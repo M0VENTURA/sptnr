@@ -6655,6 +6655,56 @@ def api_album_library_tracks():
         return jsonify({"error": str(e), "tracks": []}), 500
 
 
+def _search_mb_release_id_for_album(artist: str, album: str, expected_track_count: int = 0) -> str:
+    """Search MusicBrainz for a release MBID matching artist+album.
+
+    Returns the release MBID string for the best-scoring match, or an empty
+    string when no confident match is found.
+    """
+    if not artist or not album:
+        return ""
+    try:
+        from difflib import SequenceMatcher
+
+        escaped_artist = _escape_mb_phrase(artist)
+        escaped_album = _escape_mb_phrase(album)
+        resp = requests.get(
+            "https://musicbrainz.org/ws/2/release/",
+            params={
+                "query": f'artist:"{escaped_artist}" AND release:"{escaped_album}"',
+                "fmt": "json",
+                "limit": 10,
+            },
+            headers={"User-Agent": MUSICBRAINZ_USER_AGENT},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        releases = resp.json().get("releases", []) or []
+        if not releases:
+            return ""
+
+        def _score(rel):
+            title_sim = SequenceMatcher(None, album.lower(), (rel.get("title") or "").lower()).ratio()
+            credits = rel.get("artist-credit") or []
+            artist_name = (
+                credits[0].get("name", "") if credits and isinstance(credits[0], dict) else ""
+            )
+            artist_sim = SequenceMatcher(None, artist.lower(), artist_name.lower()).ratio()
+            track_count = rel.get("track-count") or 0
+            track_bonus = (
+                0.1 if expected_track_count and abs(track_count - expected_track_count) <= 2 else 0.0
+            )
+            return title_sim * 0.5 + artist_sim * 0.3 + track_bonus
+
+        releases.sort(key=_score, reverse=True)
+        best = releases[0]
+        if _score(best) >= 0.6:
+            return best.get("id") or ""
+    except Exception as exc:
+        logging.debug(f"[MISSING_TRACKS] MB release search fallback failed for {artist}/{album}: {exc}")
+    return ""
+
+
 @app.route("/api/album/missing-tracks")
 def api_album_missing_tracks():
     """Check which tracks are in the MusicBrainz release but missing from the library for an album."""
@@ -6694,8 +6744,24 @@ def api_album_missing_tracks():
         mb_mbid = row_dict.get("mb_mbid")
 
         if not mb_mbid:
-            conn.close()
-            return jsonify({"missing_tracks": [], "missing_count": 0, "library_count": library_count, "reason": "no_mbid"})
+            # Fallback: search MusicBrainz by artist+album name to find the release MBID.
+            fallback_mbid = _search_mb_release_id_for_album(artist, album, library_count)
+            if not fallback_mbid:
+                conn.close()
+                return jsonify({"missing_tracks": [], "missing_count": 0, "library_count": library_count, "reason": "no_mbid"})
+            mb_mbid = fallback_mbid
+            # Persist the discovered MBID so future calls don't need to search again.
+            try:
+                cursor.execute(
+                    f"UPDATE tracks SET musicbrainz_album_mbid = {placeholder}"
+                    f" WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}"
+                    f"   AND album = {placeholder}"
+                    f"   AND (musicbrainz_album_mbid IS NULL OR TRIM(musicbrainz_album_mbid) = '')",
+                    (mb_mbid, artist, album),
+                )
+                conn.commit()
+            except Exception as _save_err:
+                logging.debug(f"[MISSING_TRACKS] Could not persist fallback MBID: {_save_err}")
 
         # Fetch library tracks for this album (include mbid/beets_mbid for MBID-based matching)
         cursor.execute(f"""

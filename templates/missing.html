@@ -172,7 +172,7 @@ function renderGapAlbumCard(alb, cardId) {
           <span class="spinner-border spinner-border-sm"></span> Loading tracklist…
         </div>
         <table class="table table-sm mb-0 d-none gap_tracklist_table_${cardId}">
-          <thead class="table-light">
+          <thead>
             <tr>
               <th style="width:3rem">#</th>
               <th>Title</th>
@@ -355,7 +355,12 @@ async function downloadAllMissing(btn) {
     if (!missing.length) {
       btn.disabled = false;
       btn.innerHTML = origHtml;
-      alert('No missing tracks found for this album (MusicBrainz data may not be available).');
+      const reason = data.reason || '';
+      if (reason === 'no_mbid') {
+        alert('No MusicBrainz ID found for this album. Try opening the album page to link it to a MusicBrainz release.');
+      } else {
+        alert('No missing tracks found for this album. It may already be complete or MusicBrainz data is unavailable.');
+      }
       return;
     }
 
