@@ -1266,6 +1266,25 @@ def run_essentia_mood_scan(
         f" {synced_files} file tags synced)"
     )
 
+    # Write a completion marker so that on the next perpetual cycle the
+    # auto-resume code (which checks for status != "complete") will NOT
+    # re-apply the stale checkpoint from the previous cycle.  Without this
+    # the progress file keeps status="running" + the last resume_from_artist
+    # value, causing every subsequent cycle to resume from that checkpoint
+    # instead of scanning from the beginning.
+    _write_progress(progress_file, {
+        "is_running": False,
+        "scan_type": "essentia_mood_scan",
+        "status": "complete",
+        "processed_artists": processed_artists,
+        "total_artists": total_artists,
+        "scanned_tracks": scanned_tracks,
+        "updated_tracks": updated_tracks,
+        "synced_files": synced_files,
+        "current_artist": None,
+        "resume_from_artist": "",
+    })
+
     return {
         "stopped": False,
         "processed_artists": processed_artists,
