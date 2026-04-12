@@ -1806,14 +1806,28 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
         # the checkpoint is erased the moment the route writes "starting", and
         # get_last_scanned_artist() falls through to the DB fallback which may
         # return the wrong (or no) artist.
+        #
+        # IMPORTANT: only carry forward the checkpoint when the previous scan
+        # was genuinely interrupted (is_running=True and not in a terminal
+        # state).  Completed, stopped, or errored scans must NOT seed
+        # resume_from_artist — doing so causes every new scan to start from the
+        # last artist of the prior run (e.g. "Stray Kids") instead of from the
+        # beginning, because detect_interrupted_scan() treats a "starting"
+        # status with resume_from_artist present as a resume cue.
+        _TERMINAL_STATUSES = {"complete", "completed", "success", "stopped", "error"}
         if payload.get("status") == "starting" and not payload.get("resume_from_artist"):
             try:
                 if os.path.exists(path):
                     with open(path, "r", encoding="utf-8") as _existing_f:
                         _existing_progress = json.load(_existing_f)
-                    _prev_artist = str(_existing_progress.get("current_artist") or "").strip()
-                    if _prev_artist:
-                        payload["resume_from_artist"] = _prev_artist
+                    _prev_running = bool(_existing_progress.get("is_running", False))
+                    _prev_status = str(_existing_progress.get("status") or "").strip().lower()
+                    # Only preserve when the previous scan was actively running
+                    # and had not yet reached a terminal state.
+                    if _prev_running and _prev_status not in _TERMINAL_STATUSES:
+                        _prev_artist = str(_existing_progress.get("current_artist") or "").strip()
+                        if _prev_artist:
+                            payload["resume_from_artist"] = _prev_artist
             except Exception:
                 pass
 
