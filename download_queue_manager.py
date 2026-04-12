@@ -151,8 +151,16 @@ _DOWNLOADS_CHECK_MIN_INTERVAL_SECONDS = 60
 _PREFIX_TITLE_MIN = 0.9
 _TITLE_VARIANT_TOKENS = {
     "acoustic", "demo", "edit", "instrumental", "intro", "live",
-    "mix", "radio", "remaster", "remastered", "remix", "version",
+    "mix", "orchestral", "radio", "remaster", "remastered", "remix", "version",
 }
+
+# Soft variant tokens may be absent from file tags for the correct recording
+# (e.g. "radio edit", "edited version", "single version").  A mismatch on
+# these alone does not block the match — the caller's duration guard provides
+# the final confirmation.  Hard variants ("live", "acoustic", "orchestral", …)
+# indicate genuinely different recordings and are enforced strictly in both
+# directions.
+_SOFT_VARIANT_TOKENS = frozenset({"version", "edit", "radio"})
 
 
 def _extract_title_variant_tokens(value):
@@ -166,19 +174,28 @@ def _extract_title_variant_tokens(value):
 def _title_variants_are_compatible(expected_title, candidate_title):
     """Require version labels (mix/live/edit/etc.) to align between titles.
 
-    Only enforced when the *expected* (queue) title itself carries a variant
-    token.  If the queue title is plain (no variant qualifier) we allow any
-    file version — the user may only have the remastered/live version available
-    and blocking it would prevent a valid match.
+    Hard variant tokens (live, acoustic, orchestral, etc.) are enforced in
+    both directions: a file tagged "(Live)" must not match a plain queue item,
+    and a queue item tagged "(Live)" must not match a plain file.
+
+    Soft variant tokens (edit, radio, version) are ignored — they may be
+    absent from either side without blocking the match.  The caller is
+    expected to provide a duration guard as the final confirmation.
     """
     expected_variants = _extract_title_variant_tokens(expected_title)
     candidate_variants = _extract_title_variant_tokens(candidate_title)
 
-    if expected_variants:
-        if not candidate_variants:
-            return False
-        if expected_variants.isdisjoint(candidate_variants):
-            return False
+    expected_hard = expected_variants - _SOFT_VARIANT_TOKENS
+    candidate_hard = candidate_variants - _SOFT_VARIANT_TOKENS
+
+    # Hard variant present on one side but not the other → incompatible.
+    if expected_hard and not candidate_hard:
+        return False
+    if candidate_hard and not expected_hard:
+        return False
+    if expected_hard.isdisjoint(candidate_hard):
+        return False
+
     return True
 
 # In-memory event queue for displaying logs on UI (keep last 200 events)

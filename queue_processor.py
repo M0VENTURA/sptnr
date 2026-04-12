@@ -153,16 +153,16 @@ _BRACKET_RE = re.compile(r'\([^\)]*\)|\[[^\]]*\]')
 # metadata-matching logic.  Defined once at module level to keep them in sync.
 _TITLE_VARIANT_TOKENS = frozenset({
     "acoustic", "demo", "edit", "instrumental", "intro", "live", "mix",
-    "radio", "remaster", "remastered", "remix", "version",
+    "orchestral", "radio", "remaster", "remastered", "remix", "version",
 })
 
 # "Soft" variant tokens are version qualifiers that may simply be absent from
 # file tags even for the correct recording (e.g. "edited version", "single
-# version", "album version").  A mismatch on these alone is allowed when the
-# file duration closely confirms the expected duration (≤2 s).  All other
-# variant tokens ("live", "remix", "acoustic", etc.) indicate genuinely
-# different recordings and are treated as hard rejects.
-_SOFT_VARIANT_TOKENS = frozenset({"version", "edit"})
+# version", "album version", "radio edit").  A mismatch on these alone is
+# allowed when the file duration closely confirms the expected duration (≤2 s).
+# All other variant tokens ("live", "acoustic", "orchestral", "remix", etc.)
+# indicate genuinely different recordings and are treated as hard rejects.
+_SOFT_VARIANT_TOKENS = frozenset({"version", "edit", "radio"})
 
 
 def _strip_brackets(text):
@@ -368,12 +368,12 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         if requested_variants or candidate_variants:
             if not requested_variants or not candidate_variants:
                 # One side has variant qualifiers but the other doesn't.
-                # "Soft" variants (version, edit) may simply be absent from file
-                # tags for the correct recording (e.g. "edited version" on the
+                # "Soft" variants (version, edit, radio) may simply be absent from
+                # file tags for the correct recording (e.g. "radio edit" on the
                 # queue item but plain title in the file).  Let the duration check
                 # further down the function resolve these; other variant tokens
-                # (live, remix, acoustic, …) indicate genuinely different
-                # recordings and are always a hard reject.
+                # (live, acoustic, orchestral, remix, …) indicate genuinely
+                # different recordings and are always a hard reject.
                 _present_variants = requested_variants or candidate_variants
                 if not _present_variants.issubset(_SOFT_VARIANT_TOKENS):
                     return 0.0
@@ -745,8 +745,9 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
                     return False
             elif not (_present_variants.issubset(_SOFT_VARIANT_TOKENS) and _duration_confirms):
                 # The file has variant qualifiers but the queue title doesn't.
-                # Only allow soft variants (version, edit) with tight duration
-                # confirmation; hard variants (live, remix, …) are rejected.
+                # Only allow soft variants (version, edit, radio) with tight
+                # duration confirmation; hard variants (live, acoustic,
+                # orchestral, …) are rejected.
                 return False
         elif expected_variants.isdisjoint(candidate_variants):
             return False
@@ -878,8 +879,9 @@ def _filename_matches_queue_item(filename, queue_item):
         if requested_variants or candidate_variants:
             if not requested_variants or not candidate_variants:
                 # One side has variant qualifiers, the other doesn't.
-                # Soft variants (version, edit) may simply be absent from the
-                # filename; hard variants (live, remix, …) are always rejected.
+                # Soft variants (version, edit, radio) may simply be absent from
+                # the filename; hard variants (live, acoustic, orchestral, …)
+                # are always rejected.
                 _present_variants = requested_variants or candidate_variants
                 if not _present_variants.issubset(_SOFT_VARIANT_TOKENS):
                     return False
