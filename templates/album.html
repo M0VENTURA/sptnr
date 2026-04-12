@@ -765,6 +765,17 @@
                                     </div>
                                 </td>
                                 <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+                                    {% if track_is_queued %}
+                                    {% set _fp = track.file_path or '' %}
+                                    {% set _qid = _fp.split('queue_id_')[-1] if 'queue_id_' in _fp else '' %}
+                                    <button class="btn btn-sm btn-outline-danger delete-queued-track-btn"
+                                            data-track-id="{{ track.id }}"
+                                            data-queue-id="{{ _qid }}"
+                                            onclick="deleteQueuedTrackOnAlbumPage(this)"
+                                            title="Remove from download queue">
+                                        <i class="bi bi-x-circle"></i>
+                                    </button>
+                                    {% else %}
                                     <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
                                         <i class="bi bi-search"></i>
                                     </button>
@@ -774,6 +785,7 @@
                                     <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page">
                                         <i class="bi bi-arrow-right"></i>
                                     </a>
+                                    {% endif %}
                                 </td>
                             </tr>
                             {% endif %}
@@ -785,27 +797,44 @@
                         {% if track.is_missing %}
                         {{ missing_track_row(track) }}
                         {% else %}
-                        <tr class="d-flex flex-column d-md-table-row" data-track-id="{{ track.id }}">
+                        {% set track_is_queued = track.file_path and '__queued_for_download__' in track.file_path %}
+                        <tr class="d-flex flex-column d-md-table-row{% if track_is_queued %} table-secondary opacity-75{% endif %}" data-track-id="{{ track.id }}">
                             <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
                                 <div class="d-flex justify-content-between align-items-center gap-2">
-                                    <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
+                                    <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if track_is_queued %} disabled{% endif %}>
                                     <strong>{{ track.track_number or loop.index }}</strong>
-                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset flex-grow-1">
-                                        {{ track.title }}
+                                    <span class="flex-grow-1">
+                                        {% if track_is_queued %}
+                                        <span class="text-muted">{{ track.title }}</span>
                                         {% if track.artist and track.artist != artist_name %}
                                         <small class="text-muted">— {{ track.artist }}</small>
                                         {% endif %}
-                                    </a>
+                                        <span class="badge bg-warning text-dark ms-1" title="This track is currently in the download queue">In Queue</span>
+                                        {% else %}
+                                        <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                            {{ track.title }}
+                                            {% if track.artist and track.artist != artist_name %}
+                                            <small class="text-muted">— {{ track.artist }}</small>
+                                            {% endif %}
+                                        </a>
+                                        {% endif %}
+                                    </span>
                                 </div>
                             </td>
                             <td class="d-none d-md-table-cell">
-                                <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
+                                <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if track_is_queued %} disabled{% endif %}>
                             </td>
                             <td class="d-none d-md-table-cell text-muted">
                                 {{ track.track_number or loop.index }}
                             </td>
                             <td class="d-flex justify-content-between d-md-table-cell align-items-center">
                                 <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
+                                {% if track_is_queued %}
+                                <div class="d-none d-md-block">
+                                    <span class="text-muted">{{ track.title }}</span>
+                                    <span class="badge bg-warning text-dark ms-1" title="This track is currently in the download queue">In Queue</span>
+                                </div>
+                                {% else %}
                                 <span onclick="editTrackTitle('{{ track.id }}', '{{ track.title|escapejs }}')" class="flex-grow-1" style="cursor: pointer;" title="Click to edit">
                                     <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline track-title-display-{{ track.id }}">
                                         {{ track.title }}
@@ -815,6 +844,7 @@
                                     {% endif %}
                                     <span class="d-md-none track-title-display-{{ track.id }}">{{ track.title }}</span>
                                 </span>
+                                {% endif %}
                             </td>
                             <td class="d-none d-lg-table-cell">
                                 <span onclick="editTrackArtist('{{ track.id }}', '{{ track.artist|escapejs }}')" style="cursor: pointer;" title="Click to edit">
@@ -874,6 +904,17 @@
                                 </div>
                             </td>
                             <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+                                {% if track_is_queued %}
+                                {% set _fp = track.file_path or '' %}
+                                {% set _qid = _fp.split('queue_id_')[-1] if 'queue_id_' in _fp else '' %}
+                                <button class="btn btn-sm btn-outline-danger delete-queued-track-btn"
+                                        data-track-id="{{ track.id }}"
+                                        data-queue-id="{{ _qid }}"
+                                        onclick="deleteQueuedTrackOnAlbumPage(this)"
+                                        title="Remove from download queue">
+                                    <i class="bi bi-x-circle"></i>
+                                </button>
+                                {% else %}
                                 <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
                                     <i class="bi bi-search"></i>
                                 </button>
@@ -883,6 +924,7 @@
                                 <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page">
                                     <i class="bi bi-arrow-right"></i>
                                 </a>
+                                {% endif %}
                             </td>
                         </tr>
                         {% endif %}
@@ -4038,6 +4080,39 @@
                 btn.disabled = false;
                 btn.innerHTML = origHtml;
                 alert('Failed to queue track: ' + (data.error || 'Unknown error'));
+            }
+        } catch (e) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+            alert('Network error: ' + e.message);
+        }
+    }
+
+    // ── Delete Queued Track from Album Page ───────────────────────────────────
+    async function deleteQueuedTrackOnAlbumPage(btn) {
+        const queueId = btn.dataset.queueId;
+        const trackId = btn.dataset.trackId;
+        if (!queueId || queueId === '') {
+            alert('Cannot determine queue ID for this track.');
+            return;
+        }
+        if (!confirm('Remove this track from the download queue? The stub will be removed from the album view.')) {
+            return;
+        }
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+        try {
+            const resp = await fetch(`/api/queue/${queueId}/delete`, { method: 'DELETE' });
+            const data = await resp.json();
+            if (data.success) {
+                // Remove the row from the table
+                const row = btn.closest('tr');
+                if (row) row.remove();
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+                alert('Failed to remove from queue: ' + (data.error || 'Unknown error'));
             }
         } catch (e) {
             btn.disabled = false;

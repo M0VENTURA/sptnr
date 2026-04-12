@@ -6641,7 +6641,7 @@ def api_album_library_tracks():
         placeholder = "%s"
 
         cursor.execute(f"""
-            SELECT id, title, track_number, disc_number, file_path
+            SELECT id, title, track_number, disc_number, file_path, duration
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
               AND album = {placeholder}
@@ -15692,127 +15692,168 @@ def scan_popularity_route():
                     logging.warning("Resume mode: No last scanned artist found, starting from beginning")
             
             def run_popularity_scan_bg():
+                _pop_cycle = 0
+                _cycle_resume = resume_from_artist
                 try:
-                    if singles_only:
-                        logging.info(f"Starting singles-only scan in background")
-                        completed = scan_popularity_func(
-                            verbose=False,
-                            force=force_rescan,
-                            singles_only=True,
-                            resume_from=resume_from_artist,
-                            stop_progress_file=popularity_progress_file
-                        )
-                        if completed is False:
-                            _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "stopped", "exit_code": 0})
-                            logging.info("Singles scan stopped by user request")
-                        else:
-                            _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
-                            logging.info("Singles scan completed successfully")
+                    while True:
+                        _pop_cycle += 1
+
+                        cfg = get_config()
+                        perpetual_enabled = bool((cfg.get("features") or {}).get("perpetual", False))
+
+                        _stopped = False
+
+                        if singles_only:
+                            logging.info(f"Starting singles-only scan in background (cycle {_pop_cycle})")
+                            completed = scan_popularity_func(
+                                verbose=False,
+                                force=force_rescan,
+                                singles_only=True,
+                                resume_from=_cycle_resume,
+                                stop_progress_file=popularity_progress_file
+                            )
+                            if completed is False:
+                                _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "stopped", "exit_code": 0})
+                                logging.info("Singles scan stopped by user request")
+                                break
+                            logging.info("Singles scan cycle %d completed successfully", _pop_cycle)
                             _log_scan_session_complete("singles")
-                    elif metadata_only:
-                        logging.info(f"Starting metadata-only lookup scan in background (force={force_rescan})")
-                        completed = scan_popularity_func(
-                            verbose=False,
-                            force=force_rescan,
-                            metadata_only=True,
-                            stop_progress_file=popularity_progress_file
-                        )
-                        if completed is False:
-                            _write_progress_with_current_artist(popularity_progress_file, "metadata_lookup_scan", False, {"status": "stopped", "exit_code": 0})
-                            logging.info("Metadata lookup scan stopped by user request")
-                        else:
-                            _write_progress_with_current_artist(popularity_progress_file, "metadata_lookup_scan", False, {"status": "complete", "exit_code": 0})
-                            logging.info("Metadata lookup scan completed successfully")
+                        elif metadata_only:
+                            logging.info(f"Starting metadata-only lookup scan in background (force={force_rescan}, cycle {_pop_cycle})")
+                            completed = scan_popularity_func(
+                                verbose=False,
+                                force=force_rescan,
+                                metadata_only=True,
+                                stop_progress_file=popularity_progress_file
+                            )
+                            if completed is False:
+                                _write_progress_with_current_artist(popularity_progress_file, "metadata_lookup_scan", False, {"status": "stopped", "exit_code": 0})
+                                logging.info("Metadata lookup scan stopped by user request")
+                                break
+                            logging.info("Metadata lookup scan cycle %d completed successfully", _pop_cycle)
                             try:
                                 logging.info("Metadata lookup scan complete; starting missing releases refresh")
                                 _run_daily_missing_releases_scan()
                             except Exception as missing_release_err:
                                 logging.warning(f"Metadata lookup post-step failed (missing releases refresh): {missing_release_err}")
                             _log_scan_session_complete("metadata")
-                    elif singles_with_missing_popularity:
-                        logging.info(f"Starting singles scan (with popularity fetch for new albums) in background (force={force_rescan})")
-                        completed = scan_popularity_func(
-                            verbose=False,
-                            force=force_rescan,
-                            singles_with_missing_popularity=True,
-                            stop_progress_file=popularity_progress_file
+                        elif singles_with_missing_popularity:
+                            logging.info(f"Starting singles scan (with popularity fetch for new albums) in background (force={force_rescan}, cycle {_pop_cycle})")
+                            completed = scan_popularity_func(
+                                verbose=False,
+                                force=force_rescan,
+                                singles_with_missing_popularity=True,
+                                stop_progress_file=popularity_progress_file
+                            )
+                            if completed is False:
+                                _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "stopped", "exit_code": 0})
+                                logging.info("Singles scan stopped by user request")
+                                break
+                            logging.info("Singles scan cycle %d completed successfully", _pop_cycle)
+                            _log_scan_session_complete("singles")
+                        else:
+                            # Popularity and Singles Scan — three sequential phases, each with
+                            # its own 2-week cooldown (when not forced).  If a phase ran recently
+                            # it is skipped but the next phase still runs.
+                            _PHASE_COOLDOWN_DAYS = 14
+
+                            # Phase 1: metadata lookup
+                            run_meta = force_rescan or not _scan_phase_ran_recently("metadata", _PHASE_COOLDOWN_DAYS)
+                            if run_meta:
+                                logging.info(f"Phase 1/3: metadata lookup (force={force_rescan})")
+                                meta_completed = scan_popularity_func(
+                                    verbose=False,
+                                    force=force_rescan,
+                                    metadata_only=True,
+                                    stop_progress_file=popularity_progress_file
+                                )
+                                if meta_completed is False:
+                                    _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
+                                    logging.info("Popularity scan stopped during metadata phase")
+                                    _stopped = True
+                                else:
+                                    _log_scan_session_complete("metadata")
+                                    try:
+                                        _run_daily_missing_releases_scan()
+                                    except Exception as _mre:
+                                        logging.warning(f"Missing releases refresh failed after metadata phase: {_mre}")
+                            else:
+                                logging.info(f"Phase 1/3: metadata lookup skipped (ran within last {_PHASE_COOLDOWN_DAYS} days)")
+
+                            if not _stopped:
+                                # Phase 2: popularity scoring
+                                run_pop = force_rescan or not _scan_phase_ran_recently("popularity", _PHASE_COOLDOWN_DAYS)
+                                if run_pop:
+                                    logging.info(f"Phase 2/3: popularity scoring (force={force_rescan})")
+                                    pop_completed = scan_popularity_func(
+                                        verbose=False,
+                                        force=force_rescan,
+                                        filter_missing=filter_missing,
+                                        popularity_only=True,
+                                        resume_from=_cycle_resume,
+                                        stop_progress_file=popularity_progress_file
+                                    )
+                                    if pop_completed is False:
+                                        _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
+                                        logging.info("Popularity scan stopped during popularity phase")
+                                        _stopped = True
+                                    else:
+                                        _log_scan_session_complete("popularity")
+                                else:
+                                    logging.info(f"Phase 2/3: popularity scoring skipped (ran within last {_PHASE_COOLDOWN_DAYS} days)")
+
+                            if not _stopped:
+                                # Phase 3: singles detection + star assignment
+                                run_singles = force_rescan or not _scan_phase_ran_recently("singles", _PHASE_COOLDOWN_DAYS)
+                                if run_singles:
+                                    logging.info(f"Phase 3/3: singles detection (force={force_rescan})")
+                                    singles_completed = scan_popularity_func(
+                                        verbose=False,
+                                        force=force_rescan,
+                                        singles_only=True,
+                                        resume_from=_cycle_resume,
+                                        stop_progress_file=popularity_progress_file
+                                    )
+                                    if singles_completed is False:
+                                        _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
+                                        logging.info("Popularity scan stopped during singles phase")
+                                        _stopped = True
+                                    else:
+                                        _log_scan_session_complete("singles")
+                                else:
+                                    logging.info(f"Phase 3/3: singles detection skipped (ran within last {_PHASE_COOLDOWN_DAYS} days)")
+
+                            if _stopped:
+                                break
+
+                            logging.info("Popularity and Singles scan cycle %d (all phases) completed", _pop_cycle)
+
+                        if metadata_only:
+                            _scan_type_label = "metadata_lookup_scan"
+                        elif singles_only or singles_with_missing_popularity:
+                            _scan_type_label = "singles_scan"
+                        else:
+                            _scan_type_label = "popularity_scan"
+
+                        if not perpetual_enabled:
+                            _write_progress_with_current_artist(popularity_progress_file, _scan_type_label, False, {"status": "complete", "exit_code": 0})
+                            break
+
+                        # Perpetual: check for stop before looping.
+                        with scan_lock:
+                            if scan_process_popularity is None or _is_stop_requested_from_progress(popularity_progress_file):
+                                _write_progress_with_current_artist(popularity_progress_file, _scan_type_label, False, {"status": "stopped", "exit_code": 0})
+                                logging.info("Popularity scan perpetual loop: stop requested after cycle %d", _pop_cycle)
+                                break
+
+                        logging.info(
+                            "[POPULARITY_PERPETUAL] Cycle %d complete; perpetual mode enabled – restarting from beginning",
+                            _pop_cycle,
                         )
-                        if completed is False:
-                            _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "stopped", "exit_code": 0})
-                            logging.info("Singles scan stopped by user request")
-                        else:
-                            _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
-                            logging.info("Singles scan completed successfully")
-                            _log_scan_session_complete("singles")
-                    else:
-                        # Popularity and Singles Scan — three sequential phases, each with
-                        # its own 2-week cooldown (when not forced).  If a phase ran recently
-                        # it is skipped but the next phase still runs.
-                        _PHASE_COOLDOWN_DAYS = 14
 
-                        # Phase 1: metadata lookup
-                        run_meta = force_rescan or not _scan_phase_ran_recently("metadata", _PHASE_COOLDOWN_DAYS)
-                        if run_meta:
-                            logging.info(f"Phase 1/3: metadata lookup (force={force_rescan})")
-                            meta_completed = scan_popularity_func(
-                                verbose=False,
-                                force=force_rescan,
-                                metadata_only=True,
-                                stop_progress_file=popularity_progress_file
-                            )
-                            if meta_completed is False:
-                                _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
-                                logging.info("Popularity scan stopped during metadata phase")
-                                return
-                            _log_scan_session_complete("metadata")
-                            try:
-                                _run_daily_missing_releases_scan()
-                            except Exception as _mre:
-                                logging.warning(f"Missing releases refresh failed after metadata phase: {_mre}")
-                        else:
-                            logging.info(f"Phase 1/3: metadata lookup skipped (ran within last {_PHASE_COOLDOWN_DAYS} days)")
+                        # Subsequent perpetual cycles always start from the beginning.
+                        _cycle_resume = None
 
-                        # Phase 2: popularity scoring
-                        run_pop = force_rescan or not _scan_phase_ran_recently("popularity", _PHASE_COOLDOWN_DAYS)
-                        if run_pop:
-                            logging.info(f"Phase 2/3: popularity scoring (force={force_rescan})")
-                            pop_completed = scan_popularity_func(
-                                verbose=False,
-                                force=force_rescan,
-                                filter_missing=filter_missing,
-                                popularity_only=True,
-                                resume_from=resume_from_artist,
-                                stop_progress_file=popularity_progress_file
-                            )
-                            if pop_completed is False:
-                                _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
-                                logging.info("Popularity scan stopped during popularity phase")
-                                return
-                            _log_scan_session_complete("popularity")
-                        else:
-                            logging.info(f"Phase 2/3: popularity scoring skipped (ran within last {_PHASE_COOLDOWN_DAYS} days)")
-
-                        # Phase 3: singles detection + star assignment
-                        run_singles = force_rescan or not _scan_phase_ran_recently("singles", _PHASE_COOLDOWN_DAYS)
-                        if run_singles:
-                            logging.info(f"Phase 3/3: singles detection (force={force_rescan})")
-                            singles_completed = scan_popularity_func(
-                                verbose=False,
-                                force=force_rescan,
-                                singles_only=True,
-                                resume_from=resume_from_artist,
-                                stop_progress_file=popularity_progress_file
-                            )
-                            if singles_completed is False:
-                                _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
-                                logging.info("Popularity scan stopped during singles phase")
-                                return
-                            _log_scan_session_complete("singles")
-                        else:
-                            logging.info(f"Phase 3/3: singles detection skipped (ran within last {_PHASE_COOLDOWN_DAYS} days)")
-
-                        _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
-                        logging.info("Popularity and Singles scan (all phases) completed")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
                     if metadata_only:
@@ -15878,20 +15919,44 @@ def scan_singles():
             _write_progress_file(singles_progress_file, "singles_scan", True, {"status": "starting"})
 
             def run_singles_scan_bg():
+                _singles_cycle = 0
                 try:
-                    completed = scan_popularity_func(
-                        verbose=False,
-                        force=False,
-                        singles_only=True,
-                        stop_progress_file=singles_progress_file,
-                    )
-                    if completed is False:
-                        _write_progress_with_current_artist(singles_progress_file, "singles_scan", False, {"status": "stopped", "exit_code": 0})
-                        logging.info("Singles scan stopped by user request")
-                    else:
-                        _write_progress_with_current_artist(singles_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
-                        logging.info("Singles scan completed successfully")
+                    while True:
+                        _singles_cycle += 1
+
+                        cfg = get_config()
+                        perpetual_enabled = bool((cfg.get("features") or {}).get("perpetual", False))
+
+                        completed = scan_popularity_func(
+                            verbose=False,
+                            force=False,
+                            singles_only=True,
+                            stop_progress_file=singles_progress_file,
+                        )
+                        if completed is False:
+                            _write_progress_with_current_artist(singles_progress_file, "singles_scan", False, {"status": "stopped", "exit_code": 0})
+                            logging.info("Singles scan stopped by user request")
+                            break
+
+                        logging.info("Singles scan cycle %d completed successfully", _singles_cycle)
                         _log_scan_session_complete("singles")
+
+                        if not perpetual_enabled:
+                            _write_progress_with_current_artist(singles_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
+                            break
+
+                        # Perpetual: check for stop before looping.
+                        with scan_lock:
+                            if scan_process_singles is None or _is_stop_requested_from_progress(singles_progress_file):
+                                _write_progress_with_current_artist(singles_progress_file, "singles_scan", False, {"status": "stopped", "exit_code": 0})
+                                logging.info("Singles scan perpetual loop: stop requested after cycle %d", _singles_cycle)
+                                break
+
+                        logging.info(
+                            "[SINGLES_PERPETUAL] Cycle %d complete; perpetual mode enabled – restarting from beginning",
+                            _singles_cycle,
+                        )
+
                 except Exception as e:
                     logging.error(f"Error in singles scan: {e}", exc_info=True)
                     _write_progress_with_current_artist(singles_progress_file, "singles_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
@@ -16000,93 +16065,151 @@ def scan_essentia_mood():
                     from essentia_mood_scan import run_essentia_mood_scan
                     from helpers.config_helpers import get_config
 
-                    cfg = get_config()
-                    essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
-                    script_path = essentia_cfg.get("script_path", "")
-                    models_dir = essentia_cfg.get("models_dir", "")
-                    mood_threshold = float(essentia_cfg.get("mood_threshold", 0.005))
-                    per_file_timeout = int(essentia_cfg.get("per_file_timeout", 300))
-                    tag_genres = bool(essentia_cfg.get("tag_genres", False))
-                    num_genres = int(essentia_cfg.get("num_genres", 3))
-                    genre_threshold = float(essentia_cfg.get("genre_threshold", 15.0))
-                    genre_format = essentia_cfg.get("genre_format", "parent_child")
-                    tag_moods = bool(essentia_cfg.get("tag_moods", True))
-                    parse_json_features = bool(essentia_cfg.get("parse_json_features", True))
-                    delete_json_after_import = bool(essentia_cfg.get("delete_json_after_import", True))
-                    json_output_dir = str(essentia_cfg.get("json_output_dir", "") or "").strip()
-                    cpu_nice = int(essentia_cfg.get("cpu_nice", 10))
-                    inter_file_delay = float(essentia_cfg.get("inter_file_delay", 0.0))
+                    _essentia_cycle = 0
+                    # On first cycle honour the caller's resume_from_artist; subsequent
+                    # perpetual cycles always scan from the beginning.
+                    _cycle_resume_from_artist = resume_from_artist
 
-                    result = run_essentia_mood_scan(
-                        script_path=script_path,
-                        models_dir=models_dir,
-                        mood_threshold=mood_threshold,
-                        per_file_timeout=per_file_timeout,
-                        force=_force_scan,
-                        progress_file=essentia_progress_file,
-                        tag_genres=tag_genres,
-                        num_genres=num_genres,
-                        genre_threshold=genre_threshold,
-                        genre_format=genre_format,
-                        tag_moods=tag_moods,
-                        parse_json_features=parse_json_features,
-                        delete_json_after_import=delete_json_after_import,
-                        json_output_dir=json_output_dir,
-                        artist_filter=_artist_filter,
-                        album_filter=_album_filter,
-                        track_id_filter=_track_id_filter,
-                        resume_from_artist=resume_from_artist,
-                        cpu_nice=cpu_nice,
-                        inter_file_delay=inter_file_delay,
-                    )
-                    if result.get("stopped"):
-                        _write_progress_with_current_artist(
-                            essentia_progress_file,
-                            "essentia_mood_scan",
-                            False,
-                            {
-                                "status": "stopped",
-                                "exit_code": 0,
-                                "processed_artists": result.get("processed_artists", 0),
-                                "total_artists": result.get("total_artists", 0),
-                                "scanned_tracks": result.get("scanned_tracks", 0),
-                                "updated_tracks": result.get("updated_tracks", 0),
-                                "synced_files": result.get("synced_files", 0),
-                            },
+                    while True:
+                        _essentia_cycle += 1
+
+                        # Re-read config on every cycle so live changes to essentia
+                        # settings (and perpetual on/off) take effect immediately.
+                        cfg = get_config()
+                        essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
+                        script_path = essentia_cfg.get("script_path", "")
+                        models_dir = essentia_cfg.get("models_dir", "")
+                        mood_threshold = float(essentia_cfg.get("mood_threshold", 0.005))
+                        per_file_timeout = int(essentia_cfg.get("per_file_timeout", 300))
+                        tag_genres = bool(essentia_cfg.get("tag_genres", False))
+                        num_genres = int(essentia_cfg.get("num_genres", 3))
+                        genre_threshold = float(essentia_cfg.get("genre_threshold", 15.0))
+                        genre_format = essentia_cfg.get("genre_format", "parent_child")
+                        tag_moods = bool(essentia_cfg.get("tag_moods", True))
+                        parse_json_features = bool(essentia_cfg.get("parse_json_features", True))
+                        delete_json_after_import = bool(essentia_cfg.get("delete_json_after_import", True))
+                        json_output_dir = str(essentia_cfg.get("json_output_dir", "") or "").strip()
+                        cpu_nice = int(essentia_cfg.get("cpu_nice", 10))
+                        inter_file_delay = float(essentia_cfg.get("inter_file_delay", 0.0))
+
+                        # Scoped scans (artist/album/track filter) are never looped.
+                        perpetual_enabled = (
+                            bool((cfg.get("features") or {}).get("perpetual", False))
+                            and not _artist_filter
+                            and not _album_filter
+                            and not _track_id_filter
                         )
-                        logging.info("Essentia mood scan stopped by user request")
-                        log_unified("Essentia Scan - Stopped by user request")
-                    elif result.get("error"):
-                        _write_progress_with_current_artist(
-                            essentia_progress_file,
-                            "essentia_mood_scan",
-                            False,
-                            {"status": "error", "error": result["error"], "exit_code": 1},
+
+                        result = run_essentia_mood_scan(
+                            script_path=script_path,
+                            models_dir=models_dir,
+                            mood_threshold=mood_threshold,
+                            per_file_timeout=per_file_timeout,
+                            force=_force_scan,
+                            progress_file=essentia_progress_file,
+                            tag_genres=tag_genres,
+                            num_genres=num_genres,
+                            genre_threshold=genre_threshold,
+                            genre_format=genre_format,
+                            tag_moods=tag_moods,
+                            parse_json_features=parse_json_features,
+                            delete_json_after_import=delete_json_after_import,
+                            json_output_dir=json_output_dir,
+                            artist_filter=_artist_filter,
+                            album_filter=_album_filter,
+                            track_id_filter=_track_id_filter,
+                            resume_from_artist=_cycle_resume_from_artist,
+                            cpu_nice=cpu_nice,
+                            inter_file_delay=inter_file_delay,
                         )
-                        logging.error("Essentia mood scan error: %s", result["error"])
-                        log_unified(f"Essentia Scan - Error: {result['error']}", level=logging.ERROR)
-                    else:
-                        _write_progress_with_current_artist(
-                            essentia_progress_file,
-                            "essentia_mood_scan",
-                            False,
-                            {
-                                "status": "complete",
-                                "exit_code": 0,
-                                "processed_artists": result.get("processed_artists", 0),
-                                "total_artists": result.get("total_artists", 0),
-                                "scanned_tracks": result.get("scanned_tracks", 0),
-                                "updated_tracks": result.get("updated_tracks", 0),
-                                "synced_files": result.get("synced_files", 0),
-                            },
-                        )
-                        _log_scan_session_complete("essentia_mood")
+
+                        if result.get("stopped"):
+                            _write_progress_with_current_artist(
+                                essentia_progress_file,
+                                "essentia_mood_scan",
+                                False,
+                                {
+                                    "status": "stopped",
+                                    "exit_code": 0,
+                                    "processed_artists": result.get("processed_artists", 0),
+                                    "total_artists": result.get("total_artists", 0),
+                                    "scanned_tracks": result.get("scanned_tracks", 0),
+                                    "updated_tracks": result.get("updated_tracks", 0),
+                                    "synced_files": result.get("synced_files", 0),
+                                },
+                            )
+                            logging.info("Essentia mood scan stopped by user request")
+                            log_unified("Essentia Scan - Stopped by user request")
+                            break
+
+                        if result.get("error"):
+                            _write_progress_with_current_artist(
+                                essentia_progress_file,
+                                "essentia_mood_scan",
+                                False,
+                                {"status": "error", "error": result["error"], "exit_code": 1},
+                            )
+                            logging.error("Essentia mood scan error: %s", result["error"])
+                            log_unified(f"Essentia Scan - Error: {result['error']}", level=logging.ERROR)
+                            break
+
+                        # Successful cycle.
                         logging.info(
-                            "Essentia mood scan completed: %s tracks scanned, %s updated, %s file tags synced",
+                            "Essentia mood scan cycle %d completed: %s tracks scanned, %s updated, %s file tags synced",
+                            _essentia_cycle,
                             result.get("scanned_tracks", 0),
                             result.get("updated_tracks", 0),
                             result.get("synced_files", 0),
                         )
+
+                        if not perpetual_enabled:
+                            # Non-perpetual: write completion and exit.
+                            _write_progress_with_current_artist(
+                                essentia_progress_file,
+                                "essentia_mood_scan",
+                                False,
+                                {
+                                    "status": "complete",
+                                    "exit_code": 0,
+                                    "processed_artists": result.get("processed_artists", 0),
+                                    "total_artists": result.get("total_artists", 0),
+                                    "scanned_tracks": result.get("scanned_tracks", 0),
+                                    "updated_tracks": result.get("updated_tracks", 0),
+                                    "synced_files": result.get("synced_files", 0),
+                                },
+                            )
+                            _log_scan_session_complete("essentia_mood")
+                            break
+
+                        # Perpetual mode: check for a stop request before looping.
+                        with scan_lock:
+                            if scan_process_essentia_mood is None or _is_stop_requested_from_progress(essentia_progress_file):
+                                _write_progress_with_current_artist(
+                                    essentia_progress_file,
+                                    "essentia_mood_scan",
+                                    False,
+                                    {"status": "stopped", "exit_code": 0},
+                                )
+                                logging.info("Essentia mood scan perpetual loop: stop requested after cycle %d", _essentia_cycle)
+                                log_unified("Essentia Scan - Stopped by user request")
+                                break
+
+                        logging.info(
+                            "[ESSENTIA_PERPETUAL] Cycle %d complete; perpetual mode enabled – restarting from beginning",
+                            _essentia_cycle,
+                        )
+                        log_unified(
+                            f"Essentia Scan - Cycle {_essentia_cycle} complete, perpetual mode – restarting"
+                        )
+
+                        # If nothing was scanned this cycle (all tracks already tagged),
+                        # wait briefly before polling again to avoid a tight spin loop.
+                        if result.get("scanned_tracks", 0) == 0:
+                            time.sleep(60)
+
+                        # Subsequent perpetual cycles always start from the beginning.
+                        _cycle_resume_from_artist = ""
+
                 except Exception as e:
                     logging.error(f"Error in Essentia mood scan: {e}", exc_info=True)
                     log_unified(f"Essentia Scan - Error: {e}", level=logging.ERROR)
@@ -16912,6 +17035,96 @@ def logs_view():
             return jsonify({"lines": recent_lines})
     except FileNotFoundError:
         return jsonify({"error": "Log file not found", "lines": []})
+
+
+@app.route("/missing")
+def missing_page():
+    """Page showing albums with missing tracks and missing albums/EPs."""
+    cfg = get_config()
+    qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
+    slskd_config = cfg.get("slskd", {"enabled": False})
+    return render_template("missing.html",
+                           qbit_config=qbit_config,
+                           slskd_config=slskd_config)
+
+
+@app.route("/api/missing/overview", methods=["GET"])
+def api_missing_overview():
+    """Return albums with track-number gaps and artists with cached missing releases."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        # --- Section 1: albums with track-number gaps (fast, local) ---
+        artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
+        gap_albums = []
+        try:
+            cursor.execute(f"""
+                SELECT
+                    {artist_expr}  AS artist,
+                    album,
+                    MAX(CAST(track_number AS INTEGER)) AS max_track,
+                    COUNT(DISTINCT CAST(track_number AS INTEGER)) AS have_tracks,
+                    MAX(musicbrainz_album_mbid) AS mb_mbid
+                FROM tracks
+                WHERE {artist_expr} IS NOT NULL
+                  AND TRIM({artist_expr}) != ''
+                  AND album IS NOT NULL
+                  AND TRIM(album) != ''
+                  AND track_number IS NOT NULL
+                  AND TRIM(CAST(track_number AS TEXT)) != ''
+                  AND CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) > 0
+                  AND file_path NOT LIKE '__queued_for_download__%'
+                GROUP BY {artist_expr}, album
+                HAVING MAX(CAST(track_number AS INTEGER)) > COUNT(DISTINCT CAST(track_number AS INTEGER))
+                   AND COUNT(DISTINCT CAST(track_number AS INTEGER)) >= 2
+                ORDER BY {artist_expr}, album
+            """)
+            for row in cursor.fetchall():
+                artist_val = _row_get(row, "artist", 0, "")
+                album_val = _row_get(row, "album", 1, "")
+                max_track = int(_row_get(row, "max_track", 2) or 0)
+                have_tracks = int(_row_get(row, "have_tracks", 3) or 0)
+                mb_mbid = _row_get(row, "mb_mbid", 4, "")
+                if artist_val and album_val and max_track > have_tracks:
+                    gap_albums.append({
+                        "artist": artist_val,
+                        "album": album_val,
+                        "library_count": have_tracks,
+                        "max_track": max_track,
+                        "missing_count_estimate": max_track - have_tracks,
+                        "mb_mbid": mb_mbid or "",
+                    })
+        except Exception as gap_err:
+            logging.warning(f"[MISSING_OVERVIEW] Gap detection query failed: {gap_err}")
+
+        # --- Section 2: artists with cached missing releases ---
+        artists_with_missing = []
+        try:
+            if _table_exists(cursor, "missing_releases"):
+                cursor.execute("""
+                    SELECT artist, COUNT(*) AS cnt
+                    FROM missing_releases
+                    GROUP BY artist
+                    ORDER BY artist
+                """)
+                for row in cursor.fetchall():
+                    a = _row_get(row, "artist", 0, "")
+                    c = int(_row_get(row, "cnt", 1) or 0)
+                    if a:
+                        artists_with_missing.append({"artist": a, "missing_count": c})
+        except Exception as mr_err:
+            logging.warning(f"[MISSING_OVERVIEW] Missing releases query failed: {mr_err}")
+
+        conn.close()
+        return jsonify({
+            "gap_albums": gap_albums,
+            "artists_with_missing_releases": artists_with_missing,
+        })
+    except Exception as e:
+        logging.error(f"[MISSING_OVERVIEW] Error: {e}", exc_info=True)
+        return jsonify({"error": str(e), "gap_albums": [], "artists_with_missing_releases": []}), 500
 
 
 @app.route("/bookmarks")
@@ -18674,107 +18887,141 @@ def scan_navidrome():
             
             def run_navidrome_import_bg():
                 global scan_process_navidrome
+                _nav_cycle = 0
+                _cycle_is_first = True
                 try:
                     # Ensure singles/rating pipeline stays off during Navidrome metadata-only import
                     os.environ["SPTNR_SKIP_SINGLES"] = "1"
 
-                    logging.info(f"Starting Navidrome import-only scan (mode={mode})")
-                    log_debug(f"[NAVIDROME_SCAN] Background thread started (mode={mode}, restart_requested={restart_requested}, force_start={force_start})")
                     checkpoint_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_checkpoint.json")
 
-                    if restart_requested and os.path.exists(checkpoint_path):
-                        try:
-                            os.remove(checkpoint_path)
-                            logging.info("Restart requested: cleared Navidrome checkpoint to start from beginning")
-                        except Exception as checkpoint_err:
-                            logging.warning(f"Restart requested but failed to clear checkpoint: {checkpoint_err}")
-                    
-                    log_debug("[NAVIDROME_SCAN] Calling build_artist_index()")
-                    artist_map = build_artist_index()
-                    artists = list(artist_map.items())
-                    total = len(artists)
-                    log_debug(f"[NAVIDROME_SCAN] build_artist_index() returned {total} artists")
-                    
-                    if total == 0:
-                        logging.warning("[NAVIDROME_SCAN] No artists returned by build_artist_index() — scan will not process any artists")
-                    
-                    # Check if we have a checkpoint from a previous scan or if resume mode is active
-                    start_idx = 0
-                    last_scanned_artist = None
-                    
-                    # For resume mode, get last scanned artist from database or progress files
-                    if mode == 'resume' or mode == 'resume_force':
-                        from scan_resume import get_last_scanned_artist
-                        last_scanned_artist = get_last_scanned_artist(scan_type="navidrome", db_path=DB_PATH)
+                    while True:
+                        _nav_cycle += 1
+
+                        cfg = get_config()
+                        perpetual_enabled = bool((cfg.get("features") or {}).get("perpetual", False))
+
+                        logging.info(f"Starting Navidrome import-only scan (mode={mode}, cycle={_nav_cycle})")
+                        log_debug(f"[NAVIDROME_SCAN] Background thread cycle {_nav_cycle} started (mode={mode}, restart_requested={restart_requested}, force_start={force_start})")
+
+                        if _cycle_is_first and restart_requested and os.path.exists(checkpoint_path):
+                            try:
+                                os.remove(checkpoint_path)
+                                logging.info("Restart requested: cleared Navidrome checkpoint to start from beginning")
+                            except Exception as checkpoint_err:
+                                logging.warning(f"Restart requested but failed to clear checkpoint: {checkpoint_err}")
+
+                        log_debug("[NAVIDROME_SCAN] Calling build_artist_index()")
+                        artist_map = build_artist_index()
+                        artists = list(artist_map.items())
+                        total = len(artists)
+                        log_debug(f"[NAVIDROME_SCAN] build_artist_index() returned {total} artists")
+
+                        if total == 0:
+                            logging.warning("[NAVIDROME_SCAN] No artists returned by build_artist_index() — scan will not process any artists")
+
+                        # Check if we have a checkpoint from a previous scan or if resume mode is active
+                        start_idx = 0
+                        last_scanned_artist = None
+
+                        # For resume mode (first cycle only), get last scanned artist
+                        if _cycle_is_first and (mode == 'resume' or mode == 'resume_force'):
+                            from scan_resume import get_last_scanned_artist
+                            last_scanned_artist = get_last_scanned_artist(scan_type="navidrome", db_path=DB_PATH)
+                            if last_scanned_artist:
+                                logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}'")
+                            else:
+                                log_debug("[NAVIDROME_SCAN] Resume mode active but no last scanned artist found; starting from beginning")
+                        # Otherwise check checkpoint file (first cycle only)
+                        elif _cycle_is_first and (not restart_requested) and os.path.exists(checkpoint_path):
+                            try:
+                                with open(checkpoint_path, 'r') as f:
+                                    checkpoint = json.load(f)
+                                    last_scanned_artist = checkpoint.get("last_scanned_artist")
+                                log_debug(f"[NAVIDROME_SCAN] Checkpoint found: last_scanned_artist='{last_scanned_artist}'")
+                            except Exception as e:
+                                logging.warning(f"Error reading checkpoint: {e}, starting from beginning")
+
+                        # Find the index of the last scanned artist
                         if last_scanned_artist:
-                            logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}'")
-                        else:
-                            log_debug("[NAVIDROME_SCAN] Resume mode active but no last scanned artist found; starting from beginning")
-                    # Otherwise check checkpoint file
-                    elif (not restart_requested) and os.path.exists(checkpoint_path):
-                        try:
-                            with open(checkpoint_path, 'r') as f:
-                                checkpoint = json.load(f)
-                                last_scanned_artist = checkpoint.get("last_scanned_artist")
-                            log_debug(f"[NAVIDROME_SCAN] Checkpoint found: last_scanned_artist='{last_scanned_artist}'")
-                        except Exception as e:
-                            logging.warning(f"Error reading checkpoint: {e}, starting from beginning")
-                    
-                    # Find the index of the last scanned artist
-                    if last_scanned_artist:
-                        for idx, (artist_name, _) in enumerate(artists):
-                            if artist_name == last_scanned_artist:
-                                start_idx = idx  # Start from this artist (rescan it completely)
-                                logging.info(f"Resuming Navidrome scan from artist index {start_idx} ('{last_scanned_artist}')")
-                                break
-                        else:
-                            log_debug(f"[NAVIDROME_SCAN] Last scanned artist '{last_scanned_artist}' not found in artist list; starting from beginning")
-                    
-                    # Determine force and filter logic based on mode
-                    force_rescan = (mode == 'force' or mode == 'resume_force')
-                    filter_missing = (mode == 'missing')
-                    log_debug(f"[NAVIDROME_SCAN] Starting artist loop from index {start_idx}/{total} (force_rescan={force_rescan}, filter_missing={filter_missing})")
-                    
-                    # Scan artists starting from checkpoint or beginning
-                    for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx):
-                        # Check if scan should stop
+                            for idx, (artist_name, _) in enumerate(artists):
+                                if artist_name == last_scanned_artist:
+                                    start_idx = idx  # Start from this artist (rescan it completely)
+                                    logging.info(f"Resuming Navidrome scan from artist index {start_idx} ('{last_scanned_artist}')")
+                                    break
+                            else:
+                                log_debug(f"[NAVIDROME_SCAN] Last scanned artist '{last_scanned_artist}' not found in artist list; starting from beginning")
+
+                        # Determine force and filter logic based on mode
+                        force_rescan = (mode == 'force' or mode == 'resume_force')
+                        filter_missing = (mode == 'missing')
+                        log_debug(f"[NAVIDROME_SCAN] Starting artist loop from index {start_idx}/{total} (force_rescan={force_rescan}, filter_missing={filter_missing})")
+
+                        _nav_stopped = False
+
+                        # Scan artists starting from checkpoint or beginning
+                        for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx):
+                            # Check if scan should stop
+                            with scan_lock:
+                                stop_requested = scan_process_navidrome is None or _is_stop_requested_from_progress(nav_progress_file)
+                                if stop_requested:
+                                    logging.info("Navidrome scan stop signal received, exiting gracefully")
+                                    log_debug(f"[NAVIDROME_SCAN] Stop signal at artist index {idx} ('{artist_name}')")
+                                    _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "stopped", "exit_code": 0})
+                                    _nav_stopped = True
+                                    break
+
+                            log_debug(f"[NAVIDROME_SCAN] scan_artist_to_db: idx={idx}/{total} artist='{artist_name}' id={info.get('id')}")
+                            scan_artist_to_db(
+                                artist_name,
+                                info.get("id"),
+                                verbose=False,
+                                force=force_rescan,
+                                filter_missing=filter_missing,
+                                processed_artists=idx,
+                                total_artists=total
+                            )
+
+                            # Update checkpoint with the last scanned artist
+                            try:
+                                with open(checkpoint_path, 'w') as f:
+                                    json.dump({"last_scanned_artist": artist_name}, f)
+                            except Exception as e:
+                                logging.warning(f"Error saving checkpoint: {e}")
+
+                        if _nav_stopped:
+                            break
+
+                        # Clear checkpoint when scan completes successfully
+                        if os.path.exists(checkpoint_path):
+                            os.remove(checkpoint_path)
+
+                        logging.info("Navidrome import-only scan completed")
+                        log_debug(f"[NAVIDROME_SCAN] Scan cycle {_nav_cycle} complete: processed {total} artists")
+                        _mark_navidrome_first_full_import_complete(scan_source="manual")
+                        _sync_new_navidrome_album_artists_fast(trigger_source="manual_post_import")
+                        _maybe_start_post_navidrome_mp3_import(trigger_source="manual_post_import")
+                        _log_scan_session_complete("navidrome", total)
+
+                        if not perpetual_enabled:
+                            _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
+                            break
+
+                        # Perpetual: check for stop before looping.
                         with scan_lock:
-                            stop_requested = scan_process_navidrome is None or _is_stop_requested_from_progress(nav_progress_file)
-                            if stop_requested:
-                                logging.info("Navidrome scan stop signal received, exiting gracefully")
-                                log_debug(f"[NAVIDROME_SCAN] Stop signal at artist index {idx} ('{artist_name}')")
+                            if scan_process_navidrome is None or _is_stop_requested_from_progress(nav_progress_file):
                                 _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "stopped", "exit_code": 0})
-                                return
-                        
-                        log_debug(f"[NAVIDROME_SCAN] scan_artist_to_db: idx={idx}/{total} artist='{artist_name}' id={info.get('id')}")
-                        scan_artist_to_db(
-                            artist_name, 
-                            info.get("id"), 
-                            verbose=False, 
-                            force=force_rescan,
-                            filter_missing=filter_missing,
-                            processed_artists=idx, 
-                            total_artists=total
+                                logging.info("Navidrome scan perpetual loop: stop requested after cycle %d", _nav_cycle)
+                                break
+
+                        logging.info(
+                            "[NAVIDROME_PERPETUAL] Cycle %d complete; perpetual mode enabled – restarting from beginning",
+                            _nav_cycle,
                         )
-                        
-                        # Update checkpoint with the last scanned artist
-                        try:
-                            with open(checkpoint_path, 'w') as f:
-                                json.dump({"last_scanned_artist": artist_name}, f)
-                        except Exception as e:
-                            logging.warning(f"Error saving checkpoint: {e}")
-                    
-                    # Clear checkpoint when scan completes successfully
-                    if os.path.exists(checkpoint_path):
-                        os.remove(checkpoint_path)
-                    
-                    _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
-                    logging.info("Navidrome import-only scan completed")
-                    log_debug(f"[NAVIDROME_SCAN] Scan complete: processed {total} artists")
-                    _mark_navidrome_first_full_import_complete(scan_source="manual")
-                    _sync_new_navidrome_album_artists_fast(trigger_source="manual_post_import")
-                    _maybe_start_post_navidrome_mp3_import(trigger_source="manual_post_import")
-                    _log_scan_session_complete("navidrome", total)
+
+                        # Subsequent perpetual cycles always scan from the beginning.
+                        _cycle_is_first = False
+
                 except Exception as e:
                     logging.error(f"Error in Navidrome import-only scan: {e}", exc_info=True)
                     log_debug(f"[NAVIDROME_SCAN] Unhandled exception in background thread: {e}", exc_info=True)
