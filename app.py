@@ -6641,7 +6641,7 @@ def api_album_library_tracks():
         placeholder = "%s"
 
         cursor.execute(f"""
-            SELECT id, title, track_number, disc_number, file_path
+            SELECT id, title, track_number, disc_number, file_path, duration
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
               AND album = {placeholder}
@@ -17035,6 +17035,96 @@ def logs_view():
             return jsonify({"lines": recent_lines})
     except FileNotFoundError:
         return jsonify({"error": "Log file not found", "lines": []})
+
+
+@app.route("/missing")
+def missing_page():
+    """Page showing albums with missing tracks and missing albums/EPs."""
+    cfg = get_config()
+    qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
+    slskd_config = cfg.get("slskd", {"enabled": False})
+    return render_template("missing.html",
+                           qbit_config=qbit_config,
+                           slskd_config=slskd_config)
+
+
+@app.route("/api/missing/overview", methods=["GET"])
+def api_missing_overview():
+    """Return albums with track-number gaps and artists with cached missing releases."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        # --- Section 1: albums with track-number gaps (fast, local) ---
+        artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
+        gap_albums = []
+        try:
+            cursor.execute(f"""
+                SELECT
+                    {artist_expr}  AS artist,
+                    album,
+                    MAX(CAST(track_number AS INTEGER)) AS max_track,
+                    COUNT(DISTINCT CAST(track_number AS INTEGER)) AS have_tracks,
+                    MAX(musicbrainz_album_mbid) AS mb_mbid
+                FROM tracks
+                WHERE {artist_expr} IS NOT NULL
+                  AND TRIM({artist_expr}) != ''
+                  AND album IS NOT NULL
+                  AND TRIM(album) != ''
+                  AND track_number IS NOT NULL
+                  AND TRIM(CAST(track_number AS TEXT)) != ''
+                  AND CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) > 0
+                  AND file_path NOT LIKE '__queued_for_download__%'
+                GROUP BY {artist_expr}, album
+                HAVING MAX(CAST(track_number AS INTEGER)) > COUNT(DISTINCT CAST(track_number AS INTEGER))
+                   AND COUNT(DISTINCT CAST(track_number AS INTEGER)) >= 2
+                ORDER BY {artist_expr}, album
+            """)
+            for row in cursor.fetchall():
+                artist_val = _row_get(row, "artist", 0, "")
+                album_val = _row_get(row, "album", 1, "")
+                max_track = int(_row_get(row, "max_track", 2) or 0)
+                have_tracks = int(_row_get(row, "have_tracks", 3) or 0)
+                mb_mbid = _row_get(row, "mb_mbid", 4, "")
+                if artist_val and album_val and max_track > have_tracks:
+                    gap_albums.append({
+                        "artist": artist_val,
+                        "album": album_val,
+                        "library_count": have_tracks,
+                        "max_track": max_track,
+                        "missing_count_estimate": max_track - have_tracks,
+                        "mb_mbid": mb_mbid or "",
+                    })
+        except Exception as gap_err:
+            logging.warning(f"[MISSING_OVERVIEW] Gap detection query failed: {gap_err}")
+
+        # --- Section 2: artists with cached missing releases ---
+        artists_with_missing = []
+        try:
+            if _table_exists(cursor, "missing_releases"):
+                cursor.execute("""
+                    SELECT artist, COUNT(*) AS cnt
+                    FROM missing_releases
+                    GROUP BY artist
+                    ORDER BY artist
+                """)
+                for row in cursor.fetchall():
+                    a = _row_get(row, "artist", 0, "")
+                    c = int(_row_get(row, "cnt", 1) or 0)
+                    if a:
+                        artists_with_missing.append({"artist": a, "missing_count": c})
+        except Exception as mr_err:
+            logging.warning(f"[MISSING_OVERVIEW] Missing releases query failed: {mr_err}")
+
+        conn.close()
+        return jsonify({
+            "gap_albums": gap_albums,
+            "artists_with_missing_releases": artists_with_missing,
+        })
+    except Exception as e:
+        logging.error(f"[MISSING_OVERVIEW] Error: {e}", exc_info=True)
+        return jsonify({"error": str(e), "gap_albums": [], "artists_with_missing_releases": []}), 500
 
 
 @app.route("/bookmarks")
