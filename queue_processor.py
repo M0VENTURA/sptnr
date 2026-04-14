@@ -1326,7 +1326,7 @@ def update_queue_status(queue_id, status, **kwargs):
         # Add any additional fields to update
         for key, value in kwargs.items():
             if key in ['found_filename', 'file_path', 'failure_reason', 'retry_count', 
-                       'last_failure_time', 'source_id']:
+                       'last_failure_time', 'source_id', 'source_music_path']:
                 updates.append(f"{key} = {placeholder}")
                 params.append(value)
         
@@ -1522,14 +1522,17 @@ def check_track_exists_in_db(queue_item):
     Check if a track matching the queue item already exists in the local tracks database.
 
     Returns:
-        tuple: (exists: bool, reason: str)
+        tuple: (exists: bool, reason: str, source_path: str|None, album_matches: bool)
+            source_path  – file_path of the found track (None when not found)
+            album_matches – True when the found track is on the same album as requested
+                            (always True when no album was requested)
     """
     artist = queue_item.get("artist", "")
     title = queue_item.get("title", "")
     album = queue_item.get("album")
 
     if not artist or not title:
-        return False, ""
+        return False, "", None, True
 
     conn = None
     try:
@@ -1542,9 +1545,10 @@ def check_track_exists_in_db(queue_item):
         # '__queued_for_download__%' are queue placeholders — both must be
         # excluded so pending downloads are not falsely detected as existing.
         if album:
+            # Step 1: exact album match.
             cursor.execute(
                 f"""
-                SELECT id FROM tracks
+                SELECT id, file_path, album FROM tracks
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
@@ -1554,10 +1558,17 @@ def check_track_exists_in_db(queue_item):
                 """,
                 (artist, title, album),
             )
-        else:
+            row = cursor.fetchone()
+            if row:
+                track_id = row["id"] if hasattr(row, "keys") else row[0]
+                file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
+                reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
+                return True, reason, file_path, True
+
+            # Step 2: same artist+title but possibly different album.
             cursor.execute(
                 f"""
-                SELECT id FROM tracks
+                SELECT id, file_path, album FROM tracks
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
                   AND file_path IS NOT NULL
@@ -1566,13 +1577,34 @@ def check_track_exists_in_db(queue_item):
                 """,
                 (artist, title),
             )
-
-        row = cursor.fetchone()
-
-        if row:
-            track_id = row["id"] if hasattr(row, "keys") else (row[0] if row else None)
-            reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
-            return True, reason
+            row = cursor.fetchone()
+            if row:
+                track_id = row["id"] if hasattr(row, "keys") else row[0]
+                file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
+                found_album = (row["album"] if hasattr(row, "keys") else row[2]) or ""
+                reason = (
+                    f"Track '{artist} - {title}' already exists in local database "
+                    f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
+                )
+                return True, reason, file_path, False
+        else:
+            cursor.execute(
+                f"""
+                SELECT id, file_path FROM tracks
+                WHERE LOWER(artist) = LOWER({placeholder})
+                  AND LOWER(title) = LOWER({placeholder})
+                  AND file_path IS NOT NULL
+                  AND file_path NOT LIKE '__queued_for_download__%'
+                LIMIT 1
+                """,
+                (artist, title),
+            )
+            row = cursor.fetchone()
+            if row:
+                track_id = row["id"] if hasattr(row, "keys") else row[0]
+                file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
+                reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
+                return True, reason, file_path, True
 
     except Exception as e:
         logger.debug(f"DB existence check error for '{artist} - {title}': {e}")
@@ -1580,7 +1612,7 @@ def check_track_exists_in_db(queue_item):
         if conn:
             conn.close()
 
-    return False, ""
+    return False, "", None, True
 
 
 def check_track_exists_in_navidrome(queue_item):
@@ -1588,18 +1620,22 @@ def check_track_exists_in_navidrome(queue_item):
     Check if a track matching the queue item already exists in Navidrome via Subsonic search3 API.
 
     Returns:
-        tuple: (exists: bool, reason: str)
+        tuple: (exists: bool, reason: str, source_path: str|None, album_matches: bool)
+            source_path  – on-disk path from Navidrome (None when not found or unavailable)
+            album_matches – True when the found track is on the same album as requested,
+                            or when no album was requested
     """
     artist = queue_item.get("artist", "")
     title = queue_item.get("title", "")
+    album = queue_item.get("album") or ""
 
     if not artist or not title:
-        return False, ""
+        return False, "", None, True
 
     base_url, username, password = _get_navidrome_config()
     if not base_url:
         logger.debug("Navidrome not configured — skipping Navidrome existence check")
-        return False, ""
+        return False, "", None, True
 
     try:
         auth_params = _build_subsonic_auth_params(username, password)
@@ -1619,7 +1655,7 @@ def check_track_exists_in_navidrome(queue_item):
         data = response.json()
         if data.get("subsonic-response", {}).get("status") != "ok":
             logger.debug(f"Navidrome search3 returned non-ok status for '{artist} - {title}'")
-            return False, ""
+            return False, "", None, True
 
         songs = data.get("subsonic-response", {}).get("searchResult3", {}).get("song", [])
         if not isinstance(songs, list):
@@ -1634,17 +1670,24 @@ def check_track_exists_in_navidrome(queue_item):
             title_sim = _sim(song.get("title", ""), title)
             artist_sim = _sim(song.get("artist", ""), artist)
             if title_sim >= _NAV_TITLE_SIMILARITY_THRESHOLD and artist_sim >= _NAV_ARTIST_SIMILARITY_THRESHOLD:
+                found_album = str(song.get("album") or "").strip()
+                source_path = str(song.get("path") or "").strip() or None
+                album_matches = (
+                    not album
+                    or not found_album
+                    or found_album.lower() == album.lower()
+                )
                 reason = (
                     f"Track '{artist} - {title}' already exists in Navidrome "
                     f"(matched: '{song.get('artist')} - {song.get('title')}', "
-                    f"id={song.get('id')})"
+                    f"album='{found_album}', id={song.get('id')})"
                 )
-                return True, reason
+                return True, reason, source_path, album_matches
 
     except Exception as e:
         logger.debug(f"Navidrome existence check error for '{artist} - {title}': {e}")
 
-    return False, ""
+    return False, "", None, True
 
 
 def _build_bracketsanitized_query(queue_item):
@@ -1994,16 +2037,38 @@ def search_and_download(queue_id, queue_item, client):
         # Pre-download existence checks: skip download if the track already exists
         # in the local database or in Navidrome (catches items indexed there but not
         # yet scanned into the local DB).
-        db_exists, db_reason = check_track_exists_in_db(queue_item)
+        db_exists, db_reason, db_path, db_album_matches = check_track_exists_in_db(queue_item)
         if db_exists:
             logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {db_reason}")
-            update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
+            if not db_album_matches and db_path:
+                # Track exists in library but under a different album – offer copy.
+                logger.info(
+                    f"Queue {queue_id}: Track found on a different album; marking copy_recommended"
+                )
+                update_queue_status(
+                    queue_id, 'copy_recommended',
+                    failure_reason=db_reason,
+                    source_music_path=db_path,
+                )
+            else:
+                update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
             return False
 
-        nav_exists, nav_reason = check_track_exists_in_navidrome(queue_item)
+        nav_exists, nav_reason, nav_path, nav_album_matches = check_track_exists_in_navidrome(queue_item)
         if nav_exists:
             logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {nav_reason}")
-            update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
+            if not nav_album_matches and nav_path:
+                # Track exists in Navidrome under a different album – offer copy.
+                logger.info(
+                    f"Queue {queue_id}: Track found in Navidrome on a different album; marking copy_recommended"
+                )
+                update_queue_status(
+                    queue_id, 'copy_recommended',
+                    failure_reason=nav_reason,
+                    source_music_path=nav_path,
+                )
+            else:
+                update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
             return False
 
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")

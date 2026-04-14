@@ -4294,8 +4294,14 @@ def _auto_resume_interrupted_scans():
             resumable = [
                 ("combined", "scan_combined", "/scan/combined"),
                 ("navidrome", "scan_navidrome", "/scan/navidrome"),
-                ("singles", "scan_popularity_route", "/scan/popularity"),
+                # Check "popularity" before "singles": the combined popularity+singles
+                # scan always writes to popularity_scan_progress.json (even during the
+                # singles phase).  If "singles" were checked first, a stale
+                # singles_scan_progress.json file could appear "active" because of
+                # recent scan_history entries written by the combined run, causing
+                # auto-resume to start the wrong scan from an old checkpoint.
                 ("popularity", "scan_popularity_route", "/scan/popularity"),
+                ("singles", "scan_popularity_route", "/scan/popularity"),
                 ("essentia_mood", "scan_essentia_mood", "/scan/essentia-mood"),
             ]
 
