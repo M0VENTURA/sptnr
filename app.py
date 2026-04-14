@@ -5285,10 +5285,25 @@ def artists():
                     artist_last_updated
                 FROM ranked_album_artists
                 WHERE artist_rank = 1
+            ),
+            artist_name_counts AS (
+                SELECT
+                    canonical_album_artist,
+                    LOWER(canonical_album_artist) AS artist_key,
+                    COUNT(*) AS usage_count
+                FROM canonical_albums
+                GROUP BY canonical_album_artist
+            ),
+            best_artist_name AS (
+                SELECT DISTINCT ON (artist_key)
+                    artist_key,
+                    canonical_album_artist AS display_name
+                FROM artist_name_counts
+                ORDER BY artist_key, usage_count DESC, canonical_album_artist ASC
             )
             SELECT
-                ca.canonical_album_artist AS display_name,
-                ca.canonical_album_artist AS link_artist,
+                ban.display_name AS display_name,
+                ban.display_name AS link_artist,
                 COUNT(DISTINCT ca.album_key) AS album_count,
                 COUNT(nt.album_key) AS track_count,
                 COALESCE(SUM(CASE WHEN nt.stars = 5 THEN 1 ELSE 0 END), 0) AS five_star_count,
@@ -5296,7 +5311,9 @@ def artists():
             FROM canonical_albums ca
             JOIN normalized_tracks nt
               ON nt.album_key = ca.album_key
-            GROUP BY ca.canonical_album_artist
+            JOIN best_artist_name ban
+              ON LOWER(ca.canonical_album_artist) = ban.artist_key
+            GROUP BY ban.display_name
             HAVING COUNT(DISTINCT ca.album_key) > 0
             ORDER BY display_name
         """)
@@ -5760,10 +5777,9 @@ def artist_corrections(name):
                 COALESCE(NULLIF(suggested_mbid, ''), '') AS suggested_mbid,
                                 {album_artist_select}
             FROM tracks
-                        WHERE {artist_expr} = {placeholder}
+                        WHERE LOWER({artist_expr}) = LOWER({placeholder})
               AND title IS NOT NULL
               AND TRIM(title) != ''
-            ORDER BY album, title, track_artist, track_number, id
         """, (artist_name,))
         candidate_rows = [dict(r) for r in cursor.fetchall()]
 
@@ -6003,7 +6019,7 @@ def artist_corrections(name):
                     ELSE 'Metadata needs review'
                 END AS metadata_issue_reason
             FROM tracks
-                        WHERE {artist_expr} = {placeholder}
+                        WHERE LOWER({artist_expr}) = LOWER({placeholder})
               AND (
                     title IS NULL OR TRIM(title) = '' OR
                     album IS NULL OR TRIM(album) = '' OR
@@ -6030,7 +6046,7 @@ def artist_corrections(name):
             cursor.execute(f"""
                 SELECT album, COUNT(*) as track_count, MAX(musicbrainz_album_mbid) as mb_mbid
                 FROM tracks
-                                WHERE {artist_expr} = {placeholder}
+                                WHERE LOWER({artist_expr}) = LOWER({placeholder})
                   AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
                 GROUP BY album
                 ORDER BY album
@@ -6059,7 +6075,7 @@ def artist_corrections(name):
                     COUNT(DISTINCT TRIM(musicbrainz_album_mbid)) AS mbid_count,
                     STRING_AGG(DISTINCT TRIM(musicbrainz_album_mbid), ',' ORDER BY TRIM(musicbrainz_album_mbid)) AS mbid_values
                 FROM tracks
-                                WHERE {artist_expr} = {placeholder}
+                                WHERE LOWER({artist_expr}) = LOWER({placeholder})
                   AND album IS NOT NULL
                   AND TRIM(album) != ''
                   AND musicbrainz_album_mbid IS NOT NULL
@@ -6112,7 +6128,7 @@ def artist_corrections(name):
                                   AND CAST(disc_number AS TEXT) != '0'
                              THEN CAST(disc_number AS TEXT) END) AS disc_value
                 FROM tracks
-                                WHERE {artist_expr} = {placeholder}
+                                WHERE LOWER({artist_expr}) = LOWER({placeholder})
                   AND album IS NOT NULL AND TRIM(album) != ''
                 GROUP BY album
                 HAVING SUM(CASE WHEN disc_number IS NOT NULL
@@ -6151,7 +6167,7 @@ def artist_corrections(name):
                     COUNT(DISTINCT TRIM(musicbrainz_album_mbid)) AS distinct_mbid_count,
                     STRING_AGG(DISTINCT TRIM(musicbrainz_album_mbid), ', ') AS mbid_list
                 FROM tracks
-                                WHERE {artist_expr} = {placeholder}
+                                WHERE LOWER({artist_expr}) = LOWER({placeholder})
                   AND album IS NOT NULL
                   AND TRIM(album) != ''
                   AND musicbrainz_album_mbid IS NOT NULL
@@ -6190,7 +6206,7 @@ def artist_corrections(name):
                     MIN(year) AS album_year,
                     MAX(musicbrainz_album_mbid) AS mb_mbid
                 FROM tracks
-                WHERE {artist_expr} = {placeholder}
+                WHERE LOWER({artist_expr}) = LOWER({placeholder})
                   AND album IS NOT NULL AND TRIM(album) != ''
                 GROUP BY album
                 ORDER BY album
@@ -6595,7 +6611,7 @@ def api_artist_corrections_merge_albums():
 
         # Collect tracks before updating so we have file paths for tag writes.
         cursor.execute(
-            f"SELECT id, file_path FROM tracks WHERE {artist_expr} = {placeholder} AND album IN ({placeholders_list})",
+            f"SELECT id, file_path FROM tracks WHERE LOWER({artist_expr}) = LOWER({placeholder}) AND album IN ({placeholders_list})",
             [artist_name] + albums_to_rename,
         )
         track_rows = [dict(r) if hasattr(r, "keys") else {"id": r[0], "file_path": r[1]}
@@ -6606,7 +6622,7 @@ def api_artist_corrections_merge_albums():
             return jsonify({"success": False, "error": "No tracks found for the specified source albums"}), 404
 
         cursor.execute(
-            f"UPDATE tracks SET album = {placeholder} WHERE {artist_expr} = {placeholder} AND album IN ({placeholders_list})",
+            f"UPDATE tracks SET album = {placeholder} WHERE LOWER({artist_expr}) = LOWER({placeholder}) AND album IN ({placeholders_list})",
             [canonical_name, artist_name] + albums_to_rename,
         )
         rows_updated = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else len(track_rows)
@@ -8537,7 +8553,7 @@ def artist_detail(name):
                 MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
             GROUP BY LOWER(TRIM(COALESCE(album, '')))
             ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
         """, (name,))
@@ -8561,7 +8577,7 @@ def artist_detail(name):
                 MAX(discogs_artist_id) as discogs_artist_id,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
         """, (name,))
         artist_stats = cursor.fetchone()
         
@@ -8572,7 +8588,7 @@ def artist_detail(name):
         cursor.execute("""
             SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
             FROM missing_releases
-            WHERE artist = %s
+            WHERE LOWER(artist) = LOWER(%s)
             ORDER BY first_release_date DESC
         """, (name,))
         missing_releases_data = cursor.fetchall()
@@ -8593,7 +8609,7 @@ def artist_detail(name):
                     COALESCE(disc_number, 1) as disc_number,
                     COALESCE(duration, 0) as duration
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
                 ORDER BY COALESCE(artist_z_score, 0) DESC, COALESCE(popularity_score, 0) DESC
                 LIMIT 10
             """, (name,))
@@ -8613,7 +8629,7 @@ def artist_detail(name):
                     COALESCE(disc_number, 1) as disc_number,
                     COALESCE(duration, 0) as duration
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
                 ORDER BY COALESCE(popularity_score, 0) DESC, COALESCE(stars, 0) DESC
                 LIMIT 10
             """, (name,))
@@ -8650,8 +8666,8 @@ def artist_detail(name):
                 MAX(spotify_album_type) as album_type,
                 MAX(last_scanned) as last_updated
             FROM tracks
-            WHERE artist = %s
-              AND COALESCE(NULLIF(album_artist, ''), artist) != %s
+            WHERE LOWER(artist) = LOWER(%s)
+              AND LOWER(COALESCE(NULLIF(album_artist, ''), artist)) != LOWER(%s)
               AND NULLIF(album, '') IS NOT NULL
             GROUP BY LOWER(TRIM(COALESCE(album, ''))), COALESCE(NULLIF(album_artist, ''), artist)
             ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
@@ -8674,7 +8690,7 @@ def artist_detail(name):
                 MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
                 MAX(is_compilation) as is_compilation
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
               AND NULLIF(album, '') IS NOT NULL
             GROUP BY LOWER(TRIM(COALESCE(album, '')))
             ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
@@ -8709,7 +8725,7 @@ def artist_detail(name):
         artist_image_url = None
         artist_bio = None
         try:
-            cursor.execute(f"SELECT country, image_url, bio FROM artists WHERE name = {placeholder}", (name,))
+            cursor.execute(f"SELECT country, image_url, bio FROM artists WHERE LOWER(name) = LOWER({placeholder})", (name,))
             artist_row = cursor.fetchone()
             if artist_row:
                 artist_country = artist_row['country'] if artist_row['country'] else None
@@ -8727,7 +8743,7 @@ def artist_detail(name):
             cursor.execute(f"""
                 SELECT spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres,
                        musicbrainz_genres, essentia_genres, navidrome_genres, mood
-                FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder})
             """, (name,))
             tracks_genre_data = [dict(row) for row in cursor.fetchall()]
         except Exception as e:
@@ -9028,7 +9044,7 @@ def artist_detail(name):
             cursor.execute(f"""
                 SELECT similar_artists_lastfm, similar_artists_listenbrainz
                 FROM artists
-                WHERE name = {placeholder}
+                WHERE LOWER(name) = LOWER({placeholder})
                 LIMIT 1
             """, (name,))
 
