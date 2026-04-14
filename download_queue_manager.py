@@ -2393,7 +2393,7 @@ def update_queue_item(queue_id, **kwargs):
                            'retry_count', 'last_failure_time', 'imported_at', 'metadata', 'import_group', 'import_type',
                            'copied_individually', 'copied_individually_at', 'duration',
                            'match_confidence', 'match_method',
-                           'release_mbid', 'release_id',
+                           'release_mbid', 'release_id', 'source_music_path',
                            'slskd_transfer_id', 'slskd_username', 'slskd_state', 'slskd_queue_position', 'slskd_last_sync_at']:
                     if existing_cols is None and key in optional_update_fields:
                         logger.debug(
