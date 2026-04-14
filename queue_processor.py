@@ -1672,6 +1672,8 @@ def check_track_exists_in_navidrome(queue_item):
             if title_sim >= _NAV_TITLE_SIMILARITY_THRESHOLD and artist_sim >= _NAV_ARTIST_SIMILARITY_THRESHOLD:
                 found_album = str(song.get("album") or "").strip()
                 source_path = str(song.get("path") or "").strip() or None
+                # Treat as matching when either side is unknown – we can only
+                # flag a different-album scenario when both albums are non-empty.
                 album_matches = (
                     not album
                     or not found_album
