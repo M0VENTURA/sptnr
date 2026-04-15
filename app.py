@@ -15887,6 +15887,13 @@ def scan_popularity_route():
                                     verbose=False,
                                     force=force_rescan,
                                     metadata_only=True,
+                                    # Pass the same resume checkpoint used by Phase 2/3 so
+                                    # that a restart after a mid-Phase-1 crash (or any
+                                    # crash that happened before Phase 1 finished) does not
+                                    # restart from the very beginning of the library (e.g.
+                                    # "Various Artists") but instead skips to the last
+                                    # completed artist, just like the other phases do.
+                                    resume_from=_cycle_resume,
                                     stop_progress_file=popularity_progress_file
                                 )
                                 if meta_completed is False:
