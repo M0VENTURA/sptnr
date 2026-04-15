@@ -1825,7 +1825,17 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
                     # Only preserve when the previous scan was actively running
                     # and had not yet reached a terminal state.
                     if _prev_running and _prev_status not in _TERMINAL_STATUSES:
-                        _prev_artist = str(_existing_progress.get("current_artist") or "").strip()
+                        # Prefer last_completed_artist over current_artist.
+                        # last_completed_artist is only written after an artist
+                        # fully finishes, so it won't point at an artist that
+                        # was mid-flight when the process died.  Using it as the
+                        # resume checkpoint prevents infinite restart loops where
+                        # the same in-progress artist keeps crashing on DB errors.
+                        _prev_artist = str(
+                            _existing_progress.get("last_completed_artist")
+                            or _existing_progress.get("current_artist")
+                            or ""
+                        ).strip()
                         if _prev_artist:
                             payload["resume_from_artist"] = _prev_artist
             except Exception:
@@ -1882,6 +1892,11 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
                 # cycle (e.g. "Stray Kids") until the new scan reached its first artist.
                 marker_payload["current_artist"] = existing_current_artist
 
+            # Mirror last_completed_artist so that the resume checkpoint survives
+            # even if the main progress file is deleted or reset.
+            if payload.get("last_completed_artist"):
+                marker_payload["last_completed_artist"] = payload["last_completed_artist"]
+
             # Also mirror resume_from_artist into the marker so that
             # load_scan_progress() can recover it even if the progress file is
             # later deleted while the marker survives.
@@ -1909,34 +1924,39 @@ def _write_progress_with_current_artist(path: str, scan_type: str, is_running: b
     """
     Write progress file while preserving current_artist from existing file.
     This ensures resume functionality works even after scan completion.
-    
+
     Args:
         path: Path to progress file
         scan_type: Type of scan (e.g., 'navidrome_scan', 'popularity_scan')
         is_running: Whether scan is currently running
         extra: Additional data to include in progress file
     """
-    # Try to preserve current_artist and resume_from_artist from existing progress file
+    # Try to preserve current_artist, last_completed_artist, and resume_from_artist
+    # from the existing progress file.
     current_artist = None
+    last_completed_artist = None
     resume_from_artist = None
     try:
         with open(path, 'r') as f:
             existing_progress = json.load(f)
             current_artist = existing_progress.get('current_artist')
+            last_completed_artist = existing_progress.get('last_completed_artist')
             resume_from_artist = existing_progress.get('resume_from_artist')
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         pass  # File doesn't exist or is invalid, that's okay
-    
-    # Preserve current_artist and resume_from_artist in extra data if they exist
-    if current_artist or resume_from_artist:
+
+    # Preserve these fields in extra data if they exist
+    if current_artist or last_completed_artist or resume_from_artist:
         if extra is None:
             extra = {}
         if current_artist:
             extra['current_artist'] = current_artist
+        if last_completed_artist:
+            extra.setdefault('last_completed_artist', last_completed_artist)
         if resume_from_artist:
             extra.setdefault('resume_from_artist', resume_from_artist)
-    
-    # Write the progress file with preserved current_artist
+
+    # Write the progress file with preserved fields
     _write_progress_file(path, scan_type, is_running, extra)
 
 
@@ -17801,7 +17821,7 @@ def api_features_update():
 
         features = config_data.get("features", {})
 
-        allowed_bool_keys = {"perpetual", "force", "launch_on_startup", "startup_scan_restart"}
+        allowed_bool_keys = {"perpetual", "force", "launch_on_startup", "startup_scan_restart", "sync_ratings_to_all_users"}
         for key in allowed_bool_keys:
             if key in data:
                 features[key] = bool(data[key])

@@ -1936,74 +1936,115 @@ def _navidrome_scan_running() -> bool:
         log_verbose(f"Could not read Navidrome progress file: {e}")
     return False
 
+def _load_navidrome_users_from_config() -> list:
+    """Return a list of Navidrome user credential dicts from config.
+
+    Each dict has keys: base_url, user, pass.
+    Returns an empty list when no credentials are configured.
+    """
+    users = []
+    try:
+        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f) or {}
+
+        nav_users = config.get('navidrome_users', [])
+        for u in nav_users:
+            base_url = (u.get('base_url') or '').strip().rstrip('/')
+            user = (u.get('user') or '').strip()
+            pw = (u.get('pass') or '').strip()
+            if base_url and user and pw:
+                users.append({'base_url': base_url, 'user': user, 'pass': pw})
+
+        if not users:
+            # Fall back to the legacy single-user block
+            nav_cfg = config.get('navidrome', {}) or {}
+            base_url = (nav_cfg.get('base_url') or '').strip().rstrip('/')
+            user = (nav_cfg.get('user') or '').strip()
+            pw = (nav_cfg.get('pass') or '').strip()
+            if base_url and user and pw:
+                users.append({'base_url': base_url, 'user': user, 'pass': pw})
+    except Exception:
+        # Try env vars as last resort
+        nav_url = os.environ.get("NAV_BASE_URL", "").strip("/")
+        nav_user = os.environ.get("NAV_USER", "")
+        nav_pass = os.environ.get("NAV_PASS", "")
+        if nav_url and nav_user and nav_pass:
+            users.append({'base_url': nav_url, 'user': nav_user, 'pass': nav_pass})
+    return users
+
+
+def _is_sync_ratings_to_all_users_enabled() -> bool:
+    """Return True when the sync_ratings_to_all_users feature flag is enabled."""
+    try:
+        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f) or {}
+        return bool((config.get('features') or {}).get('sync_ratings_to_all_users', False))
+    except Exception:
+        return False
+
+
 def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
     """
     Sync a single track rating to Navidrome using the Subsonic API.
+
+    When the ``sync_ratings_to_all_users`` feature flag is enabled the rating
+    is pushed to every configured Navidrome user account.  Otherwise only the
+    primary (first) user is updated — matching the historical behaviour.
 
     Args:
         track_id: Navidrome track ID
         stars: Star rating (1-5)
 
     Returns:
-        True if successful, False otherwise
+        True if at least one user sync succeeded, False otherwise
     """
     try:
-        # Get Navidrome credentials from environment first, then fall back to config file
-        nav_url = os.environ.get("NAV_BASE_URL", "").strip("/")
-        nav_user = os.environ.get("NAV_USER", "")
-        nav_pass = os.environ.get("NAV_PASS", "")
-
-        # If not in environment, try loading from config file
-        if not all([nav_url, nav_user, nav_pass]):
-            try:
-                config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-                with open(config_path, 'r') as f:
-                    config = yaml.safe_load(f)
-
-                # Try navidrome_users first (multi-user config)
-                nav_users = config.get('navidrome_users', [])
-                if nav_users and len(nav_users) > 0:
-                    first_user = nav_users[0]
-                    nav_url = first_user.get('base_url', '').strip('/')
-                    nav_user = first_user.get('user', '')
-                    nav_pass = first_user.get('pass', '')
-                else:
-                    # Fall back to single navidrome config
-                    nav_config = config.get('navidrome', {})
-                    nav_url = nav_config.get('base_url', '').strip('/')
-                    nav_user = nav_config.get('user', '')
-                    nav_pass = nav_config.get('pass', '')
-            except Exception as e:
-                log_verbose(f"Failed to load Navidrome config from file: {e}")
+        all_users = _load_navidrome_users_from_config()
+        if not all_users:
+            # Nothing from config — try legacy env vars directly
+            nav_url = os.environ.get("NAV_BASE_URL", "").strip("/")
+            nav_user = os.environ.get("NAV_USER", "")
+            nav_pass = os.environ.get("NAV_PASS", "")
+            if not all([nav_url, nav_user, nav_pass]):
+                log_verbose("Navidrome credentials not configured, skipping rating sync")
                 return False
+            all_users = [{'base_url': nav_url, 'user': nav_user, 'pass': nav_pass}]
 
-        if not all([nav_url, nav_user, nav_pass]):
-            log_verbose("Navidrome credentials not configured, skipping rating sync")
-            return False
+        # Decide which users to sync to
+        sync_all = _is_sync_ratings_to_all_users_enabled()
+        users_to_sync = all_users if sync_all else all_users[:1]
 
-        # Build Subsonic API parameters
-        params = {
-            "u": nav_user,
-            "p": nav_pass,
-            "v": "1.16.1",
-            "c": "sptnr",
-            "f": "json",
-            "id": track_id,
-            "rating": stars
-        }
+        any_success = False
+        for creds in users_to_sync:
+            nav_url = creds['base_url']
+            nav_user = creds['user']
+            nav_pass = creds['pass']
 
-        # Call setRating API
-        response = session.get(f"{nav_url}/rest/setRating.view", params=params, timeout=10)
-        response.raise_for_status()
+            params = {
+                "u": nav_user,
+                "p": nav_pass,
+                "v": "1.16.1",
+                "c": "sptnr",
+                "f": "json",
+                "id": track_id,
+                "rating": stars
+            }
 
-        # Check if response indicates success
-        result = response.json()
-        if result.get("subsonic-response", {}).get("status") == "ok":
-            return True
-        else:
-            error_msg = result.get("subsonic-response", {}).get("error", {}).get("message", "Unknown error")
-            log_basic(f"Navidrome API error for track {track_id}: {error_msg}")
-            return False
+            try:
+                response = session.get(f"{nav_url}/rest/setRating.view", params=params, timeout=10)
+                response.raise_for_status()
+                result = response.json()
+                if result.get("subsonic-response", {}).get("status") == "ok":
+                    any_success = True
+                else:
+                    error_msg = result.get("subsonic-response", {}).get("error", {}).get("message", "Unknown error")
+                    log_basic(f"Navidrome API error for track {track_id} (user {nav_user}): {error_msg}")
+            except Exception as exc:
+                log_basic(f"Failed to sync rating to Navidrome for track {track_id} (user {nav_user}): {exc}")
+
+        return any_success
 
     except Exception as e:
         log_basic(f"Failed to sync rating to Navidrome for track {track_id}: {e}")
@@ -2015,10 +2056,35 @@ def save_popularity_progress(
     current_artist: str = None,
     progress_file: str = None,
     scan_type: str = "popularity_scan",
+    last_completed_artist: str = None,
 ):
-    """Save popularity scan progress to file"""
+    """Save popularity scan progress to file.
+
+    ``current_artist`` is the artist currently being processed (used for
+    dashboard display).  ``last_completed_artist``, when provided, records the
+    most-recently *fully-completed* artist and is used as the resume checkpoint
+    on restart.  Keeping these two values separate ensures that a DB
+    disconnection that kills the scan mid-artist does not cause infinite
+    resume-from-the-same-artist loops: resume always starts from the last
+    *completed* artist, not the one that may have been in-flight when the
+    process died.
+    """
     try:
         target_progress_file = progress_file or POPULARITY_PROGRESS_FILE
+
+        # Preserve the existing last_completed_artist when the caller does not
+        # explicitly supply one (e.g. the in-progress marker at the *start* of
+        # processing an artist should not change the completed checkpoint).
+        preserved_last_completed = last_completed_artist
+        if preserved_last_completed is None:
+            try:
+                if os.path.exists(target_progress_file):
+                    with open(target_progress_file, 'r') as _f:
+                        _existing = json.load(_f)
+                    preserved_last_completed = _existing.get('last_completed_artist')
+            except Exception:
+                pass
+
         progress_data = {
             "is_running": True,
             # Explicit "running" status so that load_scan_progress() does not
@@ -2033,6 +2099,9 @@ def save_popularity_progress(
             "current_artist": current_artist,
             "last_updated": datetime.now().isoformat()
         }
+        if preserved_last_completed is not None:
+            progress_data["last_completed_artist"] = preserved_last_completed
+
         with open(target_progress_file, 'w') as f:
             json.dump(progress_data, f)
     except Exception as e:
@@ -8003,6 +8072,11 @@ def popularity_scan(
                 current_artist=artist,
                 progress_file=progress_file_path,
                 scan_type=caller_scan_type or progress_scan_type,
+                # Record this artist as the last *completed* checkpoint so that
+                # if the process is killed before the next artist's in-progress
+                # marker is written, resume will start from here rather than
+                # looping back to the same stuck artist.
+                last_completed_artist=artist,
             )
             log_debug(f"Progress saved - {processed_artists}/{total_artists} artists processed (current: {artist})")
 

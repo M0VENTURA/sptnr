@@ -228,7 +228,7 @@ def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
         # to the progress file without touching the marker, so the marker can
         # remain at "starting" for the entire lifetime of a running scan.
         _progress_status = str(merged.get("status") or "").lower()
-        for key in ("current_artist", "resume_from_artist", "status", "stop_requested", "is_running", "last_updated"):
+        for key in ("current_artist", "last_completed_artist", "resume_from_artist", "status", "stop_requested", "is_running", "last_updated"):
             if marker.get(key) is not None:
                 if key == "status" and marker.get("status") == "starting" and _progress_status == "running":
                     continue  # progress file is more current; don't downgrade
