@@ -3873,9 +3873,11 @@ def popularity_scan(
         # Each track still uses its individual track["artist"] field for API lookups
         from collections import defaultdict
 
-        # First pass: determine canonical album_artist for each album
-        # This ensures tracks with NULL or missing album_artist still group with their album
-        album_canonical_artist = {}  # Map of album_name -> canonical_album_artist
+        # First pass: determine canonical album_artist for each (album_artist_key, album) pair.
+        # The composite key prevents identically-named albums from different artists being merged
+        # into the same scan group — e.g. ABBA's own "Gold" and a "Gold" Various-Artists
+        # compilation must remain separate so that each is scanned under the correct artist.
+        album_canonical_artist = {}  # Map of (album_artist_key, album_name) -> canonical_album_artist
 
         for track in tracks:
             album_name = track["album"]
@@ -3883,26 +3885,37 @@ def popularity_scan(
                 track['album_artist'] if hasattr(track, '__getitem__') and 'album_artist' in track.keys() else ''
             )
 
+            # Build the composite key using the album_artist (or the track artist as fallback
+            # when album_artist is missing) so that same-name albums from different artists
+            # are never collapsed into a single group.
+            _aa_key = (album_artist_value or track["artist"]).strip().lower()
+            album_key = (_aa_key, album_name)
+
             # If we don't have a canonical artist yet, use the first non-empty album_artist found
             # Otherwise, preserve existing (only update if current is empty and we find a non-empty one)
-            if album_name not in album_canonical_artist:
+            if album_key not in album_canonical_artist:
                 # First track with this album - set initial value
-                album_canonical_artist[album_name] = album_artist_value if album_artist_value else track["artist"]
-            elif not album_canonical_artist[album_name] and album_artist_value:
+                album_canonical_artist[album_key] = album_artist_value if album_artist_value else track["artist"]
+            elif not album_canonical_artist[album_key] and album_artist_value:
                 # Update if canonical is empty but current track has a value
-                album_canonical_artist[album_name] = album_artist_value
+                album_canonical_artist[album_key] = album_artist_value
 
         log_debug(f"Determined canonical artists for {len(album_canonical_artist)} album(s)")
-        for album_name, canonical_artist in list(album_canonical_artist.items())[:5]:  # Log first 5
-            log_debug(f"  Album '{album_name}' -> canonical artist: '{canonical_artist}'")
+        for (aa_key, alb_name), canonical_artist in list(album_canonical_artist.items())[:5]:  # Log first 5
+            log_debug(f"  Album '{alb_name}' (artist_key='{aa_key}') -> canonical artist: '{canonical_artist}'")
 
         # Second pass: group tracks using canonical album_artist
         artist_album_tracks = defaultdict(lambda: defaultdict(list))
 
         for track in tracks:
             album_name = track["album"]
+            album_artist_value = track.get('album_artist', '') if isinstance(track, dict) else (
+                track['album_artist'] if hasattr(track, '__getitem__') and 'album_artist' in track.keys() else ''
+            )
+            _aa_key = (album_artist_value or track["artist"]).strip().lower()
+            album_key = (_aa_key, album_name)
             # Use the canonical artist we determined in first pass
-            grouping_artist = album_canonical_artist.get(album_name, track["artist"])
+            grouping_artist = album_canonical_artist.get(album_key, track["artist"])
 
             artist_album_tracks[grouping_artist][album_name].append(track)
 

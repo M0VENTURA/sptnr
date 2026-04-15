@@ -782,6 +782,21 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 )
                 album_artist_value = _existing_aa
 
+            # Skip albums where the resolved album artist is a VA/compilation variant but the
+            # current artist is a regular (non-compilation) artist.  These albums belong to the
+            # "Various Artists" (or equivalent) artist and will be scanned correctly when that
+            # artist is processed.  Without this check, every artist that features on a
+            # compilation causes the entire compilation to be re-scanned needlessly.
+            if (album_artist_value.lower().strip() in _va_variants
+                    and canonical_artist_name.lower().strip() not in _va_variants):
+                logging.info(
+                    f"[NAVIDROME_SCAN] Skipping album '{album_name}' for '{canonical_artist_name}' "
+                    f"— album_artist '{album_artist_value}' indicates a compilation/VA release "
+                    f"(featuring appearance only; will be handled by '{album_artist_value}' scan)"
+                )
+                log_album_scan(canonical_artist_name, album_name, 'navidrome', 0, 'skipped')
+                continue
+
             for t in tracks:
                 track_id = t.get("id")
                 if not track_id:
