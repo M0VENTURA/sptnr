@@ -82,7 +82,7 @@
         </div>
         <div class="d-flex gap-2 flex-wrap justify-content-end">
           <button type="button" class="btn btn-sm btn-outline-success" id="syncRatingsNowBtn" onclick="syncRatingsNow()">
-            <i class="bi bi-arrow-repeat"></i> Sync Ratings Now
+            <i class="bi bi-arrow-repeat"></i> Sync Ratings to All Users
           </button>
           <button type="button" class="btn btn-sm btn-outline-primary" onclick="addNewUser()">
             <i class="bi bi-plus-circle"></i> Add Another User
@@ -92,9 +92,21 @@
     </div>
     <div class="card-body">
       <div class="alert alert-light border mb-3 py-2">
-        <small class="text-muted">
-          Pushes current local track stars to every configured Navidrome user account immediately.
-        </small>
+        <div class="d-flex align-items-start justify-content-between gap-3 flex-wrap">
+          <small class="text-muted">
+            Pushes current local track stars to every configured Navidrome user account immediately.
+          </small>
+          <div class="d-flex align-items-center gap-2">
+            <div class="form-check form-switch mb-0">
+              <input class="form-check-input" type="checkbox" id="syncRatingsToAllUsersToggle"
+                {% if config.get('features', {}).get('sync_ratings_to_all_users', False) %}checked{% endif %}
+                onchange="toggleSyncRatingsToAllUsers(this.checked)">
+              <label class="form-check-label" for="syncRatingsToAllUsersToggle">
+                <small>Auto-sync stars to all users after each scan</small>
+              </label>
+            </div>
+          </div>
+        </div>
       </div>
       <!-- Users Container -->
       <div id="usersContainer">
@@ -1401,6 +1413,36 @@ function syncRatingsNow() {
   .finally(() => {
     btn.disabled = false;
     btn.innerHTML = originalHtml;
+  });
+}
+
+function toggleSyncRatingsToAllUsers(enabled) {
+  fetch('/api/features/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sync_ratings_to_all_users: enabled })
+  })
+  .then(async response => {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.success === false) {
+      showToast('Error', data.error || 'Failed to update setting', 'error');
+      // Revert toggle on failure
+      const toggle = document.getElementById('syncRatingsToAllUsersToggle');
+      if (toggle) toggle.checked = !enabled;
+      return;
+    }
+    showToast(
+      'Setting Saved',
+      enabled
+        ? 'Star ratings will be synced to all Navidrome users after each scan and for individual track ratings.'
+        : 'Star ratings will only be synced to the primary Navidrome user.',
+      'success'
+    );
+  })
+  .catch(error => {
+    showToast('Error', error.message || 'Network error', 'error');
+    const toggle = document.getElementById('syncRatingsToAllUsersToggle');
+    if (toggle) toggle.checked = !enabled;
   });
 }
 
