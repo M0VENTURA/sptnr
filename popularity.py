@@ -3873,23 +3873,32 @@ def popularity_scan(
         # Each track still uses its individual track["artist"] field for API lookups
         from collections import defaultdict
 
+        def _track_album_key(track):
+            """Return a stable (album_artist_key, album_name) tuple used for grouping.
+
+            The composite key prevents identically-named albums from different artists
+            being merged into the same scan group — e.g. ABBA's own "Gold" and a "Gold"
+            Various-Artists compilation must remain separate so that each is scanned under
+            the correct artist.
+            """
+            alb_name = track["album"]
+            alb_artist = track.get('album_artist', '') if isinstance(track, dict) else (
+                track['album_artist'] if hasattr(track, '__getitem__') and 'album_artist' in track.keys() else ''
+            )
+            # Use album_artist (lowercased) as the first dimension; fall back to track artist
+            # when album_artist is missing so that same-name albums from different artists
+            # are never collapsed into a single group.
+            album_artist_key = (alb_artist or track["artist"]).strip().lower()
+            return (album_artist_key, alb_name)
+
         # First pass: determine canonical album_artist for each (album_artist_key, album) pair.
-        # The composite key prevents identically-named albums from different artists being merged
-        # into the same scan group — e.g. ABBA's own "Gold" and a "Gold" Various-Artists
-        # compilation must remain separate so that each is scanned under the correct artist.
         album_canonical_artist = {}  # Map of (album_artist_key, album_name) -> canonical_album_artist
 
         for track in tracks:
-            album_name = track["album"]
+            album_key = _track_album_key(track)
             album_artist_value = track.get('album_artist', '') if isinstance(track, dict) else (
                 track['album_artist'] if hasattr(track, '__getitem__') and 'album_artist' in track.keys() else ''
             )
-
-            # Build the composite key using the album_artist (or the track artist as fallback
-            # when album_artist is missing) so that same-name albums from different artists
-            # are never collapsed into a single group.
-            _aa_key = (album_artist_value or track["artist"]).strip().lower()
-            album_key = (_aa_key, album_name)
 
             # If we don't have a canonical artist yet, use the first non-empty album_artist found
             # Otherwise, preserve existing (only update if current is empty and we find a non-empty one)
@@ -3909,11 +3918,7 @@ def popularity_scan(
 
         for track in tracks:
             album_name = track["album"]
-            album_artist_value = track.get('album_artist', '') if isinstance(track, dict) else (
-                track['album_artist'] if hasattr(track, '__getitem__') and 'album_artist' in track.keys() else ''
-            )
-            _aa_key = (album_artist_value or track["artist"]).strip().lower()
-            album_key = (_aa_key, album_name)
+            album_key = _track_album_key(track)
             # Use the canonical artist we determined in first pass
             grouping_artist = album_canonical_artist.get(album_key, track["artist"])
 
