@@ -3819,7 +3819,14 @@ def popularity_scan(
             "is_live, is_acoustic, is_cover, musicbrainz_albumtype"
         )
         where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
-        sql = f"{select_clause} FROM tracks{where_clause} ORDER BY artist, album, title"
+        # Order by album_artist (falling back to track artist when absent) so that the
+        # dict insertion order of artist_album_tracks matches the album-artist grouping
+        # key.  Using only "artist" caused "Various Artists" compilations to sort at
+        # the position of the first individual track artist (e.g. "ABBA") rather than
+        # alphabetically at "V", making the scan spend a long time on VA before
+        # advancing to regular artists — and causing resume to mis-position the
+        # checkpoint when the scan was restarted.
+        sql = f"{select_clause} FROM tracks{where_clause} ORDER BY COALESCE(NULLIF(album_artist, ''), artist), album, title"
 
         log_debug(f"Executing SQL: {sql.strip()} with params: {sql_params}")
         cursor.execute(sql, sql_params)
