@@ -32738,6 +32738,29 @@ def api_create_smart_playlist():
         already_exists = os.path.exists(file_path)
         if already_exists and not overwrite:
             return jsonify({"error": f"Playlist file '{file_name}.nsp' already exists"}), 400
+
+        # When overwriting, delete the matching DB playlist in Navidrome so the
+        # re-scan picks up the updated .nsp without leaving a stale duplicate.
+        if already_exists and overwrite:
+            try:
+                cfg = get_config()
+                _, nav_cfg = _resolve_active_navidrome_user_config(cfg)
+                _base_url = nav_cfg.get("base_url", "")
+                _user = nav_cfg.get("user", "")
+                _pass = nav_cfg.get("pass", "")
+                if _base_url and _user and _pass:
+                    from api_clients.navidrome import NavidromeClient as _NaviClient
+                    _nc = _NaviClient(_base_url, _user, _pass)
+                    _pl_name = playlist_data.get("name", "")
+                    if _pl_name:
+                        _existing = _nc.find_playlist_by_name(_pl_name)
+                        if _existing and _existing.get("id"):
+                            _nc.delete_playlist(_existing["id"])
+                            logging.info(
+                                f"[NSP] Deleted Navidrome DB playlist '{_pl_name}' (id={_existing['id']}) before overwrite"
+                            )
+            except Exception as _del_err:
+                logging.warning(f"[NSP] Could not delete Navidrome DB playlist before overwrite: {_del_err}")
         
         # Write the playlist file
         try:
@@ -36388,7 +36411,7 @@ def api_playlist_create_custom():
         name = data.get("name", "").strip()
         description = data.get("description", "").strip()
         user_name = (data.get("user") or session.get("username") or "").strip()
-        is_public = data.get("is_public", False)
+        is_public = data.get("is_public", True)
         songs = data.get("songs", [])
         
         if not name:
