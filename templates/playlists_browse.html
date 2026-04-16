@@ -392,8 +392,8 @@
         <!-- Edit mode banner (shown when a playlist is loaded for editing from the Browse section) -->
         <div id="nspEditBanner" class="alert alert-warning py-2 mb-4 d-none">
           <div class="d-flex align-items-center gap-3 flex-wrap">
-            <span><i class="bi bi-pencil-square me-1"></i>
-            Editing <strong id="nspEditBannerName"></strong> — saving will overwrite the file.</span>
+            <span id="nspEditBannerMsg" aria-live="polite"><i class="bi bi-pencil-square me-1"></i>
+            Editing <strong></strong> — saving will overwrite the file.</span>
             <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" onclick="nspExitEditMode()" id="nspExitEditBtn">
               <i class="bi bi-x-circle"></i> Cancel edit
             </button>
@@ -880,7 +880,7 @@
       name: playlistName,
       description,
       user,
-      is_public: false,
+      is_public: true,
       songs: songs
     };
 
@@ -1409,6 +1409,24 @@
   let nspEditingFile = null;  // basename of the file currently being edited, e.g. "my_mix.nsp"
   let _cachedNspFiles = [];  // NSP file list cached from nspLoadFileList
 
+  function nspStripExt(filename) {
+    return (filename || '').replace(/\.nsp$/i, '');
+  }
+
+  function nspUpdateEditBanner() {
+    if (!nspEditingFile) return;
+    const fi = document.getElementById('nspFileName');
+    const currentName = (fi ? fi.value.trim() : '');
+    const originalBaseName = nspStripExt(nspEditingFile);
+    const msg = document.getElementById('nspEditBannerMsg');
+    if (!msg) return;
+    if (currentName && currentName !== originalBaseName) {
+      msg.innerHTML = `<i class="bi bi-file-earmark-plus me-1"></i>Editing <strong>${escapeHtml(nspEditingFile)}</strong> — file name changed, saving will create a new file.`;
+    } else {
+      msg.innerHTML = `<i class="bi bi-pencil-square me-1"></i>Editing <strong>${escapeHtml(nspEditingFile)}</strong> — saving will overwrite the file.`;
+    }
+  }
+
   function nspExitEditMode() {
     nspEditingFile = null;
     const banner = document.getElementById('nspEditBanner');
@@ -1419,8 +1437,6 @@
     if (label) label.textContent = 'Save Smart Playlist';
     const titleText = document.getElementById('nspCardTitleText');
     if (titleText) titleText.textContent = 'Create Smart Playlist (.nsp)';
-    const fi = document.getElementById('nspFileName');
-    if (fi) fi.readOnly = false;
   }
 
   // Called from browse playlist dropdowns when any playlist is selected.
@@ -1509,7 +1525,6 @@
       const fi = document.getElementById('nspFileName');
       fi.value = baseName;
       fi._userEdited = true;
-      fi.readOnly = true;  // prevent accidental rename while editing
       document.getElementById('nspComment').value = pl.comment || '';
 
       // Match type
@@ -1543,7 +1558,6 @@
       // Enter edit mode
       nspEditingFile = filename;
       const banner = document.getElementById('nspEditBanner');
-      document.getElementById('nspEditBannerName').textContent = filename;
       if (banner) banner.classList.remove('d-none');
       const exitBtn = document.getElementById('nspExitEditBtn');
       if (exitBtn) exitBtn.classList.remove('d-none');
@@ -1551,6 +1565,7 @@
       if (label) label.textContent = 'Update Smart Playlist';
       const titleText = document.getElementById('nspCardTitleText');
       if (titleText) titleText.textContent = 'Edit Smart Playlist (.nsp)';
+      nspUpdateEditBanner();
 
       // Scroll to builder
       document.getElementById('nspPlaylistName').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1760,12 +1775,15 @@
     if (limitRaw) playlist.limit = parseInt(limitRaw, 10);
 
     const isEditing = !!nspEditingFile;
+    // Only overwrite when editing the same file; a changed filename saves as a new file.
+    const originalBaseName = nspEditingFile ? nspStripExt(nspEditingFile) : null;
+    const isSameFile = isEditing && originalBaseName === fileName;
 
     try {
       const resp = await fetch('/api/smartplaylist/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName, playlist, overwrite: isEditing })
+        body: JSON.stringify({ fileName, playlist, overwrite: isSameFile })
       });
       const result = await resp.json();
       if (!resp.ok || !result.success) {
@@ -1787,7 +1805,7 @@
   // Initialise on DOM ready: filename tracking + seed one rule and sort row
   document.addEventListener('DOMContentLoaded', () => {
     const fi = document.getElementById('nspFileName');
-    if (fi) fi.addEventListener('input', () => { fi._userEdited = true; });
+    if (fi) fi.addEventListener('input', () => { fi._userEdited = true; nspUpdateEditBanner(); });
     nspAddRule();
     nspAddSortRow('random', 'asc');
     nspLoadFileList();

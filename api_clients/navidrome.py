@@ -79,6 +79,66 @@ class NavidromeClient:
             logger.error(f"❌ Failed to fetch playlist {playlist_id}: {e}")
             return {}
 
+    def find_playlist_by_name(self, name: str) -> dict | None:
+        """Return the first playlist whose name matches *name* (case-insensitive), or None."""
+        playlists = self.fetch_all_playlists()
+        name_lower = name.strip().lower()
+        for pl in playlists:
+            if str(pl.get("name") or "").strip().lower() == name_lower:
+                return pl
+        return None
+
+    def delete_playlist(self, playlist_id: str) -> bool:
+        """
+        Delete a playlist from Navidrome via the Subsonic API.
+
+        Args:
+            playlist_id: Navidrome playlist ID to delete
+
+        Returns:
+            True on success, False on failure.
+        """
+        url = f"{self.base_url}/rest/deletePlaylist.view"
+        params = self._build_params(id=playlist_id)
+        try:
+            res = self.session.get(url, params=params)
+            res.raise_for_status()
+            status = res.json().get("subsonic-response", {}).get("status")
+            if status == "ok":
+                logger.info(f"Deleted Navidrome playlist {playlist_id}")
+                return True
+            logger.warning(f"Unexpected status deleting playlist {playlist_id}: {status}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Failed to delete playlist {playlist_id}: {e}")
+            return False
+
+    def update_playlist_public(self, playlist_id: str, public: bool = True) -> bool:
+        """
+        Set a playlist's public/shared flag via the Subsonic updatePlaylist API.
+
+        Args:
+            playlist_id: Navidrome playlist ID
+            public: Whether the playlist should be publicly visible
+
+        Returns:
+            True on success, False on failure.
+        """
+        url = f"{self.base_url}/rest/updatePlaylist.view"
+        params = self._build_params(playlistId=playlist_id, public="true" if public else "false")
+        try:
+            res = self.session.get(url, params=params)
+            res.raise_for_status()
+            status = res.json().get("subsonic-response", {}).get("status")
+            if status == "ok":
+                logger.info(f"Set playlist {playlist_id} public={public}")
+                return True
+            logger.warning(f"Unexpected status updating playlist {playlist_id} public={public}: {status}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Failed to update playlist {playlist_id} public flag: {e}")
+            return False
+
     def __init__(self, base_url: str, username: str, password: str, http_session=None):
         """
         Initialize NavidromeClient.

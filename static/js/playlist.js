@@ -1895,7 +1895,7 @@ async function createPlaylist() {
         name: currentImportData.playlist_name,
         description: currentImportData.playlist_description,
         user: targetUser,
-        is_public: false,
+        is_public: true,
         songs: currentImportData.matched_tracks
       })
     });
@@ -2348,7 +2348,7 @@ function resetLastfmForm() {
   document.getElementById('lfmPlaylistName').value = '';
   document.getElementById('lfmPlaylistDesc').value = '';
   document.getElementById('lfmPlaylistUser').value = '';
-  document.getElementById('lfmPlaylistPublic').checked = false;
+  document.getElementById('lfmPlaylistPublic').checked = true;
 }
 
 function resetListenBrainzForm() {
@@ -2356,5 +2356,5 @@ function resetListenBrainzForm() {
   document.getElementById('lbPlaylistName').value = '';
   document.getElementById('lbPlaylistDesc').value = '';
   document.getElementById('lbPlaylistUser').value = '';
-  document.getElementById('lbPlaylistPublic').checked = false;
+  document.getElementById('lbPlaylistPublic').checked = true;
 }
