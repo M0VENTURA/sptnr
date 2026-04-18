@@ -939,6 +939,15 @@ def fetch_album_tracks(album_id):
 # All other boolean-like fields use INTEGER/BIGINT and require int conversion.
 _PG_BOOLEAN_COLUMNS = {'is_single'}
 
+# Fields whose existing non-empty DB value must never be overwritten by an
+# empty/unknown incoming value, regardless of which scan is writing.
+# These are set by the popularity/MusicBrainz scan and should survive
+# subsequent Navidrome re-imports or fallback scan runs.
+_PRESERVE_IF_EMPTY = {
+    "spotify_album_type",
+    "musicbrainz_albumtype",
+}
+
 # Fields populated from Navidrome tags/payload. During non-Navidrome updates
 # (for example metadata enrichment), these should be treated as backfill-only
 # so existing Navidrome values are not overwritten.
@@ -1121,6 +1130,42 @@ def save_to_db(track_data):
             except Exception:
                 # Keep write path resilient if merge lookup fails.
                 pass
+
+    # Preserve scan-detected album-type fields from being overwritten by an
+    # empty or unknown incoming value. This applies to ALL callers (both
+    # Navidrome imports and metadata scans) because the popularity scan is the
+    # authoritative setter of these fields and any scan that has no data should
+    # not erase what was previously detected.
+    _preserve_track_id = sanitized_data.get('id')
+    # Only include fields that are known DB columns (guards against SQL injection
+    # if _PRESERVE_IF_EMPTY were ever extended with a non-column name).
+    _valid_columns = existing_track_columns if 'existing_track_columns' in dir() else set()
+    _preserve_fields = [
+        f for f in _PRESERVE_IF_EMPTY
+        if f in sanitized_data
+        and not _has_meaningful_value(sanitized_data.get(f))
+        and (not _valid_columns or f in _valid_columns)
+    ]
+    if _preserve_track_id and _preserve_fields:
+        try:
+            _pf_cols = ', '.join(_preserve_fields)
+            _run_with_db_lock_retry(
+                lambda: cursor.execute(
+                    f"SELECT {_pf_cols} FROM tracks WHERE id = {placeholder}",
+                    (_preserve_track_id,),
+                ),
+                "save_to_db preserve-if-empty lookup",
+            )
+            _pf_row = cursor.fetchone()
+            if _pf_row:
+                for field in _preserve_fields:
+                    existing_value = (
+                        _pf_row[field] if hasattr(_pf_row, 'keys') else None
+                    )
+                    if _has_meaningful_value(existing_value):
+                        sanitized_data[field] = existing_value
+        except Exception:
+            pass
     
     # Check for existing track by content (artist, album, title, duration)
     # This prevents duplicate albums when Navidrome IDs change

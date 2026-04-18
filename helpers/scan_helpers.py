@@ -833,7 +833,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     # Extract file_path from extracted metadata (populated by extract_track_metadata)
                     "file_path": extracted.get("file_path", ""),
                     "last_scanned": _now_local_iso(),
-                    "spotify_album_type": "",
+                    "spotify_album_type": extracted.get("releasetype", "") or extracted.get("musicbrainz_albumtype", "") or "",
                     "spotify_total_tracks": 0,
                     "spotify_id": None,
                     "is_spotify_single": 0,

@@ -4999,8 +4999,10 @@ def popularity_scan(
                             detected_album_type = current_album_type or 'album'
                             type_detection_source = 'fallback (Spotify or default)'
 
-                # Update ALL tracks in this album with the detected type
-                if detected_album_type and detected_album_type != current_album_type:
+                # Update ALL tracks in this album with the detected type.
+                # Skip if detection fell back to "unknown" (API failure) to avoid
+                # clobbering a correctly-identified type from a previous scan.
+                if detected_album_type and detected_album_type != "unknown" and detected_album_type != current_album_type:
                     primary_release_type = normalize_primary_release_type(detected_album_type)
                     tracks_updated = 0
                     for track in album_tracks:
@@ -5024,8 +5026,10 @@ def popularity_scan(
                 else:
                     log_debug(f'Album type unchanged: "{detected_album_type or current_album_type}"')
 
-                # Use the detected type for rest of scan
-                album_type_from_field = detected_album_type or current_album_type or 'album'
+                # Use the detected type for rest of scan; treat "unknown" (API
+                # fallback) as absent so the prior confirmed value is preferred.
+                _effective_detected = detected_album_type if detected_album_type != "unknown" else None
+                album_type_from_field = _effective_detected or current_album_type or 'album'
                 pre_detected_album_type = album_type_from_field
 
                 # Update album_context_live based on MusicBrainz secondary type.
