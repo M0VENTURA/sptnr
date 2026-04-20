@@ -1529,9 +1529,15 @@ class CoverDetector:
 
             # First query works by title+writer. This mirrors the MusicBrainz web
             # Works view and gives us canonical writer-linked work IDs.
+            #
+            # Strip live/version suffixes before querying so that a title like
+            # "We Are the Champions (live)" matches the canonical MB work
+            # "We Are the Champions".  The stripped form is also used for the
+            # recording search so the query is cleaner and returns better results.
+            _search_title = _canonical_track_title(title) or title
             matched_work_ids = set()
             try:
-                work_result = mb.search_works(work=title, artist=writer, limit=25)
+                work_result = mb.search_works(work=_search_title, artist=writer, limit=25)
             except Exception:
                 work_result = {}
 
@@ -1540,12 +1546,12 @@ class CoverDetector:
                 if not work_id:
                     continue
                 work_title = work.get('title', '')
-                if work_title and self._normalize_name(work_title) != self._normalize_name(title):
+                if work_title and _canonical_track_title(work_title) != _canonical_track_title(_search_title):
                     # Keep this strict to avoid attaching unrelated writer works.
                     continue
                 matched_work_ids.add(work_id)
 
-            result = mb.search_recordings(recording=title, limit=25)
+            result = mb.search_recordings(recording=_search_title, limit=25)
             recordings = result.get('recording-list', [])
             if not recordings:
                 return None
