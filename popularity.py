@@ -6549,7 +6549,7 @@ def popularity_scan(
                             log_info(f'Starting cover detection for album "{artist} - {album}" (metadata-only mode)')
                             cursor.execute(f"""
                                 SELECT id, title, artist, writer, mbid, file_path, musicbrainz_album_mbid,
-                                       is_cover, genres, musicbrainz_genres
+                                       is_cover, genres, musicbrainz_genres, original_cover_artist
                                 FROM tracks
                                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                                 ORDER BY COALESCE(track_number, 0), title
@@ -7161,7 +7161,7 @@ def popularity_scan(
                         # Note: Use COALESCE to handle album_artist grouping like singles detection does
                         cursor.execute(f"""
                             SELECT id, title, artist, writer, mbid, file_path, musicbrainz_album_mbid,
-                                   is_cover, genres, musicbrainz_genres
+                                   is_cover, genres, musicbrainz_genres, original_cover_artist
                             FROM tracks
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                             ORDER BY COALESCE(track_number, 0), title
