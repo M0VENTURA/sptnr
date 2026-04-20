@@ -10,7 +10,7 @@ import logging
 import json
 import re
 import time
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Set, Tuple
 from pathlib import Path
 
 import requests
@@ -422,6 +422,10 @@ class CoverDetector:
         
         # Step 2: Primary detection via MusicBrainz "cover recording of" relation.
         # This is the canonical signal shown in the MB UI and should take precedence.
+        #
+        # A per-scan release cache prevents re-fetching the same album release for
+        # each track when the release-level fallback is triggered.
+        _release_cover_cache: Dict[str, dict] = {}
         for track in tracks:
             track_id = track.get('id')
             if not track_id or track_id in seen_track_ids:
@@ -442,6 +446,22 @@ class CoverDetector:
                 title=track.get('title', ''),
                 album_artist=artist
             )
+
+            # Fallback: re-check via the album release the track belongs to.
+            # The recording MBID embedded in the release may differ from the stored
+            # one (e.g. a different release edition) and may carry the cover relation
+            # that the stored MBID lacks.
+            if not relation_original:
+                release_mbid = str(track.get('musicbrainz_album_mbid') or '').strip()
+                if release_mbid:
+                    relation_original = self._find_original_from_release_track(
+                        album_release_mbid=release_mbid,
+                        track_title=track.get('title', ''),
+                        recording_mbid=mbid,
+                        album_artist=artist,
+                        _release_cache=_release_cover_cache,
+                    )
+
             if not relation_original:
                 continue
 
@@ -684,6 +704,61 @@ class CoverDetector:
                 'original_artist': resolved_original_artist,
                 'file_path': track.get('file_path'),
                 'is_cover_reason': f"Heuristic detection: title/album hint ({hint})",
+            })
+
+        # Step 5: Work-based fallback for tracks already flagged is_cover=True but
+        # whose original artist could not be resolved by the earlier steps.  This
+        # helps when the MusicBrainz recording has no explicit "cover recording of"
+        # relation yet but IS linked to a work that has other (non-cover) recordings
+        # by an earlier artist.
+        for track in tracks:
+            track_id = track.get('id')
+            if not track_id or track_id in seen_track_ids:
+                continue
+
+            # Only run for tracks the user has already manually flagged as covers.
+            is_cover_val = track.get('is_cover')
+            if is_cover_val in (None, 0, False, '0', '', 'false', 'no'):
+                continue
+            if isinstance(is_cover_val, str) and is_cover_val.strip().lower() in ('0', 'false', 'no', ''):
+                continue
+
+            # Skip when the original artist attribution is already known.
+            if (track.get('original_cover_artist') or '').strip():
+                continue
+
+            mbid = track.get('mbid') or self._resolve_recording_mbid(
+                track, album_artist=artist, album_title=album
+            )
+            if not mbid:
+                continue
+
+            track['mbid'] = mbid
+            original = self._find_original_via_work_lookup(mbid, track.get('title', ''), artist)
+            if not original:
+                continue
+
+            result = {
+                'track_id': track_id,
+                'title': track.get('title', ''),
+                'is_cover': True,
+                'original_artist': original['artist'],
+                'original_year': original.get('year'),
+                'writer': '',
+                'confidence': original.get('confidence', 'low'),
+            }
+            cover_results.append(result)
+            seen_track_ids.add(track_id)
+            logger.info(
+                f"✓ Cover confirmed (work-based fallback): '{track.get('title', '')}' "
+                f"originally by '{original['artist']}' ({original.get('year', 'unknown year')})"
+            )
+            pending_cover_updates.append({
+                'track_id': track_id,
+                'title': track.get('title', ''),
+                'original_artist': original['artist'],
+                'file_path': track.get('file_path'),
+                'is_cover_reason': 'Work-based earliest-recording fallback',
             })
 
         if pending_cover_updates:
@@ -1535,6 +1610,7 @@ class CoverDetector:
             # "We Are the Champions".  The stripped form is also used for the
             # recording search so the query is cleaner and returns better results.
             _search_title = _canonical_track_title(title) or title
+            _search_title_canonical = _canonical_track_title(_search_title)
             matched_work_ids = set()
             try:
                 work_result = mb.search_works(work=_search_title, artist=writer, limit=25)
@@ -1546,7 +1622,7 @@ class CoverDetector:
                 if not work_id:
                     continue
                 work_title = work.get('title', '')
-                if work_title and _canonical_track_title(work_title) != _canonical_track_title(_search_title):
+                if work_title and _canonical_track_title(work_title) != _search_title_canonical:
                     # Keep this strict to avoid attaching unrelated writer works.
                     continue
                 matched_work_ids.add(work_id)
@@ -1754,6 +1830,212 @@ class CoverDetector:
 
         except Exception as e:
             logger.debug(f"Failed to find original recording for '{title}' by '{writer}': {e}")
+            return None
+
+    def _find_original_from_release_track(
+        self,
+        album_release_mbid: str,
+        track_title: str,
+        recording_mbid: Optional[str] = None,
+        album_artist: Optional[str] = None,
+        _release_cache: Optional[Dict] = None,
+    ) -> Optional[Dict]:
+        """Fallback: find cover-relation data via the album release a track belongs to.
+
+        When the direct recording lookup by MBID returns no cover relation, this
+        method fetches the album release (identified by *album_release_mbid*) and
+        finds the recording embedded in that release's track listing.  If the
+        release-derived recording MBID differs from the stored one — which happens
+        when the local library was tagged against a different release edition — the
+        new MBID is checked for cover relations.
+
+        A shared *_release_cache* dict (keyed by release MBID) lets all tracks in
+        the same scan share a single API call for their release.
+        """
+        if not album_release_mbid:
+            return None
+        try:
+            mb = self._configure_mb_client()
+
+            if _release_cache is not None and album_release_mbid in _release_cache:
+                release = _release_cache[album_release_mbid]
+            else:
+                result = mb.get_release_by_id(
+                    album_release_mbid,
+                    includes=['recordings', 'artist-credits'],
+                )
+                release = result.get('release', {})
+                if _release_cache is not None:
+                    _release_cache[album_release_mbid] = release
+
+            canonical_target = _canonical_track_title(track_title)
+            for medium in release.get('medium-list', []) or []:
+                for mb_track in medium.get('track-list', []) or []:
+                    rec = mb_track.get('recording') or {}
+                    candidate_title = rec.get('title') or mb_track.get('title') or ''
+                    if _canonical_track_title(candidate_title) != canonical_target:
+                        continue
+
+                    release_rec_id = str(rec.get('id') or '').strip()
+                    if not release_rec_id or release_rec_id == (recording_mbid or '').strip():
+                        # Same MBID already checked — nothing more to do via this path.
+                        continue
+
+                    logger.debug(
+                        "Release-level cover fallback: re-checking cover relations for "
+                        "'%s' using release-derived MBID '%s' (was '%s') via release '%s'",
+                        track_title, release_rec_id,
+                        recording_mbid or 'none', album_release_mbid,
+                    )
+                    return self._find_original_from_cover_relation(
+                        recording_mbid=release_rec_id,
+                        title=track_title,
+                        album_artist=album_artist,
+                    )
+
+            return None
+        except Exception as exc:
+            logger.debug(
+                "Release-level cover fallback failed for release '%s' / track '%s': %s",
+                album_release_mbid, track_title, exc,
+            )
+            return None
+
+    def _find_original_via_work_lookup(
+        self,
+        recording_mbid: str,
+        title: str,
+        album_artist: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Fallback: find the original artist via the work linked to a recording.
+
+        Used for tracks already confirmed as covers (``is_cover=True``) that lack
+        an explicit "cover recording of" relation on MusicBrainz.  The method
+        fetches the recording's linked works (any performance type), then searches
+        for the earliest recording of those works that is not itself a cover and is
+        not credited to *album_artist*.
+
+        This is valuable when MB has not yet added the cover relation on the
+        specific recording, but the recording IS linked to a work that has other
+        (earlier) recordings by the true original artist.
+        """
+        try:
+            mb = self._configure_mb_client()
+
+            seed_result = mb.get_recording_by_id(
+                recording_mbid,
+                includes=['work-rels', 'artist-credits'],
+            )
+            seed_recording = seed_result.get('recording', {})
+
+            # Collect work IDs from any performance relation (not only cover-typed).
+            work_ids: Set[str] = set()
+            for rel in seed_recording.get('work-relation-list', []) or []:
+                if not isinstance(rel, dict):
+                    continue
+                if str(rel.get('type', '')).strip().lower() != 'performance':
+                    continue
+                work_id = (rel.get('work') or {}).get('id')
+                if work_id:
+                    work_ids.add(work_id)
+
+            if not work_ids:
+                logger.debug(
+                    "Work-based fallback: no performance work relations found for recording '%s'",
+                    recording_mbid,
+                )
+                return None
+
+            # Search for recordings of the same canonical title.
+            canonical = _canonical_track_title(title) or title
+            search_result = mb.search_recordings(recording=canonical, limit=50)
+            recordings = search_result.get('recording-list', []) or []
+
+            def _artist_from_credit(artist_credit: List[Dict]) -> str:
+                for entry in artist_credit or []:
+                    if isinstance(entry, dict):
+                        name = (entry.get('artist') or {}).get('name')
+                        if name:
+                            return name
+                return ''
+
+            def _year_from_rec(rec: Dict) -> Optional[int]:
+                date_str = str(rec.get('first-release-date') or '').strip()
+                if len(date_str) >= 4 and date_str[:4].isdigit():
+                    try:
+                        return int(date_str[:4])
+                    except (ValueError, TypeError):
+                        pass
+                for rel_entry in (rec.get('release-list') or []):
+                    if not isinstance(rel_entry, dict):
+                        continue
+                    rel_date = str(rel_entry.get('date') or '').strip()
+                    if len(rel_date) >= 4 and rel_date[:4].isdigit():
+                        try:
+                            return int(rel_date[:4])
+                        except (ValueError, TypeError):
+                            pass
+                return None
+
+            earliest = None
+            earliest_year = 9999
+            earliest_unknown_year = None
+
+            for recording in recordings:
+                rec_id = recording.get('id')
+                if not rec_id or rec_id == recording_mbid:
+                    continue
+
+                try:
+                    details = mb.get_recording_by_id(
+                        rec_id,
+                        includes=['artist-credits', 'releases', 'work-rels'],
+                    )
+                except Exception:
+                    continue
+
+                full_rec = details.get('recording', {})
+
+                # Must be linked to the same work.
+                rec_work_ids = set(
+                    (rel.get('work') or {}).get('id')
+                    for rel in (full_rec.get('work-relation-list', []) or [])
+                    if (rel.get('work') or {}).get('id')
+                )
+                if not (rec_work_ids & work_ids):
+                    continue
+
+                # Skip recordings that are themselves cover performances of the same work.
+                if self._extract_cover_work_ids(full_rec) & work_ids:
+                    continue
+
+                artist_credit = full_rec.get('artist-credit', []) or recording.get('artist-credit', [])
+                rec_artist = _artist_from_credit(artist_credit)
+                if not rec_artist:
+                    continue
+                if album_artist and self._names_match(rec_artist, album_artist):
+                    continue
+
+                year = _year_from_rec(full_rec)
+                if year is not None and year < earliest_year:
+                    earliest_year = year
+                    earliest = {'artist': rec_artist, 'year': year, 'confidence': 'medium'}
+                elif year is None and earliest_unknown_year is None:
+                    earliest_unknown_year = {'artist': rec_artist, 'year': None, 'confidence': 'low'}
+
+            result = earliest or earliest_unknown_year
+            if result:
+                logger.debug(
+                    "Work-based fallback: '%s' originally by '%s' (%s)",
+                    title, result['artist'], result.get('year') or 'unknown year',
+                )
+            return result
+
+        except Exception as exc:
+            logger.debug(
+                "Work-based fallback lookup failed for recording '%s': %s",
+                recording_mbid, exc,
+            )
             return None
 
     def update_cover_metadata(self, track_id: str, title: str, original_artist: Optional[str],
