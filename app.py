@@ -27214,8 +27214,26 @@ def api_queue_delete(queue_id):
         )
         row = cursor.fetchone()
         if not row:
+            # Queue entry is already gone, but there may be a stale tracks stub
+            # with file_path = '__queued_for_download__queue_id_<id>' left over
+            # from a previous import cycle.  Clean it up so the album page row
+            # disappears instead of showing a broken "In Queue" badge forever.
+            try:
+                cursor.execute(
+                    "DELETE FROM tracks WHERE file_path LIKE %s",
+                    (f"__queued_for_download__queue_id_{queue_id}%",),
+                )
+                conn.commit()
+            except Exception as _stub_err:
+                logging.debug(
+                    f"[QUEUE] Could not clean orphan tracks stub for missing queue {queue_id}: {_stub_err}"
+                )
             conn.close()
-            return jsonify({"error": "Queue item not found"}), 404
+            return jsonify({
+                "success": True,
+                "message": "Queue item already removed; stub cleaned up",
+                "already_removed": True,
+            })
 
         file_path = row['file_path'] if isinstance(row, dict) else row[0]
         found_filename = row['found_filename'] if isinstance(row, dict) else row[1]
