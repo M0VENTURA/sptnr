@@ -3505,12 +3505,23 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             queue_item_dict.get('matched_file_path'),
             queue_item_dict.get('music_file_path'),
             queue_item_dict.get('found_filename'),
+            # source_music_path holds the path to this recording on a different album
+            # in the library (set when status was copy_recommended).  It is a valid
+            # fallback source when the downloads file is no longer present — the user
+            # still wants the track copied into the target album even if the Soulseek
+            # download was already cleaned up or auto-moved without a status update.
+            queue_item_dict.get('source_music_path'),
         ]
         file_path = None
         for candidate in candidate_paths:
             resolved = _resolve_existing_source_path(candidate, downloads_root, music_root)
             if resolved:
                 file_path = resolved
+                if candidate == queue_item_dict.get('source_music_path') and candidate:
+                    logger.info(
+                        f"[MOVE] Queue {queue_id}: primary file not found; falling back to "
+                        f"source_music_path: {resolved}"
+                    )
                 break
 
         if not file_path:
@@ -3863,7 +3874,14 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                 'message': 'File metadata updated in place',
             }
 
-        transfer_result = transfer_download_to_music(file_path, dest_path, queue_id=queue_item_dict.get('id'))
+        # When the source file is already inside the music root (e.g. it came
+        # from source_music_path on a different album), copy rather than move so
+        # the original library file is preserved.
+        transfer_result = transfer_download_to_music(
+            file_path, dest_path,
+            queue_id=queue_item_dict.get('id'),
+            copy_only=source_already_in_music,
+        )
         if not transfer_result.get('success'):
             return {'success': False, 'target_path': None, 'error': transfer_result.get('error')}
 
