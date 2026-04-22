@@ -3500,24 +3500,25 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                 except Exception as exc:
                     logger.debug(f"[MOVE] Could not persist normalized release MBID for queue {queue_id}: {exc}")
 
+        # source_music_path holds the path to this recording on a different album
+        # in the library (set when status was copy_recommended).  It is a valid
+        # fallback source when the downloads file is no longer present — the user
+        # still wants the track copied into the target album even if the Soulseek
+        # download was already cleaned up or auto-moved without a status update.
+        _source_music_path = queue_item_dict.get('source_music_path')
         candidate_paths = [
             queue_item_dict.get('file_path'),
             queue_item_dict.get('matched_file_path'),
             queue_item_dict.get('music_file_path'),
             queue_item_dict.get('found_filename'),
-            # source_music_path holds the path to this recording on a different album
-            # in the library (set when status was copy_recommended).  It is a valid
-            # fallback source when the downloads file is no longer present — the user
-            # still wants the track copied into the target album even if the Soulseek
-            # download was already cleaned up or auto-moved without a status update.
-            queue_item_dict.get('source_music_path'),
+            _source_music_path,
         ]
         file_path = None
         for candidate in candidate_paths:
             resolved = _resolve_existing_source_path(candidate, downloads_root, music_root)
             if resolved:
                 file_path = resolved
-                if candidate == queue_item_dict.get('source_music_path') and candidate:
+                if candidate and candidate == _source_music_path:
                     logger.info(
                         f"[MOVE] Queue {queue_id}: primary file not found; falling back to "
                         f"source_music_path: {resolved}"
