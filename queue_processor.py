@@ -130,6 +130,10 @@ _SLSKD_LONG_RETRY_DELAY_MINUTES = 1440
 _QUALITY_TARGET_BITRATE = 256   # kbps — 320 mp3 and FLAC both clear this bar
 _QUALITY_UPGRADE_RETRY_HOURS = 24  # hours before re-searching for a better copy
 
+# Cached SlskdClient instance — config does not change at runtime so we build
+# the object once and reuse it for the lifetime of the process.
+_slskd_client_cache = None
+
 # Shared constants for orphan-token detection used in both
 # _score_soulseek_candidate and _filename_matches_queue_item.
 _ORPHAN_AUDIO_EXT_TOKENS = frozenset(
@@ -158,6 +162,21 @@ _FEAT_SUFFIX_RE = re.compile(
 # core track title for exactness comparisons.  The alternation ensures opening
 # and closing bracket types must match (parenthesis ↔ parenthesis, square ↔ square).
 _BRACKET_RE = re.compile(r'\([^\)]*\)|\[[^\]]*\]')
+
+# Search-query sanitization helpers from download_queue_manager.  The import
+# lives here at module level (inside a try/except to break any circular-import
+# cycle) so that the module lookup runs only once at process startup rather than
+# inside every call to _build_fallback_search_queries.
+try:
+    from download_queue_manager import (
+        _sanitize_search_query_for_slskd as _dqm_sanitize_query,
+        _strip_query_punctuation_for_slskd as _dqm_strip_punctuation,
+    )
+except ImportError:
+    def _dqm_sanitize_query(q):  # type: ignore[misc]
+        return " ".join(q.split())
+    def _dqm_strip_punctuation(q):  # type: ignore[misc]
+        return " ".join(q.split())
 
 
 def _strip_brackets(text):
@@ -1045,7 +1064,10 @@ def get_db():
     return app_get_db()
 
 def get_slskd_client():
-    """Get configured SlskdClient instance"""
+    """Get configured SlskdClient instance (cached — config does not change at runtime)."""
+    global _slskd_client_cache
+    if _slskd_client_cache is not None:
+        return _slskd_client_cache
     try:
         import yaml
         
@@ -1074,7 +1096,8 @@ def get_slskd_client():
         web_url = slskd_config.get("web_url", "http://localhost:5030")
         api_key = slskd_config.get("api_key", "")
         
-        return SlskdClient(web_url, api_key, enabled=True)
+        _slskd_client_cache = SlskdClient(web_url, api_key, enabled=True)
+        return _slskd_client_cache
         
     except Exception as e:
         logger.error(f"Error getting SlskdClient: {e}")
@@ -1777,21 +1800,6 @@ def _build_fallback_search_queries(queue_item, primary_query):
     if not title:
         return []
 
-    try:
-        from download_queue_manager import (
-            _sanitize_search_query_for_slskd,
-            _strip_query_punctuation_for_slskd,
-        )
-    except ImportError:
-        logger.warning(
-            "_build_fallback_search_queries: could not import sanitization helpers "
-            "from download_queue_manager; using plain whitespace normalisation as fallback"
-        )
-        def _sanitize_search_query_for_slskd(q):  # type: ignore[misc]
-            return " ".join(q.split())
-        def _strip_query_punctuation_for_slskd(q):  # type: ignore[misc]
-            return " ".join(q.split())
-
     # Each entry is (query_string, min_accept_score).  None means use the global
     # _SLSKD_MIN_ACCEPT_SCORE default.
     fallbacks: list[tuple[str, float | None]] = []
@@ -1811,12 +1819,12 @@ def _build_fallback_search_queries(queue_item, primary_query):
     # query.  This is the most targeted fix when the stored search_query still
     # contains a straight apostrophe (e.g. "Where's the Love") because it was
     # added before sanitization was applied or via a utility script.
-    _add(_sanitize_search_query_for_slskd(primary_query))
+    _add(_dqm_sanitize_query(primary_query))
 
     # Fallback 0b: fully depunctuated primary – strips ALL punctuation from the
     # stored query, not just quote characters.  Handles titles containing commas,
     # exclamation marks, periods, etc. ("Hello! World" → "Hello World").
-    _add(_strip_query_punctuation_for_slskd(primary_query))
+    _add(_dqm_strip_punctuation(primary_query))
 
     # Fallback 0c: bracket-stripped artist + title.  Removes parenthesised /
     # square-bracketed annotations from the title (e.g. "(Batman Forever
@@ -1826,23 +1834,23 @@ def _build_fallback_search_queries(queue_item, primary_query):
     core_title = _strip_brackets(title).strip()
     if core_title and core_title.lower() != title.lower():
         if artist:
-            _add(_sanitize_search_query_for_slskd(f"{artist} - {core_title}"))
+            _add(_dqm_sanitize_query(f"{artist} - {core_title}"))
         if album_artist and album_artist.lower() != artist.lower():
-            _add(_sanitize_search_query_for_slskd(f"{album_artist} - {core_title}"))
+            _add(_dqm_sanitize_query(f"{album_artist} - {core_title}"))
         # Also try just the core title without artist, with a stricter threshold.
         # No artist token means Soulseek may return files whose path merely
         # contains the title words; 0.60 (vs the default ~0.45) reduces the
         # risk of accepting a false-positive match.
-        _add(_sanitize_search_query_for_slskd(core_title), min_score=0.60)
+        _add(_dqm_sanitize_query(core_title), min_score=0.60)
 
     # Fallback 1: album artist (e.g. "KNEECAP - Palestine")
     if album_artist and album_artist.lower() != artist.lower():
-        _add(_sanitize_search_query_for_slskd(f"{album_artist} - {title}"))
+        _add(_dqm_sanitize_query(f"{album_artist} - {title}"))
 
     # Fallback 2: feat.-stripped track artist (e.g. "KNEECAP - Palestine")
     feat_stripped = _FEAT_SUFFIX_RE.sub("", artist).strip()
     if feat_stripped and feat_stripped.lower() != artist.lower():
-        _add(_sanitize_search_query_for_slskd(f"{feat_stripped} - {title}"))
+        _add(_dqm_sanitize_query(f"{feat_stripped} - {title}"))
 
     # Fallback 3: first meaningful word of artist + title for multi-word artists.
     # Soulseek requires ALL query tokens to be present in a filename, so a
@@ -1864,7 +1872,7 @@ def _build_fallback_search_queries(queue_item, primary_query):
     if not first_word and artist_words:
         first_word = artist_words[0]  # fallback: use first word even if it's an article
     if first_word and first_word.lower() != effective_artist.lower():
-        _add(_sanitize_search_query_for_slskd(f"{first_word} - {title}"))
+        _add(_dqm_sanitize_query(f"{first_word} - {title}"))
 
     # Fallback 3b: title + album.  Combining both forces Soulseek to return only
     # files whose path contains every album word, so results come from the right
@@ -1874,14 +1882,14 @@ def _build_fallback_search_queries(queue_item, primary_query):
     # folder whose name happens to contain the same words as the title).
     # A minimum score of 0.55 is required because artist evidence is absent.
     if album:
-        _add(_sanitize_search_query_for_slskd(f"{title} {album}"), min_score=0.55)
+        _add(_dqm_sanitize_query(f"{title} {album}"), min_score=0.55)
 
     # Fallback 4: title only.  Used when even a partial artist token blocks
     # results (e.g. the artist name is not present in any shared filename at
     # all).  No artist anchor means Soulseek may return files from folders whose
     # name simply contains the title words; a stricter score threshold (0.60)
     # is enforced to reduce the risk of false positives.
-    _add(_sanitize_search_query_for_slskd(title), min_score=0.60)
+    _add(_dqm_sanitize_query(title), min_score=0.60)
 
     return fallbacks
 
@@ -1927,7 +1935,10 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
     poll_attempt = 0
 
     while time.monotonic() < poll_deadline:
-        time.sleep(1)
+        # Back-off: poll quickly for the first 10 attempts (responses start
+        # arriving within a few seconds), then slow to 2 s to reduce HTTP
+        # round-trips during the long tail of the search window.
+        time.sleep(1 if poll_attempt < 10 else 2)
         poll_attempt += 1
         try:
             responses, state, is_complete = client.get_search_results(search_id)
@@ -1951,11 +1962,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                         f"has {len(resp.files)} files"
                     )
                     for file_info in resp.files:
-                        filename = (
-                            getattr(file_info, 'filename', file_info.get('filename', ''))
-                            if isinstance(file_info, dict)
-                            else getattr(file_info, 'filename', '')
-                        )
+                        filename = file_info.filename
                         # Skip candidates whose format is excluded by the configured
                         # quality filter (e.g. reject m4a when only flac/mp3 are
                         # listed as priorities with reject_others=True).
@@ -1965,16 +1972,8 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                                 f"— format not in configured priorities"
                             )
                             continue
-                        size = (
-                            getattr(file_info, 'size', file_info.get('size', 0))
-                            if isinstance(file_info, dict)
-                            else getattr(file_info, 'size', 0)
-                        )
-                        candidate_bitrate = (
-                            file_info.get('bitRate', 0) or file_info.get('bitrate', 0)
-                            if isinstance(file_info, dict)
-                            else int(getattr(file_info, 'bitrate', 0) or 0)
-                        )
+                        size = file_info.size
+                        candidate_bitrate = file_info.bitrate
                         candidate_length = _extract_candidate_length_seconds(file_info)
                         # Pre-filter by duration before running the full scorer.
                         # When both the expected and candidate durations are known,
@@ -2008,6 +2007,13 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                         f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt}s "
                         f"(score={best_score:.2f})"
                     )
+                    # Free the slskd search slot immediately rather than waiting
+                    # for it to time out naturally; clear_stale_searches() will
+                    # not need to clean it up on the next search.
+                    try:
+                        client.cancel_search(search_id)
+                    except Exception:
+                        pass
                     break
 
             # Stop as soon as slskd says the search is finished (including

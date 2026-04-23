@@ -12,6 +12,11 @@ logger = logging.getLogger(__name__)
 # stuck and eligible for cancellation in clear_stale_searches().
 _STUCK_SEARCH_TIMEOUT_MS = 3 * 60 * 1000  # 3 minutes
 
+# Soulseek search states that are terminal AND carry no results (the search
+# was cancelled or failed before collecting any peer responses).  Used by
+# get_search_results() to skip a redundant /responses HTTP call.
+_EMPTY_TERMINAL_STATES = frozenset({"Cancelled", "Errored"})
+
 
 @dataclass
 class SearchFile:
@@ -211,6 +216,14 @@ class SlskdClient:
             state_data = state_resp.json()
             state = state_data.get("state", "InProgress")
             logger.debug(f"Slskd search {search_id} state: {state}")
+            
+            # Terminal states that carry no search results (the search was
+            # cancelled or failed before collecting any peers).  Skip the
+            # second HTTP call to /responses — it would return an empty list
+            # anyway, and saving the round-trip matters in busy queues.
+            if state in _EMPTY_TERMINAL_STATES:
+                logger.debug(f"Slskd search {search_id} is in terminal no-result state ({state}); skipping responses fetch")
+                return [], state, True
             
             # Get the actual responses from the responses endpoint
             responses_url = f"{self.base_url}/searches/{search_id}/responses"
