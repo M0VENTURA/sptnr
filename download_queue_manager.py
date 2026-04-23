@@ -1247,6 +1247,7 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     columns.append(col_name)
 
             required_cols = {
+                'search_query': "TEXT",
                 'source': "TEXT DEFAULT 'soulseek'",
                 'priority': "INTEGER DEFAULT 5",
                 'import_group': "TEXT",
@@ -2994,7 +2995,7 @@ def _is_full_album_ready_for_move(queue_item, cursor=None, placeholder=None,
         if row is None:
             return True
         pending = int(row.get('c') or 0)
-        if int(pending or 0) > 0:
+        if pending > 0:
             return False
 
         # When the matched file is in a folder that contains more audio files

@@ -2433,7 +2433,7 @@ def api_queue_requeue_item(queue_id):
 
     except Exception as e:
         logging.error(f"Error re-queuing item {queue_id}: {e}")
-        return api_fail(str(e))
+        return api_fail("Failed to re-queue item", status=400)
 
 
 @app.route("/api/queue/requeue-all-unmatched", methods=["POST"])
@@ -2463,7 +2463,7 @@ def api_queue_requeue_all_unmatched():
 
     except Exception as e:
         logging.error(f"Error re-queuing all unmatched: {e}")
-        return api_fail(str(e))
+        return api_fail("Failed to re-queue items", status=400)
 
 def _run_monday_listenbrainz_rss_sync():
     """Run ListenBrainz playlist sync once per week at Monday 1am for configured users."""
@@ -8029,7 +8029,7 @@ def api_correcting_ignore():
         return api_ok()
     except Exception as e:
         logging.error(f"[CORRECTING] ignore error: {e}")
-        return api_fail(str(e), status=500)
+        return api_fail("Internal server error", status=500)
 
 
 @app.route("/api/correcting/unignore", methods=["POST"])
@@ -8059,7 +8059,7 @@ def api_correcting_unignore():
         return api_ok()
     except Exception as e:
         logging.error(f"[CORRECTING] unignore error: {e}")
-        return api_fail(str(e), status=500)
+        return api_fail("Internal server error", status=500)
 
 
 @app.route("/api/correcting/ignores")
@@ -8102,7 +8102,7 @@ def api_correcting_list_ignores():
         return api_ok(ignores=ignores)
     except Exception as e:
         logging.error(f"[CORRECTING] list-ignores error: {e}")
-        return api_fail(str(e), status=500)
+        return api_fail("Internal server error", status=500)
 
 
 @app.route("/artist/<path:name>/genre-management")
@@ -8529,7 +8529,7 @@ def api_search():
     
     except Exception as e:
         logging.error(f"Search error: {e}")
-        return api_fail(str(e), status=500)
+        return api_fail("Search failed. Please try again.", status=500)
 
 
 @app.route("/artist/<path:name>")
