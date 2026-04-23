@@ -22,9 +22,9 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from helpers.metadata_reader import read_mp3_metadata
 from queue_status_constants import (
-    TITLE_VARIANT_TOKENS as _TITLE_VARIANT_TOKENS,
-    SOFT_VARIANT_TOKENS as _SOFT_VARIANT_TOKENS,
-    SLSKD_DURATION_TOLERANCE_SECONDS as _SLSKD_DURATION_TOLERANCE_SECONDS,
+    TITLE_VARIANT_TOKENS,
+    SOFT_VARIANT_TOKENS,
+    SLSKD_DURATION_TOLERANCE_SECONDS,
 )
 try:
     from mutagen import File as MutagenFile
@@ -335,10 +335,10 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     if not artist_norm or not title_norm or not basename_norm:
         return 0.0
 
-    # Variant tokens are defined at module level as _TITLE_VARIANT_TOKENS and
+    # Variant tokens are defined at module level as TITLE_VARIANT_TOKENS and
     # aliased here for brevity; they are needed by both the early matching block
     # and the orphan-token penalty further below.
-    title_variant_tokens = _TITLE_VARIANT_TOKENS
+    title_variant_tokens = TITLE_VARIANT_TOKENS
 
     if title_tokens:
         shared_title_tokens = sum(1 for tok in title_tokens if tok in basename_tokens)
@@ -360,7 +360,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
                 # (live, acoustic, orchestral, remix, …) indicate genuinely
                 # different recordings and are always a hard reject.
                 _present_variants = requested_variants or candidate_variants
-                if not _present_variants.issubset(_SOFT_VARIANT_TOKENS):
+                if not _present_variants.issubset(SOFT_VARIANT_TOKENS):
                     return 0.0
                 # Soft-only mismatch — continue scoring; duration will confirm.
                 _soft_variant_mismatch = True
@@ -396,7 +396,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
             if _soft_variant_mismatch:
                 _absent_soft_tokens = {
                     t for t in title_tokens
-                    if t in _SOFT_VARIANT_TOKENS and t not in basename_tokens
+                    if t in SOFT_VARIANT_TOKENS and t not in basename_tokens
                 }
                 _effective_tokens = [t for t in title_tokens if t not in _absent_soft_tokens]
                 if not _effective_tokens:
@@ -521,7 +521,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     candidate_duration = _normalize_duration_seconds(candidate_duration)
     if expected_duration and candidate_duration:
         duration_diff = abs(expected_duration - candidate_duration)
-        duration_tolerance = _SLSKD_DURATION_TOLERANCE_SECONDS
+        duration_tolerance = SLSKD_DURATION_TOLERANCE_SECONDS
         if duration_diff <= 2:
             score += 0.22
         elif duration_diff <= duration_tolerance:
@@ -687,7 +687,7 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     # Variant check: a plain queue title must not match a "(live/remix/…)" file.
     def _variant_tokens(s):
         tokens = set(re.sub(r"[^a-z0-9]+", " ", (s or '').lower()).split())
-        return tokens & _TITLE_VARIANT_TOKENS
+        return tokens & TITLE_VARIANT_TOKENS
 
     expected_variants = _variant_tokens(queue_title)
     candidate_variants = _variant_tokens(file_title)
@@ -708,10 +708,10 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
                 _duration_5s_ok = (
                     expected_duration is not None
                     and file_duration is not None
-                    and abs(expected_duration - file_duration) <= _SLSKD_DURATION_TOLERANCE_SECONDS
+                    and abs(expected_duration - file_duration) <= SLSKD_DURATION_TOLERANCE_SECONDS
                 )
                 _soft_variant_fallback_ok = (
-                    _present_variants.issubset(_SOFT_VARIANT_TOKENS) and _duration_confirms
+                    _present_variants.issubset(SOFT_VARIANT_TOKENS) and _duration_confirms
                 )
                 # Allow when the remote Soulseek filename (found_filename) already
                 # contains the expected variant tokens — slskd selected that file
@@ -728,7 +728,7 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
                         _duration_5s_ok, _found_fn_confirms,
                     )
                     return False
-            elif not (_present_variants.issubset(_SOFT_VARIANT_TOKENS) and _duration_confirms):
+            elif not (_present_variants.issubset(SOFT_VARIANT_TOKENS) and _duration_confirms):
                 # The file has variant qualifiers but the queue title doesn't.
                 # Only allow soft variants (version, edit, radio) with tight
                 # duration confirmation; hard variants (live, acoustic,
@@ -746,7 +746,7 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
 
     # Duration check (variables already computed above).
     if expected_duration and file_duration:
-        if abs(expected_duration - file_duration) > _SLSKD_DURATION_TOLERANCE_SECONDS:
+        if abs(expected_duration - file_duration) > SLSKD_DURATION_TOLERANCE_SECONDS:
             return False
 
     combined = (artist_score + title_score) / 2
@@ -851,7 +851,7 @@ def _filename_matches_queue_item(filename, queue_item):
     )
     title_tokens = _tokenize_meaningful(core_title_norm)
     basename_tokens = set(_tokenize_meaningful(core_basename_norm))
-    title_variant_tokens = _TITLE_VARIANT_TOKENS
+    title_variant_tokens = TITLE_VARIANT_TOKENS
 
     # Variant check: use bracket-stripped core tokens on both sides so that
     # "(Radio Edit)" in the candidate does not reject a plain queue title, and
@@ -868,7 +868,7 @@ def _filename_matches_queue_item(filename, queue_item):
                 # the filename; hard variants (live, acoustic, orchestral, …)
                 # are always rejected.
                 _present_variants = requested_variants or candidate_variants
-                if not _present_variants.issubset(_SOFT_VARIANT_TOKENS):
+                if not _present_variants.issubset(SOFT_VARIANT_TOKENS):
                     return False
             elif requested_variants.isdisjoint(candidate_variants):
                 return False
@@ -1982,7 +1982,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                         # so we never waste scorer CPU on clearly wrong tracks.
                         _expected_dur = _normalize_duration_seconds(queue_item.get('duration'))
                         if _expected_dur and candidate_length:
-                            _dur_tol = _SLSKD_DURATION_TOLERANCE_SECONDS
+                            _dur_tol = SLSKD_DURATION_TOLERANCE_SECONDS
                             if abs(_expected_dur - candidate_length) > _dur_tol:
                                 logger.debug(
                                     f"Queue {queue_id}: Skipping {os.path.basename(filename)} "
@@ -2694,7 +2694,7 @@ def check_completed_downloads():
                     _actual_dur = _extract_audio_file_duration_seconds(file_path)
                     if _actual_dur:
                         _dur_diff = abs(_expected_dur - _actual_dur)
-                        _dur_tolerance = _SLSKD_DURATION_TOLERANCE_SECONDS
+                        _dur_tolerance = SLSKD_DURATION_TOLERANCE_SECONDS
                         if _dur_diff > _dur_tolerance:
                             logger.warning(
                                 f"Queue {item_id}: ✗ pre-copy duration check FAILED — "

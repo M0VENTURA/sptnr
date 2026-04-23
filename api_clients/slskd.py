@@ -8,6 +8,10 @@ from . import session
 
 logger = logging.getLogger(__name__)
 
+# Maximum age in milliseconds before an "InProgress" search is considered
+# stuck and eligible for cancellation in clear_stale_searches().
+_STUCK_SEARCH_TIMEOUT_MS = 3 * 60 * 1000  # 3 minutes
+
 
 @dataclass
 class SearchFile:
@@ -802,15 +806,13 @@ class SlskdClient:
         operation"), making every new search appear to time out.
 
         Also cancels searches that have been in an active state for longer
-        than *3 × the expected search duration* to clear truly stuck searches.
+        than ``_STUCK_SEARCH_TIMEOUT_MS`` to clear truly stuck searches.
 
         ``budget_seconds`` caps the total wall-clock time so that a large
         backlog of entries cannot cause the caller to exceed a request timeout.
         """
         _TERMINAL_STATES = {"Completed", "Cancelled", "TimedOut", "Errored", "Succeeded"}
         _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
-        # Cancel active searches older than this many milliseconds.
-        _STUCK_MS_THRESHOLD = 3 * 60 * 1000  # 3 minutes
 
         deadline = time.monotonic() + budget_seconds
         try:
@@ -833,7 +835,7 @@ class SlskdClient:
                         elapsed_ms = int(elapsed_ms or 0)
                     except (TypeError, ValueError):
                         elapsed_ms = 0
-                    if elapsed_ms > _STUCK_MS_THRESHOLD:
+                    if elapsed_ms > _STUCK_SEARCH_TIMEOUT_MS:
                         should_cancel = True
                         logger.info(
                             f"[SLSKD] Cancelling stuck active search {sid} "

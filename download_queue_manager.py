@@ -138,8 +138,8 @@ _format_filter_last_log_signature = None
 from queue_status_constants import (
     ACTIVE_QUEUE_STATUSES as _ACTIVE_QUEUE_STATUSES,
     ACTIVE_QUEUE_STATUS_SQL as _ACTIVE_QUEUE_STATUS_SQL,
-    TITLE_VARIANT_TOKENS as _TITLE_VARIANT_TOKENS,
-    SOFT_VARIANT_TOKENS as _SOFT_VARIANT_TOKENS,
+    TITLE_VARIANT_TOKENS,
+    SOFT_VARIANT_TOKENS,
 )
 
 # Throttle expensive downloads-folder checks triggered by frequent UI polling.
@@ -162,7 +162,7 @@ def _extract_title_variant_tokens(value):
     if not value:
         return set()
     tokens = set(re.sub(r"[^a-z0-9]+", " ", str(value).lower()).split())
-    return tokens & _TITLE_VARIANT_TOKENS
+    return tokens & TITLE_VARIANT_TOKENS
 
 
 def _title_variants_are_compatible(expected_title, candidate_title):
@@ -179,8 +179,8 @@ def _title_variants_are_compatible(expected_title, candidate_title):
     expected_variants = _extract_title_variant_tokens(expected_title)
     candidate_variants = _extract_title_variant_tokens(candidate_title)
 
-    expected_hard = expected_variants - _SOFT_VARIANT_TOKENS
-    candidate_hard = candidate_variants - _SOFT_VARIANT_TOKENS
+    expected_hard = expected_variants - SOFT_VARIANT_TOKENS
+    candidate_hard = candidate_variants - SOFT_VARIANT_TOKENS
 
     # Hard variant present on one side but not the other → incompatible.
     if expected_hard and not candidate_hard:
