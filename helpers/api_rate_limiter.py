@@ -27,10 +27,17 @@ MUSICBRAINZ_MIN_INTERVAL = 1.0  # Minimum 1 second between requests
 
 class APIRateLimiter:
     """Track API usage and enforce rate limits"""
+
+    # Minimum seconds between state file writes.  Persisting state on every
+    # API request adds unnecessary disk I/O (especially for MusicBrainz which
+    # fires at 1 req/s).  In-memory counters stay accurate; the file is only
+    # needed to survive process restarts.  Writing every 30 s is sufficient.
+    _STATE_SAVE_INTERVAL_SECONDS = 30
     
     def __init__(self, state_file: str = "/database/api_rate_limiter_state.json"):
         self.state_file = state_file
         self.state = self._load_state()
+        self._last_save_time: float = 0.0
         # Thread-safety lock for MusicBrainz rate limiting.
         # The check+sleep+record sequence must be atomic so concurrent threads
         # cannot all pass the "OK to proceed" check simultaneously.
@@ -47,11 +54,17 @@ class APIRateLimiter:
                     if last_reset:
                         last_reset_date = datetime.fromisoformat(last_reset).date()
                         if last_reset_date < datetime.now().date():
-                            # New day - reset counters
+                            # New day - reset counters and force-persist so process
+                            # restarts later in the day see the fresh zero counts.
                             state['spotify_daily_count'] = 0
                             state['lastfm_daily_count'] = 0
                             state['musicbrainz_daily_count'] = 0
                             state['last_reset'] = datetime.now().isoformat()
+                            try:
+                                with open(self.state_file, 'w') as fw:
+                                    json.dump(state, fw, indent=2)
+                            except Exception:
+                                pass
                     return state
             except Exception as e:
                 logger.debug(f"Could not load rate limiter state: {e}")
@@ -67,13 +80,23 @@ class APIRateLimiter:
             'last_reset': datetime.now().isoformat()
         }
     
-    def _save_state(self):
-        """Save state to file"""
+    def _save_state(self, force: bool = False):
+        """Persist state to file, throttled to avoid disk I/O on every request.
+
+        Args:
+            force: Write immediately regardless of the throttle interval.
+                   Use when accurate counts must survive a process restart
+                   (e.g. after resetting daily counters on a new day).
+        """
+        now = time.time()
+        if not force and (now - self._last_save_time) < self._STATE_SAVE_INTERVAL_SECONDS:
+            return
         try:
             # Ensure directory exists
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
             with open(self.state_file, 'w') as f:
                 json.dump(self.state, f, indent=2)
+            self._last_save_time = now
         except Exception as e:
             logger.debug(f"Could not save rate limiter state: {e}")
     

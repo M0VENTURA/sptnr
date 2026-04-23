@@ -215,6 +215,59 @@ def api_created(data, message="Created successfully", location=None, status=201)
     return jsonify(response), status
 
 
+# ---------------------------------------------------------------------------
+# Flat helpers — backward-compatible with existing JS consumers
+# ---------------------------------------------------------------------------
+# The existing `api_success` / `api_error` helpers above use a nested structure
+# that is incompatible with legacy JS consumers that read `data.error` as a
+# plain string.  These flat helpers match the shape the frontend already expects:
+#
+#   Success:  {"success": true,  "message": "...", ...extra_fields}
+#   Failure:  {"success": false, "error": "...",   ...extra_fields}
+#
+# Use `api_ok` / `api_fail` for all new routes (and when migrating existing
+# routes) to keep a consistent, frontend-safe shape.
+
+
+def api_ok(message: str | None = None, status: int = 200, **kwargs):
+    """Return ``{"success": true, "message": ..., ...kwargs}`` with *status*.
+
+    Args:
+        message: Optional human-readable success message.
+        status:  HTTP status code (default 200).
+        **kwargs: Any extra fields to merge into the top-level response dict
+                  (e.g. ``queue_id=42``, ``requeued=5``).
+
+    Example::
+
+        return api_ok("Item re-queued", queue_id=queue_id)
+        # → {"success": true, "message": "Item re-queued", "queue_id": 42}
+    """
+    body: dict = {"success": True}
+    if message is not None:
+        body["message"] = message
+    body.update(kwargs)
+    return jsonify(body), status
+
+
+def api_fail(message: str, status: int = 400, **kwargs):
+    """Return ``{"success": false, "error": message, ...kwargs}`` with *status*.
+
+    Args:
+        message: Human-readable error message (exposed as ``data.error`` in JS).
+        status:  HTTP status code (default 400).
+        **kwargs: Any extra fields to merge into the top-level response dict.
+
+    Example::
+
+        return api_fail("Queue item not found", status=404)
+        # → {"success": false, "error": "Queue item not found"}, 404
+    """
+    body: dict = {"success": False, "error": message}
+    body.update(kwargs)
+    return jsonify(body), status
+
+
 # Common HTTP error status codes with default messages
 HTTP_ERROR_CODES = {
     400: ("bad_request", "Bad request"),

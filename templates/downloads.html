@@ -2782,16 +2782,35 @@ function refreshMbDownloads() {
     });
 }
 
+// Queue status display config — injected from queue_status_constants.STATUS_DISPLAY_CONFIG
+// by Flask context processor.  Use this single source of truth instead of
+// hardcoded if/else chains scattered across the JS.
+const queueStatusConfig = {{ queue_status_config | tojson }};
+
+/**
+ * Return a Bootstrap badge HTML string for the given queue status.
+ * Falls back to a plain secondary badge for unknown statuses.
+ */
 function getStatusBadge(status) {
-    const s = status.toLowerCase();
-    if (s === 'completed') return '<span class="badge bg-success"><i class="bi bi-check-circle"></i> Completed</span>';
-    if (s === 'downloading' || s === 'in_progress' || s === 'initiating_download') return '<span class="badge bg-info"><i class="bi bi-download"></i> Downloading</span>';
-    if (s === 'queued' || s === 'pending') return '<span class="badge bg-secondary"><i class="bi bi-clock"></i> Queued</span>';
-    if (s === 'failed' || s === 'error') return '<span class="badge bg-danger"><i class="bi bi-x-circle"></i> Failed</span>';
-    if (s === 'searching') return '<span class="badge bg-warning"><i class="bi bi-search"></i> Searching</span>';
-    if (s === 'awaiting_selection') return '<span class="badge bg-primary"><i class="bi bi-hand-index"></i> Select File</span>';
+    const key = (status || '').toLowerCase();
+    const cfg = queueStatusConfig[key];
+    if (cfg) {
+        return `<span class="badge ${cfg.css}"><i class="bi bi-${cfg.icon}"></i> ${cfg.label}</span>`;
+    }
+    // Aliases / legacy status strings not in the config dict
+    if (key === 'in_progress' || key === 'initiating_download') {
+        return getStatusBadge('downloading');
+    }
+    if (key === 'pending') {
+        return getStatusBadge('queued');
+    }
+    if (key === 'error') {
+        return getStatusBadge('failed');
+    }
     return `<span class="badge bg-secondary">${status}</span>`;
 }
+
+
 
 function formatTimestamp(timestamp) {
     if (!timestamp) return 'N/A';
@@ -5041,16 +5060,7 @@ function renderFailedQueue(failed) {
 }
 
 function renderQueueItem(item, statusColor) {
-  const statusLabel = {
-    'queued': '⏳ Queued',
-    'searching': '🔍 Searching',
-    'downloading': '📥 Downloading',
-    'completed': '✅ Downloaded',
-    'imported': '📁 Imported',
-    'failed': '❌ Failed',
-    'unmatched': '⚠️ Unmatched',
-    'moving': '⏳ Moving…'
-  }[item.status] || item.status;
+  const statusLabel = (queueStatusConfig[item.status] || {}).label || item.status;
 
   const statusBg = {
     'primary': 'bg-primary',

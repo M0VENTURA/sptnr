@@ -29,6 +29,92 @@ PROCESSING_STATUSES = ('queued', 'searching', 'downloading')
 PROCESSING_STATUS_SQL = ", ".join(f"'{s}'" for s in PROCESSING_STATUSES)
 
 # ---------------------------------------------------------------------------
+# Status display configuration — single source of truth for UI presentation.
+#
+# Each entry maps a queue status string to its Bootstrap badge CSS class,
+# Bootstrap Icons icon name, and a human-readable label.  Templates can look
+# up ``STATUS_DISPLAY_CONFIG[status]`` to render a consistent badge without
+# duplicating if/elif chains.  The ``@app.context_processor`` in app.py
+# injects this dict into every Jinja template as ``queue_status_config``.
+# JavaScript equivalents in downloads.html consume it via the injected
+# ``queueStatusConfig`` template variable.
+# ---------------------------------------------------------------------------
+STATUS_DISPLAY_CONFIG: dict[str, dict[str, str]] = {
+    'queued': {
+        'label': 'Queued',
+        'css': 'bg-warning text-dark',
+        'icon': 'clock',
+    },
+    'searching': {
+        'label': 'Searching',
+        'css': 'bg-warning text-dark',
+        'icon': 'search',
+    },
+    'downloading': {
+        'label': 'Downloading',
+        'css': 'bg-primary',
+        'icon': 'download',
+    },
+    'completed': {
+        'label': 'Completed',
+        'css': 'bg-success',
+        'icon': 'check-circle',
+    },
+    'failed': {
+        'label': 'Failed',
+        'css': 'bg-danger',
+        'icon': 'x-circle',
+    },
+    'unmatched': {
+        'label': 'Unmatched',
+        'css': 'bg-warning text-dark',
+        'icon': 'exclamation-triangle',
+    },
+    'moving': {
+        'label': 'Moving',
+        'css': 'bg-info text-dark',
+        'icon': 'arrow-right-circle',
+    },
+    'queried': {
+        'label': 'Queried',
+        'css': 'bg-secondary',
+        'icon': 'question-circle',
+    },
+    'copy_recommended': {
+        'label': 'Copy Recommended',
+        'css': 'bg-info text-dark',
+        'icon': 'files',
+    },
+    'possible_duplicate': {
+        'label': 'Possible Duplicate',
+        'css': 'bg-secondary',
+        'icon': 'copy',
+    },
+    'imported': {
+        'label': 'Imported',
+        'css': 'bg-success',
+        'icon': 'check2-all',
+    },
+    'awaiting_selection': {
+        'label': 'Select File',
+        'css': 'bg-primary',
+        'icon': 'hand-index',
+    },
+}
+
+# Fallback entry used when a status value is not found in STATUS_DISPLAY_CONFIG.
+_STATUS_DISPLAY_FALLBACK: dict[str, str] = {
+    'label': 'Unknown',
+    'css': 'bg-secondary',
+    'icon': 'question',
+}
+
+
+def get_status_display(status: str) -> dict[str, str]:
+    """Return the display config for *status*, falling back to a generic entry."""
+    return STATUS_DISPLAY_CONFIG.get(status, {**_STATUS_DISPLAY_FALLBACK, 'label': status or 'Unknown'})
+
+# ---------------------------------------------------------------------------
 # Soulseek / slskd candidate-scoring constants
 # ---------------------------------------------------------------------------
 

@@ -80,6 +80,7 @@ import copy
 from functools import wraps
 from helpers.scan_helpers import scan_artist_to_db
 from helpers.config_helpers import get_config, get_navidrome_config, clear_config_cache
+from helpers.api_response import api_ok, api_fail
 from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
@@ -294,6 +295,7 @@ from compilation_manager import (
     import_featured_artists_for_album
 )
 from genre_tag_aggregator import get_artist_genres_summary, get_album_genres_summary
+from queue_status_constants import STATUS_DISPLAY_CONFIG, get_status_display
 
 # Import centralized logging configuration
 from helpers.logging_config import (
@@ -336,6 +338,24 @@ static_folder = os.path.join(app_root, 'static')
 
 # Initialize Flask with explicit static folder configuration
 app = Flask(__name__, static_folder=static_folder, static_url_path='/static')
+
+
+@app.context_processor
+def _inject_status_config():
+    """Inject queue status display config into every Jinja template.
+
+    Templates can use ``queue_status_config`` to render consistent status badges
+    without duplicating if/elif chains.  JavaScript can consume the same data via
+    the ``queueStatusConfig`` variable rendered into the page.
+
+    Example Jinja usage::
+
+        {% set cfg = queue_status_config.get(item.status, {}) %}
+        <span class="badge {{ cfg.css }}">
+          <i class="bi bi-{{ cfg.icon }}"></i> {{ cfg.label }}
+        </span>
+    """
+    return {"queue_status_config": STATUS_DISPLAY_CONFIG}
 
 _FLASH_RESULT_STORE: OrderedDict[str, dict] = OrderedDict()
 _FLASH_RESULT_STORE_LOCK = threading.Lock()
@@ -2364,56 +2384,56 @@ def api_queue_requeue_item(queue_id):
     """Re-queue a single unmatched or failed item back to queued status."""
     try:
         conn = get_db()
-        cursor = conn.cursor()
-        placeholder = "%s"
+        with conn:
+            cursor = conn.cursor()
+            placeholder = "%s"
 
-        cursor.execute(
-            f"SELECT id, status, artist, title, file_path FROM download_queue WHERE id = {placeholder}",
-            (queue_id,)
-        )
-        item = cursor.fetchone()
+            cursor.execute(
+                f"SELECT id, status, artist, title, file_path FROM download_queue WHERE id = {placeholder}",
+                (queue_id,)
+            )
+            item = cursor.fetchone()
 
-        if not item:
-            conn.close()
-            return jsonify({"error": "Queue item not found"}), 404
+            if not item:
+                conn.close()
+                return api_fail("Queue item not found", status=404)
 
-        current_status = item['status'] if hasattr(item, 'keys') else item[1]
-        if current_status not in ['unmatched', 'failed', 'completed']:
-            conn.close()
-            return jsonify({"error": f"Cannot re-queue item with status '{current_status}'"}), 400
+            current_status = item['status']
+            if current_status not in ['unmatched', 'failed', 'completed']:
+                conn.close()
+                return api_fail(f"Cannot re-queue item with status '{current_status}'")
 
-        update_sql = f"""
-            UPDATE download_queue
-            SET status = {placeholder},
-                failure_reason = NULL,
-                retry_count = 0,
-                next_retry_at = NULL,
-                updated_at = CURRENT_TIMESTAMP
-        """
-        update_params = ['queued']
+            update_sql = f"""
+                UPDATE download_queue
+                SET status = {placeholder},
+                    failure_reason = NULL,
+                    retry_count = 0,
+                    next_retry_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+            """
+            update_params = ['queued']
 
-        if current_status == 'unmatched':
-            update_sql += ", file_path = NULL"
+            if current_status == 'unmatched':
+                update_sql += ", file_path = NULL"
 
-        update_sql += f" WHERE id = {placeholder}"
-        update_params.append(queue_id)
-        cursor.execute(update_sql, tuple(update_params))
+            update_sql += f" WHERE id = {placeholder}"
+            update_params.append(queue_id)
+            cursor.execute(update_sql, tuple(update_params))
 
-        if cursor.rowcount == 0:
-            conn.close()
-            return jsonify({"error": "Failed to re-queue item"}), 500
+            if cursor.rowcount == 0:
+                conn.close()
+                return api_fail("Failed to re-queue item", status=500)
 
-        conn.commit()
-        item_artist = item['artist'] if hasattr(item, 'keys') else item[2]
-        item_title = item['title'] if hasattr(item, 'keys') else item[3]
+        item_artist = item['artist']
+        item_title = item['title']
         conn.close()
 
         logging.info(f"[QUEUE] Re-queued item {queue_id} ({item_artist} - {item_title}) from '{current_status}' back to 'queued'")
-        return jsonify({"success": True, "queue_id": queue_id, "message": f"Item re-queued: {item_artist} - {item_title}"})
+        return api_ok(f"Item re-queued: {item_artist} - {item_title}", queue_id=queue_id)
 
     except Exception as e:
         logging.error(f"Error re-queuing item {queue_id}: {e}")
-        return jsonify({"error": str(e)}), 400
+        return api_fail(str(e))
 
 
 @app.route("/api/queue/requeue-all-unmatched", methods=["POST"])
@@ -2421,29 +2441,29 @@ def api_queue_requeue_all_unmatched():
     """Re-queue all unmatched items back to queued status."""
     try:
         conn = get_db()
-        cursor = conn.cursor()
-        placeholder = "%s"
+        with conn:
+            cursor = conn.cursor()
+            placeholder = "%s"
 
-        cursor.execute(
-            f"""UPDATE download_queue
-                SET status = {placeholder},
-                    failure_reason = NULL,
-                    retry_count = 0,
-                    file_path = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE status = {placeholder}""",
-            ('queued', 'unmatched'),
-        )
-        requeued = cursor.rowcount
-        conn.commit()
+            cursor.execute(
+                f"""UPDATE download_queue
+                    SET status = {placeholder},
+                        failure_reason = NULL,
+                        retry_count = 0,
+                        file_path = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = {placeholder}""",
+                ('queued', 'unmatched'),
+            )
+            requeued = cursor.rowcount
         conn.close()
 
         logging.info(f"[QUEUE] Re-queued {requeued} unmatched item(s) back to 'queued' status")
-        return jsonify({"success": True, "requeued": requeued, "message": f"Re-queued {requeued} unmatched item(s) for retry"})
+        return api_ok(f"Re-queued {requeued} unmatched item(s) for retry", requeued=requeued)
 
     except Exception as e:
         logging.error(f"Error re-queuing all unmatched: {e}")
-        return jsonify({"error": str(e)}), 400
+        return api_fail(str(e))
 
 def _run_monday_listenbrainz_rss_sync():
     """Run ListenBrainz playlist sync once per week at Monday 1am for configured users."""
@@ -7990,31 +8010,26 @@ def api_correcting_ignore():
         field = (payload.get('field') or '').strip()
 
         if not album or not field:
-            return jsonify({"success": False, "error": "album and field are required"}), 400
+            return api_fail("album and field are required")
 
         allowed_fields = {f for f, _ in ALBUM_CONSISTENCY_FIELDS}
         if field not in allowed_fields:
-            return jsonify({"success": False, "error": f"field '{field}' is not a known corrections field"}), 400
+            return api_fail(f"field '{field}' is not a known corrections field")
 
         conn = get_db()
         _ensure_correction_ignores_table(conn)
-        cursor = conn.cursor()
-        try:
+        with conn:
+            cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO correction_ignores (album_artist, album, field)
                 VALUES (%s, %s, %s)
                 ON CONFLICT (album_artist, album, field) DO NOTHING
             """, (album_artist, album, field))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            conn.close()
-            return jsonify({"success": False, "error": str(e)}), 500
         conn.close()
-        return jsonify({"success": True})
+        return api_ok()
     except Exception as e:
         logging.error(f"[CORRECTING] ignore error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        return api_fail(str(e), status=500)
 
 
 @app.route("/api/correcting/unignore", methods=["POST"])
@@ -8030,26 +8045,21 @@ def api_correcting_unignore():
         field = (payload.get('field') or '').strip()
 
         if not album or not field:
-            return jsonify({"success": False, "error": "album and field are required"}), 400
+            return api_fail("album and field are required")
 
         conn = get_db()
         _ensure_correction_ignores_table(conn)
-        cursor = conn.cursor()
-        try:
+        with conn:
+            cursor = conn.cursor()
             cursor.execute("""
                 DELETE FROM correction_ignores
                 WHERE album_artist = %s AND album = %s AND field = %s
             """, (album_artist, album, field))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            conn.close()
-            return jsonify({"success": False, "error": str(e)}), 500
         conn.close()
-        return jsonify({"success": True})
+        return api_ok()
     except Exception as e:
         logging.error(f"[CORRECTING] unignore error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        return api_fail(str(e), status=500)
 
 
 @app.route("/api/correcting/ignores")
@@ -8080,26 +8090,19 @@ def api_correcting_list_ignores():
         rows = cursor.fetchall()
         conn.close()
 
-        ignores = []
-        for r in rows:
-            if hasattr(r, 'keys'):
-                ignores.append({
-                    'album_artist': r.get('album_artist') or '',
-                    'album': r.get('album') or '',
-                    'field': r.get('field') or '',
-                    'ignored_at': str(r.get('ignored_at') or ''),
-                })
-            else:
-                ignores.append({
-                    'album_artist': r[0] or '',
-                    'album': r[1] or '',
-                    'field': r[2] or '',
-                    'ignored_at': str(r[3] or ''),
-                })
-        return jsonify({"success": True, "ignores": ignores})
+        ignores = [
+            {
+                'album_artist': r.get('album_artist') or '',
+                'album': r.get('album') or '',
+                'field': r.get('field') or '',
+                'ignored_at': str(r.get('ignored_at') or ''),
+            }
+            for r in rows
+        ]
+        return api_ok(ignores=ignores)
     except Exception as e:
         logging.error(f"[CORRECTING] list-ignores error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        return api_fail(str(e), status=500)
 
 
 @app.route("/artist/<path:name>/genre-management")
@@ -8416,7 +8419,7 @@ def api_search():
         query = data.get("query", "").strip().lower()
         
         if not query or len(query) < 2:
-            return jsonify({"error": "Search query must be at least 2 characters"}), 400
+            return api_fail("Search query must be at least 2 characters")
         
         conn = get_db()
         cursor = conn.cursor()
@@ -8526,7 +8529,7 @@ def api_search():
     
     except Exception as e:
         logging.error(f"Search error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return api_fail(str(e), status=500)
 
 
 @app.route("/artist/<path:name>")

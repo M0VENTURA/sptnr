@@ -197,6 +197,13 @@ _queue_events = []
 _queue_events_lock = threading.Lock()
 _MAX_QUEUE_EVENTS = 200
 
+# Time-windowed deduplication for log_queue_event.
+# Identical events (same type + item_id + status) that arrive within this
+# window are silently dropped so that retry bursts don't flood the UI log.
+_EVENT_DEDUP_WINDOW_SECONDS = 1.0
+_event_dedup_cache: dict[str, float] = {}
+_EVENT_DEDUP_CACHE_MAX = 200
+
 # Keep MusicBrainz auto-enrichment off the hot scan loop to avoid UI/API stalls
 # when many unmatched files are discovered at once.
 _MB_ENRICH_MAX_WORKERS = 1
@@ -266,24 +273,45 @@ def _enqueue_musicbrainz_auto_enrichment(queue_id, artist, title, album):
 
 def log_queue_event(event_type, message, item_id=None, details=None):
     """Log a download queue event for UI display.
-    
+
+    Identical events (same type + item_id + status in details) that arrive
+    within ``_EVENT_DEDUP_WINDOW_SECONDS`` are silently dropped so that
+    retry bursts don't flood the UI with redundant entries.
+
     Args:
         event_type: 'file_found', 'status_change', 'error', 'info'
         message: Human-readable event message
         item_id: Optional queue item ID
         details: Optional dict with additional context
     """
-    global _queue_events
-    
-    event = {
-        'timestamp': datetime.now().isoformat(),
-        'type': event_type,
-        'message': message,
-        'item_id': item_id,
-        'details': details or {}
-    }
-    
+    global _queue_events, _event_dedup_cache
+
+    now = time.monotonic()
+    # Build a dedup key from the fields most likely to repeat during bursts.
+    status_hint = (details or {}).get('status', '') if isinstance(details, dict) else ''
+    dedup_key = f"{event_type}:{item_id}:{status_hint}"
+
     with _queue_events_lock:
+        # Drop duplicate if within the dedup window.
+        last_seen = _event_dedup_cache.get(dedup_key, 0.0)
+        if now - last_seen < _EVENT_DEDUP_WINDOW_SECONDS:
+            return
+
+        _event_dedup_cache[dedup_key] = now
+
+        # Prune stale dedup entries whenever the cache grows too large to
+        # prevent unbounded memory growth during long-running sessions.
+        if len(_event_dedup_cache) > _EVENT_DEDUP_CACHE_MAX:
+            cutoff = now - _EVENT_DEDUP_WINDOW_SECONDS * 10
+            _event_dedup_cache = {k: v for k, v in _event_dedup_cache.items() if v > cutoff}
+
+        event = {
+            'timestamp': datetime.now().isoformat(),
+            'type': event_type,
+            'message': message,
+            'item_id': item_id,
+            'details': details or {}
+        }
         _queue_events.append(event)
         # Keep only last 200 events
         if len(_queue_events) > _MAX_QUEUE_EVENTS:
@@ -302,7 +330,7 @@ def _listenbrainz_playlist_tables_exist(cursor):
             """
         )
         row = cursor.fetchone()
-        count = row.get('count') if hasattr(row, 'get') else (row[0] if row else 0)
+        count = row.get('count', 0) if row else 0
         return int(count or 0) == 2
     except Exception:
         return False
@@ -324,8 +352,8 @@ def _resolve_track_for_playlist_rematch(cursor, queue_item):
         row = cursor.fetchone()
         if row:
             return {
-                'track_id': row.get('id') if hasattr(row, 'get') else row[0],
-                'file_path': row.get('file_path') if hasattr(row, 'get') else row[1],
+                'track_id': row.get('id'),
+                'file_path': row.get('file_path'),
             }
 
     queue_file_path = (queue_item.get('file_path') or '').strip()
@@ -337,8 +365,8 @@ def _resolve_track_for_playlist_rematch(cursor, queue_item):
         row = cursor.fetchone()
         if row:
             return {
-                'track_id': row.get('id') if hasattr(row, 'get') else row[0],
-                'file_path': row.get('file_path') if hasattr(row, 'get') else row[1],
+                'track_id': row.get('id'),
+                'file_path': row.get('file_path'),
             }
 
     artist = (queue_item.get('artist') or '').strip()
@@ -355,8 +383,8 @@ def _resolve_track_for_playlist_rematch(cursor, queue_item):
         row = cursor.fetchone()
         if row:
             return {
-                'track_id': row.get('id') if hasattr(row, 'get') else row[0],
-                'file_path': row.get('file_path') if hasattr(row, 'get') else row[1],
+                'track_id': row.get('id'),
+                'file_path': row.get('file_path'),
             }
 
     return None
@@ -419,9 +447,9 @@ def _refresh_listenbrainz_playlists_for_completed_queue_item(conn, queue_item):
 
     impacted = {}
     for row in pending_rows:
-        username = row.get('username') if hasattr(row, 'get') else row[1]
-        playlist_key = row.get('playlist_key') if hasattr(row, 'get') else row[2]
-        playlist_name = row.get('playlist_name') if hasattr(row, 'get') else row[3]
+        username = row.get('username')
+        playlist_key = row.get('playlist_key')
+        playlist_name = row.get('playlist_name')
         if username and playlist_key:
             impacted[(username, playlist_key)] = playlist_name
 
@@ -767,23 +795,14 @@ def _is_valid_collection_track_path(path_value, artist, album, album_artist=None
 
 
 def _pick_valid_collection_track_row(rows, artist, album, album_artist=None):
-    def _row_value(row, key, *indexes):
+    def _row_value(row, key, *_indexes):
+        # All cursors use RealDictCursor, so rows are always dict-like.
         if row is None:
             return None
-        if hasattr(row, 'get'):
-            try:
-                return row.get(key)
-            except Exception:
-                pass
-        if isinstance(row, (list, tuple)):
-            for index in indexes:
-                if index is None:
-                    continue
-                try:
-                    return row[index]
-                except Exception:
-                    continue
-        return None
+        try:
+            return row.get(key)
+        except Exception:
+            return None
 
     for row in rows or []:
         file_path = _row_value(row, 'file_path', 1, 0)
@@ -1223,15 +1242,11 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
             """)
             columns = []
             for row in cursor.fetchall():
-                if hasattr(row, 'get'):
-                    col_name = row.get('column_name')
-                else:
-                    col_name = row[0] if row and len(row) > 0 else None
+                col_name = row.get('column_name') if row else None
                 if col_name:
                     columns.append(col_name)
 
             required_cols = {
-                'search_query': "TEXT",
                 'source': "TEXT DEFAULT 'soulseek'",
                 'priority': "INTEGER DEFAULT 5",
                 'import_group': "TEXT",
@@ -1303,10 +1318,7 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
             """)
             early_columns = set()
             for row in cursor.fetchall():
-                if hasattr(row, 'get'):
-                    col_name = row.get('column_name')
-                else:
-                    col_name = row[0] if row and len(row) > 0 else None
+                col_name = row.get('column_name') if row else None
                 if col_name:
                     early_columns.add(col_name)
 
@@ -1751,22 +1763,13 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         Queue item dict or None if failed
     """
     def _row_to_dict(row, row_cursor=None):
+        # All cursors use RealDictCursor; rows are always dict-like.
         if row is None:
             return None
-        if isinstance(row, dict):
+        try:
             return dict(row)
-        if hasattr(row, 'keys'):
-            try:
-                return {key: row[key] for key in row.keys()}
-            except Exception:
-                pass
-        if isinstance(row, (list, tuple)) and row_cursor and getattr(row_cursor, 'description', None):
-            try:
-                columns = [col[0] for col in row_cursor.description]
-                return dict(zip(columns, row))
-            except Exception:
-                pass
-        return None
+        except Exception:
+            return None
 
     try:
         conn = _get_postgres_conn_from_app_or_fallback()
@@ -2338,9 +2341,9 @@ def update_queue_item(queue_id, **kwargs):
                     """
                 )
                 existing_cols = {
-                    (row.get('column_name') if hasattr(row, 'get') else row[0])
+                    row.get('column_name')
                     for row in (cursor.fetchall() or [])
-                    if row
+                    if row and row.get('column_name')
                 }
             except Exception as col_err:
                 try:
@@ -2598,8 +2601,8 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
                 conn.close()
                 return None
             
-            retry_count = (row['retry_count'] if hasattr(row, 'keys') else row[0] or 0) + 1
-            max_r = row['max_retries'] if hasattr(row, 'keys') else row[1]
+            retry_count = (row['retry_count'] or 0) + 1
+            max_r = row['max_retries']
             next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
             
             # Check if we've exceeded max retries
@@ -2730,30 +2733,14 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
             'track_number', 'status', 'imported_at'
         ]
 
-        def _row_value(row, key, idx):
+        def _row_value(row, key, _idx=None):
+            # All cursors use RealDictCursor, so rows are always dict-like.
             if row is None:
                 return None
-
-            if hasattr(row, 'get'):
-                try:
-                    return row.get(key)
-                except Exception:
-                    pass
-
             try:
-                return row[idx]
+                return row.get(key)
             except Exception:
-                pass
-
-            # Last-resort fallback for tuple/list rows with unexpected shape.
-            try:
-                col_idx = selected_columns.index(key)
-                if isinstance(row, (list, tuple)) and 0 <= col_idx < len(row):
-                    return row[col_idx]
-            except Exception:
-                pass
-
-            return None
+                return None
 
         def _norm_text(value):
             if value is None:
@@ -3006,7 +2993,7 @@ def _is_full_album_ready_for_move(queue_item, cursor=None, placeholder=None,
         row = cursor.fetchone()
         if row is None:
             return True
-        pending = row['c'] if hasattr(row, 'get') and row.get('c') is not None else row[0]
+        pending = int(row.get('c') or 0)
         if int(pending or 0) > 0:
             return False
 
@@ -4762,15 +4749,12 @@ def check_downloads_folder():
             file_path NOT LIKE '__queued_for_download__%'
             """
             def _row_file_path(row_value):
+                # All cursors use RealDictCursor; rows are always dict-like.
                 if not row_value:
                     return None
-                if hasattr(row_value, 'get'):
-                    return row_value.get('file_path')
-                if isinstance(row_value, (list, tuple)):
-                    return row_value[0] if len(row_value) > 0 else None
-                return None
+                return row_value.get('file_path')
 
-            queue_item_id = queue_item.get('id') if hasattr(queue_item, 'get') else None
+            queue_item_id = queue_item.get('id') if queue_item else None
             try:
                 # 1) Strongest match: recording MBID already present on tracks.mbid
                 recording_mbid = (queue_item.get('recording_mbid') or '').strip()
@@ -5978,23 +5962,13 @@ def auto_discover_and_queue_files():
         _enrich_stale_unmatched_queue_items()
 
         def _row_get(row, key, index=None, default=None):
+            # All cursors use RealDictCursor; rows are always dict-like.
             if row is None:
                 return default
             try:
-                return row[key]
+                return row.get(key, default)
             except Exception:
-                pass
-            if hasattr(row, 'get'):
-                try:
-                    return row.get(key, default)
-                except Exception:
-                    pass
-            if index is not None:
-                try:
-                    return row[index]
-                except Exception:
-                    pass
-            return default
+                return default
 
         def _rows_to_dicts(rows, description):
             if not rows:
@@ -6069,8 +6043,9 @@ def auto_discover_and_queue_files():
             WHERE table_name = 'download_queue' AND table_schema = 'public'
         """)
         columns = [
-            (row.get('column_name') if hasattr(row, 'get') else row[0])
+            row.get('column_name')
             for row in cursor.fetchall()
+            if row and row.get('column_name')
         ]
         
         required_cols = {
@@ -7886,7 +7861,7 @@ def _ensure_matching_columns(cursor):
         FROM information_schema.columns
         WHERE table_name = 'download_queue' AND table_schema = 'public'
     """)
-    columns = [row['column_name'] if hasattr(row, 'keys') else row[0] for row in cursor.fetchall()]
+    columns = [row['column_name'] for row in cursor.fetchall() if row]
 
     required = {
         "mb_match_status": "TEXT",
@@ -9535,13 +9510,9 @@ def backfill_queued_track_metadata():
         updated = 0
         skipped = 0
 
-        def _get(row, key, idx):
-            if hasattr(row, 'get'):
-                return row.get(key)
-            try:
-                return row[idx]
-            except (IndexError, TypeError):
-                return None
+        def _get(row, key, _idx=None):
+            # All cursors use RealDictCursor; rows are always dict-like.
+            return row.get(key) if row else None
 
         for row in rows:
             try:
