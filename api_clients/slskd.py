@@ -793,6 +793,63 @@ class SlskdClient:
             logger.error(f"Slskd cancel search failed for {search_id}: {e}")
             return False
     
+    def clear_stale_searches(self, budget_seconds: float = 8) -> None:
+        """Cancel any terminal-state (or long-running stuck) searches in slskd.
+
+        slskd enforces a single concurrent search slot; a stale completed /
+        timed-out search that was never cleaned up will cause subsequent
+        ``start_search()`` calls to receive HTTP 429 ("only one concurrent
+        operation"), making every new search appear to time out.
+
+        Also cancels searches that have been in an active state for longer
+        than *3 × the expected search duration* to clear truly stuck searches.
+
+        ``budget_seconds`` caps the total wall-clock time so that a large
+        backlog of entries cannot cause the caller to exceed a request timeout.
+        """
+        _TERMINAL_STATES = {"Completed", "Cancelled", "TimedOut", "Errored", "Succeeded"}
+        _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
+        # Cancel active searches older than this many milliseconds.
+        _STUCK_MS_THRESHOLD = 3 * 60 * 1000  # 3 minutes
+
+        deadline = time.monotonic() + budget_seconds
+        try:
+            time_left = deadline - time.monotonic()
+            existing = self.list_searches(timeout=min(4, max(1, int(time_left))))
+            for s in existing:
+                if time.monotonic() >= deadline:
+                    logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                    break
+                sid = s.get("id") or s.get("searchId") or s.get("Id")
+                state = str(s.get("state") or s.get("State") or "")
+                if not sid:
+                    continue
+
+                should_cancel = state in _TERMINAL_STATES
+                if not should_cancel and state in _ACTIVE_STATES:
+                    # Also cancel searches that have been running too long.
+                    elapsed_ms = s.get("elapsedMilliseconds") or s.get("elapsed_ms") or 0
+                    try:
+                        elapsed_ms = int(elapsed_ms or 0)
+                    except (TypeError, ValueError):
+                        elapsed_ms = 0
+                    if elapsed_ms > _STUCK_MS_THRESHOLD:
+                        should_cancel = True
+                        logger.info(
+                            f"[SLSKD] Cancelling stuck active search {sid} "
+                            f"(state={state}, elapsed={elapsed_ms}ms)"
+                        )
+
+                if should_cancel:
+                    cancel_timeout = min(2, max(1, int(deadline - time.monotonic())))
+                    self.cancel_search(sid, timeout=cancel_timeout)
+                    if state in _TERMINAL_STATES:
+                        logger.info(
+                            f"[SLSKD] Cleared stale search {sid} (state={state})"
+                        )
+        except Exception as cleanup_err:
+            logger.warning(f"[SLSKD] Could not clear stale searches: {cleanup_err}")
+
     def cancel_download(self, username: str, transfer_id: str, remove: bool = True, timeout: Optional[int] = None) -> bool:
         """
         Cancel (and optionally remove) a specific download.

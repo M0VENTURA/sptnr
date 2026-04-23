@@ -27,3 +27,29 @@ ACTIVE_QUEUE_STATUS_SQL = ", ".join(f"'{s}'" for s in ACTIVE_QUEUE_STATUSES)
 # album/artist currently being fetched?" style queries.
 PROCESSING_STATUSES = ('queued', 'searching', 'downloading')
 PROCESSING_STATUS_SQL = ", ".join(f"'{s}'" for s in PROCESSING_STATUSES)
+
+# ---------------------------------------------------------------------------
+# Soulseek / slskd candidate-scoring constants
+# ---------------------------------------------------------------------------
+
+# Track-variant qualifier words used by Soulseek candidate scoring and
+# post-download metadata matching.  Single source of truth shared by
+# queue_processor.py and download_queue_manager.py.
+TITLE_VARIANT_TOKENS = frozenset({
+    "acoustic", "demo", "edit", "instrumental", "intro", "live", "mix",
+    "orchestral", "radio", "remaster", "remastered", "remix", "version",
+})
+
+# "Soft" variant tokens may be absent from file tags for the correct
+# recording (e.g. "radio edit", "edited version", "single version").  A
+# mismatch on these alone is allowed when the file duration closely
+# confirms the expected duration (≤2 s).  All other variant tokens
+# ("live", "acoustic", "orchestral", "remix", etc.) indicate genuinely
+# different recordings and are enforced strictly in both directions.
+SOFT_VARIANT_TOKENS = frozenset({"version", "edit", "radio"})
+
+# Hard duration tolerance (seconds) used across candidate scoring and
+# post-download verification.  When the expected duration is unknown the
+# caller skips the check entirely; this value only applies when a
+# duration reference is available.
+SLSKD_DURATION_TOLERANCE_SECONDS = 5

@@ -133,8 +133,14 @@ _format_filter_config_cache = None
 _format_filter_config_cache_key = None
 _format_filter_last_log_signature = None
 
-# Canonical active statuses for queue reads and processor selection.
-from queue_status_constants import ACTIVE_QUEUE_STATUSES as _ACTIVE_QUEUE_STATUSES, ACTIVE_QUEUE_STATUS_SQL as _ACTIVE_QUEUE_STATUS_SQL
+# Canonical active statuses and Soulseek scoring constants imported from
+# the shared constants module to keep them in sync with queue_processor.py.
+from queue_status_constants import (
+    ACTIVE_QUEUE_STATUSES as _ACTIVE_QUEUE_STATUSES,
+    ACTIVE_QUEUE_STATUS_SQL as _ACTIVE_QUEUE_STATUS_SQL,
+    TITLE_VARIANT_TOKENS as _TITLE_VARIANT_TOKENS,
+    SOFT_VARIANT_TOKENS as _SOFT_VARIANT_TOKENS,
+)
 
 # Throttle expensive downloads-folder checks triggered by frequent UI polling.
 _downloads_check_lock = threading.Lock()
@@ -149,18 +155,6 @@ _DOWNLOADS_CHECK_MIN_INTERVAL_SECONDS = 60
 # combined threshold of 0.68 is too lenient for these prefix cases because the
 # album similarity boost can push a clearly mismatched pair well above it.
 _PREFIX_TITLE_MIN = 0.9
-_TITLE_VARIANT_TOKENS = {
-    "acoustic", "demo", "edit", "instrumental", "intro", "live",
-    "mix", "orchestral", "radio", "remaster", "remastered", "remix", "version",
-}
-
-# Soft variant tokens may be absent from file tags for the correct recording
-# (e.g. "radio edit", "edited version", "single version").  A mismatch on
-# these alone does not block the match — the caller's duration guard provides
-# the final confirmation.  Hard variants ("live", "acoustic", "orchestral", …)
-# indicate genuinely different recordings and are enforced strictly in both
-# directions.
-_SOFT_VARIANT_TOKENS = frozenset({"version", "edit", "radio"})
 
 
 def _extract_title_variant_tokens(value):

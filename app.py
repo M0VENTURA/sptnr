@@ -564,34 +564,16 @@ def _normalize_slskd_query(value):
 
 def _clear_stale_slskd_searches(client, context="search", budget_seconds=8):
     """
-    Delete any terminal-state searches from slskd before starting a new one.
+    Delete any terminal-state (or long-running stuck) searches from slskd
+    before starting a new one.
 
-    slskd enforces a single concurrent search slot; a stale completed/timed-out
-    search that was never cleaned up will cause subsequent start_search() calls
-    to return HTTP 429 ("only one concurrent operation"), making every new search
-    appear to time out.  This helper is called just before every start_search()
-    regardless of whether the caller is interactive or a background thread.
-
-    budget_seconds caps the total wall-clock time spent here so that a large
-    number of stale entries (each requiring an individual DELETE) cannot cause
-    the caller to exceed the browser's 60 s request timeout.  Each cancel uses
-    a reduced 2 s per-request timeout within that budget.
+    Delegates to ``client.clear_stale_searches()`` so the logic lives in a
+    single place (``SlskdClient``).  ``budget_seconds`` is forwarded as the
+    time budget; the default (8 s) is safe for both interactive routes and
+    background threads.
     """
-    _TERMINAL_STATES = {"Completed", "Cancelled", "TimedOut", "Errored", "Succeeded"}
-    deadline = time.monotonic() + budget_seconds
     try:
-        time_left = deadline - time.monotonic()
-        existing = client.list_searches(timeout=min(4, max(1, int(time_left))))
-        for s in existing:
-            if time.monotonic() >= deadline:
-                logging.warning(f"[SLSKD] Stale search cleanup budget exhausted before {context}")
-                break
-            sid = s.get("id") or s.get("searchId") or s.get("Id")
-            state = (s.get("state") or s.get("State") or "")
-            if sid and state in _TERMINAL_STATES:
-                cancel_timeout = min(2, max(1, int(deadline - time.monotonic())))
-                client.cancel_search(sid, timeout=cancel_timeout)
-                logging.info(f"[SLSKD] Cleared stale search {sid} (state={state}) before {context}")
+        client.clear_stale_searches(budget_seconds=budget_seconds)
     except Exception as cleanup_err:
         logging.warning(f"[SLSKD] Could not clear stale searches before {context}: {cleanup_err}")
 
@@ -20520,35 +20502,57 @@ def _initiate_slskd_download_bg(tracking_id, query):
         # Start monitoring in a sub-thread
         def monitor_slskd_search():
             import time
-            max_wait = 30  # Wait up to 30 seconds for results
+            from difflib import SequenceMatcher
+
+            max_wait = 60  # Wait up to 60 seconds for results (raised from 30 s)
             start_time = time.time()
             all_files = []  # Collect all results, not just the best
-            
+
+            # Parse query into artist/title so we can use SequenceMatcher-based
+            # scoring that matches what the queue processor uses.
+            parts = query.split(' - ', 1)
+            if len(parts) == 2:
+                _q_artist = parts[0].strip().lower()
+                _q_title = parts[1].strip().lower()
+            else:
+                _q_artist = ""
+                _q_title = query.strip().lower()
+
+            def _sim(a, b):
+                if not a or not b:
+                    return 0.0
+                return SequenceMatcher(None, a, b).ratio()
+
+            def _score_file(raw_filename):
+                """Return a relevance score [0, 1] for a candidate filename."""
+                fn = str(raw_filename or "").replace('\\', '/').lower()
+                basename = fn.rsplit('/', 1)[-1] if '/' in fn else fn
+                # Strip extension for text matching
+                stem = basename.rsplit('.', 1)[0] if '.' in basename else basename
+                # Artist similarity
+                artist_score = _sim(_q_artist, stem) if _q_artist else 0.5
+                # Title similarity
+                title_score = _sim(_q_title, stem)
+                # Boost for preferred audio extensions
+                ext_boost = 0.0
+                if any(fn.endswith(ext) for ext in ('.mp3', '.flac', '.m4a', '.aac', '.ogg')):
+                    ext_boost = 0.05
+                return (artist_score * 0.4 + title_score * 0.6) + ext_boost
+
             while time.time() - start_time < max_wait:
                 try:
                     responses, state, is_complete = client.get_search_results(search_id)
-                    
+
                     if responses:
                         # Collect all matching files with scores
                         for response in responses:
                             if hasattr(response, 'files') and response.files:
                                 for file_info in response.files:
-                                    # Score the file based on how well it matches the query
-                                    # file_info is a SearchFile dataclass — use attribute access
                                     raw_filename = file_info.filename if hasattr(file_info, 'filename') else file_info.get('filename', '')
                                     raw_size = file_info.size if hasattr(file_info, 'size') else file_info.get('size', 0)
-                                    filename = raw_filename.lower()
-                                    query_lower = query.lower()
-                                    
-                                    # Simple scoring: count matching words
-                                    query_words = query_lower.split()
-                                    matches = sum(1 for word in query_words if word in filename)
-                                    match_score = matches / len(query_words) if query_words else 0
-                                    
-                                    # Prefer files with audio extensions
-                                    if any(filename.endswith(ext) for ext in ['.mp3', '.flac', '.m4a', '.aac', '.ogg']):
-                                        match_score *= 1.2
-                                    
+
+                                    match_score = _score_file(raw_filename)
+
                                     if match_score >= 0.3:  # Only include files with at least 30% match
                                         all_files.append({
                                             'username': response.username if hasattr(response, 'username') else 'Unknown',
@@ -20556,12 +20560,12 @@ def _initiate_slskd_download_bg(tracking_id, query):
                                             'size': raw_size,
                                             'match_score': match_score
                                         })
-                    
+
                     if is_complete:
                         break
-                    
+
                     time.sleep(1)
-                    
+
                 except Exception as e:
                     logging.error(f"[SLSKD_MONITOR] Error monitoring search {search_id}: {e}")
                     break
@@ -20579,10 +20583,10 @@ def _initiate_slskd_download_bg(tracking_id, query):
                     # Insert all results into database
                     for file_result in all_files:
                         cursor2.execute(f"""
-                            SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')))
+                            INSERT INTO slskd_search_results
                             (download_id, username, filename, size, match_score)
                             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
-                        """, (tracking_id, file_result['username'], file_result['filename'], 
+                        """, (tracking_id, file_result['username'], file_result['filename'],
                               file_result['size'], file_result['match_score']))
 
                     # Update status to awaiting_selection

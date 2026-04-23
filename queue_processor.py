@@ -21,6 +21,11 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from helpers.metadata_reader import read_mp3_metadata
+from queue_status_constants import (
+    TITLE_VARIANT_TOKENS as _TITLE_VARIANT_TOKENS,
+    SOFT_VARIANT_TOKENS as _SOFT_VARIANT_TOKENS,
+    SLSKD_DURATION_TOLERANCE_SECONDS as _SLSKD_DURATION_TOLERANCE_SECONDS,
+)
 try:
     from mutagen import File as MutagenFile
 except ImportError:
@@ -103,6 +108,11 @@ MIN_RETRY_DELAY_MINUTES = 60
 # searches that never finish (e.g. slskd unreachable mid-search).
 _SLSKD_SEARCH_MAX_WAIT_SECONDS = 150
 
+# Reduced maximum wait for fallback queries.  Fallback searches are lower-
+# specificity alternatives tried when the primary query found nothing; a
+# shorter ceiling limits the worst-case per-track search time.
+_SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS = 60
+
 # Minimum candidate score for a Soulseek result to be accepted as a valid match.
 # Scores below this threshold trigger fallback queries (e.g. using album_artist).
 _SLSKD_MIN_ACCEPT_SCORE = 0.45
@@ -148,21 +158,6 @@ _FEAT_SUFFIX_RE = re.compile(
 # core track title for exactness comparisons.  The alternation ensures opening
 # and closing bracket types must match (parenthesis ↔ parenthesis, square ↔ square).
 _BRACKET_RE = re.compile(r'\([^\)]*\)|\[[^\]]*\]')
-
-# Track-variant qualifier words used in both the candidate-scoring and the
-# metadata-matching logic.  Defined once at module level to keep them in sync.
-_TITLE_VARIANT_TOKENS = frozenset({
-    "acoustic", "demo", "edit", "instrumental", "intro", "live", "mix",
-    "orchestral", "radio", "remaster", "remastered", "remix", "version",
-})
-
-# "Soft" variant tokens are version qualifiers that may simply be absent from
-# file tags even for the correct recording (e.g. "edited version", "single
-# version", "album version", "radio edit").  A mismatch on these alone is
-# allowed when the file duration closely confirms the expected duration (≤2 s).
-# All other variant tokens ("live", "acoustic", "orchestral", "remix", etc.)
-# indicate genuinely different recordings and are treated as hard rejects.
-_SOFT_VARIANT_TOKENS = frozenset({"version", "edit", "radio"})
 
 
 def _strip_brackets(text):
@@ -240,16 +235,6 @@ def _is_musicbrainz_backed(queue_item):
         or queue_item.get('isrc')
         or str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
     )
-
-
-def _get_duration_match_tolerance(queue_item):
-    """Return the hard duration tolerance in seconds.
-
-    Always 5 seconds.  When the expected duration is unknown the caller
-    already skips duration checks entirely, so the value returned here only
-    matters when a duration is present.
-    """
-    return 5
 
 
 def _extract_audio_file_duration_seconds(file_path):
@@ -536,7 +521,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     candidate_duration = _normalize_duration_seconds(candidate_duration)
     if expected_duration and candidate_duration:
         duration_diff = abs(expected_duration - candidate_duration)
-        duration_tolerance = _get_duration_match_tolerance(queue_item)
+        duration_tolerance = _SLSKD_DURATION_TOLERANCE_SECONDS
         if duration_diff <= 2:
             score += 0.22
         elif duration_diff <= duration_tolerance:
@@ -723,7 +708,7 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
                 _duration_5s_ok = (
                     expected_duration is not None
                     and file_duration is not None
-                    and abs(expected_duration - file_duration) <= _get_duration_match_tolerance(queue_item)
+                    and abs(expected_duration - file_duration) <= _SLSKD_DURATION_TOLERANCE_SECONDS
                 )
                 _soft_variant_fallback_ok = (
                     _present_variants.issubset(_SOFT_VARIANT_TOKENS) and _duration_confirms
@@ -761,7 +746,7 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
 
     # Duration check (variables already computed above).
     if expected_duration and file_duration:
-        if abs(expected_duration - file_duration) > _get_duration_match_tolerance(queue_item):
+        if abs(expected_duration - file_duration) > _SLSKD_DURATION_TOLERANCE_SECONDS:
             return False
 
     combined = (artist_score + title_score) / 2
@@ -1901,20 +1886,31 @@ def _build_fallback_search_queries(queue_item, primary_query):
     return fallbacks
 
 
-def _run_soulseek_search(queue_id, query, queue_item, client):
+def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=None):
     """Submit a single Soulseek search and collect the best-scoring candidate.
 
     Polls until slskd marks the search as complete (is_complete=True) or
-    _SLSKD_SEARCH_MAX_WAIT_SECONDS is reached, whichever comes first.  Stopping
-    as soon as is_complete=True means searches that run the full slskd timeout
-    (state='Completed, TimedOut') still have their results evaluated rather than
-    being abandoned mid-poll.
+    *max_wait_seconds* (default: ``_SLSKD_SEARCH_MAX_WAIT_SECONDS``) is
+    reached, whichever comes first.  Stopping as soon as is_complete=True
+    means searches that run the full slskd timeout (state='Completed,
+    TimedOut') still have their results evaluated rather than being abandoned
+    mid-poll.
+
+    Pass ``max_wait_seconds=_SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS`` for
+    fallback / lower-specificity queries to cap the worst-case wait time.
 
     Returns ``(best_result, best_score)`` where *best_result* is a dict with
     keys ``username``, ``filename``, ``size``, ``length``, and ``score``, or
     ``(None, 0.0)`` if no candidates were found or the search could not be
     started.
     """
+    if max_wait_seconds is None:
+        max_wait_seconds = _SLSKD_SEARCH_MAX_WAIT_SECONDS
+
+    # Clear any terminal-state (or stuck) searches before starting a new one
+    # so slskd's single-slot enforcement never blocks this call.
+    client.clear_stale_searches()
+
     search_id = client.start_search(query)
     if not search_id:
         logger.warning(f"Queue {queue_id}: Failed to start search for '{query}'")
@@ -1927,7 +1923,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client):
 
     best_result = None
     best_score = 0.0
-    poll_deadline = time.monotonic() + _SLSKD_SEARCH_MAX_WAIT_SECONDS
+    poll_deadline = time.monotonic() + max_wait_seconds
     poll_attempt = 0
 
     while time.monotonic() < poll_deadline:
@@ -1935,7 +1931,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client):
         poll_attempt += 1
         try:
             responses, state, is_complete = client.get_search_results(search_id)
-            elapsed = int(time.monotonic() - (poll_deadline - _SLSKD_SEARCH_MAX_WAIT_SECONDS))
+            elapsed = int(time.monotonic() - (poll_deadline - max_wait_seconds))
             logger.debug(
                 f"Queue {queue_id}: Poll {poll_attempt} (+{elapsed}s) - "
                 f"Got {len(responses)} responses, state={state}"
@@ -1986,7 +1982,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client):
                         # so we never waste scorer CPU on clearly wrong tracks.
                         _expected_dur = _normalize_duration_seconds(queue_item.get('duration'))
                         if _expected_dur and candidate_length:
-                            _dur_tol = _get_duration_match_tolerance(queue_item)
+                            _dur_tol = _SLSKD_DURATION_TOLERANCE_SECONDS
                             if abs(_expected_dur - candidate_length) > _dur_tol:
                                 logger.debug(
                                     f"Queue {queue_id}: Skipping {os.path.basename(filename)} "
@@ -2123,7 +2119,10 @@ def search_and_download(queue_id, queue_item, client):
                     f"(score={best_score:.2f}), trying fallback query '{fallback_query}'"
                     f" (min_score={effective_min:.2f})..."
                 )
-                fb_result, fb_score = _run_soulseek_search(queue_id, fallback_query, queue_item, client)
+                fb_result, fb_score = _run_soulseek_search(
+                    queue_id, fallback_query, queue_item, client,
+                    max_wait_seconds=_SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS,
+                )
                 if fb_score > best_score:
                     best_score = fb_score
                     best_result = fb_result
@@ -2695,7 +2694,7 @@ def check_completed_downloads():
                     _actual_dur = _extract_audio_file_duration_seconds(file_path)
                     if _actual_dur:
                         _dur_diff = abs(_expected_dur - _actual_dur)
-                        _dur_tolerance = _get_duration_match_tolerance(item)
+                        _dur_tolerance = _SLSKD_DURATION_TOLERANCE_SECONDS
                         if _dur_diff > _dur_tolerance:
                             logger.warning(
                                 f"Queue {item_id}: ✗ pre-copy duration check FAILED — "
