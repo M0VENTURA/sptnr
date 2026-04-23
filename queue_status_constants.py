@@ -27,3 +27,115 @@ ACTIVE_QUEUE_STATUS_SQL = ", ".join(f"'{s}'" for s in ACTIVE_QUEUE_STATUSES)
 # album/artist currently being fetched?" style queries.
 PROCESSING_STATUSES = ('queued', 'searching', 'downloading')
 PROCESSING_STATUS_SQL = ", ".join(f"'{s}'" for s in PROCESSING_STATUSES)
+
+# ---------------------------------------------------------------------------
+# Status display configuration — single source of truth for UI presentation.
+#
+# Each entry maps a queue status string to its Bootstrap badge CSS class,
+# Bootstrap Icons icon name, and a human-readable label.  Templates can look
+# up ``STATUS_DISPLAY_CONFIG[status]`` to render a consistent badge without
+# duplicating if/elif chains.  The ``@app.context_processor`` in app.py
+# injects this dict into every Jinja template as ``queue_status_config``.
+# JavaScript equivalents in downloads.html consume it via the injected
+# ``queueStatusConfig`` template variable.
+# ---------------------------------------------------------------------------
+STATUS_DISPLAY_CONFIG: dict[str, dict[str, str]] = {
+    'queued': {
+        'label': 'Queued',
+        'css': 'bg-warning text-dark',
+        'icon': 'clock',
+    },
+    'searching': {
+        'label': 'Searching',
+        'css': 'bg-warning text-dark',
+        'icon': 'search',
+    },
+    'downloading': {
+        'label': 'Downloading',
+        'css': 'bg-primary',
+        'icon': 'download',
+    },
+    'completed': {
+        'label': 'Completed',
+        'css': 'bg-success',
+        'icon': 'check-circle',
+    },
+    'failed': {
+        'label': 'Failed',
+        'css': 'bg-danger',
+        'icon': 'x-circle',
+    },
+    'unmatched': {
+        'label': 'Unmatched',
+        'css': 'bg-warning text-dark',
+        'icon': 'exclamation-triangle',
+    },
+    'moving': {
+        'label': 'Moving',
+        'css': 'bg-info text-dark',
+        'icon': 'arrow-right-circle',
+    },
+    'queried': {
+        'label': 'Queried',
+        'css': 'bg-secondary',
+        'icon': 'question-circle',
+    },
+    'copy_recommended': {
+        'label': 'Copy Recommended',
+        'css': 'bg-info text-dark',
+        'icon': 'files',
+    },
+    'possible_duplicate': {
+        'label': 'Possible Duplicate',
+        'css': 'bg-secondary',
+        'icon': 'copy',
+    },
+    'imported': {
+        'label': 'Imported',
+        'css': 'bg-success',
+        'icon': 'check2-all',
+    },
+    'awaiting_selection': {
+        'label': 'Select File',
+        'css': 'bg-primary',
+        'icon': 'hand-index',
+    },
+}
+
+# Fallback entry used when a status value is not found in STATUS_DISPLAY_CONFIG.
+_STATUS_DISPLAY_FALLBACK: dict[str, str] = {
+    'label': 'Unknown',
+    'css': 'bg-secondary',
+    'icon': 'question',
+}
+
+
+def get_status_display(status: str) -> dict[str, str]:
+    """Return the display config for *status*, falling back to a generic entry."""
+    return STATUS_DISPLAY_CONFIG.get(status, {**_STATUS_DISPLAY_FALLBACK, 'label': status or 'Unknown'})
+
+# ---------------------------------------------------------------------------
+# Soulseek / slskd candidate-scoring constants
+# ---------------------------------------------------------------------------
+
+# Track-variant qualifier words used by Soulseek candidate scoring and
+# post-download metadata matching.  Single source of truth shared by
+# queue_processor.py and download_queue_manager.py.
+TITLE_VARIANT_TOKENS = frozenset([
+    "acoustic", "demo", "edit", "instrumental", "intro", "live", "mix",
+    "orchestral", "radio", "remaster", "remastered", "remix", "version",
+])
+
+# "Soft" variant tokens may be absent from file tags for the correct
+# recording (e.g. "radio edit", "edited version", "single version").  A
+# mismatch on these alone is allowed when the file duration closely
+# confirms the expected duration (≤2 s).  All other variant tokens
+# ("live", "acoustic", "orchestral", "remix", etc.) indicate genuinely
+# different recordings and are enforced strictly in both directions.
+SOFT_VARIANT_TOKENS = frozenset(["version", "edit", "radio"])
+
+# Hard duration tolerance (seconds) used across candidate scoring and
+# post-download verification.  When the expected duration is unknown the
+# caller skips the check entirely; this value only applies when a
+# duration reference is available.
+SLSKD_DURATION_TOLERANCE_SECONDS = 5

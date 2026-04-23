@@ -80,6 +80,7 @@ import copy
 from functools import wraps
 from helpers.scan_helpers import scan_artist_to_db
 from helpers.config_helpers import get_config, get_navidrome_config, clear_config_cache
+from helpers.api_response import api_ok, api_fail
 from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
@@ -294,6 +295,7 @@ from compilation_manager import (
     import_featured_artists_for_album
 )
 from genre_tag_aggregator import get_artist_genres_summary, get_album_genres_summary
+from queue_status_constants import STATUS_DISPLAY_CONFIG, get_status_display
 
 # Import centralized logging configuration
 from helpers.logging_config import (
@@ -336,6 +338,24 @@ static_folder = os.path.join(app_root, 'static')
 
 # Initialize Flask with explicit static folder configuration
 app = Flask(__name__, static_folder=static_folder, static_url_path='/static')
+
+
+@app.context_processor
+def _inject_status_config():
+    """Inject queue status display config into every Jinja template.
+
+    Templates can use ``queue_status_config`` to render consistent status badges
+    without duplicating if/elif chains.  JavaScript can consume the same data via
+    the ``queueStatusConfig`` variable rendered into the page.
+
+    Example Jinja usage::
+
+        {% set cfg = queue_status_config.get(item.status, {}) %}
+        <span class="badge {{ cfg.css }}">
+          <i class="bi bi-{{ cfg.icon }}"></i> {{ cfg.label }}
+        </span>
+    """
+    return {"queue_status_config": STATUS_DISPLAY_CONFIG}
 
 _FLASH_RESULT_STORE: OrderedDict[str, dict] = OrderedDict()
 _FLASH_RESULT_STORE_LOCK = threading.Lock()
@@ -564,34 +584,16 @@ def _normalize_slskd_query(value):
 
 def _clear_stale_slskd_searches(client, context="search", budget_seconds=8):
     """
-    Delete any terminal-state searches from slskd before starting a new one.
+    Delete any terminal-state (or long-running stuck) searches from slskd
+    before starting a new one.
 
-    slskd enforces a single concurrent search slot; a stale completed/timed-out
-    search that was never cleaned up will cause subsequent start_search() calls
-    to return HTTP 429 ("only one concurrent operation"), making every new search
-    appear to time out.  This helper is called just before every start_search()
-    regardless of whether the caller is interactive or a background thread.
-
-    budget_seconds caps the total wall-clock time spent here so that a large
-    number of stale entries (each requiring an individual DELETE) cannot cause
-    the caller to exceed the browser's 60 s request timeout.  Each cancel uses
-    a reduced 2 s per-request timeout within that budget.
+    Delegates to ``client.clear_stale_searches()`` so the logic lives in a
+    single place (``SlskdClient``).  ``budget_seconds`` is forwarded as the
+    time budget; the default (8 s) is safe for both interactive routes and
+    background threads.
     """
-    _TERMINAL_STATES = {"Completed", "Cancelled", "TimedOut", "Errored", "Succeeded"}
-    deadline = time.monotonic() + budget_seconds
     try:
-        time_left = deadline - time.monotonic()
-        existing = client.list_searches(timeout=min(4, max(1, int(time_left))))
-        for s in existing:
-            if time.monotonic() >= deadline:
-                logging.warning(f"[SLSKD] Stale search cleanup budget exhausted before {context}")
-                break
-            sid = s.get("id") or s.get("searchId") or s.get("Id")
-            state = (s.get("state") or s.get("State") or "")
-            if sid and state in _TERMINAL_STATES:
-                cancel_timeout = min(2, max(1, int(deadline - time.monotonic())))
-                client.cancel_search(sid, timeout=cancel_timeout)
-                logging.info(f"[SLSKD] Cleared stale search {sid} (state={state}) before {context}")
+        client.clear_stale_searches(budget_seconds=budget_seconds)
     except Exception as cleanup_err:
         logging.warning(f"[SLSKD] Could not clear stale searches before {context}: {cleanup_err}")
 
@@ -2382,56 +2384,56 @@ def api_queue_requeue_item(queue_id):
     """Re-queue a single unmatched or failed item back to queued status."""
     try:
         conn = get_db()
-        cursor = conn.cursor()
-        placeholder = "%s"
+        with conn:
+            cursor = conn.cursor()
+            placeholder = "%s"
 
-        cursor.execute(
-            f"SELECT id, status, artist, title, file_path FROM download_queue WHERE id = {placeholder}",
-            (queue_id,)
-        )
-        item = cursor.fetchone()
+            cursor.execute(
+                f"SELECT id, status, artist, title, file_path FROM download_queue WHERE id = {placeholder}",
+                (queue_id,)
+            )
+            item = cursor.fetchone()
 
-        if not item:
-            conn.close()
-            return jsonify({"error": "Queue item not found"}), 404
+            if not item:
+                conn.close()
+                return api_fail("Queue item not found", status=404)
 
-        current_status = item['status'] if hasattr(item, 'keys') else item[1]
-        if current_status not in ['unmatched', 'failed', 'completed']:
-            conn.close()
-            return jsonify({"error": f"Cannot re-queue item with status '{current_status}'"}), 400
+            current_status = item['status']
+            if current_status not in ['unmatched', 'failed', 'completed']:
+                conn.close()
+                return api_fail(f"Cannot re-queue item with status '{current_status}'")
 
-        update_sql = f"""
-            UPDATE download_queue
-            SET status = {placeholder},
-                failure_reason = NULL,
-                retry_count = 0,
-                next_retry_at = NULL,
-                updated_at = CURRENT_TIMESTAMP
-        """
-        update_params = ['queued']
+            update_sql = f"""
+                UPDATE download_queue
+                SET status = {placeholder},
+                    failure_reason = NULL,
+                    retry_count = 0,
+                    next_retry_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+            """
+            update_params = ['queued']
 
-        if current_status == 'unmatched':
-            update_sql += ", file_path = NULL"
+            if current_status == 'unmatched':
+                update_sql += ", file_path = NULL"
 
-        update_sql += f" WHERE id = {placeholder}"
-        update_params.append(queue_id)
-        cursor.execute(update_sql, tuple(update_params))
+            update_sql += f" WHERE id = {placeholder}"
+            update_params.append(queue_id)
+            cursor.execute(update_sql, tuple(update_params))
 
-        if cursor.rowcount == 0:
-            conn.close()
-            return jsonify({"error": "Failed to re-queue item"}), 500
+            if cursor.rowcount == 0:
+                conn.close()
+                return api_fail("Failed to re-queue item", status=500)
 
-        conn.commit()
-        item_artist = item['artist'] if hasattr(item, 'keys') else item[2]
-        item_title = item['title'] if hasattr(item, 'keys') else item[3]
+        item_artist = item['artist']
+        item_title = item['title']
         conn.close()
 
         logging.info(f"[QUEUE] Re-queued item {queue_id} ({item_artist} - {item_title}) from '{current_status}' back to 'queued'")
-        return jsonify({"success": True, "queue_id": queue_id, "message": f"Item re-queued: {item_artist} - {item_title}"})
+        return api_ok(f"Item re-queued: {item_artist} - {item_title}", queue_id=queue_id)
 
     except Exception as e:
         logging.error(f"Error re-queuing item {queue_id}: {e}")
-        return jsonify({"error": str(e)}), 400
+        return api_fail("Failed to re-queue item", status=400)
 
 
 @app.route("/api/queue/requeue-all-unmatched", methods=["POST"])
@@ -2439,29 +2441,29 @@ def api_queue_requeue_all_unmatched():
     """Re-queue all unmatched items back to queued status."""
     try:
         conn = get_db()
-        cursor = conn.cursor()
-        placeholder = "%s"
+        with conn:
+            cursor = conn.cursor()
+            placeholder = "%s"
 
-        cursor.execute(
-            f"""UPDATE download_queue
-                SET status = {placeholder},
-                    failure_reason = NULL,
-                    retry_count = 0,
-                    file_path = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE status = {placeholder}""",
-            ('queued', 'unmatched'),
-        )
-        requeued = cursor.rowcount
-        conn.commit()
+            cursor.execute(
+                f"""UPDATE download_queue
+                    SET status = {placeholder},
+                        failure_reason = NULL,
+                        retry_count = 0,
+                        file_path = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = {placeholder}""",
+                ('queued', 'unmatched'),
+            )
+            requeued = cursor.rowcount
         conn.close()
 
         logging.info(f"[QUEUE] Re-queued {requeued} unmatched item(s) back to 'queued' status")
-        return jsonify({"success": True, "requeued": requeued, "message": f"Re-queued {requeued} unmatched item(s) for retry"})
+        return api_ok(f"Re-queued {requeued} unmatched item(s) for retry", requeued=requeued)
 
     except Exception as e:
         logging.error(f"Error re-queuing all unmatched: {e}")
-        return jsonify({"error": str(e)}), 400
+        return api_fail("Failed to re-queue items", status=400)
 
 def _run_monday_listenbrainz_rss_sync():
     """Run ListenBrainz playlist sync once per week at Monday 1am for configured users."""
@@ -8008,31 +8010,26 @@ def api_correcting_ignore():
         field = (payload.get('field') or '').strip()
 
         if not album or not field:
-            return jsonify({"success": False, "error": "album and field are required"}), 400
+            return api_fail("album and field are required")
 
         allowed_fields = {f for f, _ in ALBUM_CONSISTENCY_FIELDS}
         if field not in allowed_fields:
-            return jsonify({"success": False, "error": f"field '{field}' is not a known corrections field"}), 400
+            return api_fail(f"field '{field}' is not a known corrections field")
 
         conn = get_db()
         _ensure_correction_ignores_table(conn)
-        cursor = conn.cursor()
-        try:
+        with conn:
+            cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO correction_ignores (album_artist, album, field)
                 VALUES (%s, %s, %s)
                 ON CONFLICT (album_artist, album, field) DO NOTHING
             """, (album_artist, album, field))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            conn.close()
-            return jsonify({"success": False, "error": str(e)}), 500
         conn.close()
-        return jsonify({"success": True})
+        return api_ok()
     except Exception as e:
         logging.error(f"[CORRECTING] ignore error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        return api_fail("Internal server error", status=500)
 
 
 @app.route("/api/correcting/unignore", methods=["POST"])
@@ -8048,26 +8045,21 @@ def api_correcting_unignore():
         field = (payload.get('field') or '').strip()
 
         if not album or not field:
-            return jsonify({"success": False, "error": "album and field are required"}), 400
+            return api_fail("album and field are required")
 
         conn = get_db()
         _ensure_correction_ignores_table(conn)
-        cursor = conn.cursor()
-        try:
+        with conn:
+            cursor = conn.cursor()
             cursor.execute("""
                 DELETE FROM correction_ignores
                 WHERE album_artist = %s AND album = %s AND field = %s
             """, (album_artist, album, field))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            conn.close()
-            return jsonify({"success": False, "error": str(e)}), 500
         conn.close()
-        return jsonify({"success": True})
+        return api_ok()
     except Exception as e:
         logging.error(f"[CORRECTING] unignore error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        return api_fail("Internal server error", status=500)
 
 
 @app.route("/api/correcting/ignores")
@@ -8098,26 +8090,19 @@ def api_correcting_list_ignores():
         rows = cursor.fetchall()
         conn.close()
 
-        ignores = []
-        for r in rows:
-            if hasattr(r, 'keys'):
-                ignores.append({
-                    'album_artist': r.get('album_artist') or '',
-                    'album': r.get('album') or '',
-                    'field': r.get('field') or '',
-                    'ignored_at': str(r.get('ignored_at') or ''),
-                })
-            else:
-                ignores.append({
-                    'album_artist': r[0] or '',
-                    'album': r[1] or '',
-                    'field': r[2] or '',
-                    'ignored_at': str(r[3] or ''),
-                })
-        return jsonify({"success": True, "ignores": ignores})
+        ignores = [
+            {
+                'album_artist': r.get('album_artist') or '',
+                'album': r.get('album') or '',
+                'field': r.get('field') or '',
+                'ignored_at': str(r.get('ignored_at') or ''),
+            }
+            for r in rows
+        ]
+        return api_ok(ignores=ignores)
     except Exception as e:
         logging.error(f"[CORRECTING] list-ignores error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        return api_fail("Internal server error", status=500)
 
 
 @app.route("/artist/<path:name>/genre-management")
@@ -8434,7 +8419,7 @@ def api_search():
         query = data.get("query", "").strip().lower()
         
         if not query or len(query) < 2:
-            return jsonify({"error": "Search query must be at least 2 characters"}), 400
+            return api_fail("Search query must be at least 2 characters")
         
         conn = get_db()
         cursor = conn.cursor()
@@ -8544,7 +8529,7 @@ def api_search():
     
     except Exception as e:
         logging.error(f"Search error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return api_fail("Search failed. Please try again.", status=500)
 
 
 @app.route("/artist/<path:name>")
@@ -20520,35 +20505,57 @@ def _initiate_slskd_download_bg(tracking_id, query):
         # Start monitoring in a sub-thread
         def monitor_slskd_search():
             import time
-            max_wait = 30  # Wait up to 30 seconds for results
+            from difflib import SequenceMatcher
+
+            max_wait = 60  # Wait up to 60 seconds for results (raised from 30 s)
             start_time = time.time()
             all_files = []  # Collect all results, not just the best
-            
+
+            # Parse query into artist/title so we can use SequenceMatcher-based
+            # scoring that matches what the queue processor uses.
+            parts = query.split(' - ', 1)
+            if len(parts) == 2:
+                _q_artist = parts[0].strip().lower()
+                _q_title = parts[1].strip().lower()
+            else:
+                _q_artist = ""
+                _q_title = query.strip().lower()
+
+            def _sim(a, b):
+                if not a or not b:
+                    return 0.0
+                return SequenceMatcher(None, a, b).ratio()
+
+            def _score_file(raw_filename):
+                """Return a relevance score [0, 1] for a candidate filename."""
+                fn = str(raw_filename or "").replace('\\', '/').lower()
+                basename = fn.rsplit('/', 1)[-1] if '/' in fn else fn
+                # Strip extension for text matching
+                stem = basename.rsplit('.', 1)[0] if '.' in basename else basename
+                # Artist similarity
+                artist_score = _sim(_q_artist, stem) if _q_artist else 0.5
+                # Title similarity
+                title_score = _sim(_q_title, stem)
+                # Boost for preferred audio extensions
+                ext_boost = 0.0
+                if any(fn.endswith(ext) for ext in ('.mp3', '.flac', '.m4a', '.aac', '.ogg')):
+                    ext_boost = 0.05
+                return (artist_score * 0.4 + title_score * 0.6) + ext_boost
+
             while time.time() - start_time < max_wait:
                 try:
                     responses, state, is_complete = client.get_search_results(search_id)
-                    
+
                     if responses:
                         # Collect all matching files with scores
                         for response in responses:
                             if hasattr(response, 'files') and response.files:
                                 for file_info in response.files:
-                                    # Score the file based on how well it matches the query
-                                    # file_info is a SearchFile dataclass — use attribute access
                                     raw_filename = file_info.filename if hasattr(file_info, 'filename') else file_info.get('filename', '')
                                     raw_size = file_info.size if hasattr(file_info, 'size') else file_info.get('size', 0)
-                                    filename = raw_filename.lower()
-                                    query_lower = query.lower()
-                                    
-                                    # Simple scoring: count matching words
-                                    query_words = query_lower.split()
-                                    matches = sum(1 for word in query_words if word in filename)
-                                    match_score = matches / len(query_words) if query_words else 0
-                                    
-                                    # Prefer files with audio extensions
-                                    if any(filename.endswith(ext) for ext in ['.mp3', '.flac', '.m4a', '.aac', '.ogg']):
-                                        match_score *= 1.2
-                                    
+
+                                    match_score = _score_file(raw_filename)
+
                                     if match_score >= 0.3:  # Only include files with at least 30% match
                                         all_files.append({
                                             'username': response.username if hasattr(response, 'username') else 'Unknown',
@@ -20556,12 +20563,12 @@ def _initiate_slskd_download_bg(tracking_id, query):
                                             'size': raw_size,
                                             'match_score': match_score
                                         })
-                    
+
                     if is_complete:
                         break
-                    
+
                     time.sleep(1)
-                    
+
                 except Exception as e:
                     logging.error(f"[SLSKD_MONITOR] Error monitoring search {search_id}: {e}")
                     break
@@ -20579,10 +20586,10 @@ def _initiate_slskd_download_bg(tracking_id, query):
                     # Insert all results into database
                     for file_result in all_files:
                         cursor2.execute(f"""
-                            SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')))
+                            INSERT INTO slskd_search_results
                             (download_id, username, filename, size, match_score)
                             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
-                        """, (tracking_id, file_result['username'], file_result['filename'], 
+                        """, (tracking_id, file_result['username'], file_result['filename'],
                               file_result['size'], file_result['match_score']))
 
                     # Update status to awaiting_selection
