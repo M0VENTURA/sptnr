@@ -225,6 +225,9 @@ _mb_enrichment_executor = concurrent.futures.ThreadPoolExecutor(
 # indefinitely when the music and downloads directories reside on different
 # filesystems and a byte-by-byte copy is required.
 _TRANSFER_TIMEOUT_SECONDS = 3600  # 1 hour
+# Minimum audio duration (seconds) for an existing destination file to be
+# considered valid.  Files shorter than this are treated as corrupt.
+_MIN_VALID_FILE_DURATION_SECONDS = 1.0
 
 # Dedicated thread-pool for blocking file-transfer operations so they never
 # freeze the main queue-processor event loop.
@@ -999,13 +1002,41 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None, copy_only=
     os.makedirs(os.path.dirname(final_dest_path), exist_ok=True)
 
     if os.path.exists(final_dest_path):
-        return {
-            "success": True,
-            "target_path": final_dest_path,
-            "error": None,
-            "skipped": True,
-            "converted": convert_flac_to_mp3,
-        }
+        # Validate the existing file before accepting it as a valid skip.
+        _existing_valid = False
+        if MutagenFile is not None:
+            try:
+                _mf = MutagenFile(final_dest_path)
+                if _mf is not None and _mf.info is not None:
+                    _dur = getattr(_mf.info, 'length', None)
+                    if _dur is not None and float(_dur) >= _MIN_VALID_FILE_DURATION_SECONDS:
+                        _existing_valid = True
+            except Exception:
+                pass
+        else:
+            # mutagen not available — assume the file is valid (safe fallback)
+            _existing_valid = True
+
+        if _existing_valid:
+            return {
+                "success": True,
+                "target_path": final_dest_path,
+                "error": None,
+                "skipped": True,
+                "converted": convert_flac_to_mp3,
+            }
+        else:
+            # Existing file is corrupt/empty — rename it and fall through to normal copy
+            try:
+                os.rename(final_dest_path, final_dest_path + '.conflict')
+                logger.warning(
+                    f"[TRANSFER] Existing file at {final_dest_path!r} appears corrupt; "
+                    "renamed to .conflict and re-copying"
+                )
+            except Exception as _rename_err:
+                logger.warning(
+                    f"[TRANSFER] Could not rename corrupt file {final_dest_path!r}: {_rename_err}"
+                )
 
     if convert_flac_to_mp3:
         bitrate_kbps = int(settings.get("mp3_bitrate_kbps", 320) or 320)
@@ -1292,6 +1323,17 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'low_quality_download': "INTEGER DEFAULT 0",
                 # Bitrate (kbps) of the provisional low-quality download.
                 'low_quality_bitrate': "INTEGER",
+                # Set to 1 when the download was initiated by the user via the
+                # manual Soulseek search modal (as opposed to being started
+                # automatically by the queue processor).  Allows check_completed_
+                # downloads() to trust the user's file selection without applying
+                # the strict metadata/duration validation that guards automatic
+                # downloads from mis-matches.
+                'is_manual_download': "INTEGER DEFAULT 0",
+                # Timestamp of the last time MusicBrainz metadata was refreshed
+                # for this queue item.  Used by the freshness check in
+                # search_and_download() to avoid hitting MB on every retry.
+                'mb_last_checked_at': "TIMESTAMP",
             }
 
             for col, col_type in required_cols.items():
@@ -1508,6 +1550,37 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     conn.commit()
                 except Exception as unlock_err:
                     logger.debug(f"Advisory lock release failed: {unlock_err}")
+
+
+def _ensure_banned_words_table(conn=None, cursor=None):
+    """Ensure the slsk_banned_words table exists."""
+    close_conn = conn is None
+    if conn is None:
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS slsk_banned_words (
+                word TEXT PRIMARY KEY,
+                is_banned BOOLEAN NOT NULL DEFAULT FALSE,
+                zero_result_count INTEGER NOT NULL DEFAULT 0,
+                added_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"[banned_words] Could not create slsk_banned_words table: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        if close_conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def execute_write_with_retry(cursor, conn, query, params=(), context="database write", max_retries=5, initial_delay=0.1):
@@ -3716,6 +3789,19 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                     if mb_release.get('cover_art'):
                         cover_art_data = mb_release['cover_art']
                         logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Using MusicBrainz album art")
+
+                    # Use the actual release MBID returned by MB — this is
+                    # authoritative and may differ from the input release_id
+                    # when the input was a release-group MBID or similar alias.
+                    _actual_release_mbid = (mb_release.get('release_mbid') or '').strip()
+                    if _actual_release_mbid:
+                        if _actual_release_mbid != tag_metadata.get('release_mbid'):
+                            logger.debug(
+                                f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                                f"release_mbid updated from MB response "
+                                f"{tag_metadata.get('release_mbid') or '(none)'!r} → {_actual_release_mbid!r}"
+                            )
+                        tag_metadata['release_mbid'] = _actual_release_mbid
             except Exception as mb_err:
                 logger.warning(f"[MOVE] Could not fetch MusicBrainz metadata for release {release_id}: {mb_err}")
 
@@ -3770,6 +3856,19 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                     rec_dur_ms = _rec.get('length')
                     if rec_dur_ms and not tag_metadata.get('duration'):
                         tag_metadata['duration_ms'] = int(rec_dur_ms)
+                    # Derive release MBID from the recording's releases list when
+                    # the queue item didn't carry one (common for tracks added via
+                    # Soulseek manual search that were later matched to a recording).
+                    if not tag_metadata.get('release_mbid') and _rec.get('releases'):
+                        for _r in _rec['releases']:
+                            _r_mbid = (_r.get('id') or '').strip()
+                            if _r_mbid:
+                                tag_metadata['release_mbid'] = _r_mbid
+                                logger.debug(
+                                    f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                                    f"release_mbid derived from recording {recording_mbid}: {_r_mbid}"
+                                )
+                                break
                     logger.debug(
                         f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
                         f"enriched from recording MBID {recording_mbid}: "

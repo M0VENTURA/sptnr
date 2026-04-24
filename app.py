@@ -1346,7 +1346,176 @@ def api_spotify_playlist_tracks_with_matching(playlist_id):
         logging.error(f"Failed to fetch playlist {playlist_id} tracks: {e}", exc_info=True)
         return jsonify({"success": False, "error": f"Failed to fetch playlist: {str(e)}"}), 500
 
-# --- Create Playlist Download Session ---
+# --- Import playlist from URL (Spotify / Apple Music) ---
+@app.route("/api/import_playlist_url", methods=["POST"])
+def api_import_playlist_url():
+    """Preview tracks from a Spotify or Apple Music playlist URL.
+
+    Body: {"url": "..."}
+    Returns track list with artist, title, album, duration_ms, track_number plus
+    playlist_name, album_artist, is_compilation, and service fields.
+    """
+    try:
+        data = request.json or {}
+        url = (data.get("url") or "").strip()
+        if not url:
+            return jsonify({"success": False, "error": "url is required"}), 400
+
+        # --- Spotify ---
+        spotify_playlist_id = None
+        if "open.spotify.com/playlist/" in url:
+            # e.g. https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
+            _path = url.split("open.spotify.com/playlist/")[1].split("?")[0].split("/")[0]
+            spotify_playlist_id = _path
+        elif url.startswith("spotify:playlist:"):
+            spotify_playlist_id = url.split("spotify:playlist:")[1].split("?")[0]
+
+        if spotify_playlist_id:
+            config_data, _ = _read_yaml(CONFIG_PATH)
+            spotify_config = config_data.get("api_integrations", {}).get("spotify", {})
+            client_id = spotify_config.get("client_id", "")
+            client_secret = spotify_config.get("client_secret", "")
+            if not client_id or not client_secret:
+                return jsonify({
+                    "success": False,
+                    "error": "Spotify not configured. Add client_id/client_secret to config.yaml",
+                }), 400
+
+            from api_clients.spotify import SpotifyClient
+            import requests as _req
+            _sp = SpotifyClient(client_id, client_secret)
+
+            # Fetch playlist metadata (name)
+            playlist_name = spotify_playlist_id
+            try:
+                _ph = _sp._headers()
+                _meta = _sp.session.get(
+                    f"https://api.spotify.com/v1/playlists/{spotify_playlist_id}",
+                    headers=_ph,
+                    params={"fields": "name"},
+                    timeout=(5, 15),
+                )
+                if _meta.status_code == 200:
+                    playlist_name = _meta.json().get("name") or playlist_name
+            except Exception:
+                pass
+
+            raw_tracks = _sp.get_playlist_tracks(spotify_playlist_id)
+            tracks = []
+            for idx, t in enumerate(raw_tracks, start=1):
+                tracks.append({
+                    "track_number": idx,
+                    "artist": t.get("artist", ""),
+                    "title": t.get("title", ""),
+                    "album": t.get("album", ""),
+                    "duration_ms": t.get("duration_ms") or 0,
+                })
+
+            # Determine album_artist
+            artists = [t["artist"] for t in tracks if t["artist"]]
+            primary_artists = set(a.split(",")[0].strip() for a in artists)
+            album_artist = list(primary_artists)[0] if len(primary_artists) == 1 else "Various Artists"
+            is_compilation = album_artist == "Various Artists"
+
+            return jsonify({
+                "success": True,
+                "service": "spotify",
+                "playlist_name": playlist_name,
+                "tracks": tracks,
+                "album_artist": album_artist,
+                "is_compilation": is_compilation,
+            })
+
+        # --- Apple Music ---
+        try:
+            from urllib.parse import urlparse as _urlparse
+            _parsed_url = _urlparse(url)
+            _is_apple_music = (
+                _parsed_url.hostname is not None
+                and (
+                    _parsed_url.hostname == "music.apple.com"
+                    or _parsed_url.hostname.endswith(".music.apple.com")
+                )
+                and "/playlist/" in (_parsed_url.path or "")
+            )
+        except Exception:
+            _is_apple_music = False
+        if _is_apple_music:
+            # Apple Music public playlists: https://music.apple.com/us/playlist/name/pl.xxx
+            return jsonify({
+                "success": False,
+                "error": (
+                    "Apple Music playlist import requires Apple Music API authentication "
+                    "which is not yet configured. Only Spotify playlists are supported."
+                ),
+            }), 400
+
+        return jsonify({
+            "success": False,
+            "error": "Unrecognised playlist URL. Provide a Spotify or Apple Music playlist link.",
+        }), 400
+
+    except Exception as _e:
+        logging.error(f"[import_playlist_url] Error: {_e}", exc_info=True)
+        return jsonify({"success": False, "error": "Failed to process playlist URL"}), 500
+
+
+@app.route("/api/import_playlist_url/queue", methods=["POST"])
+def api_import_playlist_url_queue():
+    """Add previewed playlist tracks to the download queue.
+
+    Body: {
+        "playlist_name": "...",
+        "album_artist": "...",
+        "is_compilation": true|false,
+        "tracks": [{"artist": ..., "title": ..., "duration_ms": ..., "track_number": ...}, ...]
+    }
+    Returns {"success": true, "queued": N, "skipped": M}
+    """
+    try:
+        data = request.json or {}
+        playlist_name = (data.get("playlist_name") or "").strip()
+        album_artist = (data.get("album_artist") or "").strip() or "Various Artists"
+        tracks = data.get("tracks") or []
+
+        if not tracks:
+            return jsonify({"success": False, "error": "No tracks provided"}), 400
+
+        from download_queue_manager import add_to_queue
+        queued_count = 0
+        skipped_count = 0
+
+        for t in tracks:
+            artist = (t.get("artist") or "").strip()
+            title = (t.get("title") or "").strip()
+            if not artist or not title:
+                skipped_count += 1
+                continue
+            duration_ms = t.get("duration_ms") or 0
+            duration_sec = int(duration_ms / 1000) if duration_ms else None
+            result = add_to_queue(
+                artist=artist,
+                title=title,
+                album=playlist_name or None,
+                album_artist=album_artist or None,
+                source="soulseek",
+                priority=5,
+                import_type="song",
+                track_number=t.get("track_number"),
+                duration=duration_sec,
+            )
+            if result:
+                queued_count += 1
+            else:
+                skipped_count += 1
+
+        return jsonify({"success": True, "queued": queued_count, "skipped": skipped_count})
+
+    except Exception as _e:
+        logging.error(f"[import_playlist_url/queue] Error: {_e}", exc_info=True)
+        return jsonify({"success": False, "error": "Failed to add tracks to queue"}), 500
+
+
 @app.route("/api/playlist/session", methods=["POST"])
 def api_create_playlist_session():
     """
@@ -19536,6 +19705,101 @@ def scan_combined():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/api/slsk/banned-words", methods=["GET"])
+def api_get_banned_words():
+    """Get banned words and suggested words (high zero-result count)."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS slsk_banned_words (
+                word TEXT PRIMARY KEY,
+                is_banned BOOLEAN NOT NULL DEFAULT FALSE,
+                zero_result_count INTEGER NOT NULL DEFAULT 0,
+                added_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+        cursor.execute("""
+            SELECT word, is_banned, zero_result_count, added_at, updated_at
+            FROM slsk_banned_words
+            ORDER BY is_banned DESC, zero_result_count DESC, word ASC
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        result = []
+        for r in rows:
+            if isinstance(r, dict):
+                result.append(r)
+            else:
+                result.append({
+                    'word': r[0], 'is_banned': r[1], 'zero_result_count': r[2],
+                    'added_at': str(r[3]) if r[3] else None, 'updated_at': str(r[4]) if r[4] else None
+                })
+        return jsonify({'success': True, 'words': result}), 200
+    except Exception as e:
+        logging.error(f"[banned_words] GET error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route("/api/slsk/banned-words", methods=["POST"])
+def api_add_banned_word():
+    """Add or update a banned word."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        word = (data.get('word') or '').strip().lower()
+        is_banned = bool(data.get('is_banned', True))
+        if not word or len(word) < 2:
+            return jsonify({'error': 'word must be at least 2 characters'}), 400
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS slsk_banned_words (
+                word TEXT PRIMARY KEY,
+                is_banned BOOLEAN NOT NULL DEFAULT FALSE,
+                zero_result_count INTEGER NOT NULL DEFAULT 0,
+                added_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO slsk_banned_words (word, is_banned, zero_result_count, updated_at)
+            VALUES (%s, %s, 0, NOW())
+            ON CONFLICT (word) DO UPDATE SET
+                is_banned = EXCLUDED.is_banned,
+                updated_at = NOW()
+        """, (word, is_banned))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'word': word, 'is_banned': is_banned}), 200
+    except Exception as e:
+        logging.error(f"[banned_words] POST error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route("/api/slsk/banned-words/<path:word>", methods=["DELETE"])
+def api_delete_banned_word(word):
+    """Remove a word from the banned words list."""
+    try:
+        word = word.strip().lower()
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM slsk_banned_words WHERE word = %s", (word,))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'word': word}), 200
+    except Exception as e:
+        logging.error(f"[banned_words] DELETE error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route("/downloads/banned-words")
+def banned_words_page():
+    """Banned search words management page."""
+    return render_template("banned_words.html")
+
+
 @app.route("/api/slskd/download", methods=["POST"])
 def slskd_download():
     """Proxy endpoint to download from slskd"""
@@ -19676,6 +19940,7 @@ def slskd_queue_download():
                     found_filename = %s,
                     slskd_username = %s,
                     slskd_state = %s,
+                    is_manual_download = 1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
                 """,
@@ -33962,6 +34227,59 @@ def api_album_musicbrainz_lookup():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/album/musicbrainz/release-group/releases", methods=["POST"])
+def api_release_group_releases():
+    """Fetch all specific releases in a MusicBrainz release group."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        rg_mbid = (data.get("release_group_mbid") or "").strip()
+        if not rg_mbid:
+            return jsonify({"error": "release_group_mbid is required"}), 400
+
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        time.sleep(1)
+        resp = requests.get(
+            "https://musicbrainz.org/ws/2/release",
+            params={
+                "release-group": rg_mbid,
+                "fmt": "json",
+                "inc": "media",
+                "limit": 50,
+            },
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        releases_data = resp.json().get("releases", []) or []
+
+        releases = []
+        for r in releases_data:
+            media = r.get("media", [])
+            total_tracks = sum(m.get("track-count", 0) for m in media)
+            disc_count = len(media)
+            formats = list({m.get("format", "") for m in media if m.get("format")})
+            releases.append({
+                "id": r.get("id", ""),
+                "title": r.get("title", ""),
+                "date": r.get("date", ""),
+                "country": r.get("country", ""),
+                "status": r.get("status", ""),
+                "disambiguation": r.get("disambiguation", ""),
+                "track_count": total_tracks,
+                "disc_count": disc_count,
+                "formats": formats,
+                "cover_art_url": f"https://coverartarchive.org/release/{r.get('id')}/front-250" if r.get("id") else "",
+            })
+
+        releases.sort(key=lambda x: (x["date"] == "", x["date"]))
+
+        return jsonify({"success": True, "releases": releases}), 200
+
+    except Exception as e:
+        logging.error(f"[release_group_releases] Error: {e}")
+        return jsonify({"error": "Failed to fetch releases"}), 500
+
+
 @app.route("/api/album/musicbrainz/compare", methods=["POST"])
 def api_album_musicbrainz_compare():
     """Compare MusicBrainz release tracks with library tracks to identify metadata that needs updating.
@@ -34171,6 +34489,12 @@ def api_album_musicbrainz_compare():
                 if mb_duration_sec is not None and lib_duration_sec is not None:
                     if abs(mb_duration_sec - lib_duration_sec) > _DURATION_TOLERANCE_SEC:
                         diff_fields.append("duration")
+
+                # Disc number: flag if library disc_number differs from MB disc_number
+                lib_disc_val = int(lib_track.get("disc_number") or 1)
+                entry["library_disc_number"] = lib_disc_val
+                if lib_disc_val != disc:
+                    diff_fields.append("disc_number")
 
                 entry["diff_fields"] = diff_fields
                 entry["needs_update"] = len(diff_fields) > 0

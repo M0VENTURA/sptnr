@@ -66,6 +66,43 @@
     </div>
   </div>
 
+  <!-- Download from Playlist Section -->
+  <div class="card mb-4">
+    <div class="card-header" style="cursor:pointer;" data-bs-toggle="collapse" data-bs-target="#playlistImportCollapse">
+      <h5 class="card-title mb-0 d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-collection-play"></i> Download from Playlist</span>
+        <i class="bi bi-chevron-down"></i>
+      </h5>
+    </div>
+    <div class="collapse" id="playlistImportCollapse">
+      <div class="card-body">
+        <p class="text-muted small mb-3">Enter a Spotify playlist URL to preview and add all tracks to the download queue. Apple Music support coming soon.</p>
+        <div class="input-group mb-3">
+          <input type="url" id="playlistImportUrl" class="form-control" placeholder="https://open.spotify.com/playlist/...">
+          <button class="btn btn-outline-primary" onclick="previewPlaylistImport()">
+            <i class="bi bi-search"></i> Preview
+          </button>
+        </div>
+        <div id="playlistImportStatus" class="alert" style="display:none;"></div>
+        <div id="playlistImportPreview" style="display:none;">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="mb-0" id="playlistImportTitle"></h6>
+            <button class="btn btn-sm btn-success" onclick="addPlaylistToQueue()" id="playlistImportAddBtn">
+              <i class="bi bi-plus-circle"></i> Add All to Queue
+            </button>
+          </div>
+          <div id="playlistImportAlbumArtist" class="text-muted small mb-2"></div>
+          <div class="table-responsive" style="max-height:400px;overflow-y:auto;">
+            <table class="table table-sm table-striped">
+              <thead><tr><th>#</th><th>Artist</th><th>Title</th><th>Duration</th></tr></thead>
+              <tbody id="playlistImportTrackList"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Upcoming Releases Section -->
   <div class="card mb-4" id="upcomingReleasesMonitorCard">
     <div class="card-header d-flex justify-content-between align-items-center">
@@ -6686,5 +6723,46 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 });
+
+let _playlistImportData = null;
+
+async function previewPlaylistImport() {
+  const url = document.getElementById('playlistImportUrl').value.trim();
+  const statusEl = document.getElementById('playlistImportStatus');
+  const previewEl = document.getElementById('playlistImportPreview');
+  if (!url) { statusEl.className='alert alert-warning'; statusEl.textContent='Please enter a playlist URL.'; statusEl.style.display=''; return; }
+  statusEl.className='alert alert-info'; statusEl.innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>Fetching playlist...'; statusEl.style.display='';
+  previewEl.style.display='none';
+  try {
+    const resp = await fetch('/api/import_playlist_url', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+    const data = await resp.json();
+    if (!resp.ok || !data.success) { statusEl.className='alert alert-danger'; statusEl.textContent='Error: '+(data.error||'Unknown error'); return; }
+    _playlistImportData = data;
+    document.getElementById('playlistImportTitle').textContent = data.playlist_name + ' (' + data.tracks.length + ' tracks)';
+    document.getElementById('playlistImportAlbumArtist').textContent = 'Album artist: ' + data.album_artist;
+    const tbody = document.getElementById('playlistImportTrackList');
+    tbody.innerHTML = '';
+    data.tracks.forEach(t => {
+      const dur = t.duration_ms ? Math.floor(t.duration_ms/60000)+':'+(Math.floor((t.duration_ms%60000)/1000)+'').padStart(2,'0') : '';
+      tbody.innerHTML += `<tr><td>${t.track_number}</td><td>${t.artist||''}</td><td>${t.title||''}</td><td>${dur}</td></tr>`;
+    });
+    statusEl.style.display='none';
+    previewEl.style.display='';
+  } catch(e) { statusEl.className='alert alert-danger'; statusEl.textContent='Network error: '+e.message; }
+}
+
+async function addPlaylistToQueue() {
+  if (!_playlistImportData) return;
+  const btn = document.getElementById('playlistImportAddBtn');
+  const statusEl = document.getElementById('playlistImportStatus');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Adding...';
+  try {
+    const resp = await fetch('/api/import_playlist_url/queue', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({playlist_name:_playlistImportData.playlist_name,album_artist:_playlistImportData.album_artist,is_compilation:_playlistImportData.is_compilation,tracks:_playlistImportData.tracks})});
+    const data = await resp.json();
+    if (!resp.ok || !data.success) { statusEl.className='alert alert-danger'; statusEl.textContent='Error: '+(data.error||'Unknown error'); statusEl.style.display=''; }
+    else { statusEl.className='alert alert-success'; statusEl.textContent='Added '+data.queued+' tracks to download queue!'; statusEl.style.display=''; document.getElementById('playlistImportPreview').style.display='none'; _playlistImportData=null; document.getElementById('playlistImportUrl').value=''; }
+  } catch(e) { statusEl.className='alert alert-danger'; statusEl.textContent='Network error: '+e.message; statusEl.style.display=''; }
+  btn.disabled=false; btn.innerHTML='<i class="bi bi-plus-circle"></i> Add All to Queue';
+}
 </script>
 {% endblock %}
