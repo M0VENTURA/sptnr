@@ -1421,6 +1421,30 @@
                         <i class="bi bi-search"></i> Discogs
                     </button>
                 </div>
+                <div class="mb-3">
+                    <button class="btn btn-sm btn-link text-decoration-none p-0 text-muted" type="button" data-bs-toggle="collapse" data-bs-target="#mbManualSearchCollapse">
+                        <i class="bi bi-pencil-square me-1"></i>Search with different terms
+                    </button>
+                    <div class="collapse" id="mbManualSearchCollapse">
+                        <div class="card card-body py-2 px-3 mt-2 bg-dark-subtle border">
+                            <div class="row g-2 align-items-end">
+                                <div class="col">
+                                    <label class="form-label form-label-sm mb-1">Artist</label>
+                                    <input type="text" id="mbManualArtist" class="form-control form-control-sm" placeholder="Artist name" value="{{ artist_name }}">
+                                </div>
+                                <div class="col">
+                                    <label class="form-label form-label-sm mb-1">Album</label>
+                                    <input type="text" id="mbManualAlbum" class="form-control form-control-sm" placeholder="Album name" value="{{ album_name }}">
+                                </div>
+                                <div class="col-auto">
+                                    <button class="btn btn-sm btn-outline-info" onclick="lookupAlbumMusicBrainzManual()">
+                                        <i class="bi bi-search"></i> Search
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <div id="albumLookupResults"></div>
             </div>
         </div>
@@ -1475,6 +1499,34 @@
         })
         .catch(error => {
             resultsDiv.innerHTML = '<div class="alert alert-danger">Network error: ' + error.message + '</div>';
+        });
+    }
+
+    function lookupAlbumMusicBrainzManual() {
+        const artist = (document.getElementById('mbManualArtist').value || '').trim();
+        const album = (document.getElementById('mbManualAlbum').value || '').trim();
+        if (!artist || !album) {
+            alert('Please enter both artist and album names.');
+            return;
+        }
+        const resultsDiv = document.getElementById('albumLookupResults');
+        resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching MusicBrainz...';
+
+        fetch('/api/album/musicbrainz', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ album: album, artist: artist, existing_mbid: null })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + escapeHtml(data.error) + '</div>';
+                return;
+            }
+            displayAlbumResults(data.results, 'musicbrainz');
+        })
+        .catch(error => {
+            resultsDiv.innerHTML = '<div class="alert alert-danger">Network error: ' + escapeHtml(error.message) + '</div>';
         });
     }
 
@@ -1570,9 +1622,15 @@
                                 <div class="small text-muted mb-2">
                                     <strong>MBID:</strong> <code style="font-size: 0.75rem;">${result.mbid}</code>
                                 </div>
-                                 <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.mbid}', '', '${result.cover_art_url || ''}', '')">
-                                    <i class="bi bi-check-circle"></i> Use This Album
-                                </button>
+                                 <div class="d-flex gap-2 flex-wrap">
+                                    <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.mbid}', '', '${result.cover_art_url || ''}', '')">
+                                        <i class="bi bi-check-circle"></i> Use This Album
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="showReleaseGroupReleases('${result.mbid}', '${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', this)" title="Show all specific releases in this release group">
+                                        <i class="bi bi-list-ul"></i> Pick Release
+                                    </button>
+                                </div>
+                                <div id="rg-releases-${result.mbid}" class="mt-2" style="display:none;"></div>
                             </div>
                         </div>
                     </div>
@@ -1637,6 +1695,68 @@
         html += '</div>';
         
         resultsDiv.innerHTML = html;
+    }
+
+    async function showReleaseGroupReleases(rgMbid, title, year, albumType, btn) {
+        const containerId = 'rg-releases-' + rgMbid;
+        const container = document.getElementById(containerId);
+        if (!container) return;
+
+        if (container.style.display !== 'none') {
+            container.style.display = 'none';
+            btn.innerHTML = '<i class="bi bi-list-ul"></i> Pick Release';
+            return;
+        }
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+
+        try {
+            const resp = await fetch('/api/album/musicbrainz/release-group/releases', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ release_group_mbid: rgMbid })
+            });
+            const data = await resp.json();
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-list-ul"></i> Pick Release';
+
+            if (!data.success || !data.releases || data.releases.length === 0) {
+                container.innerHTML = '<small class="text-muted">No specific releases found.</small>';
+                container.style.display = '';
+                return;
+            }
+
+            let html = '<div class="list-group list-group-flush mt-1" style="font-size: 0.82rem;">';
+            for (const r of data.releases) {
+                const fmt = r.formats.join(' + ') || 'Unknown format';
+                const discs = r.disc_count > 1 ? ` · ${r.disc_count} discs` : '';
+                const country = r.country ? ` · ${r.country}` : '';
+                const disambiguation = r.disambiguation ? ` (${escapeHtml(r.disambiguation)})` : '';
+                const safeTitle = escapeHtml(r.title);
+                const safeId = escapeHtml(r.id);
+                html += `
+                    <div class="list-group-item list-group-item-action py-1 px-2 d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>${safeTitle}${disambiguation}</strong>
+                            <span class="text-muted ms-2">${escapeHtml(r.date || '?')}${escapeHtml(country)} · ${escapeHtml(fmt)} · ${r.track_count} tracks${escapeHtml(discs)}</span>
+                        </div>
+                        <button class="btn btn-xs btn-primary btn-sm py-0 px-1 ms-2" style="font-size:0.75rem; white-space:nowrap;"
+                            onclick="populateAlbumFields('${escapeJsString(r.title)}', '${escapeHtml(r.date ? r.date.slice(0,4) : year)}', '${escapeHtml(albumType)}', '${safeId}', '', '${escapeJsString(r.cover_art_url || '')}', '')">
+                            Use
+                        </button>
+                    </div>`;
+            }
+            html += '</div>';
+
+            container.innerHTML = html;
+            container.style.display = '';
+        } catch (e) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-list-ul"></i> Pick Release';
+            container.innerHTML = `<small class="text-danger">Error: ${escapeHtml(e.message)}</small>`;
+            container.style.display = '';
+        }
     }
 
     function applyAlbumMBID(mbid, title, coverArtUrl) {
@@ -2439,6 +2559,9 @@
             if (trackComp.diff_fields.includes('duration')) {
                 diffParts.push(`Length: ${escapeHtml(trackComp.library_duration || '—')} → ${escapeHtml(trackComp.mb_duration || '—')}`);
             }
+            if (trackComp.diff_fields.includes('disc_number')) {
+                diffParts.push(`Disc: ${escapeHtml(String(trackComp.library_disc_number || 1))} → ${escapeHtml(String(trackComp.mb_disc_number))}`);
+            }
 
             const updateRow = document.createElement('tr');
             updateRow.className = 'mb-update-row';
@@ -2484,6 +2607,8 @@
             payload.year = String(trackComp.mb_year);
         if (trackComp.mb_recording_id)
             payload.mbid = trackComp.mb_recording_id;
+        if (trackComp.diff_fields && trackComp.diff_fields.includes('disc_number'))
+            payload.disc_number = trackComp.mb_disc_number;
 
         try {
             const resp = await fetch('/api/track/update-metadata', {
@@ -2543,6 +2668,7 @@
             if (trackComp.diff_fields.includes('track_number')) payload.track_number = String(trackComp.mb_track_number);
             if (trackComp.diff_fields.includes('year')) payload.year = String(trackComp.mb_year);
             if (trackComp.mb_recording_id) payload.mbid = trackComp.mb_recording_id;
+            if (trackComp.diff_fields.includes('disc_number')) payload.disc_number = trackComp.mb_disc_number;
 
             try {
                 const resp = await fetch('/api/track/update-metadata', {

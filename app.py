@@ -34132,6 +34132,59 @@ def api_album_musicbrainz_lookup():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/album/musicbrainz/release-group/releases", methods=["POST"])
+def api_release_group_releases():
+    """Fetch all specific releases in a MusicBrainz release group."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        rg_mbid = (data.get("release_group_mbid") or "").strip()
+        if not rg_mbid:
+            return jsonify({"error": "release_group_mbid is required"}), 400
+
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        time.sleep(1)
+        resp = requests.get(
+            "https://musicbrainz.org/ws/2/release",
+            params={
+                "release-group": rg_mbid,
+                "fmt": "json",
+                "inc": "media",
+                "limit": 50,
+            },
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        releases_data = resp.json().get("releases", []) or []
+
+        releases = []
+        for r in releases_data:
+            media = r.get("media", [])
+            total_tracks = sum(m.get("track-count", 0) for m in media)
+            disc_count = len(media)
+            formats = list({m.get("format", "") for m in media if m.get("format")})
+            releases.append({
+                "id": r.get("id", ""),
+                "title": r.get("title", ""),
+                "date": r.get("date", ""),
+                "country": r.get("country", ""),
+                "status": r.get("status", ""),
+                "disambiguation": r.get("disambiguation", ""),
+                "track_count": total_tracks,
+                "disc_count": disc_count,
+                "formats": formats,
+                "cover_art_url": f"https://coverartarchive.org/release/{r.get('id')}/front-250" if r.get("id") else "",
+            })
+
+        releases.sort(key=lambda x: (x["date"] == "", x["date"]))
+
+        return jsonify({"success": True, "releases": releases}), 200
+
+    except Exception as e:
+        logging.error(f"[release_group_releases] Error: {e}")
+        return jsonify({"error": "Failed to fetch releases"}), 500
+
+
 @app.route("/api/album/musicbrainz/compare", methods=["POST"])
 def api_album_musicbrainz_compare():
     """Compare MusicBrainz release tracks with library tracks to identify metadata that needs updating.
@@ -34341,6 +34394,12 @@ def api_album_musicbrainz_compare():
                 if mb_duration_sec is not None and lib_duration_sec is not None:
                     if abs(mb_duration_sec - lib_duration_sec) > _DURATION_TOLERANCE_SEC:
                         diff_fields.append("duration")
+
+                # Disc number: flag if library disc_number differs from MB disc_number
+                lib_disc_val = int(lib_track.get("disc_number") or 1)
+                entry["library_disc_number"] = lib_disc_val
+                if lib_disc_val != disc:
+                    diff_fields.append("disc_number")
 
                 entry["diff_fields"] = diff_fields
                 entry["needs_update"] = len(diff_fields) > 0
