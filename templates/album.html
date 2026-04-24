@@ -1729,9 +1729,9 @@
 
             let html = '<div class="list-group list-group-flush mt-1" style="font-size: 0.82rem;">';
             for (const r of data.releases) {
-                const fmt = r.formats.join(' + ') || 'Unknown format';
+                const fmt = escapeHtml(r.formats.join(' + ') || 'Unknown format');
                 const discs = r.disc_count > 1 ? ` · ${r.disc_count} discs` : '';
-                const country = r.country ? ` · ${r.country}` : '';
+                const country = r.country ? ` · ${escapeHtml(r.country)}` : '';
                 const disambiguation = r.disambiguation ? ` (${escapeHtml(r.disambiguation)})` : '';
                 const safeTitle = escapeHtml(r.title);
                 const safeId = escapeHtml(r.id);
@@ -1739,7 +1739,7 @@
                     <div class="list-group-item list-group-item-action py-1 px-2 d-flex justify-content-between align-items-center">
                         <div>
                             <strong>${safeTitle}${disambiguation}</strong>
-                            <span class="text-muted ms-2">${escapeHtml(r.date || '?')}${escapeHtml(country)} · ${escapeHtml(fmt)} · ${r.track_count} tracks${escapeHtml(discs)}</span>
+                            <span class="text-muted ms-2">${escapeHtml(r.date || '?')}${country} · ${fmt} · ${r.track_count} tracks${discs}</span>
                         </div>
                         <button class="btn btn-xs btn-primary btn-sm py-0 px-1 ms-2" style="font-size:0.75rem; white-space:nowrap;"
                             onclick="populateAlbumFields('${escapeJsString(r.title)}', '${escapeHtml(r.date ? r.date.slice(0,4) : year)}', '${escapeHtml(albumType)}', '${safeId}', '', '${escapeJsString(r.cover_art_url || '')}', '')">
