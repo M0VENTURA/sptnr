@@ -19740,7 +19740,7 @@ def api_get_banned_words():
         return jsonify({'success': True, 'words': result}), 200
     except Exception as e:
         logging.error(f"[banned_words] GET error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 @app.route("/api/slsk/banned-words", methods=["POST"])
@@ -19775,7 +19775,7 @@ def api_add_banned_word():
         return jsonify({'success': True, 'word': word, 'is_banned': is_banned}), 200
     except Exception as e:
         logging.error(f"[banned_words] POST error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 @app.route("/api/slsk/banned-words/<path:word>", methods=["DELETE"])
@@ -19791,7 +19791,7 @@ def api_delete_banned_word(word):
         return jsonify({'success': True, 'word': word}), 200
     except Exception as e:
         logging.error(f"[banned_words] DELETE error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 @app.route("/downloads/banned-words")

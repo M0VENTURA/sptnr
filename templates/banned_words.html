@@ -79,7 +79,7 @@ async function loadWords() {
                     <span class="badge bg-danger d-flex align-items-center gap-1" style="font-size:0.9rem; padding: 0.4em 0.7em;">
                         <span>${escapeHtml(w.word)}</span>
                         <small class="opacity-75">(${w.zero_result_count} searches)</small>
-                        <button class="btn-close btn-close-white ms-1" style="font-size:0.6rem;" onclick="removeWord('${escapeHtml(w.word)}')" title="Unban"></button>
+                        <button class="btn-close btn-close-white ms-1" style="font-size:0.6rem;" data-word="${escapeHtml(w.word)}" data-action="remove" title="Unban"></button>
                     </span>`).join('') +
                 '</div>';
         }
@@ -94,18 +94,30 @@ async function loadWords() {
                     <span class="badge bg-warning text-dark d-flex align-items-center gap-1" style="font-size:0.9rem; padding: 0.4em 0.7em;">
                         <span>${escapeHtml(w.word)}</span>
                         <small class="opacity-75">(${w.zero_result_count} searches)</small>
-                        <button class="btn btn-sm btn-danger py-0 px-1 ms-1" style="font-size:0.65rem;" onclick="banSuggested('${escapeHtml(w.word)}')">Ban</button>
-                        <button class="btn btn-sm btn-secondary py-0 px-1" style="font-size:0.65rem;" onclick="removeWord('${escapeHtml(w.word)}')">Dismiss</button>
+                        <button class="btn btn-sm btn-danger py-0 px-1 ms-1" style="font-size:0.65rem;" data-word="${escapeHtml(w.word)}" data-action="ban">Ban</button>
+                        <button class="btn btn-sm btn-secondary py-0 px-1" style="font-size:0.65rem;" data-word="${escapeHtml(w.word)}" data-action="remove">Dismiss</button>
                     </span>`).join('') +
                 '</div>';
         }
+
+        // Attach delegated event listeners after rendering
+        document.getElementById('bannedWordsList').addEventListener('click', handleWordAction);
+        document.getElementById('suggestedWordsList').addEventListener('click', handleWordAction);
     } catch(e) {
         console.error('Failed to load banned words:', e);
     }
 }
 
-async function addBannedWord() {
-    const input = document.getElementById('newWordInput');
+async function handleWordAction(e) {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const word = btn.dataset.word;
+    const action = btn.dataset.action;
+    if (action === 'remove') await removeWord(word);
+    else if (action === 'ban') await banSuggested(word);
+}
+
+async function addBannedWord() {    const input = document.getElementById('newWordInput');
     const word = (input.value || '').trim().toLowerCase();
     if (!word) { alert('Please enter a word.'); return; }
     try {
