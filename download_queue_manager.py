@@ -999,13 +999,41 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None, copy_only=
     os.makedirs(os.path.dirname(final_dest_path), exist_ok=True)
 
     if os.path.exists(final_dest_path):
-        return {
-            "success": True,
-            "target_path": final_dest_path,
-            "error": None,
-            "skipped": True,
-            "converted": convert_flac_to_mp3,
-        }
+        # Validate the existing file before accepting it as a valid skip.
+        _existing_valid = False
+        if MutagenFile is not None:
+            try:
+                _mf = MutagenFile(final_dest_path)
+                if _mf is not None and _mf.info is not None:
+                    _dur = getattr(_mf.info, 'length', None)
+                    if _dur is not None and float(_dur) >= 1.0:
+                        _existing_valid = True
+            except Exception:
+                pass
+        else:
+            # mutagen not available — assume the file is valid (safe fallback)
+            _existing_valid = True
+
+        if _existing_valid:
+            return {
+                "success": True,
+                "target_path": final_dest_path,
+                "error": None,
+                "skipped": True,
+                "converted": convert_flac_to_mp3,
+            }
+        else:
+            # Existing file is corrupt/empty — rename it and fall through to normal copy
+            try:
+                os.rename(final_dest_path, final_dest_path + '.conflict')
+                logger.warning(
+                    f"[TRANSFER] Existing file at {final_dest_path!r} appears corrupt; "
+                    "renamed to .conflict and re-copying"
+                )
+            except Exception as _rename_err:
+                logger.warning(
+                    f"[TRANSFER] Could not rename corrupt file {final_dest_path!r}: {_rename_err}"
+                )
 
     if convert_flac_to_mp3:
         bitrate_kbps = int(settings.get("mp3_bitrate_kbps", 320) or 320)
@@ -1299,6 +1327,10 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 # the strict metadata/duration validation that guards automatic
                 # downloads from mis-matches.
                 'is_manual_download': "INTEGER DEFAULT 0",
+                # Timestamp of the last time MusicBrainz metadata was refreshed
+                # for this queue item.  Used by the freshness check in
+                # search_and_download() to avoid hitting MB on every retry.
+                'mb_last_checked_at': "TIMESTAMP",
             }
 
             for col, col_type in required_cols.items():

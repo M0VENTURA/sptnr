@@ -1346,7 +1346,163 @@ def api_spotify_playlist_tracks_with_matching(playlist_id):
         logging.error(f"Failed to fetch playlist {playlist_id} tracks: {e}", exc_info=True)
         return jsonify({"success": False, "error": f"Failed to fetch playlist: {str(e)}"}), 500
 
-# --- Create Playlist Download Session ---
+# --- Import playlist from URL (Spotify / Apple Music) ---
+@app.route("/api/import_playlist_url", methods=["POST"])
+def api_import_playlist_url():
+    """Preview tracks from a Spotify or Apple Music playlist URL.
+
+    Body: {"url": "..."}
+    Returns track list with artist, title, album, duration_ms, track_number plus
+    playlist_name, album_artist, is_compilation, and service fields.
+    """
+    try:
+        data = request.json or {}
+        url = (data.get("url") or "").strip()
+        if not url:
+            return jsonify({"success": False, "error": "url is required"}), 400
+
+        # --- Spotify ---
+        spotify_playlist_id = None
+        if "open.spotify.com/playlist/" in url:
+            # e.g. https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
+            _path = url.split("open.spotify.com/playlist/")[1].split("?")[0].split("/")[0]
+            spotify_playlist_id = _path
+        elif url.startswith("spotify:playlist:"):
+            spotify_playlist_id = url.split("spotify:playlist:")[1].split("?")[0]
+
+        if spotify_playlist_id:
+            config_data, _ = _read_yaml(CONFIG_PATH)
+            spotify_config = config_data.get("api_integrations", {}).get("spotify", {})
+            client_id = spotify_config.get("client_id", "")
+            client_secret = spotify_config.get("client_secret", "")
+            if not client_id or not client_secret:
+                return jsonify({
+                    "success": False,
+                    "error": "Spotify not configured. Add client_id/client_secret to config.yaml",
+                }), 400
+
+            from api_clients.spotify import SpotifyClient
+            import requests as _req
+            _sp = SpotifyClient(client_id, client_secret)
+
+            # Fetch playlist metadata (name)
+            playlist_name = spotify_playlist_id
+            try:
+                _ph = _sp._headers()
+                _meta = _sp.session.get(
+                    f"https://api.spotify.com/v1/playlists/{spotify_playlist_id}",
+                    headers=_ph,
+                    params={"fields": "name"},
+                    timeout=(5, 15),
+                )
+                if _meta.status_code == 200:
+                    playlist_name = _meta.json().get("name") or playlist_name
+            except Exception:
+                pass
+
+            raw_tracks = _sp.get_playlist_tracks(spotify_playlist_id)
+            tracks = []
+            for idx, t in enumerate(raw_tracks, start=1):
+                tracks.append({
+                    "track_number": idx,
+                    "artist": t.get("artist", ""),
+                    "title": t.get("title", ""),
+                    "album": t.get("album", ""),
+                    "duration_ms": t.get("duration_ms") or 0,
+                })
+
+            # Determine album_artist
+            artists = [t["artist"] for t in tracks if t["artist"]]
+            primary_artists = set(a.split(",")[0].strip() for a in artists)
+            album_artist = list(primary_artists)[0] if len(primary_artists) == 1 else "Various Artists"
+            is_compilation = album_artist == "Various Artists"
+
+            return jsonify({
+                "success": True,
+                "service": "spotify",
+                "playlist_name": playlist_name,
+                "tracks": tracks,
+                "album_artist": album_artist,
+                "is_compilation": is_compilation,
+            })
+
+        # --- Apple Music ---
+        if "music.apple.com" in url and "/playlist/" in url:
+            # Apple Music public playlists: https://music.apple.com/us/playlist/name/pl.xxx
+            return jsonify({
+                "success": False,
+                "error": (
+                    "Apple Music playlist import requires Apple Music API authentication "
+                    "which is not yet configured. Only Spotify playlists are supported."
+                ),
+            }), 400
+
+        return jsonify({
+            "success": False,
+            "error": "Unrecognised playlist URL. Provide a Spotify or Apple Music playlist link.",
+        }), 400
+
+    except Exception as _e:
+        logging.error(f"[import_playlist_url] Error: {_e}", exc_info=True)
+        return jsonify({"success": False, "error": str(_e)}), 500
+
+
+@app.route("/api/import_playlist_url/queue", methods=["POST"])
+def api_import_playlist_url_queue():
+    """Add previewed playlist tracks to the download queue.
+
+    Body: {
+        "playlist_name": "...",
+        "album_artist": "...",
+        "is_compilation": true|false,
+        "tracks": [{"artist": ..., "title": ..., "duration_ms": ..., "track_number": ...}, ...]
+    }
+    Returns {"success": true, "queued": N, "skipped": M}
+    """
+    try:
+        data = request.json or {}
+        playlist_name = (data.get("playlist_name") or "").strip()
+        album_artist = (data.get("album_artist") or "").strip() or "Various Artists"
+        tracks = data.get("tracks") or []
+
+        if not tracks:
+            return jsonify({"success": False, "error": "No tracks provided"}), 400
+
+        from download_queue_manager import add_to_queue
+        queued_count = 0
+        skipped_count = 0
+
+        for t in tracks:
+            artist = (t.get("artist") or "").strip()
+            title = (t.get("title") or "").strip()
+            if not artist or not title:
+                skipped_count += 1
+                continue
+            duration_ms = t.get("duration_ms") or 0
+            duration_sec = int(duration_ms / 1000) if duration_ms else None
+            result = add_to_queue(
+                artist=artist,
+                title=title,
+                album=playlist_name or None,
+                album_artist=album_artist or None,
+                source="soulseek",
+                priority=5,
+                import_type="song",
+                track_number=t.get("track_number"),
+                duration=duration_sec,
+            )
+            if result:
+                queued_count += 1
+            else:
+                skipped_count += 1
+
+        return jsonify({"success": True, "queued": queued_count, "skipped": skipped_count})
+
+    except Exception as _e:
+        logging.error(f"[import_playlist_url/queue] Error: {_e}", exc_info=True)
+        return jsonify({"success": False, "error": str(_e)}), 500
+
+
 @app.route("/api/playlist/session", methods=["POST"])
 def api_create_playlist_session():
     """

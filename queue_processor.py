@@ -2038,6 +2038,75 @@ def search_and_download(queue_id, queue_item, client):
     try:
         search_query = queue_item['search_query']
 
+        # MB freshness check: if the item has a recording_mbid and the metadata
+        # was last verified more than 24 hours ago (or never), refresh it now.
+        try:
+            _recording_mbid = (queue_item.get('recording_mbid') or '').strip()
+            if _recording_mbid:
+                _mb_last = queue_item.get('mb_last_checked_at')
+                _stale = True
+                if _mb_last:
+                    try:
+                        _checked_dt = datetime.fromisoformat(str(_mb_last))
+                        if (datetime.now() - _checked_dt).total_seconds() < 86400:
+                            _stale = False
+                    except Exception:
+                        pass
+                if _stale:
+                    from api_clients.musicbrainz import _USER_AGENT as _MB_UA
+                    import requests as _mb_requests
+                    _mb_url = (
+                        f"https://musicbrainz.org/ws/2/recording/{_recording_mbid}"
+                        "?inc=artist-credits&fmt=json"
+                    )
+                    _mb_resp = _mb_requests.get(
+                        _mb_url,
+                        headers={"User-Agent": _MB_UA, "Accept": "application/json"},
+                        timeout=10,
+                    )
+                    if _mb_resp.status_code == 200:
+                        _mb_data = _mb_resp.json()
+                        _updates = {}
+                        _mb_dur_ms = _mb_data.get('length')
+                        if _mb_dur_ms:
+                            _mb_dur_sec = int(round(_mb_dur_ms / 1000))
+                            if queue_item.get('duration') is None or abs(
+                                float(queue_item.get('duration') or 0) - _mb_dur_sec
+                            ) > 2:
+                                _updates['duration'] = _mb_dur_sec
+                        _mb_title = (_mb_data.get('title') or '').strip()
+                        if _mb_title and _mb_title != (queue_item.get('title') or '').strip():
+                            _updates['title'] = _mb_title
+                        _mb_ac = _mb_data.get('artist-credit') or []
+                        if _mb_ac:
+                            _parts = []
+                            for _cr in _mb_ac:
+                                if isinstance(_cr, dict):
+                                    _name = _cr.get('name') or (_cr.get('artist') or {}).get('name') or ''
+                                    _join = _cr.get('joinphrase') or ''
+                                    _parts.append(_name + _join)
+                            _mb_artist = ''.join(_parts).strip()
+                            if _mb_artist and not (queue_item.get('artist') or '').strip():
+                                _updates['artist'] = _mb_artist
+                        _updates['mb_last_checked_at'] = datetime.now().isoformat()
+                        if _updates:
+                            update_queue_item(queue_id, **_updates)
+                            queue_item = dict(queue_item)
+                            queue_item.update(_updates)
+                            # Keep search_query in sync with potentially updated artist/title
+                            if 'artist' in _updates or 'title' in _updates:
+                                _new_artist = queue_item.get('artist', '')
+                                _new_title = queue_item.get('title', '')
+                                if _new_artist and _new_title:
+                                    queue_item['search_query'] = f"{_new_artist} {_new_title}"
+                                    search_query = queue_item['search_query']
+                        else:
+                            update_queue_item(queue_id, mb_last_checked_at=datetime.now().isoformat())
+                            queue_item = dict(queue_item)
+                            queue_item['mb_last_checked_at'] = datetime.now().isoformat()
+        except Exception as _mb_fresh_err:
+            logger.debug(f"Queue {queue_id}: MB freshness check failed (non-fatal): {_mb_fresh_err}")
+
         # Pre-download existence checks: skip download if the track already exists
         # in the local database or in Navidrome (catches items indexed there but not
         # yet scanned into the local DB).
@@ -3455,6 +3524,238 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
     return now_ts
 
 
+def process_copy_recommended_items(now_ts, last_run_ts, interval_seconds=120):
+    """Periodically auto-copy items marked 'copy_recommended' to the music library.
+
+    Items reach this status when the track already exists in the library under a
+    different album and ``source_music_path`` was recorded.  This function copies
+    the source file to the canonical destination so the track appears under the
+    correct album without a fresh Soulseek download.
+
+    Args:
+        now_ts: Current timestamp (time.time())
+        last_run_ts: Timestamp returned by the previous call, or None
+        interval_seconds: Minimum seconds between sweeps (default 120)
+
+    Returns:
+        Updated last-run timestamp
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    # Respect the auto_copy_matched_tracks config flag.
+    try:
+        _config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        _cfg: dict = {}
+        if os.path.exists(_config_path):
+            import yaml as _yaml
+            with open(_config_path, 'r', encoding='utf-8') as _f:
+                _cfg = _yaml.safe_load(_f) or {}
+        if not _cfg.get('downloads', {}).get('auto_copy_matched_tracks', True):
+            return now_ts
+    except Exception as _cfg_err:
+        logger.debug(f"[COPY_RECOMMENDED] Could not read config: {_cfg_err}")
+
+    try:
+        import psycopg2.extras
+        from download_queue_manager import (
+            _get_postgres_conn_from_app_or_fallback,
+            move_single_track_to_music_dir,
+            update_queue_item,
+        )
+        from download_file_verification import verify_file_in_music, mark_queue_item_moved
+
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute("""
+            SELECT id, artist, title, album, album_artist, track_number, disc_number,
+                   year, release_id, release_mbid, recording_mbid, release_source,
+                   source_music_path, duration
+            FROM download_queue
+            WHERE status = 'copy_recommended'
+              AND source_music_path IS NOT NULL
+              AND source_music_path != ''
+            ORDER BY id ASC
+            LIMIT 50
+        """)
+        items = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+    except Exception as _db_err:
+        logger.warning(f"[COPY_RECOMMENDED] DB query failed: {_db_err}")
+        return last_run_ts
+
+    if not items:
+        return now_ts
+
+    logger.info(f"[COPY_RECOMMENDED] Processing {len(items)} copy_recommended item(s)")
+    scan_needed = False
+
+    for item in items:
+        src = item.get('source_music_path', '')
+        if not src or not os.path.isfile(src):
+            logger.debug(
+                f"[COPY_RECOMMENDED] Queue {item['id']}: source not found at {src!r}, skipping"
+            )
+            continue
+
+        # Optional: check duration matches within 5-second tolerance.
+        expected_dur = item.get('duration')
+        if expected_dur:
+            try:
+                actual_dur = _extract_audio_file_duration_seconds(src)
+                if actual_dur is not None and abs(actual_dur - float(expected_dur)) > 5:
+                    logger.warning(
+                        f"[COPY_RECOMMENDED] Queue {item['id']}: duration mismatch "
+                        f"(expected {expected_dur}s, got {actual_dur:.1f}s) — skipping"
+                    )
+                    continue
+            except Exception:
+                pass
+
+        try:
+            item_for_move = dict(item)
+            # Setting file_path to source_music_path causes move_single_track_to_music_dir
+            # to auto-detect that the source is already within the music root and use copy.
+            item_for_move['file_path'] = src
+            move_result = move_single_track_to_music_dir(item_for_move)
+            if move_result.get('success'):
+                target_path = move_result.get('target_path')
+                verify_result = verify_file_in_music(item['id'], target_path)
+                if verify_result.get('success') or (target_path and os.path.isfile(target_path)):
+                    mark_queue_item_moved(item['id'], target_path)
+                    update_queue_item(
+                        item['id'],
+                        status='imported',
+                        music_file_path=target_path,
+                        copied_individually=1,
+                        copied_individually_at=datetime.now().isoformat(),
+                    )
+                    logger.info(
+                        f"[COPY_RECOMMENDED] Queue {item['id']}: "
+                        f"'{item.get('artist')} – {item.get('title')}' → {target_path}"
+                    )
+                    scan_needed = True
+                else:
+                    logger.warning(
+                        f"[COPY_RECOMMENDED] Queue {item['id']}: "
+                        f"move verification failed ({verify_result.get('error')})"
+                    )
+            else:
+                logger.warning(
+                    f"[COPY_RECOMMENDED] Queue {item['id']}: "
+                    f"move failed ({move_result.get('error')})"
+                )
+        except Exception as _mv_err:
+            logger.warning(f"[COPY_RECOMMENDED] Queue {item['id']}: error: {_mv_err}")
+
+    if scan_needed:
+        if not _trigger_navidrome_scan():
+            logger.warning(
+                "[COPY_RECOMMENDED] Imports occurred but Navidrome scan trigger failed"
+            )
+
+    return now_ts
+
+
+def verify_completed_import_groups(now_ts, last_run_ts, interval_seconds=300):
+    """Verify that all tracks in recently completed import groups are indexed in Navidrome.
+
+    A group is "completed" when every download_queue row sharing an import_group
+    has status='imported'.  For each such group completed within the last 30
+    minutes this function triggers a Navidrome scan, waits briefly, then calls
+    check_track_exists_in_navidrome() for each track.  Missing tracks are logged
+    as warnings (not re-queued, to avoid infinite loops).
+
+    Args:
+        now_ts: Current timestamp (time.time())
+        last_run_ts: Timestamp returned by the previous call, or None
+        interval_seconds: Minimum seconds between checks (default 300)
+
+    Returns:
+        Updated last-run timestamp
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        import psycopg2.extras
+        from download_queue_manager import _get_postgres_conn_from_app_or_fallback
+
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Cutoff: groups completed in the last 30 minutes
+        cutoff = (datetime.now() - timedelta(minutes=30)).isoformat()
+
+        # Find import_groups where every row is 'imported' and at least one was
+        # copied within the cutoff window.
+        cursor.execute("""
+            SELECT import_group
+            FROM download_queue
+            WHERE import_group IS NOT NULL AND import_group != ''
+            GROUP BY import_group
+            HAVING
+                COUNT(*) FILTER (WHERE status != 'imported') = 0
+                AND MAX(copied_individually_at) >= %s
+        """, (cutoff,))
+        groups = [row['import_group'] for row in cursor.fetchall()]
+
+        if not groups:
+            conn.close()
+            return now_ts
+
+        # Fetch all items for each completed group
+        group_items: dict[str, list] = {}
+        for grp in groups:
+            cursor.execute("""
+                SELECT id, artist, title, album, album_artist, duration,
+                       track_number, music_file_path
+                FROM download_queue
+                WHERE import_group = %s
+                ORDER BY track_number ASC NULLS LAST
+            """, (grp,))
+            group_items[grp] = [dict(r) for r in cursor.fetchall()]
+
+        conn.close()
+    except Exception as _db_err:
+        logger.warning(f"[VERIFY_GROUPS] DB query failed: {_db_err}")
+        return last_run_ts
+
+    logger.info(
+        f"[VERIFY_GROUPS] Verifying {len(groups)} completed import group(s)"
+    )
+
+    _trigger_navidrome_scan()
+    time.sleep(5)  # Allow Navidrome time to index
+
+    for grp, items in group_items.items():
+        missing = []
+        for item in items:
+            try:
+                exists, reason, _path, _alb = check_track_exists_in_navidrome(item)
+                if not exists:
+                    missing.append(item)
+            except Exception as _chk_err:
+                logger.debug(
+                    f"[VERIFY_GROUPS] Could not check {item.get('title')!r}: {_chk_err}"
+                )
+
+        if missing:
+            logger.warning(
+                f"[VERIFY_GROUPS] Group {grp!r}: "
+                f"{len(missing)}/{len(items)} track(s) not found in Navidrome after scan: "
+                + ", ".join(
+                    f"'{t.get('artist')} – {t.get('title')}'" for t in missing
+                )
+            )
+        else:
+            logger.info(
+                f"[VERIFY_GROUPS] Group {grp!r}: all {len(items)} track(s) verified in Navidrome"
+            )
+
+    return now_ts
+
+
 def maybe_enrich_queue_items_from_mb(now_ts, last_run_ts, interval_seconds=600):
     """Periodically fetch missing duration / artist for queued items from MusicBrainz.
 
@@ -3676,6 +3977,8 @@ def run_processor(interval=30):
     last_retry_completed_ts = None
     last_cleanup_imported_ts = None
     last_mb_enrich_ts = None
+    last_copy_recommended_ts = None
+    last_verify_import_groups_ts = None
 
     try:
         while True:
@@ -3722,6 +4025,8 @@ def run_processor(interval=30):
                     last_cleanup_imported_ts = now_ts
 
                 last_navidrome_scan_ts = trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
+                last_copy_recommended_ts = process_copy_recommended_items(now_ts, last_copy_recommended_ts)
+                last_verify_import_groups_ts = verify_completed_import_groups(now_ts, last_verify_import_groups_ts)
                 
                 if processed > 0:
                     logger.info(f"Processed {processed} queue items")
