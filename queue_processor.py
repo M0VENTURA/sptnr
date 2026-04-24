@@ -2056,7 +2056,10 @@ def search_and_download(queue_id, queue_item, client):
                 _stale = True
                 if _mb_last:
                     try:
-                        _checked_dt = datetime.fromisoformat(str(_mb_last))
+                        if isinstance(_mb_last, datetime):
+                            _checked_dt = _mb_last
+                        else:
+                            _checked_dt = datetime.fromisoformat(str(_mb_last))
                         if (datetime.now() - _checked_dt).total_seconds() < _MB_FRESHNESS_THRESHOLD_SECONDS:
                             _stale = False
                     except Exception:

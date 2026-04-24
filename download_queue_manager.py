@@ -225,6 +225,9 @@ _mb_enrichment_executor = concurrent.futures.ThreadPoolExecutor(
 # indefinitely when the music and downloads directories reside on different
 # filesystems and a byte-by-byte copy is required.
 _TRANSFER_TIMEOUT_SECONDS = 3600  # 1 hour
+# Minimum audio duration (seconds) for an existing destination file to be
+# considered valid.  Files shorter than this are treated as corrupt.
+_MIN_VALID_FILE_DURATION_SECONDS = 1.0
 
 # Dedicated thread-pool for blocking file-transfer operations so they never
 # freeze the main queue-processor event loop.
@@ -1006,7 +1009,7 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None, copy_only=
                 _mf = MutagenFile(final_dest_path)
                 if _mf is not None and _mf.info is not None:
                     _dur = getattr(_mf.info, 'length', None)
-                    if _dur is not None and float(_dur) >= 1.0:
+                    if _dur is not None and float(_dur) >= _MIN_VALID_FILE_DURATION_SECONDS:
                         _existing_valid = True
             except Exception:
                 pass
