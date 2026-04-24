@@ -19676,6 +19676,7 @@ def slskd_queue_download():
                     found_filename = %s,
                     slskd_username = %s,
                     slskd_state = %s,
+                    is_manual_download = 1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
                 """,

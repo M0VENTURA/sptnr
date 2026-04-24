@@ -306,7 +306,10 @@ def fetch_musicbrainz_release_metadata(release_id):
             'artist': '',
             'disc_count': len(mb_data.get('media', [])),
             'cover_art': None,
-            'tracks': []
+            'tracks': [],
+            # Include the actual release MBID so callers can embed the correct
+            # tag even when the input release_id was a release-group MBID.
+            'release_mbid': mb_data.get('id', ''),
         }
         
         # Get album artist (use joinphrase for correct multi-artist formatting)

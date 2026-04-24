@@ -2493,31 +2493,38 @@ def check_completed_downloads():
 
             if abs_path:
                 candidate_rel = os.path.relpath(abs_path, DOWNLOADS_DIR)
-                is_match, match_source = _file_matches_queue_item(abs_path, item, candidate_rel)
-                if is_match:
+                if item.get('is_manual_download'):
+                    # The user explicitly chose this file via the manual search
+                    # modal; trust their selection without metadata validation.
                     match_found = candidate_rel
-                    match_meta_state = match_source
-                    logger.debug(f"Queue {item_id}: matched via slskd localFilePath: {abs_path}")
+                    match_meta_state = 'manual'
+                    logger.debug(f"Queue {item_id}: manual download accepted via slskd localFilePath: {abs_path}")
                 else:
-                    logger.info(
-                        f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
-                    )
-                    # The file was downloaded specifically for this queue item but its
-                    # content (metadata / duration) does not match what we expected.
-                    # Delete it so the retry downloads a different source rather than
-                    # looping indefinitely on the same mismatched file.
-                    _delete_mismatched_download(
-                        abs_path, item_id,
-                        f"metadata mismatch for slskd-completed file ({match_source})"
-                    )
-                    mark_failed(
-                        item_id,
-                        f"Downloaded file did not match queue item ({match_source} mismatch); "
-                        f"deleted and rescheduled",
-                        schedule_retry=True,
-                        retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
-                    )
-                    continue
+                    is_match, match_source = _file_matches_queue_item(abs_path, item, candidate_rel)
+                    if is_match:
+                        match_found = candidate_rel
+                        match_meta_state = match_source
+                        logger.debug(f"Queue {item_id}: matched via slskd localFilePath: {abs_path}")
+                    else:
+                        logger.info(
+                            f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
+                        )
+                        # The file was downloaded specifically for this queue item but its
+                        # content (metadata / duration) does not match what we expected.
+                        # Delete it so the retry downloads a different source rather than
+                        # looping indefinitely on the same mismatched file.
+                        _delete_mismatched_download(
+                            abs_path, item_id,
+                            f"metadata mismatch for slskd-completed file ({match_source})"
+                        )
+                        mark_failed(
+                            item_id,
+                            f"Downloaded file did not match queue item ({match_source} mismatch); "
+                            f"deleted and rescheduled",
+                            schedule_retry=True,
+                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                        )
+                        continue
 
             # 2. Exact filename match against filesystem files
             if match_found is None and found_fn:
@@ -2526,6 +2533,11 @@ def check_completed_downloads():
                     found_norm = found_fn.replace('\\', '/')
                     if rel_norm == found_norm or os.path.basename(rel_norm) == os.path.basename(found_norm):
                         file_path = os.path.join(DOWNLOADS_DIR, rel_file)
+                        if item.get('is_manual_download'):
+                            # Manual selection: trust the user, skip metadata check.
+                            match_found = rel_file
+                            match_meta_state = 'manual'
+                            break
                         is_match, match_source = _file_matches_queue_item(file_path, item, rel_file)
                         if not is_match:
                             logger.info(
@@ -2666,7 +2678,9 @@ def check_completed_downloads():
                 # secondary check: if the file now has readable artist+title tags and
                 # those tags clearly contradict the queue item, reject and delete the
                 # file rather than importing wrong content.
-                if match_meta_state != 'metadata':
+                # Skip this check for manually-initiated downloads: the user already
+                # confirmed the selection so metadata differences are acceptable.
+                if match_meta_state not in ('metadata', 'manual'):
                     _sec_meta = _metadata_matches_queue_item(file_path, item)
                     if _sec_meta is False:
                         logger.warning(
@@ -2695,6 +2709,9 @@ def check_completed_downloads():
                 # The check is only applied when the queue item carries an
                 # expected duration; items without one are left through because we
                 # have no reliable reference to compare against.
+                # Manual downloads bypass the strict reject/delete path — the user
+                # chose the file intentionally, so duration differences are allowed
+                # (though a warning is logged for transparency).
                 _expected_dur = _normalize_duration_seconds(item.get('duration'))
                 if _expected_dur:
                     _actual_dur = _extract_audio_file_duration_seconds(file_path)
@@ -2702,28 +2719,38 @@ def check_completed_downloads():
                         _dur_diff = abs(_expected_dur - _actual_dur)
                         _dur_tolerance = SLSKD_DURATION_TOLERANCE_SECONDS
                         if _dur_diff > _dur_tolerance:
-                            logger.warning(
-                                f"Queue {item_id}: ✗ pre-copy duration check FAILED — "
-                                f"expected {_expected_dur}s, file is {_actual_dur}s "
-                                f"(diff={_dur_diff}s, tolerance={_dur_tolerance}s); "
-                                f"deleting '{match_found}' and scheduling retry"
+                            if item.get('is_manual_download'):
+                                # Manual selection: log the discrepancy but do
+                                # not delete or reject — the user chose this file.
+                                logger.info(
+                                    f"Queue {item_id}: manual download duration differs from expected "
+                                    f"({_actual_dur}s vs {_expected_dur}s, diff={_dur_diff}s) — "
+                                    f"proceeding at user's request"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Queue {item_id}: ✗ pre-copy duration check FAILED — "
+                                    f"expected {_expected_dur}s, file is {_actual_dur}s "
+                                    f"(diff={_dur_diff}s, tolerance={_dur_tolerance}s); "
+                                    f"deleting '{match_found}' and scheduling retry"
+                                )
+                                _delete_mismatched_download(
+                                    file_path, item_id,
+                                    f"duration mismatch: expected {_expected_dur}s, got {_actual_dur}s"
+                                )
+                                mark_failed(
+                                    item_id,
+                                    f"Pre-copy duration mismatch: expected {_expected_dur}s, "
+                                    f"got {_actual_dur}s (diff={_dur_diff}s); deleted and rescheduled",
+                                    schedule_retry=True,
+                                    retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
+                                )
+                                continue
+                        else:
+                            logger.debug(
+                                f"Queue {item_id}: pre-copy duration OK "
+                                f"(expected {_expected_dur}s, file {_actual_dur}s, diff={_dur_diff}s)"
                             )
-                            _delete_mismatched_download(
-                                file_path, item_id,
-                                f"duration mismatch: expected {_expected_dur}s, got {_actual_dur}s"
-                            )
-                            mark_failed(
-                                item_id,
-                                f"Pre-copy duration mismatch: expected {_expected_dur}s, "
-                                f"got {_actual_dur}s (diff={_dur_diff}s); deleted and rescheduled",
-                                schedule_retry=True,
-                                retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
-                            )
-                            continue
-                        logger.debug(
-                            f"Queue {item_id}: pre-copy duration OK "
-                            f"(expected {_expected_dur}s, file {_actual_dur}s, diff={_dur_diff}s)"
-                        )
                     else:
                         logger.debug(
                             f"Queue {item_id}: pre-copy duration check skipped — "

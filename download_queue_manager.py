@@ -1292,6 +1292,13 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'low_quality_download': "INTEGER DEFAULT 0",
                 # Bitrate (kbps) of the provisional low-quality download.
                 'low_quality_bitrate': "INTEGER",
+                # Set to 1 when the download was initiated by the user via the
+                # manual Soulseek search modal (as opposed to being started
+                # automatically by the queue processor).  Allows check_completed_
+                # downloads() to trust the user's file selection without applying
+                # the strict metadata/duration validation that guards automatic
+                # downloads from mis-matches.
+                'is_manual_download': "INTEGER DEFAULT 0",
             }
 
             for col, col_type in required_cols.items():
@@ -3716,6 +3723,19 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                     if mb_release.get('cover_art'):
                         cover_art_data = mb_release['cover_art']
                         logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Using MusicBrainz album art")
+
+                    # Use the actual release MBID returned by MB — this is
+                    # authoritative and may differ from the input release_id
+                    # when the input was a release-group MBID or similar alias.
+                    _actual_release_mbid = (mb_release.get('release_mbid') or '').strip()
+                    if _actual_release_mbid:
+                        if _actual_release_mbid != tag_metadata.get('release_mbid'):
+                            logger.debug(
+                                f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                                f"release_mbid updated from MB response "
+                                f"{tag_metadata.get('release_mbid') or '(none)'!r} → {_actual_release_mbid!r}"
+                            )
+                        tag_metadata['release_mbid'] = _actual_release_mbid
             except Exception as mb_err:
                 logger.warning(f"[MOVE] Could not fetch MusicBrainz metadata for release {release_id}: {mb_err}")
 
@@ -3770,6 +3790,19 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                     rec_dur_ms = _rec.get('length')
                     if rec_dur_ms and not tag_metadata.get('duration'):
                         tag_metadata['duration_ms'] = int(rec_dur_ms)
+                    # Derive release MBID from the recording's releases list when
+                    # the queue item didn't carry one (common for tracks added via
+                    # Soulseek manual search that were later matched to a recording).
+                    if not tag_metadata.get('release_mbid') and _rec.get('releases'):
+                        for _r in _rec['releases']:
+                            _r_mbid = (_r.get('id') or '').strip()
+                            if _r_mbid:
+                                tag_metadata['release_mbid'] = _r_mbid
+                                logger.debug(
+                                    f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                                    f"release_mbid derived from recording {recording_mbid}: {_r_mbid}"
+                                )
+                                break
                     logger.debug(
                         f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
                         f"enriched from recording MBID {recording_mbid}: "
