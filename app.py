@@ -1427,7 +1427,20 @@ def api_import_playlist_url():
             })
 
         # --- Apple Music ---
-        if "music.apple.com" in url and "/playlist/" in url:
+        try:
+            from urllib.parse import urlparse as _urlparse
+            _parsed_url = _urlparse(url)
+            _is_apple_music = (
+                _parsed_url.hostname is not None
+                and (
+                    _parsed_url.hostname == "music.apple.com"
+                    or _parsed_url.hostname.endswith(".music.apple.com")
+                )
+                and "/playlist/" in (_parsed_url.path or "")
+            )
+        except Exception:
+            _is_apple_music = False
+        if _is_apple_music:
             # Apple Music public playlists: https://music.apple.com/us/playlist/name/pl.xxx
             return jsonify({
                 "success": False,
@@ -1444,7 +1457,7 @@ def api_import_playlist_url():
 
     except Exception as _e:
         logging.error(f"[import_playlist_url] Error: {_e}", exc_info=True)
-        return jsonify({"success": False, "error": str(_e)}), 500
+        return jsonify({"success": False, "error": "Failed to process playlist URL"}), 500
 
 
 @app.route("/api/import_playlist_url/queue", methods=["POST"])
@@ -1500,7 +1513,7 @@ def api_import_playlist_url_queue():
 
     except Exception as _e:
         logging.error(f"[import_playlist_url/queue] Error: {_e}", exc_info=True)
-        return jsonify({"success": False, "error": str(_e)}), 500
+        return jsonify({"success": False, "error": "Failed to add tracks to queue"}), 500
 
 
 @app.route("/api/playlist/session", methods=["POST"])

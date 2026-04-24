@@ -117,6 +117,15 @@ _SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS = 60
 # Scores below this threshold trigger fallback queries (e.g. using album_artist).
 _SLSKD_MIN_ACCEPT_SCORE = 0.45
 
+# MusicBrainz freshness threshold: re-check recording metadata if older than this.
+_MB_FRESHNESS_THRESHOLD_SECONDS = 86400  # 24 hours
+
+# Seconds to wait after triggering a Navidrome scan before querying it.
+_NAVIDROME_INDEXING_WAIT_SECONDS = 5
+
+# Window (minutes) within which completed import groups are verified.
+_IMPORT_GROUP_COMPLETION_WINDOW_MINUTES = 30
+
 # Retry delay (minutes) used for tracks that couldn't be matched today —
 # "no results" and duration-mismatch failures both use this value so that the
 # same track is not hammered on every run.
@@ -2048,7 +2057,7 @@ def search_and_download(queue_id, queue_item, client):
                 if _mb_last:
                     try:
                         _checked_dt = datetime.fromisoformat(str(_mb_last))
-                        if (datetime.now() - _checked_dt).total_seconds() < 86400:
+                        if (datetime.now() - _checked_dt).total_seconds() < _MB_FRESHNESS_THRESHOLD_SECONDS:
                             _stale = False
                     except Exception:
                         pass
@@ -3684,8 +3693,8 @@ def verify_completed_import_groups(now_ts, last_run_ts, interval_seconds=300):
         conn = _get_postgres_conn_from_app_or_fallback()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # Cutoff: groups completed in the last 30 minutes
-        cutoff = (datetime.now() - timedelta(minutes=30)).isoformat()
+        # Cutoff: groups completed in the last _IMPORT_GROUP_COMPLETION_WINDOW_MINUTES minutes
+        cutoff = (datetime.now() - timedelta(minutes=_IMPORT_GROUP_COMPLETION_WINDOW_MINUTES)).isoformat()
 
         # Find import_groups where every row is 'imported' and at least one was
         # copied within the cutoff window.
@@ -3726,7 +3735,7 @@ def verify_completed_import_groups(now_ts, last_run_ts, interval_seconds=300):
     )
 
     _trigger_navidrome_scan()
-    time.sleep(5)  # Allow Navidrome time to index
+    time.sleep(_NAVIDROME_INDEXING_WAIT_SECONDS)  # Allow Navidrome time to index
 
     for grp, items in group_items.items():
         missing = []
