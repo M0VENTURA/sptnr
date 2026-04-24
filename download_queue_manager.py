@@ -1552,6 +1552,37 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     logger.debug(f"Advisory lock release failed: {unlock_err}")
 
 
+def _ensure_banned_words_table(conn=None, cursor=None):
+    """Ensure the slsk_banned_words table exists."""
+    close_conn = conn is None
+    if conn is None:
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS slsk_banned_words (
+                word TEXT PRIMARY KEY,
+                is_banned BOOLEAN NOT NULL DEFAULT FALSE,
+                zero_result_count INTEGER NOT NULL DEFAULT 0,
+                added_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"[banned_words] Could not create slsk_banned_words table: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        if close_conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def execute_write_with_retry(cursor, conn, query, params=(), context="database write", max_retries=5, initial_delay=0.1):
     """Execute a write query with commit retry on transient PostgreSQL errors."""
     delay = initial_delay

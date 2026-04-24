@@ -1893,6 +1893,16 @@ def _build_fallback_search_queries(queue_item, primary_query):
     if album:
         _add(_dqm_sanitize_query(f"{title} {album}"), min_score=0.55)
 
+    # Fallback 3c/3d/3e: year-based queries.  When a release year is known,
+    # combining it with the artist and/or album name helps Soulseek narrow
+    # results to the correct release without relying on an exact title match.
+    year_raw = queue_item.get('year') or queue_item.get('release_year')
+    year_str = str(year_raw).strip() if year_raw else ''
+    if year_str and re.fullmatch(r'\d{4}', year_str) and artist and album:
+        _add(_dqm_sanitize_query(f"{artist} {album} {year_str}"), min_score=0.55)
+        _add(_dqm_sanitize_query(f"{artist} {year_str}"), min_score=0.60)
+        _add(_dqm_sanitize_query(f"{album} {year_str}"), min_score=0.60)
+
     # Fallback 4: title only.  Used when even a partial artist token blocks
     # results (e.g. the artist name is not present in any shared filename at
     # all).  No artist anchor means Soulseek may return files from folders whose
@@ -1901,6 +1911,64 @@ def _build_fallback_search_queries(queue_item, primary_query):
     _add(_dqm_sanitize_query(title), min_score=0.60)
 
     return fallbacks
+
+
+def _get_banned_words() -> set:
+    """Fetch the set of confirmed-banned words from the database."""
+    try:
+        from download_queue_manager import _get_postgres_conn_from_app_or_fallback
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor()
+        cursor.execute("SELECT word FROM slsk_banned_words WHERE is_banned = TRUE")
+        rows = cursor.fetchall()
+        conn.close()
+        return {r[0].lower() if isinstance(r, tuple) else r['word'].lower() for r in rows}
+    except Exception as e:
+        logger.debug(f"[banned_words] Could not fetch banned words: {e}")
+        return set()
+
+
+def _filter_banned_words(query: str, banned: set) -> str:
+    """Remove banned words from a query string."""
+    if not banned:
+        return query
+    words = query.split()
+    filtered = [w for w in words if w.lower() not in banned]
+    result = ' '.join(filtered).strip()
+    return result if len(result) >= 3 else query  # don't return empty/trivial queries
+
+
+def _track_zero_result_words(query: str) -> None:
+    """Increment zero_result_count for individual words in a query that returned 0 results.
+
+    Words shorter than 4 characters, pure digits, and common stop words are skipped.
+    Only words that returned 0 results for 3+ distinct searches are suggested as banned.
+    """
+    _STOP_WORDS = {
+        'the', 'and', 'for', 'with', 'from', 'this', 'that', 'feat', 'live',
+        'edit', 'mix', 'ver', 'version', 'radio', 'remaster', 'remastered',
+        'official', 'audio', 'video', 'lyrics',
+    }
+    try:
+        words = [w for w in re.findall(r'[a-zA-Z]{4,}', query.lower()) if w not in _STOP_WORDS]
+        if not words:
+            return
+        from download_queue_manager import _get_postgres_conn_from_app_or_fallback, _ensure_banned_words_table
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor()
+        _ensure_banned_words_table(conn, cursor)
+        for word in set(words):
+            cursor.execute("""
+                INSERT INTO slsk_banned_words (word, zero_result_count, updated_at)
+                VALUES (%s, 1, NOW())
+                ON CONFLICT (word) DO UPDATE SET
+                    zero_result_count = slsk_banned_words.zero_result_count + 1,
+                    updated_at = NOW()
+            """, (word,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug(f"[banned_words] Could not track zero-result words for '{query}': {e}")
 
 
 def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=None):
@@ -1942,6 +2010,8 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
     best_score = 0.0
     poll_deadline = time.monotonic() + max_wait_seconds
     poll_attempt = 0
+    total_files_seen = 0
+    is_complete = False
 
     while time.monotonic() < poll_deadline:
         # Back-off: poll quickly for the first 10 attempts (responses start
@@ -1971,6 +2041,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                         f"has {len(resp.files)} files"
                     )
                     for file_info in resp.files:
+                        total_files_seen += 1
                         filename = file_info.filename
                         # Skip candidates whose format is excluded by the configured
                         # quality filter (e.g. reject m4a when only flac/mp3 are
@@ -2038,6 +2109,9 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
         except Exception as e:
             logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt}): {e}")
             logger.debug(traceback.format_exc())
+
+    if total_files_seen == 0 and is_complete:
+        _track_zero_result_words(query)
 
     return best_result, best_score
 
@@ -2159,6 +2233,16 @@ def search_and_download(queue_id, queue_item, client):
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')
 
+        # Load banned words and filter them from the primary query
+        _banned = _get_banned_words()
+        if _banned:
+            _filtered_sq = _filter_banned_words(search_query, _banned)
+            if _filtered_sq and _filtered_sq != search_query:
+                logger.info(f"Queue {queue_id}: Banned-word filter changed query '{search_query}' → '{_filtered_sq}'")
+                search_query = _filtered_sq
+                queue_item = dict(queue_item)
+                queue_item['search_query'] = search_query
+
         poll_start_time = datetime.now()
 
         # Try a bracket-stripped plain-text query first.  Searching with the
@@ -2226,11 +2310,19 @@ def search_and_download(queue_id, queue_item, client):
             mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES)
             return False
 
-        if best_score < _SLSKD_MIN_ACCEPT_SCORE:
+        # For individual song searches (not part of an album batch), require a
+        # stricter match score to avoid downloading a superficially-matching
+        # file when the query is ambiguous.
+        _item_import_type = (queue_item.get('import_type') or 'song').lower()
+        _effective_min_score = _SLSKD_MIN_ACCEPT_SCORE
+        if _item_import_type != 'album':
+            _effective_min_score = max(_SLSKD_MIN_ACCEPT_SCORE, 0.55)
+
+        if best_score < _effective_min_score:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(
                 f"Queue {queue_id}: ✗ Results found but no safe match for '{search_query}' "
-                f"(best_score={best_score:.2f}, elapsed={elapsed:.0f}s)"
+                f"(best_score={best_score:.2f}, min_score={_effective_min_score:.2f}, elapsed={elapsed:.0f}s)"
             )
             mark_failed(
                 queue_id,

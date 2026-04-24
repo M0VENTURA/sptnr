@@ -19705,6 +19705,101 @@ def scan_combined():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/api/slsk/banned-words", methods=["GET"])
+def api_get_banned_words():
+    """Get banned words and suggested words (high zero-result count)."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS slsk_banned_words (
+                word TEXT PRIMARY KEY,
+                is_banned BOOLEAN NOT NULL DEFAULT FALSE,
+                zero_result_count INTEGER NOT NULL DEFAULT 0,
+                added_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+        cursor.execute("""
+            SELECT word, is_banned, zero_result_count, added_at, updated_at
+            FROM slsk_banned_words
+            ORDER BY is_banned DESC, zero_result_count DESC, word ASC
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        result = []
+        for r in rows:
+            if isinstance(r, dict):
+                result.append(r)
+            else:
+                result.append({
+                    'word': r[0], 'is_banned': r[1], 'zero_result_count': r[2],
+                    'added_at': str(r[3]) if r[3] else None, 'updated_at': str(r[4]) if r[4] else None
+                })
+        return jsonify({'success': True, 'words': result}), 200
+    except Exception as e:
+        logging.error(f"[banned_words] GET error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/api/slsk/banned-words", methods=["POST"])
+def api_add_banned_word():
+    """Add or update a banned word."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        word = (data.get('word') or '').strip().lower()
+        is_banned = bool(data.get('is_banned', True))
+        if not word or len(word) < 2:
+            return jsonify({'error': 'word must be at least 2 characters'}), 400
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS slsk_banned_words (
+                word TEXT PRIMARY KEY,
+                is_banned BOOLEAN NOT NULL DEFAULT FALSE,
+                zero_result_count INTEGER NOT NULL DEFAULT 0,
+                added_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO slsk_banned_words (word, is_banned, zero_result_count, updated_at)
+            VALUES (%s, %s, 0, NOW())
+            ON CONFLICT (word) DO UPDATE SET
+                is_banned = EXCLUDED.is_banned,
+                updated_at = NOW()
+        """, (word, is_banned))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'word': word, 'is_banned': is_banned}), 200
+    except Exception as e:
+        logging.error(f"[banned_words] POST error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/api/slsk/banned-words/<path:word>", methods=["DELETE"])
+def api_delete_banned_word(word):
+    """Remove a word from the banned words list."""
+    try:
+        word = word.strip().lower()
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM slsk_banned_words WHERE word = %s", (word,))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'word': word}), 200
+    except Exception as e:
+        logging.error(f"[banned_words] DELETE error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/downloads/banned-words")
+def banned_words_page():
+    """Banned search words management page."""
+    return render_template("banned_words.html")
+
+
 @app.route("/api/slskd/download", methods=["POST"])
 def slskd_download():
     """Proxy endpoint to download from slskd"""
