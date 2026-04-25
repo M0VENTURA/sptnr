@@ -20598,7 +20598,11 @@ def api_musicbrainz_download():
         tracking_id = _row_get(tracking_row, 'id', 0)
         # Add all tracks to download_queue to ensure they're tracked
         # under a single import_group (queue folder) for this release request.
-        import_group = f"mb_{artist}_{release_title}_{release_id}".replace(' ', '_')[:100]
+        # Use mbid_ prefix so _resolve_canonical_release_mbid extracts the MBID directly.
+        import_group = f"mbid_{release_id}"
+        # Build a release-specific cover art URL so the correct artwork is fetched
+        # even for compilations that lack art at the release-group level.
+        cover_art_url = f"https://coverartarchive.org/release/{release_id}/front-500"
         queue_source = 'soulseek' if method == 'slskd' else 'qbittorrent'
         queue_ids = []
         track_count = 0
@@ -20627,6 +20631,7 @@ def api_musicbrainz_download():
                             track_artist = _build_artist_credit_string(rec_credits) or artist
                         else:
                             track_artist = artist
+                        recording_mbid = recording.get('id') or None
                         
                         # Create search query for individual track (artist - title format, no album)
                         search_query = f"{track_artist} - {track_title}".strip()
@@ -20636,11 +20641,19 @@ def api_musicbrainz_download():
                             INSERT INTO download_queue
                             (artist, album, title, search_query, source, status,
                              import_group, import_type,
-                             release_id, release_source, track_number, album_artist, year, created_at, updated_at)
-                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, 'album', {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                             release_id, release_mbid, release_source,
+                             track_number, album_artist, year, recording_mbid, cover_art_url,
+                             created_at, updated_at)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued',
+                                    {placeholder}, 'album',
+                                    {placeholder}, {placeholder}, 'musicbrainz',
+                                    {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             RETURNING id
-                        """, (track_artist, release_title, track_title, search_query, queue_source, import_group, release_id, 'musicbrainz', track_number, artist, release_year))
+                        """, (track_artist, release_title, track_title, search_query, queue_source,
+                              import_group,
+                              release_id, release_id,
+                              track_number, artist, release_year, recording_mbid, cover_art_url))
                         queue_row = cursor.fetchone()
                         queue_id = queue_row[0] if queue_row else None
                         if queue_id is not None:

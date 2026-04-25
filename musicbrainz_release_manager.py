@@ -481,21 +481,34 @@ class MusicBrainzReleaseManager:
                             continue
 
                         # Add to download_queue with release year, album_artist, and MB IDs
+                        # Build a stable import_group so all tracks in this release share
+                        # the same group key for album-level completion detection and
+                        # canonical-MBID resolution.
+                        import_group = f"mbid_{release_id}"
+                        # Build cover art URL from release-specific CAA endpoint so
+                        # per-release art is used in preference to the release-group.
+                        cover_art_url = f"https://coverartarchive.org/release/{release_id}/front-500"
                         try:
                             cursor.execute(f"""
                                 INSERT INTO download_queue
                                 (artist, album, title, search_query, source, status,
-                                 release_id, track_number, disc_number, mb_release_download_id,
-                                 year, album_artist, recording_mbid,
+                                 release_id, release_mbid, release_source,
+                                 import_group, import_type,
+                                 track_number, disc_number, mb_release_download_id,
+                                 year, album_artist, recording_mbid, cover_art_url,
                                  created_at, updated_at)
                                 VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued',
-                                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                        {placeholder}, {placeholder}, 'musicbrainz',
+                                        {placeholder}, 'album',
                                         {placeholder}, {placeholder}, {placeholder},
+                                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
                                         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                                 RETURNING id
                             """, (track_artist, album, track_title, search_query, normalized_queue_source,
-                                  release_id, track_number, disc_number, mb_release_db_id,
-                                  release_year, rel_album_artist, recording_mbid))
+                                  release_id, release_id,
+                                  import_group,
+                                  track_number, disc_number, mb_release_db_id,
+                                  release_year, rel_album_artist, recording_mbid, cover_art_url))
                             queue_row = cursor.fetchone()
                             queue_id = self._row_get(queue_row, 'id', 0, 0)
                         except Exception as insert_err:

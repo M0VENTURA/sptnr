@@ -2503,6 +2503,32 @@ def search_and_download(queue_id, queue_item, client):
             )
             return False
 
+        # Re-check that the queue item still exists before sending the download
+        # request to slskd.  The Soulseek search can take up to 150 s and the
+        # user may have removed the album from the queue in the meantime.
+        _recheck_conn = None
+        try:
+            _recheck_conn = get_db()
+            _recheck_cursor = _recheck_conn.cursor()
+            _recheck_cursor.execute(
+                "SELECT id FROM download_queue WHERE id = %s",
+                (queue_id,),
+            )
+            _item_still_exists = _recheck_cursor.fetchone() is not None
+        except Exception as _recheck_err:
+            logger.debug(f"Queue {queue_id}: Could not re-check item existence: {_recheck_err}")
+            _item_still_exists = True  # err on the side of not blocking a valid download
+        finally:
+            if _recheck_conn:
+                _recheck_conn.close()
+
+        if not _item_still_exists:
+            logger.info(
+                f"Queue {queue_id}: Item was removed from the queue while searching — "
+                "skipping download request"
+            )
+            return False
+
         # Download the result
         logger.info(
             f"Queue {queue_id}: Downloading '{best_result['filename']}' from "
