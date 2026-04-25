@@ -206,6 +206,12 @@ _FEAT_SUFFIX_RE = re.compile(
 # and closing bracket types must match (parenthesis ↔ parenthesis, square ↔ square).
 _BRACKET_RE = re.compile(r'\([^\)]*\)|\[[^\]]*\]')
 
+# Matches a 4-digit year enclosed in square brackets anywhere in a path
+# (e.g. "Artist - Album [2012]" or "/Music/[2012] Album/track.mp3").
+# Used to extract the release year embedded in a folder or file name so that
+# candidates from a clearly different year can be rejected early.
+_PATH_YEAR_RE = re.compile(r'\[([12]\d{3})\]')
+
 # Search-query sanitization helpers from download_queue_manager.  The import
 # lives here at module level (inside a try/except to break any circular-import
 # cycle) so that the module lookup runs only once at process startup rather than
@@ -225,6 +231,66 @@ except ImportError:
 def _strip_brackets(text):
     """Return *text* with all (…) and […] sections removed."""
     return re.sub(r'\s+', ' ', _BRACKET_RE.sub('', text or '')).strip()
+
+
+def _extract_year_from_path(path):
+    """Return the first 4-digit year found inside square brackets in *path*.
+
+    Scans the full path string so that years embedded in folder names such as
+    ``Artist - Album [2012]/track.mp3`` are detected.  Returns an int or None.
+    """
+    m = _PATH_YEAR_RE.search(path or '')
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _is_compilation_release(queue_item):
+    """Return True when the queue item represents a compilation/various-artists release.
+
+    Compilations are detected by checking that both the track artist and the
+    album artist are one of the generic placeholder names used for compilation
+    releases (e.g. "Various Artists", "OST", …).  When a queue item is a
+    compilation the year-mismatch guard is bypassed because individual tracks
+    on a compilation may carry original release years that differ widely from
+    the compilation's own release year.
+    """
+    artist = (queue_item.get('artist') or '').strip().lower()
+    album_artist = (queue_item.get('album_artist') or '').strip().lower()
+    return (
+        artist in _GENERIC_COMPILATION_ARTISTS
+        and (not album_artist or album_artist in _GENERIC_COMPILATION_ARTISTS)
+    )
+
+
+def _year_mismatch_rejects(path, queue_item):
+    """Return True when the file path's bracketed year conflicts with the queue item's year.
+
+    Extracts the first ``[YYYY]`` year from *path* and the release year from
+    *queue_item* (``release_year`` or ``year`` field).  Returns True — meaning
+    the candidate should be rejected — when both years are available, the
+    absolute difference is more than 1 year, and the queue item is not a
+    compilation release.
+
+    Returns False (do not reject) when either year is missing, when the
+    difference is ≤ 1 year, or when the release is a compilation.
+    """
+    year_raw = queue_item.get('release_year') or queue_item.get('year')
+    if not year_raw:
+        return False
+    year_str = re.search(r'\d{4}', str(year_raw))
+    if not year_str:
+        return False
+    queue_year = int(year_str.group(0))
+
+    path_year = _extract_year_from_path(path)
+    if path_year is None:
+        return False
+
+    if abs(queue_year - path_year) <= 1:
+        return False
+
+    return not _is_compilation_release(queue_item)
 
 
 def _normalize_match_text(value):
@@ -401,6 +467,14 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     full_basename_tokens = set(_tokenize_meaningful(basename_norm))
 
     if not artist_norm or not title_norm or not basename_norm:
+        return 0.0
+
+    # Year-mismatch guard: when the candidate path contains a bracketed year
+    # (e.g. "Artist - Album [2012]/track.mp3") and the queue item has a known
+    # release year, reject the candidate if the years differ by more than one
+    # year.  Compilations ("Various Artists", etc.) are exempt because tracks
+    # on a compilation may have been originally released in very different years.
+    if _year_mismatch_rejects(norm_filename, queue_item):
         return 0.0
 
     # Variant tokens are defined at module level as TITLE_VARIANT_TOKENS and
@@ -909,6 +983,12 @@ def _filename_matches_queue_item(filename, queue_item):
     norm_path = filename.replace("\\", "/")
     basename = os.path.basename(norm_path)
     basename_norm = _normalize_match_text(basename)
+
+    # Year-mismatch guard: when the path contains a bracketed year and the
+    # queue item has a known release year, reject when they differ by more than
+    # one year (unless the queue item is a compilation).
+    if _year_mismatch_rejects(norm_path, queue_item):
+        return False
 
     # Gate: using os.path.basename ensures the title is checked against the
     # basename only — a match where the title only appears in the directory portion
