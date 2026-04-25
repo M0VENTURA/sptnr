@@ -9,6 +9,12 @@ import re
 import logging
 from typing import Optional, Dict, List, Tuple
 
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _HAVE_RAPIDFUZZ = True
+except ImportError:
+    _HAVE_RAPIDFUZZ = False
+
 logger = logging.getLogger(__name__)
 
 # Matching confidence thresholds
@@ -95,13 +101,13 @@ def normalize_artist(artist: str) -> str:
 
 
 def levenshtein_distance(s1: str, s2: str) -> int:
-    """Calculate Levenshtein distance between two strings."""
+    """Calculate Levenshtein distance between two strings (pure-Python fallback)."""
     if len(s1) < len(s2):
         return levenshtein_distance(s2, s1)
-    
+
     if len(s2) == 0:
         return len(s1)
-    
+
     previous_row = range(len(s2) + 1)
     for i, c1 in enumerate(s1):
         current_row = [i + 1]
@@ -111,26 +117,30 @@ def levenshtein_distance(s1: str, s2: str) -> int:
             substitutions = previous_row[j] + (c1 != c2)
             current_row.append(min(insertions, deletions, substitutions))
         previous_row = current_row
-    
+
     return previous_row[-1]
 
 
 def calculate_similarity(s1: str, s2: str) -> float:
-    """Calculate similarity score between two strings (0.0 to 1.0)."""
+    """Calculate similarity score between two strings (0.0 to 1.0).
+
+    Uses RapidFuzz when available; falls back to pure-Python Levenshtein.
+    Strings should already be normalised before calling.
+    """
     if not s1 or not s2:
         return 0.0
-    
-    normalized1 = normalize_string(s1)
-    normalized2 = normalize_string(s2)
-    
-    if normalized1 == normalized2:
+
+    if s1 == s2:
         return 1.0
-    
-    max_length = max(len(normalized1), len(normalized2))
+
+    if _HAVE_RAPIDFUZZ:
+        return _fuzz.ratio(s1, s2) / 100.0
+
+    # Pure-Python fallback
+    max_length = max(len(s1), len(s2))
     if max_length == 0:
         return 1.0
-    
-    distance = levenshtein_distance(normalized1, normalized2)
+    distance = levenshtein_distance(s1, s2)
     return 1.0 - (distance / max_length)
 
 

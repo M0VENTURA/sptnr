@@ -31,6 +31,22 @@ from api_clients import session  # Use shared session with retry logic & connect
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _HAVE_RAPIDFUZZ = True
+except ImportError:
+    _HAVE_RAPIDFUZZ = False
+
+try:
+    from helpers.matching_utils import (
+        best_title_match_score as _best_title_match_score,
+        track_numbers_conflict as _track_numbers_conflict,
+        strip_search_parentheses as _strip_search_parentheses,
+    )
+    _HAVE_MATCHING_UTILS = True
+except ImportError:
+    _HAVE_MATCHING_UTILS = False
+
 logger = logging.getLogger("download_queue")
 if not logger.handlers:
     _queue_log_handler = logging.FileHandler("/config/download_queue.log")
@@ -3195,7 +3211,7 @@ def verify_downloaded_file_metadata(file_path, queue_item,
     queue item that triggered the download.
 
     Checks performed:
-    - **Title similarity** — SequenceMatcher ratio ≥ *title_min_score* (0.70).
+    - **Title similarity** — RapidFuzz/SequenceMatcher ratio ≥ *title_min_score* (0.70).
       Short titles that are exact substrings (e.g. "Creep" vs "Creep Live") are
       accepted as long as the ratio meets the threshold.
     - **Duration** — actual file length within ±*duration_tolerance_s* seconds
@@ -3211,7 +3227,8 @@ def verify_downloaded_file_metadata(file_path, queue_item,
           - ``reason`` (str): human-readable summary.
           - ``detail`` (dict): per-check scores / diffs.
     """
-    from difflib import SequenceMatcher
+    # Rec 1/6: _seq_ratio (RapidFuzz-backed) is defined at module level;
+    # no local import needed.
 
     try:
         file_meta = read_mp3_metadata(file_path) or {}
@@ -3225,7 +3242,18 @@ def verify_downloaded_file_metadata(file_path, queue_item,
     file_title = (file_meta.get('title') or '').strip().lower()
     queue_title = (queue_item.get('title') or '').strip().lower()
     if file_title and queue_title:
-        title_score = SequenceMatcher(None, file_title, queue_title).ratio()
+        # Rec 3 – Track-number guard: hard-reject when both titles contain
+        # different digit sequences.
+        if _HAVE_MATCHING_UTILS and _track_numbers_conflict(file_title, queue_title):
+            return {'ok': False, 'reason': 'track_number_conflict', 'detail': detail}
+        title_score = _seq_ratio(file_title, queue_title)
+        # Rec 5 (version-stripped fallback): re-score after stripping edition
+        # markers so "Song (Radio Edit)" still validates against "Song".
+        if _HAVE_MATCHING_UTILS and title_score < 1.0:
+            _ft_s = _strip_search_parentheses(file_title)
+            _qt_s = _strip_search_parentheses(queue_title)
+            if _ft_s and _qt_s and (_ft_s != file_title or _qt_s != queue_title):
+                title_score = max(title_score, _seq_ratio(_ft_s, _qt_s))
         detail['title_score'] = round(title_score, 3)
         if title_score < title_min_score:
             reasons.append(f"title_mismatch(score={title_score:.2f})")
@@ -3234,7 +3262,7 @@ def verify_downloaded_file_metadata(file_path, queue_item,
     file_artist = (file_meta.get('artist') or '').strip().lower()
     queue_artist = (queue_item.get('artist') or '').strip().lower()
     if file_artist and queue_artist:
-        artist_score = SequenceMatcher(None, file_artist, queue_artist).ratio()
+        artist_score = _seq_ratio(file_artist, queue_artist)
         detail['artist_score'] = round(artist_score, 3)
         if artist_score < 0.50:
             reasons.append(f"artist_mismatch(score={artist_score:.2f})")
@@ -4615,7 +4643,8 @@ def _metadata_matches_queue_item(
     def _sim(a, b):
         if not a or not b:
             return 0.0
-        return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+        # Rec 1/6: use RapidFuzz-backed _seq_ratio for C-extension speed.
+        return _seq_ratio(a.lower().strip(), b.lower().strip())
 
     file_artist = (file_meta.get('artist') or '').strip()
     # Fall back to album artist when track artist tag is absent.
@@ -4634,21 +4663,35 @@ def _metadata_matches_queue_item(
     if not file_artist or not file_title or not queue_artist or not queue_title:
         return None
 
+    # Rec 3 – Track-number guard: hard-reject when both titles contain
+    # different digit sequences (e.g. "Track 01" vs "Track 02").
+    if _HAVE_MATCHING_UTILS and _track_numbers_conflict(
+        file_title.lower(), queue_title.lower()
+    ):
+        return False
+
     artist_candidates = [queue_artist]
     if queue_album_artist and queue_album_artist.lower() != queue_artist.lower():
         artist_candidates.append(queue_album_artist)
     artist_score = max((_sim(file_artist, cand) for cand in artist_candidates if cand), default=0.0)
     title_score = _sim(file_title, queue_title)
 
-    # Bracket-stripped fallback: context markers in the queue title like
-    # "(Batman Forever Soundtrack)" or version suffixes in the file title like
-    # "(remastered LP version)" can drive the raw similarity below the field
-    # minimum even though the core titles are identical.  Strip all (…) and
-    # […] sections from both sides and use the better of the two scores.
-    _qt_stripped = re.sub(r'\s*[\(\[][^\)\]]*[\)\]]\s*', ' ', queue_title).strip()
-    _ft_stripped = re.sub(r'\s*[\(\[][^\)\]]*[\)\]]\s*', ' ', file_title).strip()
-    if _qt_stripped and _ft_stripped:
-        title_score = max(title_score, _sim(_ft_stripped, _qt_stripped))
+    # Rec 5 (version-stripped fallback): use strip_search_parentheses from
+    # matching_utils when available; fall back to the simpler bracket-only
+    # regex that was here before so older environments are unaffected.
+    if _HAVE_MATCHING_UTILS and title_score < 1.0:
+        _qt_stripped = _strip_search_parentheses(queue_title)
+        _ft_stripped = _strip_search_parentheses(file_title)
+        if _qt_stripped and _ft_stripped and (
+            _qt_stripped != queue_title or _ft_stripped != file_title
+        ):
+            title_score = max(title_score, _sim(_ft_stripped, _qt_stripped))
+    elif title_score < 1.0:
+        # Bracket-stripped fallback (original): strip all (…) and […] sections.
+        _qt_stripped = re.sub(r'\s*[\(\[][^\)\]]*[\)\]]\s*', ' ', queue_title).strip()
+        _ft_stripped = re.sub(r'\s*[\(\[][^\)\]]*[\)\]]\s*', ' ', file_title).strip()
+        if _qt_stripped and _ft_stripped:
+            title_score = max(title_score, _sim(_ft_stripped, _qt_stripped))
 
     # Each individual field must clear a minimum similarity floor before
     # the weighted average is tested against the overall threshold parameter.
@@ -5776,11 +5819,20 @@ def is_match(filename, queue_item):
             return True
 
         # Use stricter sequence similarity fallback to avoid cross-track collisions.
+        # Rec 1/6: use RapidFuzz-backed _seq_ratio.
         combined_target = f"{artist} {title} {album}".strip()
-        score = SequenceMatcher(None, combined_target, filename_test).ratio()
+        score = _seq_ratio(combined_target, filename_test)
 
         if score >= 0.60 and (artist_in_path or title_in_path):
             return True
+
+        # Rec 2: multi-candidate title score against the raw filename.
+        # Catches formatted filenames like "01 - Artist - Title.flac" where
+        # the plain combined-target similarity is depressed by the extra tokens.
+        if _HAVE_MATCHING_UTILS and title_in_path:
+            _orig_title = queue_item.get('title') or title
+            if _best_title_match_score(filename, _orig_title) >= 0.80:
+                return True
 
         # Last-resort search_query overlap with stronger threshold.
         if search_query:
@@ -7490,9 +7542,25 @@ def _normalize_match_text(value):
     return normalized
 
 
+def _seq_ratio(a: str, b: str) -> float:
+    """Return a normalized similarity score (0.0–1.0) for two pre-normalised strings.
+
+    Uses RapidFuzz ``fuzz.ratio`` when available (C extension, much faster),
+    and falls back to ``difflib.SequenceMatcher`` otherwise.
+    """
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if _HAVE_RAPIDFUZZ:
+        return _fuzz.ratio(a, b) / 100.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
 def _string_similarity(a, b):
     """Return normalized string similarity score (0-1)."""
-    return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
+    # Rec 1/6: delegate to RapidFuzz-backed _seq_ratio.
+    return _seq_ratio(_normalize_match_text(a), _normalize_match_text(b))
 
 
 def _normalize_album_for_dedup(title: str) -> str:
