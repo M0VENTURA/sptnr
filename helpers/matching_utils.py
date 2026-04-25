@@ -17,12 +17,24 @@ Key Features:
 - Collaboration handling (feat., ft., with, &, etc.)
 - Weighted component scoring (title 35%, artist 25%, duration 25%, album 15%)
 - Graduated duration matching with penalties
+- RapidFuzz-backed string similarity (C++ speed)
+- Multi-candidate title generation from filenames (inspired by Soulmate)
+- Track-number guard to prevent cross-track false positives (inspired by SeekDownloader)
+- Per-component minimum thresholds for title and artist
+- Version-stripped title fallback scoring
 """
 
 import unicodedata
 import re
 import logging
-from typing import Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple
+
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _HAVE_RAPIDFUZZ = True
+except ImportError:  # pragma: no cover – fallback for environments without rapidfuzz
+    _HAVE_RAPIDFUZZ = False
+
 try:
     from helpers.config_loader import load_config
 except ImportError:
@@ -356,24 +368,22 @@ def normalize_album(album: str) -> str:
 def levenshtein_distance(s1: str, s2: str) -> int:
     """
     Calculate Levenshtein distance between two strings.
-    
-    The Levenshtein distance is the minimum number of single-character edits
-    (insertions, deletions, or substitutions) required to change one string
-    into the other.
-    
+
+    Pure-Python fallback used only when rapidfuzz is unavailable.
+
     Args:
         s1: First string
         s2: Second string
-        
+
     Returns:
         Integer distance between the strings
     """
     if len(s1) < len(s2):
         return levenshtein_distance(s2, s1)
-    
+
     if len(s2) == 0:
         return len(s1)
-    
+
     previous_row = range(len(s2) + 1)
     for i, c1 in enumerate(s1):
         current_row = [i + 1]
@@ -383,38 +393,195 @@ def levenshtein_distance(s1: str, s2: str) -> int:
             substitutions = previous_row[j] + (c1 != c2)
             current_row.append(min(insertions, deletions, substitutions))
         previous_row = current_row
-    
+
     return previous_row[-1]
 
 
 def calculate_similarity(s1: str, s2: str) -> float:
     """
-    Calculate similarity score between two strings (0.0 to 1.0).
-    
-    Uses Levenshtein distance normalized by maximum string length.
-    
+    Calculate similarity score between two pre-normalised strings (0.0 to 1.0).
+
+    Uses RapidFuzz ``fuzz.ratio`` when available (C++ speed); falls back to a
+    pure-Python Levenshtein implementation otherwise.
+
+    Unlike the old implementation this function accepts *already-normalised*
+    strings so callers that need normalization should normalise before calling.
+
     Args:
         s1: First string
         s2: Second string
-        
+
     Returns:
         Similarity score from 0.0 (completely different) to 1.0 (identical)
     """
     if not s1 or not s2:
         return 0.0
-    
-    normalized1 = normalize_string(s1)
-    normalized2 = normalize_string(s2)
-    
-    if normalized1 == normalized2:
+
+    if s1 == s2:
         return 1.0
-    
-    max_length = max(len(normalized1), len(normalized2))
+
+    if _HAVE_RAPIDFUZZ:
+        return _fuzz.ratio(s1, s2) / 100.0
+
+    # Pure-Python fallback
+    max_length = max(len(s1), len(s2))
     if max_length == 0:
         return 1.0
-    
-    distance = levenshtein_distance(normalized1, normalized2)
+    distance = levenshtein_distance(s1, s2)
     return 1.0 - (distance / max_length)
+
+
+# ---------------------------------------------------------------------------
+# Rec 2 – Multi-candidate title generation from filenames (Soulmate-inspired)
+# ---------------------------------------------------------------------------
+
+_TRACK_NUMBER_PREFIX_RE = re.compile(r"^\d+([-.]\d+)*[-.\s]*")
+_FILE_EXTENSION_RE = re.compile(r"\.\w{2,5}$")
+
+# Delimiters that may separate track number / artist / album from the actual
+# title, together with which "side" of the split contains the title.
+_TITLE_SPLIT_DELIMITERS = [
+    ("(", 0),       # "(feat. X)" → keep everything before
+    ("feat.", 0),   # "Song feat. Artist" → keep left side
+    ("featuring", 0),
+    ("[", 0),       # "[Radio Edit]" → keep left side
+    ("-", -1),      # "Artist - Song" → keep right side
+]
+
+
+def get_possible_titles(filename: str) -> List[str]:
+    """
+    Generate a list of candidate title strings from a filename.
+
+    Inspired by Soulmate's ``_get_possible_titles``.  Each variant is
+    already lowercased so it is ready for direct comparison or RapidFuzz.
+
+    Variants produced for each form of the name (original / underscore→space):
+    1. Full name with track-number prefix removed.
+    2. Full name *including* the prefix (useful when the title itself starts
+       with a number).
+    3. Sub-strings produced by splitting on common delimiters like ``(``,
+       ``feat.``, ``[``, ``-``.
+
+    Args:
+        filename: Raw filename, with or without directory path.
+
+    Returns:
+        Ordered list of unique candidate title strings (lowercased, no ext).
+    """
+    # Strip any leading directory components
+    filename = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    # Replace en-dash / em-dash with ASCII hyphen for uniformity
+    filename = filename.replace("–", "-").replace("—", "-")
+
+    possible: List[str] = []
+
+    def _add(candidate: str) -> None:
+        c = candidate.strip()
+        if c and c not in possible:
+            possible.append(c)
+
+    for raw in (filename, filename.replace("_", " ")):
+        # Remove file extension
+        name = _FILE_EXTENSION_RE.sub("", raw)
+        name_with_num = name.lower()
+
+        # Version without track-number prefix
+        name_no_num = _TRACK_NUMBER_PREFIX_RE.sub("", name).lower()
+
+        _add(name_no_num)
+        _add(name_with_num)
+
+        # Delimiter-based variants (applied to the no-number version)
+        for delimiter, position in _TITLE_SPLIT_DELIMITERS:
+            needle = delimiter.lower()
+            candidate = name_no_num
+            if needle not in candidate:
+                continue
+            if position == 0:
+                pruned = candidate.split(needle, 1)[0]
+            else:
+                pruned = candidate.rsplit(needle, 1)[-1]
+            _add(pruned.strip())
+
+    return possible
+
+
+def best_title_match_score(filename: str, track_title: str) -> float:
+    """
+    Return the best similarity score between any candidate title derived from
+    *filename* and the given *track_title*.
+
+    Uses :func:`get_possible_titles` to enumerate candidates.  When RapidFuzz
+    is available, ``fuzz.WRatio`` is used because it handles partial overlaps
+    well (e.g. "artist - my song" vs "my song").  Without RapidFuzz the
+    standard ``calculate_similarity`` (Levenshtein) is used instead.
+
+    Args:
+        filename: Raw filename (with or without path).
+        track_title: The known track title to match against.
+
+    Returns:
+        Highest similarity score (0.0–1.0) across all candidates.
+    """
+    norm_target = normalize_string(track_title)
+    if not norm_target:
+        return 0.0
+
+    candidates = get_possible_titles(filename)
+    if not candidates:
+        return 0.0
+
+    if _HAVE_RAPIDFUZZ:
+        return max(_fuzz.WRatio(c, norm_target) / 100.0 for c in candidates)
+
+    return max(calculate_similarity(c, norm_target) for c in candidates)
+
+
+# ---------------------------------------------------------------------------
+# Rec 3 – Track-number guard (SeekDownloader ExactNumberMatch-inspired)
+# ---------------------------------------------------------------------------
+
+_DIGIT_SEQUENCE_RE = re.compile(r"\d+")
+
+
+def _extract_numbers(text: str) -> List[int]:
+    """Extract all contiguous digit sequences from *text* as integers."""
+    return [int(m) for m in _DIGIT_SEQUENCE_RE.findall(text)]
+
+
+def track_numbers_conflict(title1: str, title2: str) -> bool:
+    """
+    Return True when both titles contain digit sequences that differ.
+
+    If either title contains *no* digits the guard is not applied (returns
+    False), so the fuzzy scorer can still decide.  When both titles have
+    digits and those digit sequences do not match exactly (same values, same
+    order), the titles are considered conflicting track numbers and the
+    function returns True to signal that no match should be declared.
+
+    Inspired by SeekDownloader's ``FuzzyHelper.ExactNumberMatch``.
+
+    Args:
+        title1: First (normalised) title string.
+        title2: Second (normalised) title string.
+
+    Returns:
+        True if a track-number conflict was detected, False otherwise.
+    """
+    nums1 = _extract_numbers(title1)
+    nums2 = _extract_numbers(title2)
+
+    # Guard only applies when both titles contain numbers
+    if not nums1 or not nums2:
+        return False
+
+    return nums1 != nums2
+
+
+# ---------------------------------------------------------------------------
+# End of new helpers
+# ---------------------------------------------------------------------------
 
 
 def calculate_duration_similarity(duration1: float, duration2: float) -> float:
@@ -466,18 +633,27 @@ def calculate_track_similarity(
 ) -> Tuple[float, Dict[str, float]]:
     """
     Calculate overall track similarity using weighted components.
-    
+
     Weighted combination:
     - Title: 35%
     - Artist: 25%
     - Duration: 25%
     - Album: 15%
-    
+
     Includes boosters:
     - Perfect title match + artist >= 0.3: boost to 0.85+
     - Duration match >= 0.9: +0.1 boost
     - Album match >= 0.8 with decent title/artist: +0.05 boost
-    
+
+    Rec 3 – Track-number guard: if both titles contain digit sequences that
+    differ, returns a score of 0.0 immediately to prevent "01 Song" from
+    matching "02 Song".
+
+    Rec 5 – Version-stripped title fallback: the title similarity is the
+    *maximum* of the full-title score and the score computed after stripping
+    edition markers (e.g. "(Remastered)", "(Radio Edit)") from both titles.
+    This ensures "Song (Radio Edit)" matches "Song" at a high score.
+
     Args:
         track1: First track dictionary
         track2: Second track dictionary
@@ -489,31 +665,49 @@ def calculate_track_similarity(
         album_key2: Key for album in track2 (default: "album")
         duration_key1: Key for duration in track1 (default: "duration")
         duration_key2: Key for duration in track2 (default: "duration")
-        
+
     Returns:
         Tuple of (overall_score, component_scores_dict)
     """
-    # Calculate individual components
-    title_sim = calculate_similarity(
-        normalize_title(track1.get(title_key1, "")),
-        normalize_title(track2.get(title_key2, ""))
-    )
-    
+    raw_title1 = track1.get(title_key1, "")
+    raw_title2 = track2.get(title_key2, "")
+
+    norm_title1 = normalize_title(raw_title1)
+    norm_title2 = normalize_title(raw_title2)
+
+    # Rec 3 – Track-number guard: conflicting digit sequences → no match
+    if track_numbers_conflict(norm_title1, norm_title2):
+        zero_components: Dict[str, float] = {
+            "title": 0.0,
+            "artist": 0.0,
+            "album": 0.0,
+            "duration": 0.0,
+        }
+        return 0.0, zero_components
+
+    # Rec 5 – Version-stripped title fallback
+    stripped_title1 = normalize_string(strip_search_parentheses(raw_title1))
+    stripped_title2 = normalize_string(strip_search_parentheses(raw_title2))
+
+    title_sim_full = calculate_similarity(norm_title1, norm_title2)
+    title_sim_stripped = calculate_similarity(stripped_title1, stripped_title2)
+    title_sim = max(title_sim_full, title_sim_stripped)
+
     artist_sim = calculate_similarity(
         normalize_artist(track1.get(artist_key1, "")),
         normalize_artist(track2.get(artist_key2, ""))
     )
-    
+
     album_sim = calculate_similarity(
         normalize_album(track1.get(album_key1, "")),
         normalize_album(track2.get(album_key2, ""))
     )
-    
+
     duration_sim = calculate_duration_similarity(
         track1.get(duration_key1, 0),
         track2.get(duration_key2, 0)
     )
-    
+
     # Weighted combination (based on navispot's algorithm)
     base_score = (
         title_sim * 0.35 +
@@ -521,29 +715,29 @@ def calculate_track_similarity(
         duration_sim * 0.25 +
         album_sim * 0.15
     )
-    
+
     # Boost for perfect title match
     if title_sim == 1.0:
         if artist_sim >= 0.3:
             base_score = max(base_score, 0.85)
         else:
             base_score = max(base_score, 0.75)
-    
+
     # Boost for good duration match
     if duration_sim >= 0.9:
         base_score = min(base_score + 0.1, MAX_FUZZY_SCORE)
-    
+
     # Boost for album context
     if album_sim >= 0.8 and (title_sim >= 0.6 or artist_sim >= 0.4):
         base_score = min(base_score + 0.05, MAX_FUZZY_SCORE)
-    
+
     components = {
         "title": round(title_sim, 3),
         "artist": round(artist_sim, 3),
         "album": round(album_sim, 3),
-        "duration": round(duration_sim, 3)
+        "duration": round(duration_sim, 3),
     }
-    
+
     return round(base_score, 3), components
 
 
@@ -568,22 +762,42 @@ def is_fuzzy_match(
     track1: Dict,
     track2: Dict,
     threshold: float = FUZZY_THRESHOLD,
+    min_title_score: float = 0.0,
+    min_artist_score: float = 0.0,
     **kwargs
 ) -> Tuple[bool, float, Dict[str, float]]:
     """
     Check if two tracks match using fuzzy matching.
-    
+
+    Rec 4 – Per-component thresholds: in addition to the overall *threshold*,
+    callers may supply independent minimum scores for title and artist.  A
+    pair is only considered a match when *all* of the following hold:
+
+    - ``overall_score >= threshold``
+    - ``title_score  >= min_title_score``  (default: 0.0 → disabled)
+    - ``artist_score >= min_artist_score`` (default: 0.0 → disabled)
+
+    This prevents a high duration or album score from compensating for a
+    completely wrong title or artist.
+
     Args:
         track1: First track dictionary
         track2: Second track dictionary
-        threshold: Minimum similarity score to consider a match (default: 0.80)
-        **kwargs: Additional arguments to pass to calculate_track_similarity()
-        
+        threshold: Minimum overall similarity score (default: 0.80)
+        min_title_score: Minimum per-component title score (default: 0.0)
+        min_artist_score: Minimum per-component artist score (default: 0.0)
+        **kwargs: Additional arguments forwarded to calculate_track_similarity()
+
     Returns:
         Tuple of (is_match, score, component_scores)
     """
     score, components = calculate_track_similarity(track1, track2, **kwargs)
-    return (score >= threshold, score, components)
+    is_match = (
+        score >= threshold
+        and components.get("title", 0.0) >= min_title_score
+        and components.get("artist", 0.0) >= min_artist_score
+    )
+    return (is_match, score, components)
 
 
 def is_strict_match(
