@@ -33803,6 +33803,70 @@ def api_get_track(track_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/track/<track_id>/audio")
+@login_required
+def api_track_audio(track_id):
+    """Stream an audio file for in-browser playback.
+
+    Looks up the track's file_path in the database, verifies the path falls
+    under the configured music folder (security boundary), then serves the
+    file with HTTP range-request support so browsers can seek freely.
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = get_placeholder(conn)
+        cursor.execute(
+            f"SELECT file_path FROM tracks WHERE id = {placeholder}",
+            (track_id,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+    except Exception as e:
+        logging.error(f"[audio] DB error for track {track_id}: {e}")
+        return jsonify({"error": "Database error"}), 500
+
+    if not row or not row.get("file_path"):
+        return jsonify({"error": "Track not found or has no file"}), 404
+
+    file_path = row["file_path"]
+
+    # Reject placeholder paths used for queued-but-not-yet-downloaded tracks
+    if "__queued_for_download__" in file_path:
+        return jsonify({"error": "Track is not yet downloaded"}), 404
+
+    # Resolve to absolute path and confirm it exists on disk
+    resolved = os.path.realpath(file_path)
+    if not os.path.isfile(resolved):
+        return jsonify({"error": "File not found on disk"}), 404
+
+    # Security: ensure the file lives inside the configured music folder
+    cfg = get_config()
+    music_folder = os.path.realpath(
+        cfg.get("navidrome", {}).get("music_folder", "")
+        or os.environ.get("MUSIC_FOLDER", "")
+        or os.environ.get("MUSIC_DIR", "/music")
+    )
+    if not resolved.startswith(music_folder + os.sep) and resolved != music_folder:
+        logging.warning(f"[audio] Path traversal attempt blocked: {resolved}")
+        abort(403)
+
+    # Determine MIME type from extension
+    ext = os.path.splitext(resolved)[1].lower()
+    mime_map = {
+        ".mp3": "audio/mpeg",
+        ".flac": "audio/flac",
+        ".ogg": "audio/ogg",
+        ".opus": "audio/ogg; codecs=opus",
+        ".m4a": "audio/mp4",
+        ".aac": "audio/aac",
+        ".wav": "audio/wav",
+    }
+    mimetype = mime_map.get(ext, "application/octet-stream")
+
+    return send_file(resolved, mimetype=mimetype, conditional=True)
+
+
 @app.route("/api/track/genre-recommendations", methods=["GET"])
 def track_genre_recommendations():
     """Get genre recommendations for a track from various sources"""

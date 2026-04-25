@@ -572,6 +572,10 @@
             <h5 class="card-title mb-0">
                 <i class="bi bi-music-note-list"></i> Tracks
             </h5>
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+                <button class="btn btn-sm btn-success" id="playAlbumBtn" onclick="playAlbum()" title="Play all downloaded tracks">
+                    <i class="bi bi-play-circle-fill"></i> <span class="d-none d-sm-inline">Play Album</span>
+                </button>
             <div class="d-flex gap-2 flex-wrap" id="bulkActionsToolbar" style="display: none;">
                 <button class="btn btn-sm btn-outline-secondary" onclick="selectAllTracks()">
                     <i class="bi bi-check2-square"></i> Select All
@@ -588,6 +592,7 @@
                 <button class="btn btn-sm btn-danger" onclick="confirmBulkDeleteTracks()">
                     <i class="bi bi-trash"></i> Delete Selected
                 </button>
+            </div>
             </div>
         </div>
         <div class="table-responsive">
@@ -776,6 +781,17 @@
                                         <i class="bi bi-x-circle"></i>
                                     </button>
                                     {% else %}
+                                    {% if track.file_path %}
+                                    <button class="btn btn-sm btn-outline-success player-play-btn"
+                                            data-track-id="{{ track.id }}"
+                                            data-title="{{ track.title|escapejs }}"
+                                            data-artist="{{ (track.artist or artist_name)|escapejs }}"
+                                            data-art="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}"
+                                            onclick="playTrackFromAlbum(this)"
+                                            title="Play this track">
+                                        <i class="bi bi-play-fill"></i>
+                                    </button>
+                                    {% endif %}
                                     <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
                                         <i class="bi bi-search"></i>
                                     </button>
@@ -915,6 +931,17 @@
                                     <i class="bi bi-x-circle"></i>
                                 </button>
                                 {% else %}
+                                {% if track.file_path %}
+                                <button class="btn btn-sm btn-outline-success player-play-btn"
+                                        data-track-id="{{ track.id }}"
+                                        data-title="{{ track.title|escapejs }}"
+                                        data-artist="{{ (track.artist or artist_name)|escapejs }}"
+                                        data-art="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}"
+                                        onclick="playTrackFromAlbum(this)"
+                                        title="Play this track">
+                                    <i class="bi bi-play-fill"></i>
+                                </button>
+                                {% endif %}
                                 <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
                                     <i class="bi bi-search"></i>
                                 </button>
@@ -1459,6 +1486,35 @@
         var addGenreModalInstance = null;
     }
     let currentAlbumGenres = new Set();
+
+    // ── Built-in player helpers ───────────────────────────────────────────────
+    function playTrackFromAlbum(btn) {
+        if (typeof Player === 'undefined') return;
+        const trackId  = btn.dataset.trackId;
+        const title    = btn.dataset.title;
+        const artist   = btn.dataset.artist;
+        const artUrl   = btn.dataset.art;
+        Player.playTrack(trackId, title, artist, artUrl);
+    }
+
+    function playAlbum() {
+        if (typeof Player === 'undefined') return;
+        const btns = Array.from(document.querySelectorAll('.player-play-btn'));
+        if (!btns.length) {
+            alert('No downloaded tracks found on this album.');
+            return;
+        }
+        const tracks = btns.map(function (btn) {
+            return {
+                id: btn.dataset.trackId,
+                title: btn.dataset.title,
+                artist: btn.dataset.artist,
+                albumArtUrl: btn.dataset.art
+            };
+        });
+        Player.playQueue(tracks);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     function openAlbumLookupModal() {
         const modal = new bootstrap.Modal(document.getElementById('albumLookupModal'));
