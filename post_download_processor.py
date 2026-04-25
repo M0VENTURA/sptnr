@@ -349,22 +349,29 @@ def fetch_musicbrainz_release_metadata(release_id):
                 
                 release_info['tracks'].append(track_info)
         
-        # Try to fetch cover art from MusicBrainz.
-        # Prefer the release-group URL (more reliably available in CAA than art
-        # for a specific pressing/reissue MBID).
+        # Try to fetch cover art from MusicBrainz Cover Art Archive.
+        # Try the specific release first — compilations and pressings often have
+        # art submitted to the release but not to the release-group.  Fall back
+        # to the release-group URL if the release-specific request fails.
         rg_id = rg.get("id", "")
-        try:
-            cover_url = (
-                f"https://coverartarchive.org/release-group/{rg_id}/front-500"
-                if rg_id
-                else f"https://coverartarchive.org/release/{release_id}/front-500"
-            )
-            cover_response = requests.get(cover_url, timeout=5)
-            if cover_response.status_code == 200:
-                release_info['cover_art'] = cover_response.content
-                logger.debug(f"[MB_METADATA] Fetched cover art for release {release_id}")
-        except Exception as e:
-            logger.debug(f"Could not fetch cover art for release {release_id}: {e}")
+        # Use the resolved release MBID from mb_data (the actual release, which may
+        # differ from the caller-supplied release_id when that was a release-group MBID).
+        actual_release_id = mb_data.get('id') or release_id
+        cover_urls = [f"https://coverartarchive.org/release/{actual_release_id}/front-500"]
+        if rg_id:
+            cover_urls.append(f"https://coverartarchive.org/release-group/{rg_id}/front-500")
+        for cover_url in cover_urls:
+            try:
+                cover_response = requests.get(cover_url, timeout=5)
+                if cover_response.status_code == 200:
+                    release_info['cover_art'] = cover_response.content
+                    logger.debug(
+                        f"[MB_METADATA] Fetched cover art for release {release_id} "
+                        f"from {cover_url}"
+                    )
+                    break
+            except Exception as e:
+                logger.debug(f"Could not fetch cover art from {cover_url}: {e}")
         
         logger.info(f"[MB_METADATA] Fetched metadata for release {release_id}: "
                    f"{release_info['release_title']} by {release_info['artist']}")

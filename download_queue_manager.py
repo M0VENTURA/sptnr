@@ -3921,12 +3921,6 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         except Exception:
             track_num_fmt = "00"
 
-        try:
-            from post_download_processor import update_file_metadata_with_albumart
-            update_file_metadata_with_albumart(file_path, tag_metadata, cover_art_data)
-        except Exception as tag_err:
-            logger.warning(f"[MOVE] Could not update file tags before move (non-fatal): {tag_err}")
-
         # Build destination path from Queue File Name Format config with a safe fallback.
         file_name_format = _read_track_file_name_format()
         format_vars = {
@@ -3975,6 +3969,12 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         normalized_source = os.path.abspath(os.path.normpath(file_path))
         normalized_dest = os.path.abspath(os.path.normpath(dest_path))
         if normalized_source == normalized_dest:
+            # Source IS the destination — safe to update tags directly in-place.
+            try:
+                from post_download_processor import update_file_metadata_with_albumart
+                update_file_metadata_with_albumart(file_path, tag_metadata, cover_art_data)
+            except Exception as tag_err:
+                logger.warning(f"[MOVE] Could not update file tags in place (non-fatal): {tag_err}")
             _apply_release_year_mtime(normalized_dest, year, queue_id=queue_item_dict.get('id'))
             return {
                 'success': True,
@@ -3983,6 +3983,18 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                 'skipped': True,
                 'message': 'File metadata updated in place',
             }
+
+        # When the source file is NOT already in /music (e.g. it is in /downloads),
+        # update its tags now before moving so the file arrives in /music already tagged.
+        # When the source IS already in /music (source_already_in_music=True), skip the
+        # pre-transfer tag write to avoid corrupting the original library file — the copy
+        # at the destination will be tagged after the transfer below.
+        if not source_already_in_music:
+            try:
+                from post_download_processor import update_file_metadata_with_albumart
+                update_file_metadata_with_albumart(file_path, tag_metadata, cover_art_data)
+            except Exception as tag_err:
+                logger.warning(f"[MOVE] Could not update file tags before move (non-fatal): {tag_err}")
 
         # When the source file is already inside the music root (e.g. it came
         # from source_music_path on a different album), copy rather than move so
@@ -3997,6 +4009,19 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
 
         final_target = transfer_result.get('target_path')
         logger.info(f"[MOVE] {file_path} → {final_target}")
+
+        # For files copied FROM /music, apply the new album metadata to the
+        # destination copy only — the original library file is left untouched.
+        if source_already_in_music and final_target:
+            try:
+                from post_download_processor import update_file_metadata_with_albumart
+                update_file_metadata_with_albumart(final_target, tag_metadata, cover_art_data)
+                logger.info(
+                    f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                    f"applied metadata to destination copy (original preserved)"
+                )
+            except Exception as tag_err:
+                logger.warning(f"[MOVE] Could not update file tags after copy (non-fatal): {tag_err}")
 
         # Promote the pre-populated tracks placeholder record to a real file path now
         # that the file is in /music.  This replaces the __queued_for_download__ marker
