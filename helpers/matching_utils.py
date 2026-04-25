@@ -435,17 +435,24 @@ def calculate_similarity(s1: str, s2: str) -> float:
 # Rec 2 – Multi-candidate title generation from filenames (Soulmate-inspired)
 # ---------------------------------------------------------------------------
 
-_TRACK_NUMBER_PREFIX_RE = re.compile(r"^\d+([-.]\d+)*[-.\s]*")
+_TRACK_NUMBER_PREFIX_RE = re.compile(
+    # Matches: one or more digits, optionally followed by dot/dash + more digits,
+    # then trailing separators (dot, dash, or spaces).
+    # Examples matched: "01 ", "02-", "1.", "01-02 ", "1.2-"
+    r"^\d+([-.]\d+)*[-.\s]*"
+)
 _FILE_EXTENSION_RE = re.compile(r"\.\w{2,5}$")
 
 # Delimiters that may separate track number / artist / album from the actual
 # title, together with which "side" of the split contains the title.
+# NOTE: The hyphen delimiter uses " - " (space-hyphen-space) to avoid splitting
+# titles that contain hyphens as part of the song name (e.g. "Spider-Man Theme").
 _TITLE_SPLIT_DELIMITERS = [
     ("(", 0),       # "(feat. X)" → keep everything before
     ("feat.", 0),   # "Song feat. Artist" → keep left side
     ("featuring", 0),
     ("[", 0),       # "[Radio Edit]" → keep left side
-    ("-", -1),      # "Artist - Song" → keep right side
+    (" - ", -1),    # "Artist - Song" → keep right side (space-hyphen-space only)
 ]
 
 
@@ -495,14 +502,13 @@ def get_possible_titles(filename: str) -> List[str]:
         # Delimiter-based variants (applied to the no-number version)
         for delimiter, position in _TITLE_SPLIT_DELIMITERS:
             needle = delimiter.lower()
-            candidate = name_no_num
-            if needle not in candidate:
+            if needle not in name_no_num:
                 continue
             if position == 0:
-                pruned = candidate.split(needle, 1)[0]
+                extracted_title = name_no_num.split(needle, 1)[0]
             else:
-                pruned = candidate.rsplit(needle, 1)[-1]
-            _add(pruned.strip())
+                extracted_title = name_no_num.rsplit(needle, 1)[-1]
+            _add(extracted_title.strip())
 
     return possible
 
@@ -533,9 +539,9 @@ def best_title_match_score(filename: str, track_title: str) -> float:
         return 0.0
 
     if _HAVE_RAPIDFUZZ:
-        return max(_fuzz.WRatio(c, norm_target) / 100.0 for c in candidates)
+        return max((_fuzz.WRatio(c, norm_target) / 100.0 for c in candidates), default=0.0)
 
-    return max(calculate_similarity(c, norm_target) for c in candidates)
+    return max((calculate_similarity(c, norm_target) for c in candidates), default=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -678,20 +684,21 @@ def calculate_track_similarity(
     # Rec 3 – Track-number guard: conflicting digit sequences → no match
     if track_numbers_conflict(norm_title1, norm_title2):
         zero_components: Dict[str, float] = {
-            "title": 0.0,
-            "artist": 0.0,
-            "album": 0.0,
-            "duration": 0.0,
+            "title": 0.0, "artist": 0.0, "album": 0.0, "duration": 0.0,
         }
         return 0.0, zero_components
 
-    # Rec 5 – Version-stripped title fallback
-    stripped_title1 = normalize_string(strip_search_parentheses(raw_title1))
-    stripped_title2 = normalize_string(strip_search_parentheses(raw_title2))
-
+    # Rec 5 – Version-stripped title fallback: compute stripped variant lazily
+    # (only when the full-title score is not already perfect) to avoid
+    # unnecessary string operations on the hot path.
     title_sim_full = calculate_similarity(norm_title1, norm_title2)
-    title_sim_stripped = calculate_similarity(stripped_title1, stripped_title2)
-    title_sim = max(title_sim_full, title_sim_stripped)
+    if title_sim_full < 1.0:
+        stripped_title1 = normalize_string(strip_search_parentheses(raw_title1))
+        stripped_title2 = normalize_string(strip_search_parentheses(raw_title2))
+        title_sim_stripped = calculate_similarity(stripped_title1, stripped_title2)
+        title_sim = max(title_sim_full, title_sim_stripped)
+    else:
+        title_sim = title_sim_full
 
     artist_sim = calculate_similarity(
         normalize_artist(track1.get(artist_key1, "")),
