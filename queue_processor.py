@@ -31,6 +31,22 @@ try:
 except ImportError:
     MutagenFile = None
 
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _HAVE_RAPIDFUZZ = True
+except ImportError:
+    _HAVE_RAPIDFUZZ = False
+
+try:
+    from helpers.matching_utils import (
+        best_title_match_score as _best_title_match_score,
+        track_numbers_conflict as _track_numbers_conflict,
+        strip_search_parentheses as _strip_search_parentheses,
+    )
+    _HAVE_MATCHING_UTILS = True
+except ImportError:
+    _HAVE_MATCHING_UTILS = False
+
 # Use unified logging system - all logs go to debug.log
 from helpers.logging_config import (
     setup_logging,
@@ -49,6 +65,22 @@ logger = logging.getLogger(__name__)
 # Similarity thresholds for Navidrome existence checks
 _NAV_TITLE_SIMILARITY_THRESHOLD = 0.85
 _NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75
+
+
+def _seq_ratio(a: str, b: str) -> float:
+    """Return a normalized similarity score (0.0–1.0) for two strings.
+
+    Uses RapidFuzz ``fuzz.ratio`` when available (C extension, much faster),
+    and falls back to ``difflib.SequenceMatcher`` otherwise.  Both inputs are
+    expected to be already-normalised (lowercased, stripped) strings.
+    """
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if _HAVE_RAPIDFUZZ:
+        return _fuzz.ratio(a, b) / 100.0
+    return SequenceMatcher(None, a, b).ratio()
 
 
 def _is_postgres_connection(conn):
@@ -468,11 +500,27 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # When the track artist contains featured guests (e.g. "KNEECAP feat. Fawzi"),
     # files are often tagged with the album artist only ("KNEECAP"), so also
     # consider the album_artist similarity and take whichever is higher.
-    artist_sim = SequenceMatcher(None, artist_norm, basename_norm).ratio()
+    # Rec 1/6: use RapidFuzz-backed _seq_ratio for C-extension speed.
+    artist_sim = _seq_ratio(artist_norm, basename_norm)
     if album_artist_norm and album_artist_norm != artist_norm:
-        album_artist_sim = SequenceMatcher(None, album_artist_norm, basename_norm).ratio()
+        album_artist_sim = _seq_ratio(album_artist_norm, basename_norm)
         artist_sim = max(artist_sim, album_artist_sim)
-    title_sim = SequenceMatcher(None, core_title_norm, core_basename_norm).ratio()
+    # Rec 5 (version-stripped fallback): score the bracket-stripped core first,
+    # then also try strip_search_parentheses on the raw queue title so that a
+    # queue entry like "Song (Radio Edit)" still matches "Song.flac".
+    title_sim = _seq_ratio(core_title_norm, core_basename_norm)
+    if _HAVE_MATCHING_UTILS and title_sim < 1.0:
+        _stripped_title_norm = _normalize_match_text(
+            _strip_search_parentheses(queue_item.get('title') or '')
+        )
+        if _stripped_title_norm and _stripped_title_norm != core_title_norm:
+            title_sim = max(title_sim, _seq_ratio(_stripped_title_norm, core_basename_norm))
+
+    # Rec 3 – Track-number guard: when both the queue title and the basename
+    # contain different digit sequences (e.g. "01" vs "02"), hard-reject to
+    # prevent "Track 01" from matching "Track 02".
+    if _HAVE_MATCHING_UTILS and _track_numbers_conflict(core_title_norm, core_basename_norm):
+        return 0.0
 
     # Artist absence from the filename is permitted — the track title and
     # duration are the primary evidence.  A low artist_sim simply contributes
@@ -674,14 +722,34 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     def _sim(a, b):
         if not a or not b:
             return 0.0
-        return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
+        # Rec 1/6: use RapidFuzz-backed _seq_ratio for C-extension speed.
+        return _seq_ratio(_normalize_match_text(a), _normalize_match_text(b))
 
     # Use album_artist as an additional artist candidate (e.g. "Various Artists").
     artist_candidates = [queue_artist]
     if queue_album_artist and queue_album_artist.lower() != queue_artist.lower():
         artist_candidates.append(queue_album_artist)
     artist_score = max((_sim(file_artist, cand) for cand in artist_candidates if cand), default=0.0)
+
+    # Rec 5 (version-stripped fallback): also score the edition-stripped titles
+    # so that "Song (Radio Edit)" in the file tags still matches a plain
+    # "Song" queue title, and vice-versa.  Compute lazily to avoid the extra
+    # work on exact-match paths.
     title_score = _sim(file_title, queue_title)
+    if _HAVE_MATCHING_UTILS and title_score < 1.0:
+        _ft_stripped = _strip_search_parentheses(file_title)
+        _qt_stripped = _strip_search_parentheses(queue_title)
+        if (_ft_stripped and _qt_stripped
+                and (_ft_stripped != file_title or _qt_stripped != queue_title)):
+            title_score = max(title_score, _sim(_ft_stripped, _qt_stripped))
+
+    # Rec 3 – Track-number guard: hard-reject when both titles contain
+    # different digit sequences (e.g. "Track 01" vs "Track 02").
+    if _HAVE_MATCHING_UTILS:
+        _fn = _normalize_match_text(file_title)
+        _qn = _normalize_match_text(queue_title)
+        if _track_numbers_conflict(_fn, _qn):
+            return False
 
     # For "Various Artists" compilations where both artist and album_artist are
     # generic placeholder names, the real per-track artist embedded in the file
@@ -866,8 +934,17 @@ def _filename_matches_queue_item(filename, queue_item):
         # Fallback: allow if the full candidate score is high enough even
         # without the whole-phrase title guard (e.g. unseparated filename
         # "artist title album.flac" where the title is embedded mid-string).
+        # Rec 2: also check multi-candidate title score from the filename to
+        # catch formats like "01 - Artist - Title.flac" where the plain title
+        # substring guard might fail but the best extracted variant matches.
         score = _score_soulseek_candidate(norm_path, queue_item)
-        return score >= 0.60
+        if score >= 0.60:
+            return True
+        if _HAVE_MATCHING_UTILS:
+            queue_title = queue_item.get('title') or ''
+            if _best_title_match_score(os.path.basename(norm_path), queue_title) >= 0.80:
+                return True
+        return False
 
     # Core (bracket-stripped + feat-stripped) tokens for exact title matching.
     album_norm = _normalize_match_text(queue_item.get('album'))
@@ -1681,7 +1758,8 @@ def check_track_exists_in_navidrome(queue_item):
         def _sim(a, b):
             if not a or not b:
                 return 0.0
-            return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+            # Rec 1/6: use RapidFuzz-backed _seq_ratio for C-extension speed.
+            return _seq_ratio(a.lower().strip(), b.lower().strip())
 
         for song in songs:
             title_sim = _sim(song.get("title", ""), title)
