@@ -35520,6 +35520,158 @@ def api_track_musicbrainz_lookup():
         logger.error(f"MusicBrainz track lookup error: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+@app.route("/api/track/<track_id>/mb-releases", methods=["GET"])
+def api_track_mb_releases(track_id):
+    """Fetch all MusicBrainz releases that contain this track's recording"""
+    logger = logging.getLogger('sptnr')
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+        cursor.execute(
+            f"SELECT musicbrainz_trackid, beets_mbid FROM tracks WHERE CAST(id AS TEXT) = {placeholder}",
+            (str(track_id),)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return jsonify({"error": "Track not found"}), 404
+
+        recording_mbid = (row[0] if row[0] else row[1] or "").strip()
+        if not recording_mbid:
+            return jsonify({"error": "Track has no MusicBrainz recording ID"}), 400
+
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        resp = requests.get(
+            f"https://musicbrainz.org/ws/2/recording/{recording_mbid}",
+            params={"fmt": "json", "inc": "releases+release-groups+media"},
+            headers=headers,
+            timeout=10,
+        )
+        if not resp.ok:
+            return jsonify({"error": f"MusicBrainz returned {resp.status_code}"}), 502
+
+        data = resp.json()
+        releases_raw = data.get("releases") or []
+
+        releases = []
+        for rel in releases_raw:
+            rg = rel.get("release-group") or {}
+            primary_type = rg.get("primary-type") or ""
+            secondary_types = rg.get("secondary-types") or []
+            all_types = [primary_type] + secondary_types
+            type_str = "+".join(t for t in all_types if t)
+            date = (rel.get("date") or "").strip()
+            year = date[:4] if len(date) >= 4 and date[:4].isdigit() else ""
+            # Track position on this release
+            track_pos = None
+            for medium in (rel.get("media") or []):
+                for t in (medium.get("tracks") or []):
+                    if (t.get("recording") or {}).get("id") == recording_mbid:
+                        track_pos = t.get("number") or t.get("position")
+                        break
+                if track_pos is not None:
+                    break
+            releases.append({
+                "release_mbid": rel.get("id", ""),
+                "release_group_mbid": rg.get("id", ""),
+                "title": rel.get("title", ""),
+                "year": year,
+                "date": date,
+                "country": rel.get("country") or rel.get("release-events", [{}])[0].get("area", {}).get("iso-3166-1-codes", [""])[0] if rel.get("release-events") else (rel.get("country") or ""),
+                "status": rel.get("status") or "",
+                "type": type_str,
+                "track_position": track_pos,
+            })
+
+        # Sort: official releases first, then by date
+        def _sort_key(r):
+            status_order = 0 if r["status"].lower() == "official" else 1
+            return (status_order, r["date"] or "9999")
+
+        releases.sort(key=_sort_key)
+
+        return jsonify({"recording_mbid": recording_mbid, "releases": releases}), 200
+
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "MusicBrainz request timed out"}), 504
+    except Exception as e:
+        logger.error(f"mb-releases error for track {track_id}: {e}")
+        return jsonify({"error": "Failed to fetch releases from MusicBrainz"}), 500
+
+
+@app.route("/api/track/<track_id>/apply-mb-release", methods=["POST"])
+def api_track_apply_mb_release(track_id):
+    """Apply a chosen MusicBrainz release MBID to a track (updates album MBID fields)"""
+    logger = logging.getLogger('sptnr')
+    try:
+        data = request.get_json() or {}
+        release_mbid = str(data.get("release_mbid") or "").strip()
+        release_group_mbid = str(data.get("release_group_mbid") or "").strip()
+
+        if not release_mbid:
+            return jsonify({"error": "release_mbid required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        # Determine which columns exist
+        track_columns = _get_table_columns(cursor, "tracks") or set()
+        has_mb_album_mbid = "musicbrainz_album_mbid" in track_columns
+        has_musicbrainz_albumid = "musicbrainz_albumid" in track_columns
+        has_rg = "musicbrainz_releasegroupid" in track_columns
+
+        update_parts = []
+        params = []
+
+        if has_mb_album_mbid:
+            update_parts.append(f"musicbrainz_album_mbid = {placeholder}")
+            params.append(release_mbid)
+        if has_musicbrainz_albumid:
+            update_parts.append(f"musicbrainz_albumid = {placeholder}")
+            params.append(release_mbid)
+        if release_group_mbid and has_rg:
+            update_parts.append(f"musicbrainz_releasegroupid = {placeholder}")
+            params.append(release_group_mbid)
+
+        if not update_parts:
+            conn.close()
+            return jsonify({"error": "No compatible columns to update"}), 400
+
+        params.append(str(track_id))
+        cursor.execute(
+            f"UPDATE tracks SET {', '.join(update_parts)} WHERE CAST(id AS TEXT) = {placeholder}",
+            params,
+        )
+        conn.commit()
+
+        # Fetch file path for tag sync
+        cursor.execute(f"SELECT file_path FROM tracks WHERE CAST(id AS TEXT) = {placeholder}", (str(track_id),))
+        row = cursor.fetchone()
+        conn.close()
+        file_path = (row[0] if row else None) or ""
+
+        file_synced = False
+        if file_path and os.path.exists(file_path):
+            try:
+                from helpers.tag_manager import write_tags_to_file
+                tag_updates = {"musicbrainz_album_mbid": release_mbid}
+                if release_group_mbid:
+                    tag_updates["musicbrainz_releasegroupid"] = release_group_mbid
+                file_synced = bool(write_tags_to_file(file_path, tag_updates))
+            except Exception as tag_err:
+                logger.warning(f"[APPLY_MB_RELEASE] Tag write failed for {file_path}: {tag_err}")
+
+        return jsonify({"success": True, "release_mbid": release_mbid, "file_synced": file_synced}), 200
+
+    except Exception as e:
+        logger.error(f"apply-mb-release error for track {track_id}: {e}")
+        return jsonify({"error": "Failed to apply release"}), 500
+
+
 # ==========================================================================
 # GENRE MANAGEMENT API ROUTES
 # ==========================================================================
