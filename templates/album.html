@@ -798,6 +798,11 @@
                                     <button class="btn btn-sm btn-outline-info" onclick="openEditTrackFromAlbum('{{ track.id }}')" title="Edit track on this page">
                                         <i class="bi bi-pencil"></i>
                                     </button>
+                                    {% if track.musicbrainz_trackid or track.beets_mbid %}
+                                    <button class="btn btn-sm btn-outline-warning" onclick="openAlbumTrackMbReleaseModal('{{ track.id }}')" title="Match to a different MusicBrainz release">
+                                        <i class="bi bi-arrow-repeat"></i>
+                                    </button>
+                                    {% endif %}
                                     <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page">
                                         <i class="bi bi-arrow-right"></i>
                                     </a>
@@ -948,6 +953,11 @@
                                 <button class="btn btn-sm btn-outline-info" onclick="openEditTrackFromAlbum('{{ track.id }}')" title="Edit track on this page">
                                     <i class="bi bi-pencil"></i>
                                 </button>
+                                {% if track.musicbrainz_trackid or track.beets_mbid %}
+                                <button class="btn btn-sm btn-outline-warning" onclick="openAlbumTrackMbReleaseModal('{{ track.id }}')" title="Match to a different MusicBrainz release">
+                                    <i class="bi bi-arrow-repeat"></i>
+                                </button>
+                                {% endif %}
                                 <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page">
                                     <i class="bi bi-arrow-right"></i>
                                 </a>
@@ -4422,5 +4432,144 @@
 {# Shared MusicBrainz Release Search System #}
 {% include '_musicbrainz_search_modal.html' %}
 {% include '_musicbrainz_search_functions.html' %}
+
+<!-- MusicBrainz Release Match Modal (per-track) -->
+<div class="modal fade" id="albumTrackMbReleaseModal" tabindex="-1" aria-labelledby="albumTrackMbReleaseModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="albumTrackMbReleaseModalLabel">
+                    <i class="bi bi-music-note-list"></i> Match Track to MusicBrainz Release
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3">Select the correct release (album) this track belongs to. This updates the MusicBrainz Album ID for this track.</p>
+                <div id="albumTrackMbReleaseStatus" class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2 text-muted">Fetching releases from MusicBrainz…</p>
+                </div>
+                <div id="albumTrackMbReleaseError" class="alert alert-danger" style="display:none;"></div>
+                <div id="albumTrackMbReleaseResults"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let _albumMbReleaseTargetTrackId = null;
+
+function openAlbumTrackMbReleaseModal(trackId) {
+    _albumMbReleaseTargetTrackId = String(trackId);
+    const statusEl = document.getElementById('albumTrackMbReleaseStatus');
+    const errorEl = document.getElementById('albumTrackMbReleaseError');
+    const resultsEl = document.getElementById('albumTrackMbReleaseResults');
+
+    statusEl.style.display = 'block';
+    errorEl.style.display = 'none';
+    resultsEl.innerHTML = '';
+
+    const modal = new bootstrap.Modal(document.getElementById('albumTrackMbReleaseModal'));
+    modal.show();
+
+    fetch('/api/track/' + encodeURIComponent(trackId) + '/mb-releases')
+        .then(r => r.json())
+        .then(data => {
+            statusEl.style.display = 'none';
+            if (data.error) {
+                errorEl.textContent = data.error;
+                errorEl.style.display = 'block';
+                return;
+            }
+            renderAlbumTrackMbReleases(data.releases || []);
+        })
+        .catch(err => {
+            statusEl.style.display = 'none';
+            errorEl.textContent = 'Network error: ' + err.message;
+            errorEl.style.display = 'block';
+        });
+}
+
+function renderAlbumTrackMbReleases(releases) {
+    const resultsEl = document.getElementById('albumTrackMbReleaseResults');
+    if (!releases.length) {
+        resultsEl.innerHTML = '<div class="alert alert-info">No releases found for this recording on MusicBrainz.</div>';
+        return;
+    }
+
+    function _escHtml(str) {
+        const d = document.createElement('div');
+        d.textContent = str || '';
+        return d.innerHTML;
+    }
+
+    let html = '<div class="list-group">';
+    releases.forEach(rel => {
+        const typeLabel = rel.type ? `<span class="badge bg-secondary me-1" style="font-size:0.7rem;">${_escHtml(rel.type)}</span>` : '';
+        const statusLabel = rel.status ? `<span class="badge bg-${rel.status.toLowerCase() === 'official' ? 'success' : 'warning'} me-1" style="font-size:0.7rem;">${_escHtml(rel.status)}</span>` : '';
+        const countryLabel = rel.country ? `<span class="badge bg-info me-1" style="font-size:0.7rem;">${_escHtml(rel.country)}</span>` : '';
+        const trackPosLabel = rel.track_position ? `<span class="text-muted" style="font-size:0.8rem;">Track ${_escHtml(String(rel.track_position))}</span>` : '';
+
+        html += `
+            <div class="list-group-item" style="padding:0.85rem;">
+                <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">
+                    <div class="flex-grow-1">
+                        <div class="fw-semibold mb-1">${_escHtml(rel.title)}</div>
+                        <div class="mb-1">${typeLabel}${statusLabel}${countryLabel}${trackPosLabel}</div>
+                        <div class="text-muted" style="font-size:0.75rem;">
+                            ${rel.year ? '<strong>' + _escHtml(rel.year) + '</strong> &nbsp;' : ''}
+                            MBID: <code style="font-size:0.7rem;">${_escHtml(rel.release_mbid)}</code>
+                        </div>
+                    </div>
+                    <div class="flex-shrink-0">
+                        <a href="https://musicbrainz.org/release/${encodeURIComponent(rel.release_mbid)}" target="_blank" class="btn btn-sm btn-outline-secondary me-1" title="Open on MusicBrainz">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                        </a>
+                        <button class="btn btn-sm btn-primary album-mb-apply-btn"
+                                data-release-mbid="${_escHtml(rel.release_mbid)}"
+                                data-release-group-mbid="${_escHtml(rel.release_group_mbid || '')}"
+                                data-release-title="${_escHtml(rel.title)}">
+                            <i class="bi bi-check-circle"></i> Select
+                        </button>
+                    </div>
+                </div>
+            </div>`;
+    });
+    html += '</div>';
+    resultsEl.innerHTML = html;
+
+    resultsEl.querySelectorAll('.album-mb-apply-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            applyAlbumTrackMbRelease(btn.dataset.releaseMbid, btn.dataset.releaseGroupMbid, btn.dataset.releaseTitle);
+        });
+    });
+}
+
+function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
+    if (!_albumMbReleaseTargetTrackId) return;
+
+    fetch('/api/track/' + encodeURIComponent(_albumMbReleaseTargetTrackId) + '/apply-mb-release', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ release_mbid: releaseMbid, release_group_mbid: releaseGroupMbid })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.success) {
+            alert('Failed to apply release: ' + (data.error || 'Unknown error'));
+            return;
+        }
+        const modal = bootstrap.Modal.getInstance(document.getElementById('albumTrackMbReleaseModal'));
+        if (modal) modal.hide();
+        setTimeout(() => {
+            alert('✅ Release matched for track!\nMusicBrainz Album ID updated to:\n' + releaseTitle + '\n' + releaseMbid);
+            location.reload();
+        }, 150);
+    })
+    .catch(err => alert('Network error: ' + err.message));
+}
+</script>
 
 {% endblock %}
