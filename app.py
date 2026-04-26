@@ -1354,6 +1354,11 @@ def api_import_playlist_url():
     Body: {"url": "..."}
     Returns track list with artist, title, album, duration_ms, track_number plus
     playlist_name, album_artist, is_compilation, and service fields.
+
+    Spotify playlists are fetched without requiring configured API credentials by
+    using Spotify's anonymous web-player access token.  Configured client_id /
+    client_secret are used as a fallback only if the anonymous token cannot be
+    obtained.
     """
     try:
         data = request.json or {}
@@ -1371,27 +1376,63 @@ def api_import_playlist_url():
             spotify_playlist_id = url.split("spotify:playlist:")[1].split("?")[0]
 
         if spotify_playlist_id:
-            config_data, _ = _read_yaml(CONFIG_PATH)
-            spotify_config = config_data.get("api_integrations", {}).get("spotify", {})
-            client_id = spotify_config.get("client_id", "")
-            client_secret = spotify_config.get("client_secret", "")
-            if not client_id or not client_secret:
+            import requests as _req
+
+            # Attempt to get an anonymous Spotify web-player token first so that
+            # no developer API credentials are required for public playlist lookups.
+            _access_token = None
+            try:
+                _anon_resp = _req.get(
+                    "https://open.spotify.com/get_access_token",
+                    params={"reason": "transport", "productType": "web_player"},
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/124.0.0.0 Safari/537.36"
+                        ),
+                        "Accept": "application/json",
+                    },
+                    timeout=(5, 10),
+                )
+                if _anon_resp.status_code == 200:
+                    _access_token = _anon_resp.json().get("accessToken")
+            except Exception:
+                pass
+
+            # Fall back to configured API credentials if anonymous token unavailable.
+            if not _access_token:
+                config_data, _ = _read_yaml(CONFIG_PATH)
+                spotify_config = config_data.get("api_integrations", {}).get("spotify", {})
+                client_id = spotify_config.get("client_id", "")
+                client_secret = spotify_config.get("client_secret", "")
+                if client_id and client_secret:
+                    try:
+                        from api_clients.spotify import SpotifyClient
+                        _access_token = SpotifyClient(client_id, client_secret)._get_token()
+                    except Exception:
+                        pass
+
+            if not _access_token:
                 return jsonify({
                     "success": False,
-                    "error": "Spotify not configured. Add client_id/client_secret to config.yaml",
+                    "error": (
+                        "Could not obtain a Spotify access token. "
+                        "Optionally add client_id/client_secret to config.yaml as a fallback."
+                    ),
                 }), 400
 
-            from api_clients.spotify import SpotifyClient
-            import requests as _req
-            _sp = SpotifyClient(client_id, client_secret)
+            _auth_headers = {
+                "Authorization": f"Bearer {_access_token}",
+                "Content-Type": "application/json",
+            }
 
-            # Fetch playlist metadata (name)
+            # Fetch playlist metadata (name).
             playlist_name = spotify_playlist_id
             try:
-                _ph = _sp._headers()
-                _meta = _sp.session.get(
+                _meta = _req.get(
                     f"https://api.spotify.com/v1/playlists/{spotify_playlist_id}",
-                    headers=_ph,
+                    headers=_auth_headers,
                     params={"fields": "name"},
                     timeout=(5, 15),
                 )
@@ -1400,18 +1441,31 @@ def api_import_playlist_url():
             except Exception:
                 pass
 
-            raw_tracks = _sp.get_playlist_tracks(spotify_playlist_id)
+            # Fetch all tracks via paginated endpoint.
             tracks = []
-            for idx, t in enumerate(raw_tracks, start=1):
-                tracks.append({
-                    "track_number": idx,
-                    "artist": t.get("artist", ""),
-                    "title": t.get("title", ""),
-                    "album": t.get("album", ""),
-                    "duration_ms": t.get("duration_ms") or 0,
-                })
+            next_url = f"https://api.spotify.com/v1/playlists/{spotify_playlist_id}/tracks"
+            params = {"limit": 100}
+            while next_url:
+                _resp = _req.get(next_url, headers=_auth_headers, params=params, timeout=(5, 30))
+                _resp.raise_for_status()
+                payload = _resp.json()
+                for item in payload.get("items", []):
+                    track = item.get("track") or {}
+                    if track.get("id"):
+                        artist = ", ".join(
+                            a.get("name", "") for a in track.get("artists", [])
+                        )
+                        tracks.append({
+                            "track_number": len(tracks) + 1,
+                            "artist": artist,
+                            "title": track.get("name", ""),
+                            "album": (track.get("album") or {}).get("name", ""),
+                            "duration_ms": track.get("duration_ms") or 0,
+                        })
+                next_url = payload.get("next")
+                params = None  # next URL already contains query params
 
-            # Determine album_artist
+            # Determine album_artist.
             artists = [t["artist"] for t in tracks if t["artist"]]
             primary_artists = set(a.split(",")[0].strip() for a in artists)
             album_artist = list(primary_artists)[0] if len(primary_artists) == 1 else "Various Artists"

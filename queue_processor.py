@@ -2136,11 +2136,85 @@ def _filter_banned_words(query: str, banned: set) -> str:
     return result if len(result) >= 3 else query  # don't return empty/trivial queries
 
 
-def _track_zero_result_words(query: str) -> None:
+_BANNED_WORDS_SUSPECTED_THRESHOLD = 3  # must match the frontend filter (zero_result_count >= 3)
+
+
+def _slsk_word_has_results(word: str, client) -> bool:
+    """Return True if a single-word Soulseek search finds any files.
+
+    Used to verify whether a candidate suspected-banned word genuinely blocks
+    results.  A short timeout (30 s) is used since words that are NOT banned
+    typically produce results within the first few seconds.
+    """
+    try:
+        client.clear_stale_searches()
+        search_id = client.start_search(word)
+        if not search_id:
+            return True  # can't verify, assume the word is OK
+        max_wait = 30
+        deadline = time.monotonic() + max_wait
+        poll_count = 0
+        found = False
+        try:
+            while time.monotonic() < deadline:
+                time.sleep(1 if poll_count < 10 else 2)
+                poll_count += 1
+                try:
+                    responses, _, is_done = client.get_search_results(search_id)
+                    total = sum(
+                        len(r.files) for r in responses
+                        if hasattr(r, 'files') and r.files
+                    )
+                    if total > 0:
+                        found = True
+                        break
+                    if is_done:
+                        break
+                except Exception as _poll_err:
+                    logger.debug(f"[banned_words] Verification poll error for '{word}': {_poll_err}")
+        finally:
+            try:
+                client.cancel_search(search_id)
+            except Exception as _cancel_err:
+                logger.debug(f"[banned_words] Could not cancel verification search for '{word}': {_cancel_err}")
+        return found
+    except Exception as e:
+        logger.debug(f"[banned_words] Verification search for '{word}' error: {e}")
+        return True  # assume OK on error to avoid false positives
+
+
+def _clear_suspected_words() -> None:
+    """Delete all non-confirmed (is_banned=FALSE) entries from slsk_banned_words.
+
+    Called once on queue-processor startup so that suspected words accumulated
+    during a previous run do not carry over.  Only manually-confirmed bans
+    (is_banned=TRUE) are preserved.
+    """
+    try:
+        from download_queue_manager import _get_postgres_conn_from_app_or_fallback, _ensure_banned_words_table
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor()
+        _ensure_banned_words_table(conn, cursor)
+        cursor.execute("DELETE FROM slsk_banned_words WHERE is_banned = FALSE")
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        if deleted:
+            logger.info(f"[banned_words] Cleared {deleted} suspected word(s) on startup")
+    except Exception as e:
+        logger.warning(f"[banned_words] Could not clear suspected words on startup: {e}")
+
+
+def _track_zero_result_words(query: str, client=None) -> None:
     """Increment zero_result_count for individual words in a query that returned 0 results.
 
     Words shorter than 4 characters, pure digits, and common stop words are skipped.
     Only words that returned 0 results for 3+ distinct searches are suggested as banned.
+
+    When a word's count would reach _BANNED_WORDS_SUSPECTED_THRESHOLD for the first
+    time, a single-word Soulseek verification search is performed via *client*.
+    The word is only tracked if that verification search also returns 0 results,
+    preventing false positives caused by multi-word query failures.
     """
     _STOP_WORDS = {
         'the', 'and', 'for', 'with', 'from', 'this', 'that', 'feat', 'live',
@@ -2156,6 +2230,30 @@ def _track_zero_result_words(query: str) -> None:
         cursor = conn.cursor()
         _ensure_banned_words_table(conn, cursor)
         for word in set(words):
+            # Fetch the word's current count so we know whether this increment
+            # would push it to the suspected threshold.
+            cursor.execute(
+                "SELECT zero_result_count FROM slsk_banned_words WHERE word = %s",
+                (word,)
+            )
+            row = cursor.fetchone()
+            current_count = (row[0] if isinstance(row, tuple) else row['zero_result_count']) if row else 0
+
+            # When the next increment would first make this word "suspected"
+            # (i.e. reach the threshold), run a verification search with just
+            # that single word.  If the word returns results on its own, it is
+            # not a banned keyword — skip it.
+            if current_count + 1 >= _BANNED_WORDS_SUSPECTED_THRESHOLD and client is not None:
+                if current_count + 1 == _BANNED_WORDS_SUSPECTED_THRESHOLD:
+                    logger.debug(
+                        f"[banned_words] Verifying suspected word '{word}' with single-word search"
+                    )
+                    if _slsk_word_has_results(word, client):
+                        logger.debug(
+                            f"[banned_words] Word '{word}' returned results in verification — not flagging"
+                        )
+                        continue
+
             cursor.execute("""
                 INSERT INTO slsk_banned_words (word, zero_result_count, updated_at)
                 VALUES (%s, 1, NOW())
@@ -2362,7 +2460,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
             logger.debug(traceback.format_exc())
 
     if total_files_seen == 0 and is_complete:
-        _track_zero_result_words(query)
+        _track_zero_result_words(query, client)
 
     return best_result, best_score
 
@@ -4339,7 +4437,10 @@ def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
     logger.info(f"Processing interval: {interval}s")
-    
+
+    # Clear suspected (unconfirmed) banned words carried over from any previous run.
+    _clear_suspected_words()
+
     client = get_slskd_client()
     if not client:
         logger.error("Cannot initialize SlskdClient - exiting")
