@@ -1829,10 +1829,10 @@ function renderMbReleases(releases, recordingMbid) {
         return;
     }
 
-    const currentAlbumId = (document.getElementById('musicbrainz_albumid') || {}).value || '';
+    const currentAlbumId = document.getElementById('musicbrainz_albumid')?.value || '';
 
     let html = '<div class="list-group">';
-    releases.forEach(rel => {
+    releases.forEach((rel, idx) => {
         const isCurrent = rel.release_mbid && rel.release_mbid === currentAlbumId;
         const typeLabel = rel.type ? `<span class="badge bg-secondary me-1" style="font-size:0.7rem;">${escapeHtml(rel.type)}</span>` : '';
         const statusLabel = rel.status ? `<span class="badge bg-${rel.status.toLowerCase() === 'official' ? 'success' : 'warning'} me-1" style="font-size:0.7rem;">${escapeHtml(rel.status)}</span>` : '';
@@ -1855,9 +1855,11 @@ function renderMbReleases(releases, recordingMbid) {
                         <a href="https://musicbrainz.org/release/${encodeURIComponent(rel.release_mbid)}" target="_blank" class="btn btn-sm btn-outline-secondary me-1" title="Open on MusicBrainz">
                             <i class="bi bi-box-arrow-up-right"></i>
                         </a>
-                        <button class="btn btn-sm ${isCurrent ? 'btn-secondary disabled' : 'btn-primary'}"
-                                ${isCurrent ? 'disabled' : ''}
-                                onclick="applyMbRelease('${escapeHtml(rel.release_mbid)}', '${escapeHtml(rel.release_group_mbid || '')}', '${escapeHtml(rel.title)}')">
+                        <button class="btn btn-sm mb-apply-btn ${isCurrent ? 'btn-secondary' : 'btn-primary'}"
+                                data-release-mbid="${escapeHtml(rel.release_mbid)}"
+                                data-release-group-mbid="${escapeHtml(rel.release_group_mbid || '')}"
+                                data-release-title="${escapeHtml(rel.title)}"
+                                ${isCurrent ? 'disabled' : ''}>
                             <i class="bi bi-check-circle"></i> ${isCurrent ? 'Selected' : 'Select'}
                         </button>
                     </div>
@@ -1866,6 +1868,12 @@ function renderMbReleases(releases, recordingMbid) {
     });
     html += '</div>';
     resultsEl.innerHTML = html;
+
+    resultsEl.querySelectorAll('.mb-apply-btn:not([disabled])').forEach(btn => {
+        btn.addEventListener('click', () => {
+            applyMbRelease(btn.dataset.releaseMbid, btn.dataset.releaseGroupMbid, btn.dataset.releaseTitle);
+        });
+    });
 }
 
 function applyMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
@@ -1882,14 +1890,15 @@ function applyMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
             alert('Failed to apply release: ' + (data.error || 'Unknown error'));
             return;
         }
-        // Update form field if present
         const albumIdField = document.getElementById('musicbrainz_albumid');
         if (albumIdField) albumIdField.value = releaseMbid;
 
         const modal = bootstrap.Modal.getInstance(document.getElementById('mbReleaseModal'));
         if (modal) modal.hide();
-        alert('✅ Release matched! MusicBrainz Album ID updated to:\n' + releaseTitle + '\n' + releaseMbid);
-        location.reload();
+        setTimeout(() => {
+            alert('✅ Release matched! MusicBrainz Album ID updated to:\n' + releaseTitle + '\n' + releaseMbid);
+            location.reload();
+        }, 150);
     })
     .catch(err => alert('Network error: ' + err.message));
 }

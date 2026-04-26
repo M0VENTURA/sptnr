@@ -4527,8 +4527,10 @@ function renderAlbumTrackMbReleases(releases) {
                         <a href="https://musicbrainz.org/release/${encodeURIComponent(rel.release_mbid)}" target="_blank" class="btn btn-sm btn-outline-secondary me-1" title="Open on MusicBrainz">
                             <i class="bi bi-box-arrow-up-right"></i>
                         </a>
-                        <button class="btn btn-sm btn-primary"
-                                onclick="applyAlbumTrackMbRelease('${_escHtml(rel.release_mbid)}', '${_escHtml(rel.release_group_mbid || '')}', '${_escHtml(rel.title)}')">
+                        <button class="btn btn-sm btn-primary album-mb-apply-btn"
+                                data-release-mbid="${_escHtml(rel.release_mbid)}"
+                                data-release-group-mbid="${_escHtml(rel.release_group_mbid || '')}"
+                                data-release-title="${_escHtml(rel.title)}">
                             <i class="bi bi-check-circle"></i> Select
                         </button>
                     </div>
@@ -4537,6 +4539,12 @@ function renderAlbumTrackMbReleases(releases) {
     });
     html += '</div>';
     resultsEl.innerHTML = html;
+
+    resultsEl.querySelectorAll('.album-mb-apply-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            applyAlbumTrackMbRelease(btn.dataset.releaseMbid, btn.dataset.releaseGroupMbid, btn.dataset.releaseTitle);
+        });
+    });
 }
 
 function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
@@ -4555,8 +4563,10 @@ function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
         }
         const modal = bootstrap.Modal.getInstance(document.getElementById('albumTrackMbReleaseModal'));
         if (modal) modal.hide();
-        alert('✅ Release matched for track!\nMusicBrainz Album ID updated to:\n' + releaseTitle + '\n' + releaseMbid);
-        location.reload();
+        setTimeout(() => {
+            alert('✅ Release matched for track!\nMusicBrainz Album ID updated to:\n' + releaseTitle + '\n' + releaseMbid);
+            location.reload();
+        }, 150);
     })
     .catch(err => alert('Network error: ' + err.message));
 }
