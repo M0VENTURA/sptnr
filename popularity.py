@@ -3816,7 +3816,7 @@ def popularity_scan(
             "spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup, "
             "popularity_score, album_artist, writer, spotify_genres, lastfm_tags, "
             "listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url, "
-            "is_live, is_acoustic, is_cover, musicbrainz_albumtype"
+            "is_live, is_acoustic, is_cover, musicbrainz_albumtype, discogs_release_id"
         )
         where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
         # Order by album_artist (falling back to track artist when absent) so that the
@@ -4989,11 +4989,15 @@ def popularity_scan(
                                         log_debug(f'Using release group MBID {release_group_mbid} for direct MusicBrainz lookup')
                             except Exception:
                                 pass  # Column may not exist in older schemas
-                            detected_album_type, type_detection_source = get_album_type_with_fallback(
+                            detected_album_type, type_detection_source, discovered_release_group_mbid = get_album_type_with_fallback(
                                 artist, album, current_album_type, enabled=HAVE_MUSICBRAINZ,
                                 track_count=len(album_tracks), release_group_mbid=release_group_mbid
                             )
                             log_debug(f'MusicBrainz album type: "{detected_album_type}" (source: {type_detection_source})')
+                            # Capture a newly-discovered MBID (text-search path) so it can
+                            # be propagated to all tracks that are currently missing it.
+                            if discovered_release_group_mbid and not release_group_mbid:
+                                release_group_mbid = discovered_release_group_mbid
                         except Exception as e:
                             log_debug(f'Failed to fetch album type from MusicBrainz: {e}')
                             detected_album_type = current_album_type or 'album'
@@ -5025,6 +5029,28 @@ def popularity_scan(
                         log_info(f'Updated {tracks_updated} track(s) with album type "{detected_album_type}" (source: {type_detection_source})')
                 else:
                     log_debug(f'Album type unchanged: "{detected_album_type or current_album_type}"')
+
+                # Propagate the release-group MBID to any tracks in this album that are
+                # missing it.  This ensures all tracks benefit from the MBID discovered
+                # during the album type lookup (text-search path), not just the one track
+                # that originally carried it.
+                if release_group_mbid:
+                    try:
+                        cursor.execute(f"""
+                            UPDATE tracks
+                            SET musicbrainz_album_mbid = {placeholder},
+                                musicbrainz_albumid    = {placeholder}
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                              AND album = {placeholder}
+                              AND (musicbrainz_album_mbid IS NULL
+                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = '')
+                        """, (release_group_mbid, release_group_mbid, artist, album))
+                        _mbid_rows = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else 0
+                        if _mbid_rows > 0:
+                            conn.commit()
+                            log_info(f'Propagated album MBID {release_group_mbid} to {_mbid_rows} track(s) in "{artist} - {album}"')
+                    except Exception as _mbid_err:
+                        log_debug(f'Could not propagate album MBID for "{artist} - {album}": {_mbid_err}')
 
                 # Use the detected type for rest of scan; treat "unknown" (API
                 # fallback) as absent so the prior confirmed value is preferred.
@@ -5146,6 +5172,25 @@ def popularity_scan(
                                 log_debug(f'No Discogs genres found at album level for release ID {first_track_discogs_id}')
                         else:
                             log_debug(f'No Discogs release ID available for album-level genre fetch')
+                            # Fallback: try a text search by artist + album title
+                            try:
+                                from api_clients.discogs import DiscogsClient as _DC
+                                _dc_fb = _DC(discogs_token)
+                                _fb_genres = _run_with_timeout(
+                                    _dc_fb.get_genres,
+                                    10,
+                                    "Discogs album text-search timed out",
+                                    album, artist
+                                )
+                                if _fb_genres:
+                                    if isinstance(_fb_genres, list) and _fb_genres and isinstance(_fb_genres[0], str):
+                                        album_discogs_genres = [{"name": g} for g in _fb_genres]
+                                    else:
+                                        album_discogs_genres = _fb_genres
+                                    album_discogs_genres_json = json.dumps(album_discogs_genres)
+                                    log_info(f'Discogs album text-search found {len(album_discogs_genres)} genre(s) for "{artist} - {album}"')
+                            except Exception as _dc_fb_err:
+                                log_debug(f'Discogs album text-search fallback failed: {_dc_fb_err}')
                     except Exception as e:
                         log_debug(f'Failed to fetch album-level Discogs genres: {e}')
                         log_info(f'Will fall back to per-track Discogs genre fetching for this album')
@@ -5741,6 +5786,44 @@ def popularity_scan(
                                     log_debug(f'Failed to fetch Discogs genres for "{title}": {e}')
 
                             # Store all tags for this track (including empty lists if nothing was fetched)
+                            # Discogs final fallback: if the track still has no discogs_genres and
+                            # album-level data is available (artist release, not VA/soundtrack),
+                            # apply the album genres to this track.
+                            if not track_tags.get("discogs_genres") and album_discogs_genres and is_homogeneous_album:
+                                track_tags["discogs_genres"] = album_discogs_genres
+                                log_debug(f'Applied album-level Discogs genres to "{title}" (no track-level result)')
+
+                            # Fetch MusicBrainz genres via title+artist text search.
+                            # This runs in both popularity and metadata_only modes.
+                            # Skip if musicbrainz_genres is already populated to avoid redundant calls.
+                            _existing_mb_genres = row_get(track, 'musicbrainz_genres')
+                            _mb_genres_populated = False
+                            if _existing_mb_genres:
+                                try:
+                                    _mb_parsed = json.loads(_existing_mb_genres) if isinstance(_existing_mb_genres, str) else _existing_mb_genres
+                                    _mb_genres_populated = bool(_mb_parsed)
+                                except (ValueError, TypeError):
+                                    _mb_genres_populated = bool(_existing_mb_genres)
+                            if not _mb_genres_populated and HAVE_MUSICBRAINZ:
+                                try:
+                                    from api_clients.musicbrainz import MusicBrainzClient as _MBC
+                                    _mb_genre_client = _MBC()
+                                    _mb_genre_list = _run_with_timeout(
+                                        _mb_genre_client.get_genres,
+                                        API_CALL_TIMEOUT,
+                                        "MusicBrainz genre lookup timed out",
+                                        track_artist, api_lookup_title_tags
+                                    )
+                                    if _mb_genre_list:
+                                        # Normalise to {"name": ..., "count": 0} so display renders correctly
+                                        track_tags["musicbrainz_genres"] = [
+                                            {"name": g, "count": 0} if isinstance(g, str) else g
+                                            for g in _mb_genre_list
+                                        ]
+                                        log_debug(f'Fetched {len(_mb_genre_list)} MusicBrainz genres for "{title}"')
+                                except Exception as _mb_g_err:
+                                    log_debug(f'MusicBrainz genre fetch failed for "{title}": {_mb_g_err}')
+
                             album_tags_data[track_id] = track_tags
 
                         if album_tags_data:
@@ -6186,6 +6269,9 @@ def popularity_scan(
                             if tags_data.get("discogs_genres"):
                                 discogs_genres = json.dumps(tags_data["discogs_genres"])
                                 log_debug(f"Using Discogs genres for track {track_id}: {len(tags_data['discogs_genres'])} genres")
+                            if tags_data.get("musicbrainz_genres"):
+                                musicbrainz_genres = json.dumps(tags_data["musicbrainz_genres"])
+                                log_debug(f"Using MusicBrainz genres for track {track_id}: {len(tags_data['musicbrainz_genres'])} genres")
 
                         # Add "Cover" genre if this is a cover song
                         if is_cover_song:

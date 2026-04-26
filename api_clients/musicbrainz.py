@@ -1254,7 +1254,7 @@ def get_artist_country(artist: str, enabled: bool = True) -> str:
     return client.get_artist_country(artist)
 
 
-def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: str = None, enabled: bool = True, track_count: int = None, release_group_mbid: str = None) -> tuple[str, str]:
+def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: str = None, enabled: bool = True, track_count: int = None, release_group_mbid: str = None) -> tuple[str, str, str | None]:
     """
     Get album type from MusicBrainz with Spotify fallback using intelligent candidate scoring.
 
@@ -1275,14 +1275,15 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
         release_group_mbid: MusicBrainz release group MBID for direct lookup (optional)
 
     Returns:
-        Tuple of (album_type, source) where:
+        Tuple of (album_type, source, discovered_mbid) where:
         - album_type: "album", "single", "ep", "compilation" or "unknown"
         - source: "musicbrainz", "spotify", or "fallback"
+        - discovered_mbid: the release-group MBID found (or None)
     """
     if not enabled:
         if spotify_album_type:
-            return (spotify_album_type.lower() if spotify_album_type else "unknown", "spotify")
-        return ("unknown", "fallback")
+            return (spotify_album_type.lower() if spotify_album_type else "unknown", "spotify", None)
+        return ("unknown", "fallback", None)
     
     try:
         client = _get_musicbrainz_client(enabled)
@@ -1327,7 +1328,7 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
                         album_type = f"{primary_type} ({displayable_secondary})"
                 
                 logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' type={album_type} (primary={primary_type}, secondary={secondary_types}, via MBID={release_group_mbid})")
-                return (album_type, "musicbrainz")
+                return (album_type, "musicbrainz", release_group_mbid)
             except Exception as mbid_err:
                 logger.debug(f"MusicBrainz direct MBID lookup failed for '{release_group_mbid}': {mbid_err}, falling back to text search")
                 # Rate limit before the text search fallback
@@ -1416,27 +1417,27 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
                     album_type = f"{primary_type} ({displayable_secondary})"
                 
                 logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' type={album_type} (primary={primary_type}, secondary={secondary_types}, candidate_score={best_score})")
-                return (album_type, "musicbrainz")
+                return (album_type, "musicbrainz", rg.get("id"))
         
         # MusicBrainz didn't find this album, fall back to Spotify
         if spotify_album_type:
             album_type = spotify_album_type.lower()
             logger.debug(f"MusicBrainz: No match for '{album}' by '{artist}', using Spotify type: {album_type}")
-            return (album_type, "spotify")
+            return (album_type, "spotify", None)
         
         logger.debug(f"Album type detection failed for '{album}' by '{artist}' - no MusicBrainz match and no Spotify type")
-        return ("unknown", "fallback")
+        return ("unknown", "fallback", None)
         
     except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
         logger.debug(f"MusicBrainz album type lookup failed for '{album}' by '{artist}': {e}, falling back to Spotify")
         if spotify_album_type:
-            return (spotify_album_type.lower(), "spotify")
-        return ("unknown", "fallback")
+            return (spotify_album_type.lower(), "spotify", None)
+        return ("unknown", "fallback", None)
     except Exception as e:
         logger.debug(f"Unexpected error getting album type for '{album}' by '{artist}': {e}")
         if spotify_album_type:
-            return (spotify_album_type.lower(), "spotify")
-        return ("unknown", "fallback")
+            return (spotify_album_type.lower(), "spotify", None)
+        return ("unknown", "fallback", None)
 
 
 def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
