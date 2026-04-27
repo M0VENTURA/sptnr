@@ -42,11 +42,19 @@
 <!-- How to get a CSV -->
 <div class="row mb-4">
   <div class="col-12">
-    <div class="alert alert-info">
-      <i class="bi bi-info-circle"></i>
-      <strong>How to get a CSV:</strong>
-      Go to <a href="https://exportify.net" target="_blank" rel="noopener">exportify.net</a>, log in with Spotify, and download any playlist as a CSV.
-      Then upload it here — no Spotify credentials are needed in SPTNR.
+    <div class="card border-success">
+      <div class="card-body d-flex flex-column flex-md-row align-items-md-center gap-3">
+        <div class="flex-grow-1">
+          <h5 class="mb-1"><i class="bi bi-cloud-download text-success"></i> Step 1 — Get your playlist CSV</h5>
+          <p class="mb-0 text-secondary">
+            Visit <strong>exportify.net</strong>, log in with Spotify, and click <em>Export</em> next to any playlist.
+            Save the <code>.csv</code> file, then upload it below — no Spotify credentials are needed in SPTNR.
+          </p>
+        </div>
+        <a href="https://exportify.net" target="_blank" rel="noopener" class="btn btn-success btn-lg text-nowrap">
+          <i class="bi bi-box-arrow-up-right"></i> Open exportify.net
+        </a>
+      </div>
     </div>
   </div>
 </div>
@@ -56,7 +64,7 @@
   <div class="col-12">
     <div class="card">
       <div class="card-header">
-        <h5 class="mb-0">Upload Exportify CSV</h5>
+        <h5 class="mb-0"><i class="bi bi-upload"></i> Step 2 — Upload your CSV</h5>
       </div>
       <div class="card-body">
         <form id="csvForm" onsubmit="importPlaylistFromCSV(event)">
