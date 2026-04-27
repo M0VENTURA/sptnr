@@ -34639,7 +34639,12 @@ def api_album_musicbrainz_compare():
             norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
             lib_by_title[(disc, norm)] = t
 
-        # Compare each MB track with the library
+        # Compare each MB track with the library.
+        # matched_lib_ids tracks every library track that has already been claimed by a
+        # previous MB-track match.  Fuzzy fallbacks (steps 3 & 4) skip claimed tracks so
+        # that e.g. a disc-3 "Song (Instrumental)" cannot steal the disc-1 "Song" that
+        # was already correctly matched by the disc-1 MB entry.
+        matched_lib_ids: set = set()
         comparison = []
         for mb_track in mb_tracks:
             disc = int(mb_track.get("disc_number") or 1)
@@ -34681,11 +34686,14 @@ def api_album_musicbrainz_compare():
                 #    so that instrumental/bonus tracks on a higher-numbered MB disc are
                 #    never matched against regular tracks on a lower library disc (e.g.
                 #    MB disc 3 "Song (Instrumental)" must not match library disc 1 "Song").
+                #    Also skips library tracks already claimed by an earlier MB track.
                 if lib_track is None:
                     best_ratio = 0.0
                     best_t = None
                     for t in library_tracks:
                         if int(t.get("disc_number") or 1) != disc:
+                            continue
+                        if t.get("id") in matched_lib_ids:
                             continue
                         lib_norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
                         ratio = _difflib.SequenceMatcher(None, norm_mb, lib_norm).ratio()
@@ -34702,17 +34710,21 @@ def api_album_musicbrainz_compare():
                 #    The regex strips greedily from the first ( or [ to end-of-string.
                 #    e.g. "Song (feat. X) (Remix)" → "Song", which correctly matches
                 #    a library entry titled simply "Song".
-                #    Like step 3, matching is restricted to the same disc to avoid
-                #    cross-disc false positives on multi-disc releases.
+                #    Like step 3, matching is restricted to the same disc and to
+                #    unclaimed library tracks.
                 if lib_track is None:
                     norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
                     if norm_mb_core and norm_mb_core != norm_mb:
-                        lib_track = lib_by_title.get((disc, norm_mb_core))
+                        candidate_exact = lib_by_title.get((disc, norm_mb_core))
+                        if candidate_exact is not None and candidate_exact.get("id") not in matched_lib_ids:
+                            lib_track = candidate_exact
                         if lib_track is None:
                             best_ratio = 0.0
                             best_t = None
                             for t in library_tracks:
                                 if int(t.get("disc_number") or 1) != disc:
+                                    continue
+                                if t.get("id") in matched_lib_ids:
                                     continue
                                 lib_norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
                                 ratio = _difflib.SequenceMatcher(None, norm_mb_core, lib_norm).ratio()
@@ -34745,6 +34757,7 @@ def api_album_musicbrainz_compare():
             }
 
             if lib_track:
+                matched_lib_ids.add(lib_track["id"])
                 entry["matched"] = True
                 entry["library_track_id"] = lib_track.get("id")
                 entry["library_title"] = lib_track.get("title", "")
