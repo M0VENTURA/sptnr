@@ -272,6 +272,7 @@ from api_clients.slskd import SlskdClient
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT, _escape_lucene_special_chars as _escape_mb_phrase
 from helpers.metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
 import io
+import csv
 from helpers.helpers import create_retry_session, clean_discogs_biography
 import difflib
 import unicodedata
@@ -33461,6 +33462,157 @@ def api_playlist_import():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/playlist/import/csv", methods=["POST"])
+def api_playlist_import_csv():
+    """Import a playlist from an Exportify-exported CSV file.
+
+    Accepts multipart/form-data with:
+        file             – CSV file (required)
+        playlist_name    – desired playlist name (required)
+        playlist_description – optional description
+        target_user      – Navidrome user to assign the playlist to
+
+    Exportify CSV columns used for matching:
+        Track Name, Artist Name(s), Album Name, ISRC, Spotify URI
+    """
+    try:
+        # --- Validate uploaded file ---
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+
+        uploaded_file = request.files["file"]
+        if not uploaded_file.filename:
+            return jsonify({"error": "No file selected"}), 400
+        if not uploaded_file.filename.lower().endswith(".csv"):
+            return jsonify({"error": "Only .csv files are supported"}), 400
+
+        playlist_name = (request.form.get("playlist_name") or "").strip()
+        playlist_description = (request.form.get("playlist_description") or "").strip()
+        target_user = (request.form.get("target_user") or "").strip()
+
+        if not playlist_name:
+            return jsonify({"error": "playlist_name is required"}), 400
+
+        # --- Parse CSV ---
+        content = uploaded_file.read().decode("utf-8-sig")  # strip BOM if present
+        reader = csv.DictReader(io.StringIO(content))
+
+        # Normalise header names: lowercase + strip whitespace
+        raw_fieldnames = reader.fieldnames or []
+        normalised = {h.lower().strip(): h for h in raw_fieldnames}
+
+        def col(aliases):
+            """Return the actual header name for the first alias that exists."""
+            for alias in aliases:
+                if alias in normalised:
+                    return normalised[alias]
+            return None
+
+        title_col  = col(["track name", "name", "title"])
+        artist_col = col(["artist name(s)", "artist names", "artist name", "artist", "artists"])
+        album_col  = col(["album name", "album"])
+        isrc_col   = col(["isrc"])
+        uri_col    = col(["spotify uri", "track uri", "uri"])
+
+        if not title_col or not artist_col:
+            return jsonify({
+                "error": "CSV must contain at least 'Track Name' and 'Artist Name(s)' columns. "
+                         "Please export using Exportify (exportify.net)."
+            }), 400
+
+        tracks_from_csv = []
+        for row in reader:
+            title  = (row.get(title_col) or "").strip()
+            artist = (row.get(artist_col) or "").strip()
+            if not title and not artist:
+                continue  # skip blank rows
+            tracks_from_csv.append({
+                "title":      title,
+                "artist":     artist,
+                "album":      (row.get(album_col) or "").strip() if album_col else "",
+                "isrc":       (row.get(isrc_col) or "").strip() if isrc_col else "",
+                "spotify_id": (row.get(uri_col) or "").strip().split(":")[-1] if uri_col else "",
+            })
+
+        if not tracks_from_csv:
+            return jsonify({"error": "No tracks found in CSV"}), 400
+
+        # --- Match tracks using same 3-tier strategy as Spotify URL import ---
+        matched_tracks = []
+        missing_tracks = []
+        match_stats = {"isrc": 0, "fuzzy": 0, "strict": 0, "unmatched": 0}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        for track in tracks_from_csv:
+            matched_track, confidence, strategy = enhanced_match_track(
+                track,
+                cursor,
+                enable_isrc=True,
+                enable_fuzzy=True,
+                enable_strict=True,
+                fuzzy_threshold=0.80,
+                logger=logging,
+            )
+
+            if matched_track:
+                matched_tracks.append({
+                    "id":         matched_track["id"],
+                    "title":      matched_track["title"],
+                    "artist":     matched_track["artist"],
+                    "album":      matched_track["album"],
+                    "stars":      matched_track["stars"],
+                    "confidence": confidence,
+                    "strategy":   strategy,
+                })
+                match_stats[strategy] += 1
+            else:
+                missing_tracks.append({
+                    "title":      track["title"],
+                    "artist":     track["artist"],
+                    "album":      track["album"],
+                    "spotify_id": track["spotify_id"],
+                    "isrc":       track["isrc"],
+                    "best_score": confidence,
+                })
+                match_stats["unmatched"] += 1
+
+        conn.close()
+
+        # Check if slskd is enabled
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        slskd_enabled = config_data.get("slskd", {}).get("enabled", False)
+
+        logging.info(
+            f"CSV playlist import '{playlist_name}': "
+            f"Matched {len(matched_tracks)}/{len(tracks_from_csv)} tracks"
+        )
+        logging.info(
+            f"  Strategy breakdown: ISRC={match_stats['isrc']}, "
+            f"Fuzzy={match_stats['fuzzy']}, Strict={match_stats['strict']}, "
+            f"Unmatched={match_stats['unmatched']}"
+        )
+
+        return jsonify({
+            "success":              True,
+            "playlist_name":        playlist_name,
+            "playlist_description": playlist_description,
+            "target_user":          target_user,
+            "matched_tracks":       matched_tracks,
+            "missing_tracks":       missing_tracks,
+            "slskd_enabled":        slskd_enabled,
+            "message":              f"Matched {len(matched_tracks)}/{len(tracks_from_csv)} tracks",
+            "match_stats":          match_stats,
+        })
+
+    except UnicodeDecodeError:
+        return jsonify({"error": "Could not decode CSV file. Please save it as UTF-8."}), 400
+    except Exception as e:
+        logging.error(f"CSV playlist import error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/playlist/create", methods=["POST"])
 def api_playlist_create():
     """
@@ -36352,6 +36504,23 @@ def playlists_import():
                          navidrome_users=navidrome_users,
                          spotify_enabled=spotify_enabled,
                          lastfm_enabled=lastfm_enabled)
+
+
+@app.route("/playlists/import/csv")
+def playlists_import_csv():
+    """Import playlist from Exportify CSV page"""
+    cfg = get_config()
+    navidrome_config = cfg.get("navidrome", {})
+    navidrome_users = cfg.get("navidrome_users", [])
+
+    if not navidrome_users and navidrome_config.get("user"):
+        navidrome_users = [{
+            "base_url": navidrome_config.get("base_url"),
+            "user": navidrome_config.get("user"),
+        }]
+
+    return render_template('playlist_importer_csv.html', navidrome_users=navidrome_users)
+
 
 
 @app.route("/api/playlist/list")
