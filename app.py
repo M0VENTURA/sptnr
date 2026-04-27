@@ -7185,6 +7185,18 @@ def api_album_missing_tracks():
                     lambda entry: _track_matches_title(entry, t_disc, t_norm, t_norm_recording, t_norm_stripped)
                 )
 
+            # Final fallback: match by track number alone (same disc + same position).
+            # This handles tracks whose titles differ slightly in the library
+            # (e.g. "Song" vs "Song (Remastered)") so they are not falsely flagged
+            # as missing when the track clearly occupies the correct position.
+            if matched_entry is None and t_track_num_int is not None:
+                matched_entry = _pop_matching_entry(
+                    lambda entry: (
+                        entry["disc"] == t_disc
+                        and entry["track_num"] == t_track_num_int
+                    )
+                )
+
             if matched_entry is None:
                 # MusicBrainz returns duration in milliseconds; convert to seconds for UI
                 mb_duration_ms = mb_track.get("duration")
