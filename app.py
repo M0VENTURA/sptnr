@@ -33610,7 +33610,7 @@ def api_playlist_import_csv():
         return jsonify({"error": "Could not decode CSV file. Please save it as UTF-8."}), 400
     except Exception as e:
         logging.error(f"CSV playlist import error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "An error occurred while processing the CSV file"}), 500
 
 
 @app.route("/api/playlist/create", methods=["POST"])

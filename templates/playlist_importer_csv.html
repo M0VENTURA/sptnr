@@ -153,7 +153,7 @@
       </div>
     </div>
     <div class="col-12 col-md-3">
-      <div class="card text-center bg-secondary bg-opacity-10 border-secondary">
+      <div class="card text-center bg-secondary bg-opacity-10 border-secondary" id="coverageCard">
         <div class="card-body">
           <h5 class="card-title text-secondary">Coverage</h5>
           <h2 id="coverage" class="text-secondary">0%</h2>
@@ -331,12 +331,32 @@
   .track-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
   .missing-track-badge { background-color: rgba(255,193,7,0.1); color: #ffc107; padding: 0.25rem 0.75rem; border-radius: 4px; font-size: 0.8rem; white-space: nowrap; }
   .track-actions .btn { padding: 0.35rem 0.6rem; font-size: 0.85rem; min-width: auto; white-space: nowrap; }
-  :root { --border-color: #495057; --text-secondary: #adb5bd; --text-tertiary: #868e96; }
+  :root { --border-color: #495057; --text-secondary: #adb5bd; --text-tertiary: #868e96; --spotify-green: #1db954; }
 </style>
 
 <script>
   let currentImportData = null;
   let missingTracksForSearch = [];
+
+  // ─── helpers ─────────────────────────────────────────────────────────────────
+
+  function escapeHtml(text) {
+    const d = document.createElement('div');
+    d.textContent = String(text ?? '');
+    return d.innerHTML;
+  }
+
+  // Store track payloads in a side-map keyed by a numeric index so no data
+  // ever ends up inside onclick attribute strings (eliminates JS-context XSS).
+  const _trackPayloads = {};
+  let _payloadIdx = 0;
+  function storePayload(obj) {
+    const id = _payloadIdx++;
+    _trackPayloads[id] = obj;
+    return id;
+  }
+
+  // ─── import ──────────────────────────────────────────────────────────────────
 
   async function importPlaylistFromCSV(event) {
     event.preventDefault();
@@ -389,6 +409,8 @@
     }
   }
 
+  // ─── display results ─────────────────────────────────────────────────────────
+
   function displayResults(data) {
     const matchedCount = data.matched_tracks ? data.matched_tracks.length : 0;
     const missingCount = data.missing_tracks ? data.missing_tracks.length : 0;
@@ -400,64 +422,71 @@
     document.getElementById('totalCount').textContent = totalCount;
     document.getElementById('coverage').textContent = coverage + '%';
 
-    const coverageEl = document.getElementById('coverage').parentElement.parentElement;
-    coverageEl.classList.remove('bg-success', 'bg-warning', 'bg-danger');
-    if (coverage >= 90) coverageEl.classList.add('bg-success');
-    else if (coverage >= 70) coverageEl.classList.add('bg-warning');
-    else coverageEl.classList.add('bg-danger');
+    // Fix up the coverage card color — always remove all three before adding one
+    const coverageCard = document.getElementById('coverageCard');
+    coverageCard.classList.remove('bg-success', 'bg-warning', 'bg-danger');
+    if (coverage >= 90)      coverageCard.classList.add('bg-success');
+    else if (coverage >= 70) coverageCard.classList.add('bg-warning');
+    else                     coverageCard.classList.add('bg-danger');
 
+    // Matched tracks
     const matchedContainer = document.getElementById('matchedTracksContainer');
     if (matchedCount > 0) {
-      matchedContainer.innerHTML = data.matched_tracks.map((track, idx) => `
-        <div class="track-row">
-          <div class="track-info split-col">
-            <div class="track-label text-secondary">CSV Track</div>
-            <div class="track-title">${escapeHtml(track.title)}</div>
-            <div class="track-artist">${escapeHtml(track.artist)}</div>
-            <div class="track-album">${escapeHtml(track.album)}</div>
-          </div>
-          <div class="track-info split-col border-start ps-3">
-            <div class="track-label text-success">Matched in Library</div>
-            <div class="track-title text-success">${escapeHtml(track.title)}</div>
-            <div class="track-artist">${escapeHtml(track.artist)}</div>
-            <div class="track-album">${escapeHtml(track.album)}</div>
-            ${track.stars !== undefined ? `<div class="text-muted small">Rating: ${track.stars || 0}★</div>` : ''}
-            <div class="text-muted small">via ${escapeHtml(track.strategy || '')}</div>
-          </div>
-          <div class="track-actions">
-            <span class="badge bg-success">✓ Found</span>
-            <button class="btn btn-sm btn-outline-info" onclick="openReplacementTrackModal('${escapeHtml(track.artist)}', '${escapeHtml(track.title)}', '${escapeHtml(track.album || '')}', 'matched', ${idx})" title="Replace with a different local track">
-              <i class="bi bi-arrow-repeat"></i> Replace
-            </button>
-          </div>
-        </div>
-      `).join('');
+      matchedContainer.innerHTML = data.matched_tracks.map((track, idx) => {
+        const pid = storePayload({ artist: track.artist, title: track.title, album: track.album || '', source: 'matched', sourceIndex: idx });
+        return `
+          <div class="track-row">
+            <div class="track-info split-col">
+              <div class="track-label text-secondary">CSV Track</div>
+              <div class="track-title">${escapeHtml(track.title)}</div>
+              <div class="track-artist">${escapeHtml(track.artist)}</div>
+              <div class="track-album">${escapeHtml(track.album)}</div>
+            </div>
+            <div class="track-info split-col border-start ps-3">
+              <div class="track-label text-success">Matched in Library</div>
+              <div class="track-title text-success">${escapeHtml(track.title)}</div>
+              <div class="track-artist">${escapeHtml(track.artist)}</div>
+              <div class="track-album">${escapeHtml(track.album)}</div>
+              ${track.stars !== undefined ? `<div class="text-muted small">Rating: ${track.stars || 0}★</div>` : ''}
+              <div class="text-muted small">via ${escapeHtml(track.strategy || '')}</div>
+            </div>
+            <div class="track-actions">
+              <span class="badge bg-success">✓ Found</span>
+              <button class="btn btn-sm btn-outline-info js-replace-btn" data-pid="${pid}" title="Replace with a different local track">
+                <i class="bi bi-arrow-repeat"></i> Replace
+              </button>
+            </div>
+          </div>`;
+      }).join('');
     } else {
       matchedContainer.innerHTML = '<p class="text-secondary text-center py-5">No matched tracks found</p>';
     }
 
+    // Missing tracks
     const missingContainer = document.getElementById('missingTracksContainer');
     if (missingCount > 0) {
-      missingContainer.innerHTML = data.missing_tracks.map((track, idx) => `
-        <div class="track-row">
-          <div class="track-info">
-            <div class="track-title">${escapeHtml(track.title)}</div>
-            <div class="track-artist">${escapeHtml(track.artist)}</div>
-            <div class="track-album">${escapeHtml(track.album || 'Unknown Album')}</div>
-          </div>
-          <div class="track-actions">
-            <span class="missing-track-badge">✗ Missing</span>
-            ${data.slskd_enabled ? `
-            <button class="btn btn-sm btn-outline-success" onclick="searchTrackInSoulseek('${escapeHtml(track.artist + ' ' + track.title)}', this)" title="Search in Soulseek">
-              <i class="bi bi-cloud-arrow-down"></i> Search
-            </button>
-            ` : ''}
-            <button class="btn btn-sm btn-outline-info" onclick="openReplacementTrackModal('${escapeHtml(track.artist)}', '${escapeHtml(track.title)}', '${escapeHtml(track.album || '')}', 'missing', ${idx})" title="Replace with different song">
-              <i class="bi bi-arrow-repeat"></i> Replace
-            </button>
-          </div>
-        </div>
-      `).join('');
+      missingContainer.innerHTML = data.missing_tracks.map((track, idx) => {
+        const pid = storePayload({ artist: track.artist, title: track.title, album: track.album || '', source: 'missing', sourceIndex: idx });
+        const searchPid = storePayload({ query: `${track.artist} ${track.title}` });
+        return `
+          <div class="track-row">
+            <div class="track-info">
+              <div class="track-title">${escapeHtml(track.title)}</div>
+              <div class="track-artist">${escapeHtml(track.artist)}</div>
+              <div class="track-album">${escapeHtml(track.album || 'Unknown Album')}</div>
+            </div>
+            <div class="track-actions">
+              <span class="missing-track-badge">✗ Missing</span>
+              ${data.slskd_enabled ? `
+              <button class="btn btn-sm btn-outline-success js-slskd-search-btn" data-pid="${searchPid}" title="Search in Soulseek">
+                <i class="bi bi-cloud-arrow-down"></i> Search
+              </button>` : ''}
+              <button class="btn btn-sm btn-outline-info js-replace-btn" data-pid="${pid}" title="Replace with different song">
+                <i class="bi bi-arrow-repeat"></i> Replace
+              </button>
+            </div>
+          </div>`;
+      }).join('');
     } else {
       missingContainer.innerHTML = '<p class="text-success text-center py-5">All tracks found in library!</p>';
     }
@@ -470,6 +499,47 @@
     document.getElementById('resultsSection').style.display = 'block';
     document.getElementById('errorSection').style.display = 'none';
   }
+
+  // ─── event delegation for dynamically created buttons ────────────────────────
+
+  document.addEventListener('click', function(e) {
+    const replaceBtn = e.target.closest('.js-replace-btn');
+    if (replaceBtn) {
+      const p = _trackPayloads[replaceBtn.dataset.pid];
+      if (p) openReplacementTrackModal(p.artist, p.title, p.album, p.source, p.sourceIndex);
+      return;
+    }
+
+    const slskdBtn = e.target.closest('.js-slskd-search-btn');
+    if (slskdBtn) {
+      const p = _trackPayloads[slskdBtn.dataset.pid];
+      if (p) searchTrackInSoulseek(p.query, slskdBtn);
+      return;
+    }
+
+    const addBtn = e.target.closest('.js-add-track-btn');
+    if (addBtn) {
+      const p = _trackPayloads[addBtn.dataset.pid];
+      if (p) addSelectedTrack(p.title, p.artist, p.album);
+      return;
+    }
+
+    const swapBtn = e.target.closest('.js-swap-track-btn');
+    if (swapBtn) {
+      const p = _trackPayloads[swapBtn.dataset.pid];
+      if (p) replaceSelectedTrack(p.title, p.artist, p.album, p.id);
+      return;
+    }
+
+    const dlBtn = e.target.closest('.js-slskd-download-btn');
+    if (dlBtn) {
+      const p = _trackPayloads[dlBtn.dataset.pid];
+      if (p) downloadSoulseekFile(p.username, p.filename, p.size);
+      return;
+    }
+  });
+
+  // ─── create playlist ──────────────────────────────────────────────────────────
 
   async function createPlaylist() {
     if (!currentImportData) return;
@@ -491,13 +561,16 @@
       if (!response.ok) throw new Error(data.error || 'Playlist creation failed');
       alert(`✅ Playlist "${currentImportData.playlist_name}" created successfully!`);
       createBtn.innerHTML = '<i class="bi bi-check-circle"></i> Playlist Created!';
-      createBtn.classList.replace('btn-success', 'btn-success');
+      createBtn.classList.remove('btn-success');
+      createBtn.classList.add('btn-outline-success');
     } catch (error) {
       alert(`❌ Error: ${error.message}`);
       createBtn.disabled = false;
       createBtn.innerHTML = originalText;
     }
   }
+
+  // ─── soulseek ────────────────────────────────────────────────────────────────
 
   async function searchMissingTracks() {
     if (!missingTracksForSearch.length) { alert('No missing tracks to search'); return; }
@@ -528,7 +601,7 @@
       const res = await fetch('/api/slskd/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query.trim() })
+        body: JSON.stringify({ query: String(query).trim() })
       });
       if (!res.ok) throw new Error('Search failed');
       const data = await res.json();
@@ -546,7 +619,10 @@
       const res = await fetch(`/api/slskd/search/${searchId}`);
       if (!res.ok) throw new Error('Failed to get results');
       const data = await res.json();
-      if (!data.isComplete) { setTimeout(() => pollSoulseekResults(searchId, query, buttonEl, originalText), 2000); return; }
+      if (!data.isComplete) {
+        setTimeout(() => pollSoulseekResults(searchId, query, buttonEl, originalText), 2000);
+        return;
+      }
       if (data.fileCount === 0) { alert(`⚠️ No results found for: "${query}"`); }
       else { showSoulseekResultsModal(data.results, query); }
       buttonEl.disabled = false;
@@ -558,30 +634,51 @@
   }
 
   function showSoulseekResultsModal(results, query) {
-    let html = `<div class="modal fade" id="soulseekResultsModal" tabindex="-1" aria-hidden="true">
+    const container = document.createElement('div');
+    container.className = 'modal fade';
+    container.id = 'soulseekResultsModal';
+    container.setAttribute('tabindex', '-1');
+    container.setAttribute('aria-hidden', 'true');
+
+    const listItems = results.map(r => {
+      const pid = storePayload({ username: r.username, filename: r.filename, size: r.size });
+      const item = document.createElement('div');
+      item.className = 'list-group-item';
+      item.innerHTML = `
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1">
+            <h6 class="mb-1">${escapeHtml(r.filename)}</h6>
+            <small class="text-muted">
+              <i class="bi bi-person"></i> ${escapeHtml(r.username)} |
+              <i class="bi bi-file-earmark-music"></i> ${r.size_mb} MB |
+              <i class="bi bi-speedometer"></i> ${r.bitrate || 'unknown'} bps
+            </small>
+          </div>
+          <button class="btn btn-sm btn-success js-slskd-download-btn" data-pid="${pid}">
+            <i class="bi bi-download"></i> Download
+          </button>
+        </div>`;
+      return item.outerHTML;
+    }).join('');
+
+    container.innerHTML = `
       <div class="modal-dialog modal-lg"><div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title">Soulseek Results for: ${escapeHtml(query)}</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
-        <div class="modal-body" style="max-height:500px;overflow-y:auto;"><div class="list-group">`;
-    results.forEach(r => {
-      html += `<div class="list-group-item"><div class="d-flex justify-content-between align-items-start">
-        <div class="flex-grow-1">
-          <h6 class="mb-1">${escapeHtml(r.filename)}</h6>
-          <small class="text-muted"><i class="bi bi-person"></i> ${escapeHtml(r.username)} | <i class="bi bi-file-earmark-music"></i> ${r.size_mb} MB | <i class="bi bi-speedometer"></i> ${r.bitrate || 'unknown'} bps</small>
+        <div class="modal-body" style="max-height:500px;overflow-y:auto;">
+          <div class="list-group">${listItems}</div>
         </div>
-        <button class="btn btn-sm btn-success" onclick="downloadSoulseekFile('${escapeHtml(r.username)}', '${escapeHtml(r.filename)}', '${escapeHtml(String(r.size))}')">
-          <i class="bi bi-download"></i> Download
-        </button>
+        <div class="modal-footer">
+          <small class="text-muted">Found ${results.length} result(s). Downloads will appear on the Downloads page.</small>
+        </div>
       </div></div>`;
-    });
-    html += `</div></div><div class="modal-footer"><small class="text-muted">Found ${results.length} result(s). Downloads will appear on the Downloads page.</small></div>
-      </div></div></div>`;
+
     const old = document.getElementById('soulseekResultsModal');
     if (old) old.remove();
-    document.body.insertAdjacentHTML('beforeend', html);
-    new bootstrap.Modal(document.getElementById('soulseekResultsModal')).show();
+    document.body.appendChild(container);
+    new bootstrap.Modal(container).show();
   }
 
   async function downloadSoulseekFile(username, filename, size) {
@@ -592,11 +689,13 @@
         body: JSON.stringify({ username, filename, size: parseInt(size) })
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Download failed'); }
-      alert(`✅ Download started for: ${escapeHtml(filename)}`);
+      alert(`✅ Download started for: ${filename}`);
       const modal = bootstrap.Modal.getInstance(document.getElementById('soulseekResultsModal'));
       if (modal) modal.hide();
     } catch (error) { alert(`❌ Error: ${error.message}`); }
   }
+
+  // ─── add track modal ──────────────────────────────────────────────────────────
 
   function openAddTrackModal() {
     if (!currentImportData) { alert('Please import a playlist first'); return; }
@@ -613,12 +712,13 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query })
       });
-      if (!res.ok) { resultsDiv.innerHTML = `<p class="text-danger text-center">Error</p>`; return; }
+      if (!res.ok) { resultsDiv.innerHTML = '<p class="text-danger text-center">Error searching</p>'; return; }
       const data = await res.json();
       const tracks = (data.results || []).filter(r => r.type === 'track');
       if (!tracks.length) { resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>'; return; }
       let html = '<div style="border-top:1px solid var(--border-color);">';
       tracks.forEach(t => {
+        const pid = storePayload({ title: t.title, artist: t.artist, album: t.album || '' });
         html += `<div class="track-row" style="padding:0.75rem 0;border-bottom:1px solid var(--border-color);">
           <div class="track-info">
             <div class="track-title">${escapeHtml(t.title)}</div>
@@ -626,7 +726,7 @@
             <div class="track-album">${escapeHtml(t.album || 'Unknown Album')}</div>
           </div>
           <div class="track-actions">
-            <button class="btn btn-sm btn-success" onclick="addSelectedTrack('${escapeHtml(t.title)}','${escapeHtml(t.artist)}','${escapeHtml(t.album||'')}')">
+            <button class="btn btn-sm btn-success js-add-track-btn" data-pid="${pid}">
               <i class="bi bi-plus-circle"></i> Add
             </button>
           </div>
@@ -648,9 +748,11 @@
     alert(`✅ Track "${title}" added to playlist!`);
   }
 
+  // ─── replace track modal ──────────────────────────────────────────────────────
+
   let replacingTrackInfo = null;
 
-  function openReplacementTrackModal(artist, title, album, source = 'missing', sourceIndex = null) {
+  function openReplacementTrackModal(artist, title, album, source, sourceIndex) {
     replacingTrackInfo = { artist, title, album, source, sourceIndex };
     document.getElementById('originalTitle').textContent = title;
     document.getElementById('originalArtist').textContent = artist;
@@ -658,7 +760,8 @@
     document.getElementById('replacementArtistInput').value = artist || '';
     document.getElementById('replacementTitleInput').value = title || '';
     document.getElementById('replacementAlbumInput').value = album || '';
-    document.getElementById('replacementTrackSearchResults').innerHTML = '<p class="text-muted text-center py-4">Enter artist/title above to find replacement tracks</p>';
+    document.getElementById('replacementTrackSearchResults').innerHTML =
+      '<p class="text-muted text-center py-4">Enter artist/title above to find replacement tracks</p>';
     new bootstrap.Modal(document.getElementById('replaceTrackModal')).show();
   }
 
@@ -675,12 +778,13 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: combined, artist, title, album })
       });
-      if (!res.ok) { resultsDiv.innerHTML = '<p class="text-danger text-center">Error</p>'; return; }
+      if (!res.ok) { resultsDiv.innerHTML = '<p class="text-danger text-center">Error searching</p>'; return; }
       const data = await res.json();
       const tracks = data.songs || [];
       if (!tracks.length) { resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>'; return; }
       let html = '<div style="border-top:1px solid var(--border-color);">';
       tracks.forEach(t => {
+        const pid = storePayload({ title: t.title, artist: t.artist, album: t.album || '', id: t.id || '' });
         html += `<div class="track-row" style="padding:0.75rem 0;border-bottom:1px solid var(--border-color);">
           <div class="track-info">
             <div class="track-title text-success">${escapeHtml(t.title)}</div>
@@ -688,7 +792,7 @@
             <div class="track-album">${escapeHtml(t.album || 'Unknown Album')}</div>
           </div>
           <div class="track-actions">
-            <button class="btn btn-sm btn-success" onclick="replaceSelectedTrack('${escapeHtml(t.title)}','${escapeHtml(t.artist)}','${escapeHtml(t.album||'')}','${escapeHtml(t.id||'')}')">
+            <button class="btn btn-sm btn-success js-swap-track-btn" data-pid="${pid}">
               <i class="bi bi-arrow-left-right"></i> Swap
             </button>
           </div>
@@ -716,12 +820,6 @@
     displayResults(currentImportData);
     alert(`✅ Swapped!\n\nPlaylist: "${replacingTrackInfo.artist} – ${replacingTrackInfo.title}"\nLibrary:  "${artist} – ${title}"`);
     replacingTrackInfo = null;
-  }
-
-  function escapeHtml(text) {
-    const d = document.createElement('div');
-    d.textContent = text;
-    return d.innerHTML;
   }
 </script>
 
