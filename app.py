@@ -34677,11 +34677,16 @@ def api_album_musicbrainz_compare():
                 norm_mb = re.sub(r"\s+", " ", mb_track_title.lower().strip())
                 lib_track = lib_by_title.get((disc, norm_mb))
 
-                # 3. Fuzzy title match (≥80% similarity)
+                # 3. Fuzzy title match (≥80% similarity) — restricted to the same disc
+                #    so that instrumental/bonus tracks on a higher-numbered MB disc are
+                #    never matched against regular tracks on a lower library disc (e.g.
+                #    MB disc 3 "Song (Instrumental)" must not match library disc 1 "Song").
                 if lib_track is None:
                     best_ratio = 0.0
                     best_t = None
                     for t in library_tracks:
+                        if int(t.get("disc_number") or 1) != disc:
+                            continue
                         lib_norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
                         ratio = _difflib.SequenceMatcher(None, norm_mb, lib_norm).ratio()
                         if ratio > best_ratio and ratio >= 0.80:
@@ -34697,6 +34702,8 @@ def api_album_musicbrainz_compare():
                 #    The regex strips greedily from the first ( or [ to end-of-string.
                 #    e.g. "Song (feat. X) (Remix)" → "Song", which correctly matches
                 #    a library entry titled simply "Song".
+                #    Like step 3, matching is restricted to the same disc to avoid
+                #    cross-disc false positives on multi-disc releases.
                 if lib_track is None:
                     norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
                     if norm_mb_core and norm_mb_core != norm_mb:
@@ -34705,6 +34712,8 @@ def api_album_musicbrainz_compare():
                             best_ratio = 0.0
                             best_t = None
                             for t in library_tracks:
+                                if int(t.get("disc_number") or 1) != disc:
+                                    continue
                                 lib_norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
                                 ratio = _difflib.SequenceMatcher(None, norm_mb_core, lib_norm).ratio()
                                 if ratio > best_ratio and ratio >= 0.80:
