@@ -2542,6 +2542,167 @@ def search_and_download(queue_id, queue_item, client):
         except Exception as _mb_fresh_err:
             logger.debug(f"Queue {queue_id}: MB freshness check failed (non-fatal): {_mb_fresh_err}")
 
+        # MB recording pre-lookup: for items that have no recording_mbid yet
+        # (e.g. tracks added from a Spotify CSV), search MusicBrainz for the
+        # recording so that we can store the canonical artist, release MBID, and
+        # recording MBID before the Soulseek search begins.  This ensures the
+        # search query and stored metadata are correct even when the queue item
+        # was created with only partial Spotify metadata.
+        try:
+            _has_recording_mbid = bool((queue_item.get('recording_mbid') or '').strip())
+            _artist_val = (queue_item.get('artist') or '').strip()
+            _title_val  = (queue_item.get('title') or '').strip()
+            if not _has_recording_mbid and _artist_val and _title_val:
+                # Normalise semicolon-joined multi-artist strings (Spotify CSV
+                # style) to just the primary artist for the MB query.
+                _mb_query_artist = _artist_val.split(';')[0].strip()
+                logger.debug(
+                    f"Queue {queue_id}: no recording_mbid — attempting MB recording lookup "
+                    f"for '{_mb_query_artist} - {_title_val}'"
+                )
+                try:
+                    import time as _time_mod
+                    import requests as _mb_pre_req
+                    from api_clients.musicbrainz import _USER_AGENT as _MB_PRE_UA
+                    import difflib as _pre_difflib
+
+                    _time_mod.sleep(1.0)  # respect MB rate limit
+
+                    def _escape_mb(text):
+                        """Escape Lucene special characters for MB query."""
+                        import re as _re
+                        return _re.sub(r'([\+\-\&\|\!\(\)\{\}\[\]\^"~\*\?:\\\/])', r'\\\1', text)
+
+                    _mb_params = {
+                        "query": (
+                            f'recording:"{_escape_mb(_title_val)}"'
+                            f' AND artist:"{_escape_mb(_mb_query_artist)}"'
+                        ),
+                        "fmt": "json",
+                        "limit": 10,
+                        "inc": "releases+artist-credits",
+                    }
+                    _mb_pre_resp = _mb_pre_req.get(
+                        "https://musicbrainz.org/ws/2/recording/",
+                        headers={"User-Agent": _MB_PRE_UA, "Accept": "application/json"},
+                        params=_mb_params,
+                        timeout=12,
+                    )
+                    if _mb_pre_resp.status_code == 200:
+                        _mb_pre_data = _mb_pre_resp.json()
+                        _recordings = _mb_pre_data.get("recordings") or []
+                        _title_norm = _title_val.lower()
+
+                        # Pick the best recording by title similarity + year match
+                        _year_hint = str(queue_item.get('year') or queue_item.get('release_year') or '')[:4]
+                        _best_rec = None
+                        _best_rec_score = 0.0
+                        for _rec in _recordings:
+                            _rec_title = (_rec.get("title") or "").lower()
+                            _sim = _pre_difflib.SequenceMatcher(None, _title_norm, _rec_title).ratio()
+                            if _sim < 0.75:
+                                continue
+                            # Optional: favour recordings whose release date matches
+                            _year_bonus = 0.0
+                            if _year_hint:
+                                for _rel in (_rec.get("releases") or []):
+                                    _rel_date = str(_rel.get("date") or "")[:4]
+                                    if _rel_date == _year_hint:
+                                        _year_bonus = 0.05
+                                        break
+                            _score = _sim + _year_bonus
+                            if _score > _best_rec_score:
+                                _best_rec_score = _score
+                                _best_rec = _rec
+
+                        if _best_rec and _best_rec_score >= 0.75:
+                            _new_recording_mbid = (_best_rec.get("id") or "").strip()
+                            _mb_ac = _best_rec.get("artist-credit") or []
+                            _ac_parts = []
+                            for _cr in _mb_ac:
+                                if isinstance(_cr, dict):
+                                    _n = _cr.get("name") or (_cr.get("artist") or {}).get("name") or ""
+                                    _j = _cr.get("joinphrase") or ""
+                                    _ac_parts.append(_n + _j)
+                            _mb_canonical_artist = "".join(_ac_parts).strip()
+
+                            # Pick the best release from this recording for release_mbid
+                            _new_release_mbid = (queue_item.get('release_mbid') or '').strip()
+                            _existing_has_release = bool(_new_release_mbid)
+                            if not _existing_has_release:
+                                for _rel in (_best_rec.get("releases") or []):
+                                    _rid = (_rel.get("id") or "").strip()
+                                    if _rid:
+                                        _new_release_mbid = _rid
+                                        break
+
+                            _pre_updates = {}
+                            if _new_recording_mbid:
+                                _pre_updates['recording_mbid'] = _new_recording_mbid
+                            if _new_release_mbid and not _existing_has_release:
+                                _pre_updates['release_mbid'] = _new_release_mbid
+                                _pre_updates['release_source'] = 'musicbrainz'
+                            if _mb_canonical_artist and not (queue_item.get('artist') or '').strip():
+                                _pre_updates['artist'] = _mb_canonical_artist
+                            _pre_updates['mb_last_checked_at'] = datetime.now().isoformat()
+
+                            if _pre_updates:
+                                update_queue_item(queue_id, **_pre_updates)
+                                queue_item = dict(queue_item)
+                                queue_item.update(_pre_updates)
+                                # Update search_query to use canonical MB artist when the
+                                # stored artist was blank and we just populated it.
+                                if 'artist' in _pre_updates:
+                                    _new_a = queue_item.get('artist', '')
+                                    _new_t = queue_item.get('title', '')
+                                    if _new_a and _new_t:
+                                        from download_queue_manager import _sanitize_search_query_for_slskd as _pre_sanitize
+                                        _primary = _new_a.split(';')[0].strip()
+                                        queue_item['search_query'] = _pre_sanitize(f"{_primary} - {_new_t}")
+                                        search_query = queue_item['search_query']
+
+                                # Also update the tracks table placeholder so the
+                                # correct MBIDs are visible immediately on the page.
+                                try:
+                                    from download_queue_manager import _add_queue_item_to_tracks_table, get_db as _dqm_get_db
+                                    _tc = _dqm_get_db()
+                                    _tcc = _tc.cursor()
+                                    _add_queue_item_to_tracks_table(
+                                        _tc, _tcc,
+                                        queue_item.get('artist'),
+                                        queue_item.get('title'),
+                                        queue_item.get('album'),
+                                        queue_item.get('album_artist'),
+                                        queue_item.get('track_number'),
+                                        queue_item.get('year') or queue_item.get('release_year'),
+                                        queue_item.get('duration'),
+                                        queue_item.get('disc_number'),
+                                        _new_release_mbid or None,
+                                        _new_recording_mbid or None,
+                                        queue_id,
+                                        queue_item.get('status'),
+                                        isrc=queue_item.get('isrc'),
+                                        composer=queue_item.get('composer'),
+                                    )
+                                    _tc.close()
+                                except Exception as _tc_err:
+                                    logger.debug(f"Queue {queue_id}: tracks table sync after MB pre-lookup failed (non-fatal): {_tc_err}")
+
+                                logger.info(
+                                    f"Queue {queue_id}: MB pre-lookup → recording_mbid={_new_recording_mbid}, "
+                                    f"release_mbid={_new_release_mbid or '(kept)'}, "
+                                    f"score={_best_rec_score:.2f}"
+                                )
+                        else:
+                            logger.debug(
+                                f"Queue {queue_id}: MB pre-lookup found no confident match "
+                                f"(best_score={_best_rec_score:.2f})"
+                            )
+                except Exception as _mb_pre_inner:
+                    logger.debug(f"Queue {queue_id}: MB recording pre-lookup inner error (non-fatal): {_mb_pre_inner}")
+        except Exception as _mb_pre_err:
+            logger.debug(f"Queue {queue_id}: MB recording pre-lookup failed (non-fatal): {_mb_pre_err}")
+
         # Pre-download existence checks: skip download if the track already exists
         # in the local database or in Navidrome (catches items indexed there but not
         # yet scanned into the local DB).

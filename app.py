@@ -33975,6 +33975,7 @@ def api_playlist_import_csv():
         title_col    = col(["track name", "name", "title"])
         artist_col   = col(["artist name(s)", "artist names", "artist name", "artist", "artists"])
         album_col    = col(["album name", "album"])
+        album_artist_col = col(["album artist", "album_artist", "albumartist"])
         isrc_col     = col(["isrc"])
         uri_col      = col(["spotify uri", "track uri", "uri"])
         duration_col = col(["duration (ms)", "duration_ms", "duration"])
@@ -34006,6 +34007,13 @@ def api_playlist_import_csv():
             if not title and not artist:
                 continue  # skip blank rows
 
+            # Album artist from CSV.  When absent, fall back to the first artist
+            # from the (possibly semicolon-joined) track artist field so that
+            # single-artist releases are handled correctly without hardcoding
+            # "Various Artists" here — that decision is left to the caller.
+            raw_album_artist = (row.get(album_artist_col) or "").strip() if album_artist_col else ""
+            album_artist = raw_album_artist or artist.split(';')[0].strip()
+
             # Duration: CSV stores milliseconds; convert to whole seconds for queue
             duration_s = None
             if duration_col:
@@ -34021,6 +34029,7 @@ def api_playlist_import_csv():
             tracks_from_csv.append({
                 "title":        title,
                 "artist":       artist,
+                "album_artist": album_artist,
                 "album":        (row.get(album_col) or "").strip() if album_col else "",
                 "isrc":         (row.get(isrc_col) or "").strip() if isrc_col else "",
                 "spotify_id":   (row.get(uri_col) or "").strip().split(":")[-1] if uri_col else "",
@@ -34082,6 +34091,7 @@ def api_playlist_import_csv():
                 missing_tracks.append({
                     "title":        track["title"],
                     "artist":       track["artist"],
+                    "album_artist": track.get("album_artist", ""),
                     "album":        track["album"],
                     "spotify_id":   track["spotify_id"],
                     "isrc":         track["isrc"],

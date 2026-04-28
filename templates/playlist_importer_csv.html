@@ -221,7 +221,7 @@
         artist:         t.artist,
         title:          t.title,
         album:          importName,
-        album_artist:   'Various Artists',
+        album_artist:   t.album_artist || 'Various Artists',
         year:           currentYear,
         duration:       t.duration_s  || null,
         genres:         t.genres      || null,
