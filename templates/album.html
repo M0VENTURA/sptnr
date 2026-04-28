@@ -697,7 +697,7 @@
                                                 {% endif %}
                                             </a>
                                             {% if track._mb_is_extra %}
-                                            <span class="badge bg-secondary ms-1 mb-extra-badge" style="font-size:0.65rem;vertical-align:middle;" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                            <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
                                             {% endif %}
                                             {% endif %}
                                         </span>
@@ -720,7 +720,7 @@
                                             {{ track.title }}
                                         </a>
                                         {% if track._mb_is_extra %}
-                                        <span class="badge bg-secondary ms-1 mb-extra-badge" style="font-size:0.65rem;vertical-align:middle;" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                        <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
                                         {% endif %}
                                         {% if track.file_path %}
                                         <div class="text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
@@ -878,7 +878,7 @@
                                             {% endif %}
                                         </a>
                                         {% if track._mb_is_extra %}
-                                        <span class="badge bg-secondary ms-1 mb-extra-badge" style="font-size:0.65rem;vertical-align:middle;" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                        <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
                                         {% endif %}
                                         {% endif %}
                                     </span>
@@ -903,7 +903,7 @@
                                         {{ track.title }}
                                     </a>
                                     {% if track._mb_is_extra %}
-                                    <span class="badge bg-secondary ms-1 mb-extra-badge d-none d-md-inline" style="font-size:0.65rem;vertical-align:middle;" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                    <span class="badge bg-secondary ms-1 mb-extra-badge d-none d-md-inline" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
                                     {% endif %}
                                     {% if track.file_path %}
                                     <div class="d-none d-md-block text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
@@ -1047,6 +1047,11 @@
 /* Dark theme improvements for album page */
 .d-contents {
     display: contents;
+}
+
+.mb-extra-badge {
+    font-size: 0.65rem;
+    vertical-align: middle;
 }
 
 .card {
@@ -2795,7 +2800,6 @@
                 if (titleLink) {
                     const badge = document.createElement('span');
                     badge.className = 'badge bg-secondary ms-1 mb-extra-badge mb-extra-badge-dynamic';
-                    badge.style.cssText = 'font-size:0.65rem;vertical-align:middle;';
                     badge.title = 'This track was not found in the MusicBrainz metadata for this album';
                     badge.textContent = 'Extra';
                     titleLink.insertAdjacentElement('afterend', badge);
