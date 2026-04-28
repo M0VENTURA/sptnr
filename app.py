@@ -14148,6 +14148,15 @@ def album_detail(artist, album):
             if _raw:
                 try:
                     _comp = _json_local.loads(_raw)
+
+                    # Track is marked as extra (not part of MB release) — show badge only.
+                    if _comp.get('is_extra'):
+                        _td['_mb_is_extra'] = True
+                        _td['_mb_diff_items'] = []
+                        _td['_mb_comp_json'] = ''
+                        continue
+
+                    _td['_mb_is_extra'] = False
                     _diff_fields = _comp.get('diff_fields', [])
 
                     # Filter out permanently-ignored fields for this track
@@ -14217,9 +14226,11 @@ def album_detail(artist, album):
                         _td['_mb_diff_items'] = []
                         _td['_mb_comp_json'] = ''
                 except Exception:
+                    _td['_mb_is_extra'] = False
                     _td['_mb_diff_items'] = []
                     _td['_mb_comp_json'] = ''
             else:
+                _td['_mb_is_extra'] = False
                 _td['_mb_diff_items'] = []
                 _td['_mb_comp_json'] = ''
 
@@ -35326,6 +35337,20 @@ def api_album_musicbrainz_compare():
 
         tracks_needing_update = sum(1 for c in comparison if c["needs_update"])
 
+        # Identify library tracks that were never matched by any MB track —
+        # these are "extra" tracks that exist locally but are not part of the
+        # official release according to MusicBrainz.
+        extra_tracks = []
+        for t in library_tracks:
+            if t["id"] not in matched_lib_ids:
+                extra_tracks.append({
+                    "library_track_id": t["id"],
+                    "library_title": t.get("title", ""),
+                    "library_track_number": t.get("track_number"),
+                    "library_disc_number": int(t.get("disc_number") or 1),
+                    "library_artist": t.get("artist", ""),
+                })
+
         # Persist comparison results to the database so that the "MusicBrainz
         # update available" banners survive page refreshes.
         try:
@@ -35347,6 +35372,12 @@ def api_album_musicbrainz_compare():
                         f"UPDATE tracks SET pending_mb_updates = {ph_p} WHERE id = {ph_p}",
                         (_json.dumps(entry), entry["library_track_id"]),
                     )
+            # Mark extra tracks (not in MB metadata) so the badge persists on page refresh.
+            for extra in extra_tracks:
+                cursor_p.execute(
+                    f"UPDATE tracks SET pending_mb_updates = {ph_p} WHERE id = {ph_p}",
+                    (_json.dumps({"is_extra": True}), extra["library_track_id"]),
+                )
             conn_p.commit()
             conn_p.close()
         except Exception as _save_err:
@@ -35396,6 +35427,7 @@ def api_album_musicbrainz_compare():
             "mb_artist": mb_release.get("artist", ""),
             "release_group_mbid": release_group_mbid,
             "comparison": comparison,
+            "extra_tracks": extra_tracks,
             "tracks_needing_update": tracks_needing_update,
             "total_tracks": len(comparison),
         }), 200
