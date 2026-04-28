@@ -250,7 +250,7 @@ def match_by_isrc(
     cursor.execute("""
         SELECT id, title, artist, album, stars, duration, isrc
         FROM tracks
-        WHERE isrc = ?
+        WHERE isrc = %s
         LIMIT 1
     """, (isrc,))
     
@@ -304,8 +304,8 @@ def match_by_fuzzy(
     cursor.execute("""
         SELECT id, title, artist, album, stars, duration, isrc
         FROM tracks
-        WHERE LOWER(title) LIKE ? OR LOWER(artist) LIKE ?
-        LIMIT ?
+        WHERE LOWER(title) LIKE %s OR LOWER(artist) LIKE %s
+        LIMIT %s
     """, (title_like, artist_like, max_candidates))
     
     candidates = cursor.fetchall()
@@ -317,8 +317,8 @@ def match_by_fuzzy(
             cursor.execute("""
                 SELECT id, title, artist, album, stars, duration, isrc
                 FROM tracks
-                WHERE LOWER(title) LIKE ?
-                LIMIT ?
+                WHERE LOWER(title) LIKE %s
+                LIMIT %s
             """, (f"%{first_word}%", max_candidates))
             candidates = cursor.fetchall()
     
@@ -392,7 +392,7 @@ def match_by_strict(
     cursor.execute("""
         SELECT id, title, artist, album, stars, duration, isrc
         FROM tracks
-        WHERE LOWER(title) LIKE ? AND LOWER(artist) LIKE ?
+        WHERE LOWER(title) LIKE %s AND LOWER(artist) LIKE %s
         LIMIT 500
     """, (title_filter, artist_filter))
     
