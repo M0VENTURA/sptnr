@@ -181,13 +181,13 @@
             <button class="btn btn-primary" onclick="openAddTrackModal()" title="Manually add a track from the database">
               <i class="bi bi-plus-circle"></i> Add Track
             </button>
-            <button class="btn btn-success" onclick="createPlaylist()" id="createPlaylistBtn">
-              <i class="bi bi-music-note-list"></i> Create Playlist
+            <button class="btn btn-success" onclick="createAlbum()" id="createAlbumBtn">
+              <i class="bi bi-collection"></i> Create as Album
             </button>
           </div>
         </div>
         <div class="card-body">
-          <p class="text-secondary small mb-3">Create Playlist uses the Navidrome API and includes only the tracks shown below.</p>
+          <p class="text-secondary small mb-3">Create as Album copies matched tracks to a <em>Various Artists</em> folder in your library with updated metadata, and adds missing tracks to the download queue.</p>
           <div id="matchedTracksContainer" style="max-height: 500px; overflow-y: auto;">
           </div>
         </div>
@@ -547,34 +547,42 @@
     }
   });
 
-  // ─── create playlist ──────────────────────────────────────────────────────────
+  // ─── create album ─────────────────────────────────────────────────────────────
 
-  async function createPlaylist() {
+  async function createAlbum() {
     if (!currentImportData) return;
-    const createBtn = document.getElementById('createPlaylistBtn');
-    const originalText = createBtn.innerHTML;
-    createBtn.disabled = true;
-    createBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating...';
+    const btn = document.getElementById('createAlbumBtn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating...';
     try {
-      const response = await fetch('/api/playlist/create', {
+      const response = await fetch('/api/playlist/import/csv/create-album', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          playlist_name: currentImportData.playlist_name,
-          playlist_description: currentImportData.playlist_description,
-          matched_tracks: currentImportData.matched_tracks
+          playlist_name:   currentImportData.playlist_name,
+          matched_tracks:  currentImportData.matched_tracks,
+          missing_tracks:  currentImportData.missing_tracks || []
         })
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Playlist creation failed');
-      alert(`✅ Playlist "${currentImportData.playlist_name}" created successfully!`);
-      createBtn.innerHTML = '<i class="bi bi-check-circle"></i> Playlist Created!';
-      createBtn.classList.remove('btn-success');
-      createBtn.classList.add('btn-outline-success');
+      if (!response.ok) throw new Error(data.error || 'Album creation failed');
+
+      let msg = `✅ Album "${currentImportData.playlist_name}" created!\n\n`;
+      msg += `• ${data.copied} track(s) copied to library\n`;
+      msg += `• ${data.queued} missing track(s) added to download queue`;
+      if (data.copy_failed > 0) {
+        msg += `\n⚠ ${data.copy_failed} track(s) could not be copied`;
+      }
+      alert(msg);
+
+      btn.innerHTML = '<i class="bi bi-check-circle"></i> Album Created!';
+      btn.classList.remove('btn-success');
+      btn.classList.add('btn-outline-success');
     } catch (error) {
       alert(`❌ Error: ${error.message}`);
-      createBtn.disabled = false;
-      createBtn.innerHTML = originalText;
+      btn.disabled = false;
+      btn.innerHTML = originalText;
     }
   }
 
