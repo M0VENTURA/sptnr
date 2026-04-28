@@ -809,6 +809,24 @@
                                     {% endif %}
                                 </td>
                             </tr>
+                            {% if track._mb_diff_html %}
+                            <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}">
+                                <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                                    <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
+                                         style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
+                                        <small class="text-warning-emphasis">
+                                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
+                                        </small>
+                                        <small class="text-muted">{{ track._mb_diff_html | safe }}</small>
+                                        <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
+                                                style="font-size: 0.75rem; white-space: nowrap;"
+                                                onclick="updateSingleTrackFromMB(this)">
+                                            <i class="bi bi-arrow-repeat"></i> Update
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endif %}
                             {% endif %}
                             {% endfor %}
                         {% endfor %}
@@ -964,6 +982,24 @@
                                 {% endif %}
                             </td>
                         </tr>
+                        {% if track._mb_diff_html %}
+                        <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}">
+                            <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                                <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
+                                     style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
+                                    <small class="text-warning-emphasis">
+                                        <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
+                                    </small>
+                                    <small class="text-muted">{{ track._mb_diff_html | safe }}</small>
+                                    <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
+                                            style="font-size: 0.75rem; white-space: nowrap;"
+                                            onclick="updateSingleTrackFromMB(this)">
+                                        <i class="bi bi-arrow-repeat"></i> Update
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endif %}
                         {% endif %}
                         {% endfor %}
                     {% endif %}
@@ -2664,7 +2700,7 @@
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
 
-        const payload = { track_id: trackId, sync_to_file: true };
+        const payload = { track_id: trackId, sync_to_file: true, clear_mb_pending: true };
         if (trackComp.diff_fields && trackComp.diff_fields.includes('title'))
             payload.title = trackComp.mb_title;
         if (trackComp.diff_fields && trackComp.diff_fields.includes('track_number'))
@@ -2729,7 +2765,7 @@
         let updated = 0, failed = 0;
         for (const trackComp of tracksToUpdate) {
             const trackId = String(trackComp.library_track_id);
-            const payload = { track_id: trackId, sync_to_file: true };
+            const payload = { track_id: trackId, sync_to_file: true, clear_mb_pending: true };
             if (trackComp.diff_fields.includes('title')) payload.title = trackComp.mb_title;
             if (trackComp.diff_fields.includes('track_number')) payload.track_number = String(trackComp.mb_track_number);
             if (trackComp.diff_fields.includes('year')) payload.year = String(trackComp.mb_year);
@@ -4570,6 +4606,106 @@ function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
     })
     .catch(err => alert('Network error: ' + err.message));
 }
+
+// ---------------------------------------------------------------------------
+// Live queue-status polling
+// Polls /api/album/queue-status every 8 seconds while there are still tracks
+// with an active download status.  Updates badges in-place so the user can see
+// real-time progress (Queued → Searching → Downloading → Completed) without a
+// full page reload.
+// ---------------------------------------------------------------------------
+(function () {
+    const _albumArtist = {{ artist_name | tojson }};
+    const _albumName   = {{ album_name  | tojson }};
+
+    // Collect all queue-status badge spans on the page at startup.
+    // Each queued track row has data-track-id on the <tr> and badge spans
+    // with class "queue-status-badge" that we populate below.
+    const POLL_INTERVAL_MS = 8000;
+    const ACTIVE_STATUSES = new Set(['queued', 'searching', 'downloading', 'unmatched', 'moving', 'queried', 'copy_recommended']);
+    let _pollTimer = null;
+
+    // Map existing "In Queue" static badges to JS-controlled spans so we can
+    // update them without touching anything else.
+    document.querySelectorAll('.badge.bg-warning[title="This track is currently in the download queue"]').forEach(badge => {
+        // Find the parent <tr data-track-id="...">
+        const row = badge.closest('tr[data-track-id]');
+        if (!row) return;
+        badge.classList.add('queue-status-badge');
+        badge.dataset.trackId = row.dataset.trackId;
+    });
+
+    const allBadges = () => document.querySelectorAll('.queue-status-badge[data-track-id]');
+
+    function hasActiveBadges() {
+        for (const b of allBadges()) {
+            if (ACTIVE_STATUSES.has(b.dataset.currentStatus || 'queued')) return true;
+        }
+        return false;
+    }
+
+    function applyStatusToBadge(badge, info) {
+        badge.dataset.currentStatus = info.status;
+        badge.className = `badge ${info.css} ms-1 queue-status-badge`;
+        // Build label with icon
+        badge.innerHTML = `<i class="bi bi-${info.icon} me-1"></i>${escapeHtml(info.label)}`;
+        badge.title = `Download status: ${info.label}`;
+    }
+
+    async function pollQueueStatus() {
+        const badges = allBadges();
+        if (badges.length === 0) {
+            stopPolling();
+            return;
+        }
+
+        try {
+            const resp = await fetch(
+                `/api/album/queue-status?artist=${encodeURIComponent(_albumArtist)}&album=${encodeURIComponent(_albumName)}`
+            );
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (!data.success || !data.tracks) return;
+
+            for (const badge of badges) {
+                const trackId = badge.dataset.trackId;
+                const info = data.tracks[trackId];
+                if (!info) continue;
+
+                applyStatusToBadge(badge, info);
+
+                // If a track completed, trigger a page reload after a short delay
+                // so the track row is replaced with the real file-based row.
+                if (info.status === 'completed') {
+                    badge.innerHTML = `<i class="bi bi-check-circle-fill me-1"></i>Completed`;
+                    badge.className = 'badge bg-success ms-1 queue-status-badge';
+                }
+            }
+
+            if (!hasActiveBadges()) {
+                stopPolling();
+                // All queued tracks are now done — reload the page to show real rows.
+                setTimeout(() => location.reload(), 2500);
+            }
+        } catch (_e) {
+            // Silently ignore network errors during polling
+        }
+    }
+
+    function stopPolling() {
+        if (_pollTimer !== null) {
+            clearInterval(_pollTimer);
+            _pollTimer = null;
+        }
+    }
+
+    // Only start polling if there are actually queued tracks on this page.
+    if (allBadges().length > 0) {
+        // Kick off an immediate check, then repeat.
+        pollQueueStatus();
+        _pollTimer = setInterval(pollQueueStatus, POLL_INTERVAL_MS);
+    }
+})();
 </script>
 
 {% endblock %}

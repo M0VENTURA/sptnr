@@ -215,10 +215,8 @@ def get_db_connection_context(conn=None):
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 
 _DEFAULT_WEIGHTS = {
-    "spotify": 0.10,      # Minimal: Algorithm-driven, paid API, increasingly gamed
-    "lastfm": 0.30,       # Community choice: genuine scrobbles since 2002 (established metric)
-    "listenbrainz": 0.35, # Community choice: open-source, not influenced by artist payola (most authentic)
-    "age": 0.25,          # Recency and track maturity (slightly reduced for community primacy)
+    "lastfm": 0.70,       # Community choice: genuine scrobbles since 2002 (established metric)
+    "age": 0.30,          # Recency and track maturity
 }
 
 _DEFAULT_FEATURES = {
@@ -268,19 +266,20 @@ def _load_config() -> dict:
         return {}
 
 
-def _resolve_weights(cfg: dict) -> Tuple[float, float, float, float]:
-    """Resolve popularity weights from config (supports 4 sources: Spotify, Last.fm, ListenBrainz, Age)."""
+def _resolve_weights(cfg: dict) -> Tuple[float, float]:
+    """Resolve popularity weights from config (2 active sources: Last.fm and Age)."""
     weights = cfg.get("weights") if isinstance(cfg, dict) else None
     weights = weights or {}
     return (
-        float(weights.get("spotify", _DEFAULT_WEIGHTS["spotify"])),
         float(weights.get("lastfm", _DEFAULT_WEIGHTS["lastfm"])),
-        float(weights.get("listenbrainz", _DEFAULT_WEIGHTS["listenbrainz"])),
         float(weights.get("age", _DEFAULT_WEIGHTS["age"])),
     )
 
 
-SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT = _resolve_weights(_load_config())
+LASTFM_WEIGHT, AGE_WEIGHT = _resolve_weights(_load_config())
+# Legacy aliases kept for any remaining references; both are unused in scoring
+SPOTIFY_WEIGHT: float = 0.0
+LISTENBRAINZ_WEIGHT: float = 0.0
 
 
 def _worker_threads(cfg: dict) -> int:
@@ -301,12 +300,12 @@ def configure_popularity_helpers(
     """Configure shared clients and refresh weights based on provided config."""
     global _spotify_client, _lastfm_client
     global _spotify_enabled, _clients_configured
-    global SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT
+    global LASTFM_WEIGHT, AGE_WEIGHT
 
     cfg = config if config is not None else _load_config()
 
     # Refresh weights from config
-    SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT = _resolve_weights(cfg)
+    LASTFM_WEIGHT, AGE_WEIGHT = _resolve_weights(cfg)
 
     api_cfg = cfg.get("api_integrations") if isinstance(cfg, dict) else None
     api_cfg = api_cfg or {}
@@ -1301,7 +1300,46 @@ def save_to_db(track_data):
                 )
 
             existing = cursor.fetchone()
-        
+
+        # When saving a real track that has a file path, also remove any
+        # "missing" placeholder (file_path NULL) for the same content that may
+        # have been inserted earlier by add_release_tracks_to_queue().  Preserves
+        # any useful MBID data from the placeholder before deleting it.
+        if file_path and not str(file_path).startswith("__queued_for_download__") and not existing:
+            _run_with_db_lock_retry(
+                lambda: cursor.execute(
+                    f"""
+                    SELECT id, mbid, musicbrainz_album_mbid
+                    FROM tracks
+                    WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder}
+                      AND (file_path IS NULL OR file_path = '')
+                      AND id != {placeholder}
+                    LIMIT 1
+                    """,
+                    (artist, album, title, track_id),
+                ),
+                "save_to_db missing placeholder lookup",
+            )
+            missing_placeholder = cursor.fetchone()
+            if missing_placeholder:
+                is_dict = hasattr(missing_placeholder, 'keys')
+                missing_id = missing_placeholder['id'] if is_dict else missing_placeholder[0]
+                missing_mbid = (missing_placeholder['mbid'] if is_dict else missing_placeholder[1]) or ''
+                missing_album_mbid = (missing_placeholder['musicbrainz_album_mbid'] if is_dict else missing_placeholder[2]) or ''
+                # Carry over any MBID data the placeholder holds that the real track lacks.
+                if missing_mbid and not sanitized_data.get('mbid'):
+                    sanitized_data['mbid'] = missing_mbid
+                if missing_album_mbid and not sanitized_data.get('musicbrainz_album_mbid'):
+                    sanitized_data['musicbrainz_album_mbid'] = missing_album_mbid
+                _run_with_db_lock_retry(
+                    lambda: cursor.execute(f"DELETE FROM tracks WHERE id = {placeholder}", (missing_id,)),
+                    "save_to_db delete missing placeholder",
+                )
+                logging.info(
+                    f"[DEDUP] Removed missing placeholder {missing_id!r} for '{artist} - {title}' "
+                    f"(real file found: {file_path})"
+                )
+
         if existing:
             existing_id = existing['id']
             existing_beets_mbid = existing['beets_mbid']

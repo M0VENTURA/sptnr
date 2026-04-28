@@ -5036,6 +5036,24 @@ def popularity_scan(
                 # that originally carried it.
                 if release_group_mbid:
                     try:
+                        # Fetch file paths for tracks that are about to receive the album MBID,
+                        # so we can write the tag to the actual audio files after the DB update.
+                        cursor.execute(
+                            f"""
+                            SELECT file_path FROM tracks
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                              AND album = {placeholder}
+                              AND file_path IS NOT NULL AND file_path <> ''
+                              AND (musicbrainz_album_mbid IS NULL
+                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = '')
+                            """,
+                            (artist, album),
+                        )
+                        _fps_to_tag = [
+                            (r['file_path'] if hasattr(r, 'keys') else r[0])
+                            for r in cursor.fetchall()
+                        ]
+
                         cursor.execute(f"""
                             UPDATE tracks
                             SET musicbrainz_album_mbid = {placeholder},
@@ -5049,6 +5067,29 @@ def popularity_scan(
                         if _mbid_rows > 0:
                             conn.commit()
                             log_info(f'Propagated album MBID {release_group_mbid} to {_mbid_rows} track(s) in "{artist} - {album}"')
+
+                            # Also write the MBID into the physical audio files so that
+                            # media servers (Navidrome, etc.) group all tracks under the
+                            # correct album without needing a separate "Save" action.
+                            try:
+                                from helpers.tag_manager import write_tags_to_file as _write_album_mbid_tag
+                                _files_written = 0
+                                for _fp in _fps_to_tag:
+                                    if _fp and os.path.exists(str(_fp)):
+                                        try:
+                                            if _write_album_mbid_tag(str(_fp), {"musicbrainz_album_mbid": release_group_mbid}):
+                                                _files_written += 1
+                                        except Exception as _fp_tag_err:
+                                            log_debug(
+                                                f'Could not write album MBID to "{_fp}": {_fp_tag_err}'
+                                            )
+                                if _files_written:
+                                    log_info(
+                                        f'Wrote album MBID {release_group_mbid} to {_files_written} '
+                                        f'audio file(s) in "{artist} - {album}"'
+                                    )
+                            except Exception as _tag_err:
+                                log_debug(f'Could not write album MBID to files for "{artist} - {album}": {_tag_err}')
                     except Exception as _mbid_err:
                         log_debug(f'Could not propagate album MBID for "{artist} - {album}": {_mbid_err}')
 

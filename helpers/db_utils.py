@@ -1096,6 +1096,48 @@ def ensure_popularity_freeze_columns():
             conn.close()
 
 
+def ensure_pending_mb_updates_column():
+    """Ensure the pending_mb_updates TEXT column exists on the tracks table.
+
+    This column stores a JSON snapshot of the MusicBrainz comparison result for
+    a track so that the "update available" banner on the album page survives page
+    refreshes.  It is set when a comparison is run and cleared once the user
+    applies (or explicitly dismisses) the update.
+    """
+    import logging
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not _table_exists(cursor, "tracks"):
+            logging.warning("Tracks table does not exist yet, skipping pending_mb_updates migration")
+            return False
+
+        existing = _get_table_columns(cursor, "tracks")
+        if "pending_mb_updates" in existing:
+            logging.debug("pending_mb_updates column already present; skipping migration")
+            return True
+
+        cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS pending_mb_updates TEXT")
+        conn.commit()
+        logging.info("✓ Added 'pending_mb_updates' column to tracks table")
+        return True
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping pending_mb_updates migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping pending_mb_updates migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring pending_mb_updates column exists: {e}", exc_info=True)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def ensure_artists_name_unique_constraint():
     """Ensure a UNIQUE constraint exists on the artists.name column.
 
