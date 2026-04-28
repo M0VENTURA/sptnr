@@ -13279,53 +13279,75 @@ def api_album_queue_status():
         return jsonify({"error": str(e)}), 500
 
 
-
+@app.route("/api/album/set-art", methods=["POST"])
 def api_album_set_art():
-    """Set custom album art"""
+    """Set custom album art from a URL – downloads the image and stores it in the database"""
     data = request.json or {}
     artist_name = data.get("artist", "").strip()
     album_name = data.get("album", "").strip()
     image_url = data.get("image_url", "").strip()
-    
+
     if not artist_name or not album_name or not image_url:
         return jsonify({"error": "Artist, album name, and image URL required"}), 400
-    
+
     # Validate that image_url is a valid HTTP/HTTPS URL, not a data URI or other scheme
     if not image_url.startswith(('http://', 'https://')):
         return jsonify({"error": "Image URL must be a valid HTTP or HTTPS URL"}), 400
-    
+
     logger = logging.getLogger('sptnr')
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        # Create album_art table if it doesn't exist
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS album_art (
-                artist_name TEXT NOT NULL,
-                album_name TEXT NOT NULL,
-                image_url TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (artist_name, album_name)
-            )
-        """)
-        
-        # Insert or update
-        cursor.execute("""
-            INSERT INTO album_art (artist_name, album_name, image_url, updated_at)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (artist_name, album_name)
-            DO UPDATE SET
-                image_url = EXCLUDED.image_url,
-                updated_at = EXCLUDED.updated_at
-        """, (artist_name, album_name, image_url, datetime.now().isoformat()))
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"Album art updated for '{artist_name} - {album_name}': {image_url}")
+        resp = requests.get(image_url, timeout=10, allow_redirects=True,
+                            headers={"User-Agent": "sptnr/1.0 +https://github.com/M0VENTURA/sptnr"})
+        if resp.status_code != 200 or not resp.content:
+            return jsonify({"error": f"Could not download image: HTTP {resp.status_code}"}), 400
+
+        mime_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+        if not mime_type.startswith("image/"):
+            return jsonify({"error": "URL did not return an image"}), 400
+
+        saved = _save_album_art_to_db(artist_name, album_name, resp.content, source="manual", mime_type=mime_type)
+        if not saved:
+            return jsonify({"error": "Failed to save image to database"}), 500
+
+        logger.info(f"Album art updated for '{artist_name} - {album_name}' from URL")
         return jsonify({"success": True, "message": "Album art updated"})
-        
+
     except Exception as e:
         logger.error(f"Error setting album art: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/album/upload-art", methods=["POST"])
+def api_album_upload_art():
+    """Set custom album art from a directly uploaded image file"""
+    artist_name = request.form.get("artist", "").strip()
+    album_name = request.form.get("album", "").strip()
+    image_file = request.files.get("image")
+
+    if not artist_name or not album_name:
+        return jsonify({"error": "Artist and album name required"}), 400
+    if not image_file or not image_file.filename:
+        return jsonify({"error": "No image file provided"}), 400
+
+    mime_type = image_file.mimetype or "image/jpeg"
+    if not mime_type.startswith("image/"):
+        return jsonify({"error": "Uploaded file must be an image"}), 400
+
+    logger = logging.getLogger('sptnr')
+    try:
+        image_data = image_file.read()
+        if not image_data:
+            return jsonify({"error": "Uploaded image is empty"}), 400
+
+        saved = _save_album_art_to_db(artist_name, album_name, image_data, source="manual_upload", mime_type=mime_type)
+        if not saved:
+            return jsonify({"error": "Failed to save image to database"}), 500
+
+        logger.info(f"Album art uploaded for '{artist_name} - {album_name}'")
+        return jsonify({"success": True, "message": "Album art uploaded"})
+
+    except Exception as e:
+        logger.error(f"Error uploading album art: {e}")
         return jsonify({"error": str(e)}), 500
 
 
