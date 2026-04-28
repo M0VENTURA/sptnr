@@ -39,795 +39,301 @@
   </div>
 </div>
 
-<!-- How to get a CSV -->
+<!-- How to get a CSV + Import button -->
 <div class="row mb-4">
   <div class="col-12">
     <div class="card border-success">
       <div class="card-body d-flex flex-column flex-md-row align-items-md-center gap-3">
         <div class="flex-grow-1">
-          <h5 class="mb-1"><i class="bi bi-cloud-download text-success"></i> Step 1 — Get your playlist CSV</h5>
+          <h5 class="mb-1"><i class="bi bi-cloud-download text-success"></i> Get your playlist CSV from Exportify</h5>
           <p class="mb-0 text-secondary">
             Visit <strong>exportify.net</strong>, log in with Spotify, and click <em>Export</em> next to any playlist.
-            Save the <code>.csv</code> file, then upload it below — no Spotify credentials are needed in SPTNR.
+            Save the <code>.csv</code> file, then click <strong>Import CSV</strong> — no Spotify credentials needed in SPTNR.
           </p>
         </div>
-        <a href="https://exportify.net" target="_blank" rel="noopener" class="btn btn-success btn-lg text-nowrap">
-          <i class="bi bi-box-arrow-up-right"></i> Open exportify.net
-        </a>
+        <div class="d-flex gap-2 flex-wrap">
+          <a href="https://exportify.net" target="_blank" rel="noopener" class="btn btn-outline-success text-nowrap">
+            <i class="bi bi-box-arrow-up-right"></i> Open exportify.net
+          </a>
+          <button class="btn btn-primary btn-lg text-nowrap" data-bs-toggle="modal" data-bs-target="#csvImportModal">
+            <i class="bi bi-upload"></i> Import CSV
+          </button>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Upload Form -->
-<div class="row mb-4">
+<!-- Result banner (shown after successful import) -->
+<div id="importResultBanner" style="display:none;" class="row mb-4">
   <div class="col-12">
-    <div class="card">
-      <div class="card-header">
-        <h5 class="mb-0"><i class="bi bi-upload"></i> Step 2 — Upload your CSV</h5>
+    <div id="importResultAlert" class="alert mb-0" role="alert"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     CSV Import Modal
+     ═══════════════════════════════════════════════════ -->
+<div class="modal fade" id="csvImportModal" tabindex="-1" aria-labelledby="csvImportModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+
+      <!-- Header -->
+      <div class="modal-header">
+        <h5 class="modal-title" id="csvImportModalLabel">
+          <i class="bi bi-filetype-csv"></i> Import Playlist from CSV
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
-      <div class="card-body">
+
+      <!-- Body: form (shown while idle/ready) -->
+      <div class="modal-body" id="csvModalForm">
         <form id="csvForm" onsubmit="importPlaylistFromCSV(event)">
-          <div class="row g-3">
-            <div class="col-12">
-              <label for="csvFile" class="form-label">CSV File</label>
-              <input
-                type="file"
-                id="csvFile"
-                class="form-control"
-                accept=".csv"
-                required
-              />
-              <small class="text-secondary">
-                <i class="bi bi-info-circle"></i>
-                Only Exportify-exported CSVs are supported. The file must contain at least
-                <code>Track Name</code> and <code>Artist Name(s)</code> columns.
-                An <code>ISRC</code> column will be used for exact matching when available.
-              </small>
+          <div class="mb-3">
+            <label for="csvFile" class="form-label fw-semibold">CSV File <span class="text-danger">*</span></label>
+            <input type="file" id="csvFile" class="form-control" accept=".csv" required />
+            <div class="form-text">
+              <i class="bi bi-info-circle"></i>
+              Exportify CSV — must contain at least <code>Track Name</code> and <code>Artist Name(s)</code> columns.
+              An <code>ISRC</code> column enables exact matching when present.
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-md-6">
+              <label for="csvPlaylistName" class="form-label fw-semibold">Playlist Name <span class="text-danger">*</span></label>
+              <input type="text" id="csvPlaylistName" class="form-control" placeholder="e.g., My Exported Playlist" required />
             </div>
             <div class="col-12 col-md-6">
-              <label for="csvPlaylistName" class="form-label">Playlist Name</label>
-              <input
-                type="text"
-                id="csvPlaylistName"
-                class="form-control"
-                placeholder="e.g., My Exported Playlist"
-                required
-              />
+              <label for="csvPlaylistDescription" class="form-label fw-semibold">Description <span class="text-secondary fw-normal">(optional)</span></label>
+              <input type="text" id="csvPlaylistDescription" class="form-control" placeholder="e.g., Imported from Exportify" />
             </div>
-            <div class="col-12 col-md-6">
-              <label for="csvPlaylistDescription" class="form-label">Description (optional)</label>
-              <input
-                type="text"
-                id="csvPlaylistDescription"
-                class="form-control"
-                placeholder="e.g., Imported from Exportify CSV"
-              />
-            </div>
-            <div class="col-12 col-md-6">
-              <label for="csvTargetUser" class="form-label">Assign to User</label>
-              <select id="csvTargetUser" class="form-select">
-                {% if navidrome_users %}
-                  {% for user in navidrome_users %}
-                  <option value="{{ user.user }}">{{ user.user }}</option>
-                  {% endfor %}
-                {% else %}
-                  <option value="">Default Navidrome User</option>
-                {% endif %}
-              </select>
-            </div>
-            <div class="col-12">
-              <button type="submit" class="btn btn-primary">
-                <i class="bi bi-upload"></i> Import Playlist
-              </button>
-              <span id="csvImportStatus" class="ms-2 text-secondary"></span>
-            </div>
+          </div>
+          <div class="mb-3">
+            <label for="csvTargetUser" class="form-label fw-semibold">Assign to User</label>
+            <select id="csvTargetUser" class="form-select">
+              {% if navidrome_users %}
+                {% for user in navidrome_users %}
+                <option value="{{ user.user }}">{{ user.user }}</option>
+                {% endfor %}
+              {% else %}
+                <option value="">Default Navidrome User</option>
+              {% endif %}
+            </select>
           </div>
         </form>
       </div>
-    </div>
-  </div>
-</div>
 
-<!-- Results Section (identical structure to Spotify importer) -->
-<div id="resultsSection" style="display: none;">
-  <!-- Summary Cards -->
-  <div class="row mb-4">
-    <div class="col-12 col-md-3">
-      <div class="card text-center bg-success bg-opacity-10 border-success">
-        <div class="card-body">
-          <h5 class="card-title text-success">Matched</h5>
-          <h2 id="matchedCount" class="text-success">0</h2>
-          <small class="text-secondary">songs found in library</small>
+      <!-- Body: progress (shown while processing) -->
+      <div class="modal-body text-center py-5" id="csvModalProgress" style="display:none;">
+        <div class="spinner-border text-primary mb-3" role="status" style="width:3rem;height:3rem;">
+          <span class="visually-hidden">Processing…</span>
         </div>
+        <h5 id="csvProgressLabel" class="mb-1">Processing CSV…</h5>
+        <p class="text-secondary small mb-0">Matching tracks and creating playlist, please wait.</p>
       </div>
-    </div>
-    <div class="col-12 col-md-3">
-      <div class="card text-center bg-warning bg-opacity-10 border-warning">
-        <div class="card-body">
-          <h5 class="card-title text-warning">Missing</h5>
-          <h2 id="missingCount" class="text-warning">0</h2>
-          <small class="text-secondary">songs not in library</small>
-        </div>
-      </div>
-    </div>
-    <div class="col-12 col-md-3">
-      <div class="card text-center bg-info bg-opacity-10 border-info">
-        <div class="card-body">
-          <h5 class="card-title text-info">Total</h5>
-          <h2 id="totalCount" class="text-info">0</h2>
-          <small class="text-secondary">tracks in playlist</small>
-        </div>
-      </div>
-    </div>
-    <div class="col-12 col-md-3">
-      <div class="card text-center bg-secondary bg-opacity-10 border-secondary" id="coverageCard">
-        <div class="card-body">
-          <h5 class="card-title text-secondary">Coverage</h5>
-          <h2 id="coverage" class="text-secondary">0%</h2>
-          <small class="text-secondary">of playlist matched</small>
-        </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- Matched Tracks -->
-  <div class="row mb-4">
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <h5 class="mb-0"><i class="bi bi-check-circle-fill text-success"></i> Matched Tracks</h5>
-          <div class="btn-group btn-group-sm" role="group">
-            <button class="btn btn-primary" onclick="openAddTrackModal()" title="Manually add a track from the database">
-              <i class="bi bi-plus-circle"></i> Add Track
-            </button>
-            <button class="btn btn-success" onclick="createPlaylist()" id="createPlaylistBtn">
-              <i class="bi bi-music-note-list"></i> Create Playlist
-            </button>
-          </div>
-        </div>
-        <div class="card-body">
-          <p class="text-secondary small mb-3">Create Playlist uses the Navidrome API and includes only the tracks shown below.</p>
-          <div id="matchedTracksContainer" style="max-height: 500px; overflow-y: auto;">
-          </div>
+      <!-- Body: result (shown after completion) -->
+      <div class="modal-body" id="csvModalResult" style="display:none;">
+        <!-- summary stats row -->
+        <div class="row g-3 mb-3" id="csvResultStats"></div>
+        <!-- missing track list (collapsed by default) -->
+        <div id="csvMissingSection" style="display:none;">
+          <hr class="my-2">
+          <h6 class="text-warning mb-2"><i class="bi bi-exclamation-circle-fill"></i> Tracks not in library</h6>
+          <div id="csvMissingList" style="max-height:240px;overflow-y:auto;"></div>
         </div>
       </div>
-    </div>
-  </div>
 
-  <!-- Missing Tracks -->
-  <div class="row mb-4">
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <div>
-            <h5 class="mb-0"><i class="bi bi-exclamation-circle-fill text-warning"></i> Missing Tracks</h5>
-            <small class="text-secondary d-block mt-2">Tracks not found in your library</small>
-          </div>
-          <button class="btn btn-sm btn-outline-success" onclick="searchMissingTracks()" id="searchMissingBtn" style="display: none;" title="Search for all missing tracks in Soulseek">
-            <i class="bi bi-cloud-arrow-down"></i> Search Missing Tracks
-          </button>
-        </div>
-        <div class="card-body">
-          <div id="missingTracksContainer" style="max-height: 500px; overflow-y: auto;">
-          </div>
-        </div>
+      <!-- Footer -->
+      <div class="modal-footer" id="csvModalFooter">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" form="csvForm" class="btn btn-primary" id="csvSubmitBtn">
+          <i class="bi bi-upload"></i> Import &amp; Create Playlist
+        </button>
       </div>
-    </div>
-  </div>
-</div>
 
-<!-- Add Track to Playlist Modal -->
-<div class="modal fade" id="addTrackModal" tabindex="-1" aria-labelledby="addTrackLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="addTrackLabel">Manually Add Track to Playlist</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <div class="mb-3">
-          <label for="manualTrackSearch" class="form-label">Search Database</label>
-          <div class="input-group">
-            <input type="text" class="form-control" id="manualTrackSearch" placeholder="Search by artist, track, or album..." onkeypress="if(event.key==='Enter') searchForTrack();">
-            <button class="btn btn-primary" type="button" onclick="searchForTrack()">
-              <i class="bi bi-search"></i> Search
-            </button>
-          </div>
-        </div>
-        <div id="trackSearchResults" style="max-height: 400px; overflow-y: auto;">
-          <p class="text-muted text-center">Enter a search query to find tracks</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Replace Track Modal -->
-<div class="modal fade" id="replaceTrackModal" tabindex="-1" aria-labelledby="replaceTrackLabel" aria-hidden="true">
-  <div class="modal-dialog modal-xl">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="replaceTrackLabel"><i class="bi bi-arrow-repeat"></i> Swap Missing Track with Library Track</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <div class="row mb-4">
-          <div class="col-12">
-            <div class="card border-warning">
-              <div class="card-header bg-warning bg-opacity-10">
-                <h6 class="mb-0"><i class="bi bi-music-note"></i> Original Missing Track</h6>
-              </div>
-              <div class="card-body">
-                <div id="originalTrackDisplay" class="track-row">
-                  <div class="track-info">
-                    <div class="track-title text-warning" id="originalTitle"></div>
-                    <div class="track-artist" id="originalArtist"></div>
-                    <div class="track-album" id="originalAlbum"></div>
-                  </div>
-                  <span class="badge bg-warning">Missing from Library</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="text-center mb-4">
-          <i class="bi bi-arrow-down-circle-fill text-primary" style="font-size: 2rem;"></i>
-        </div>
-        <div class="mb-3">
-          <label class="form-label"><strong>Search Library for Replacement Track</strong></label>
-          <div class="row g-2">
-            <div class="col-12 col-md-4">
-              <input type="text" class="form-control" id="replacementArtistInput" placeholder="Artist" onkeypress="if(event.key==='Enter') searchForReplacementTrack();">
-            </div>
-            <div class="col-12 col-md-4">
-              <input type="text" class="form-control" id="replacementTitleInput" placeholder="Title" onkeypress="if(event.key==='Enter') searchForReplacementTrack();">
-            </div>
-            <div class="col-12 col-md-4">
-              <input type="text" class="form-control" id="replacementAlbumInput" placeholder="Album (optional)" onkeypress="if(event.key==='Enter') searchForReplacementTrack();">
-            </div>
-          </div>
-          <div class="mt-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
-            <small class="text-muted">Provide artist/title to narrow matches; album is optional.</small>
-            <button class="btn btn-primary" type="button" onclick="searchForReplacementTrack()">
-              <i class="bi bi-search"></i> Search
-            </button>
-          </div>
-        </div>
-        <div class="card border-success">
-          <div class="card-header bg-success bg-opacity-10">
-            <h6 class="mb-0"><i class="bi bi-check-circle"></i> Select Replacement from Library</h6>
-          </div>
-          <div class="card-body">
-            <div id="replacementTrackSearchResults" style="max-height: 400px; overflow-y: auto;">
-              <p class="text-muted text-center py-4">Enter artist/title above to find replacement tracks</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Error Section -->
-<div id="errorSection" style="display: none;">
-  <div class="row">
-    <div class="col-12">
-      <div class="alert alert-danger" role="alert">
-        <h5 class="alert-heading"><i class="bi bi-exclamation-triangle"></i> Error</h5>
-        <p id="errorMessage"></p>
-      </div>
     </div>
   </div>
 </div>
 
 <style>
-  .track-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.75rem 0;
-    border-bottom: 1px solid var(--border-color);
-  }
-  .track-row:last-child { border-bottom: none; }
-  .track-info { flex: 1; }
-  .split-col { flex: 1; min-width: 220px; }
-  .track-label { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.25rem; }
-  .track-title { font-weight: 600; color: var(--spotify-green); margin-bottom: 0.25rem; }
-  .track-artist { color: var(--text-secondary); font-size: 0.9rem; }
-  .track-album { color: var(--text-tertiary); font-size: 0.85rem; }
-  .track-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-  .missing-track-badge { background-color: rgba(255,193,7,0.1); color: #ffc107; padding: 0.25rem 0.75rem; border-radius: 4px; font-size: 0.8rem; white-space: nowrap; }
-  .track-actions .btn { padding: 0.35rem 0.6rem; font-size: 0.85rem; min-width: auto; white-space: nowrap; }
   :root { --border-color: #495057; --text-secondary: #adb5bd; --text-tertiary: #868e96; --spotify-green: #1db954; }
+  .missing-row { padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); font-size: 0.9rem; }
+  .missing-row:last-child { border-bottom: none; }
 </style>
 
 <script>
-  let currentImportData = null;
-  let missingTracksForSearch = [];
-
-  // ─── helpers ─────────────────────────────────────────────────────────────────
-
   function escapeHtml(text) {
     const d = document.createElement('div');
     d.textContent = String(text ?? '');
     return d.innerHTML;
   }
 
-  // Store track payloads in a side-map keyed by a numeric index so no data
-  // ever ends up inside onclick attribute strings (eliminates JS-context XSS).
-  const _trackPayloads = {};
-  let _payloadIdx = 0;
-  function storePayload(obj) {
-    const id = _payloadIdx++;
-    _trackPayloads[id] = obj;
-    return id;
+  // ─── reset modal to its initial (form) state ──────────────────────────────────
+
+  function resetCsvModal() {
+    document.getElementById('csvModalForm').style.display = '';
+    document.getElementById('csvModalProgress').style.display = 'none';
+    document.getElementById('csvModalResult').style.display = 'none';
+    document.getElementById('csvModalFooter').innerHTML = `
+      <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+      <button type="submit" form="csvForm" class="btn btn-primary" id="csvSubmitBtn">
+        <i class="bi bi-upload"></i> Import &amp; Create Playlist
+      </button>`;
+    document.getElementById('csvForm').reset();
   }
 
-  // ─── import ──────────────────────────────────────────────────────────────────
+  // Reset form whenever the modal is opened
+  document.getElementById('csvImportModal').addEventListener('show.bs.modal', resetCsvModal);
+
+  // Auto-open the modal if the URL hash is #import
+  if (window.location.hash === '#import') {
+    new bootstrap.Modal(document.getElementById('csvImportModal')).show();
+  }
+
+  // ─── main import handler ──────────────────────────────────────────────────────
 
   async function importPlaylistFromCSV(event) {
     event.preventDefault();
 
-    const fileInput = document.getElementById('csvFile');
+    const fileInput   = document.getElementById('csvFile');
     const playlistName = document.getElementById('csvPlaylistName').value.trim();
-    const playlistDescription = document.getElementById('csvPlaylistDescription').value.trim();
-    const targetUser = document.getElementById('csvTargetUser').value.trim();
-    const statusEl = document.getElementById('csvImportStatus');
+    const playlistDesc = document.getElementById('csvPlaylistDescription').value.trim();
+    const targetUser   = document.getElementById('csvTargetUser').value.trim();
 
     if (!fileInput.files.length || !playlistName) {
-      alert('Please select a CSV file and enter a playlist name');
-      return;
+      return;  // HTML5 required handles this
     }
 
-    statusEl.textContent = '⏳ Importing...';
-    statusEl.className = 'ms-2 text-secondary';
-
-    const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
-    formData.append('playlist_name', playlistName);
-    formData.append('playlist_description', playlistDescription);
-    formData.append('target_user', targetUser);
+    // ── switch to progress view ───────────────────────────────────────────────
+    document.getElementById('csvModalForm').style.display = 'none';
+    document.getElementById('csvModalProgress').style.display = '';
+    document.getElementById('csvModalFooter').innerHTML = '';  // hide buttons while working
 
     try {
-      const response = await fetch('/api/playlist/import/csv', {
-        method: 'POST',
-        body: formData
-      });
+      // Step 1 – parse & match CSV
+      document.getElementById('csvProgressLabel').textContent = 'Matching tracks…';
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+      formData.append('playlist_name', playlistName);
+      formData.append('playlist_description', playlistDesc);
+      formData.append('target_user', targetUser);
 
-      const data = await response.json();
+      const matchRes  = await fetch('/api/playlist/import/csv', { method: 'POST', body: formData });
+      const matchData = await matchRes.json();
+      if (!matchRes.ok) throw new Error(matchData.error || 'CSV processing failed');
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Import failed');
-      }
+      const matched = matchData.matched_tracks || [];
+      const missing = matchData.missing_tracks || [];
+      const total   = matched.length + missing.length;
 
-      currentImportData = data;
-      missingTracksForSearch = data.missing_tracks || [];
-      displayResults(data);
-
-      statusEl.textContent = '✅ Import complete!';
-      statusEl.className = 'ms-2 text-success';
-    } catch (error) {
-      console.error('CSV import error:', error);
-      statusEl.textContent = `❌ ${error.message}`;
-      statusEl.className = 'ms-2 text-danger';
-      document.getElementById('errorSection').style.display = 'block';
-      document.getElementById('errorMessage').textContent = error.message;
-      document.getElementById('resultsSection').style.display = 'none';
-    }
-  }
-
-  // ─── display results ─────────────────────────────────────────────────────────
-
-  function displayResults(data) {
-    const matchedCount = data.matched_tracks ? data.matched_tracks.length : 0;
-    const missingCount = data.missing_tracks ? data.missing_tracks.length : 0;
-    const totalCount = matchedCount + missingCount;
-    const coverage = totalCount > 0 ? Math.round((matchedCount / totalCount) * 100) : 0;
-
-    document.getElementById('matchedCount').textContent = matchedCount;
-    document.getElementById('missingCount').textContent = missingCount;
-    document.getElementById('totalCount').textContent = totalCount;
-    document.getElementById('coverage').textContent = coverage + '%';
-
-    // Fix up the coverage card color — always remove all three before adding one
-    const coverageCard = document.getElementById('coverageCard');
-    coverageCard.classList.remove('bg-success', 'bg-warning', 'bg-danger');
-    if (coverage >= 90)      coverageCard.classList.add('bg-success');
-    else if (coverage >= 70) coverageCard.classList.add('bg-warning');
-    else                     coverageCard.classList.add('bg-danger');
-
-    // Matched tracks
-    const matchedContainer = document.getElementById('matchedTracksContainer');
-    if (matchedCount > 0) {
-      matchedContainer.innerHTML = data.matched_tracks.map((track, idx) => {
-        const pid = storePayload({ artist: track.artist, title: track.title, album: track.album || '', source: 'matched', sourceIndex: idx });
-        return `
-          <div class="track-row">
-            <div class="track-info split-col">
-              <div class="track-label text-secondary">CSV Track</div>
-              <div class="track-title">${escapeHtml(track.title)}</div>
-              <div class="track-artist">${escapeHtml(track.artist)}</div>
-              <div class="track-album">${escapeHtml(track.album)}</div>
-            </div>
-            <div class="track-info split-col border-start ps-3">
-              <div class="track-label text-success">Matched in Library</div>
-              <div class="track-title text-success">${escapeHtml(track.title)}</div>
-              <div class="track-artist">${escapeHtml(track.artist)}</div>
-              <div class="track-album">${escapeHtml(track.album)}</div>
-              ${track.stars !== undefined ? `<div class="text-muted small">Rating: ${track.stars || 0}★</div>` : ''}
-              <div class="text-muted small">via ${escapeHtml(track.strategy || '')}</div>
-            </div>
-            <div class="track-actions">
-              <span class="badge bg-success">✓ Found</span>
-              <button class="btn btn-sm btn-outline-info js-replace-btn" data-pid="${pid}" title="Replace with a different local track">
-                <i class="bi bi-arrow-repeat"></i> Replace
-              </button>
-            </div>
-          </div>`;
-      }).join('');
-    } else {
-      matchedContainer.innerHTML = '<p class="text-secondary text-center py-5">No matched tracks found</p>';
-    }
-
-    // Missing tracks
-    const missingContainer = document.getElementById('missingTracksContainer');
-    if (missingCount > 0) {
-      missingContainer.innerHTML = data.missing_tracks.map((track, idx) => {
-        const pid = storePayload({ artist: track.artist, title: track.title, album: track.album || '', source: 'missing', sourceIndex: idx });
-        const searchPid = storePayload({ query: `${track.artist} ${track.title}` });
-        return `
-          <div class="track-row">
-            <div class="track-info">
-              <div class="track-title">${escapeHtml(track.title)}</div>
-              <div class="track-artist">${escapeHtml(track.artist)}</div>
-              <div class="track-album">${escapeHtml(track.album || 'Unknown Album')}</div>
-            </div>
-            <div class="track-actions">
-              <span class="missing-track-badge">✗ Missing</span>
-              ${data.slskd_enabled ? `
-              <button class="btn btn-sm btn-outline-success js-slskd-search-btn" data-pid="${searchPid}" title="Search in Soulseek">
-                <i class="bi bi-cloud-arrow-down"></i> Search
-              </button>` : ''}
-              <button class="btn btn-sm btn-outline-info js-replace-btn" data-pid="${pid}" title="Replace with different song">
-                <i class="bi bi-arrow-repeat"></i> Replace
-              </button>
-            </div>
-          </div>`;
-      }).join('');
-    } else {
-      missingContainer.innerHTML = '<p class="text-success text-center py-5">All tracks found in library!</p>';
-    }
-
-    const searchMissingBtn = document.getElementById('searchMissingBtn');
-    if (searchMissingBtn) {
-      searchMissingBtn.style.display = (data.slskd_enabled && missingCount > 0) ? 'inline-block' : 'none';
-    }
-
-    document.getElementById('resultsSection').style.display = 'block';
-    document.getElementById('errorSection').style.display = 'none';
-  }
-
-  // ─── event delegation for dynamically created buttons ────────────────────────
-
-  document.addEventListener('click', function(e) {
-    const replaceBtn = e.target.closest('.js-replace-btn');
-    if (replaceBtn) {
-      const p = _trackPayloads[replaceBtn.dataset.pid];
-      if (p) openReplacementTrackModal(p.artist, p.title, p.album, p.source, p.sourceIndex);
-      return;
-    }
-
-    const slskdBtn = e.target.closest('.js-slskd-search-btn');
-    if (slskdBtn) {
-      const p = _trackPayloads[slskdBtn.dataset.pid];
-      if (p) searchTrackInSoulseek(p.query, slskdBtn);
-      return;
-    }
-
-    const addBtn = e.target.closest('.js-add-track-btn');
-    if (addBtn) {
-      const p = _trackPayloads[addBtn.dataset.pid];
-      if (p) addSelectedTrack(p.title, p.artist, p.album);
-      return;
-    }
-
-    const swapBtn = e.target.closest('.js-swap-track-btn');
-    if (swapBtn) {
-      const p = _trackPayloads[swapBtn.dataset.pid];
-      if (p) replaceSelectedTrack(p.title, p.artist, p.album, p.id);
-      return;
-    }
-
-    const dlBtn = e.target.closest('.js-slskd-download-btn');
-    if (dlBtn) {
-      const p = _trackPayloads[dlBtn.dataset.pid];
-      if (p) downloadSoulseekFile(p.username, p.filename, p.size);
-      return;
-    }
-  });
-
-  // ─── create playlist ──────────────────────────────────────────────────────────
-
-  async function createPlaylist() {
-    if (!currentImportData) return;
-    const createBtn = document.getElementById('createPlaylistBtn');
-    const originalText = createBtn.innerHTML;
-    createBtn.disabled = true;
-    createBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating...';
-    try {
-      const response = await fetch('/api/playlist/create', {
+      // Step 2 – create playlist from matched tracks
+      document.getElementById('csvProgressLabel').textContent = 'Creating playlist…';
+      const createRes  = await fetch('/api/playlist/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          playlist_name: currentImportData.playlist_name,
-          playlist_description: currentImportData.playlist_description,
-          matched_tracks: currentImportData.matched_tracks
-        })
+          playlist_name:        playlistName,
+          playlist_description: playlistDesc,
+          matched_tracks:       matched,
+        }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Playlist creation failed');
-      alert(`✅ Playlist "${currentImportData.playlist_name}" created successfully!`);
-      createBtn.innerHTML = '<i class="bi bi-check-circle"></i> Playlist Created!';
-      createBtn.classList.remove('btn-success');
-      createBtn.classList.add('btn-outline-success');
-    } catch (error) {
-      alert(`❌ Error: ${error.message}`);
-      createBtn.disabled = false;
-      createBtn.innerHTML = originalText;
-    }
-  }
+      const createData = await createRes.json();
+      if (!createRes.ok) throw new Error(
+        createData.error?.message || (typeof createData.error === 'string' ? createData.error : null) ||
+        'Playlist creation failed'
+      );
 
-  // ─── soulseek ────────────────────────────────────────────────────────────────
+      // ── switch to result view ─────────────────────────────────────────────
+      document.getElementById('csvModalProgress').style.display = 'none';
+      document.getElementById('csvModalResult').style.display = '';
 
-  async function searchMissingTracks() {
-    if (!missingTracksForSearch.length) { alert('No missing tracks to search'); return; }
-    const btn = document.getElementById('searchMissingBtn');
-    const orig = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Searching...';
-    for (const track of missingTracksForSearch) {
-      try {
-        await fetch('/api/slskd/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: `${track.artist} ${track.title}` })
-        });
-      } catch (_) {}
-      await new Promise(r => setTimeout(r, 500));
-    }
-    alert(`✅ Started searching for ${missingTracksForSearch.length} missing tracks in Soulseek.`);
-    btn.disabled = false;
-    btn.innerHTML = orig;
-  }
+      const coverage  = total > 0 ? Math.round((matched.length / total) * 100) : 0;
+      const coverCls  = coverage >= 90 ? 'success' : coverage >= 70 ? 'warning' : 'danger';
 
-  async function searchTrackInSoulseek(query, buttonEl) {
-    const orig = buttonEl.innerHTML;
-    buttonEl.disabled = true;
-    buttonEl.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    try {
-      const res = await fetch('/api/slskd/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: String(query).trim() })
-      });
-      if (!res.ok) throw new Error('Search failed');
-      const data = await res.json();
-      buttonEl.innerHTML = '<i class="bi bi-check-circle text-success"></i> Searching...';
-      setTimeout(() => pollSoulseekResults(data.searchId, query, buttonEl, orig), 1000);
-    } catch (error) {
-      alert(`❌ Error: ${error.message}`);
-      buttonEl.disabled = false;
-      buttonEl.innerHTML = orig;
-    }
-  }
+      document.getElementById('csvResultStats').innerHTML = `
+        <div class="col-6 col-md-3">
+          <div class="card text-center bg-success bg-opacity-10 border-success h-100">
+            <div class="card-body py-3">
+              <div class="h3 text-success mb-1">${matched.length}</div>
+              <div class="small text-secondary">Matched</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card text-center bg-warning bg-opacity-10 border-warning h-100">
+            <div class="card-body py-3">
+              <div class="h3 text-warning mb-1">${missing.length}</div>
+              <div class="small text-secondary">Not in Library</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card text-center bg-info bg-opacity-10 border-info h-100">
+            <div class="card-body py-3">
+              <div class="h3 text-info mb-1">${total}</div>
+              <div class="small text-secondary">Total Tracks</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card text-center bg-${coverCls} bg-opacity-10 border-${coverCls} h-100">
+            <div class="card-body py-3">
+              <div class="h3 text-${coverCls} mb-1">${coverage}%</div>
+              <div class="small text-secondary">Coverage</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="alert alert-success mb-0 py-2">
+            <i class="bi bi-check-circle-fill me-2"></i>
+            Playlist <strong>${escapeHtml(playlistName)}</strong> created with <strong>${matched.length}</strong> track${matched.length !== 1 ? 's' : ''}.
+          </div>
+        </div>`;
 
-  async function pollSoulseekResults(searchId, query, buttonEl, originalText) {
-    try {
-      const res = await fetch(`/api/slskd/search/${searchId}`);
-      if (!res.ok) throw new Error('Failed to get results');
-      const data = await res.json();
-      if (!data.isComplete) {
-        setTimeout(() => pollSoulseekResults(searchId, query, buttonEl, originalText), 2000);
-        return;
+      // Show missing track list if any
+      if (missing.length > 0) {
+        document.getElementById('csvMissingSection').style.display = '';
+        document.getElementById('csvMissingList').innerHTML = missing.map(t => `
+          <div class="missing-row">
+            <span class="fw-semibold">${escapeHtml(t.title)}</span>
+            <span class="text-secondary ms-2">${escapeHtml(t.artist)}</span>
+            ${t.album ? `<span class="text-tertiary ms-2 small">${escapeHtml(t.album)}</span>` : ''}
+          </div>`).join('');
       }
-      if (data.fileCount === 0) { alert(`⚠️ No results found for: "${query}"`); }
-      else { showSoulseekResultsModal(data.results, query); }
-      buttonEl.disabled = false;
-      buttonEl.innerHTML = originalText;
-    } catch (_) {
-      buttonEl.disabled = false;
-      buttonEl.innerHTML = originalText;
+
+      document.getElementById('csvModalFooter').innerHTML = `
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        <a href="/playlist-manager" class="btn btn-success">
+          <i class="bi bi-folder2-open"></i> View Playlists
+        </a>`;
+
+      // Update the page banner
+      const banner = document.getElementById('importResultBanner');
+      const alert  = document.getElementById('importResultAlert');
+      alert.className = 'alert alert-success mb-0';
+      alert.innerHTML = `<i class="bi bi-check-circle-fill me-2"></i>
+        Playlist <strong>${escapeHtml(playlistName)}</strong> created — ${matched.length}/${total} tracks matched (${coverage}% coverage).
+        <a href="/playlist-manager" class="alert-link ms-2">View Playlists →</a>`;
+      banner.style.display = '';
+
+    } catch (err) {
+      console.error('CSV import error:', err);
+
+      document.getElementById('csvModalProgress').style.display = 'none';
+      document.getElementById('csvModalForm').style.display = '';
+      document.getElementById('csvModalFooter').innerHTML = `
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" form="csvForm" class="btn btn-primary">
+          <i class="bi bi-upload"></i> Import &amp; Create Playlist
+        </button>`;
+
+      const banner = document.getElementById('importResultBanner');
+      const alert  = document.getElementById('importResultAlert');
+      alert.className = 'alert alert-danger mb-0';
+      alert.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-2"></i><strong>Error:</strong> ${escapeHtml(err.message)}`;
+      banner.style.display = '';
     }
-  }
-
-  function showSoulseekResultsModal(results, query) {
-    const container = document.createElement('div');
-    container.className = 'modal fade';
-    container.id = 'soulseekResultsModal';
-    container.setAttribute('tabindex', '-1');
-    container.setAttribute('aria-hidden', 'true');
-
-    const listItems = results.map(r => {
-      const pid = storePayload({ username: r.username, filename: r.filename, size: r.size });
-      const item = document.createElement('div');
-      item.className = 'list-group-item';
-      item.innerHTML = `
-        <div class="d-flex justify-content-between align-items-start">
-          <div class="flex-grow-1">
-            <h6 class="mb-1">${escapeHtml(r.filename)}</h6>
-            <small class="text-muted">
-              <i class="bi bi-person"></i> ${escapeHtml(r.username)} |
-              <i class="bi bi-file-earmark-music"></i> ${r.size_mb} MB |
-              <i class="bi bi-speedometer"></i> ${r.bitrate || 'unknown'} bps
-            </small>
-          </div>
-          <button class="btn btn-sm btn-success js-slskd-download-btn" data-pid="${pid}">
-            <i class="bi bi-download"></i> Download
-          </button>
-        </div>`;
-      return item.outerHTML;
-    }).join('');
-
-    container.innerHTML = `
-      <div class="modal-dialog modal-lg"><div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title">Soulseek Results for: ${escapeHtml(query)}</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body" style="max-height:500px;overflow-y:auto;">
-          <div class="list-group">${listItems}</div>
-        </div>
-        <div class="modal-footer">
-          <small class="text-muted">Found ${results.length} result(s). Downloads will appear on the Downloads page.</small>
-        </div>
-      </div></div>`;
-
-    const old = document.getElementById('soulseekResultsModal');
-    if (old) old.remove();
-    document.body.appendChild(container);
-    new bootstrap.Modal(container).show();
-  }
-
-  async function downloadSoulseekFile(username, filename, size) {
-    try {
-      const res = await fetch('/api/slskd/download-single', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, filename, size: parseInt(size) })
-      });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Download failed'); }
-      alert(`✅ Download started for: ${filename}`);
-      const modal = bootstrap.Modal.getInstance(document.getElementById('soulseekResultsModal'));
-      if (modal) modal.hide();
-    } catch (error) { alert(`❌ Error: ${error.message}`); }
-  }
-
-  // ─── add track modal ──────────────────────────────────────────────────────────
-
-  function openAddTrackModal() {
-    if (!currentImportData) { alert('Please import a playlist first'); return; }
-    new bootstrap.Modal(document.getElementById('addTrackModal')).show();
-  }
-
-  async function searchForTrack() {
-    const query = document.getElementById('manualTrackSearch').value.trim();
-    if (!query) { alert('Please enter a search query'); return; }
-    const resultsDiv = document.getElementById('trackSearchResults');
-    resultsDiv.innerHTML = '<div class="text-center"><span class="spinner-border spinner-border-sm"></span> Searching...</div>';
-    try {
-      const res = await fetch('/api/search', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query })
-      });
-      if (!res.ok) { resultsDiv.innerHTML = '<p class="text-danger text-center">Error searching</p>'; return; }
-      const data = await res.json();
-      const tracks = (data.results || []).filter(r => r.type === 'track');
-      if (!tracks.length) { resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>'; return; }
-      let html = '<div style="border-top:1px solid var(--border-color);">';
-      tracks.forEach(t => {
-        const pid = storePayload({ title: t.title, artist: t.artist, album: t.album || '' });
-        html += `<div class="track-row" style="padding:0.75rem 0;border-bottom:1px solid var(--border-color);">
-          <div class="track-info">
-            <div class="track-title">${escapeHtml(t.title)}</div>
-            <div class="track-artist">${escapeHtml(t.artist)}</div>
-            <div class="track-album">${escapeHtml(t.album || 'Unknown Album')}</div>
-          </div>
-          <div class="track-actions">
-            <button class="btn btn-sm btn-success js-add-track-btn" data-pid="${pid}">
-              <i class="bi bi-plus-circle"></i> Add
-            </button>
-          </div>
-        </div>`;
-      });
-      html += '</div>';
-      resultsDiv.innerHTML = html;
-    } catch (error) { resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`; }
-  }
-
-  function addSelectedTrack(title, artist, album) {
-    if (!currentImportData) { alert('No playlist data found'); return; }
-    if (currentImportData.matched_tracks.some(t => t.title === title && t.artist === artist)) {
-      alert('This track is already in the playlist'); return;
-    }
-    currentImportData.matched_tracks.push({ title, artist, album });
-    bootstrap.Modal.getInstance(document.getElementById('addTrackModal')).hide();
-    displayResults(currentImportData);
-    alert(`✅ Track "${title}" added to playlist!`);
-  }
-
-  // ─── replace track modal ──────────────────────────────────────────────────────
-
-  let replacingTrackInfo = null;
-
-  function openReplacementTrackModal(artist, title, album, source, sourceIndex) {
-    replacingTrackInfo = { artist, title, album, source, sourceIndex };
-    document.getElementById('originalTitle').textContent = title;
-    document.getElementById('originalArtist').textContent = artist;
-    document.getElementById('originalAlbum').textContent = album || 'Unknown Album';
-    document.getElementById('replacementArtistInput').value = artist || '';
-    document.getElementById('replacementTitleInput').value = title || '';
-    document.getElementById('replacementAlbumInput').value = album || '';
-    document.getElementById('replacementTrackSearchResults').innerHTML =
-      '<p class="text-muted text-center py-4">Enter artist/title above to find replacement tracks</p>';
-    new bootstrap.Modal(document.getElementById('replaceTrackModal')).show();
-  }
-
-  async function searchForReplacementTrack() {
-    const artist = document.getElementById('replacementArtistInput').value.trim();
-    const title  = document.getElementById('replacementTitleInput').value.trim();
-    const album  = document.getElementById('replacementAlbumInput').value.trim();
-    const combined = [artist, title, album].filter(Boolean).join(' ');
-    if (!combined) { alert('Please provide at least one search field'); return; }
-    const resultsDiv = document.getElementById('replacementTrackSearchResults');
-    resultsDiv.innerHTML = '<div class="text-center"><span class="spinner-border spinner-border-sm"></span> Searching...</div>';
-    try {
-      const res = await fetch('/api/playlist/search-songs', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: combined, artist, title, album })
-      });
-      if (!res.ok) { resultsDiv.innerHTML = '<p class="text-danger text-center">Error searching</p>'; return; }
-      const data = await res.json();
-      const tracks = data.songs || [];
-      if (!tracks.length) { resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>'; return; }
-      let html = '<div style="border-top:1px solid var(--border-color);">';
-      tracks.forEach(t => {
-        const pid = storePayload({ title: t.title, artist: t.artist, album: t.album || '', id: t.id || '' });
-        html += `<div class="track-row" style="padding:0.75rem 0;border-bottom:1px solid var(--border-color);">
-          <div class="track-info">
-            <div class="track-title text-success">${escapeHtml(t.title)}</div>
-            <div class="track-artist">${escapeHtml(t.artist)}</div>
-            <div class="track-album">${escapeHtml(t.album || 'Unknown Album')}</div>
-          </div>
-          <div class="track-actions">
-            <button class="btn btn-sm btn-success js-swap-track-btn" data-pid="${pid}">
-              <i class="bi bi-arrow-left-right"></i> Swap
-            </button>
-          </div>
-        </div>`;
-      });
-      html += '</div>';
-      resultsDiv.innerHTML = html;
-    } catch (error) { resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`; }
-  }
-
-  function replaceSelectedTrack(title, artist, album, trackId) {
-    if (!currentImportData || !replacingTrackInfo) { alert('No playlist data found'); return; }
-    const { source, sourceIndex } = replacingTrackInfo;
-    if (source === 'missing') {
-      const idx = currentImportData.missing_tracks.findIndex((t, i) =>
-        i === sourceIndex || (t.title === replacingTrackInfo.title && t.artist === replacingTrackInfo.artist));
-      if (idx !== -1) currentImportData.missing_tracks.splice(idx, 1);
-    }
-    if (source === 'matched' && sourceIndex !== null && currentImportData.matched_tracks[sourceIndex]) {
-      currentImportData.matched_tracks[sourceIndex] = { id: trackId, title, artist, album, stars: 0 };
-    } else {
-      currentImportData.matched_tracks.push({ id: trackId, title, artist, album, stars: 0 });
-    }
-    bootstrap.Modal.getInstance(document.getElementById('replaceTrackModal')).hide();
-    displayResults(currentImportData);
-    alert(`✅ Swapped!\n\nPlaylist: "${replacingTrackInfo.artist} – ${replacingTrackInfo.title}"\nLibrary:  "${artist} – ${title}"`);
-    replacingTrackInfo = null;
   }
 </script>
 
