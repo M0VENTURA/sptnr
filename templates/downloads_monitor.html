@@ -67,24 +67,37 @@
 
   <!-- Download from Playlist Section -->
   <div class="card mb-4">
-    <div class="card-header">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-collection-play"></i> Download from Playlist
+    <div class="card-header" style="cursor:pointer;" data-bs-toggle="collapse" data-bs-target="#playlistImportCollapse">
+      <h5 class="card-title mb-0 d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-collection-play"></i> Download from Playlist</span>
+        <i class="bi bi-chevron-down"></i>
       </h5>
     </div>
-    <div class="card-body">
-      <p class="text-muted small mb-3">
-        To queue tracks from a Spotify playlist, first convert your playlist to a CSV using
-        <a href="https://exportify.net" target="_blank" rel="noopener">Exportify</a>,
-        then import it below.
-      </p>
-      <div class="d-flex gap-2 flex-wrap">
-        <a href="/playlists/import" class="btn btn-outline-primary">
-          <i class="bi bi-spotify"></i> Import from Spotify URL
-        </a>
-        <a href="/playlists/import/csv" class="btn btn-outline-success">
-          <i class="bi bi-filetype-csv"></i> Import from CSV
-        </a>
+    <div class="collapse" id="playlistImportCollapse">
+      <div class="card-body">
+        <p class="text-muted small mb-3">Enter a Spotify playlist URL to preview and add all tracks to the download queue. Apple Music support coming soon.</p>
+        <div class="input-group mb-3">
+          <input type="url" id="playlistImportUrl" class="form-control" placeholder="https://open.spotify.com/playlist/...">
+          <button class="btn btn-outline-primary" onclick="previewPlaylistImport()">
+            <i class="bi bi-search"></i> Preview
+          </button>
+        </div>
+        <div id="playlistImportStatus" class="alert" style="display:none;"></div>
+        <div id="playlistImportPreview" style="display:none;">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="mb-0" id="playlistImportTitle"></h6>
+            <button class="btn btn-sm btn-success" onclick="addPlaylistToQueue()" id="playlistImportAddBtn">
+              <i class="bi bi-plus-circle"></i> Add All to Queue
+            </button>
+          </div>
+          <div id="playlistImportAlbumArtist" class="text-muted small mb-2"></div>
+          <div class="table-responsive" style="max-height:400px;overflow-y:auto;">
+            <table class="table table-sm table-striped">
+              <thead><tr><th>#</th><th>Artist</th><th>Title</th><th>Duration</th></tr></thead>
+              <tbody id="playlistImportTrackList"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   </div>
