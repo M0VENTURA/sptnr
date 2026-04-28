@@ -23859,10 +23859,18 @@ _missing_album_tracks_table_ensured = False
 
 
 def _ensure_missing_album_tracks_table(cursor) -> None:
-    """Create the missing_album_tracks table if it doesn't already exist."""
+    """Create the missing_album_tracks table if it doesn't already exist.
+
+    The module-level flag is intentionally NOT used as a skip-guard here.
+    ``CREATE TABLE IF NOT EXISTS`` is idempotent so it is safe to run on
+    every call.  Using a cached flag was unreliable: if the first call
+    executed the DDL inside a transaction that was later rolled back (before
+    the caller called ``commit()``), the flag would be set to True while the
+    table had never actually been committed to the database.  Subsequent calls
+    would then skip the creation and the following DML would fail with
+    "relation does not exist".
+    """
     global _missing_album_tracks_table_ensured
-    if _missing_album_tracks_table_ensured:
-        return
     try:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS missing_album_tracks (
