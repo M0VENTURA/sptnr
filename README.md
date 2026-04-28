@@ -101,8 +101,8 @@ services:
       - LASTFM_API_KEY=your_lastfm_api_key
       - LASTFM_API_SECRET=your_lastfm_api_secret
       - DISCOGS_TOKEN=your_discogs_personal_token
-      - LASTFM_WEIGHT=0.30
-      - LISTENBRAINZ_WEIGHT=0.35
+      - LASTFM_WEIGHT=0.35
+      - LISTENBRAINZ_WEIGHT=0.40
       - AGE_WEIGHT=0.25
       - MUSIC_FOLDER=/music
       - DB_PATH=/database/sptnr.db
@@ -149,8 +149,8 @@ Copy `.env.example` to `.env` for local (non-Docker) runs, or set these as envir
 | `DISCOGS_TOKEN` | Recommended | Discogs personal access token — https://www.discogs.com/settings/developers |
 | `MUSIC_FOLDER` | Optional | Path to your music library (default: `/music`) |
 | `DB_PATH` | Optional | Path to SQLite database (default: `/database/sptnr.db`) |
-| `LASTFM_WEIGHT` | Optional | Last.fm weighting (default: `0.30`) |
-| `LISTENBRAINZ_WEIGHT` | Optional | ListenBrainz weighting (default: `0.35`) |
+| `LASTFM_WEIGHT` | Optional | Last.fm weighting (default: `0.35`) |
+| `LISTENBRAINZ_WEIGHT` | Optional | ListenBrainz weighting (default: `0.40`) |
 | `AGE_WEIGHT` | Optional | Age/recency weighting (default: `0.25`) |
 
 > ListenBrainz and MusicBrainz are free public APIs — no key required.

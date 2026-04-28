@@ -19,8 +19,8 @@ services:
       - LASTFM_API_KEY=                    #Last.FM API Key
       - LASTFM_API_SECRET=                 #Last.FM API Secret
       - DISCOGS_TOKEN=                     #Discogs Personal Access Token (https://www.discogs.com/settings/developers)
-      - LASTFM_WEIGHT=0.30                 #Adjust Last.FM Weighting (lastfm + listenbrainz + age = 1.0)
-      - LISTENBRAINZ_WEIGHT=0.35           #Adjust ListenBrainz Weighting
+      - LASTFM_WEIGHT=0.35                 #Adjust Last.FM Weighting (lastfm + listenbrainz + age = 1.0)
+      - LISTENBRAINZ_WEIGHT=0.40           #Adjust ListenBrainz Weighting
       - AGE_WEIGHT=0.25                    #Adjust Age/Recency Weighting
       - MUSIC_FOLDER=/music                #Path to music folder inside container
       - DB_PATH=/database/sptnr.db         #Path to SQLite database

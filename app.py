@@ -1713,7 +1713,7 @@ def setup():
                 "source_lastfm_confidence": "medium",
                 "source_radio_edit_confidence": "high",
             }
-            weights = {"lastfm": 0.30, "listenbrainz": 0.35, "age": 0.25}
+            weights = {"lastfm": 0.35, "listenbrainz": 0.40, "age": 0.25}
 
             config = {
                 "navidrome_users": users,
