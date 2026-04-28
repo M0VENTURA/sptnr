@@ -567,23 +567,42 @@ class MusicBrainzReleaseManager:
                               track_artist, duration_ms, isrc))
                         
                         # Also add to tracks table with 'downloading' status
-                        # This allows the track to appear on artist/album pages as "Downloading"
+                        # This allows the track to appear on artist/album pages as "Downloading".
+                        # Skip if a library file already exists for this track — inserting a
+                        # placeholder would create a ghost duplicate that never gets cleaned up.
                         track_id = f"{track_artist}|{album}|{track_title}"
-                        cursor.execute(f"""
-                            INSERT INTO tracks
-                            (id, artist, album, title, track_number, duration, isrc,
-                             download_status)
-                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'downloading')
-                            ON CONFLICT (id) DO UPDATE SET
-                                artist = EXCLUDED.artist,
-                                album = EXCLUDED.album,
-                                title = EXCLUDED.title,
-                                track_number = EXCLUDED.track_number,
-                                duration = EXCLUDED.duration,
-                                isrc = EXCLUDED.isrc,
-                                download_status = EXCLUDED.download_status
-                        """, (track_id, track_artist, album, track_title,
-                              track_number, duration_sec, isrc))
+                        cursor.execute(
+                            f"""
+                            SELECT id FROM tracks
+                            WHERE LOWER(artist) = LOWER({placeholder})
+                              AND LOWER(album) = LOWER({placeholder})
+                              AND LOWER(title) = LOWER({placeholder})
+                              AND file_path IS NOT NULL AND file_path <> ''
+                            LIMIT 1
+                            """,
+                            (track_artist, album, track_title),
+                        )
+                        if cursor.fetchone():
+                            logger.info(
+                                f"[QUEUE_ADD] Track '{track_title}' already in library with a file — "
+                                f"skipping missing placeholder insert"
+                            )
+                        else:
+                            cursor.execute(f"""
+                                INSERT INTO tracks
+                                (id, artist, album, title, track_number, duration, isrc,
+                                 download_status)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'downloading')
+                                ON CONFLICT (id) DO UPDATE SET
+                                    artist = EXCLUDED.artist,
+                                    album = EXCLUDED.album,
+                                    title = EXCLUDED.title,
+                                    track_number = EXCLUDED.track_number,
+                                    duration = EXCLUDED.duration,
+                                    isrc = EXCLUDED.isrc,
+                                    download_status = EXCLUDED.download_status
+                            """, (track_id, track_artist, album, track_title,
+                                  track_number, duration_sec, isrc))
                         
                         logger.info(f"[QUEUE_ADD] Added track {track_number}: {track_title} (Queue ID: {queue_id})")
                 

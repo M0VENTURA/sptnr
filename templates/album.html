@@ -809,6 +809,24 @@
                                     {% endif %}
                                 </td>
                             </tr>
+                            {% if track._mb_diff_html %}
+                            <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}">
+                                <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                                    <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
+                                         style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
+                                        <small class="text-warning-emphasis">
+                                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
+                                        </small>
+                                        <small class="text-muted">{{ track._mb_diff_html | safe }}</small>
+                                        <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
+                                                style="font-size: 0.75rem; white-space: nowrap;"
+                                                onclick="updateSingleTrackFromMB(this)">
+                                            <i class="bi bi-arrow-repeat"></i> Update
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endif %}
                             {% endif %}
                             {% endfor %}
                         {% endfor %}
@@ -964,6 +982,24 @@
                                 {% endif %}
                             </td>
                         </tr>
+                        {% if track._mb_diff_html %}
+                        <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}">
+                            <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                                <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
+                                     style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
+                                    <small class="text-warning-emphasis">
+                                        <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
+                                    </small>
+                                    <small class="text-muted">{{ track._mb_diff_html | safe }}</small>
+                                    <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
+                                            style="font-size: 0.75rem; white-space: nowrap;"
+                                            onclick="updateSingleTrackFromMB(this)">
+                                        <i class="bi bi-arrow-repeat"></i> Update
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endif %}
                         {% endif %}
                         {% endfor %}
                     {% endif %}
@@ -2664,7 +2700,7 @@
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
 
-        const payload = { track_id: trackId, sync_to_file: true };
+        const payload = { track_id: trackId, sync_to_file: true, clear_mb_pending: true };
         if (trackComp.diff_fields && trackComp.diff_fields.includes('title'))
             payload.title = trackComp.mb_title;
         if (trackComp.diff_fields && trackComp.diff_fields.includes('track_number'))
@@ -2729,7 +2765,7 @@
         let updated = 0, failed = 0;
         for (const trackComp of tracksToUpdate) {
             const trackId = String(trackComp.library_track_id);
-            const payload = { track_id: trackId, sync_to_file: true };
+            const payload = { track_id: trackId, sync_to_file: true, clear_mb_pending: true };
             if (trackComp.diff_fields.includes('title')) payload.title = trackComp.mb_title;
             if (trackComp.diff_fields.includes('track_number')) payload.track_number = String(trackComp.mb_track_number);
             if (trackComp.diff_fields.includes('year')) payload.year = String(trackComp.mb_year);

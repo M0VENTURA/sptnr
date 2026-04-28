@@ -13,6 +13,7 @@ from helpers.db_utils import (
     ensure_popularity_freeze_columns,
     ensure_artists_name_unique_constraint,
     verify_album_artist_column,
+    ensure_pending_mb_updates_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
@@ -664,6 +665,9 @@ ensure_cover_columns()
 
 # Ensure optional release_year column exists in tracks table
 ensure_track_release_year_column()
+
+# Ensure pending_mb_updates column exists for persistent MusicBrainz update banners
+ensure_pending_mb_updates_column()
 
 # Ensure mood scan columns exist in tracks table
 ensure_mood_columns()
@@ -13816,6 +13820,50 @@ def album_detail(artist, album):
             return (disc_num, track_num, track_str.lower(), title)
 
         tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
+
+        # Pre-compute MusicBrainz pending update banner data from the stored
+        # pending_mb_updates JSON so banners are rendered server-side and survive
+        # page refreshes without requiring another round-trip to MusicBrainz.
+        import json as _json_local
+        import html as _html_mod
+        for _td in tracks_with_genre_fit:
+            _raw = _td.get('pending_mb_updates')
+            if _raw:
+                try:
+                    _comp = _json_local.loads(_raw)
+                    _diff_fields = _comp.get('diff_fields', [])
+                    _parts = []
+                    if 'title' in _diff_fields:
+                        _parts.append(
+                            f"Title: {_comp.get('library_title', '')} \u2192 {_comp.get('mb_title', '')}"
+                        )
+                    if 'track_number' in _diff_fields:
+                        _parts.append(
+                            f"Track#: {_comp.get('library_track_number', '?')} \u2192 {_comp.get('mb_track_number', '?')}"
+                        )
+                    if 'year' in _diff_fields:
+                        _parts.append(
+                            f"Year: {_comp.get('library_year', '\u2014')} \u2192 {_comp.get('mb_year', '')}"
+                        )
+                    if 'mbid' in _diff_fields:
+                        _parts.append("MusicBrainz ID: missing \u2192 added")
+                    if 'duration' in _diff_fields:
+                        _parts.append(
+                            f"Length: {_comp.get('library_duration', '\u2014')} \u2192 {_comp.get('mb_duration', '\u2014')}"
+                        )
+                    if 'disc_number' in _diff_fields:
+                        _parts.append(
+                            f"Disc: {_comp.get('library_disc_number', 1)} \u2192 {_comp.get('mb_disc_number', '')}"
+                        )
+                    # Build HTML-safe joined display string (avoids double-escaping in the template)
+                    _td['_mb_diff_html'] = ' &nbsp;&middot;&nbsp; '.join(_html_mod.escape(p) for p in _parts)
+                    _td['_mb_comp_json'] = _raw
+                except Exception:
+                    _td['_mb_diff_html'] = ''
+                    _td['_mb_comp_json'] = ''
+            else:
+                _td['_mb_diff_html'] = ''
+                _td['_mb_comp_json'] = ''
 
         # If album-level IDs are missing, infer from track-level IDs in this album.
         def _infer_album_id_from_tracks(rows, key_name):
@@ -34819,6 +34867,32 @@ def api_album_musicbrainz_compare():
 
         tracks_needing_update = sum(1 for c in comparison if c["needs_update"])
 
+        # Persist comparison results to the database so that the "MusicBrainz
+        # update available" banners survive page refreshes.
+        try:
+            import json as _json
+            conn_p = get_db()
+            cursor_p = conn_p.cursor()
+            ph_p = "%s"
+            # Clear any stale pending updates for all tracks in this album so
+            # that tracks which are now up-to-date no longer show a banner.
+            cursor_p.execute(
+                f"UPDATE tracks SET pending_mb_updates = NULL "
+                f"WHERE COALESCE(NULLIF(album_artist, ''), artist) = {ph_p} AND album = {ph_p}",
+                (artist, album),
+            )
+            # Store fresh pending update data for tracks that still need it.
+            for entry in comparison:
+                if entry.get("needs_update") and entry.get("library_track_id"):
+                    cursor_p.execute(
+                        f"UPDATE tracks SET pending_mb_updates = {ph_p} WHERE id = {ph_p}",
+                        (_json.dumps(entry), entry["library_track_id"]),
+                    )
+            conn_p.commit()
+            conn_p.close()
+        except Exception as _save_err:
+            logging.warning(f"[MB_COMPARE] Could not persist comparison results: {_save_err}")
+
         return jsonify({
             "success": True,
             "mb_title": mb_release_title,
@@ -36086,6 +36160,7 @@ def api_track_update_metadata():
         data = request.get_json() or {}
         track_id = data.get("track_id", "").strip()
         sync_to_file = data.get("sync_to_file", True)
+        clear_mb_pending = bool(data.get("clear_mb_pending", False))
         
         if not track_id:
             return jsonify({"error": "track_id required"}), 400
@@ -36160,7 +36235,12 @@ def api_track_update_metadata():
         if not db_updates:
             conn.close()
             return jsonify({"error": "At least one field required"}), 400
-        
+
+        # Clear the stored MusicBrainz comparison pending state when the update
+        # has been applied (signalled by the caller setting clear_mb_pending=true).
+        if clear_mb_pending:
+            db_updates["pending_mb_updates"] = None
+
         # Update database using the correct placeholder for the DB backend
         set_clause = ", ".join([f"{k} = {placeholder}" for k in db_updates.keys()])
         values = list(db_updates.values()) + [track_id]
