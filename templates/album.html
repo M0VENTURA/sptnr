@@ -598,7 +598,7 @@
         <div class="table-responsive">
             {# Macro: render a single row for a track that exists in MusicBrainz but not in the library #}
             {% macro missing_track_row(track) %}
-            <tr class="text-muted missing-track-row" style="opacity: 0.6;">
+            <tr class="text-muted missing-track-row" style="opacity: 0.6;" data-missing-id="{{ track.missing_track_id or '' }}">
                 <td></td>
                 <td class="fst-italic">{{ track.track_number or '?' }}</td>
                 <td colspan="6" class="fst-italic">
@@ -631,6 +631,14 @@
                             data-album="{{ track.album|escapejs }}"
                             onclick="openAlbumMatchModal(this)">
                             <i class="bi bi-link-45deg"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary"
+                            title="Ignore – hide this track from the missing list"
+                            data-missing-id="{{ track.missing_track_id or '' }}"
+                            data-title="{{ track.title|escapejs }}"
+                            data-disc-number="{{ track.disc_number or 1 }}"
+                            onclick="ignoreMissingTrack(this)">
+                            <i class="bi bi-x-lg"></i>
                         </button>
                     </div>
                 </td>
@@ -2246,6 +2254,41 @@
         return div.innerHTML;
     }
 
+    function ignoreMissingTrack(btn) {
+        const albumArtist = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
+        const missingId = btn.dataset.missingId || '';
+        const title = btn.dataset.title || '';
+        const discNumber = parseInt(btn.dataset.discNumber || '1', 10);
+
+        if (!confirm(`Hide "${title}" from the missing tracks list?\n\nYou can restore it by running a new MusicBrainz comparison.`)) return;
+
+        const row = btn.closest('tr');
+
+        fetch('/api/album/ignore-missing-track', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                id: missingId || undefined,
+                artist: albumArtist,
+                album: albumName,
+                title: title,
+                disc_number: discNumber,
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                if (row) row.remove();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to ignore track'));
+            }
+        })
+        .catch(err => {
+            alert('❌ Network error: ' + err.message);
+        });
+    }
+
     // Genre recommendation functions
     let selectedGenres = new Set();
 
@@ -2596,7 +2639,7 @@
             const safeAlbumArtist = escapeHtml(albumArtist);
             const safeAlbum = escapeHtml(albumName);
             const safeTrackNum = escapeHtml(String(track.mb_track_number || ''));
-            const safeDiscNum = escapeHtml(String(track.mb_disc_number || ''));
+            const safeDiscNum = escapeHtml(String(track.mb_disc_number || 1));
             const safeRecordingMbid = escapeHtml(String(track.mb_recording_id || ''));
             const safeDuration = track.mb_duration_sec != null ? String(track.mb_duration_sec) : '';
 
@@ -2626,6 +2669,24 @@
                             data-duration="${safeDuration}"
                             onclick="queueMissingTrack(this)">
                             <i class="bi bi-download"></i>
+                        </button>
+                        <button class="btn btn-outline-primary"
+                            title="Match to an existing song in the library"
+                            data-title="${safeTitle}"
+                            data-track-number="${safeTrackNum}"
+                            data-release-id="${releaseId}"
+                            data-artist="${safeArtist}"
+                            data-album="${safeAlbum}"
+                            onclick="openAlbumMatchModal(this)">
+                            <i class="bi bi-link-45deg"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary"
+                            title="Ignore – hide this track from the missing list"
+                            data-missing-id=""
+                            data-title="${safeTitle}"
+                            data-disc-number="${safeDiscNum}"
+                            onclick="ignoreMissingTrack(this)">
+                            <i class="bi bi-x-lg"></i>
                         </button>
                     </div>
                 </td>`;
