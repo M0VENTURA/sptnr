@@ -153,7 +153,7 @@ Copy `.env.example` to `.env` for local (non-Docker) runs, or set these as envir
 
 > ListenBrainz and MusicBrainz are free public APIs — no key required.
 
-Configuration can also be managed via the **Config** page in the web UI, which writes to `config.yaml` inside `/config`.
+Configuration can also be managed via the **Config** page in the web UI, which writes to `/config/config.yaml`.
 
 ---
 
