@@ -25,7 +25,7 @@ import requests
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
-from helpers.db_utils import get_db_connection, is_postgres_configured, _is_postgres_connection
+from helpers.db_utils import get_db_connection, is_postgres_configured, _is_postgres_connection, is_transient_pg_startup_error
 from helpers.metadata_reader import read_mp3_metadata
 from api_clients import session  # Use shared session with retry logic & connection pooling
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
@@ -2366,9 +2366,12 @@ def get_queue(status=None, source=None, limit=50):
         return items
 
     except Exception as e:
-        logger.error(f"Error getting queue: {type(e).__name__}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        if is_transient_pg_startup_error(e):
+            logger.debug(f"Error getting queue (transient, will retry): {e}")
+        else:
+            logger.error(f"Error getting queue: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         return []
 
 
@@ -5596,9 +5599,12 @@ def check_downloads_folder():
         return completed_items
         
     except Exception as e:
-        logger.error(f"Error checking downloads folder: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        if is_transient_pg_startup_error(e):
+            logger.debug(f"Error checking downloads folder (transient, will retry): {e}")
+        else:
+            logger.error(f"Error checking downloads folder: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         return []
     finally:
         if conn is not None:
@@ -7091,7 +7097,10 @@ def get_completed_queue(limit=50):
         return [{k: v for k, v in row.items()} for row in rows] if rows else []
 
     except Exception as e:
-        logger.error(f"Error getting completed queue: {e}")
+        if is_transient_pg_startup_error(e):
+            logger.debug(f"Error getting completed queue (transient, will retry): {e}")
+        else:
+            logger.error(f"Error getting completed queue: {e}")
         return []
     finally:
         if conn is not None:
