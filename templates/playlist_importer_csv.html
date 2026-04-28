@@ -209,60 +209,53 @@
       const allTracks = parseData.all_tracks || [];
       if (!allTracks.length) throw new Error('No tracks found in CSV');
 
-      // Step 2 – queue ALL tracks grouped by artist+album
+      // Step 2 – queue ALL tracks as a single playlist album group
       setProgress('Adding to queue…', `Sending ${allTracks.length} track${allTracks.length !== 1 ? 's' : ''} to the download queue.`);
 
-      // Group by artist+album — each group becomes one batch with a shared import_group.
-      // Any group whose tracks carry an album name is queued as 'album' so the queue
-      // manager creates a proper album folder; otherwise it falls back to 'song'.
-      const nameSlug = importName.replace(/\s+/g, '_').substring(0, 40);
-      const albums = {};
-      for (const t of allTracks) {
-        const groupKey = `${nameSlug}_${(t.artist || 'Unknown').replace(/\s+/g, '_')}_${(t.album || 'Unknown').replace(/\s+/g, '_')}`.substring(0, 120);
-        if (!albums[groupKey]) albums[groupKey] = [];
-        albums[groupKey].push(t);
-      }
+      // All tracks share one import_group (the playlist name) so they appear as a single
+      // album group in the queue with all tracks nested below it.
+      const nameSlug = importName.replace(/\s+/g, '_').substring(0, 80);
+
+      const currentYear = String(new Date().getFullYear());
+      const items = allTracks.map(t => ({
+        artist:         t.artist,
+        title:          t.title,
+        album:          importName,
+        album_artist:   'Various Artists',
+        year:           currentYear,
+        duration:       t.duration_s  || null,
+        genres:         t.genres      || null,
+        isrc:           t.isrc        || null,
+        release_id:     t.spotify_id  || null,
+        release_source: t.spotify_id ? 'spotify' : null,
+      }));
 
       let totalAdded = 0, totalSkipped = 0, totalFailed = 0;
 
-      for (const [groupKey, tracks] of Object.entries(albums)) {
-        const items = tracks.map(t => ({
-          artist:         t.artist,
-          title:          t.title,
-          album:          t.album       || null,
-          year:           t.year        || null,
-          duration:       t.duration_s  || null,
-          genres:         t.genres      || null,
-          isrc:           t.isrc        || null,
-          release_id:     t.spotify_id  || null,
-          release_source: t.spotify_id ? 'spotify' : null,
-        }));
-
-        try {
-          const res = await fetch('/api/queue/add-batch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              items,
-              import_group: groupKey,
-              import_type:  tracks.some(t => t.album) ? 'album' : 'song',
-              source:       'soulseek',
-            }),
-          });
-          const data = await res.json();
-          if (res.ok && data.success !== false) {
-            totalAdded   += data.added   || 0;
-            totalSkipped += data.skipped || 0;
-            totalFailed  += data.failed  || 0;
-          } else {
-            totalFailed += items.length;
-          }
-        } catch (_) {
-          totalFailed += items.length;
+      try {
+        const res = await fetch('/api/queue/add-batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items,
+            import_group: nameSlug,
+            import_type:  'playlist',
+            source:       'soulseek',
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.success !== false) {
+          totalAdded   = data.added   || 0;
+          totalSkipped = data.skipped || 0;
+          totalFailed  = data.failed  || 0;
+        } else {
+          totalFailed = items.length;
         }
+      } catch (_) {
+        totalFailed = items.length;
       }
 
-      const albumCount = Object.keys(albums).length;
+      const albumCount = 1;
 
       // ── switch to result view ─────────────────────────────────────────────
       document.getElementById('csvModalProgress').style.display = 'none';
