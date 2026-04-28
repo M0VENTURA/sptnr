@@ -2562,16 +2562,17 @@ def search_and_download(queue_id, queue_item, client):
                 )
                 try:
                     import time as _time_mod
+                    import re as _pre_re
                     import requests as _mb_pre_req
                     from api_clients.musicbrainz import _USER_AGENT as _MB_PRE_UA
                     import difflib as _pre_difflib
 
-                    _time_mod.sleep(1.0)  # respect MB rate limit
-
                     def _escape_mb(text):
                         """Escape Lucene special characters for MB query."""
-                        import re as _re
-                        return _re.sub(r'([\+\-\&\|\!\(\)\{\}\[\]\^"~\*\?:\\\/])', r'\\\1', text)
+                        return _pre_re.sub(r'([\+\-\&\|\!\(\)\{\}\[\]\^"~\*\?:\\\/])', r'\\\1', text)
+
+                    def _norm_title_text(t):
+                        return _pre_re.sub(r'\s+', ' ', (t or '').lower().strip())
 
                     _mb_params = {
                         "query": (
@@ -2588,18 +2589,19 @@ def search_and_download(queue_id, queue_item, client):
                         params=_mb_params,
                         timeout=12,
                     )
+                    _time_mod.sleep(1.1)  # respect MB rate limit after the request
                     if _mb_pre_resp.status_code == 200:
                         _mb_pre_data = _mb_pre_resp.json()
                         _recordings = _mb_pre_data.get("recordings") or []
-                        _title_norm = _title_val.lower()
+                        _title_norm = _norm_title_text(_title_val)
 
                         # Pick the best recording by title similarity + year match
                         _year_hint = str(queue_item.get('year') or queue_item.get('release_year') or '')[:4]
                         _best_rec = None
                         _best_rec_score = 0.0
                         for _rec in _recordings:
-                            _rec_title = (_rec.get("title") or "").lower()
-                            _sim = _pre_difflib.SequenceMatcher(None, _title_norm, _rec_title).ratio()
+                            _rec_title_norm = _norm_title_text(_rec.get("title") or "")
+                            _sim = _pre_difflib.SequenceMatcher(None, _title_norm, _rec_title_norm).ratio()
                             if _sim < 0.75:
                                 continue
                             # Optional: favour recordings whose release date matches
