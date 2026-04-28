@@ -107,10 +107,8 @@ web_api_key: ""  # API key for web interface authentication
 enable_web_api_key: true  # Set to false to disable API key requirement
 
 weights:
-  spotify: 0.10      # Minimal: Algorithm-driven, paid API increasingly gamed by artists/labels
-  lastfm: 0.30       # Community scrobbles: genuine user choice (established 2002)
-  listenbrainz: 0.35 # Community listens: open-source, no payola, most authentic metric
-  age: 0.25          # Recency and track maturity (gives precedence to community metrics)
+  lastfm: 0.70       # Community scrobbles: genuine user choice (established 2002)
+  age: 0.30          # Recency and track maturity
 
 database:
   path: "/database/sptnr.db"
