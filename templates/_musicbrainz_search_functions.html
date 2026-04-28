@@ -1,0 +1,955 @@
+<script>
+// Shared MusicBrainz Release Search Functions
+// Used across artist, album, track, and downloads pages
+
+// ===== Utility Functions =====
+
+if (typeof escapeHtml === 'undefined') {
+  function escapeHtml(text) {
+    if (!text) return '';
+    const element = document.createElement('div');
+    element.textContent = text;
+    return element.innerHTML;
+  }
+}
+
+if (typeof formatDuration === 'undefined') {
+  function formatDuration(rawValue) {
+    if (rawValue == null || rawValue === '') return 'N/A';
+
+    // MusicBrainz duration fields can arrive as seconds, milliseconds, or
+    // microseconds depending on endpoint/proxy path. Normalize heuristically.
+    let n = Number(rawValue);
+    if (!Number.isFinite(n) || n <= 0) return 'N/A';
+
+    let seconds;
+    if (n >= 100000000) {
+      // Likely microseconds
+      seconds = n / 1000000;
+    } else if (n > 10000) {
+      // Likely milliseconds
+      seconds = n / 1000;
+    } else {
+      // Likely already seconds
+      seconds = n;
+    }
+
+    seconds = Math.max(0, Math.floor(seconds));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+
+    if (hours > 0) {
+      return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${minutes}:${secs.toString().padStart(2, '0')}`;
+  }
+}
+
+// ===== Encoding/Decoding for Inline Arguments =====
+
+function decodeInlineArtistArg(value, fallback = '') {
+  try {
+    const decoded = decodeURIComponent(value);
+    try {
+      return JSON.parse(decoded);
+    } catch (_jsonErr) {
+      return decoded || fallback;
+    }
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function searchMusicBrainzReleaseFromEncoded(event, artistEnc, albumEnc) {
+  return searchMusicBrainzRelease(
+    event,
+    decodeInlineArtistArg(artistEnc, ''),
+    decodeInlineArtistArg(albumEnc, '')
+  );
+}
+
+// ===== Retry helpers =====
+
+// Tracks the last search args so the retry button can re-issue the call.
+let _mbLastSearchTrack = null;
+
+function _mbShowRetry(artist, album) {
+  const retryEl = document.getElementById('mbSearchRetry');
+  if (!retryEl) return;
+  const artistInput = document.getElementById('mbRetryArtist');
+  const albumInput  = document.getElementById('mbRetryAlbum');
+  if (artistInput) artistInput.value = artist || '';
+  if (albumInput)  albumInput.value  = album  || '';
+  retryEl.style.display = 'block';
+}
+
+function _mbHideRetry() {
+  const retryEl = document.getElementById('mbSearchRetry');
+  if (retryEl) retryEl.style.display = 'none';
+}
+
+function mbRetrySearch() {
+  const artist = (document.getElementById('mbRetryArtist')?.value || '').trim();
+  const album  = (document.getElementById('mbRetryAlbum')?.value  || '').trim();
+  searchMusicBrainzRelease(null, artist, album, _mbLastSearchTrack);
+}
+
+// ===== Main Search Function =====
+
+async function searchMusicBrainzRelease(event, artist, album, track) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  // Remember the track context so the retry button can reuse it.
+  _mbLastSearchTrack = track || null;
+
+  const modalEl = document.getElementById('musicBrainzModal');
+  const statusEl = document.getElementById('mbSearchStatus');
+  const errorEl = document.getElementById('mbSearchError');
+  const resultsEl = document.getElementById('mbSearchResults');
+  const infoEl = document.getElementById('mbSearchInfo');
+  const infoArtistEl = document.getElementById('mbSearchArtist');
+  const infoAlbumEl = document.getElementById('mbSearchAlbum');
+
+  if (!modalEl || !statusEl || !errorEl || !resultsEl) {
+    alert('Search UI not available on this page.');
+    return;
+  }
+
+  const hasBootstrapModal = !!(window.bootstrap && window.bootstrap.Modal);
+  if (hasBootstrapModal) {
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+  } else {
+    // Fallback for environments where Bootstrap JS is not loaded
+    modalEl.style.display = 'block';
+    modalEl.classList.add('show');
+    modalEl.removeAttribute('aria-hidden');
+    document.body.classList.add('modal-open');
+  }
+
+  if (infoEl && infoArtistEl && infoAlbumEl) {
+    // Build a human-readable label from whatever fields were provided
+    const parts = [];
+    if (track) parts.push(`Track: "${track}"`);
+    if (album) parts.push(`Album: "${album}"`);
+    infoArtistEl.textContent = (artist && artist.trim()) ? artist : '(any artist)';
+    infoAlbumEl.textContent = parts.join(' · ') || '';
+    infoEl.style.display = 'block';
+  }
+
+  statusEl.style.display = 'block';
+  statusEl.innerHTML = '<div class="spinner-border spinner-border-sm me-2"></div>Searching MusicBrainz...';
+  errorEl.style.display = 'none';
+  _mbHideRetry();
+  resultsEl.innerHTML = '';
+
+  const parseJsonResponse = async (resp, sourceName) => {
+    const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('application/json')) {
+      const raw = await resp.text();
+      const htmlResponse = raw && raw.trim().startsWith('<');
+      const hint = htmlResponse
+        ? 'Received HTML instead of JSON (possible auth/session redirect or server error).'
+        : `Unexpected response format from ${sourceName}.`;
+      throw new Error(`${hint} HTTP ${resp.status}`);
+    }
+
+    const parsed = await resp.json();
+    if (!resp.ok) {
+      throw new Error(parsed.error || parsed.message || `${sourceName} request failed (HTTP ${resp.status})`);
+    }
+    return parsed;
+  };
+
+  try {
+    const response = await fetch('/api/upcoming-releases/search-musicbrainz', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist, album, track: track || '' })
+    });
+    const data = await parseJsonResponse(response, 'MusicBrainz');
+
+    const isArtistOnlySearch = !album && !track;
+
+    // For artist-only browsing (similar artists buttons), stay artist-scoped in MusicBrainz only.
+    if (data.success && data.results && data.results.length >= (isArtistOnlySearch ? 1 : 3)) {
+      statusEl.style.display = 'none';
+      displayMusicBrainzResults(data.results);
+      return;
+    }
+
+    if (isArtistOnlySearch) {
+      statusEl.style.display = 'none';
+      errorEl.textContent = 'No releases found on MusicBrainz for this artist';
+      errorEl.style.display = 'block';
+      _mbShowRetry(artist, album);
+      return;
+    }
+
+    // For track-based searches, skip Discogs fallback (Discogs doesn't support track search)
+    if (track) {
+      statusEl.style.display = 'none';
+      if (data.success && data.results && data.results.length > 0) {
+        displayMusicBrainzResults(data.results);
+      } else {
+        errorEl.textContent = data.message || 'No results found on MusicBrainz for this track';
+        errorEl.style.display = 'block';
+        _mbShowRetry(artist, album);
+      }
+      return;
+    }
+
+    statusEl.innerHTML = '<div class="spinner-border spinner-border-sm me-2"></div>Searching Discogs fallback...';
+
+    // Discogs is optional — if it is not configured or returns an error, treat it as
+    // "no Discogs results" rather than surfacing the configuration error to the user.
+    let discogsData = { success: false, results: [] };
+    try {
+      const discogsResponse = await fetch('/api/upcoming-releases/search-discogs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ artist, album })
+      });
+      const discogsJson = await discogsResponse.json().catch(() => ({}));
+      if (discogsResponse.ok && discogsJson.success) {
+        discogsData = discogsJson;
+      } else {
+        console.warn('Discogs fallback skipped:', discogsJson.error || `HTTP ${discogsResponse.status}`);
+      }
+    } catch (discogsErr) {
+      console.warn('Discogs fallback fetch failed:', discogsErr.message);
+    }
+
+    statusEl.style.display = 'none';
+
+    const allResults = [];
+    if (Array.isArray(data.results)) allResults.push(...data.results);
+    if (Array.isArray(discogsData.results)) allResults.push(...discogsData.results);
+
+    if (allResults.length === 0) {
+      errorEl.textContent = 'No releases found on MusicBrainz or Discogs';
+      errorEl.style.display = 'block';
+      _mbShowRetry(artist, album);
+      return;
+    }
+
+    displayMusicBrainzResults(allResults);
+  } catch (error) {
+    statusEl.style.display = 'none';
+    errorEl.textContent = 'Error searching: ' + error.message;
+    errorEl.style.display = 'block';
+    _mbShowRetry(artist, album);
+  }
+}
+
+// ===== Display Results Function =====
+
+function _mbReleaseDateKey(release) {
+  const raw = release.date || release.year || '';
+  if (!raw) return '';
+  // Normalise to a comparable ISO-style string: "2024" < "2024-05" < "2024-05-10"
+  return String(raw).trim();
+}
+
+function displayMusicBrainzResults(results) {
+  const container = document.getElementById('mbSearchResults');
+
+  // Sort by type (Albums → EPs → Singles → others), then newest-first within each type.
+  const _mbTypeOrder = { 'Album': 0, 'EP': 1, 'Single': 2 };
+  results = [...results].sort((a, b) => {
+    const ta = _mbTypeOrder[a.type] !== undefined ? _mbTypeOrder[a.type] : 3;
+    const tb = _mbTypeOrder[b.type] !== undefined ? _mbTypeOrder[b.type] : 3;
+    if (ta !== tb) return ta - tb;
+    const da = _mbReleaseDateKey(a);
+    const db = _mbReleaseDateKey(b);
+    if (!da && !db) return 0;
+    if (!da) return 1;
+    if (!db) return -1;
+    return db.localeCompare(da);
+  });
+
+  // Global storage for release data to avoid JSON escaping in HTML attributes
+  if (!window.mbReleaseData) {
+    window.mbReleaseData = {};
+  }
+  
+  let html = '<div class="accordion" id="mbResultsAccordion">';
+  
+  results.forEach((release, index) => {
+    const releaseId = `mbRelease${index}`;
+    const dataKey = `release_${Date.now()}_${index}`;
+    
+    const tracksDeferred = !!release.tracks_deferred;
+
+    // Store release data in global object for safe access
+    window.mbReleaseData[dataKey] = {
+      artist: release.artist,
+      album: release.title,
+      tracks: release.tracks || [],
+      year: release.date || release.year || null,
+      release_id: release.release_id || null,
+      release_group_id: release.release_group_id || null,
+      source: release.source || 'musicbrainz',
+      tracks_deferred: tracksDeferred,
+    };
+    
+    // Handle both MusicBrainz and Discogs formats
+    const source = release.source || 'musicbrainz';
+    const sourceBadge = source === 'discogs' ? 
+      '<span class="badge bg-info ms-2">Discogs</span>' : 
+      '<span class="badge ms-2" style="background:#f06a34;color:#fff;border-radius:999px;"><i class="bi bi-hexagon-fill me-1" style="color:#d45aa3;"></i>MusicBrainz</span>';
+    
+    // For deferred releases render a loading placeholder; tracks are fetched on accordion expand.
+    let tracksHtml;
+    if (tracksDeferred) {
+      tracksHtml = `<tr class="mb-tracks-loading-row"><td colspan="5" class="text-center text-muted py-3">
+        <span class="spinner-border spinner-border-sm me-2"></span>Loading tracks…
+      </td></tr>`;
+    } else {
+      // Format tracks based on source
+      tracksHtml = (release.tracks || []).map((track, trackIndex) => {
+        // MusicBrainz uses 'length' in milliseconds, Discogs uses 'duration' as string
+        let duration = 'N/A';
+        if (track.length != null && track.length !== '') {
+          duration = formatDuration(track.length);
+        } else if (track.duration != null && track.duration !== '') {
+          duration = track.duration;
+        }
+        
+        return `
+          <tr>
+            <td style="width: 44px;" class="text-center">
+              <input type="checkbox" class="form-check-input mb-track-select" data-release-key="${dataKey}" data-track-index="${trackIndex}">
+            </td>
+            <td>${escapeHtml(track.position)}</td>
+            <td>${escapeHtml(track.title)}</td>
+            <td>${duration}</td>
+            <td style="width: 120px;" class="text-center">
+              <button class="btn btn-sm btn-outline-success mb-download-track" data-release-key="${dataKey}" data-track-index="${trackIndex}">
+                <i class="bi bi-download"></i> Download
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+    
+    // Build release info
+    let releaseInfo = [];
+    if (release.type) {
+      releaseInfo.push(release.type);
+    } else if (release.formats && Array.isArray(release.formats) && release.formats.length > 0) {
+      const formatStr = release.formats.join(', ');
+      releaseInfo.push(formatStr);
+    } else {
+      releaseInfo.push('Album');
+    }
+    
+    if (release.date) releaseInfo.push(release.date);
+    else if (release.year) releaseInfo.push(release.year);
+    else releaseInfo.push('Unknown date');
+    
+    const trackCountLabel = tracksDeferred ? '… tracks' : `${release.track_count} tracks`;
+    releaseInfo.push(trackCountLabel);
+    
+    html += `
+      <div class="accordion-item">
+        <h2 class="accordion-header" id="heading${releaseId}">
+          <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" 
+            data-bs-toggle="collapse" data-bs-target="#${releaseId}" 
+            aria-expanded="${index === 0 ? 'true' : 'false'}" aria-controls="${releaseId}">
+            <div class="w-100">
+              <strong>${escapeHtml(release.title)}</strong>${sourceBadge}
+              <small class="text-muted ms-2">
+                ${releaseInfo.join(' · ')}
+              </small>
+            </div>
+          </button>
+        </h2>
+        <div id="${releaseId}" class="accordion-collapse collapse ${index === 0 ? 'show' : ''}" 
+          aria-labelledby="heading${releaseId}" data-bs-parent="#mbResultsAccordion"
+          ${tracksDeferred ? `data-mb-deferred="1" data-mb-datakey="${dataKey}"` : ''}>
+          <div class="accordion-body">
+            <div class="mb-3 d-flex flex-wrap align-items-center gap-2">
+              <button class="btn btn-success mb-download-release" 
+                data-release-key="${dataKey}"${tracksDeferred ? ' disabled' : ''}>
+                <i class="bi bi-download"></i> Download All Tracks${tracksDeferred ? '' : ` (${release.track_count})`}
+              </button>
+              <button class="btn btn-outline-success mb-download-selected" data-release-key="${dataKey}" disabled>
+                <i class="bi bi-check2-square"></i> Download Selected (0)
+              </button>
+              <div class="form-check mb-0 ms-md-2">
+                <input class="form-check-input mb-select-all" type="checkbox" id="mbSelectAll_${releaseId}" data-release-key="${dataKey}">
+                <label class="form-check-label" for="mbSelectAll_${releaseId}">Select All</label>
+              </div>
+            </div>
+            <table class="table table-sm table-hover table-striped table-dark mb-0">
+              <thead>
+                <tr>
+                  <th style="width: 44px;" class="text-center"></th>
+                  <th style="width: 60px;">#</th>
+                  <th>Title</th>
+                  <th style="width: 100px;">Duration</th>
+                  <th style="width: 120px;" class="text-center">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tracksHtml}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  
+  html += '</div>';
+  container.innerHTML = html;
+
+  // Lazy-load tracks for deferred accordion items.
+  // The first item is already expanded, so trigger its load immediately;
+  // subsequent items load when the user first expands them.
+  async function _loadDeferredTracks(collapseEl) {
+    if (!collapseEl.dataset.mbDeferred) return;
+    const dataKey = collapseEl.dataset.mbDatakey;
+    const releaseData = window.mbReleaseData && window.mbReleaseData[dataKey];
+    if (!releaseData || !releaseData.tracks_deferred) return;
+
+    // Mark as loading so we don't double-fetch
+    releaseData.tracks_deferred = false;
+    delete collapseEl.dataset.mbDeferred;
+
+    const rgId = releaseData.release_group_id;
+    if (!rgId) {
+      collapseEl.querySelector('.mb-tracks-loading-row td').textContent = 'No release group ID available.';
+      return;
+    }
+
+    try {
+      const resp = await fetch(`/api/upcoming-releases/release-group-tracks?rg_id=${encodeURIComponent(rgId)}`);
+      const data = resp.ok ? await resp.json() : null;
+      if (!data || !data.success) {
+        collapseEl.querySelector('.mb-tracks-loading-row td').textContent = 'Could not load tracks.';
+        return;
+      }
+
+      releaseData.tracks = data.tracks || [];
+      if (data.release_id) releaseData.release_id = data.release_id;
+
+      // Re-render track rows
+      const tbody = collapseEl.querySelector('tbody');
+      if (tbody) {
+        tbody.innerHTML = releaseData.tracks.map((track, trackIndex) => {
+          let duration = 'N/A';
+          if (track.length != null && track.length !== '') {
+            duration = formatDuration(track.length);
+          } else if (track.duration != null && track.duration !== '') {
+            duration = track.duration;
+          }
+          return `
+            <tr>
+              <td style="width: 44px;" class="text-center">
+                <input type="checkbox" class="form-check-input mb-track-select" data-release-key="${dataKey}" data-track-index="${trackIndex}">
+              </td>
+              <td>${escapeHtml(track.position)}</td>
+              <td>${escapeHtml(track.title)}</td>
+              <td>${duration}</td>
+              <td style="width: 120px;" class="text-center">
+                <button class="btn btn-sm btn-outline-success mb-download-track" data-release-key="${dataKey}" data-track-index="${trackIndex}">
+                  <i class="bi bi-download"></i> Download
+                </button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+
+        // Re-attach per-track download listeners for newly rendered rows
+        tbody.querySelectorAll('.mb-download-track').forEach(btn => {
+          btn.addEventListener('click', async function () {
+            const dk = this.dataset.releaseKey;
+            const ti = Number(this.dataset.trackIndex);
+            const rd = window.mbReleaseData[dk];
+            if (!rd || !Array.isArray(rd.tracks) || !rd.tracks[ti]) {
+              alert('Error: Track data not found');
+              return;
+            }
+            const origHtml = this.innerHTML;
+            this.disabled = true;
+            this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+            try {
+              const queued = await downloadMusicBrainzRelease(rd.artist, rd.album, [rd.tracks[ti]], rd.year, rd.release_id, rd.source, { closeModal: false, selectionLabel: 'track' });
+              if (queued) {
+                markMBTrackQueued(container, dk, ti);
+              } else {
+                this.disabled = false;
+                this.innerHTML = origHtml;
+              }
+            } catch (e) {
+              this.disabled = false;
+              this.innerHTML = origHtml;
+            }
+          });
+        });
+
+        tbody.querySelectorAll('.mb-track-select').forEach(checkbox => {
+          checkbox.addEventListener('change', function () {
+            updateMBSelectionUI(container, this.dataset.releaseKey);
+          });
+        });
+      }
+
+      // Update "Download All Tracks" button
+      const downloadAllBtn = collapseEl.querySelector('.mb-download-release');
+      if (downloadAllBtn) {
+        downloadAllBtn.disabled = releaseData.tracks.length === 0;
+        downloadAllBtn.innerHTML = `<i class="bi bi-download"></i> Download All Tracks (${releaseData.tracks.length})`;
+      }
+
+      // Update the accordion header track count
+      const accordionItem = collapseEl.closest('.accordion-item');
+      if (accordionItem) {
+        const small = accordionItem.querySelector('.accordion-button small');
+        if (small) {
+          small.textContent = small.textContent.replace(/… tracks/, `${releaseData.tracks.length} tracks`);
+        }
+      }
+
+      // Asynchronously check which of these newly loaded tracks are in the library
+      _checkMBResultsAgainstCollection(container);
+
+    } catch (e) {
+      console.error('[MB] Failed to load tracks:', e);
+      const loadingRow = collapseEl.querySelector('.mb-tracks-loading-row td');
+      if (loadingRow) loadingRow.textContent = 'Error loading tracks.';
+    }
+  }
+
+  // Trigger immediate load for the first (already-visible) deferred item
+  const firstDeferred = container.querySelector('.accordion-collapse.show[data-mb-deferred]');
+  if (firstDeferred) _loadDeferredTracks(firstDeferred);
+
+  // Listen for accordion expansions to load remaining deferred items
+  container.querySelectorAll('.accordion-collapse[data-mb-deferred]').forEach(collapseEl => {
+    collapseEl.addEventListener('show.bs.collapse', function () {
+      _loadDeferredTracks(this);
+    }, { once: true });
+  });
+
+  // After rendering, asynchronously check which tracks are already in the
+  // local library and mark them with an "In Library" badge.
+  _checkMBResultsAgainstCollection(container);
+
+  // Attach event listeners to download buttons
+  container.querySelectorAll('.mb-download-release').forEach(button => {
+    button.addEventListener('click', async function() {
+      const dataKey = this.dataset.releaseKey;
+      const releaseData = window.mbReleaseData[dataKey];
+
+      if (!releaseData) {
+        alert('Error: Release data not found');
+        return;
+      }
+
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Starting…';
+      try {
+        await downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+      }
+    });
+  });
+
+  container.querySelectorAll('.mb-download-track').forEach(button => {
+    button.addEventListener('click', async function() {
+      const dataKey = this.dataset.releaseKey;
+      const trackIndex = Number(this.dataset.trackIndex);
+      const releaseData = window.mbReleaseData[dataKey];
+
+      if (!releaseData || !Array.isArray(releaseData.tracks) || !releaseData.tracks[trackIndex]) {
+        alert('Error: Track data not found');
+        return;
+      }
+
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+      try {
+        const queued = await downloadMusicBrainzRelease(
+          releaseData.artist,
+          releaseData.album,
+          [releaseData.tracks[trackIndex]],
+          releaseData.year,
+          releaseData.release_id,
+          releaseData.source,
+          { closeModal: false, selectionLabel: 'track' }
+        );
+        if (queued) {
+          markMBTrackQueued(container, dataKey, trackIndex);
+        } else {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
+      } catch (e) {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+      }
+    });
+  });
+
+  container.querySelectorAll('.mb-download-selected').forEach(button => {
+    button.addEventListener('click', async function() {
+      const dataKey = this.dataset.releaseKey;
+      const releaseData = window.mbReleaseData[dataKey];
+      const selectedTracks = getSelectedTracksForRelease(dataKey);
+      const selectedIndices = Array.from(container.querySelectorAll(`.mb-track-select[data-release-key="${dataKey}"]:checked`))
+        .map(input => Number(input.dataset.trackIndex));
+
+      if (!releaseData || selectedTracks.length === 0) {
+        alert('Select at least one track first');
+        return;
+      }
+
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Starting…';
+      try {
+        const queued = await downloadMusicBrainzRelease(
+          releaseData.artist,
+          releaseData.album,
+          selectedTracks,
+          releaseData.year,
+          releaseData.release_id,
+          releaseData.source,
+          { closeModal: false, selectionLabel: 'selected tracks' }
+        );
+        if (queued) {
+          selectedIndices.forEach(index => markMBTrackQueued(container, dataKey, index));
+        }
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+      }
+    });
+  });
+
+  container.querySelectorAll('.mb-select-all').forEach(checkbox => {
+    checkbox.addEventListener('change', function() {
+      const dataKey = this.dataset.releaseKey;
+      const checked = this.checked;
+      container.querySelectorAll(`.mb-track-select[data-release-key="${dataKey}"]`).forEach(trackBox => {
+        trackBox.checked = checked;
+      });
+      updateMBSelectionUI(container, dataKey);
+    });
+  });
+
+  container.querySelectorAll('.mb-track-select').forEach(checkbox => {
+    checkbox.addEventListener('change', function() {
+      const dataKey = this.dataset.releaseKey;
+      updateMBSelectionUI(container, dataKey);
+    });
+  });
+}
+
+// ===== Helper Functions for Track Selection =====
+
+function getSelectedTracksForRelease(dataKey) {
+  const releaseData = window.mbReleaseData && window.mbReleaseData[dataKey];
+  if (!releaseData || !Array.isArray(releaseData.tracks)) {
+    return [];
+  }
+
+  const selectedIndices = Array.from(document.querySelectorAll(`.mb-track-select[data-release-key="${dataKey}"]:checked`))
+    .map(input => Number(input.dataset.trackIndex))
+    .filter(index => Number.isInteger(index) && index >= 0 && index < releaseData.tracks.length);
+
+  return selectedIndices.map(index => releaseData.tracks[index]);
+}
+
+function updateMBSelectionUI(container, dataKey) {
+  const allTrackBoxes = container.querySelectorAll(`.mb-track-select[data-release-key="${dataKey}"]`);
+  const selectedTrackBoxes = container.querySelectorAll(`.mb-track-select[data-release-key="${dataKey}"]:checked`);
+  const selectedCount = selectedTrackBoxes.length;
+  const totalCount = allTrackBoxes.length;
+
+  const selectedBtn = container.querySelector(`.mb-download-selected[data-release-key="${dataKey}"]`);
+  if (selectedBtn) {
+    selectedBtn.disabled = selectedCount === 0;
+    selectedBtn.innerHTML = `<i class="bi bi-check2-square"></i> Download Selected (${selectedCount})`;
+  }
+
+  const selectAll = container.querySelector(`.mb-select-all[data-release-key="${dataKey}"]`);
+  if (selectAll) {
+    selectAll.checked = totalCount > 0 && selectedCount === totalCount;
+    selectAll.indeterminate = selectedCount > 0 && selectedCount < totalCount;
+  }
+}
+
+function markMBTrackQueued(container, dataKey, trackIndex) {
+  const rowCheckbox = container.querySelector(`.mb-track-select[data-release-key="${dataKey}"][data-track-index="${trackIndex}"]`);
+  if (rowCheckbox) {
+    rowCheckbox.checked = false;
+    rowCheckbox.disabled = true;
+  }
+
+  const rowButton = container.querySelector(`.mb-download-track[data-release-key="${dataKey}"][data-track-index="${trackIndex}"]`);
+  if (rowButton) {
+    rowButton.disabled = true;
+    rowButton.classList.remove('btn-outline-success');
+    rowButton.classList.add('btn-success');
+    rowButton.innerHTML = '<i class="bi bi-check2"></i> Queued';
+  }
+
+  updateMBSelectionUI(container, dataKey);
+}
+
+// ===== Collection (In-Library) Helpers =====
+
+/**
+ * Mark a single track row as already in the local library.
+ * Disables the download button and shows an "In Library" badge with the path.
+ */
+function markMBTrackInCollection(container, dataKey, trackIndex, filePath) {
+  const rowCheckbox = container.querySelector(
+    `.mb-track-select[data-release-key="${dataKey}"][data-track-index="${trackIndex}"]`
+  );
+  if (rowCheckbox) {
+    rowCheckbox.checked = false;
+    rowCheckbox.disabled = true;
+  }
+
+  const rowButton = container.querySelector(
+    `.mb-download-track[data-release-key="${dataKey}"][data-track-index="${trackIndex}"]`
+  );
+  if (rowButton) {
+    rowButton.disabled = true;
+    rowButton.classList.remove('btn-outline-success');
+    rowButton.classList.add('btn-secondary');
+    const pathTip = filePath ? ` title="${escapeHtml(filePath)}"` : '';
+    rowButton.innerHTML = `<i class="bi bi-check-circle-fill"${pathTip}></i> In Library`;
+  }
+
+  updateMBSelectionUI(container, dataKey);
+}
+
+/**
+ * Call /api/queue/check-collection-batch for every track in every rendered
+ * release accordion, then call markMBTrackInCollection for each hit.
+ * Runs asynchronously after displayMusicBrainzResults so it never blocks render.
+ */
+async function _checkMBResultsAgainstCollection(container) {
+  if (!window.mbReleaseData) return;
+
+  // Build a flat list: { dataKey, trackIndex, artist, title, album }
+  const toCheck = [];
+  for (const [dataKey, releaseData] of Object.entries(window.mbReleaseData)) {
+    if (!Array.isArray(releaseData.tracks)) continue;
+    releaseData.tracks.forEach((track, trackIndex) => {
+      toCheck.push({
+        dataKey,
+        trackIndex,
+        artist: releaseData.artist || '',
+        title: track.title || '',
+        album: releaseData.album || '',
+      });
+    });
+  }
+  if (toCheck.length === 0) return;
+
+  try {
+    const resp = await fetch('/api/queue/check-collection-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tracks: toCheck.map(t => ({ artist: t.artist, title: t.title, album: t.album }))
+      })
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const results = data.results || [];
+    results.forEach((result, i) => {
+      if (result.found && toCheck[i]) {
+        const { dataKey, trackIndex } = toCheck[i];
+        markMBTrackInCollection(container, dataKey, trackIndex, result.file_path);
+      }
+    });
+  } catch (e) {
+    // Collection check is best-effort; silently ignore network errors.
+    console.debug('[MB] Collection check failed:', e);
+  }
+}
+
+// ===== Download Function =====
+
+async function downloadMusicBrainzRelease(artist, album, tracks, year, release_id, source, options = {}) {
+  if (!tracks || tracks.length === 0) {
+    alert('No tracks to download');
+    return false;
+  }
+
+  const closeModal = options.closeModal !== false;
+  const selectionLabel = options.selectionLabel || null;
+  
+  try {
+    // Extract year from date string if needed (e.g., "2023-04-15" -> "2023")
+    let releaseYear = null;
+    if (year) {
+      const yearStr = String(year);
+      releaseYear = yearStr.substring(0, 4);
+    }
+    
+    // Batch add all tracks in a single API call with MusicBrainz/Discogs metadata.
+    // For "Various Artists" compilations each track can carry its own artist field
+    // (populated by the MusicBrainz search endpoint).  When a per-track artist is
+    // present it is used as the queue item artist so files are tagged and named
+    // correctly, while album_artist always stores the release-level artist (e.g.
+    // "Various Artists") for correct library folder organisation.
+    const trackItems = tracks.map(track => ({
+      artist: track.artist || artist,
+      title: track.title,
+      album: album,
+      source: 'soulseek',
+      priority: 5,
+      track_number: track.position || null,
+      disc_number: track.disc_number || null,
+      album_artist: artist,
+      year: releaseYear,
+      release_id: release_id,
+      // release_mbid fills a separate column used for MB-specific duplicate
+      // detection and cross-source overwrite merge in add_to_queue.
+      release_mbid: release_id || null,
+      release_source: source || 'musicbrainz',
+      recording_mbid: track.recording_mbid || null,
+      duration: track.length || null,
+    }));
+    
+    // Send batch request with import_group based on artist+album
+    const import_group = `${artist}_${album}`.replace(/\s+/g, '_').substring(0, 100);
+    
+    const response = await fetch('/api/queue/add-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: trackItems,
+        import_group: import_group,
+        import_type: 'album'
+      })
+    });
+    
+    const data = await response.json();
+    
+    // Close modal for full-album downloads only
+    if (closeModal) {
+      const modalEl = document.getElementById('musicBrainzModal');
+      const modal = bootstrap.Modal.getInstance(modalEl);
+      if (modal) {
+        modal.hide();
+      }
+    }
+    
+    // Show result message
+    if (data.success) {
+      const added = data.added || 0;
+      const skipped = data.skipped || 0;
+      const failed = data.failed || 0;
+      const inCollection = data.in_collection || 0;
+      const inCollectionTracks = data.in_collection_tracks || [];
+      const skippedTracks = data.skipped_tracks || [];
+      const failedTracks = data.failed_tracks || [];
+      const importGroup = data.import_group;
+      const importType = data.import_type || 'album';
+      
+      const label = selectionLabel ? ` ${selectionLabel}` : ' tracks';
+      let message = added > 0
+        ? `✅ Added ${added}${label} from "${album}" to download queue`
+        : `ℹ️ No new tracks added for "${album}"`;
+
+      if (inCollection > 0) {
+        message += `\n\n📚 ${inCollection} track(s) already in your library (not re-queued):`;
+        inCollectionTracks.slice(0, 8).forEach(t => {
+          const path = t.file_path ? `\n   ${t.file_path}` : '';
+          message += `\n • ${t.title}${path}`;
+        });
+        if (inCollectionTracks.length > 8) {
+          message += `\n   … and ${inCollectionTracks.length - 8} more`;
+        }
+      }
+      if (skipped > 0 && skipped > inCollection) {
+        const extraSkipped = skipped - inCollection;
+        message += `\nℹ️ Skipped ${extraSkipped} already queued track(s)`;
+        const extraNames = skippedTracks.filter(t => !inCollectionTracks.some(ic => ic.title === t)).slice(0, 5);
+        if (extraNames.length > 0) message += `: ${extraNames.join(', ')}`;
+      }
+      if (failed > 0) {
+        message += `\n⚠️ Failed to add ${failed} track(s)`;
+        if (failedTracks.length > 0) {
+          message += `: ${failedTracks.slice(0, 5).join(', ')}${failedTracks.length > 5 ? '…' : ''}`;
+        }
+      }
+      
+      // Inform user about grouping and organization
+      if (added > 0 && importGroup) {
+        message += `\n\n📦 Grouped as: "${album}"`;
+        message += `\nOnce downloads complete, use "Organize All" in the Completed section to move them to /music`;
+      }
+      
+      alert(message);
+
+      // Mark in-collection tracks in the modal UI (if still open)
+      if (inCollectionTracks.length > 0) {
+        const mbContainer = document.getElementById('mbSearchResults');
+        if (mbContainer && window.mbReleaseData) {
+          inCollectionTracks.forEach(ic => {
+            const icTitle = (ic.title || '').toLowerCase();
+            const icArtist = (ic.artist || '').toLowerCase();
+            const icAlbum = (ic.album || '').toLowerCase();
+            for (const [dataKey, releaseData] of Object.entries(window.mbReleaseData)) {
+              if (!Array.isArray(releaseData.tracks)) continue;
+              const releaseArtist = (releaseData.artist || '').toLowerCase();
+              const releaseAlbum = (releaseData.album || '').toLowerCase();
+              if (icArtist && releaseArtist && !releaseArtist.includes(icArtist) && !icArtist.includes(releaseArtist)) continue;
+              if (icAlbum && releaseAlbum && !releaseAlbum.includes(icAlbum) && !icAlbum.includes(releaseAlbum)) continue;
+              releaseData.tracks.forEach((track, trackIndex) => {
+                if ((track.title || '').toLowerCase() === icTitle) {
+                  markMBTrackInCollection(mbContainer, dataKey, trackIndex, ic.file_path);
+                }
+              });
+            }
+          });
+        }
+      }
+      
+      // Refresh queue status if the function exists
+      if (typeof loadQueueStatus === 'function') {
+        await loadQueueStatus();
+      }
+      
+      // Notify other tabs/windows to refresh
+      try {
+        localStorage.setItem('popularr_queue_updated', Date.now().toString());
+      } catch (e) {
+        console.warn('Could not update localStorage:', e);
+      }
+      return true;
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add tracks to queue'));
+      return false;
+    }
+    
+  } catch (error) {
+    console.error('Error downloading release:', error);
+    alert('❌ Error: ' + error.message);
+    return false;
+  }
+}
+</script>

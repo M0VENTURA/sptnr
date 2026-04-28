@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+
+{% block title %}Import Playlist – Popularr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <div class="row mb-4">
+    <div class="col-12">
+      <h1>
+        <i class="bi bi-music-note-list"></i> Import Spotify Playlist
+        <a href="/help/FEATURES_PLAYLISTS" class="btn btn-sm btn-outline-success ms-2" title="Help for Playlist Import">
+          <i class="bi bi-question-circle"></i>
+        </a>
+      </h1>
+      <p class="text-secondary">Create a Navidrome playlist from a Spotify playlist URL</p>
+    </div>
+  </div>
+
+  <!-- Input Section -->
+  <div class="row mb-4">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="mb-0">Import Playlist</h5>
+        </div>
+        <div class="card-body">
+          <form id="playlistForm" onsubmit="importPlaylist(event)">
+            <div class="row g-3">
+              <div class="col-12">
+                <label for="spotifyUrl" class="form-label">Spotify Playlist URL</label>
+                <input 
+                  type="text" 
+                  id="spotifyUrl" 
+                  class="form-control" 
+                  placeholder="https://open.spotify.com/playlist/..."
+                  required
+                />
+                <small class="text-secondary">
+                  <i class="bi bi-info-circle"></i> 
+                  Paste a Spotify playlist URL (any format: link, URI, or ID)
+                </small>
+              </div>
+              <div class="col-12 col-md-6">
+                <label for="playlistName" class="form-label">Playlist Name</label>
+                <input 
+                  type="text" 
+                  id="playlistName" 
+                  class="form-control" 
+                  placeholder="e.g., My Imported Playlist"
+                  required
+                />
+              </div>
+              <div class="col-12 col-md-6">
+                <label for="playlistDescription" class="form-label">Description (optional)</label>
+                <input 
+                  type="text" 
+                  id="playlistDescription" 
+                  class="form-control" 
+                  placeholder="e.g., Imported from Spotify"
+                />
+              </div>
+              <div class="col-12 col-md-6">
+                <label for="playlistTargetUser" class="form-label">Assign to User</label>
+                <select id="playlistTargetUser" class="form-select">
+                  {% if navidrome_users %}
+                    {% for user in navidrome_users %}
+                    <option value="{{ user.user }}">{{ user.user }}</option>
+                    {% endfor %}
+                  {% else %}
+                    <option value="">Default Navidrome User</option>
+                  {% endif %}
+                </select>
+                <small class="text-secondary">
+                  <i class="bi bi-info-circle"></i>
+                  Choose the Navidrome user who should own the imported playlist.
+                </small>
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-primary">
+                  <i class="bi bi-download"></i> Import Playlist
+                </button>
+                <span id="importStatus" class="ms-2 text-secondary"></span>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Your Spotify Playlists Section -->
+  <div class="row mb-4">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="mb-0">
+            <i class="bi bi-spotify"></i> Your Spotify Playlists
+          </h5>
+          <button class="btn btn-sm btn-outline-secondary" id="refreshPlaylistsBtn" onclick="loadSpotifyPlaylists()">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+          </button>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-info mb-3">
+            <i class="bi bi-info-circle"></i> 
+            <strong>Note:</strong> To view your personal Spotify playlists, you need to set the <code>SPOTIFY_USER_TOKEN</code> environment variable with your Spotify user access token. 
+            Without it, featured public playlists will be shown instead.
+          </div>
+          
+          <!-- Spotify User ID Input -->
+          <div class="mb-3">
+            <label for="spotifyUserId" class="form-label">
+              <i class="bi bi-person"></i> Browse Another User's Public Playlists
+            </label>
+            <div class="input-group">
+              <input 
+                type="text" 
+                id="spotifyUserId" 
+                class="form-control" 
+                placeholder="Enter Spotify User ID (e.g., 'spotify', 'username')"
+              />
+              <button class="btn btn-outline-primary" type="button" onclick="loadSpotifyPlaylistsByUser()">
+                <i class="bi bi-search"></i> Load
+              </button>
+              <button class="btn btn-outline-secondary" type="button" onclick="clearSpotifyUserId()">
+                <i class="bi bi-x-circle"></i> Clear
+              </button>
+            </div>
+            <small class="text-secondary">
+              <i class="bi bi-info-circle"></i> 
+              Enter a Spotify User ID to view their public playlists. Leave empty to use configured user or featured playlists.
+            </small>
+          </div>
+          
+          <div id="playlistsLoading" class="text-center text-muted py-4">
+            <div class="spinner-border spinner-border-sm me-2" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            Loading Spotify playlists...
+          </div>
+          <div id="playlistsContainer" style="display: none;">
+            <div class="row g-3" id="playlistsGrid">
+              <!-- Playlists will be inserted here -->
+            </div>
+          </div>
+          <div id="playlistsError" style="display: none;" class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle"></i>
+            <span id="playlistsErrorText">Unable to load playlists. Make sure Spotify is configured in your config file.</span>
+          </div>
+          <div id="playlistsEmpty" style="display: none;" class="alert alert-info">
+            <i class="bi bi-info-circle"></i> 
+            <span id="playlistsEmptyText">No playlists found. If you expected to see your personal playlists, make sure <code>SPOTIFY_USER_TOKEN</code> is set.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Results Section -->
+  <div id="resultsSection" style="display: none;">
+    <!-- Summary Cards -->
+    <div class="row mb-4">
+      <div class="col-12 col-md-3">
+        <div class="card text-center bg-success bg-opacity-10 border-success">
+          <div class="card-body">
+            <h5 class="card-title text-success">Matched</h5>
+            <h2 id="matchedCount" class="text-success">0</h2>
+            <small class="text-secondary">songs found in library</small>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-md-3">
+        <div class="card text-center bg-warning bg-opacity-10 border-warning">
+          <div class="card-body">
+            <h5 class="card-title text-warning">Missing</h5>
+            <h2 id="missingCount" class="text-warning">0</h2>
+            <small class="text-secondary">songs not in library</small>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-md-3">
+        <div class="card text-center bg-info bg-opacity-10 border-info">
+          <div class="card-body">
+            <h5 class="card-title text-info">Total</h5>
+            <h2 id="totalCount" class="text-info">0</h2>
+            <small class="text-secondary">tracks in playlist</small>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-md-3">
+        <div class="card text-center bg-secondary bg-opacity-10 border-secondary">
+          <div class="card-body">
+            <h5 class="card-title text-secondary">Coverage</h5>
+            <h2 id="coverage" class="text-secondary">0%</h2>
+            <small class="text-secondary">of playlist matched</small>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Matched Tracks -->
+    <div class="row mb-4">
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="bi bi-check-circle-fill text-success"></i> Matched Tracks</h5>
+            <div class="btn-group btn-group-sm" role="group">
+              <button class="btn btn-success" onclick="createPlaylist()" id="createPlaylistBtn">
+                <i class="bi bi-music-note-list"></i> Create Playlist
+              </button>
+            </div>
+          </div>
+          <div class="card-body">
+            <p class="text-secondary small mb-3">Create Playlist uses the Navidrome API and includes only the matched tracks shown below.</p>
+            <div id="matchedTracksContainer" style="max-height: 500px; overflow-y: auto;">
+              <!-- Matched tracks will be listed here -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Missing Tracks -->
+    <div class="row mb-4">
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+              <h5 class="mb-0"><i class="bi bi-exclamation-circle-fill text-warning"></i> Missing Tracks</h5>
+              <small class="text-secondary d-block mt-2">Tracks not found in your library</small>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="missingTracksContainer" style="max-height: 500px; overflow-y: auto;">
+              <!-- Missing tracks will be listed here -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Error Section -->
+<div id="errorSection" style="display: none;">
+  <div class="row">
+    <div class="col-12">
+      <div class="alert alert-danger" role="alert">
+        <h5 class="alert-heading"><i class="bi bi-exclamation-triangle"></i> Error</h5>
+        <p id="errorMessage"></p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/playlist.js') }}"></script>
+
+<style>
+  .track-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .track-row:last-child {
+    border-bottom: none;
+  }
+
+  .track-info {
+    flex: 1;
+  }
+
+  .track-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+  }
+
+  .track-artist {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+  }
+
+  .track-album {
+    color: var(--text-tertiary);
+    font-size: 0.85rem;
+  }
+
+  .track-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  :root {
+    --border-color: #495057;
+    --text-secondary: #adb5bd;
+    --text-tertiary: #868e96;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .bg-light {
+      background-color: var(--secondary-bg) !important;
+    }
+  }
+</style>
+
+{% endblock %}

@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}Setup Wizard · Popularr{% endblock %}
+{% block content %}
+<div class="py-5" style="background: radial-gradient(circle at 20% 20%, #101820 0, #0d1117 35%, #0b0f14 75%); min-height: calc(100vh - 4rem);">
+  <div class="container">
+    <div class="row g-4 align-items-stretch">
+      <!-- Left side: Instructions -->
+      <div class="col-lg-4">
+        <div class="card h-100 shadow-sm border-0 bg-dark text-white">
+          <div class="card-body d-flex flex-column">
+            <div class="d-flex align-items-center mb-3">
+              <div class="me-3 text-primary fs-3"><i class="bi bi-magic"></i></div>
+              <div>
+                <h1 class="h4 mb-1">First-Run Setup</h1>
+                <p class="mb-0 text-secondary">Get started in 3 quick steps</p>
+              </div>
+            </div>
+            <ol class="ps-3 small text-secondary mb-0">
+              <li class="mb-2"><strong>Connect Navidrome:</strong> Your music server (required)</li>
+              <li class="mb-2"><strong>Add API Keys:</strong> For scoring and recommendations (optional)</li>
+              <li><strong>Start Scanning:</strong> From the dashboard</li>
+            </ol>
+            <div class="mt-auto pt-3 small text-secondary border-top">
+              You can change these settings anytime from <strong>Config</strong> page.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right side: Form -->
+      <div class="col-lg-8">
+        <div class="card shadow-sm border-0">
+          <div class="card-header bg-primary text-white">
+            <i class="bi bi-plug me-2"></i>
+            <span class="fw-semibold">Connection & API Keys</span>
+          </div>
+          <form method="post" action="{{ url_for('setup') }}" id="setupForm">
+            <div class="card-body">
+              <div class="row g-4">
+                <!-- Required: Navidrome Configuration -->
+                <div class="col-12">
+                  <div class="alert alert-info mb-0">
+                    <i class="bi bi-info-circle"></i>
+                    <strong>Required:</strong> You need at least one Navidrome instance to use this app.
+                  </div>
+                </div>
+
+                <div class="col-12 mt-2">
+                  <h6 class="mb-3"><i class="bi bi-music-note-beamed"></i> Navidrome Server (Required)</h6>
+                </div>
+
+                <!-- Navidrome User(s) -->
+                {%  set nav_users = nav_users or [] %}
+                <div class="col-12">
+                  {% if nav_users %}
+                    {% for nav_user in nav_users %}
+                    <div class="mb-3 p-3 border rounded" style="background-color: rgba(255,255,255,0.02);">
+                      <div class="mb-3">
+                        <h6 class="mb-0">{{ nav_user.get('display_name', nav_user.get('user', 'User ' ~ loop.index)) }}</h6>
+                      </div>
+                      <div class="row g-2">
+                        <div class="col-12">
+                          <label class="form-label small">Display Name</label>
+                          <input type="text" class="form-control form-control-sm" name="display_name[]" placeholder="e.g., My Library" value="{{ nav_user.get('display_name', '') }}">
+                        </div>
+                        <div class="col-12">
+                          <label class="form-label small">Navidrome Base URL</label>
+                          <input type="text" class="form-control form-control-sm" name="nav_base_url[]" placeholder="http://localhost:4533" value="{{ nav_user.get('base_url', '') }}" required>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label small">Username</label>
+                          <input type="text" class="form-control form-control-sm" name="nav_user[]" value="{{ nav_user.get('user', '') }}" required>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label small">Password</label>
+                          <input type="password" class="form-control form-control-sm" name="nav_pass[]" value="{{ nav_user.get('pass', '') }}" required>
+                        </div>
+                      </div>
+                    </div>
+                    {% endfor %}
+                  {% else %}
+                    <div class="mb-3 p-3 border rounded" style="background-color: rgba(255,255,255,0.02);">
+                      <div class="mb-3">
+                        <h6 class="mb-0">Primary User</h6>
+                      </div>
+                      <div class="row g-2">
+                        <div class="col-12">
+                          <label class="form-label small">Display Name (Optional)</label>
+                          <input type="text" class="form-control form-control-sm" name="display_name[]" placeholder="e.g., My Library" value="">
+                        </div>
+                        <div class="col-12">
+                          <label class="form-label small">Navidrome Base URL</label>
+                          <input type="text" class="form-control form-control-sm" name="nav_base_url[]" placeholder="http://localhost:4533" value="" required>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label small">Username</label>
+                          <input type="text" class="form-control form-control-sm" name="nav_user[]" placeholder="username" value="" required>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label small">Password</label>
+                          <input type="password" class="form-control form-control-sm" name="nav_pass[]" placeholder="password" value="" required>
+                        </div>
+                      </div>
+                    </div>
+                  {% endif %}
+                </div>
+
+                <!-- Optional: API Keys -->
+                <div class="col-12 mt-4">
+                  <hr>
+                  <div class="alert alert-success mb-0">
+                    <i class="bi bi-star-fill"></i>
+                    <strong>Optional API Keys:</strong> These improve scoring and enable additional features, but you can skip them for now.
+                  </div>
+                </div>
+
+                <div class="col-12 mt-3">
+                  <h6 class="mb-3"><i class="bi bi-link-45deg"></i> Music Services (Optional)</h6>
+                </div>
+
+                <!-- Last.fm -->
+                <div class="col-12">
+                  <label class="form-label small"><i class="bi bi-music-note"></i> Last.fm API Key</label>
+                  <input type="text" class="form-control form-control-sm" name="lastfm_api_key" value="{{ lastfm_api_key or '' }}" placeholder="Leave blank to skip">
+                  <small class="form-text text-muted">Get from <a href="https://www.last.fm/api/account/create" target="_blank">Last.fm API</a></small>
+                </div>
+
+                <!-- Discogs -->
+                <div class="col-12">
+                  <label class="form-label small"><i class="bi bi-record-circle"></i> Discogs Personal Token</label>
+                  <input type="text" class="form-control form-control-sm" name="discogs_token" value="{{ discogs_token or '' }}" placeholder="Leave blank to skip">
+                  <small class="form-text text-muted">Get from your <a href="https://www.discogs.com/settings/developers" target="_blank">Discogs Settings</a></small>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card Footer -->
+            <div class="card-footer d-flex justify-content-between gap-2">
+              <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
+                <i class="bi bi-x-circle"></i> Skip Setup
+              </a>
+              <button type="submit" class="btn btn-primary btn-lg">
+                <i class="bi bi-check-circle"></i> Save & Continue
+              </button>
+            </div>
+
+            <!-- Validation Warning -->
+            <div id="setupWarning" class="alert alert-danger mt-0 mx-3 mb-3 rounded-0 border-0" style="display:none;"></div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Simple validation for required Navidrome fields
+document.getElementById('setupForm').addEventListener('submit', function(e) {
+  const navUrls = document.getElementsByName('nav_base_url[]');
+  const navUsers = document.getElementsByName('nav_user[]');
+  const navPasses = document.getElementsByName('nav_pass[]');
+  
+  let valid = true;
+  let msg = [];
+  
+  // Check at least first user has required fields
+  if (!navUrls[0] || !navUrls[0].value.trim()) {
+    valid = false;
+    msg.push('Navidrome URL is required.');
+  }
+  if (!navUsers[0] || !navUsers[0].value.trim()) {
+    valid = false;
+    msg.push('Navidrome username is required.');
+  }
+  if (!navPasses[0] || !navPasses[0].value.trim()) {
+    valid = false;
+    msg.push('Navidrome password is required.');
+  }
+  
+  if (!valid) {
+    e.preventDefault();
+    const warningEl = document.getElementById('setupWarning');
+    warningEl.innerHTML = '<i class="bi bi-exclamation-circle"></i> ' + msg.join(' ');
+    warningEl.style.display = 'block';
+    warningEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+});
+</script>
+
+<style>
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+</style>
+{% endblock %}

@@ -1,0 +1,369 @@
+commit 6cf6a22129636be9e998ffe562c9182f0c5f721b
+Author: cgdmonson <aaron.monson@cgd.vic.gov.au>
+Date:   Sun Mar 8 17:41:48 2026 +1100
+
+    Fix queue organize metadata and add configurable naming format
+
+diff --git a/app.py b/app.py
+index 2a8485d..24defe8 100644
+--- a/app.py
++++ b/app.py
+@@ -9475,21 +9475,21 @@ def api_musicbrainz_download():
+                             cursor.execute(f"""
+                                 INSERT INTO download_queue
+                                 (artist, album, title, search_query, source, status,
+-                                 release_id, track_number, created_at, updated_at)
+-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder},
++                                 release_id, release_source, track_number, album_artist, year, created_at, updated_at)
++                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                 RETURNING id
+-                            """, (track_artist, release_title, track_title, search_query, release_id, track_number))
++                            """, (track_artist, release_title, track_title, search_query, release_id, 'musicbrainz', track_number, artist, release_year))
+                             queue_row = cursor.fetchone()
+                             queue_id = queue_row[0] if queue_row else None
+                         else:
+                             cursor.execute(f"""
+                                 INSERT INTO download_queue
+                                 (artist, album, title, search_query, source, status,
+-                                 release_id, track_number, created_at, updated_at)
+-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder},
++                                 release_id, release_source, track_number, album_artist, year, created_at, updated_at)
++                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+-                            """, (track_artist, release_title, track_title, search_query, release_id, track_number))
++                            """, (track_artist, release_title, track_title, search_query, release_id, 'musicbrainz', track_number, artist, release_year))
+                             queue_id = cursor.lastrowid
+                         
+                         if queue_id:
+@@ -14588,6 +14588,84 @@ def api_queue_clear():
+         return jsonify({"error": str(e)}), 400
+ 
+ 
++def _queue_sanitize_component(value):
++    value = (value or '').strip()
++    for ch in '<>:"|?*\\':
++        value = value.replace(ch, '_')
++    return value.strip('. ')
++
++
++def _queue_safe_track_number(track_number_value):
++    if track_number_value is None:
++        return '00'
++    raw = str(track_number_value).strip()
++    if not raw:
++        return '00'
++    raw = raw.split('/')[0].strip()
++    if raw.isdigit():
++        return f"{int(raw):02d}"
++    digits = ''.join(ch for ch in raw if ch.isdigit())
++    if digits:
++        return f"{int(digits):02d}"
++    return _queue_sanitize_component(raw) or '00'
++
++
++def _read_queue_naming_format():
++    """Read configurable queue filename format from config, with sensible default."""
++    try:
++        cfg, _ = _read_yaml(CONFIG_PATH)
++        downloads_cfg = cfg.get('downloads', {}) if isinstance(cfg, dict) else {}
++        fmt = downloads_cfg.get('file_name_format') if isinstance(downloads_cfg, dict) else None
++        if isinstance(fmt, str) and fmt.strip():
++            return fmt.strip()
++    except Exception as cfg_err:
++        logging.debug(f"[ORGANIZE] Could not read naming config: {cfg_err}")
++    return '{track_number}. {artist} - {title}'
++
++
++def _build_queue_target_path(music_root_value, album_artist_value, year_value, album_value, track_artist_value, title_value, track_number_value, source_file_path):
++    album_artist_part = _queue_sanitize_component(album_artist_value) or 'Unknown Artist'
++    album_part = _queue_sanitize_component(album_value) or 'Unknown Album'
++    year_part = str(year_value).strip()[:4] if year_value else ''
++
++    if year_part:
++        target_dir_local = os.path.join(music_root_value, album_artist_part, _queue_sanitize_component(f"{year_part} - {album_part}"))
++    else:
++        target_dir_local = os.path.join(music_root_value, album_artist_part, album_part)
++
++    os.makedirs(target_dir_local, exist_ok=True)
++
++    file_name_format = _read_queue_naming_format()
++    ext_local = os.path.splitext(source_file_path)[1]
++    format_vars = {
++        'track_number': _queue_safe_track_number(track_number_value),
++        'artist': _queue_sanitize_component(track_artist_value) or 'Unknown Artist',
++        'album_artist': album_artist_part,
++        'title': _queue_sanitize_component(title_value) or 'Unknown Title',
++        'album': album_part,
++        'year': year_part or 'Unknown',
++    }
++
++    try:
++        base_name = file_name_format.format(**format_vars)
++    except Exception:
++        base_name = f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
++
++    base_name = _queue_sanitize_component(base_name) or f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
++    target_path_local = os.path.join(target_dir_local, f"{base_name}{ext_local}")
++
++    if os.path.exists(target_path_local):
++        counter_local = 1
++        while True:
++            candidate = os.path.join(target_dir_local, f"{base_name}_{counter_local}{ext_local}")
++            if not os.path.exists(candidate):
++                target_path_local = candidate
++                break
++            counter_local += 1
++
++    return target_path_local
++
++
+ @app.route("/api/queue/<int:queue_id>/organize", methods=["POST"])
+ def api_queue_organize(queue_id):
+     """Move a single file from /downloads to /music (individual copy).
+@@ -14604,6 +14682,65 @@ def api_queue_organize(queue_id):
+         import shutil
+         from download_queue_manager import update_queue_item, is_match
+ 
++        request_data = request.get_json(silent=True) or {}
++        metadata_overrides = request_data.get('metadata') if isinstance(request_data.get('metadata'), dict) else {}
++
++        def _first_non_empty(*values):
++            for value in values:
++                if value is None:
++                    continue
++                if isinstance(value, str):
++                    if value.strip():
++                        return value.strip()
++                    continue
++                return value
++            return None
++
++        def _resolve_musicbrainz_metadata(queue_id_value, release_id_value):
++            """Resolve canonical metadata from MusicBrainz release tables when available."""
++            resolved = {}
++            try:
++                rconn = get_db()
++                rcursor = rconn.cursor()
++                is_pg_local = _is_postgres_connection(rconn)
++                placeholder_local = "%s" if is_pg_local else "?"
++
++                # Prefer queue_id mapping because it gives exact track_number/title for this queue item.
++                rcursor.execute(f"""
++                    SELECT r.release_title, r.artist, r.release_year,
++                           rt.track_number, rt.track_title, rt.track_artist
++                    FROM musicbrainz_release_tracks rt
++                    JOIN musicbrainz_releases r ON r.release_id = rt.release_id
++                    WHERE rt.queue_id = {placeholder_local}
++                    LIMIT 1
++                """, (queue_id_value,))
++                row = rcursor.fetchone()
++
++                # Fallback to release-level metadata when track mapping wasn't persisted.
++                if not row and release_id_value:
++                    rcursor.execute(f"""
++                        SELECT release_title, artist, release_year
++                        FROM musicbrainz_releases
++                        WHERE release_id = {placeholder_local}
++                        LIMIT 1
++                    """, (release_id_value,))
++                    row = rcursor.fetchone()
++
++                if row:
++                    resolved = {
++                        'album': _row_get(row, 'release_title', 0),
++                        'album_artist': _row_get(row, 'artist', 1),
++                        'year': _row_get(row, 'release_year', 2),
++                        'track_number': _row_get(row, 'track_number', 3),
++                        'title': _row_get(row, 'track_title', 4),
++                        'artist': _row_get(row, 'track_artist', 5),
++                    }
++
++                rconn.close()
++            except Exception as resolve_err:
++                logging.debug(f"[ORGANIZE] Could not resolve MusicBrainz metadata for queue {queue_id_value}: {resolve_err}")
++            return resolved
++
+         conn = get_db()
+         cursor = conn.cursor()
+ 
+@@ -14675,6 +14812,35 @@ def api_queue_organize(queue_id):
+ 
+         logging.info(f"[ORGANIZE] Starting individual copy for queue {queue_id}: {file_path}")
+ 
++        # Resolve best-available metadata before move.
++        resolved_mb_metadata = _resolve_musicbrainz_metadata(queue_id, release_id)
++        title = _first_non_empty(metadata_overrides.get('title'), resolved_mb_metadata.get('title'), title)
++        artist = _first_non_empty(metadata_overrides.get('artist'), resolved_mb_metadata.get('artist'), artist)
++        album = _first_non_empty(metadata_overrides.get('album'), resolved_mb_metadata.get('album'), album)
++        album_artist = _first_non_empty(
++            metadata_overrides.get('album_artist'),
++            resolved_mb_metadata.get('album_artist'),
++            album_artist,
++            artist
++        )
++        year = _first_non_empty(metadata_overrides.get('year'), resolved_mb_metadata.get('year'), year)
++        track_number = _first_non_empty(metadata_overrides.get('track_number'), resolved_mb_metadata.get('track_number'), track_number)
++        disc_number = _first_non_empty(metadata_overrides.get('disc_number'), request_data.get('disc_number'))
++
++        # Persist corrected metadata back to queue item so future operations stay consistent.
++        try:
++            update_queue_item(
++                queue_id,
++                title=title,
++                artist=artist,
++                album=album,
++                album_artist=album_artist,
++                year=str(year) if year is not None else None,
++                track_number=str(track_number) if track_number is not None else None,
++            )
++        except Exception as queue_meta_err:
++            logging.debug(f"[ORGANIZE] Could not persist resolved metadata to queue item {queue_id}: {queue_meta_err}")
++
+         # Update file metadata from release info before copying
+         try:
+             from post_download_processor import update_file_metadata
+@@ -14685,6 +14851,7 @@ def api_queue_organize(queue_id):
+                 'album': album,
+                 'year': year,
+                 'track_number': track_number,
++                'disc_number': disc_number,
+             }
+             if any(v for v in [title, artist, album, year, track_number, album_artist] if v):
+                 success = update_file_metadata(file_path, metadata)
+@@ -14697,21 +14864,16 @@ def api_queue_organize(queue_id):
+ 
+         # Get paths and create directory structure
+         music_root = os.environ.get("MUSIC_ROOT", "/music")
+-        target_dir = os.path.join(music_root, album_artist, album)
+-        os.makedirs(target_dir, exist_ok=True)
+-
+-        # Get filename and handle duplicates
+-        filename = os.path.basename(file_path)
+-        target_path = os.path.join(target_dir, filename)
+-
+-        # If target exists, add suffix
+-        if os.path.exists(target_path):
+-            base, ext = os.path.splitext(filename)
+-            counter = 1
+-            while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
+-                counter += 1
+-            target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+-            logging.info(f"[ORGANIZE] Target file exists, using: {target_path}")
++        target_path = _build_queue_target_path(
++            music_root,
++            album_artist,
++            year,
++            album,
++            artist,
++            title,
++            track_number,
++            file_path,
++        )
+ 
+         # Move file
+         logging.info(f"[ORGANIZE] Moving file from {file_path} to {target_path}")
+@@ -14755,7 +14917,7 @@ def api_queue_organize_group():
+         import shutil
+         from download_queue_manager import update_queue_item
+         
+-        data = request.get_json()
++        data = request.get_json(silent=True) or {}
+         group_id = data.get('group_id')
+         metadata = data.get('metadata', {})
+         
+@@ -14766,9 +14928,13 @@ def api_queue_organize_group():
+         conn = get_db()
+         cursor = conn.cursor()
+         
+-        cursor.execute("""
+-            SELECT id, file_path, artist, album, title FROM download_queue 
+-            WHERE import_group = ? AND status = 'completed'
++        is_pg = _is_postgres_connection(conn)
++        placeholder = "%s" if is_pg else "?"
++
++        cursor.execute(f"""
++            SELECT id, file_path, artist, album, title, track_number, disc_number, album_artist, year
++            FROM download_queue
++            WHERE import_group = {placeholder} AND status = 'completed'
+         """, (group_id,))
+         
+         items = cursor.fetchall()
+@@ -14806,39 +14972,59 @@ def api_queue_organize_group():
+                 
+                 # Update track metadata in database
+                 try:
++                    resolved_album_artist = album_artist if album_artist else item['album_artist'] or item['artist']
++                    resolved_album_name = album_name if album_name else item['album']
++                    resolved_year = year if year else item['year']
++
+                     update_queue_item(
+                         item['id'],
+                         artist=item['artist'],  # Keep original artist
+-                        album=album_name,
+-                        album_artist=album_artist if album_artist else item['artist'],
+-                        year=year
++                        album=resolved_album_name,
++                        album_artist=resolved_album_artist,
++                        year=resolved_year
+                     )
+-                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Updated metadata - artist={item['artist']}, album={album_name}, album_artist={album_artist}, year={year}")
++                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Updated metadata - artist={item['artist']}, album={resolved_album_name}, album_artist={resolved_album_artist}, year={resolved_year}")
+                 except Exception as meta_error:
+                     logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
+                     log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
++
++                # Update embedded file tags before moving so tracks attach to the target album correctly.
++                try:
++                    from post_download_processor import update_file_metadata
++                    file_metadata = {
++                        'title': item['title'],
++                        'artist': item['artist'],
++                        'album_artist': resolved_album_artist,
++                        'album': resolved_album_name,
++                        'year': resolved_year,
++                        'track_number': item['track_number'],
++                        'disc_number': item['disc_number'],
++                    }
++                    tag_success = update_file_metadata(file_path, file_metadata)
++                    if tag_success:
++                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ??? Metadata tags updated")
++                    else:
++                        logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Metadata tag update skipped/failed (non-fatal)")
++                except Exception as tag_error:
++                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Metadata tag update error (non-fatal): {tag_error}")
+                 
+                 # Move file to music directory
+                 try:
+                     music_root = os.environ.get("MUSIC_ROOT", "/music")
+-                    target_dir = os.path.join(music_root, album_artist or item['artist'], album_name)
+-                    os.makedirs(target_dir, exist_ok=True)
+-                    
+-                    filename = os.path.basename(file_path)
+-                    target_path = os.path.join(target_dir, filename)
++                    target_path = _build_queue_target_path(
++                        music_root,
++                        resolved_album_artist,
++                        resolved_year,
++                        resolved_album_name,
++                        item['artist'],
++                        item['title'],
++                        item['track_number'],
++                        file_path,
++                    )
+                     
+                     logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Move - source={file_path}")
+                     logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Move - target={target_path}")
+                     
+-                    # Handle duplicates
+-                    if os.path.exists(target_path):
+-                        base, ext = os.path.splitext(filename)
+-                        counter = 1
+-                        while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
+-                            counter += 1
+-                        target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+-                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Target exists, using counter={counter}: {target_path}")
+-                    
+                     logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Moving file")
+                     shutil.move(file_path, target_path)
+                     

@@ -1,0 +1,14 @@
+directory: /music
+library: /config/beets/musiclibrary.db
+import:
+  copy: false
+  write: false
+  autotag: false
+  resume: no
+  incremental: true
+  log: /config/beets_import.log
+musicbrainz:
+  enabled: false
+plugins:
+- duplicates
+- info

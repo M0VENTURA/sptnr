@@ -1,0 +1,22 @@
+# Read-Only Beets Configuration for Library Scanning
+# Used for importing music metadata from MusicBrainz without modifying files or tags
+# Command: beet -c /config/read_config.yml import /music
+
+directory: /music
+library: /config/beets/musiclibrary.db
+
+import:
+  autotag: true          # Fetch MusicBrainz data for DB
+  copy: false            # Do not copy files
+  write: false           # Do not write tags to files
+  incremental: true      # Skip already imported files
+  log: /config/beets_import.log
+  resume: no
+  quiet: no
+
+musicbrainz:
+  enabled: true          # Enable MusicBrainz lookups
+
+plugins:
+  - duplicates
+  - info
