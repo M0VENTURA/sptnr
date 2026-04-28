@@ -443,23 +443,61 @@ def write_tags_to_file(file_path: str, tags: Dict[str, Any]) -> bool:
 
 
 def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
-    """Write ID3 tags to MP3 file."""
+    """Write ID3 tags to MP3 file.
+
+    Some MP3 files trigger mutagen's "can't sync to MPEG frame" error when
+    loaded via ``mutagen.mp3.MP3`` because the MPEG frame scanner can't locate
+    a valid sync word (e.g. non-standard encoders, large padding blocks, or
+    files whose MPEG audio starts unusually late).  The ID3 tag layer is still
+    perfectly valid in those files, so we fall back to ``mutagen.id3.ID3``
+    which skips MPEG frame validation and only reads/writes the ID3 header.
+    """
     if not _MUTAGEN_AVAILABLE:
         logger.error("Mutagen library not available for ID3 tag writing")
         return False
-    
-    try:
-        audio = MP3(file_path, ID3=ID3)  # type: ignore[name-defined]
-        if audio.tags is None:
-            audio.add_tags()
 
+    try:
+        # --- load tag object -------------------------------------------------
+        # Try the full MP3 loader first (validates MPEG framing).  On failure
+        # fall back to raw ID3 access so that tag writes still succeed on files
+        # with non-standard MPEG structures.
+        tag_obj = None      # the ID3 tag dict we operate on
+        _save_fn = None     # callable that persists changes to disk
+
+        try:
+            audio = MP3(file_path, ID3=ID3)  # type: ignore[name-defined]
+            if audio.tags is None:
+                audio.add_tags()
+            tag_obj = audio.tags
+
+            def _save_mp3():
+                audio.save(v2_version=3)
+            _save_fn = _save_mp3
+        except Exception as _mp3_load_err:
+            logger.debug(
+                f"MP3 MPEG-frame load failed for {file_path} "
+                f"({_mp3_load_err}); falling back to raw ID3 access"
+            )
+            try:
+                tag_obj = ID3(file_path)  # type: ignore[name-defined]
+            except Exception:
+                # File has no ID3 tags yet — create an empty tag set.
+                tag_obj = ID3()  # type: ignore[name-defined]
+
+            _fp = file_path  # capture for the closure
+
+            def _save_id3():
+                tag_obj.save(_fp, v2_version=3)
+            _save_fn = _save_id3
+
+        # --- helper closures that operate on tag_obj -------------------------
         def _set_text_frame(frame_id: str, frame_cls, value: Any):
             if value is None or value == "":
-                audio.tags.delall(frame_id)
+                tag_obj.delall(frame_id)
                 return
             text = str(value)
-            audio.tags.delall(frame_id)
-            audio.tags.add(frame_cls(encoding=3, text=[text]))
+            tag_obj.delall(frame_id)
+            tag_obj.add(frame_cls(encoding=3, text=[text]))
 
         def _norm_txxx_desc(desc: str) -> str:
             """Normalise a TXXX desc for comparison: lowercase, strip spaces/underscores/hyphens."""
@@ -473,12 +511,13 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             frame, ensuring exactly one value ends up in the file.
             """
             to_delete = [
-                key for key in list(audio.tags.keys())
+                key for key in list(tag_obj.keys())
                 if key.startswith('TXXX:') and _norm_txxx_desc(key[5:]) == normalized_target
             ]
             for key in to_delete:
-                audio.tags.delall(key)
+                tag_obj.delall(key)
 
+        # --- apply requested tag changes -------------------------------------
         for field, value in tags.items():
             if field == "title":
                 _set_text_frame("TIT2", TIT2, value)
@@ -492,9 +531,9 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 _set_text_frame("TCOM", TCOM, value)
             elif field == "writer":
                 frame_key = "TXXX:WRITER"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="WRITER", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="WRITER", text=[str(value)]))
             elif field == "track_number":
                 _set_text_frame("TRCK", TRCK, value)
             elif field == "disc_number":
@@ -503,62 +542,62 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 _set_text_frame("TDRC", TDRC, value)
             elif field in ("genre", "genres"):
                 if value is None or value == "":
-                    audio.tags.delall("TCON")
+                    tag_obj.delall("TCON")
                 else:
                     if isinstance(value, list):
                         genre_values = [str(v).strip() for v in value if str(v).strip()]
                     else:
                         import re
                         genre_values = [g.strip() for g in re.split(r'[\\,;/]+', str(value)) if g.strip()]
-                    audio.tags.delall("TCON")
+                    tag_obj.delall("TCON")
                     if genre_values:
-                        audio.tags.add(TCON(encoding=3, text=genre_values))
+                        tag_obj.add(TCON(encoding=3, text=genre_values))
             elif field == "mood":
                 # Fix: use standard TMOO frame (Navidrome reads tmoo alias, not TXXX:MOOD)
-                audio.tags.delall("TXXX:MOOD")
-                audio.tags.delall("TMOO")
+                tag_obj.delall("TXXX:MOOD")
+                tag_obj.delall("TMOO")
                 if value is not None and str(value).strip():
-                    audio.tags.add(TMOO(encoding=3, text=[str(value)]))
+                    tag_obj.add(TMOO(encoding=3, text=[str(value)]))
             elif field == "bpm":
                 _set_text_frame("TBPM", TBPM, value)
             elif field == "danceability":
                 frame_key = "TXXX:DANCEABILITY"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="DANCEABILITY", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="DANCEABILITY", text=[str(value)]))
             elif field == "comment":
-                audio.tags.delall("COMM")
+                tag_obj.delall("COMM")
                 if value is not None and str(value).strip():
-                    audio.tags.add(COMM(encoding=3, lang="eng", desc="", text=[str(value)]))
+                    tag_obj.add(COMM(encoding=3, lang="eng", desc="", text=[str(value)]))
             elif field in ("mbid", "musicbrainz_trackid"):
                 # Both field names refer to the recording UUID and map to the same TXXX frame.
                 _clear_txxx_variants('musicbrainztrackid')
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ TRACK ID", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ TRACK ID", text=[str(value)]))
             elif field in ("musicbrainz_album_mbid", "musicbrainz_albumid"):
                 _clear_txxx_variants('musicbrainzalbumid')
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ID", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ID", text=[str(value)]))
             elif field == "musicbrainz_artistid":
                 _clear_txxx_variants('musicbrainzartistid')
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ARTIST ID", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ ARTIST ID", text=[str(value)]))
             elif field == "musicbrainz_albumartistid":
                 _clear_txxx_variants('musicbrainzalbumartistid')
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ARTIST ID", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ARTIST ID", text=[str(value)]))
             elif field == "musicbrainz_releasegroupid":
                 _clear_txxx_variants('musicbrainzreleasegroupid')
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ RELEASE GROUP ID", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ RELEASE GROUP ID", text=[str(value)]))
             elif field == "musicbrainz_releasetrackid":
                 _clear_txxx_variants('musicbrainzreleasetrackid')
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ RELEASE TRACK ID", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ RELEASE TRACK ID", text=[str(value)]))
             elif field == "musicbrainz_workid":
                 _clear_txxx_variants('musicbrainzworkid')
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ WORK ID", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ WORK ID", text=[str(value)]))
             elif field == "titlesort":
                 _set_text_frame("TSOT", TSOT, value)
             elif field == "albumsort":
@@ -566,85 +605,85 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             elif field == "albumartistsort":
                 # TSO2 is not a standard ID3v2.3 frame; use TXXX for broader compatibility
                 frame_key = "TXXX:ALBUMARTISTSORT"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="ALBUMARTISTSORT", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="ALBUMARTISTSORT", text=[str(value)]))
             elif field == "composersort":
                 _set_text_frame("TSOC", TSOC, value)
             elif field == "lyricistsort":
                 frame_key = "TXXX:lyricistsort"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="lyricistsort", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="lyricistsort", text=[str(value)]))
             elif field == "artists":
                 frame_key = "TXXX:ARTISTS"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="ARTISTS", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="ARTISTS", text=[str(value)]))
             elif field == "artistssort":
                 frame_key = "TXXX:artistssort"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="artistssort", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="artistssort", text=[str(value)]))
             elif field == "albumartists":
                 frame_key = "TXXX:ALBUM ARTISTS"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="ALBUM ARTISTS", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="ALBUM ARTISTS", text=[str(value)]))
             elif field == "albumartistssort":
                 frame_key = "TXXX:albumartistssort"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="albumartistssort", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="albumartistssort", text=[str(value)]))
             elif field == "conductor":
                 _set_text_frame("TPE3", TPE3, value)
             elif field == "director":
                 frame_key = "TXXX:DIRECTOR"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="DIRECTOR", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="DIRECTOR", text=[str(value)]))
             elif field == "djmixer":
                 frame_key = "TXXX:DJMIXER"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="DJMIXER", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="DJMIXER", text=[str(value)]))
             elif field == "engineer":
                 frame_key = "TXXX:ENGINEER"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="ENGINEER", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="ENGINEER", text=[str(value)]))
             elif field == "remixer":
                 _set_text_frame("TPE4", TPE4, value)
             elif field == "lyricist":
                 _set_text_frame("TEXT", TTEXT, value)
             elif field == "albumversion":
                 frame_key = "TXXX:ALBUMVERSION"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="ALBUMVERSION", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="ALBUMVERSION", text=[str(value)]))
             elif field == "discsubtitle":
                 _set_text_frame("TSST", TSST, value)
             elif field == "lyrics":
-                audio.tags.delall("USLT")
+                tag_obj.delall("USLT")
                 if value is not None and str(value).strip():
-                    audio.tags.add(USLT(encoding=3, lang="eng", desc="", text=str(value)))
+                    tag_obj.add(USLT(encoding=3, lang="eng", desc="", text=str(value)))
             elif field == "releasedate":
                 _set_text_frame("TDRL", TDRL, value)
             elif field == "r128_album_gain":
                 frame_key = "TXXX:R128_ALBUM_GAIN"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="R128_ALBUM_GAIN", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="R128_ALBUM_GAIN", text=[str(value)]))
             elif field == "r128_track_gain":
                 frame_key = "TXXX:R128_TRACK_GAIN"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="R128_TRACK_GAIN", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="R128_TRACK_GAIN", text=[str(value)]))
             elif field == "explicitstatus":
                 frame_key = "TXXX:ITUNESADVISORY"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="ITUNESADVISORY", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="ITUNESADVISORY", text=[str(value)]))
             elif field == "copyright":
                 _set_text_frame("TCOP", TCOP, value)
             elif field == "encodedby":
@@ -659,60 +698,60 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 _set_text_frame("TLAN", TLAN, value)
             elif field == "license":
                 frame_key = "TXXX:LICENSE"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="LICENSE", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="LICENSE", text=[str(value)]))
             elif field == "movementname":
                 frame_key = "TXXX:MOVEMENTNAME"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MOVEMENTNAME", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="MOVEMENTNAME", text=[str(value)]))
             elif field == "movementtotal":
                 frame_key = "TXXX:MOVEMENTTOTAL"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MOVEMENTTOTAL", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="MOVEMENTTOTAL", text=[str(value)]))
             elif field == "movement":
                 frame_key = "TXXX:MOVEMENT"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MOVEMENT", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="MOVEMENT", text=[str(value)]))
             elif field == "subtitle":
                 _set_text_frame("TIT3", TIT3, value)
             elif field == "website":
-                audio.tags.delall("WOAR")
+                tag_obj.delall("WOAR")
                 if value is not None and str(value).strip():
-                    audio.tags.add(WOAR(url=str(value)))
+                    tag_obj.add(WOAR(url=str(value)))
             elif field == "recordlabel":
                 _set_text_frame("TPUB", TPUB, value)
             elif field == "isrc":
                 _set_text_frame("TSRC", TSRC, value)
             elif field == "replaygain_track_gain":
                 frame_key = "TXXX:replaygain_track_gain"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="replaygain_track_gain", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="replaygain_track_gain", text=[str(value)]))
             elif field == "replaygain_track_peak":
                 frame_key = "TXXX:replaygain_track_peak"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="replaygain_track_peak", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="replaygain_track_peak", text=[str(value)]))
             elif field == "replaygain_album_gain":
                 frame_key = "TXXX:replaygain_album_gain"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="replaygain_album_gain", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="replaygain_album_gain", text=[str(value)]))
             elif field == "replaygain_album_peak":
                 frame_key = "TXXX:replaygain_album_peak"
-                audio.tags.delall(frame_key)
+                tag_obj.delall(frame_key)
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="replaygain_album_peak", text=[str(value)]))
+                    tag_obj.add(TXXX(encoding=3, desc="replaygain_album_peak", text=[str(value)]))
             elif field == "cover_art_data":
                 # value should be raw image bytes; cover_art_mime is read from the same tags dict
                 if value is not None and isinstance(value, (bytes, bytearray)) and len(value) > 0:
                     mime = tags.get("cover_art_mime", "image/jpeg")
-                    audio.tags.delall("APIC")
-                    audio.tags.add(APIC(
+                    tag_obj.delall("APIC")
+                    tag_obj.add(APIC(
                         encoding=3,
                         mime=mime,
                         type=3,  # 3 = Cover (front)
@@ -724,7 +763,7 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             else:
                 logger.debug(f"Skipping unmapped field for ID3: {field}")
 
-        audio.save(v2_version=3)
+        _save_fn()
         logger.info(f"Wrote ID3 tags to {file_path}")
         return True
     except Exception as e:

@@ -696,6 +696,9 @@
                                                 <small class="text-muted">— {{ track.artist }}</small>
                                                 {% endif %}
                                             </a>
+                                            {% if track._mb_is_extra %}
+                                            <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                            {% endif %}
                                             {% endif %}
                                         </span>
                                     </div>
@@ -716,6 +719,9 @@
                                         <a href="{{ url_for('track_detail', track_id=track.id) }}">
                                             {{ track.title }}
                                         </a>
+                                        {% if track._mb_is_extra %}
+                                        <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                        {% endif %}
                                         {% if track.file_path %}
                                         <div class="text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
                                         {% endif %}
@@ -871,6 +877,9 @@
                                             <small class="text-muted">— {{ track.artist }}</small>
                                             {% endif %}
                                         </a>
+                                        {% if track._mb_is_extra %}
+                                        <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                        {% endif %}
                                         {% endif %}
                                     </span>
                                 </div>
@@ -893,6 +902,9 @@
                                     <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline track-title-display-{{ track.id }}">
                                         {{ track.title }}
                                     </a>
+                                    {% if track._mb_is_extra %}
+                                    <span class="badge bg-secondary ms-1 mb-extra-badge d-none d-md-inline" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                    {% endif %}
                                     {% if track.file_path %}
                                     <div class="d-none d-md-block text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
                                     {% endif %}
@@ -1035,6 +1047,11 @@
 /* Dark theme improvements for album page */
 .d-contents {
     display: contents;
+}
+
+.mb-extra-badge {
+    font-size: 0.65rem;
+    vertical-align: middle;
 }
 
 .card {
@@ -2767,15 +2784,66 @@
         return tracks;
     }
 
+    // Mark library tracks that are not part of the MusicBrainz release with an
+    // "Extra" sub-row and a dynamic badge so the user knows they are outside the
+    // official track listing.
+    function _markExtraTracks(extraTracks) {
+        for (const extra of extraTracks) {
+            const trackId = String(extra.library_track_id);
+            const trackRow = document.querySelector(`[data-track-id="${CSS.escape(trackId)}"]`);
+            if (!trackRow) continue;
+
+            // Add a dynamic "Extra" badge to any title link/span inside the row
+            // (skip rows that already have a server-rendered badge).
+            if (!trackRow.querySelector('.mb-extra-badge')) {
+                const titleLink = trackRow.querySelector('a[href*="/track/"]') || trackRow.querySelector('.track-title-display-' + trackId);
+                if (titleLink) {
+                    const badge = document.createElement('span');
+                    badge.className = 'badge bg-secondary ms-1 mb-extra-badge mb-extra-badge-dynamic';
+                    badge.title = 'This track was not found in the MusicBrainz metadata for this album';
+                    badge.textContent = 'Extra';
+                    titleLink.insertAdjacentElement('afterend', badge);
+                }
+            }
+
+            // Inject a sub-row with more detail, similar to mb-update-row
+            const subRow = document.createElement('tr');
+            subRow.className = 'mb-extra-row';
+            subRow.innerHTML = `
+                <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                    <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
+                         style="background: rgba(108,117,125,0.12); border: 1px solid rgba(108,117,125,0.35);">
+                        <small class="text-secondary">
+                            <i class="bi bi-question-circle-fill me-1"></i><strong>MusicBrainz:</strong>
+                        </small>
+                        <small class="text-muted">Not found in the MusicBrainz metadata for this release</small>
+                    </div>
+                </td>`;
+
+            // Insert after the track row, skipping any already-injected helper rows
+            let insertAfter = trackRow;
+            let sib = insertAfter.nextElementSibling;
+            while (sib && (sib.classList.contains('mb-update-row') || sib.classList.contains('mb-missing-row') || sib.classList.contains('mb-extra-row'))) {
+                insertAfter = sib;
+                sib = sib.nextElementSibling;
+            }
+            insertAfter.insertAdjacentElement('afterend', subRow);
+        }
+    }
+
     function _displayMBComparison(data) {
-        // Remove any stale update/missing rows from a previous comparison
+        // Remove any stale update/missing/extra rows from a previous comparison
         document.querySelectorAll('.mb-update-row').forEach(el => el.remove());
         document.querySelectorAll('.mb-missing-row').forEach(el => el.remove());
+        document.querySelectorAll('.mb-extra-row').forEach(el => el.remove());
+        // Remove client-injected extra badges (server-rendered ones stay until page refresh)
+        document.querySelectorAll('.mb-extra-badge-dynamic').forEach(el => el.remove());
 
         const needsUpdate = data.comparison.filter(c => c.needs_update && c.library_track_id);
         const missingTracks = data.comparison.filter(c => !c.matched);
+        const extraTracks = data.extra_tracks || [];
 
-        if (needsUpdate.length === 0 && missingTracks.length === 0) {
+        if (needsUpdate.length === 0 && missingTracks.length === 0 && extraTracks.length === 0) {
             _showMBCompareBanner(
                 `<i class="bi bi-check-circle-fill text-success me-2"></i>All ${escapeHtml(String(data.total_tracks))} tracks match MusicBrainz metadata — no updates needed.`,
                 'success',
@@ -2789,9 +2857,22 @@
             _injectMissingTrackRows(missingTracks, data);
         }
 
+        // Mark extra tracks (in library but not in MB release) with a sub-row and badge
+        if (extraTracks.length > 0) {
+            _markExtraTracks(extraTracks);
+        }
+
         if (needsUpdate.length === 0) {
+            let onlyMsg = '';
+            if (missingTracks.length > 0 && extraTracks.length > 0) {
+                onlyMsg = `<strong>${escapeHtml(String(missingTracks.length))}</strong> ${missingTracks.length === 1 ? 'track is' : 'tracks are'} missing from the library and <strong>${escapeHtml(String(extraTracks.length))}</strong> ${extraTracks.length === 1 ? 'track is' : 'tracks are'} not in the MusicBrainz metadata.`;
+            } else if (missingTracks.length > 0) {
+                onlyMsg = `<strong>${escapeHtml(String(missingTracks.length))} of ${escapeHtml(String(data.total_tracks))} tracks</strong> are missing from the library.`;
+            } else {
+                onlyMsg = `<strong>${escapeHtml(String(extraTracks.length))}</strong> ${extraTracks.length === 1 ? 'track in the library is' : 'tracks in the library are'} not found in the MusicBrainz metadata for this release.`;
+            }
             _showMBCompareBanner(
-                `<i class="bi bi-exclamation-triangle-fill me-2"></i><strong>${escapeHtml(String(missingTracks.length))} of ${escapeHtml(String(data.total_tracks))} tracks</strong> are missing from the library.`,
+                `<i class="bi bi-exclamation-triangle-fill me-2"></i>${onlyMsg}`,
                 'warning',
                 true
             );
@@ -2811,6 +2892,9 @@
         let bannerMsg = `<strong>${escapeHtml(String(needsUpdate.length))} of ${escapeHtml(String(data.total_tracks))} tracks</strong> have metadata that can be updated from MusicBrainz.`;
         if (missingTracks.length > 0) {
             bannerMsg += ` <strong>${escapeHtml(String(missingTracks.length))}</strong> ${missingTracks.length === 1 ? 'track is' : 'tracks are'} missing from the library.`;
+        }
+        if (extraTracks.length > 0) {
+            bannerMsg += ` <strong>${escapeHtml(String(extraTracks.length))}</strong> ${extraTracks.length === 1 ? 'track is' : 'tracks are'} not in the MusicBrainz metadata.`;
         }
         banner.innerHTML = `
             <div class="alert alert-warning d-flex align-items-center gap-2 mb-2 py-2 flex-wrap">
@@ -2837,7 +2921,9 @@
                 year: () => `Year: ${escapeHtml(trackComp.library_year || '—')} → ${escapeHtml(String(trackComp.mb_year))}`,
                 mbid: () => `MusicBrainz ID: <em>missing</em> → <strong>added</strong>`,
                 duration: () => `Length: ${escapeHtml(trackComp.library_duration || '—')} → ${escapeHtml(trackComp.mb_duration || '—')}`,
-                disc_number: () => `Disc: ${escapeHtml(String(trackComp.library_disc_number || 1))} → ${escapeHtml(String(trackComp.mb_disc_number))}`,
+                disc_number: () => trackComp.cross_disc_match
+                    ? `Move to Disc ${escapeHtml(String(trackComp.mb_disc_number))} (track ${escapeHtml(String(trackComp.mb_track_number || '?'))})`
+                    : `Disc: ${escapeHtml(String(trackComp.library_disc_number || 1))} → ${escapeHtml(String(trackComp.mb_disc_number))}`,
             };
 
             let insertAfter = trackRow;
@@ -3099,6 +3185,8 @@
     function clearMBComparison() {
         document.querySelectorAll('.mb-update-row').forEach(el => el.remove());
         document.querySelectorAll('.mb-missing-row').forEach(el => el.remove());
+        document.querySelectorAll('.mb-extra-row').forEach(el => el.remove());
+        document.querySelectorAll('.mb-extra-badge-dynamic').forEach(el => el.remove());
         const banner = document.getElementById('mb-compare-banner');
         if (banner) banner.remove();
         mbComparisonData = null;

@@ -2115,7 +2115,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         # so the stored search_query is already clean for display and retry use.
         artist_text = str(artist or '').strip()
         title_text = str(title or '').strip()
-        if artist_text.lower() in _GENERIC_ARTIST_NAMES:
+        # Spotify/Exportify CSVs use semicolons to join multiple artists
+        # (e.g. "Nine Inch Nails;Boys Noize").  Use only the primary (first)
+        # artist for the Soulseek query so the search term stays clean, while
+        # the full multi-artist string is preserved in the stored artist field.
+        _query_artist = artist_text.split(';')[0].strip() if ';' in artist_text else artist_text
+        if _query_artist.lower() in _GENERIC_ARTIST_NAMES:
             if ' - ' in title_text:
                 left, right = [part.strip() for part in title_text.split(' - ', 1)]
                 if left and right and left.lower() not in _GENERIC_ARTIST_NAMES:
@@ -2125,7 +2130,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             else:
                 search_query = _sanitize_search_query_for_slskd(title_text)
         else:
-            search_query = _sanitize_search_query_for_slskd(f"{artist_text} - {title_text}")
+            search_query = _sanitize_search_query_for_slskd(f"{_query_artist} - {title_text}")
 
         # Normalize duration to seconds. Some MusicBrainz paths supply milliseconds.
         if duration not in (None, ""):

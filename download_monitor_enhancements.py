@@ -288,20 +288,72 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
             except Exception:
                 pass
 
-        # Fetch current status and file_path before updating so we can decide
-        # whether to promote the item to 'matched' after setting the MBID.
+        # Fetch current status, file_path, title, and existing recording_mbid before
+        # updating so we can decide whether to promote the item to 'matched' and
+        # whether we still need to search for the recording (track) MBID.
         cursor.execute(
-            f"SELECT status, file_path FROM download_queue WHERE id = {ph}",
+            f"SELECT status, file_path, title, recording_mbid FROM download_queue WHERE id = {ph}",
             (queue_id,),
         )
         current_row = cursor.fetchone()
         current_status = None
         current_file_path = None
+        current_title = None
+        existing_recording_mbid = None
         if current_row:
             current_status = _row_value(current_row, 'status')
             current_file_path = _row_value(current_row, 'file_path')
+            current_title = _row_value(current_row, 'title') or title
+            existing_recording_mbid = (_row_value(current_row, 'recording_mbid') or '').strip()
+
+        # Look up the recording (track) MBID within the matched release.
+        # This fills in recording_mbid so the pre-Soulseek freshness check and
+        # post-download tagging both have a correct track-level MBID.
+        recording_mbid = existing_recording_mbid or None
+        if not recording_mbid and release_mbid and current_title:
+            try:
+                import requests as _rec_req
+                import time as _rec_time
+                import re as _rec_re
+                from api_clients.musicbrainz import _USER_AGENT as _REC_UA
+
+                _rec_time.sleep(1.1)  # respect MB rate limit
+                _rel_resp = _rec_req.get(
+                    f"https://musicbrainz.org/ws/2/release/{release_mbid}",
+                    headers={"User-Agent": _REC_UA, "Accept": "application/json"},
+                    params={"fmt": "json", "inc": "recordings"},
+                    timeout=12,
+                )
+                if _rel_resp.status_code == 200:
+                    _rel_data = _rel_resp.json()
+                    _norm_title = _rec_re.sub(r'\s+', ' ', current_title.lower().strip())
+                    _best_rec_mbid = None
+                    _best_sim = 0.0
+                    import difflib as _rec_difflib
+                    for _medium in (_rel_data.get('media') or []):
+                        for _trk in (_medium.get('tracks') or []):
+                            _trk_rec = _trk.get('recording') or {}
+                            _trk_title = _rec_re.sub(r'\s+', ' ', (_trk_rec.get('title') or '').lower().strip())
+                            _sim = _rec_difflib.SequenceMatcher(None, _norm_title, _trk_title).ratio()
+                            if _sim > _best_sim:
+                                _best_sim = _sim
+                                _best_rec_mbid = (_trk_rec.get('id') or '').strip()
+                    if _best_rec_mbid and _best_sim >= 0.80:
+                        recording_mbid = _best_rec_mbid
+                        logger.info(
+                            f"[MB_ENRICH] Queue {queue_id}: found recording_mbid={recording_mbid} "
+                            f"(title_sim={_best_sim:.2f})"
+                        )
+            except Exception as _rec_err:
+                logger.debug(f"[MB_ENRICH] Queue {queue_id}: recording MBID lookup failed (non-fatal): {_rec_err}")
 
         # Update original queue item with release-level metadata.
+        # Conditionally add recording_mbid to the SET clause only when we found one.
+        _rec_set_clause = (
+            f", recording_mbid = COALESCE({ph}, recording_mbid)"
+            if recording_mbid else ""
+        )
+        _rec_update_params = (recording_mbid,) if recording_mbid else ()
         cursor.execute(
             f"""
             UPDATE download_queue
@@ -310,11 +362,13 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
                 release_source = 'musicbrainz',
                 release_year = {ph},
                 album_artist = {ph},
-                cover_art_url = COALESCE({ph}, cover_art_url),
+                cover_art_url = COALESCE({ph}, cover_art_url){_rec_set_clause},
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = {ph}
             """,
-            (release_mbid, release_mbid, release_year, release_artist, cover_art_url, queue_id),
+            (release_mbid, release_mbid, release_year, release_artist, cover_art_url)
+            + _rec_update_params
+            + (queue_id,),
         )
 
         # When auto-enrichment confirms an MBID for an item that already has a
@@ -341,10 +395,48 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
             )
 
         conn.commit()
+
+        # Also update the tracks table placeholder row so that musicbrainz_albumid
+        # and musicbrainz_trackid are visible on the library page immediately.
+        try:
+            from download_queue_manager import _add_queue_item_to_tracks_table
+            cursor.execute(
+                f"SELECT * FROM download_queue WHERE id = {ph}",
+                (queue_id,),
+            )
+            _q = cursor.fetchone()
+            if _q:
+                _q = dict(_q) if hasattr(_q, 'keys') else {}
+                _add_queue_item_to_tracks_table(
+                    conn, cursor,
+                    _q.get('artist'), _q.get('title'), _q.get('album'),
+                    _q.get('album_artist'),
+                    _q.get('track_number'),
+                    _q.get('year') or _q.get('release_year'),
+                    _q.get('duration'),
+                    _q.get('disc_number'),
+                    release_mbid,
+                    recording_mbid or None,
+                    queue_id,
+                    _q.get('status'),
+                    isrc=_q.get('isrc'),
+                    composer=_q.get('composer'),
+                )
+                conn.commit()
+        except Exception as _tracks_sync_err:
+            logger.debug(
+                f"[MB_ENRICH] Queue {queue_id}: tracks table sync failed (non-fatal): {_tracks_sync_err}"
+            )
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
         conn.close()
         logger.info(
             f"[MB_ENRICH] Queue {queue_id}: updated release metadata "
-            f"(MBID={release_mbid}, artist={release_artist}, year={release_year})"
+            f"(MBID={release_mbid}, recording_mbid={recording_mbid or 'n/a'}, "
+            f"artist={release_artist}, year={release_year})"
         )
         
     except Exception as e:
