@@ -210,17 +210,17 @@
         const nameSlug    = importName.replace(/\s+/g, '_').substring(0, 80);
         const currentYear = String(new Date().getFullYear());
         const items = allTracks.map((t, idx) => ({
-          artist:         t.artist,
-          title:          t.title,
-          album:          importName,
-          album_artist:   'Various Artists',
-          year:           currentYear,
-          track_number:   idx + 1,
-          duration:       t.duration_s  || null,
-          genres:         t.genres      || null,
-          isrc:           t.isrc        || null,
-          release_id:     t.spotify_id  || null,
-          release_source: t.spotify_id ? 'spotify' : null,
+          artist:       t.artist,
+          title:        t.title,
+          album:        importName,
+          album_artist: 'Various Artists',
+          year:         currentYear,
+          track_number: idx + 1,
+          duration:     t.duration_s  || null,
+          genres:       t.genres      || null,
+          isrc:         t.isrc        || null,
+          // Playlists don't have an album release — omit per-track Spotify IDs
+          // so tracks aren't grouped as individual releases in the queue UI.
         }));
 
         let totalAdded = 0, totalSkipped = 0, totalFailed = 0;
@@ -2732,6 +2732,14 @@ async function loadFolderGroups(options = {}) {
     const individualItems = [];
     
     queueItemsToShow.forEach(item => {
+      // Items with an import_group belong to a playlist/batch import.
+      // Route them to individualItems so they are grouped by their shared
+      // import_group key rather than by a per-track release_id.
+      if ((item.import_group || '').trim()) {
+        individualItems.push(item);
+        return;
+      }
+
       const itemReleaseId = item.release_mbid || item.release_id;
       if (itemReleaseId) {
         // Group by release_id for album releases
