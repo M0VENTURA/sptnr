@@ -1666,8 +1666,7 @@ def setup():
             nav_base_urls = request.form.getlist("nav_base_url[]")
             nav_users = request.form.getlist("nav_user[]")
             nav_passes = request.form.getlist("nav_pass[]")
-            # Optional per-user fields (future: add more as needed)
-            # For now, only first user gets Spotify keys from main form
+            # Optional per-user fields
             users = []
             for i in range(len(nav_base_urls)):
                 user = {
@@ -1676,8 +1675,6 @@ def setup():
                     "pass": nav_passes[i],
                 }
                 if i == 0:
-                    user["spotify_client_id"] = request.form.get("spotify_client_id", "")
-                    user["spotify_client_secret"] = request.form.get("spotify_client_secret", "")
                     user["lastfm_api_key"] = request.form.get("lastfm_api_key", "")
                     user["discogs_token"] = request.form.get("discogs_token", "")
                 users.append(user)
@@ -1716,16 +1713,11 @@ def setup():
                 "source_lastfm_confidence": "medium",
                 "source_radio_edit_confidence": "high",
             }
-            weights = {"spotify": 0.10, "lastfm": 0.30, "listenbrainz": 0.35, "age": 0.25}
+            weights = {"lastfm": 0.30, "listenbrainz": 0.35, "age": 0.25}
 
             config = {
                 "navidrome_users": users,
                 "api_integrations": {
-                    "spotify": {
-                        "enabled": True,
-                        "client_id": request.form.get("spotify_client_id", ""),
-                        "client_secret": request.form.get("spotify_client_secret", "")
-                    },
                     "lastfm": {
                         "enabled": True,
                         "api_key": request.form.get("lastfm_api_key", "")
@@ -1735,6 +1727,7 @@ def setup():
                         "token": request.form.get("discogs_token", "")
                     },
                     "musicbrainz": {"enabled": True},
+                    "listenbrainz": {"enabled": True},
                     "audiodb": {"enabled": False, "api_key": ""},
                     "google": {"enabled": False, "api_key": "", "cse_id": ""},
                     "youtube": {"enabled": False, "api_key": ""},
@@ -1823,15 +1816,11 @@ def setup():
                 user["pass"] = user["navidrome_password"]
             if "username" in user:
                 user["user"] = user["username"]
-        spotify_client_id = config.get("api_integrations", {}).get("spotify", {}).get("client_id", "")
-        spotify_client_secret = config.get("api_integrations", {}).get("spotify", {}).get("client_secret", "")
         discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
         lastfm_api_key = config.get("api_integrations", {}).get("lastfm", {}).get("api_key", "")
         return render_template(
             "setup.html",
             nav_users=nav_users,
-            spotify_client_id=spotify_client_id,
-            spotify_client_secret=spotify_client_secret,
             discogs_token=discogs_token,
             lastfm_api_key=lastfm_api_key
         )
