@@ -35374,7 +35374,12 @@ def api_album_musicbrainz_compare():
 
             # Fuzzy title search across all discs (excluding already-matched library tracks)
             norm_mb = re.sub(r"\s+", " ", mb_track_title.lower().strip())
-            norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
+            # Derive a "core" title by truncating at the first parenthetical/bracket.
+            # Use str.find to avoid catastrophic backtracking on user-supplied text.
+            _paren = norm_mb.find('(')
+            _brack = norm_mb.find('[')
+            _cut = min(x for x in (_paren, _brack, len(norm_mb)) if x >= 0)
+            norm_mb_core = norm_mb[:_cut].rstrip()
 
             best_ratio = 0.0
             best_lib = None
