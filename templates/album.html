@@ -809,23 +809,30 @@
                                     {% endif %}
                                 </td>
                             </tr>
-                            {% if track._mb_diff_html %}
-                            <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}">
+                            {% if track._mb_diff_items %}
+                            {% for _item in track._mb_diff_items %}
+                            <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}" data-mb-field="{{ _item.field }}">
                                 <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
                                     <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
                                          style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
                                         <small class="text-warning-emphasis">
-                                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
+                                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz:</strong>
                                         </small>
-                                        <small class="text-muted">{{ track._mb_diff_html | safe }}</small>
+                                        <small class="text-muted">{{ _item.html | safe }}</small>
                                         <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
                                                 style="font-size: 0.75rem; white-space: nowrap;"
-                                                onclick="updateSingleTrackFromMB(this)">
-                                            <i class="bi bi-arrow-repeat"></i> Update
+                                                onclick="applyMBField(this)">
+                                            <i class="bi bi-check-lg"></i> Apply
+                                        </button>
+                                        <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                                                style="font-size: 0.75rem; white-space: nowrap;"
+                                                onclick="ignoreMBField(this)">
+                                            <i class="bi bi-x-lg"></i> Ignore
                                         </button>
                                     </div>
                                 </td>
                             </tr>
+                            {% endfor %}
                             {% endif %}
                             {% endif %}
                             {% endfor %}
@@ -982,23 +989,30 @@
                                 {% endif %}
                             </td>
                         </tr>
-                        {% if track._mb_diff_html %}
-                        <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}">
+                        {% if track._mb_diff_items %}
+                        {% for _item in track._mb_diff_items %}
+                        <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}" data-mb-field="{{ _item.field }}">
                             <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
                                 <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
                                      style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
                                     <small class="text-warning-emphasis">
-                                        <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
+                                        <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz:</strong>
                                     </small>
-                                    <small class="text-muted">{{ track._mb_diff_html | safe }}</small>
+                                    <small class="text-muted">{{ _item.html | safe }}</small>
                                     <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
                                             style="font-size: 0.75rem; white-space: nowrap;"
-                                            onclick="updateSingleTrackFromMB(this)">
-                                        <i class="bi bi-arrow-repeat"></i> Update
+                                            onclick="applyMBField(this)">
+                                        <i class="bi bi-check-lg"></i> Apply
+                                    </button>
+                                    <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                                            style="font-size: 0.75rem; white-space: nowrap;"
+                                            onclick="ignoreMBField(this)">
+                                        <i class="bi bi-x-lg"></i> Ignore
                                     </button>
                                 </div>
                             </td>
                         </tr>
+                        {% endfor %}
                         {% endif %}
                         {% endif %}
                         {% endfor %}
@@ -2637,7 +2651,7 @@
                 <button type="button" class="btn-close" onclick="clearMBComparison()" aria-label="Dismiss"></button>
             </div>`;
 
-        // Inject an update hint row below each matching track row
+        // Inject an update hint row below each matching track row — one row per diff field
         for (const trackComp of data.comparison) {
             if (!trackComp.needs_update || !trackComp.library_track_id) continue;
 
@@ -2645,49 +2659,151 @@
             const trackRow = document.querySelector(`[data-track-id="${CSS.escape(trackId)}"]`);
             if (!trackRow) continue;
 
-            const diffParts = [];
-            if (trackComp.diff_fields.includes('title')) {
-                diffParts.push(`Title: <em>${escapeHtml(trackComp.library_title)}</em> → <strong>${escapeHtml(trackComp.mb_title)}</strong>`);
-            }
-            if (trackComp.diff_fields.includes('track_number')) {
-                diffParts.push(`Track#: ${escapeHtml(String(trackComp.library_track_number))} → ${escapeHtml(String(trackComp.mb_track_number))}`);
-            }
-            if (trackComp.diff_fields.includes('year')) {
-                diffParts.push(`Year: ${escapeHtml(trackComp.library_year || '—')} → ${escapeHtml(String(trackComp.mb_year))}`);
-            }
-            if (trackComp.diff_fields.includes('mbid')) {
-                diffParts.push(`MusicBrainz ID: <em>missing</em> → <strong>added</strong>`);
-            }
-            if (trackComp.diff_fields.includes('duration')) {
-                diffParts.push(`Length: ${escapeHtml(trackComp.library_duration || '—')} → ${escapeHtml(trackComp.mb_duration || '—')}`);
-            }
-            if (trackComp.diff_fields.includes('disc_number')) {
-                diffParts.push(`Disc: ${escapeHtml(String(trackComp.library_disc_number || 1))} → ${escapeHtml(String(trackComp.mb_disc_number))}`);
+            // Build one row per diff field
+            const fieldLabels = {
+                title: () => `Title: <em>${escapeHtml(trackComp.library_title)}</em> → <strong>${escapeHtml(trackComp.mb_title)}</strong>`,
+                track_number: () => `Track#: ${escapeHtml(String(trackComp.library_track_number))} → ${escapeHtml(String(trackComp.mb_track_number))}`,
+                year: () => `Year: ${escapeHtml(trackComp.library_year || '—')} → ${escapeHtml(String(trackComp.mb_year))}`,
+                mbid: () => `MusicBrainz ID: <em>missing</em> → <strong>added</strong>`,
+                duration: () => `Length: ${escapeHtml(trackComp.library_duration || '—')} → ${escapeHtml(trackComp.mb_duration || '—')}`,
+                disc_number: () => `Disc: ${escapeHtml(String(trackComp.library_disc_number || 1))} → ${escapeHtml(String(trackComp.mb_disc_number))}`,
+            };
+
+            let insertAfter = trackRow;
+            // Skip any already-injected rows
+            let sib = insertAfter.nextElementSibling;
+            while (sib && (sib.classList.contains('mb-update-row') || sib.classList.contains('mb-missing-row'))) {
+                insertAfter = sib;
+                sib = sib.nextElementSibling;
             }
 
-            const updateRow = document.createElement('tr');
-            updateRow.className = 'mb-update-row';
-            updateRow.dataset.trackId = trackId;
-            // Store comparison data as JSON attribute for later use
-            updateRow.dataset.mbComp = JSON.stringify(trackComp);
+            for (const field of trackComp.diff_fields) {
+                if (!fieldLabels[field]) continue;
+                const updateRow = document.createElement('tr');
+                updateRow.className = 'mb-update-row';
+                updateRow.dataset.trackId = trackId;
+                updateRow.dataset.mbComp = JSON.stringify(trackComp);
+                updateRow.dataset.mbField = field;
+                updateRow.innerHTML = `
+                    <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                        <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
+                             style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
+                            <small class="text-warning-emphasis">
+                                <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz:</strong>
+                            </small>
+                            <small class="text-muted">${fieldLabels[field]()}</small>
+                            <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
+                                    style="font-size: 0.75rem; white-space: nowrap;"
+                                    onclick="applyMBField(this)">
+                                <i class="bi bi-check-lg"></i> Apply
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                                    style="font-size: 0.75rem; white-space: nowrap;"
+                                    onclick="ignoreMBField(this)">
+                                <i class="bi bi-x-lg"></i> Ignore
+                            </button>
+                        </div>
+                    </td>`;
+                insertAfter.insertAdjacentElement('afterend', updateRow);
+                insertAfter = updateRow;
+            }
+        }
+    }
 
-            updateRow.innerHTML = `
-                <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
-                    <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
-                         style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
-                        <small class="text-warning-emphasis">
-                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
-                        </small>
-                        <small class="text-muted">${diffParts.join(' &nbsp;·&nbsp; ')}</small>
-                        <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
-                                style="font-size: 0.75rem; white-space: nowrap;"
-                                onclick="updateSingleTrackFromMB(this)">
-                            <i class="bi bi-arrow-repeat"></i> Update
-                        </button>
-                    </div>
-                </td>`;
+    // Apply a single MusicBrainz field update for one track row
+    async function applyMBField(btn) {
+        const updateRow = btn.closest('.mb-update-row');
+        const trackComp = JSON.parse(updateRow.dataset.mbComp || '{}');
+        const trackId = String(trackComp.library_track_id || updateRow.dataset.trackId || '');
+        const field = updateRow.dataset.mbField || '';
 
-            trackRow.insertAdjacentElement('afterend', updateRow);
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+
+        // Check if this is the last pending row for this track so we can clear the pending flag
+        const siblingsForTrack = document.querySelectorAll(`.mb-update-row[data-track-id="${CSS.escape(trackId)}"]`);
+        const isLastField = siblingsForTrack.length === 1;
+
+        const payload = { track_id: trackId, sync_to_file: true };
+        if (isLastField) payload.clear_mb_pending = true;
+
+        if (field === 'title') payload.title = trackComp.mb_title;
+        else if (field === 'track_number') payload.track_number = String(trackComp.mb_track_number);
+        else if (field === 'year') payload.year = String(trackComp.mb_year);
+        else if (field === 'mbid' && trackComp.mb_recording_id) payload.mbid = trackComp.mb_recording_id;
+        else if (field === 'disc_number') payload.disc_number = trackComp.mb_disc_number;
+
+        try {
+            const resp = await fetch('/api/track/update-metadata', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await resp.json();
+            if (result.success) {
+                updateRow.remove();
+                if (field === 'title') {
+                    document.querySelectorAll(`.track-title-display-${CSS.escape(trackId)}`).forEach(el => {
+                        el.textContent = trackComp.mb_title;
+                    });
+                }
+                if (!document.querySelector('.mb-update-row')) {
+                    _showMBCompareBanner(
+                        '<i class="bi bi-check-circle-fill text-success me-2"></i>All MusicBrainz suggestions have been applied.',
+                        'success', true
+                    );
+                }
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+                alert('Failed to apply MusicBrainz update: ' + (result.error || 'Unknown error'));
+            }
+        } catch (err) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+            alert('Network error: ' + err.message);
+        }
+    }
+
+    // Permanently ignore a single MusicBrainz field suggestion for one track
+    async function ignoreMBField(btn) {
+        const updateRow = btn.closest('.mb-update-row');
+        const trackComp = JSON.parse(updateRow.dataset.mbComp || '{}');
+        const trackId = String(trackComp.library_track_id || updateRow.dataset.trackId || '');
+        const field = updateRow.dataset.mbField || '';
+
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+
+        const siblingsForTrack = document.querySelectorAll(`.mb-update-row[data-track-id="${CSS.escape(trackId)}"]`);
+        const isLastField = siblingsForTrack.length === 1;
+
+        try {
+            const resp = await fetch('/api/track/ignore-mb-field', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ track_id: trackId, field, clear_mb_pending: isLastField })
+            });
+            const result = await resp.json();
+            if (result.success) {
+                updateRow.remove();
+                if (!document.querySelector('.mb-update-row')) {
+                    _showMBCompareBanner(
+                        '<i class="bi bi-check-circle-fill text-success me-2"></i>All MusicBrainz suggestions have been handled.',
+                        'success', true
+                    );
+                }
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+                alert('Failed to ignore MusicBrainz field: ' + (result.error || 'Unknown error'));
+            }
+        } catch (err) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+            alert('Network error: ' + err.message);
         }
     }
 
