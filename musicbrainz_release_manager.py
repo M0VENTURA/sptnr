@@ -602,17 +602,22 @@ class MusicBrainzReleaseManager:
                              created_at, updated_at)
                             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', 
                                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                            ON CONFLICT DO NOTHING
+                            RETURNING id
                         """, (release_id, queue_id, disc_number, track_number, track_title,
                               track_artist, duration_ms, isrc, recording_mbid))
 
-                        # Fetch the mrt row id so we can back-link download_queue.metadata_id
-                        cursor.execute(
-                            f"SELECT id FROM musicbrainz_release_tracks WHERE queue_id = {placeholder} LIMIT 1",
-                            (queue_id,),
-                        )
                         mrt_row = cursor.fetchone()
                         mrt_id = self._row_get(mrt_row, 'id', 0, None)
+
+                        # Fallback: if RETURNING returned nothing, look up the existing row
+                        if not mrt_id:
+                            cursor.execute(
+                                f"SELECT id FROM musicbrainz_release_tracks WHERE queue_id = {placeholder} LIMIT 1",
+                                (queue_id,),
+                            )
+                            fb_row = cursor.fetchone()
+                            mrt_id = self._row_get(fb_row, 'id', 0, None)
+
                         if mrt_id:
                             try:
                                 cursor.execute(

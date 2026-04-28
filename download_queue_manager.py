@@ -1884,9 +1884,13 @@ def _upsert_release_metadata(conn, cursor, release_key, release_title, artist,
             rm_id = row.get('id') if hasattr(row, 'get') else row[0]
             conn.commit()
             return rm_id
-        # RETURNING may return nothing when ON CONFLICT DO UPDATE touches no
-        # columns; fall back to a plain SELECT.
-        conn.rollback()
+        # RETURNING returned nothing — this should not happen with ON CONFLICT DO UPDATE
+        # but fall back gracefully to a plain SELECT rather than rolling back.
+        logger.warning(
+            "[_upsert_release_metadata] RETURNING returned no row for release %s; "
+            "falling back to SELECT",
+            release_key,
+        )
         cursor.execute(
             "SELECT id FROM musicbrainz_releases WHERE release_id = %s",
             (release_key,),
@@ -2766,41 +2770,50 @@ def backfill_queue_metadata_ids(limit=500):
         conn = _get_postgres_conn_from_app_or_fallback()
         cursor = conn.cursor()
 
-        # Link release_metadata_id via release_mbid / release_id
+        # Link release_metadata_id via release_mbid / release_id.
+        # PostgreSQL does not support LIMIT directly on UPDATE; use a CTE with
+        # ctid to safely cap the number of rows touched per run.
         cursor.execute(
-            f"""
-            UPDATE download_queue dq
-               SET release_metadata_id = mr.id,
-                   updated_at = CURRENT_TIMESTAMP
-              FROM musicbrainz_releases mr
-             WHERE dq.release_metadata_id IS NULL
-               AND (
-                       (dq.release_mbid IS NOT NULL AND dq.release_mbid <> ''
-                        AND mr.release_id = dq.release_mbid)
-                    OR
-                       (dq.release_id IS NOT NULL AND dq.release_id <> ''
-                        AND mr.release_id = dq.release_id)
-                   )
-             LIMIT {limit}
             """
+            UPDATE download_queue dq
+               SET release_metadata_id = sub.mr_id,
+                   updated_at = CURRENT_TIMESTAMP
+              FROM (
+                  SELECT dq2.ctid AS row_ctid, mr.id AS mr_id
+                    FROM download_queue dq2
+                    JOIN musicbrainz_releases mr
+                      ON mr.release_id = COALESCE(
+                             NULLIF(dq2.release_mbid, ''),
+                             NULLIF(dq2.release_id, '')
+                         )
+                   WHERE dq2.release_metadata_id IS NULL
+                     AND COALESCE(dq2.release_mbid, dq2.release_id, '') <> ''
+                   LIMIT %s
+              ) sub
+             WHERE dq.ctid = sub.row_ctid
+            """,
+            (limit,),
         )
         releases_linked = cursor.rowcount or 0
         conn.commit()
 
         # Link metadata_id via musicbrainz_release_tracks.queue_id
         cursor.execute(
-            f"""
-            UPDATE download_queue dq
-               SET metadata_id = mrt.id,
-                   updated_at = CURRENT_TIMESTAMP
-              FROM musicbrainz_release_tracks mrt
-             WHERE dq.metadata_id IS NULL
-               AND mrt.queue_id = dq.id
-             LIMIT {limit}
             """
+            UPDATE download_queue dq
+               SET metadata_id = sub.mrt_id,
+                   updated_at = CURRENT_TIMESTAMP
+              FROM (
+                  SELECT dq2.ctid AS row_ctid, mrt.id AS mrt_id
+                    FROM download_queue dq2
+                    JOIN musicbrainz_release_tracks mrt ON mrt.queue_id = dq2.id
+                   WHERE dq2.metadata_id IS NULL
+                   LIMIT %s
+              ) sub
+             WHERE dq.ctid = sub.row_ctid
+            """,
+            (limit,),
         )
-        tracks_linked = cursor.rowcount or 0
-        conn.commit()
 
         if releases_linked or tracks_linked:
             logger.info(
@@ -2986,10 +2999,9 @@ def update_queue_item(queue_id, **kwargs):
                         """,
                         (kwargs['status'], queue_id),
                     )
-                    if cursor.rowcount and cursor.rowcount > 0:
-                        conn.commit()
-                    else:
-                        conn.rollback()
+                    # Commit regardless of rowcount — zero rows updated is fine
+                    # (no mrt entry for this queue item yet).
+                    conn.commit()
                 except Exception as _mrt_err:
                     logger.debug(
                         f"[update_queue_item] status propagation to mrt for queue {queue_id}: {_mrt_err}"
