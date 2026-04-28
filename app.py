@@ -18999,9 +18999,19 @@ def downloads_search(source):
     if not template:
         abort(404)
     
-    return render_template(template,
-                         qbit_config=qbit_config,
-                         slskd_config=slskd_config)
+    kwargs = dict(qbit_config=qbit_config, slskd_config=slskd_config)
+
+    if source == 'playlists':
+        navidrome_config = cfg.get("navidrome", {})
+        navidrome_users = cfg.get("navidrome_users", [])
+        if not navidrome_users and navidrome_config.get("user"):
+            navidrome_users = [{
+                "base_url": navidrome_config.get("base_url"),
+                "user": navidrome_config.get("user"),
+            }]
+        kwargs['navidrome_users'] = navidrome_users
+
+    return render_template(template, **kwargs)
 
 
 @app.route("/downloads/discover/<category>")
