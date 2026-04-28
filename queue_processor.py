@@ -477,6 +477,57 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     if _year_mismatch_rejects(norm_filename, queue_item):
         return 0.0
 
+    # Conflicting-artist-in-folder guard: when the directory portion of the
+    # Soulseek path contains a clearly different artist name (e.g. the path is
+    # "@@user\The Jesus and Mary Chain\Darklands\10 About You.mp3" but the
+    # queue artist is "The Pretty Reckless"), hard-reject.
+    #
+    # We extract each folder segment of the path (everything before the
+    # filename), split on separators, and test whether any segment is a strong
+    # fuzzy match against a named artist that is NOT the queue artist or
+    # album_artist.  "Strong" means ≥ 0.80 similarity so short common words
+    # (e.g. "The", "Band") never trigger this guard by themselves.
+    #
+    # Exempt compilations where the queue artist is a generic placeholder
+    # because we don't know the track artist and the folder may legitimately
+    # contain any artist name.
+    if not _is_compilation_release(queue_item) and artist_norm not in _GENERIC_COMPILATION_ARTISTS:
+        _dir_part = os.path.dirname(norm_filename)
+        # Soulseek paths use backslash separators; split on either.
+        _dir_segments = [s for s in re.split(r'[/\\]', _dir_part) if s and not s.startswith('@')]
+        for _seg in _dir_segments:
+            _seg_norm = _normalize_match_text(_seg)
+            # A segment must contain at least 2 meaningful tokens to be
+            # considered an artist candidate (avoids single-word false hits).
+            if not _seg_norm or len(_tokenize_meaningful(_seg_norm)) < 2:
+                continue
+            # If the segment matches the queue artist or album_artist it's fine.
+            if _seq_ratio(artist_norm, _seg_norm) >= 0.80:
+                break
+            if album_artist_norm and _seq_ratio(album_artist_norm, _seg_norm) >= 0.80:
+                break
+            # If the segment matches a generic compilation placeholder, skip it.
+            if _seg_norm.lower() in _GENERIC_COMPILATION_ARTISTS:
+                continue
+            # Hard-reject: the folder segment is a plausible artist-level name
+            # AND it clearly does not match the queue artist.  For example,
+            # "thejesusandmarychain" (segment) vs "theprettyreckless" (queue)
+            # have near-zero similarity → reject.
+            # We only fire when the queue artist itself is NOT found in the
+            # segment — that means the segment represents a genuinely different
+            # artist, not an alternate spelling of the same one.
+            if _seq_ratio(artist_norm, _seg_norm) < 0.60 and (
+                not album_artist_norm or _seq_ratio(album_artist_norm, _seg_norm) < 0.60
+            ):
+                logger.debug(
+                    "Queue scorer: rejecting '%s' — folder segment '%s' "
+                    "conflicts with queue artist '%s'",
+                    os.path.basename(norm_filename),
+                    _seg,
+                    queue_item.get('artist', ''),
+                )
+                return 0.0
+
     # Variant tokens are defined at module level as TITLE_VARIANT_TOKENS and
     # aliased here for brevity; they are needed by both the early matching block
     # and the orphan-token penalty further below.
