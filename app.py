@@ -36577,7 +36577,7 @@ def api_track_ignore_mb_field():
 
     except Exception as e:
         logging.error(f"[ignore_mb_field] Error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to ignore field"}), 500
     finally:
         if conn is not None:
             try:
