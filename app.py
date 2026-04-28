@@ -14054,7 +14054,7 @@ def album_detail(artist, album):
                         _items.append({
                             'field': 'year',
                             'html': _html_mod.escape(
-                                f"Year: {_comp.get('library_year', '\u2014')} \u2192 {_comp.get('mb_year', '')}"
+                                f"Year: {_comp.get('library_year', '—')} \u2192 {_comp.get('mb_year', '')}"
                             ),
                         })
                     if 'mbid' in _diff_fields:
@@ -14066,7 +14066,7 @@ def album_detail(artist, album):
                         _items.append({
                             'field': 'duration',
                             'html': _html_mod.escape(
-                                f"Length: {_comp.get('library_duration', '\u2014')} \u2192 {_comp.get('mb_duration', '\u2014')}"
+                                f"Length: {_comp.get('library_duration', '—')} \u2192 {_comp.get('mb_duration', '—')}"
                             ),
                         })
                     if 'disc_number' in _diff_fields:
