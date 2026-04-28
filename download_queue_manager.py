@@ -6542,6 +6542,7 @@ def _enrich_stale_unmatched_queue_items():
             WHERE status = 'unmatched'
               AND (release_mbid IS NULL OR release_mbid = '')
               AND (release_id   IS NULL OR release_id   = '')
+              AND COALESCE(import_type, '') != 'playlist'
               AND file_path IS NOT NULL
               AND created_at <= CURRENT_TIMESTAMP - %s * INTERVAL '1 minute'
             LIMIT 50
