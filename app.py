@@ -12978,9 +12978,15 @@ def api_album_search_art():
         images = []
         
         if source == "musicbrainz":
-            # Search for release-group
+            import difflib as _difflib_art
+            # Search release-groups using the correct field name for the endpoint.
+            # Use "releasegroup:" for title matching and "artist:" for artist filtering.
             search_url = "https://musicbrainz.org/ws/2/release-group"
-            params = {"query": f'release:"{album_name}" AND artist:"{artist_name}"', "fmt": "json", "limit": 20}
+            params = {
+                "query": f'releasegroup:"{album_name}" AND artist:"{artist_name}"',
+                "fmt": "json",
+                "limit": 20,
+            }
             headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
             
             resp = requests.get(search_url, params=params, headers=headers, timeout=10)
@@ -12988,31 +12994,99 @@ def api_album_search_art():
             data = resp.json()
             
             logger.debug(f"MusicBrainz search returned {len(data.get('release-groups', []))} results")
-            
+
+            # Normalise helper for comparison
+            def _norm_title(t):
+                return re.sub(r"[^a-z0-9]", "", (t or "").lower())
+
+            norm_album = _norm_title(album_name)
+
             for rg in data.get("release-groups", [])[:20]:
                 rg_id = rg.get("id")
-                if rg_id:
-                    # Try multiple image formats from CAA
-                    for image_format in ["front-500", "front-250", "front"]:
-                        image_url = f"https://coverartarchive.org/release-group/{rg_id}/{image_format}"
-                        
-                        # Verify the URL exists before adding
-                        try:
-                            head_resp = requests.head(image_url, timeout=3)
-                            if head_resp.status_code == 200:
-                                images.append({
-                                    "url": image_url,
-                                    "source": "MusicBrainz CAA",
-                                    "title": rg.get("title", ""),
-                                    "artist": rg.get("artist-credit", [{}])[0].get("name", "") if rg.get("artist-credit") else ""
-                                })
-                                break  # Found one, don't try other formats for this RG
-                        except Exception as e:
-                            logger.debug(f"HEAD request failed for {image_url}: {e}")
-                            continue
+                if not rg_id:
+                    continue
+
+                rg_title = rg.get("title", "")
+                # Skip results whose title is very dissimilar to the query to avoid
+                # returning artwork for a completely different album.
+                if norm_album:
+                    ratio = _difflib_art.SequenceMatcher(
+                        None, norm_album, _norm_title(rg_title)
+                    ).ratio()
+                    if ratio < 0.40:
+                        logger.debug(
+                            f"Skipping release-group '{rg_title}' (similarity {ratio:.2f} < 0.40)"
+                        )
+                        continue
+
+                # The Cover Art Archive stores images per release, not per release-group.
+                # Attempt front image for the release-group; if that fails, enumerate
+                # individual releases within the group to find a cover.
+                found_for_rg = False
+                for image_format in ["front-500", "front-250", "front"]:
+                    image_url = f"https://coverartarchive.org/release-group/{rg_id}/{image_format}"
+                    try:
+                        head_resp = requests.head(image_url, timeout=3, allow_redirects=True)
+                        if head_resp.status_code == 200:
+                            artist_display = (
+                                rg.get("artist-credit", [{}])[0].get("name", "")
+                                if rg.get("artist-credit")
+                                else ""
+                            )
+                            images.append({
+                                "url": image_url,
+                                "source": "MusicBrainz CAA",
+                                "title": rg_title,
+                                "artist": artist_display,
+                            })
+                            found_for_rg = True
+                            break
+                    except Exception as e:
+                        logger.debug(f"HEAD request failed for {image_url}: {e}")
+                        continue
+
+                if not found_for_rg:
+                    # Fall back to individual releases within the group
+                    try:
+                        rg_detail_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}"
+                        rg_detail_resp = requests.get(
+                            rg_detail_url,
+                            params={"fmt": "json", "inc": "releases"},
+                            headers=headers,
+                            timeout=5,
+                        )
+                        if rg_detail_resp.status_code == 200:
+                            releases_in_group = rg_detail_resp.json().get("releases", [])
+                            for rel in releases_in_group[:5]:
+                                rel_id = rel.get("id")
+                                if not rel_id:
+                                    continue
+                                rel_img_url = f"https://coverartarchive.org/release/{rel_id}/front-500"
+                                try:
+                                    rel_head = requests.head(rel_img_url, timeout=3, allow_redirects=True)
+                                    if rel_head.status_code == 200:
+                                        artist_display = (
+                                            rg.get("artist-credit", [{}])[0].get("name", "")
+                                            if rg.get("artist-credit")
+                                            else ""
+                                        )
+                                        images.append({
+                                            "url": rel_img_url,
+                                            "source": "MusicBrainz CAA",
+                                            "title": rg_title,
+                                            "artist": artist_display,
+                                        })
+                                        found_for_rg = True
+                                        break
+                                except Exception:
+                                    continue
+                    except Exception as rg_detail_err:
+                        logger.debug(f"Release-group detail fetch failed for {rg_id}: {rg_detail_err}")
+
         
         elif source == "discogs":
             # Search Discogs for release
+            import difflib as _difflib_art_discogs
             from popularity import _discogs_search, _get_discogs_session
             
             config_data, _ = _read_yaml(CONFIG_PATH)
@@ -13023,7 +13097,12 @@ def api_album_search_art():
             headers = {"User-Agent": "Popularr/1.0"}
             if discogs_token:
                 headers["Authorization"] = f"Discogs token={discogs_token}"
-            
+
+            def _norm_title_d(t):
+                return re.sub(r"[^a-z0-9]", "", (t or "").lower())
+
+            norm_album_d = _norm_title_d(album_name)
+
             # Search with album and artist - try different query formats
             for query in [f"{artist_name} {album_name}", f'"{album_name}" {artist_name}', album_name]:
                 try:
@@ -13032,6 +13111,21 @@ def api_album_search_art():
                     
                     for result in results[:15]:
                         if result.get("cover_image"):
+                            # Filter out results that don't match the album title at all.
+                            # Discogs returns a combined "Artist - Title" string in result["title"].
+                            result_title_raw = result.get("title", "")
+                            # Discogs title is often "Artist - Album"
+                            result_album_part = result_title_raw.split(" - ", 1)[-1] if " - " in result_title_raw else result_title_raw
+                            if norm_album_d:
+                                ratio_d = _difflib_art_discogs.SequenceMatcher(
+                                    None, norm_album_d, _norm_title_d(result_album_part)
+                                ).ratio()
+                                if ratio_d < 0.35:
+                                    logger.debug(
+                                        f"Skipping Discogs result '{result_title_raw}' "
+                                        f"(similarity {ratio_d:.2f} < 0.35)"
+                                    )
+                                    continue
                             # Verify the image URL is valid
                             try:
                                 img_resp = requests.head(result["cover_image"], timeout=3)
@@ -13039,7 +13133,7 @@ def api_album_search_art():
                                     images.append({
                                         "url": result["cover_image"],
                                         "source": "Discogs",
-                                        "title": result.get("title", ""),
+                                        "title": result_album_part,
                                         "artist": ", ".join([a.get("name", "") for a in result.get("artists", [])])
                                     })
                             except Exception as e:
@@ -13095,7 +13189,93 @@ def api_album_search_art():
         return jsonify({"error": str(e), "images": []}), 500
 
 
-@app.route("/api/album/set-art", methods=["POST"])
+@app.route("/api/album/queue-status", methods=["GET"])
+def api_album_queue_status():
+    """Return the current download-queue status for every queued track in an album.
+
+    Query params: artist, album
+    Returns a mapping of track_id -> {queue_id, status, label, css, icon}
+    so the album page can update its "In Queue" badges dynamically.
+    """
+    artist_name = request.args.get("artist", "").strip()
+    album_name = request.args.get("album", "").strip()
+    if not artist_name or not album_name:
+        return jsonify({"error": "artist and album are required"}), 400
+
+    try:
+        from queue_status_constants import STATUS_DISPLAY_CONFIG, ACTIVE_QUEUE_STATUSES
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = get_placeholder(conn)
+
+        # Find all track stubs that still carry a __queued_for_download__ marker for
+        # this album so we know which queue items to look up.
+        cursor.execute(
+            f"""
+            SELECT id, title, file_path
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+              AND album = {placeholder}
+              AND file_path LIKE '__queued_for_download__%%'
+            """,
+            (artist_name, album_name),
+        )
+        queued_rows = cursor.fetchall()
+
+        result = {}
+        for row in queued_rows:
+            is_dict = hasattr(row, 'keys')
+            track_id = row['id'] if is_dict else row[0]
+            file_path = (row['file_path'] if is_dict else row[2]) or ''
+
+            # Extract queue_id from the file_path marker: __queued_for_download__queue_id_<N>
+            queue_id = None
+            if 'queue_id_' in file_path:
+                try:
+                    queue_id = int(file_path.split('queue_id_')[-1])
+                except (ValueError, IndexError):
+                    pass
+
+            if queue_id is None:
+                result[track_id] = {
+                    "queue_id": None,
+                    "status": "queued",
+                    "label": "In Queue",
+                    "css": "bg-warning text-dark",
+                    "icon": "clock",
+                }
+                continue
+
+            # Look up current status in download_queue
+            cursor.execute(
+                f"SELECT status FROM download_queue WHERE id = {placeholder}",
+                (queue_id,),
+            )
+            dq_row = cursor.fetchone()
+            if dq_row:
+                status = (dq_row['status'] if hasattr(dq_row, 'keys') else dq_row[0]) or 'queued'
+            else:
+                status = 'queued'
+
+            cfg = STATUS_DISPLAY_CONFIG.get(status, {})
+            result[track_id] = {
+                "queue_id": queue_id,
+                "status": status,
+                "label": cfg.get("label", status.capitalize()),
+                "css": cfg.get("css", "bg-warning text-dark"),
+                "icon": cfg.get("icon", "clock"),
+            }
+
+        conn.close()
+        return jsonify({"success": True, "tracks": result})
+
+    except Exception as e:
+        logging.error(f"[ALBUM_QUEUE_STATUS] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+
 def api_album_set_art():
     """Set custom album art"""
     data = request.json or {}

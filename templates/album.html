@@ -4606,6 +4606,106 @@ function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
     })
     .catch(err => alert('Network error: ' + err.message));
 }
+
+// ---------------------------------------------------------------------------
+// Live queue-status polling
+// Polls /api/album/queue-status every 8 seconds while there are still tracks
+// with an active download status.  Updates badges in-place so the user can see
+// real-time progress (Queued → Searching → Downloading → Completed) without a
+// full page reload.
+// ---------------------------------------------------------------------------
+(function () {
+    const _albumArtist = {{ artist_name | tojson }};
+    const _albumName   = {{ album_name  | tojson }};
+
+    // Collect all queue-status badge spans on the page at startup.
+    // Each queued track row has data-track-id on the <tr> and badge spans
+    // with class "queue-status-badge" that we populate below.
+    const POLL_INTERVAL_MS = 8000;
+    const ACTIVE_STATUSES = new Set(['queued', 'searching', 'downloading', 'unmatched', 'moving', 'queried', 'copy_recommended']);
+    let _pollTimer = null;
+
+    // Map existing "In Queue" static badges to JS-controlled spans so we can
+    // update them without touching anything else.
+    document.querySelectorAll('.badge.bg-warning[title="This track is currently in the download queue"]').forEach(badge => {
+        // Find the parent <tr data-track-id="...">
+        const row = badge.closest('tr[data-track-id]');
+        if (!row) return;
+        badge.classList.add('queue-status-badge');
+        badge.dataset.trackId = row.dataset.trackId;
+    });
+
+    const allBadges = () => document.querySelectorAll('.queue-status-badge[data-track-id]');
+
+    function hasActiveBadges() {
+        for (const b of allBadges()) {
+            if (ACTIVE_STATUSES.has(b.dataset.currentStatus || 'queued')) return true;
+        }
+        return false;
+    }
+
+    function applyStatusToBadge(badge, info) {
+        badge.dataset.currentStatus = info.status;
+        badge.className = `badge ${info.css} ms-1 queue-status-badge`;
+        // Build label with icon
+        badge.innerHTML = `<i class="bi bi-${info.icon} me-1"></i>${escapeHtml(info.label)}`;
+        badge.title = `Download status: ${info.label}`;
+    }
+
+    async function pollQueueStatus() {
+        const badges = allBadges();
+        if (badges.length === 0) {
+            stopPolling();
+            return;
+        }
+
+        try {
+            const resp = await fetch(
+                `/api/album/queue-status?artist=${encodeURIComponent(_albumArtist)}&album=${encodeURIComponent(_albumName)}`
+            );
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (!data.success || !data.tracks) return;
+
+            for (const badge of badges) {
+                const trackId = badge.dataset.trackId;
+                const info = data.tracks[trackId];
+                if (!info) continue;
+
+                applyStatusToBadge(badge, info);
+
+                // If a track completed, trigger a page reload after a short delay
+                // so the track row is replaced with the real file-based row.
+                if (info.status === 'completed') {
+                    badge.innerHTML = `<i class="bi bi-check-circle-fill me-1"></i>Completed`;
+                    badge.className = 'badge bg-success ms-1 queue-status-badge';
+                }
+            }
+
+            if (!hasActiveBadges()) {
+                stopPolling();
+                // All queued tracks are now done — reload the page to show real rows.
+                setTimeout(() => location.reload(), 2500);
+            }
+        } catch (_e) {
+            // Silently ignore network errors during polling
+        }
+    }
+
+    function stopPolling() {
+        if (_pollTimer !== null) {
+            clearInterval(_pollTimer);
+            _pollTimer = null;
+        }
+    }
+
+    // Only start polling if there are actually queued tracks on this page.
+    if (allBadges().length > 0) {
+        // Kick off an immediate check, then repeat.
+        pollQueueStatus();
+        _pollTimer = setInterval(pollQueueStatus, POLL_INTERVAL_MS);
+    }
+})();
 </script>
 
 {% endblock %}
