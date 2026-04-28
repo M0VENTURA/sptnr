@@ -34066,6 +34066,195 @@ def api_playlist_create():
         )
 
 
+@app.route("/api/playlist/import/csv/create-album", methods=["POST"])
+def api_csv_create_album():
+    """Create a Various Artists album from CSV import results.
+
+    Request body (JSON):
+        {
+            "playlist_name": "My Playlist",
+            "matched_tracks": [{"id": "track-123", ...}, ...],
+            "missing_tracks": [{"artist": "X", "title": "Y", "album": "Z", "isrc": "..."}, ...]
+        }
+
+    For each matched track the source file is copied to
+        {music_folder}/Various Artists/{playlist_name}/
+    and its album, album_artist tags are updated to the playlist name and
+    "Various Artists" respectively; all MusicBrainz MBID tags are removed.
+
+    Each missing track is added to the download queue under the same album name.
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        playlist_name = (data.get("playlist_name") or "").strip()
+        matched_tracks = data.get("matched_tracks") or []
+        missing_tracks = data.get("missing_tracks") or []
+
+        if not playlist_name:
+            return jsonify({"error": "playlist_name is required"}), 400
+
+        # Resolve music folder
+        cfg = get_config()
+        music_folder = os.path.realpath(
+            cfg.get("navidrome", {}).get("music_folder", "")
+            or os.environ.get("MUSIC_FOLDER", "")
+            or os.environ.get("MUSIC_DIR", "/music")
+        )
+        if not music_folder:
+            return jsonify({"error": "Music folder is not configured"}), 500
+
+        # Sanitize playlist name for use as a folder name
+        safe_name = "".join(
+            c for c in playlist_name if c.isalnum() or c in (' ', '-', '_', '.', '(', ')')
+        ).strip()
+        if not safe_name:
+            return jsonify({"error": "Playlist name contains no valid characters for a folder name"}), 400
+
+        album_dir = os.path.join(music_folder, "Various Artists", safe_name)
+        try:
+            os.makedirs(album_dir, exist_ok=True)
+        except OSError as dir_err:
+            logging.error(f"[csv/create-album] Could not create album directory '{album_dir}': {dir_err}")
+            return jsonify({"error": f"Could not create album directory: {dir_err}"}), 500
+
+        # All MBID tag fields – set to "" so write_tags_to_file removes the frames
+        MBID_CLEAR = {
+            "mbid":                        "",
+            "musicbrainz_albumid":         "",
+            "musicbrainz_albumartistid":   "",
+            "musicbrainz_artistid":        "",
+            "musicbrainz_releasegroupid":  "",
+            "musicbrainz_releasetrackid":  "",
+            "musicbrainz_workid":          "",
+        }
+
+        def _resolve_file_path(raw_path):
+            """Return absolute path for raw_path, trying music_folder as root when relative."""
+            if not raw_path:
+                return None
+            if os.path.isabs(raw_path) and os.path.isfile(raw_path):
+                return raw_path
+            for root in (music_folder, os.environ.get("MUSIC_ROOT"), os.environ.get("MUSIC_DIR")):
+                if not root:
+                    continue
+                candidate = os.path.join(root, raw_path)
+                if os.path.isfile(candidate):
+                    return candidate
+            return None
+
+        copied = []
+        copy_failed = []
+
+        conn = get_db()
+        try:
+            cursor = conn.cursor()
+            from helpers.tag_manager import write_tags_to_file
+
+            for track in matched_tracks:
+                track_id = str(track.get("id") or "").strip()
+                if not track_id:
+                    copy_failed.append({"reason": "missing id", "track": track})
+                    continue
+
+                cursor.execute("SELECT file_path FROM tracks WHERE id = %s", (track_id,))
+                row = cursor.fetchone()
+                if not row or not row["file_path"]:
+                    copy_failed.append({"id": track_id, "reason": "no file_path in database"})
+                    continue
+
+                src_path = _resolve_file_path(row["file_path"])
+                if not src_path:
+                    copy_failed.append({"id": track_id, "reason": "source file not found on disk"})
+                    continue
+
+                # Security: source must be inside music folder
+                src_real = os.path.realpath(src_path)
+                if not (src_real.startswith(music_folder + os.sep) or src_real == music_folder):
+                    logging.warning(f"[csv/create-album] Source outside music folder, skipping: {src_real}")
+                    copy_failed.append({"id": track_id, "reason": "source file outside music folder"})
+                    continue
+
+                filename = os.path.basename(src_real)
+                dst_path = os.path.join(album_dir, filename)
+
+                # Avoid overwriting a different file with the same name
+                if os.path.exists(dst_path) and os.path.realpath(dst_path) != src_real:
+                    base, ext = os.path.splitext(filename)
+                    counter = 1
+                    while True:
+                        candidate_dst = os.path.join(album_dir, f"{base}_{counter}{ext}")
+                        if not os.path.exists(candidate_dst):
+                            dst_path = candidate_dst
+                            break
+                        counter += 1
+
+                try:
+                    import shutil
+                    shutil.copy2(src_real, dst_path)
+                except OSError as copy_err:
+                    logging.error(f"[csv/create-album] Failed to copy {src_real} -> {dst_path}: {copy_err}")
+                    copy_failed.append({"id": track_id, "reason": str(copy_err)})
+                    continue
+
+                # Update tags on the copy: new album identity + clear MBIDs
+                tags = {"album": playlist_name, "album_artist": "Various Artists"}
+                tags.update(MBID_CLEAR)
+                write_tags_to_file(dst_path, tags)
+
+                copied.append({"id": track_id, "path": dst_path})
+                logging.debug(f"[csv/create-album] Copied and tagged: {src_real} -> {dst_path}")
+        finally:
+            conn.close()
+
+        # Add missing tracks to download queue
+        from download_queue_manager import add_to_queue
+        queued = []
+        queue_failed = []
+
+        for track in missing_tracks:
+            artist = (track.get("artist") or "").strip()
+            title  = (track.get("title") or "").strip()
+            if not artist or not title:
+                queue_failed.append(track)
+                continue
+
+            result = add_to_queue(
+                artist=artist,
+                title=title,
+                album=playlist_name,
+                album_artist="Various Artists",
+                source="soulseek",
+                priority=5,
+                import_type="song",
+                isrc=(track.get("isrc") or None) or None,
+            )
+            if result:
+                queued.append({"artist": artist, "title": title})
+            else:
+                queue_failed.append({"artist": artist, "title": title, "reason": "add_to_queue returned None"})
+
+        logging.info(
+            f"[csv/create-album] '{playlist_name}': "
+            f"copied={len(copied)}, queued={len(queued)}, "
+            f"copy_failed={len(copy_failed)}, queue_failed={len(queue_failed)}"
+        )
+
+        return jsonify({
+            "success":      True,
+            "album_name":   playlist_name,
+            "album_dir":    album_dir,
+            "copied":       len(copied),
+            "queued":       len(queued),
+            "copy_failed":  len(copy_failed),
+            "queue_failed": len(queue_failed),
+            "failed_details": copy_failed,
+        })
+
+    except Exception as exc:
+        logging.error(f"[csv/create-album] Unexpected error: {exc}", exc_info=True)
+        return jsonify({"error": "An unexpected error occurred"}), 500
+
+
 def extract_spotify_playlist_id(url_or_id):
     """Extract Spotify playlist ID from URL or return the ID if already in correct format"""
     import re
