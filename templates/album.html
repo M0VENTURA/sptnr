@@ -2921,7 +2921,9 @@
                 year: () => `Year: ${escapeHtml(trackComp.library_year || '—')} → ${escapeHtml(String(trackComp.mb_year))}`,
                 mbid: () => `MusicBrainz ID: <em>missing</em> → <strong>added</strong>`,
                 duration: () => `Length: ${escapeHtml(trackComp.library_duration || '—')} → ${escapeHtml(trackComp.mb_duration || '—')}`,
-                disc_number: () => `Disc: ${escapeHtml(String(trackComp.library_disc_number || 1))} → ${escapeHtml(String(trackComp.mb_disc_number))}`,
+                disc_number: () => trackComp.cross_disc_match
+                    ? `Move to Disc ${escapeHtml(String(trackComp.mb_disc_number))} (track ${escapeHtml(String(trackComp.mb_track_number || '?'))})`
+                    : `Disc: ${escapeHtml(String(trackComp.library_disc_number || 1))} → ${escapeHtml(String(trackComp.mb_disc_number))}`,
             };
 
             let insertAfter = trackRow;

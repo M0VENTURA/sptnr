@@ -14212,11 +14212,17 @@ def album_detail(artist, album):
                             ),
                         })
                     if 'disc_number' in _diff_fields:
+                        if _comp.get('cross_disc_match'):
+                            _html_disc = _html_mod.escape(
+                                f"Move to Disc {_comp.get('mb_disc_number', '')} (track {_comp.get('mb_track_number', '?')})"
+                            )
+                        else:
+                            _html_disc = _html_mod.escape(
+                                f"Disc: {_comp.get('library_disc_number', 1)} \u2192 {_comp.get('mb_disc_number', '')}"
+                            )
                         _items.append({
                             'field': 'disc_number',
-                            'html': _html_mod.escape(
-                                f"Disc: {_comp.get('library_disc_number', 1)} \u2192 {_comp.get('mb_disc_number', '')}"
-                            ),
+                            'html': _html_disc,
                         })
 
                     if _items:
@@ -35335,6 +35341,150 @@ def api_album_musicbrainz_compare():
 
             comparison.append(entry)
 
+        tracks_needing_update = sum(1 for c in comparison if c["needs_update"])
+
+        # ── Cross-disc matching pass ──────────────────────────────────────────
+        # After the same-disc pass, some MB tracks may remain unmatched because
+        # the library stores them under a different disc number (e.g. library has
+        # tracks 23–37 on disc 1 but MusicBrainz places them on disc 2).
+        # For each still-unmatched MB track, try a fuzzy title match against
+        # still-unmatched library tracks on *any* disc.  When a cross-disc match
+        # is found the track is promoted to a regular comparison entry with
+        # "disc_number" in diff_fields so the UI can suggest the corrective move.
+        matched_mb_recording_ids: set = {
+            e.get("mb_recording_id", "") for e in comparison if e.get("matched")
+        }
+        for mb_track in mb_tracks:
+            mb_recording_id = mb_track.get("recording_mbid", "")
+            if mb_recording_id and mb_recording_id in matched_mb_recording_ids:
+                continue
+            mb_track_title = mb_track.get("title", "")
+            mb_num = mb_track.get("track_number")
+            disc = int(mb_track.get("disc_number") or 1)
+
+            # Check whether this MB track was already matched in the main pass.
+            already_matched = any(
+                e.get("matched") and e.get("mb_title") == mb_track_title
+                and int(e.get("mb_disc_number") or 1) == disc
+                and e.get("mb_track_number") == mb_num
+                for e in comparison
+            )
+            if already_matched:
+                continue
+
+            # Fuzzy title search across all discs (excluding already-matched library tracks)
+            norm_mb = re.sub(r"\s+", " ", mb_track_title.lower().strip())
+            norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
+
+            best_ratio = 0.0
+            best_lib = None
+            for t in library_tracks:
+                if t.get("id") in matched_lib_ids:
+                    continue
+                # Must be on a different disc to be a cross-disc candidate
+                lib_disc = int(t.get("disc_number") or 1)
+                if lib_disc == disc:
+                    continue
+                lib_norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
+                ratio = _difflib.SequenceMatcher(None, norm_mb, lib_norm).ratio()
+                if ratio < 0.80 and norm_mb_core and norm_mb_core != norm_mb:
+                    ratio = max(ratio, _difflib.SequenceMatcher(None, norm_mb_core, lib_norm).ratio())
+                if ratio > best_ratio and ratio >= 0.80:
+                    best_ratio = ratio
+                    best_lib = t
+
+            if best_lib is None:
+                continue
+
+            # We have a cross-disc match — build a comparison entry identical to
+            # the same-disc path but with disc_number guaranteed in diff_fields.
+            lib_track = best_lib
+            matched_lib_ids.add(lib_track["id"])
+            if mb_recording_id:
+                matched_mb_recording_ids.add(mb_recording_id)
+
+            mb_year = mb_release.get("release_year", "")
+            mb_duration_ms_raw = mb_track.get("duration")
+            mb_duration_sec_raw = int(mb_duration_ms_raw // 1000) if mb_duration_ms_raw else None
+
+            entry = {
+                "mb_track_number": mb_num,
+                "mb_disc_number": disc,
+                "mb_title": mb_track_title,
+                "mb_artist": mb_track.get("artist", ""),
+                "mb_recording_id": mb_recording_id,
+                "mb_year": mb_year,
+                "library_track_id": lib_track["id"],
+                "library_title": lib_track.get("title", ""),
+                "library_track_number": lib_track.get("track_number"),
+                "library_disc_number": int(lib_track.get("disc_number") or 1),
+                "library_artist": lib_track.get("artist", ""),
+                "library_year": str(lib_track.get("year") or ""),
+                "mb_duration": None,
+                "mb_duration_sec": mb_duration_sec_raw,
+                "library_duration": None,
+                "matched": True,
+                "cross_disc_match": True,
+            }
+
+            diff_fields = []
+            if mb_track_title and mb_track_title != lib_track.get("title", ""):
+                lib_title = lib_track.get("title", "")
+                if re.search(r'\([^)]*\bcover\b[^)]*\)', lib_title, re.IGNORECASE):
+                    stripped = re.sub(r'\s*\([^)]*\bcover\b[^)]*\)', '', lib_title, flags=re.IGNORECASE).strip()
+                    if stripped.lower() != mb_track_title.lower():
+                        diff_fields.append("title")
+                else:
+                    diff_fields.append("title")
+            if mb_num is not None and str(mb_num) != str(lib_track.get("track_number") or ""):
+                diff_fields.append("track_number")
+            if mb_year and str(mb_year) != str(lib_track.get("year") or ""):
+                diff_fields.append("year")
+            lib_mbid = (lib_track.get("mbid") or "").strip()
+            if mb_recording_id and not lib_mbid:
+                diff_fields.append("mbid")
+
+            mb_duration_sec = (mb_duration_ms_raw / 1000.0) if mb_duration_ms_raw else None
+            raw_lib_dur = lib_track.get("duration")
+            if raw_lib_dur not in (None, "", 0, "0"):
+                try:
+                    lib_dur_val = float(raw_lib_dur)
+                    lib_duration_sec = (lib_dur_val / 1000.0) if lib_dur_val > 10000 else lib_dur_val
+                    lib_duration_sec = lib_duration_sec if lib_duration_sec > 0 else None
+                except (TypeError, ValueError):
+                    lib_duration_sec = None
+            else:
+                lib_duration_sec = None
+
+            def _fmt_dur2(sec):
+                if sec is None:
+                    return None
+                s = int(round(sec))
+                return f"{s // 60}:{s % 60:02d}"
+
+            entry["mb_duration"] = _fmt_dur2(mb_duration_sec)
+            entry["library_duration"] = _fmt_dur2(lib_duration_sec)
+            if mb_duration_sec is not None and lib_duration_sec is not None:
+                if abs(mb_duration_sec - lib_duration_sec) > 5:
+                    diff_fields.append("duration")
+
+            # disc_number mismatch is the whole point of this match
+            diff_fields.append("disc_number")
+
+            import json as _json_xdisc
+            _raw_ignored = lib_track.get("mb_ignored_fields") or "[]"
+            try:
+                _ignored_set = set(_json_xdisc.loads(_raw_ignored))
+            except Exception:
+                _ignored_set = set()
+            diff_fields = [f for f in diff_fields if f not in _ignored_set]
+            diff_fields = list(dict.fromkeys(diff_fields))  # deduplicate, preserve order
+
+            entry["diff_fields"] = diff_fields
+            entry["needs_update"] = len(diff_fields) > 0
+            comparison.append(entry)
+
+        # Recount after cross-disc pass
         tracks_needing_update = sum(1 for c in comparison if c["needs_update"])
 
         # Identify library tracks that were never matched by any MB track —
