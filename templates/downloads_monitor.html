@@ -67,38 +67,41 @@
 
   <!-- Download from Playlist Section -->
   <div class="card mb-4">
-    <div class="card-header" style="cursor:pointer;" data-bs-toggle="collapse" data-bs-target="#playlistImportCollapse">
-      <h5 class="card-title mb-0 d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-collection-play"></i> Download from Playlist</span>
-        <i class="bi bi-chevron-down"></i>
+    <div class="card-header">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-collection-play"></i> Download from Playlist
       </h5>
     </div>
-    <div class="collapse" id="playlistImportCollapse">
-      <div class="card-body">
-        <p class="text-muted small mb-3">Enter a Spotify playlist URL to preview and add all tracks to the download queue. Apple Music support coming soon.</p>
-        <div class="input-group mb-3">
-          <input type="url" id="playlistImportUrl" class="form-control" placeholder="https://open.spotify.com/playlist/...">
-          <button class="btn btn-outline-primary" onclick="previewPlaylistImport()">
-            <i class="bi bi-search"></i> Preview
-          </button>
-        </div>
-        <div id="playlistImportStatus" class="alert" style="display:none;"></div>
-        <div id="playlistImportPreview" style="display:none;">
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <h6 class="mb-0" id="playlistImportTitle"></h6>
-            <button class="btn btn-sm btn-success" onclick="addPlaylistToQueue()" id="playlistImportAddBtn">
-              <i class="bi bi-plus-circle"></i> Add All to Queue
-            </button>
+    <div class="card-body">
+
+      <!-- Step 1 -->
+      <div class="card border-success mb-3">
+        <div class="card-body d-flex flex-column flex-md-row align-items-md-center gap-3">
+          <div class="flex-grow-1">
+            <h6 class="mb-1"><i class="bi bi-cloud-download text-success"></i> Step 1 — Get your playlist CSV</h6>
+            <p class="mb-0 text-secondary small">
+              Visit <strong>exportify.net</strong>, log in with Spotify, click <em>Export</em> next to any playlist, and save the <code>.csv</code> file.
+            </p>
           </div>
-          <div id="playlistImportAlbumArtist" class="text-muted small mb-2"></div>
-          <div class="table-responsive" style="max-height:400px;overflow-y:auto;">
-            <table class="table table-sm table-striped">
-              <thead><tr><th>#</th><th>Artist</th><th>Title</th><th>Duration</th></tr></thead>
-              <tbody id="playlistImportTrackList"></tbody>
-            </table>
-          </div>
+          <a href="https://exportify.net" target="_blank" rel="noopener" class="btn btn-success btn-lg text-nowrap">
+            <i class="bi bi-box-arrow-up-right"></i> Open exportify.net
+          </a>
         </div>
       </div>
+
+      <!-- Step 2 -->
+      <div class="card">
+        <div class="card-header">
+          <h6 class="mb-0"><i class="bi bi-upload"></i> Step 2 — Upload your CSV</h6>
+        </div>
+        <div class="card-body">
+          <a href="/playlists/import/csv" class="btn btn-primary">
+            <i class="bi bi-filetype-csv"></i> Open CSV Importer
+          </a>
+          <span class="text-secondary small ms-2">Drop your file in and hit Import to create a Navidrome playlist.</span>
+        </div>
+      </div>
+
     </div>
   </div>
 
