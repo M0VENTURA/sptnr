@@ -34103,19 +34103,26 @@ def api_csv_create_album():
         if not music_folder:
             return jsonify({"error": "Music folder is not configured"}), 500
 
-        # Sanitize playlist name for use as a folder name
+        # Sanitize playlist name for use as a folder name (no path separators or dots that
+        # could escape the intended directory).
         safe_name = "".join(
-            c for c in playlist_name if c.isalnum() or c in (' ', '-', '_', '.', '(', ')')
+            c for c in playlist_name if c.isalnum() or c in (' ', '-', '_', '(', ')')
         ).strip()
         if not safe_name:
             return jsonify({"error": "Playlist name contains no valid characters for a folder name"}), 400
 
-        album_dir = os.path.join(music_folder, "Various Artists", safe_name)
+        album_dir = os.path.realpath(os.path.join(music_folder, "Various Artists", safe_name))
+
+        # Security: ensure the computed album directory is inside the music folder
+        if not (album_dir.startswith(music_folder + os.sep) or album_dir == music_folder):
+            logging.warning(f"[csv/create-album] Computed album_dir outside music_folder, blocked")
+            return jsonify({"error": "Invalid album directory path"}), 400
+
         try:
             os.makedirs(album_dir, exist_ok=True)
         except OSError as dir_err:
-            logging.error(f"[csv/create-album] Could not create album directory '{album_dir}': {dir_err}")
-            return jsonify({"error": f"Could not create album directory: {dir_err}"}), 500
+            logging.error(f"[csv/create-album] Could not create album directory: {dir_err}")
+            return jsonify({"error": "Could not create album directory"}), 500
 
         # All MBID tag fields – set to "" so write_tags_to_file removes the frames
         MBID_CLEAR = {
@@ -34175,14 +34182,20 @@ def api_csv_create_album():
                     continue
 
                 filename = os.path.basename(src_real)
-                dst_path = os.path.join(album_dir, filename)
+                dst_path = os.path.realpath(os.path.join(album_dir, filename))
+
+                # Security: destination must be inside the album directory
+                if not (dst_path.startswith(album_dir + os.sep) or dst_path == album_dir):
+                    logging.warning(f"[csv/create-album] Destination outside album_dir, skipping: {dst_path}")
+                    copy_failed.append({"id": track_id, "reason": "destination path invalid"})
+                    continue
 
                 # Avoid overwriting a different file with the same name
                 if os.path.exists(dst_path) and os.path.realpath(dst_path) != src_real:
                     base, ext = os.path.splitext(filename)
                     counter = 1
                     while True:
-                        candidate_dst = os.path.join(album_dir, f"{base}_{counter}{ext}")
+                        candidate_dst = os.path.realpath(os.path.join(album_dir, f"{base}_{counter}{ext}"))
                         if not os.path.exists(candidate_dst):
                             dst_path = candidate_dst
                             break
@@ -34193,7 +34206,7 @@ def api_csv_create_album():
                     shutil.copy2(src_real, dst_path)
                 except OSError as copy_err:
                     logging.error(f"[csv/create-album] Failed to copy {src_real} -> {dst_path}: {copy_err}")
-                    copy_failed.append({"id": track_id, "reason": str(copy_err)})
+                    copy_failed.append({"id": track_id, "reason": "file copy failed"})
                     continue
 
                 # Update tags on the copy: new album identity + clear MBIDs
@@ -34201,7 +34214,7 @@ def api_csv_create_album():
                 tags.update(MBID_CLEAR)
                 write_tags_to_file(dst_path, tags)
 
-                copied.append({"id": track_id, "path": dst_path})
+                copied.append({"id": track_id})
                 logging.debug(f"[csv/create-album] Copied and tagged: {src_real} -> {dst_path}")
         finally:
             conn.close()
@@ -34231,7 +34244,7 @@ def api_csv_create_album():
             if result:
                 queued.append({"artist": artist, "title": title})
             else:
-                queue_failed.append({"artist": artist, "title": title, "reason": "add_to_queue returned None"})
+                queue_failed.append({"artist": artist, "title": title, "reason": "queuing failed"})
 
         logging.info(
             f"[csv/create-album] '{playlist_name}': "
@@ -34242,12 +34255,10 @@ def api_csv_create_album():
         return jsonify({
             "success":      True,
             "album_name":   playlist_name,
-            "album_dir":    album_dir,
             "copied":       len(copied),
             "queued":       len(queued),
             "copy_failed":  len(copy_failed),
             "queue_failed": len(queue_failed),
-            "failed_details": copy_failed,
         })
 
     except Exception as exc:

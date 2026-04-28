@@ -554,7 +554,7 @@
     const btn = document.getElementById('createAlbumBtn');
     const originalText = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating…';
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating...';
     try {
       const response = await fetch('/api/playlist/import/csv/create-album', {
         method: 'POST',
