@@ -14,6 +14,7 @@ from helpers.db_utils import (
     ensure_artists_name_unique_constraint,
     verify_album_artist_column,
     ensure_pending_mb_updates_column,
+    ensure_mb_ignored_fields_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
@@ -668,6 +669,9 @@ ensure_track_release_year_column()
 
 # Ensure pending_mb_updates column exists for persistent MusicBrainz update banners
 ensure_pending_mb_updates_column()
+
+# Ensure mb_ignored_fields column exists for permanently dismissing MB suggestions
+ensure_mb_ignored_fields_column()
 
 # Ensure mood scan columns exist in tracks table
 ensure_mood_columns()
@@ -14012,37 +14016,78 @@ def album_detail(artist, album):
                 try:
                     _comp = _json_local.loads(_raw)
                     _diff_fields = _comp.get('diff_fields', [])
-                    _parts = []
+
+                    # Filter out permanently-ignored fields for this track
+                    _raw_ignored = _td.get('mb_ignored_fields') or '[]'
+                    try:
+                        _ignored_set = set(_json_local.loads(_raw_ignored))
+                    except Exception:
+                        _ignored_set = set()
+                    _diff_fields = [f for f in _diff_fields if f not in _ignored_set]
+
+                    # Skip title rename if the only difference is a "(Artist Cover)" suffix
                     if 'title' in _diff_fields:
-                        _parts.append(
-                            f"Title: {_comp.get('library_title', '')} \u2192 {_comp.get('mb_title', '')}"
-                        )
+                        _lib_title = _comp.get('library_title', '')
+                        _mb_title = _comp.get('mb_title', '')
+                        if re.search(r'\([^)]*\bcover\b[^)]*\)', _lib_title, re.IGNORECASE):
+                            _stripped = re.sub(r'\s*\([^)]*\bcover\b[^)]*\)', '', _lib_title, flags=re.IGNORECASE).strip()
+                            if _stripped.lower() == _mb_title.lower():
+                                _diff_fields = [f for f in _diff_fields if f != 'title']
+
+                    # Build per-field items list used to render one row per change
+                    _items = []
+                    if 'title' in _diff_fields:
+                        _items.append({
+                            'field': 'title',
+                            'html': _html_mod.escape(
+                                f"Title: {_comp.get('library_title', '')} \u2192 {_comp.get('mb_title', '')}"
+                            ),
+                        })
                     if 'track_number' in _diff_fields:
-                        _parts.append(
-                            f"Track#: {_comp.get('library_track_number', '?')} \u2192 {_comp.get('mb_track_number', '?')}"
-                        )
+                        _items.append({
+                            'field': 'track_number',
+                            'html': _html_mod.escape(
+                                f"Track#: {_comp.get('library_track_number', '?')} \u2192 {_comp.get('mb_track_number', '?')}"
+                            ),
+                        })
                     if 'year' in _diff_fields:
-                        _parts.append(
-                            f"Year: {_comp.get('library_year', '—')} \u2192 {_comp.get('mb_year', '')}"
-                        )
+                        _items.append({
+                            'field': 'year',
+                            'html': _html_mod.escape(
+                                f"Year: {_comp.get('library_year', '\u2014')} \u2192 {_comp.get('mb_year', '')}"
+                            ),
+                        })
                     if 'mbid' in _diff_fields:
-                        _parts.append("MusicBrainz ID: missing \u2192 added")
+                        _items.append({
+                            'field': 'mbid',
+                            'html': _html_mod.escape("MusicBrainz ID: missing \u2192 added"),
+                        })
                     if 'duration' in _diff_fields:
-                        _parts.append(
-                            f"Length: {_comp.get('library_duration', '—')} \u2192 {_comp.get('mb_duration', '—')}"
-                        )
+                        _items.append({
+                            'field': 'duration',
+                            'html': _html_mod.escape(
+                                f"Length: {_comp.get('library_duration', '\u2014')} \u2192 {_comp.get('mb_duration', '\u2014')}"
+                            ),
+                        })
                     if 'disc_number' in _diff_fields:
-                        _parts.append(
-                            f"Disc: {_comp.get('library_disc_number', 1)} \u2192 {_comp.get('mb_disc_number', '')}"
-                        )
-                    # Build HTML-safe joined display string (avoids double-escaping in the template)
-                    _td['_mb_diff_html'] = ' &nbsp;&middot;&nbsp; '.join(_html_mod.escape(p) for p in _parts)
-                    _td['_mb_comp_json'] = _raw
+                        _items.append({
+                            'field': 'disc_number',
+                            'html': _html_mod.escape(
+                                f"Disc: {_comp.get('library_disc_number', 1)} \u2192 {_comp.get('mb_disc_number', '')}"
+                            ),
+                        })
+
+                    if _items:
+                        _td['_mb_diff_items'] = _items
+                        _td['_mb_comp_json'] = _raw
+                    else:
+                        _td['_mb_diff_items'] = []
+                        _td['_mb_comp_json'] = ''
                 except Exception:
-                    _td['_mb_diff_html'] = ''
+                    _td['_mb_diff_items'] = []
                     _td['_mb_comp_json'] = ''
             else:
-                _td['_mb_diff_html'] = ''
+                _td['_mb_diff_items'] = []
                 _td['_mb_comp_json'] = ''
 
         # If album-level IDs are missing, infer from track-level IDs in this album.
@@ -34836,7 +34881,7 @@ def api_album_musicbrainz_compare():
         placeholder = "%s"
 
         cursor.execute(f"""
-            SELECT id, title, track_number, disc_number, artist, year, mbid, file_path, duration
+            SELECT id, title, track_number, disc_number, artist, year, mbid, file_path, duration, mb_ignored_fields
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
               AND album = {placeholder}
@@ -34993,9 +35038,18 @@ def api_album_musicbrainz_compare():
                 entry["library_year"] = str(lib_track.get("year") or "")
 
                 diff_fields = []
-                # Title differs?
+                # Title differs? — skip if the only difference is a "(Artist Cover)" suffix
+                # in the library title, e.g. "Song (Bob Dylan Cover)" vs MB "Song".
                 if mb_track_title and mb_track_title != lib_track.get("title", ""):
-                    diff_fields.append("title")
+                    lib_title = lib_track.get("title", "")
+                    if re.search(r'\([^)]*\bcover\b[^)]*\)', lib_title, re.IGNORECASE):
+                        # Strip the cover notation and compare again; if they now match,
+                        # this is an expected cover-version annotation — don't flag it.
+                        stripped = re.sub(r'\s*\([^)]*\bcover\b[^)]*\)', '', lib_title, flags=re.IGNORECASE).strip()
+                        if stripped.lower() != mb_track_title.lower():
+                            diff_fields.append("title")
+                    else:
+                        diff_fields.append("title")
                 # Track number differs?
                 if mb_num is not None and str(mb_num) != str(lib_track.get("track_number") or ""):
                     diff_fields.append("track_number")
@@ -35039,6 +35093,15 @@ def api_album_musicbrainz_compare():
                 entry["library_disc_number"] = lib_disc_val
                 if lib_disc_val != disc:
                     diff_fields.append("disc_number")
+
+                # Remove any fields the user has permanently ignored for this track
+                import json as _json_cmp
+                _raw_ignored = lib_track.get("mb_ignored_fields") or "[]"
+                try:
+                    _ignored_set = set(_json_cmp.loads(_raw_ignored))
+                except Exception:
+                    _ignored_set = set()
+                diff_fields = [f for f in diff_fields if f not in _ignored_set]
 
                 entry["diff_fields"] = diff_fields
                 entry["needs_update"] = len(diff_fields) > 0
@@ -36456,6 +36519,72 @@ def api_track_update_metadata():
                 conn.close()
             except Exception:
                 pass
+
+@app.route("/api/track/ignore-mb-field", methods=["POST"])
+def api_track_ignore_mb_field():
+    """Permanently ignore a specific MusicBrainz diff field for a track.
+
+    Accepts ``{track_id, field}`` in the request body.  The field name is
+    appended to the ``mb_ignored_fields`` JSON array stored on the track row so
+    that future comparisons skip it automatically.
+    """
+    import json as _json_ignore
+    conn = None
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        track_id = str(data.get("track_id") or "").strip()
+        field = str(data.get("field") or "").strip()
+        clear_pending = bool(data.get("clear_mb_pending", False))
+
+        valid_fields = {"title", "track_number", "year", "mbid", "duration", "disc_number"}
+        if not track_id or field not in valid_fields:
+            return jsonify({"error": "track_id and a valid field are required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        cursor.execute(f"SELECT mb_ignored_fields FROM tracks WHERE id = {placeholder}", (track_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Track not found"}), 404
+
+        raw = (row["mb_ignored_fields"] if isinstance(row, dict) else row[0]) or "[]"
+        try:
+            ignored = _json_ignore.loads(raw)
+            if not isinstance(ignored, list):
+                ignored = []
+        except Exception:
+            ignored = []
+
+        if field not in ignored:
+            ignored.append(field)
+
+        updates = {"mb_ignored_fields": _json_ignore.dumps(ignored)}
+        if clear_pending:
+            updates["pending_mb_updates"] = None
+
+        set_clause = ", ".join([f"{k} = {placeholder}" for k in updates])
+        cursor.execute(
+            f"UPDATE tracks SET {set_clause} WHERE id = {placeholder}",
+            list(updates.values()) + [track_id],
+        )
+        conn.commit()
+        conn.close()
+        conn = None
+        return jsonify({"success": True, "ignored_fields": ignored}), 200
+
+    except Exception as e:
+        logging.error(f"[ignore_mb_field] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 @app.route("/api/navidrome/scan/start", methods=["POST"])
 def api_start_navidrome_scan():
