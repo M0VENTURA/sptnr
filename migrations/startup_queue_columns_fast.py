@@ -118,6 +118,14 @@ def _ensure_postgres_columns(conn):
         # statement needs to be modified.  DEFAULT CURRENT_TIMESTAMP ensures
         # existing rows get a value on the ALTER TABLE backfill.
         "status_changed_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        # FK → musicbrainz_release_tracks.id: links this queue row to its
+        # authoritative per-track metadata record.
+        "metadata_id": "BIGINT",
+        # FK → musicbrainz_releases.id: links this queue row to its
+        # authoritative album-level metadata record.
+        "release_metadata_id": "BIGINT",
+        # Final path in /music after the file has been moved there.
+        "music_file_path": "TEXT",
     }
 
     # Trigger: keep status_changed_at in sync whenever status changes.
@@ -238,33 +246,78 @@ def _ensure_postgres_track_columns(conn):
 
 
 def _ensure_postgres_musicbrainz_releases_columns(conn):
-    """Ensure release_year exists on musicbrainz_releases for pre-existing tables."""
+    """Ensure all metadata columns exist on musicbrainz_releases and
+    musicbrainz_release_tracks for pre-existing tables."""
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_name = 'musicbrainz_releases' AND column_name = 'release_year'
-        )
-        """
-    )
-    exists_row = cur.fetchone()
-    exists = bool(exists_row and exists_row[0])
-    if not exists:
-        try:
-            cur.execute(
-                "ALTER TABLE musicbrainz_releases ADD COLUMN IF NOT EXISTS release_year INTEGER"
+    added = []
+
+    # --- musicbrainz_releases ---
+    for col, col_type in (
+        ("release_year",   "INTEGER"),
+        ("album_artist",   "TEXT"),
+        ("genres",         "TEXT"),
+        ("cover_art_url",  "TEXT"),
+        ("release_source", "TEXT"),
+    ):
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'musicbrainz_releases' AND column_name = %s
             )
-            conn.commit()
-            return ["release_year"]
-        except Exception as alter_err:
+            """,
+            (col,),
+        )
+        exists_row = cur.fetchone()
+        exists = bool(exists_row and exists_row[0])
+        if not exists:
             try:
-                conn.rollback()
-            except Exception:
-                pass
-            print(f"⚠ Could not add musicbrainz_releases.release_year: {alter_err}")
-    return []
+                cur.execute(
+                    f"ALTER TABLE musicbrainz_releases ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                )
+                conn.commit()
+                added.append(col)
+            except Exception as alter_err:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                print(f"⚠ Could not add musicbrainz_releases.{col}: {alter_err}")
+
+    # --- musicbrainz_release_tracks ---
+    for col, col_type in (
+        ("composer",     "TEXT"),
+        ("album_artist", "TEXT"),
+        ("year",         "TEXT"),
+    ):
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'musicbrainz_release_tracks' AND column_name = %s
+            )
+            """,
+            (col,),
+        )
+        exists_row = cur.fetchone()
+        exists = bool(exists_row and exists_row[0])
+        if not exists:
+            try:
+                cur.execute(
+                    f"ALTER TABLE musicbrainz_release_tracks ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                )
+                conn.commit()
+                added.append(f"mrt.{col}")
+            except Exception as alter_err:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                print(f"⚠ Could not add musicbrainz_release_tracks.{col}: {alter_err}")
+
+    return added
 
 
 def _ensure_postgres_musicbrainz_release_conflict_target(conn):
