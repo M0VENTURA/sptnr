@@ -129,24 +129,18 @@
           <span class="visually-hidden">Processing…</span>
         </div>
         <h5 id="csvProgressLabel" class="mb-1">Processing CSV…</h5>
-        <p class="text-secondary small mb-0">Matching tracks and creating playlist, please wait.</p>
+        <p class="text-secondary small mb-0" id="csvProgressSub">Matching tracks against your library, please wait.</p>
       </div>
 
       <!-- Body: result (shown after completion) -->
       <div class="modal-body" id="csvModalResult" style="display:none;">
         <!-- summary stats row -->
         <div class="row g-3 mb-3" id="csvResultStats"></div>
-        <!-- missing track list -->
+        <!-- queued-for-download track list -->
         <div id="csvMissingSection" style="display:none;">
           <hr class="my-2">
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <h6 class="text-warning mb-0"><i class="bi bi-exclamation-circle-fill"></i> Tracks not in library</h6>
-            <button class="btn btn-sm btn-outline-success" id="queueMissingBtn" onclick="queueAllMissingTracks()">
-              <i class="bi bi-cloud-arrow-down"></i> Queue Missing for Download
-            </button>
-          </div>
+          <h6 class="text-info mb-2"><i class="bi bi-cloud-arrow-down-fill"></i> Queued for download</h6>
           <div id="csvMissingList" style="max-height:240px;overflow-y:auto;"></div>
-          <div id="csvQueueStatus" class="mt-2" style="display:none;"></div>
         </div>
       </div>
 
@@ -175,10 +169,6 @@
     return d.innerHTML;
   }
 
-  // Holds the missing tracks from the last successful import so the queue
-  // button can reference them even after the result pane is rebuilt.
-  let _csvMissingTracks = [];
-
   // ─── reset modal to its initial (form) state ──────────────────────────────────
 
   function resetCsvModal() {
@@ -191,7 +181,6 @@
         <i class="bi bi-upload"></i> Import &amp; Create Playlist
       </button>`;
     document.getElementById('csvForm').reset();
-    _csvMissingTracks = [];
   }
 
   // Reset form whenever the modal is opened
@@ -200,8 +189,65 @@
   // Auto-open the modal if the URL hash is #import, then clean up the hash
   if (window.location.hash === '#import') {
     new bootstrap.Modal(document.getElementById('csvImportModal')).show();
-    // Remove the hash so a page refresh doesn't re-open the modal unexpectedly
     history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+
+  // ─── helper: queue missing tracks grouped by album ────────────────────────────
+
+  async function _queueMissingTracks(missing) {
+    if (!missing.length) return { totalAdded: 0, totalSkipped: 0, totalFailed: 0, albumCount: 0 };
+
+    // Group by artist+album so each album is one batch with a shared import_group.
+    // Any group whose tracks carry an album field is queued as 'album' so the queue
+    // manager creates a proper album folder; otherwise it falls back to 'song'.
+    const albums = {};
+    for (const t of missing) {
+      const groupKey = `${(t.artist || 'Unknown').replace(/\s+/g, '_')}_${(t.album || 'Unknown').replace(/\s+/g, '_')}`.substring(0, 100);
+      if (!albums[groupKey]) albums[groupKey] = [];
+      albums[groupKey].push(t);
+    }
+
+    let totalAdded = 0, totalSkipped = 0, totalFailed = 0;
+
+    for (const [groupKey, tracks] of Object.entries(albums)) {
+      const items = tracks.map(t => ({
+        artist:         t.artist,
+        title:          t.title,
+        album:          t.album     || null,
+        year:           t.year      || null,
+        duration:       t.duration_s || null,
+        genres:         t.genres    || null,
+        isrc:           t.isrc      || null,
+        release_id:     t.spotify_id || null,
+        release_source: t.spotify_id ? 'spotify' : null,
+      }));
+
+      try {
+        const res = await fetch('/api/queue/add-batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items,
+            import_group: groupKey,
+            // 'album' if any track in the group carries an album name, otherwise 'song'
+            import_type:  tracks.some(t => t.album) ? 'album' : 'song',
+            source:       'soulseek',
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.success !== false) {
+          totalAdded   += data.added   || 0;
+          totalSkipped += data.skipped || 0;
+          totalFailed  += data.failed  || 0;
+        } else {
+          totalFailed += items.length;
+        }
+      } catch (_) {
+        totalFailed += items.length;
+      }
+    }
+
+    return { totalAdded, totalSkipped, totalFailed, albumCount: Object.keys(albums).length };
   }
 
   // ─── main import handler ──────────────────────────────────────────────────────
@@ -209,23 +255,26 @@
   async function importPlaylistFromCSV(event) {
     event.preventDefault();
 
-    const fileInput   = document.getElementById('csvFile');
+    const fileInput    = document.getElementById('csvFile');
     const playlistName = document.getElementById('csvPlaylistName').value.trim();
     const playlistDesc = document.getElementById('csvPlaylistDescription').value.trim();
     const targetUser   = document.getElementById('csvTargetUser').value.trim();
 
-    if (!fileInput.files.length || !playlistName) {
-      return;  // HTML5 required handles this
-    }
+    if (!fileInput.files.length || !playlistName) return;
 
     // ── switch to progress view ───────────────────────────────────────────────
     document.getElementById('csvModalForm').style.display = 'none';
     document.getElementById('csvModalProgress').style.display = '';
-    document.getElementById('csvModalFooter').innerHTML = '';  // hide buttons while working
+    document.getElementById('csvModalFooter').innerHTML = '';
+
+    const setProgress = (label, sub) => {
+      document.getElementById('csvProgressLabel').textContent = label;
+      if (sub !== undefined) document.getElementById('csvProgressSub').textContent = sub;
+    };
 
     try {
-      // Step 1 – parse & match CSV
-      document.getElementById('csvProgressLabel').textContent = 'Matching tracks…';
+      // Step 1 – parse & match CSV against local library
+      setProgress('Matching tracks…', 'Comparing CSV against your library.');
       const formData = new FormData();
       formData.append('file', fileInput.files[0]);
       formData.append('playlist_name', playlistName);
@@ -240,11 +289,8 @@
       const missing = matchData.missing_tracks || [];
       const total   = matched.length + missing.length;
 
-      // Store missing tracks for the queue button
-      _csvMissingTracks = missing;
-
       // Step 2 – create playlist from matched tracks
-      document.getElementById('csvProgressLabel').textContent = 'Creating playlist…';
+      setProgress('Creating playlist…', `Adding ${matched.length} matched track${matched.length !== 1 ? 's' : ''} to Navidrome.`);
       const createRes  = await fetch('/api/playlist/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -260,34 +306,61 @@
         'Playlist creation failed'
       );
 
+      // Step 3 – auto-queue all missing tracks grouped by album
+      let queueResult = { totalAdded: 0, totalSkipped: 0, totalFailed: 0, albumCount: 0 };
+      if (missing.length > 0) {
+        setProgress('Queueing missing tracks…', `Sending ${missing.length} track${missing.length !== 1 ? 's' : ''} to the download queue.`);
+        queueResult = await _queueMissingTracks(missing);
+      }
+
       // ── switch to result view ─────────────────────────────────────────────
       document.getElementById('csvModalProgress').style.display = 'none';
       document.getElementById('csvModalResult').style.display = '';
 
-      const coverage  = total > 0 ? Math.round((matched.length / total) * 100) : 0;
-      const coverCls  = coverage >= 90 ? 'success' : coverage >= 70 ? 'warning' : 'danger';
+      const coverage = total > 0 ? Math.round((matched.length / total) * 100) : 0;
+      const coverCls = coverage >= 90 ? 'success' : coverage >= 70 ? 'warning' : 'danger';
+
+      // Build queue summary line
+      let queueLine = '';
+      if (missing.length > 0) {
+        if (queueResult.totalFailed === 0) {
+          queueLine = `<div class="alert alert-info mb-0 py-2">
+            <i class="bi bi-cloud-arrow-down-fill me-2"></i>
+            <strong>${queueResult.totalAdded}</strong> missing track${queueResult.totalAdded !== 1 ? 's' : ''} queued for download
+            across <strong>${queueResult.albumCount}</strong> album folder${queueResult.albumCount !== 1 ? 's' : ''}.
+            ${queueResult.totalSkipped > 0 ? `<span class="text-secondary">(${queueResult.totalSkipped} already queued)</span>` : ''}
+            <a href="/downloads" class="alert-link ms-2">View Downloads →</a>
+          </div>`;
+        } else {
+          queueLine = `<div class="alert alert-warning mb-0 py-2">
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+            Queued ${queueResult.totalAdded}, skipped ${queueResult.totalSkipped},
+            failed ${queueResult.totalFailed}.
+          </div>`;
+        }
+      }
 
       document.getElementById('csvResultStats').innerHTML = `
         <div class="col-6 col-md-3">
           <div class="card text-center bg-success bg-opacity-10 border-success h-100">
             <div class="card-body py-3">
               <div class="h3 text-success mb-1">${matched.length}</div>
-              <div class="small text-secondary">Matched</div>
-            </div>
-          </div>
-        </div>
-        <div class="col-6 col-md-3">
-          <div class="card text-center bg-warning bg-opacity-10 border-warning h-100">
-            <div class="card-body py-3">
-              <div class="h3 text-warning mb-1">${missing.length}</div>
-              <div class="small text-secondary">Not in Library</div>
+              <div class="small text-secondary">In Library</div>
             </div>
           </div>
         </div>
         <div class="col-6 col-md-3">
           <div class="card text-center bg-info bg-opacity-10 border-info h-100">
             <div class="card-body py-3">
-              <div class="h3 text-info mb-1">${total}</div>
+              <div class="h3 text-info mb-1">${missing.length}</div>
+              <div class="small text-secondary">Queued for Download</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card text-center bg-secondary bg-opacity-10 border-secondary h-100">
+            <div class="card-body py-3">
+              <div class="h3 mb-1">${total}</div>
               <div class="small text-secondary">Total Tracks</div>
             </div>
           </div>
@@ -296,7 +369,7 @@
           <div class="card text-center bg-${coverCls} bg-opacity-10 border-${coverCls} h-100">
             <div class="card-body py-3">
               <div class="h3 text-${coverCls} mb-1">${coverage}%</div>
-              <div class="small text-secondary">Coverage</div>
+              <div class="small text-secondary">Already In Library</div>
             </div>
           </div>
         </div>
@@ -305,9 +378,10 @@
             <i class="bi bi-check-circle-fill me-2"></i>
             Playlist <strong>${escapeHtml(playlistName)}</strong> created with <strong>${matched.length}</strong> track${matched.length !== 1 ? 's' : ''}.
           </div>
-        </div>`;
+        </div>
+        ${queueLine ? `<div class="col-12">${queueLine}</div>` : ''}`;
 
-      // Show missing track list if any
+      // Show queued track list if any
       if (missing.length > 0) {
         document.getElementById('csvMissingSection').style.display = '';
         document.getElementById('csvMissingList').innerHTML = missing.map(t => {
@@ -331,14 +405,18 @@
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
         <a href="/playlist-manager" class="btn btn-success">
           <i class="bi bi-folder2-open"></i> View Playlists
-        </a>`;
+        </a>
+        ${missing.length > 0 ? `<a href="/downloads" class="btn btn-info">
+          <i class="bi bi-cloud-arrow-down"></i> View Downloads
+        </a>` : ''}`;
 
       // Update the page banner
-      const banner = document.getElementById('importResultBanner');
+      const banner  = document.getElementById('importResultBanner');
       const alertEl = document.getElementById('importResultAlert');
       alertEl.className = 'alert alert-success mb-0';
       alertEl.innerHTML = `<i class="bi bi-check-circle-fill me-2"></i>
-        Playlist <strong>${escapeHtml(playlistName)}</strong> created — ${matched.length}/${total} tracks matched (${coverage}% coverage).
+        Playlist <strong>${escapeHtml(playlistName)}</strong> created — ${matched.length}/${total} tracks already in library.
+        ${missing.length > 0 ? `${queueResult.totalAdded} track${queueResult.totalAdded !== 1 ? 's' : ''} queued for download. ` : ''}
         <a href="/playlist-manager" class="alert-link ms-2">View Playlists →</a>`;
       banner.style.display = '';
 
@@ -353,94 +431,11 @@
           <i class="bi bi-upload"></i> Import &amp; Create Playlist
         </button>`;
 
-      const banner = document.getElementById('importResultBanner');
+      const banner  = document.getElementById('importResultBanner');
       const alertEl = document.getElementById('importResultAlert');
       alertEl.className = 'alert alert-danger mb-0';
       alertEl.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-2"></i><strong>Error:</strong> ${escapeHtml(err.message)}`;
       banner.style.display = '';
-    }
-  }
-
-  // ─── queue all missing tracks, grouped by album ───────────────────────────────
-
-  async function queueAllMissingTracks() {
-    if (!_csvMissingTracks.length) return;
-
-    const btn      = document.getElementById('queueMissingBtn');
-    const statusEl = document.getElementById('csvQueueStatus');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Queuing…';
-    statusEl.style.display = 'none';
-
-    // Group tracks by artist+album so each album becomes a single batch request
-    // with its own import_group, which the queue manager uses to create album folders.
-    const albums = {};
-    for (const t of _csvMissingTracks) {
-      const groupKey = `${(t.artist || 'Unknown').replace(/\s+/g, '_')}_${(t.album || 'Unknown').replace(/\s+/g, '_')}`.substring(0, 100);
-      if (!albums[groupKey]) albums[groupKey] = [];
-      albums[groupKey].push(t);
-    }
-
-    let totalAdded = 0;
-    let totalSkipped = 0;
-    let totalFailed = 0;
-    const errors = [];
-
-    for (const [groupKey, tracks] of Object.entries(albums)) {
-      const items = tracks.map(t => ({
-        artist:     t.artist,
-        title:      t.title,
-        album:      t.album || null,
-        year:       t.year || null,
-        duration:   t.duration_s || null,
-        genres:     t.genres || null,
-        isrc:       t.isrc || null,
-        release_id: t.spotify_id || null,
-        release_source: t.spotify_id ? 'spotify' : null,
-      }));
-
-      try {
-        const res = await fetch('/api/queue/add-batch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            items,
-            import_group:  groupKey,
-            import_type:   (tracks.length > 1 || tracks.some(t => t.album)) ? 'album' : 'song',
-            source:        'soulseek',
-          }),
-        });
-        const data = await res.json();
-        if (res.ok && data.success !== false) {
-          totalAdded   += data.added   || 0;
-          totalSkipped += data.skipped || 0;
-          totalFailed  += data.failed  || 0;
-        } else {
-          totalFailed += items.length;
-          errors.push(data.error || 'Unknown error');
-        }
-      } catch (e) {
-        totalFailed += items.length;
-        errors.push(e.message);
-      }
-    }
-
-    btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-check-circle-fill text-success"></i> Queued';
-
-    statusEl.style.display = '';
-    if (totalFailed === 0) {
-      statusEl.className = 'alert alert-success py-2 small mb-0 mt-2';
-      statusEl.innerHTML = `<i class="bi bi-check-circle-fill me-1"></i>
-        Queued <strong>${totalAdded}</strong> track${totalAdded !== 1 ? 's' : ''}
-        ${totalSkipped > 0 ? `(${totalSkipped} already queued)` : ''} —
-        grouped into ${Object.keys(albums).length} album folder${Object.keys(albums).length !== 1 ? 's' : ''}.
-        <a href="/downloads" class="alert-link ms-1">View Downloads →</a>`;
-    } else {
-      statusEl.className = 'alert alert-warning py-2 small mb-0 mt-2';
-      statusEl.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1"></i>
-        Added ${totalAdded}, skipped ${totalSkipped}, failed ${totalFailed}.
-        ${errors.length ? `Errors: ${errors.slice(0, 2).map(escapeHtml).join('; ')}` : ''}`;
     }
   }
 </script>
