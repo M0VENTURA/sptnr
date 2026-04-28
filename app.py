@@ -33855,6 +33855,19 @@ def api_playlist_import_csv():
         if not tracks_from_csv:
             return jsonify({"error": "No tracks found in CSV"}), 400
 
+        # --- Skip matching if caller only wants parsed track metadata ---
+        skip_matching = request.form.get("skip_matching", "").lower() in ("true", "1", "yes")
+        if skip_matching:
+            logging.info(
+                f"CSV parse-only (skip_matching) for '{playlist_name}': "
+                f"{len(tracks_from_csv)} tracks parsed"
+            )
+            return jsonify({
+                "success":    True,
+                "all_tracks": tracks_from_csv,
+                "total":      len(tracks_from_csv),
+            })
+
         # --- Match tracks using same 3-tier strategy as Spotify URL import ---
         matched_tracks = []
         missing_tracks = []
