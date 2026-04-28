@@ -14023,13 +14023,13 @@ def album_detail(artist, album):
                         )
                     if 'year' in _diff_fields:
                         _parts.append(
-                            f"Year: {_comp.get('library_year', '\u2014')} \u2192 {_comp.get('mb_year', '')}"
+                            f"Year: {_comp.get('library_year', '—')} \u2192 {_comp.get('mb_year', '')}"
                         )
                     if 'mbid' in _diff_fields:
                         _parts.append("MusicBrainz ID: missing \u2192 added")
                     if 'duration' in _diff_fields:
                         _parts.append(
-                            f"Length: {_comp.get('library_duration', '\u2014')} \u2192 {_comp.get('mb_duration', '\u2014')}"
+                            f"Length: {_comp.get('library_duration', '—')} \u2192 {_comp.get('mb_duration', '—')}"
                         )
                     if 'disc_number' in _diff_fields:
                         _parts.append(
