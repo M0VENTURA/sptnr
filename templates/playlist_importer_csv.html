@@ -216,11 +216,13 @@
       // album group in the queue with all tracks nested below it.
       const nameSlug = importName.replace(/\s+/g, '_').substring(0, 80);
 
+      const currentYear = String(new Date().getFullYear());
       const items = allTracks.map(t => ({
         artist:         t.artist,
         title:          t.title,
-        album:          t.album       || null,
-        year:           t.year        || null,
+        album:          importName,
+        album_artist:   'Various Artists',
+        year:           currentYear,
         duration:       t.duration_s  || null,
         genres:         t.genres      || null,
         isrc:           t.isrc        || null,
