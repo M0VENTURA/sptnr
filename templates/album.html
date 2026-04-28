@@ -2596,6 +2596,24 @@
         }
     }
 
+    // Collect unique track comparison objects from server-rendered .mb-update-row elements.
+    // Used when mbComparisonData is not available (i.e. rows were pre-rendered by the server).
+    function _getTracksFromDOM() {
+        const seen = new Set();
+        const tracks = [];
+        document.querySelectorAll('.mb-update-row').forEach(row => {
+            const trackId = row.dataset.trackId;
+            if (trackId && !seen.has(trackId)) {
+                seen.add(trackId);
+                try {
+                    const comp = JSON.parse(row.dataset.mbComp || '{}');
+                    if (comp.library_track_id) tracks.push(comp);
+                } catch (_) {}
+            }
+        });
+        return tracks;
+    }
+
     function _displayMBComparison(data) {
         // Remove any stale update/missing rows from a previous comparison
         document.querySelectorAll('.mb-update-row').forEach(el => el.remove());
@@ -2865,8 +2883,9 @@
     }
 
     async function updateAllTracksFromMB() {
-        if (!mbComparisonData) return;
-        const tracksToUpdate = mbComparisonData.comparison.filter(c => c.needs_update && c.library_track_id);
+        const tracksToUpdate = mbComparisonData
+            ? mbComparisonData.comparison.filter(c => c.needs_update && c.library_track_id)
+            : _getTracksFromDOM();
         if (tracksToUpdate.length === 0) return;
         if (!confirm(`Update metadata for ${tracksToUpdate.length} track(s) from MusicBrainz?\n\nThis will update the database and MP3 file tags.`)) return;
 
@@ -3021,6 +3040,34 @@
         
         // Load track-level genre recommendations
         loadTrackRecommendations();
+
+        // Show "Update All" banner if the server pre-rendered any MusicBrainz update rows
+        const existingUpdateRows = document.querySelectorAll('.mb-update-row');
+        if (existingUpdateRows.length > 0) {
+            const trackIds = new Set([...existingUpdateRows].map(r => r.dataset.trackId).filter(Boolean));
+            const count = trackIds.size;
+            let banner = document.getElementById('mb-compare-banner');
+            if (!banner) {
+                const container = _getMBCompareBannerContainer();
+                if (container) {
+                    banner = document.createElement('div');
+                    banner.id = 'mb-compare-banner';
+                    const tableResponsive = document.querySelector('.table-responsive');
+                    container.insertBefore(banner, tableResponsive);
+                }
+            }
+            if (banner) {
+                banner.innerHTML = `
+                    <div class="alert alert-warning d-flex align-items-center gap-2 mb-2 py-2 flex-wrap">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        <div><strong>${escapeHtml(String(count))}</strong> track${count !== 1 ? 's have' : ' has'} metadata that can be updated from MusicBrainz.</div>
+                        <button class="btn btn-warning btn-sm ms-auto" onclick="updateAllTracksFromMB()">
+                            <i class="bi bi-arrow-repeat"></i> Update All
+                        </button>
+                        <button type="button" class="btn-close" onclick="clearMBComparison()" aria-label="Dismiss"></button>
+                    </div>`;
+            }
+        }
     });
     
     // Toggle apply button when album source-tag checkboxes change
