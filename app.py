@@ -33792,11 +33792,17 @@ def api_playlist_import_csv():
                     return normalised[alias]
             return None
 
-        title_col  = col(["track name", "name", "title"])
-        artist_col = col(["artist name(s)", "artist names", "artist name", "artist", "artists"])
-        album_col  = col(["album name", "album"])
-        isrc_col   = col(["isrc"])
-        uri_col    = col(["spotify uri", "track uri", "uri"])
+        title_col    = col(["track name", "name", "title"])
+        artist_col   = col(["artist name(s)", "artist names", "artist name", "artist", "artists"])
+        album_col    = col(["album name", "album"])
+        isrc_col     = col(["isrc"])
+        uri_col      = col(["spotify uri", "track uri", "uri"])
+        duration_col = col(["duration (ms)", "duration_ms", "duration"])
+        date_col     = col(["release date", "release_date", "date"])
+        genres_col   = col(["genres", "genre"])
+        label_col    = col(["record label", "label"])
+        popularity_col = col(["popularity"])
+        explicit_col   = col(["explicit"])
 
         if not title_col or not artist_col:
             return jsonify({
@@ -33804,18 +33810,46 @@ def api_playlist_import_csv():
                          "Please export using Exportify (exportify.net)."
             }), 400
 
+        def _extract_year(date_str):
+            """Extract a 4-digit year from a date string (e.g. '24/04/2026' or '2026-04-24')."""
+            if not date_str:
+                return None
+            # Try ISO format first (YYYY-MM-DD or YYYY-…)
+            import re
+            m = re.search(r'\b(\d{4})\b', str(date_str))
+            return m.group(1) if m else None
+
         tracks_from_csv = []
         for row in reader:
             title  = (row.get(title_col) or "").strip()
             artist = (row.get(artist_col) or "").strip()
             if not title and not artist:
                 continue  # skip blank rows
+
+            # Duration: CSV stores milliseconds; convert to whole seconds for queue
+            duration_s = None
+            if duration_col:
+                raw_dur = (row.get(duration_col) or "").strip()
+                try:
+                    duration_s = int(round(float(raw_dur) / 1000)) if raw_dur else None
+                except (ValueError, TypeError):
+                    duration_s = None
+
+            # Year from release date
+            year = _extract_year(row.get(date_col)) if date_col else None
+
             tracks_from_csv.append({
-                "title":      title,
-                "artist":     artist,
-                "album":      (row.get(album_col) or "").strip() if album_col else "",
-                "isrc":       (row.get(isrc_col) or "").strip() if isrc_col else "",
-                "spotify_id": (row.get(uri_col) or "").strip().split(":")[-1] if uri_col else "",
+                "title":        title,
+                "artist":       artist,
+                "album":        (row.get(album_col) or "").strip() if album_col else "",
+                "isrc":         (row.get(isrc_col) or "").strip() if isrc_col else "",
+                "spotify_id":   (row.get(uri_col) or "").strip().split(":")[-1] if uri_col else "",
+                "duration_s":   duration_s,
+                "year":         year,
+                "genres":       (row.get(genres_col) or "").strip() if genres_col else "",
+                "record_label": (row.get(label_col) or "").strip() if label_col else "",
+                "popularity":   (row.get(popularity_col) or "").strip() if popularity_col else "",
+                "explicit":     (row.get(explicit_col) or "").strip().upper() if explicit_col else "",
             })
 
         if not tracks_from_csv:
@@ -33853,12 +33887,18 @@ def api_playlist_import_csv():
                 match_stats[strategy] += 1
             else:
                 missing_tracks.append({
-                    "title":      track["title"],
-                    "artist":     track["artist"],
-                    "album":      track["album"],
-                    "spotify_id": track["spotify_id"],
-                    "isrc":       track["isrc"],
-                    "best_score": confidence,
+                    "title":        track["title"],
+                    "artist":       track["artist"],
+                    "album":        track["album"],
+                    "spotify_id":   track["spotify_id"],
+                    "isrc":         track["isrc"],
+                    "best_score":   confidence,
+                    "duration_s":   track.get("duration_s"),
+                    "year":         track.get("year"),
+                    "genres":       track.get("genres"),
+                    "record_label": track.get("record_label"),
+                    "popularity":   track.get("popularity"),
+                    "explicit":     track.get("explicit"),
                 })
                 match_stats["unmatched"] += 1
 
