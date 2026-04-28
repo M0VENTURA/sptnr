@@ -209,12 +209,13 @@
 
         const nameSlug    = importName.replace(/\s+/g, '_').substring(0, 80);
         const currentYear = String(new Date().getFullYear());
-        const items = allTracks.map(t => ({
+        const items = allTracks.map((t, idx) => ({
           artist:         t.artist,
           title:          t.title,
           album:          importName,
           album_artist:   'Various Artists',
           year:           currentYear,
+          track_number:   idx + 1,
           duration:       t.duration_s  || null,
           genres:         t.genres      || null,
           isrc:           t.isrc        || null,
@@ -230,11 +231,14 @@
             body: JSON.stringify({ items, import_group: nameSlug, import_type: 'playlist', source: 'soulseek' }),
           });
           const data = await res.json();
-          if (res.ok && data.success !== false) {
+          // Read real counts from response body regardless of HTTP status.
+          // The API returns accurate added/skipped/failed even when it responds
+          // with 500 (e.g. "all failed" edge-case uses 500 but includes counts).
+          if (data && (data.added !== undefined || data.failed !== undefined)) {
             totalAdded   = data.added   || 0;
             totalSkipped = data.skipped || 0;
             totalFailed  = data.failed  || 0;
-          } else {
+          } else if (!res.ok) {
             totalFailed = items.length;
           }
         } catch (batchErr) {
@@ -2782,18 +2786,26 @@ async function loadFolderGroups(options = {}) {
       is_musicbrainz_release: release.release_source === 'musicbrainz'
     }));
     
-    // Group individual queue items by artist+album so tracks from the same album
-    // are combined into one entry instead of showing as separate "Possible Duplicate" rows.
+    // Group individual queue items by import_group first (playlists/CSV imports),
+    // then fall back to artist+album so tracks from the same source are combined
+    // into one entry instead of showing as separate rows.
     const individualAlbumGroups = {};
     individualItems.forEach(item => {
+      const importGroup = (item.import_group || '').trim();
       const artist = (item.artist || '').trim();
       const album = (item.album || '').trim();
-      // Only merge items that share both an artist and an album; otherwise keep solo
-      const groupKey = (artist && album)
-        ? `${artist.toLowerCase()}|||${album.toLowerCase()}`
-        : `__solo_${item.id}`;
+      const groupKey = importGroup
+        ? `__ig_${importGroup}`
+        : (artist && album)
+          ? `${artist.toLowerCase()}|||${album.toLowerCase()}`
+          : `__solo_${item.id}`;
       if (!individualAlbumGroups[groupKey]) {
-        individualAlbumGroups[groupKey] = { artist: item.artist || '', album: item.album || '', items: [] };
+        // For import_group entries use album_artist (e.g. "Various Artists") as the
+        // display artist so the group header doesn't show a single track's artist.
+        const displayArtist = importGroup
+          ? (item.album_artist || item.artist || '')
+          : (item.artist || '');
+        individualAlbumGroups[groupKey] = { artist: displayArtist, album: item.album || '', items: [] };
       }
       individualAlbumGroups[groupKey].items.push(item);
     });
