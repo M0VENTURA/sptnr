@@ -4441,6 +4441,21 @@ def run_processor(interval=30):
     # Clear suspected (unconfirmed) banned words carried over from any previous run.
     _clear_suspected_words()
 
+    # One-off background migration: link existing queue rows to normalised
+    # metadata tables where the FKs are not yet populated.  Non-fatal if the
+    # metadata tables or columns don't exist yet (they are created by
+    # ensure_schema() and startup_queue_columns_fast.py on first run).
+    try:
+        from download_queue_manager import backfill_queue_metadata_ids
+        _bf = backfill_queue_metadata_ids(limit=1000)
+        if _bf.get('releases_linked') or _bf.get('tracks_linked'):
+            logger.info(
+                "[STARTUP] Backfilled metadata FK links — releases: %d, tracks: %d",
+                _bf['releases_linked'], _bf['tracks_linked'],
+            )
+    except Exception as _bf_err:
+        logger.debug(f"[STARTUP] backfill_queue_metadata_ids skipped: {_bf_err}")
+
     client = get_slskd_client()
     if not client:
         logger.error("Cannot initialize SlskdClient - exiting")
