@@ -13279,53 +13279,141 @@ def api_album_queue_status():
         return jsonify({"error": str(e)}), 500
 
 
-
+@app.route("/api/album/set-art", methods=["POST"])
 def api_album_set_art():
-    """Set custom album art"""
+    """Set custom album art from a URL – downloads the image and stores it in the database"""
     data = request.json or {}
     artist_name = data.get("artist", "").strip()
     album_name = data.get("album", "").strip()
     image_url = data.get("image_url", "").strip()
-    
+
     if not artist_name or not album_name or not image_url:
         return jsonify({"error": "Artist, album name, and image URL required"}), 400
-    
+
     # Validate that image_url is a valid HTTP/HTTPS URL, not a data URI or other scheme
     if not image_url.startswith(('http://', 'https://')):
         return jsonify({"error": "Image URL must be a valid HTTP or HTTPS URL"}), 400
-    
+
+    # Block SSRF: reject URLs resolving to private/loopback addresses
+    try:
+        from urllib.parse import urlparse as _up
+        import ipaddress as _ipaddress
+        import socket as _socket
+        _parsed_url = _up(image_url)
+        _hostname = _parsed_url.hostname or ""
+        if not _hostname:
+            return jsonify({"error": "Invalid URL: no hostname"}), 400
+        # Reject obvious internal hostnames
+        _lower_host = _hostname.lower()
+        if _lower_host in ("localhost", "127.0.0.1", "::1") or _lower_host.endswith(".local"):
+            return jsonify({"error": "Image URL hostname is not permitted"}), 400
+        # Resolve and block private IP ranges
+        try:
+            _addr = _socket.getaddrinfo(_hostname, None)[0][4][0]
+            _ip = _ipaddress.ip_address(_addr)
+            if _ip.is_private or _ip.is_loopback or _ip.is_link_local or _ip.is_reserved:
+                return jsonify({"error": "Image URL hostname is not permitted"}), 400
+        except Exception:
+            pass  # If resolution fails let requests handle the error
+        # Reconstruct safe URL from parsed components to avoid tainted-URL attacks
+        _safe_image_url = _up(image_url).geturl()
+    except Exception:
+        return jsonify({"error": "Invalid image URL"}), 400
+
     logger = logging.getLogger('sptnr')
+    try:
+        resp = requests.get(_safe_image_url, timeout=10, allow_redirects=True,
+                            headers={"User-Agent": "sptnr/1.0 +https://github.com/M0VENTURA/sptnr"})
+        if resp.status_code != 200 or not resp.content:
+            return jsonify({"error": f"Could not download image: HTTP {resp.status_code}"}), 400
+
+        mime_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+        if not mime_type.startswith("image/"):
+            return jsonify({"error": "URL did not return an image"}), 400
+
+        saved = _save_album_art_to_db(artist_name, album_name, resp.content, source="manual", mime_type=mime_type)
+        if not saved:
+            return jsonify({"error": "Failed to save image to database"}), 500
+
+        logger.info(f"Album art updated for '{artist_name} - {album_name}' from URL")
+        return jsonify({"success": True, "message": "Album art updated"})
+
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Error downloading album art: {e}")
+        return jsonify({"error": "Failed to download image from the provided URL"}), 400
+    except Exception as e:
+        logger.error(f"Error setting album art: {e}")
+        return jsonify({"error": "An internal error occurred"}), 500
+
+
+@app.route("/api/album/upload-art", methods=["POST"])
+def api_album_upload_art():
+    """Set custom album art from a directly uploaded image file"""
+    artist_name = request.form.get("artist", "").strip()
+    album_name = request.form.get("album", "").strip()
+    image_file = request.files.get("image")
+
+    if not artist_name or not album_name:
+        return jsonify({"error": "Artist and album name required"}), 400
+    if not image_file or not image_file.filename:
+        return jsonify({"error": "No image file provided"}), 400
+
+    mime_type = image_file.mimetype or "image/jpeg"
+    if not mime_type.startswith("image/"):
+        return jsonify({"error": "Uploaded file must be an image"}), 400
+
+    logger = logging.getLogger('sptnr')
+    try:
+        image_data = image_file.read()
+        if not image_data:
+            return jsonify({"error": "Uploaded image is empty"}), 400
+
+        saved = _save_album_art_to_db(artist_name, album_name, image_data, source="manual_upload", mime_type=mime_type)
+        if not saved:
+            return jsonify({"error": "Failed to save image to database"}), 500
+
+        logger.info(f"Album art uploaded for '{artist_name} - {album_name}'")
+        return jsonify({"success": True, "message": "Album art uploaded"})
+
+    except Exception as e:
+        logger.error(f"Error uploading album art: {e}")
+        return jsonify({"error": "An internal error occurred"}), 500
+
+
+@app.route("/api/album/ignore-missing-track", methods=["POST"])
+def api_album_ignore_missing_track():
+    """Mark a persisted missing track as ignored so it no longer shows on the album page"""
+    data = request.get_json(force=True, silent=True) or {}
+    missing_track_id = data.get("id")
+    artist = (data.get("artist") or "").strip()
+    album_name = (data.get("album") or "").strip()
+    title = (data.get("title") or "").strip()
+    disc_number = int(data.get("disc_number") or 1)
+
+    if not missing_track_id and not (artist and album_name and title):
+        return jsonify({"error": "Provide id or (artist, album, title)"}), 400
+
     try:
         conn = get_db()
         cursor = conn.cursor()
-        # Create album_art table if it doesn't exist
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS album_art (
-                artist_name TEXT NOT NULL,
-                album_name TEXT NOT NULL,
-                image_url TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (artist_name, album_name)
+        _ensure_missing_album_tracks_table(cursor)
+        ph = "%s"
+        if missing_track_id:
+            cursor.execute(
+                f"UPDATE missing_album_tracks SET ignored = TRUE WHERE id = {ph}",
+                (missing_track_id,),
             )
-        """)
-        
-        # Insert or update
-        cursor.execute("""
-            INSERT INTO album_art (artist_name, album_name, image_url, updated_at)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (artist_name, album_name)
-            DO UPDATE SET
-                image_url = EXCLUDED.image_url,
-                updated_at = EXCLUDED.updated_at
-        """, (artist_name, album_name, image_url, datetime.now().isoformat()))
+        else:
+            cursor.execute(
+                f"UPDATE missing_album_tracks SET ignored = TRUE "
+                f"WHERE artist_name = {ph} AND album_name = {ph} AND title = {ph} AND disc_number = {ph}",
+                (artist, album_name, title, disc_number),
+            )
         conn.commit()
         conn.close()
-        
-        logger.info(f"Album art updated for '{artist_name} - {album_name}': {image_url}")
-        return jsonify({"success": True, "message": "Album art updated"})
-        
+        return jsonify({"success": True})
     except Exception as e:
-        logger.error(f"Error setting album art: {e}")
+        logging.error(f"Error ignoring missing track: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -14004,6 +14092,51 @@ def album_detail(artist, album):
             return (disc_num, track_num, track_str.lower(), title)
 
         tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
+
+        # Load persisted missing tracks from the database and merge them in so they
+        # survive page refreshes without requiring another MusicBrainz comparison.
+        try:
+            conn_mt = get_db()
+            cursor_mt = conn_mt.cursor()
+            ph_mt = "%s"
+            _ensure_missing_album_tracks_table(cursor_mt)
+            cursor_mt.execute(
+                f"SELECT id, title, track_number, disc_number, track_artist, year, "
+                f"release_id, recording_mbid, duration "
+                f"FROM missing_album_tracks "
+                f"WHERE LOWER(artist_name) = LOWER({ph_mt}) AND LOWER(album_name) = LOWER({ph_mt}) "
+                f"AND ignored = FALSE "
+                f"ORDER BY disc_number, track_number",
+                (artist, album),
+            )
+            for mt_row in cursor_mt.fetchall():
+                mt = dict(mt_row) if hasattr(mt_row, "keys") else {
+                    "id": mt_row[0], "title": mt_row[1], "track_number": mt_row[2],
+                    "disc_number": mt_row[3], "track_artist": mt_row[4], "year": mt_row[5],
+                    "release_id": mt_row[6], "recording_mbid": mt_row[7], "duration": mt_row[8],
+                }
+                tracks_with_genre_fit.append({
+                    "is_missing": True,
+                    "missing_track_id": mt.get("id"),
+                    "title": mt.get("title", ""),
+                    "track_number": mt.get("track_number"),
+                    "disc_number": mt.get("disc_number") or 1,
+                    "artist": mt.get("track_artist") or artist,
+                    "album_artist": artist,
+                    "album": album,
+                    "year": mt.get("year") or "",
+                    "release_id": mt.get("release_id") or "",
+                    "recording_mbid": mt.get("recording_mbid") or "",
+                    "duration": mt.get("duration"),
+                    "_mb_diff_items": [],
+                    "_mb_comp_json": "",
+                })
+            conn_mt.close()
+            # Re-sort to interleave missing tracks at the right positions
+            tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
+        except Exception as _mt_err:
+            logging.debug(f"Could not load persisted missing tracks: {_mt_err}")
+
 
         # Pre-compute MusicBrainz pending update banner data from the stored
         # pending_mb_updates JSON so banners are rendered server-side and survive
@@ -23704,6 +23837,36 @@ _pg_album_art_schema_ensured = False
 # concurrent workers.  The value must be unique within the PostgreSQL instance
 # but is otherwise arbitrary — a CRC-32 of the string "album_art_schema_init".
 _ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY = 1986627450
+
+_missing_album_tracks_table_ensured = False
+
+
+def _ensure_missing_album_tracks_table(cursor) -> None:
+    """Create the missing_album_tracks table if it doesn't already exist."""
+    global _missing_album_tracks_table_ensured
+    if _missing_album_tracks_table_ensured:
+        return
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS missing_album_tracks (
+                id BIGSERIAL PRIMARY KEY,
+                artist_name TEXT NOT NULL,
+                album_name  TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                track_number TEXT,
+                disc_number  INTEGER DEFAULT 1,
+                track_artist TEXT,
+                year         TEXT,
+                release_id   TEXT,
+                recording_mbid TEXT,
+                duration     INTEGER,
+                ignored      BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        _missing_album_tracks_table_ensured = True
+    except Exception as _tbl_err:
+        logging.debug(f"[MISSING_ALBUM_TRACKS] Could not create table: {_tbl_err}")
 
 
 def _ensure_album_art_pg_schema(conn, cursor) -> None:
@@ -35188,6 +35351,43 @@ def api_album_musicbrainz_compare():
             conn_p.close()
         except Exception as _save_err:
             logging.warning(f"[MB_COMPARE] Could not persist comparison results: {_save_err}")
+
+        # Persist unmatched (missing) tracks so they survive page refreshes.
+        # Only non-ignored entries from a previous comparison are replaced; ignored
+        # entries remain untouched so the user's "Ignore" choice is preserved.
+        try:
+            conn_m = get_db()
+            cursor_m = conn_m.cursor()
+            ph_m = "%s"
+            _ensure_missing_album_tracks_table(cursor_m)
+            # Remove only non-ignored entries for this album so we get a fresh set
+            cursor_m.execute(
+                f"DELETE FROM missing_album_tracks "
+                f"WHERE artist_name = {ph_m} AND album_name = {ph_m} AND ignored = FALSE",
+                (artist, album),
+            )
+            for entry in comparison:
+                if not entry.get("matched"):
+                    cursor_m.execute(
+                        f"INSERT INTO missing_album_tracks "
+                        f"(artist_name, album_name, title, track_number, disc_number, track_artist, year, release_id, recording_mbid, duration) "
+                        f"VALUES ({ph_m},{ph_m},{ph_m},{ph_m},{ph_m},{ph_m},{ph_m},{ph_m},{ph_m},{ph_m})",
+                        (
+                            artist, album,
+                            entry.get("mb_title", ""),
+                            str(entry.get("mb_track_number") or ""),
+                            int(entry.get("mb_disc_number") or 1),
+                            entry.get("mb_artist") or artist,
+                            str(mb_year or ""),
+                            release_group_mbid,
+                            entry.get("mb_recording_id") or "",
+                            entry.get("mb_duration_sec"),
+                        ),
+                    )
+            conn_m.commit()
+            conn_m.close()
+        except Exception as _miss_err:
+            logging.warning(f"[MB_COMPARE] Could not persist missing tracks: {_miss_err}")
 
         return jsonify({
             "success": True,
