@@ -6687,12 +6687,18 @@ function toggleQueueLogPause() {
 // Load queue status on page load
 document.addEventListener('DOMContentLoaded', function() {
   // Load queue status and folder groups together to keep them in sync
-  async function loadBothAsync() {
+  async function loadBothAsync({ forceRender: explicitForce } = {}) {
     await loadQueueStatus();
-    await loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+    // Skip a forced list re-render while any Bootstrap modal is open.
+    // Replacing list.innerHTML during a modal causes a full DOM reflow that
+    // makes the modal flash/flicker.  The signature-based change detection
+    // (forceRender: false) still updates the list when data actually changes.
+    const anyModalOpen = !!document.querySelector('.modal.show');
+    const shouldForce = explicitForce !== undefined ? explicitForce : !anyModalOpen;
+    await loadFolderGroups({ forceRender: shouldForce, keepVisibleOnEmpty: true });
   }
   
-  setTimeout(loadBothAsync, 500);
+  setTimeout(() => loadBothAsync({ forceRender: true }), 500);
   // Delay upcoming releases so the critical queue / folder data renders first.
   // It reads from the local database; there is no Wikipedia fetch on load.
   setTimeout(refreshUpcomingReleasesMonitor, 2000);
@@ -6706,7 +6712,7 @@ document.addEventListener('DOMContentLoaded', function() {
   setTimeout(async () => {
     try {
       await fetchJsonOrThrow('/api/queue/requeue-all-unmatched', { method: 'POST' });
-      await loadBothAsync();
+      await loadBothAsync({ forceRender: true });
     } catch (error) {
       console.debug('Auto-requeue unmatched failed:', error);
     }
