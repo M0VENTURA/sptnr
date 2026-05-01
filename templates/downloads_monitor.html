@@ -219,6 +219,11 @@
       <div class="d-flex align-items-center gap-2 flex-wrap">
         <span class="badge bg-info" id="folderGroupsBadge">0 items</span>
         <span class="text-muted small" id="queuePageSummary">Showing 0 of 0</span>
+        <select id="queueSortMode" class="form-select form-select-sm" style="width:auto;" onchange="loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true })">
+          <option value="folder">Sort: Folder</option>
+          <option value="artist">Sort: Artist</option>
+          <option value="album">Sort: Album</option>
+        </select>
         <button class="btn btn-sm btn-outline-secondary" id="queuePrevPageBtn" onclick="changeQueuePage(-1)" disabled>
           <i class="bi bi-chevron-left"></i> Prev
         </button>
@@ -2740,7 +2745,24 @@ async function loadFolderGroups(options = {}) {
     let filteredGroups = groups;
 
     // Keep ordering stable to prevent unnecessary re-renders on refresh.
+    const sortMode = document.getElementById('queueSortMode')?.value || 'folder';
     filteredGroups = filteredGroups.sort((a, b) => {
+      if (sortMode === 'artist') {
+        const artistA = String(a.artist || '').toLowerCase();
+        const artistB = String(b.artist || '').toLowerCase();
+        if (artistA !== artistB) return artistA.localeCompare(artistB);
+        const albumA = String(a.album || '').toLowerCase();
+        const albumB = String(b.album || '').toLowerCase();
+        return albumA.localeCompare(albumB);
+      }
+      if (sortMode === 'album') {
+        const albumA = String(a.album || '').toLowerCase();
+        const albumB = String(b.album || '').toLowerCase();
+        if (albumA !== albumB) return albumA.localeCompare(albumB);
+        const artistA = String(a.artist || '').toLowerCase();
+        const artistB = String(b.artist || '').toLowerCase();
+        return artistA.localeCompare(artistB);
+      }
       const keyA = String(a.folder_path || a.folder_name || '').toLowerCase();
       const keyB = String(b.folder_path || b.folder_name || '').toLowerCase();
       return keyA.localeCompare(keyB);
@@ -2752,6 +2774,7 @@ async function loadFolderGroups(options = {}) {
 
     const nextSignature = JSON.stringify({
       filter: 'queue',
+      sort: sortMode,
       groups: filteredGroups.map(group => ({
         folder_path: group.folder_path,
         folder_name: group.folder_name,
