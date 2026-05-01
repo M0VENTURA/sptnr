@@ -5,6 +5,8 @@ on:
     types: [opened, synchronize]
   pull_request_review_comment:
     types: [created]
+  issue_comment:
+    types: [created]
 
 jobs:
   opencode:
@@ -18,6 +20,8 @@ jobs:
       id-token: write
       contents: write
       pull-requests: write
+      issues: write
+
 
     steps:
       - name: Checkout repository
@@ -30,6 +34,7 @@ jobs:
         uses: anomalyco/opencode/github@latest
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           model: opencode-go/kimi-k2.6
-          token: ${{ github.token }}
+          use_github_token: true
