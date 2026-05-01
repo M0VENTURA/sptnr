@@ -1,3 +1,6 @@
+> This document is referenced by OpenCode system configuration in `.opencode.json`
+> and provides authoritative documentation links for all external APIs.
+
 # External API Reference – sptnr
 
 This document describes the external APIs used by the sptnr service, their purpose within the system, and where authoritative documentation can be found.
