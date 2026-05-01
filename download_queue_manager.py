@@ -47,6 +47,11 @@ try:
 except ImportError:
     _HAVE_MATCHING_UTILS = False
 
+try:
+    from mutagen import File as MutagenFile
+except ImportError:
+    MutagenFile = None
+
 logger = logging.getLogger("download_queue")
 if not logger.handlers:
     _queue_log_handler = logging.FileHandler("/config/download_queue.log")
@@ -5354,10 +5359,17 @@ def check_downloads_folder():
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         ph = "%s"
 
-        # Get all active queue items (not yet completed or imported)
+        # Get active queue items that have NOT yet been dispatched to slskd.
+        # 'downloading' items are intentionally EXCLUDED here — they are
+        # exclusively handled by queue_processor.check_completed_downloads()
+        # which performs slskd-transfer-state reconciliation and proper
+        # metadata verification.  Including 'downloading' in this filesystem
+        # scan creates a race where check_downloads_folder can flip an item
+        # to 'completed' before slskd-aware logic has a chance to verify it,
+        # leaving non-MusicBrainz or partial-album matches orphaned.
         cursor.execute("""
             SELECT * FROM download_queue 
-            WHERE status IN ('queued', 'searching', 'downloading')
+            WHERE status IN ('queued', 'searching')
             ORDER BY created_at ASC
         """)
         queue_items = cursor.fetchall()
@@ -5374,6 +5386,17 @@ def check_downloads_folder():
 
         conversion_settings = _read_download_conversion_settings()
         original_subfolder = (conversion_settings.get("original_subfolder") or "Original").strip().lower()
+
+        # Lazy imports to avoid circular references at module load time.
+        # queue_processor imports from download_queue_manager, so we must not
+        # import it at the top level.
+        try:
+            from queue_processor import _metadata_matches_queue_item as _qp_metadata_matches
+            from queue_processor import matches_queue_item as _qp_matches_queue_item
+        except Exception as _imp_err:
+            logger.warning(f"[check_downloads_folder] Could not import queue_processor matchers: {_imp_err}")
+            _qp_metadata_matches = None
+            _qp_matches_queue_item = None
 
         # Recursively get all supported audio files in downloads folder and subdirectories.
         # Queue scanner is intentionally strict: mp3/flac only.
@@ -5558,11 +5581,10 @@ def check_downloads_folder():
                         except Exception:
                             metadata = None
 
-                        meta_state = _metadata_matches_queue_item(
-                            metadata or {},
-                            queue_item,
-                            file_path=file_info['full_path'],
-                            check_quality=False,
+                        meta_state = (
+                            _qp_metadata_matches(file_info['full_path'], queue_item)
+                            if _qp_metadata_matches is not None
+                            else None
                         )
                         if meta_state is False:
                             # File metadata doesn't match queue item, skip this file
@@ -5588,11 +5610,10 @@ def check_downloads_folder():
                     except Exception:
                         metadata = None
 
-                    meta_state = _metadata_matches_queue_item(
-                        metadata or {},
-                        queue_item,
-                        file_path=file_info['full_path'],
-                        check_quality=False,
+                    meta_state = (
+                        _qp_metadata_matches(file_info['full_path'], queue_item)
+                        if _qp_metadata_matches is not None
+                        else None
                     )
 
                     # If tags exist and disagree, never allow filename fallback.
@@ -5613,7 +5634,9 @@ def check_downloads_folder():
                     # "first file wins" is still avoided because is_match requires
                     # both the artist AND the title to appear in the path.
                     rel_path = file_info['rel_path']
-                    if is_match(rel_path, queue_item):
+                    if _qp_matches_queue_item is not None and _qp_matches_queue_item(
+                        rel_path, queue_item, file_info['full_path']
+                    ):
                         # Duration double-check: hard-reject when both sides have a
                         # known duration and they differ by more than 5 seconds.
                         file_dur_ms = (metadata or {}).get('duration_ms')
@@ -5660,13 +5683,17 @@ def check_downloads_folder():
                 folder_all_audio = _folder_files_map.get(match_dir, [])
                 folder_audio_count = len(folder_all_audio)
 
-                # First mark as completed so the item has file_path set
+                # First mark as completed so the item has file_path set.
+                # Do NOT set imported_at here — that column is reserved for the
+                # 'imported' terminal state.  Setting it prematurely prevents
+                # post_download_processor from picking this item up (it filters
+                # on imported_at IS NULL) and leaves the row stuck in
+                # 'completed' indefinitely.
                 updated_item = update_queue_item(
                     queue_item['id'],
                     status='completed',
                     found_filename=match_found,
                     file_path=match_path,
-                    imported_at=datetime.now().isoformat()
                 )
 
                 if updated_item:
@@ -7942,14 +7969,15 @@ def check_and_remove_failed_downloads():
 
 def cleanup_imported(days=7):
     """
-    Remove imported items older than X days to keep queue clean
+    Remove imported AND stale completed items older than *days* to keep queue clean.
     
     Args:
-        days: Days to keep imported items
+        days: Days to keep terminal items
     
     Returns:
-        Number of items removed
+        Total number of items removed
     """
+    total_removed = 0
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -7957,6 +7985,7 @@ def cleanup_imported(days=7):
         
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
         
+        # 1) Purge old imported rows
         execute_write_with_retry(
             cursor,
             conn,
@@ -7968,14 +7997,30 @@ def cleanup_imported(days=7):
             (cutoff_date,),
             context="cleanup_imported delete"
         )
-
-        removed = cursor.rowcount
+        total_removed += int(cursor.rowcount or 0)
+        
+        # 2) Purge old completed rows that were never promoted to imported.
+        # These can accumulate when a file was matched but the move pipeline
+        # repeatedly failed or the source file vanished.
+        execute_write_with_retry(
+            cursor,
+            conn,
+            f"""
+            DELETE FROM download_queue
+            WHERE status = 'completed'
+              AND updated_at < {placeholder}
+        """,
+            (cutoff_date,),
+            context="cleanup_stale_completed delete"
+        )
+        total_removed += int(cursor.rowcount or 0)
+        
         conn.close()
         
-        if removed > 0:
-            logger.info(f"Cleaned up {removed} old imported queue items")
+        if total_removed > 0:
+            logger.info(f"Cleaned up {total_removed} old queue items (imported/completed)")
         
-        return removed
+        return total_removed
         
     except Exception as e:
         logger.error(f"Error cleaning up queue: {e}")

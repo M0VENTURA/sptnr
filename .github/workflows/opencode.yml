@@ -10,10 +10,17 @@ on:
 
 jobs:
   opencode:
-    if: >
-      github.event_name == 'pull_request' ||
-      contains(github.event.comment.body, '/oc') ||
-      contains(github.event.comment.body, '/opencode')
+    if: |
+      (github.event_name == 'pull_request') ||
+      (github.event_name == 'issue_comment' && (
+        contains(github.event.comment.body, '/oc') ||
+        contains(github.event.comment.body, '/opencode')
+      )) ||
+      (github.event_name == 'pull_request_review_comment' && (
+        contains(github.event.comment.body, '/oc') ||
+        contains(github.event.comment.body, '/opencode')
+      ))
+
     runs-on: ubuntu-latest
 
     permissions:
@@ -22,13 +29,17 @@ jobs:
       pull-requests: write
       issues: write
 
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          persist-credentials: false
+          persist-credentials: true
+
+      - name: Configure Git author
+        run: |
+          git config --global user.name "opencode-agent"
+          git config --global user.email "opencode-agent@users.noreply.github.com"
 
       - name: Run OpenCode
         uses: anomalyco/opencode/github@latest
