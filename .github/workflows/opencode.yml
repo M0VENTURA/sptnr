@@ -5,6 +5,8 @@ on:
     types: [opened, synchronize]
   pull_request_review_comment:
     types: [created]
+  issue_comment:
+    types: [created]
 
 jobs:
   opencode:
@@ -19,6 +21,7 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+
 
     steps:
       - name: Checkout repository
