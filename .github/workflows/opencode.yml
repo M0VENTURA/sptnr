@@ -1,36 +1,32 @@
 name: opencode
 
 on:
-  issue_comment:
-    types: [created]
-
   pull_request:
-    types: [opened, synchronize] 
-
+    types: [opened, synchronize]
   pull_request_review_comment:
     types: [created]
 
 jobs:
   opencode:
-if: >
-    github.event_name == 'pull_request' ||
-    contains(github.event.comment.body, '/oc') ||
-    contains(github.event.comment.body, '/opencode')
+    if: >
+      github.event_name == 'pull_request' ||
+      contains(github.event.comment.body, '/oc') ||
+      contains(github.event.comment.body, '/opencode')
     runs-on: ubuntu-latest
 
     permissions:
       id-token: write
       contents: write
-      issues: write
       pull-requests: write
       reactions: write
-      
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
           persist-credentials: false
+
       - name: Run OpenCode
         uses: anomalyco/opencode/github@latest
         env:
