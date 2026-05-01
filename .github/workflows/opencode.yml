@@ -18,7 +18,8 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-
+      reactions: write
+      
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
