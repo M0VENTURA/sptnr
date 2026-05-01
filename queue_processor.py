@@ -165,6 +165,10 @@ _IMPORT_GROUP_COMPLETION_WINDOW_MINUTES = 30
 # same track is not hammered on every run.
 _SLSKD_LONG_RETRY_DELAY_MINUTES = 1440
 
+# Remotely-queued transfers that stay in "Queued, Remotely" for longer than
+# this are cancelled and re-queued so the item can be searched again.
+_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES = 60
+
 # Quality thresholds for the low-quality fallback download logic.
 # A candidate is considered "low quality" when its bitrate is known, is below
 # _QUALITY_TARGET_BITRATE, and the file is not a lossless format (FLAC/WAV).
@@ -1754,8 +1758,9 @@ def check_track_exists_in_db(queue_item):
             if row:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
-                reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
-                return True, reason, file_path, True
+                if file_path and os.path.isfile(file_path):
+                    reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
+                    return True, reason, file_path, True
 
             # Step 2: same artist+title but possibly different album.
             cursor.execute(
@@ -1774,11 +1779,12 @@ def check_track_exists_in_db(queue_item):
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
                 found_album = (row["album"] if hasattr(row, "keys") else row[2]) or ""
-                reason = (
-                    f"Track '{artist} - {title}' already exists in local database "
-                    f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
-                )
-                return True, reason, file_path, False
+                if file_path and os.path.isfile(file_path):
+                    reason = (
+                        f"Track '{artist} - {title}' already exists in local database "
+                        f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
+                    )
+                    return True, reason, file_path, False
         else:
             cursor.execute(
                 f"""
@@ -1795,8 +1801,9 @@ def check_track_exists_in_db(queue_item):
             if row:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
-                reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
-                return True, reason, file_path, True
+                if file_path and os.path.isfile(file_path):
+                    reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
+                    return True, reason, file_path, True
 
     except Exception as e:
         logger.debug(f"DB existence check error for '{artist} - {title}': {e}")
@@ -1805,6 +1812,37 @@ def check_track_exists_in_db(queue_item):
             conn.close()
 
     return False, "", None, True
+
+
+def check_target_folder_exists(queue_item):
+    """
+    Check if a file matching the queue item already exists in the target music folder.
+
+    Returns:
+        tuple: (exists: bool, reason: str, source_path: str|None)
+    """
+    artist = queue_item.get("artist", "").strip()
+    title = queue_item.get("title", "").strip()
+    if not artist or not title:
+        return False, "", None
+
+    music_root = os.environ.get("MUSIC_ROOT", "/music")
+    try:
+        for root, _, files in os.walk(music_root):
+            for f in files:
+                if not f.lower().endswith((".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac")):
+                    continue
+                if title.lower() in f.lower():
+                    full_path = os.path.join(root, f)
+                    if os.path.isfile(full_path):
+                        return (
+                            True,
+                            f"Track '{artist} - {title}' already exists in target folder ({full_path})",
+                            full_path,
+                        )
+    except Exception as e:
+        logger.debug(f"Target folder existence check error for '{artist} - {title}': {e}")
+    return False, "", None
 
 
 def check_track_exists_in_navidrome(queue_item):
@@ -2126,14 +2164,86 @@ def _get_banned_words() -> set:
         return set()
 
 
-def _filter_banned_words(query: str, banned: set) -> str:
-    """Remove banned words from a query string."""
-    if not banned:
+def _get_dismissed_words() -> set:
+    """Fetch the set of dismissed words from the persistent JSON file."""
+    dismissed_path = os.environ.get("DISMISSED_WORDS_PATH", "/config/dismissed_words.json")
+    try:
+        if os.path.exists(dismissed_path):
+            with open(dismissed_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return set(str(w).lower().strip() for w in data if w)
+    except Exception as e:
+        logger.debug(f"[banned_words] Could not load dismissed words: {e}")
+    return set()
+
+
+def _save_dismissed_words(dismissed: set) -> None:
+    """Persist the dismissed words set to JSON."""
+    dismissed_path = os.environ.get("DISMISSED_WORDS_PATH", "/config/dismissed_words.json")
+    try:
+        with open(dismissed_path, "w", encoding="utf-8") as f:
+            json.dump(sorted(dismissed), f)
+    except Exception as e:
+        logger.warning(f"[banned_words] Could not save dismissed words: {e}")
+
+
+def _filter_banned_words(query: str, banned: set, dismissed: set | None = None) -> str:
+    """Remove banned (and optionally dismissed) words from a query string."""
+    excluded = banned | (dismissed or set())
+    if not excluded:
         return query
     words = query.split()
-    filtered = [w for w in words if w.lower() not in banned]
+    filtered = [w for w in words if w.lower() not in excluded]
     result = ' '.join(filtered).strip()
     return result if len(result) >= 3 else query  # don't return empty/trivial queries
+
+
+def _build_safe_search_query(queue_item, banned: set, dismissed: set) -> str | None:
+    """
+    Build a Soulseek search query that excludes banned and dismissed words.
+
+    Strategy:
+    1. Gather candidate tokens from artist, album, and title.
+    2. Remove any token that appears in *banned* or *dismissed*.
+    3. If any title token was removed, drop the entire title from the query
+       (reverting to Artist + Album only) so we never search with a partial
+       or corrupted title.
+    4. If all tokens are removed, return None so the caller can skip the search.
+    """
+    artist = (queue_item.get('artist') or '').strip()
+    album = (queue_item.get('album') or '').strip()
+    title = (queue_item.get('title') or '').strip()
+
+    excluded = banned | dismissed
+
+    def _tokens(s: str) -> list[str]:
+        return [t for t in s.split() if t]
+
+    artist_tokens = _tokens(artist)
+    album_tokens = _tokens(album)
+    title_tokens = _tokens(title)
+
+    # Filter each field
+    artist_filtered = [t for t in artist_tokens if t.lower() not in excluded]
+    album_filtered = [t for t in album_tokens if t.lower() not in excluded]
+    title_filtered = [t for t in title_tokens if t.lower() not in excluded]
+
+    # If any title token was banned/dismissed, drop the whole title
+    if len(title_filtered) != len(title_tokens):
+        title_filtered = []
+
+    # Prefer Artist + Album; fall back to Artist alone; then Album alone
+    tokens_out = []
+    if artist_filtered:
+        tokens_out.extend(artist_filtered)
+    if album_filtered:
+        tokens_out.extend(album_filtered)
+    if not tokens_out and title_filtered:
+        tokens_out.extend(title_filtered)
+
+    if not tokens_out:
+        return None
+    return ' '.join(tokens_out)
 
 
 _BANNED_WORDS_SUSPECTED_THRESHOLD = 3  # must match the frontend filter (zero_result_count >= 3)
@@ -2211,6 +2321,8 @@ def _track_zero_result_words(query: str, client=None) -> None:
     Words shorter than 4 characters, pure digits, and common stop words are skipped.
     Only words that returned 0 results for 3+ distinct searches are suggested as banned.
 
+    Banned and dismissed words are never suggested again, so they are skipped here.
+
     When a word's count would reach _BANNED_WORDS_SUSPECTED_THRESHOLD for the first
     time, a single-word Soulseek verification search is performed via *client*.
     The word is only tracked if that verification search also returns 0 results,
@@ -2225,6 +2337,14 @@ def _track_zero_result_words(query: str, client=None) -> None:
         words = [w for w in re.findall(r'[a-zA-Z]{4,}', query.lower()) if w not in _STOP_WORDS]
         if not words:
             return
+
+        # Skip banned and dismissed words — they must never appear as suggestions.
+        _banned = _get_banned_words()
+        _dismissed = _get_dismissed_words()
+        words = [w for w in words if w not in _banned and w not in _dismissed]
+        if not words:
+            return
+
         from download_queue_manager import _get_postgres_conn_from_app_or_fallback, _ensure_banned_words_table
         conn = _get_postgres_conn_from_app_or_fallback()
         cursor = conn.cursor()
@@ -2587,18 +2707,43 @@ def search_and_download(queue_id, queue_item, client):
                 update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
             return False
 
+        # Also check whether the expected destination already exists on disk
+        # even if it has not yet been scanned into the local DB.
+        target_exists, target_reason, target_path = check_target_folder_exists(queue_item)
+        if target_exists:
+            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {target_reason}")
+            update_queue_status(
+                queue_id, 'in_collection',
+                failure_reason=target_reason,
+                source_music_path=target_path,
+            )
+            return False
+
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')
 
-        # Load banned words and filter them from the primary query
+        # Load banned and dismissed words and build a safe query that excludes them.
         _banned = _get_banned_words()
-        if _banned:
-            _filtered_sq = _filter_banned_words(search_query, _banned)
-            if _filtered_sq and _filtered_sq != search_query:
-                logger.info(f"Queue {queue_id}: Banned-word filter changed query '{search_query}' → '{_filtered_sq}'")
-                search_query = _filtered_sq
-                queue_item = dict(queue_item)
-                queue_item['search_query'] = search_query
+        _dismissed = _get_dismissed_words()
+        _safe_query = _build_safe_search_query(queue_item, _banned, _dismissed)
+        if _safe_query is None:
+            logger.warning(
+                f"Queue {queue_id}: All search tokens are banned or dismissed — skipping Soulseek search"
+            )
+            mark_failed(
+                queue_id,
+                "All search tokens banned or dismissed",
+                schedule_retry=True,
+                retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
+            )
+            return False
+        if _safe_query != search_query:
+            logger.info(
+                f"Queue {queue_id}: Banned/dismissed filter changed query '{search_query}' → '{_safe_query}'"
+            )
+            search_query = _safe_query
+            queue_item = dict(queue_item)
+            queue_item['search_query'] = search_query
 
         poll_start_time = datetime.now()
 
@@ -2612,18 +2757,26 @@ def search_and_download(queue_id, queue_item, client):
         best_score = 0.0
         stripped_query = _build_bracketsanitized_query(queue_item)
         if stripped_query:
-            logger.info(
-                f"Queue {queue_id}: Trying bracket-stripped query '{stripped_query}'..."
-            )
-            best_result, best_score = _run_soulseek_search(
-                queue_id, stripped_query, queue_item, client
-            )
-            if best_result and best_score >= _SLSKD_MIN_ACCEPT_SCORE:
+            _filtered_stripped = _filter_banned_words(stripped_query, _banned, _dismissed)
+            if _filtered_stripped and _filtered_stripped != stripped_query:
                 logger.info(
-                    f"Queue {queue_id}: Bracket-stripped query succeeded (score={best_score:.2f})"
+                    f"Queue {queue_id}: Banned/dismissed filter changed stripped query "
+                    f"'{stripped_query}' → '{_filtered_stripped}'"
                 )
+                stripped_query = _filtered_stripped
+            if stripped_query:
+                logger.info(
+                    f"Queue {queue_id}: Trying bracket-stripped query '{stripped_query}'..."
+                )
+                best_result, best_score = _run_soulseek_search(
+                    queue_id, stripped_query, queue_item, client
+                )
+                if best_result and best_score >= _SLSKD_MIN_ACCEPT_SCORE:
+                    logger.info(
+                        f"Queue {queue_id}: Bracket-stripped query succeeded (score={best_score:.2f})"
+                    )
 
-        # Primary plain-text search using the stored search_query when the
+        # Primary plain-text search using the safe search_query when the
         # bracket-stripped query returned nothing useful.
         if not best_result or best_score < _SLSKD_MIN_ACCEPT_SCORE:
             plain_result, plain_score = _run_soulseek_search(
@@ -2634,13 +2787,18 @@ def search_and_download(queue_id, queue_item, client):
                 best_score = plain_score
 
         # If the primary search found nothing useful, retry with fallback queries.
-        # This handles tracks where the track artist contains featured guests
-        # (e.g. "KNEECAP feat. Fawzi - Palestine") but Soulseek files are tagged
-        # with the album artist only ("KNEECAP - Palestine").
-        # _build_fallback_search_queries returns (query, min_score) tuples;
-        # min_score overrides _SLSKD_MIN_ACCEPT_SCORE for broader queries.
+        # Fallback queries are also filtered for banned/dismissed words.
         if not best_result or best_score < _SLSKD_MIN_ACCEPT_SCORE:
             for fallback_query, fb_min_score in _build_fallback_search_queries(queue_item, search_query):
+                _filtered_fb = _filter_banned_words(fallback_query, _banned, _dismissed)
+                if not _filtered_fb:
+                    continue
+                if _filtered_fb != fallback_query:
+                    logger.info(
+                        f"Queue {queue_id}: Banned/dismissed filter changed fallback query "
+                        f"'{fallback_query}' → '{_filtered_fb}'"
+                    )
+                    fallback_query = _filtered_fb
                 effective_min = fb_min_score if fb_min_score is not None else _SLSKD_MIN_ACCEPT_SCORE
                 logger.info(
                     f"Queue {queue_id}: Primary search insufficient "
@@ -3198,6 +3356,33 @@ def check_completed_downloads():
                                 schedule_retry=True,
                                 retry_delay_minutes=10,
                             )
+                        elif transfer_state == getattr(slskd_client, "STATE_QUEUED_REMOTELY", "Queued, Remotely"):
+                            if _is_stale_queue_item(item, stale_minutes=_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES):
+                                logger.warning(
+                                    f"Queue {item_id}: slskd reports remotely queued for > {_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES} min, "
+                                    f"cancelling transfer and scheduling retry"
+                                )
+                                try:
+                                    _stale_id = str(transfer.get("id") or "")
+                                    _stale_user = str(transfer.get("username") or "")
+                                    if _stale_id and _stale_user:
+                                        slskd_client.cancel_download(
+                                            _stale_user, _stale_id, remove=True
+                                        )
+                                        logger.debug(
+                                            f"Queue {item_id}: cancelled stale remotely-queued transfer "
+                                            f"{_stale_id} (user={_stale_user}) from slskd"
+                                        )
+                                except Exception as _cancel_err:
+                                    logger.debug(
+                                        f"Queue {item_id}: could not cancel stale transfer: {_cancel_err}"
+                                    )
+                                mark_failed(
+                                    item_id,
+                                    "Remotely queued for > 1 hour",
+                                    schedule_retry=True,
+                                    retry_delay_minutes=10,
+                                )
                         # Active/unknown transfer states are left untouched —
                         # the download may still be in progress.  Skip to the
                         # next item and let it be re-evaluated next cycle.
