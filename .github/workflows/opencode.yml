@@ -48,3 +48,4 @@ jobs:
         with:
           model: opencode-go/kimi-k2.6
           use_github_token: true
+          github_token: ${{ github.token }}
