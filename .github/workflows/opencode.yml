@@ -18,7 +18,6 @@ jobs:
       id-token: write
       contents: write
       pull-requests: write
-      reactions: write
 
     steps:
       - name: Checkout repository
