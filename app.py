@@ -4095,21 +4095,12 @@ def _start_navidrome_incremental_scheduler():
                             break
                         continue
 
-                    result = _scan_new_navidrome_files_since_last_import()
-                    if result.get("success"):
-                        if result.get("missing_tracks_detected", 0) > 0:
-                            log_unified(
-                                f"[NAV_INCREMENTAL] Imported missing tracks from new files: "
-                                f"tracks={result.get('missing_tracks_detected', 0)}, "
-                                f"artists={result.get('rescanned_artists', 0)}"
-                            )
-                        else:
-                            logging.info(
-                                "[NAV_INCREMENTAL] No new files detected (checked=%s)",
-                                result.get("candidate_tracks_checked", 0),
-                            )
-                    else:
-                        logging.warning(f"[NAV_INCREMENTAL] Incremental check failed: {result.get('error', 'unknown error')}")
+                    from helpers.library_sync import request_library_sync
+                    sync_result = request_library_sync()
+                    if sync_result.get("started"):
+                        logging.info("[NAV_INCREMENTAL] Library sync requested via scheduler")
+                    elif sync_result.get("coalesced"):
+                        logging.debug("[NAV_INCREMENTAL] Library sync coalesced (already running)")
 
                     if stop_event.wait(timeout=interval_seconds):
                         break

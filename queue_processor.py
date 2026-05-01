@@ -3616,6 +3616,12 @@ def check_completed_downloads():
         if scan_needed:
             if not _trigger_navidrome_scan():
                 logger.warning("[NAVIDROME-SCAN] Imports occurred but scan trigger failed — safety-net will retry")
+            try:
+                from helpers.library_sync import request_library_sync
+                request_library_sync()
+                logger.info("[NAVIDROME-SCAN] Library sync requested after imports")
+            except Exception as sync_err:
+                logger.warning(f"[NAVIDROME-SCAN] Could not request library sync: {sync_err}")
 
     except Exception as e:
         logger.error(f"Error checking completed downloads: {e}")
@@ -4017,6 +4023,12 @@ def trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds
                 f"— triggering safety-net scan"
             )
             _trigger_navidrome_scan()
+            try:
+                from helpers.library_sync import request_library_sync
+                request_library_sync()
+                logger.info("[NAVIDROME-SCAN] Library sync requested after safety-net scan")
+            except Exception as sync_err:
+                logger.warning(f"[NAVIDROME-SCAN] Could not request library sync: {sync_err}")
         else:
             logger.debug("[NAVIDROME-SCAN] No new imports since last check, scan not needed")
     except Exception as e:
@@ -4202,6 +4214,12 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
                     "[RETRY_MOVES] Imports occurred but Navidrome scan trigger failed "
                     "— safety-net will retry"
                 )
+            try:
+                from helpers.library_sync import request_library_sync
+                request_library_sync()
+                logger.info("[RETRY_MOVES] Library sync requested after retry moves")
+            except Exception as sync_err:
+                logger.warning(f"[RETRY_MOVES] Could not request library sync: {sync_err}")
 
     except Exception as e:
         logger.error(f"[RETRY_MOVES] Sweep error: {e}")
@@ -4338,6 +4356,12 @@ def process_copy_recommended_items(now_ts, last_run_ts, interval_seconds=120):
             logger.warning(
                 "[COPY_RECOMMENDED] Imports occurred but Navidrome scan trigger failed"
             )
+        try:
+            from helpers.library_sync import request_library_sync
+            request_library_sync()
+            logger.info("[COPY_RECOMMENDED] Library sync requested after copy-recommended")
+        except Exception as sync_err:
+            logger.warning(f"[COPY_RECOMMENDED] Could not request library sync: {sync_err}")
 
     return now_ts
 
