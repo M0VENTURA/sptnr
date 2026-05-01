@@ -598,7 +598,7 @@
         <div class="table-responsive">
             {# Macro: render a single row for a track that exists in MusicBrainz but not in the library #}
             {% macro missing_track_row(track) %}
-            <tr class="text-muted missing-track-row" style="opacity: 0.6;">
+            <tr class="text-muted missing-track-row" style="opacity: 0.6;" data-missing-id="{{ track.missing_track_id or '' }}">
                 <td></td>
                 <td class="fst-italic">{{ track.track_number or '?' }}</td>
                 <td colspan="6" class="fst-italic">
@@ -631,6 +631,14 @@
                             data-album="{{ track.album|escapejs }}"
                             onclick="openAlbumMatchModal(this)">
                             <i class="bi bi-link-45deg"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary"
+                            title="Ignore – hide this track from the missing list"
+                            data-missing-id="{{ track.missing_track_id or '' }}"
+                            data-title="{{ track.title|escapejs }}"
+                            data-disc-number="{{ track.disc_number or 1 }}"
+                            onclick="ignoreMissingTrack(this)">
+                            <i class="bi bi-x-lg"></i>
                         </button>
                     </div>
                 </td>
@@ -688,6 +696,9 @@
                                                 <small class="text-muted">— {{ track.artist }}</small>
                                                 {% endif %}
                                             </a>
+                                            {% if track._mb_is_extra %}
+                                            <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                            {% endif %}
                                             {% endif %}
                                         </span>
                                     </div>
@@ -708,6 +719,9 @@
                                         <a href="{{ url_for('track_detail', track_id=track.id) }}">
                                             {{ track.title }}
                                         </a>
+                                        {% if track._mb_is_extra %}
+                                        <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                        {% endif %}
                                         {% if track.file_path %}
                                         <div class="text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
                                         {% endif %}
@@ -809,23 +823,30 @@
                                     {% endif %}
                                 </td>
                             </tr>
-                            {% if track._mb_diff_html %}
-                            <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}">
+                            {% if track._mb_diff_items %}
+                            {% for _item in track._mb_diff_items %}
+                            <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}" data-mb-field="{{ _item.field }}">
                                 <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
                                     <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
                                          style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
                                         <small class="text-warning-emphasis">
-                                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
+                                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz:</strong>
                                         </small>
-                                        <small class="text-muted">{{ track._mb_diff_html | safe }}</small>
+                                        <small class="text-muted">{{ _item.html | safe }}</small>
                                         <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
                                                 style="font-size: 0.75rem; white-space: nowrap;"
-                                                onclick="updateSingleTrackFromMB(this)">
-                                            <i class="bi bi-arrow-repeat"></i> Update
+                                                onclick="applyMBField(this)">
+                                            <i class="bi bi-check-lg"></i> Apply
+                                        </button>
+                                        <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                                                style="font-size: 0.75rem; white-space: nowrap;"
+                                                onclick="ignoreMBField(this)">
+                                            <i class="bi bi-x-lg"></i> Ignore
                                         </button>
                                     </div>
                                 </td>
                             </tr>
+                            {% endfor %}
                             {% endif %}
                             {% endif %}
                             {% endfor %}
@@ -856,6 +877,9 @@
                                             <small class="text-muted">— {{ track.artist }}</small>
                                             {% endif %}
                                         </a>
+                                        {% if track._mb_is_extra %}
+                                        <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                        {% endif %}
                                         {% endif %}
                                     </span>
                                 </div>
@@ -878,6 +902,9 @@
                                     <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline track-title-display-{{ track.id }}">
                                         {{ track.title }}
                                     </a>
+                                    {% if track._mb_is_extra %}
+                                    <span class="badge bg-secondary ms-1 mb-extra-badge d-none d-md-inline" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                                    {% endif %}
                                     {% if track.file_path %}
                                     <div class="d-none d-md-block text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
                                     {% endif %}
@@ -982,23 +1009,30 @@
                                 {% endif %}
                             </td>
                         </tr>
-                        {% if track._mb_diff_html %}
-                        <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}">
+                        {% if track._mb_diff_items %}
+                        {% for _item in track._mb_diff_items %}
+                        <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}" data-mb-field="{{ _item.field }}">
                             <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
                                 <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
                                      style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
                                     <small class="text-warning-emphasis">
-                                        <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
+                                        <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz:</strong>
                                     </small>
-                                    <small class="text-muted">{{ track._mb_diff_html | safe }}</small>
+                                    <small class="text-muted">{{ _item.html | safe }}</small>
                                     <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
                                             style="font-size: 0.75rem; white-space: nowrap;"
-                                            onclick="updateSingleTrackFromMB(this)">
-                                        <i class="bi bi-arrow-repeat"></i> Update
+                                            onclick="applyMBField(this)">
+                                        <i class="bi bi-check-lg"></i> Apply
+                                    </button>
+                                    <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                                            style="font-size: 0.75rem; white-space: nowrap;"
+                                            onclick="ignoreMBField(this)">
+                                        <i class="bi bi-x-lg"></i> Ignore
                                     </button>
                                 </div>
                             </td>
                         </tr>
+                        {% endfor %}
                         {% endif %}
                         {% endif %}
                         {% endfor %}
@@ -1013,6 +1047,11 @@
 /* Dark theme improvements for album page */
 .d-contents {
     display: contents;
+}
+
+.mb-extra-badge {
+    font-size: 0.65rem;
+    vertical-align: middle;
 }
 
 .card {
@@ -2021,25 +2060,60 @@
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
-                            <div class="mb-3">
-                                <label for="manualAlbumArtUrl" class="form-label">Manual Image URL</label>
-                                <input type="text" class="form-control" id="manualAlbumArtUrl" placeholder="https://example.com/album-art.jpg">
+                            <ul class="nav nav-tabs mb-3" id="albumArtTabs" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" id="albumArtUrlTab" data-bs-toggle="tab" data-bs-target="#albumArtUrlPane" type="button" role="tab">
+                                        <i class="bi bi-link-45deg"></i> URL
+                                    </button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="albumArtUploadTab" data-bs-toggle="tab" data-bs-target="#albumArtUploadPane" type="button" role="tab">
+                                        <i class="bi bi-upload"></i> Upload Image
+                                    </button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="albumArtSearchTab" data-bs-toggle="tab" data-bs-target="#albumArtSearchPane" type="button" role="tab">
+                                        <i class="bi bi-search"></i> Search
+                                    </button>
+                                </li>
+                            </ul>
+                            <div class="tab-content">
+                                <div class="tab-pane fade show active" id="albumArtUrlPane" role="tabpanel">
+                                    <div class="mb-3">
+                                        <label for="manualAlbumArtUrl" class="form-label">Image URL</label>
+                                        <input type="text" class="form-control" id="manualAlbumArtUrl" placeholder="https://example.com/album-art.jpg">
+                                    </div>
+                                    <button class="btn btn-primary" onclick="applyManualAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}')">
+                                        <i class="bi bi-check"></i> Apply URL
+                                    </button>
+                                </div>
+                                <div class="tab-pane fade" id="albumArtUploadPane" role="tabpanel">
+                                    <div class="mb-3">
+                                        <label for="manualAlbumArtFile" class="form-label">Select Image File</label>
+                                        <input type="file" class="form-control" id="manualAlbumArtFile" accept="image/*">
+                                    </div>
+                                    <div id="albumArtUploadPreview" class="mb-3" style="display:none;">
+                                        <img id="albumArtPreviewImg" src="" alt="Preview" style="max-height:200px; max-width:100%; border-radius:0.375rem;">
+                                    </div>
+                                    <button class="btn btn-primary" onclick="uploadAlbumArtFile('${escapeHtml(artistName)}', '${escapeHtml(albumName)}')">
+                                        <i class="bi bi-upload"></i> Upload Image
+                                    </button>
+                                </div>
+                                <div class="tab-pane fade" id="albumArtSearchPane" role="tabpanel">
+                                    <div class="d-flex gap-2 mb-3 flex-wrap">
+                                        <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'musicbrainz')">
+                                            <i class="bi bi-search"></i> MusicBrainz
+                                        </button>
+                                        <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'discogs')">
+                                            <i class="bi bi-disc"></i> Discogs
+                                        </button>
+                                        <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'applemusic')">
+                                            <i class="bi bi-apple"></i> Apple Music
+                                        </button>
+                                    </div>
+                                    <div id="albumArtResults"></div>
+                                </div>
                             </div>
-                            <div class="d-flex gap-2 mb-4 flex-wrap">
-                                <button class="btn btn-primary" onclick="applyManualAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}')">
-                                    <i class="bi bi-check"></i> Apply URL
-                                </button>
-                                <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'musicbrainz')">
-                                    <i class="bi bi-search"></i> MusicBrainz
-                                </button>
-                                <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'discogs')">
-                                    <i class="bi bi-disc"></i> Discogs
-                                </button>
-                                <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'applemusic')">
-                                    <i class="bi bi-apple"></i> Apple Music
-                                </button>
-                            </div>
-                            <div id="albumArtResults"></div>
                         </div>
                     </div>
                 </div>
@@ -2051,6 +2125,28 @@
         if (existingModal) existingModal.remove();
         
         document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+        // Wire up file input preview
+        const fileInput = document.getElementById('manualAlbumArtFile');
+        if (fileInput) {
+            fileInput.addEventListener('change', function() {
+                const file = this.files[0];
+                const preview = document.getElementById('albumArtUploadPreview');
+                const previewImg = document.getElementById('albumArtPreviewImg');
+                if (file && file.type.startsWith('image/')) {
+                    const reader = new FileReader();
+                    reader.onload = e => {
+                        previewImg.src = e.target.result;
+                        preview.style.display = 'block';
+                    };
+                    reader.readAsDataURL(file);
+                } else {
+                    preview.style.display = 'none';
+                    previewImg.src = '';
+                }
+            });
+        }
+
         const modal = new bootstrap.Modal(document.getElementById('albumArtModal'));
         modal.show();
     }
@@ -2062,6 +2158,41 @@
             return;
         }
         applyAlbumArt(artistName, albumName, url);
+    }
+
+    function uploadAlbumArtFile(artistName, albumName) {
+        const fileInput = document.getElementById('manualAlbumArtFile');
+        if (!fileInput || !fileInput.files || !fileInput.files[0]) {
+            alert('Please select an image file');
+            return;
+        }
+        const file = fileInput.files[0];
+        const formData = new FormData();
+        formData.append('artist', artistName);
+        formData.append('album', albumName);
+        formData.append('image', file);
+
+        fetch('/api/album/upload-art', {
+            method: 'POST',
+            body: formData
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                const modal = bootstrap.Modal.getInstance(document.getElementById('albumArtModal'));
+                if (modal) modal.hide();
+                const img = document.getElementById('albumArtImage');
+                if (img) {
+                    img.src = img.src.split('?')[0] + '?t=' + Date.now();
+                }
+                alert('✅ Album art uploaded successfully!');
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to upload album art'));
+            }
+        })
+        .catch(error => {
+            alert('❌ Network error: ' + error.message);
+        });
     }
 
     function searchAlbumArt(artistName, albumName, source) {
@@ -2138,6 +2269,41 @@
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    function ignoreMissingTrack(btn) {
+        const albumArtist = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
+        const missingId = btn.dataset.missingId || '';
+        const title = btn.dataset.title || '';
+        const discNumber = parseInt(btn.dataset.discNumber || '1', 10);
+
+        if (!confirm(`Hide "${title}" from the missing tracks list?\n\nYou can restore it by running a new MusicBrainz comparison.`)) return;
+
+        const row = btn.closest('tr');
+
+        fetch('/api/album/ignore-missing-track', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                id: missingId || undefined,
+                artist: albumArtist,
+                album: albumName,
+                title: title,
+                disc_number: discNumber,
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                if (row) row.remove();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to ignore track'));
+            }
+        })
+        .catch(err => {
+            alert('❌ Network error: ' + err.message);
+        });
     }
 
     // Genre recommendation functions
@@ -2490,7 +2656,7 @@
             const safeAlbumArtist = escapeHtml(albumArtist);
             const safeAlbum = escapeHtml(albumName);
             const safeTrackNum = escapeHtml(String(track.mb_track_number || ''));
-            const safeDiscNum = escapeHtml(String(track.mb_disc_number || ''));
+            const safeDiscNum = escapeHtml(String(track.mb_disc_number || 1));
             const safeRecordingMbid = escapeHtml(String(track.mb_recording_id || ''));
             const safeDuration = track.mb_duration_sec != null ? String(track.mb_duration_sec) : '';
 
@@ -2520,6 +2686,24 @@
                             data-duration="${safeDuration}"
                             onclick="queueMissingTrack(this)">
                             <i class="bi bi-download"></i>
+                        </button>
+                        <button class="btn btn-outline-primary"
+                            title="Match to an existing song in the library"
+                            data-title="${safeTitle}"
+                            data-track-number="${safeTrackNum}"
+                            data-release-id="${releaseId}"
+                            data-artist="${safeArtist}"
+                            data-album="${safeAlbum}"
+                            onclick="openAlbumMatchModal(this)">
+                            <i class="bi bi-link-45deg"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary"
+                            title="Ignore – hide this track from the missing list"
+                            data-missing-id=""
+                            data-title="${safeTitle}"
+                            data-disc-number="${safeDiscNum}"
+                            onclick="ignoreMissingTrack(this)">
+                            <i class="bi bi-x-lg"></i>
                         </button>
                     </div>
                 </td>`;
@@ -2582,15 +2766,84 @@
         }
     }
 
+    // Collect unique track comparison objects from server-rendered .mb-update-row elements.
+    // Used when mbComparisonData is not available (i.e. rows were pre-rendered by the server).
+    function _getTracksFromDOM() {
+        const seen = new Set();
+        const tracks = [];
+        document.querySelectorAll('.mb-update-row').forEach(row => {
+            const trackId = row.dataset.trackId;
+            if (trackId && !seen.has(trackId)) {
+                seen.add(trackId);
+                try {
+                    const comp = JSON.parse(row.dataset.mbComp || '{}');
+                    if (comp.library_track_id) tracks.push(comp);
+                } catch (_) {}
+            }
+        });
+        return tracks;
+    }
+
+    // Mark library tracks that are not part of the MusicBrainz release with an
+    // "Extra" sub-row and a dynamic badge so the user knows they are outside the
+    // official track listing.
+    function _markExtraTracks(extraTracks) {
+        for (const extra of extraTracks) {
+            const trackId = String(extra.library_track_id);
+            const trackRow = document.querySelector(`[data-track-id="${CSS.escape(trackId)}"]`);
+            if (!trackRow) continue;
+
+            // Add a dynamic "Extra" badge to any title link/span inside the row
+            // (skip rows that already have a server-rendered badge).
+            if (!trackRow.querySelector('.mb-extra-badge')) {
+                const titleLink = trackRow.querySelector('a[href*="/track/"]') || trackRow.querySelector('.track-title-display-' + trackId);
+                if (titleLink) {
+                    const badge = document.createElement('span');
+                    badge.className = 'badge bg-secondary ms-1 mb-extra-badge mb-extra-badge-dynamic';
+                    badge.title = 'This track was not found in the MusicBrainz metadata for this album';
+                    badge.textContent = 'Extra';
+                    titleLink.insertAdjacentElement('afterend', badge);
+                }
+            }
+
+            // Inject a sub-row with more detail, similar to mb-update-row
+            const subRow = document.createElement('tr');
+            subRow.className = 'mb-extra-row';
+            subRow.innerHTML = `
+                <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                    <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
+                         style="background: rgba(108,117,125,0.12); border: 1px solid rgba(108,117,125,0.35);">
+                        <small class="text-secondary">
+                            <i class="bi bi-question-circle-fill me-1"></i><strong>MusicBrainz:</strong>
+                        </small>
+                        <small class="text-muted">Not found in the MusicBrainz metadata for this release</small>
+                    </div>
+                </td>`;
+
+            // Insert after the track row, skipping any already-injected helper rows
+            let insertAfter = trackRow;
+            let sib = insertAfter.nextElementSibling;
+            while (sib && (sib.classList.contains('mb-update-row') || sib.classList.contains('mb-missing-row') || sib.classList.contains('mb-extra-row'))) {
+                insertAfter = sib;
+                sib = sib.nextElementSibling;
+            }
+            insertAfter.insertAdjacentElement('afterend', subRow);
+        }
+    }
+
     function _displayMBComparison(data) {
-        // Remove any stale update/missing rows from a previous comparison
+        // Remove any stale update/missing/extra rows from a previous comparison
         document.querySelectorAll('.mb-update-row').forEach(el => el.remove());
         document.querySelectorAll('.mb-missing-row').forEach(el => el.remove());
+        document.querySelectorAll('.mb-extra-row').forEach(el => el.remove());
+        // Remove client-injected extra badges (server-rendered ones stay until page refresh)
+        document.querySelectorAll('.mb-extra-badge-dynamic').forEach(el => el.remove());
 
         const needsUpdate = data.comparison.filter(c => c.needs_update && c.library_track_id);
         const missingTracks = data.comparison.filter(c => !c.matched);
+        const extraTracks = data.extra_tracks || [];
 
-        if (needsUpdate.length === 0 && missingTracks.length === 0) {
+        if (needsUpdate.length === 0 && missingTracks.length === 0 && extraTracks.length === 0) {
             _showMBCompareBanner(
                 `<i class="bi bi-check-circle-fill text-success me-2"></i>All ${escapeHtml(String(data.total_tracks))} tracks match MusicBrainz metadata — no updates needed.`,
                 'success',
@@ -2604,9 +2857,22 @@
             _injectMissingTrackRows(missingTracks, data);
         }
 
+        // Mark extra tracks (in library but not in MB release) with a sub-row and badge
+        if (extraTracks.length > 0) {
+            _markExtraTracks(extraTracks);
+        }
+
         if (needsUpdate.length === 0) {
+            let onlyMsg = '';
+            if (missingTracks.length > 0 && extraTracks.length > 0) {
+                onlyMsg = `<strong>${escapeHtml(String(missingTracks.length))}</strong> ${missingTracks.length === 1 ? 'track is' : 'tracks are'} missing from the library and <strong>${escapeHtml(String(extraTracks.length))}</strong> ${extraTracks.length === 1 ? 'track is' : 'tracks are'} not in the MusicBrainz metadata.`;
+            } else if (missingTracks.length > 0) {
+                onlyMsg = `<strong>${escapeHtml(String(missingTracks.length))} of ${escapeHtml(String(data.total_tracks))} tracks</strong> are missing from the library.`;
+            } else {
+                onlyMsg = `<strong>${escapeHtml(String(extraTracks.length))}</strong> ${extraTracks.length === 1 ? 'track in the library is' : 'tracks in the library are'} not found in the MusicBrainz metadata for this release.`;
+            }
             _showMBCompareBanner(
-                `<i class="bi bi-exclamation-triangle-fill me-2"></i><strong>${escapeHtml(String(missingTracks.length))} of ${escapeHtml(String(data.total_tracks))} tracks</strong> are missing from the library.`,
+                `<i class="bi bi-exclamation-triangle-fill me-2"></i>${onlyMsg}`,
                 'warning',
                 true
             );
@@ -2627,6 +2893,9 @@
         if (missingTracks.length > 0) {
             bannerMsg += ` <strong>${escapeHtml(String(missingTracks.length))}</strong> ${missingTracks.length === 1 ? 'track is' : 'tracks are'} missing from the library.`;
         }
+        if (extraTracks.length > 0) {
+            bannerMsg += ` <strong>${escapeHtml(String(extraTracks.length))}</strong> ${extraTracks.length === 1 ? 'track is' : 'tracks are'} not in the MusicBrainz metadata.`;
+        }
         banner.innerHTML = `
             <div class="alert alert-warning d-flex align-items-center gap-2 mb-2 py-2 flex-wrap">
                 <i class="bi bi-exclamation-triangle-fill"></i>
@@ -2637,7 +2906,7 @@
                 <button type="button" class="btn-close" onclick="clearMBComparison()" aria-label="Dismiss"></button>
             </div>`;
 
-        // Inject an update hint row below each matching track row
+        // Inject an update hint row below each matching track row — one row per diff field
         for (const trackComp of data.comparison) {
             if (!trackComp.needs_update || !trackComp.library_track_id) continue;
 
@@ -2645,49 +2914,153 @@
             const trackRow = document.querySelector(`[data-track-id="${CSS.escape(trackId)}"]`);
             if (!trackRow) continue;
 
-            const diffParts = [];
-            if (trackComp.diff_fields.includes('title')) {
-                diffParts.push(`Title: <em>${escapeHtml(trackComp.library_title)}</em> → <strong>${escapeHtml(trackComp.mb_title)}</strong>`);
-            }
-            if (trackComp.diff_fields.includes('track_number')) {
-                diffParts.push(`Track#: ${escapeHtml(String(trackComp.library_track_number))} → ${escapeHtml(String(trackComp.mb_track_number))}`);
-            }
-            if (trackComp.diff_fields.includes('year')) {
-                diffParts.push(`Year: ${escapeHtml(trackComp.library_year || '—')} → ${escapeHtml(String(trackComp.mb_year))}`);
-            }
-            if (trackComp.diff_fields.includes('mbid')) {
-                diffParts.push(`MusicBrainz ID: <em>missing</em> → <strong>added</strong>`);
-            }
-            if (trackComp.diff_fields.includes('duration')) {
-                diffParts.push(`Length: ${escapeHtml(trackComp.library_duration || '—')} → ${escapeHtml(trackComp.mb_duration || '—')}`);
-            }
-            if (trackComp.diff_fields.includes('disc_number')) {
-                diffParts.push(`Disc: ${escapeHtml(String(trackComp.library_disc_number || 1))} → ${escapeHtml(String(trackComp.mb_disc_number))}`);
+            // Build one row per diff field
+            const fieldLabels = {
+                title: () => `Title: <em>${escapeHtml(trackComp.library_title)}</em> → <strong>${escapeHtml(trackComp.mb_title)}</strong>`,
+                track_number: () => `Track#: ${escapeHtml(String(trackComp.library_track_number))} → ${escapeHtml(String(trackComp.mb_track_number))}`,
+                year: () => `Year: ${escapeHtml(trackComp.library_year || '—')} → ${escapeHtml(String(trackComp.mb_year))}`,
+                mbid: () => `MusicBrainz ID: <em>missing</em> → <strong>added</strong>`,
+                duration: () => `Length: ${escapeHtml(trackComp.library_duration || '—')} → ${escapeHtml(trackComp.mb_duration || '—')}`,
+                disc_number: () => trackComp.cross_disc_match
+                    ? `Move to Disc ${escapeHtml(String(trackComp.mb_disc_number))} (track ${escapeHtml(String(trackComp.mb_track_number || '?'))})`
+                    : `Disc: ${escapeHtml(String(trackComp.library_disc_number || 1))} → ${escapeHtml(String(trackComp.mb_disc_number))}`,
+            };
+
+            let insertAfter = trackRow;
+            // Skip any already-injected rows
+            let sib = insertAfter.nextElementSibling;
+            while (sib && (sib.classList.contains('mb-update-row') || sib.classList.contains('mb-missing-row'))) {
+                insertAfter = sib;
+                sib = sib.nextElementSibling;
             }
 
-            const updateRow = document.createElement('tr');
-            updateRow.className = 'mb-update-row';
-            updateRow.dataset.trackId = trackId;
-            // Store comparison data as JSON attribute for later use
-            updateRow.dataset.mbComp = JSON.stringify(trackComp);
+            for (const field of trackComp.diff_fields) {
+                if (!fieldLabels[field]) continue;
+                const updateRow = document.createElement('tr');
+                updateRow.className = 'mb-update-row';
+                updateRow.dataset.trackId = trackId;
+                updateRow.dataset.mbComp = JSON.stringify(trackComp);
+                updateRow.dataset.mbField = field;
+                updateRow.innerHTML = `
+                    <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                        <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
+                             style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
+                            <small class="text-warning-emphasis">
+                                <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz:</strong>
+                            </small>
+                            <small class="text-muted">${fieldLabels[field]()}</small>
+                            <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
+                                    style="font-size: 0.75rem; white-space: nowrap;"
+                                    onclick="applyMBField(this)">
+                                <i class="bi bi-check-lg"></i> Apply
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                                    style="font-size: 0.75rem; white-space: nowrap;"
+                                    onclick="ignoreMBField(this)">
+                                <i class="bi bi-x-lg"></i> Ignore
+                            </button>
+                        </div>
+                    </td>`;
+                insertAfter.insertAdjacentElement('afterend', updateRow);
+                insertAfter = updateRow;
+            }
+        }
+    }
 
-            updateRow.innerHTML = `
-                <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
-                    <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
-                         style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
-                        <small class="text-warning-emphasis">
-                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
-                        </small>
-                        <small class="text-muted">${diffParts.join(' &nbsp;·&nbsp; ')}</small>
-                        <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
-                                style="font-size: 0.75rem; white-space: nowrap;"
-                                onclick="updateSingleTrackFromMB(this)">
-                            <i class="bi bi-arrow-repeat"></i> Update
-                        </button>
-                    </div>
-                </td>`;
+    // Apply a single MusicBrainz field update for one track row
+    async function applyMBField(btn) {
+        const updateRow = btn.closest('.mb-update-row');
+        const trackComp = JSON.parse(updateRow.dataset.mbComp || '{}');
+        const trackId = String(trackComp.library_track_id || updateRow.dataset.trackId || '');
+        const field = updateRow.dataset.mbField || '';
 
-            trackRow.insertAdjacentElement('afterend', updateRow);
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+
+        // Check if this is the last pending row for this track so we can clear the pending flag
+        const siblingsForTrack = document.querySelectorAll(`.mb-update-row[data-track-id="${CSS.escape(trackId)}"]`);
+        const isLastField = siblingsForTrack.length === 1;
+
+        const payload = { track_id: trackId, sync_to_file: true };
+        if (isLastField) payload.clear_mb_pending = true;
+
+        if (field === 'title') payload.title = trackComp.mb_title;
+        else if (field === 'track_number') payload.track_number = String(trackComp.mb_track_number);
+        else if (field === 'year') payload.year = String(trackComp.mb_year);
+        else if (field === 'mbid' && trackComp.mb_recording_id) payload.mbid = trackComp.mb_recording_id;
+        else if (field === 'disc_number') payload.disc_number = trackComp.mb_disc_number;
+
+        try {
+            const resp = await fetch('/api/track/update-metadata', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await resp.json();
+            if (result.success) {
+                updateRow.remove();
+                if (field === 'title') {
+                    document.querySelectorAll(`.track-title-display-${CSS.escape(trackId)}`).forEach(el => {
+                        el.textContent = trackComp.mb_title;
+                    });
+                }
+                if (!document.querySelector('.mb-update-row')) {
+                    _showMBCompareBanner(
+                        '<i class="bi bi-check-circle-fill text-success me-2"></i>All MusicBrainz suggestions have been applied.',
+                        'success', true
+                    );
+                }
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+                alert('Failed to apply MusicBrainz update: ' + (result.error || 'Unknown error'));
+            }
+        } catch (err) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+            alert('Network error: ' + err.message);
+        }
+    }
+
+    // Permanently ignore a single MusicBrainz field suggestion for one track
+    async function ignoreMBField(btn) {
+        const updateRow = btn.closest('.mb-update-row');
+        const trackComp = JSON.parse(updateRow.dataset.mbComp || '{}');
+        const trackId = String(trackComp.library_track_id || updateRow.dataset.trackId || '');
+        const field = updateRow.dataset.mbField || '';
+
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+
+        const siblingsForTrack = document.querySelectorAll(`.mb-update-row[data-track-id="${CSS.escape(trackId)}"]`);
+        const isLastField = siblingsForTrack.length === 1;
+
+        try {
+            const resp = await fetch('/api/track/ignore-mb-field', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ track_id: trackId, field, clear_mb_pending: isLastField })
+            });
+            const result = await resp.json();
+            if (result.success) {
+                updateRow.remove();
+                if (!document.querySelector('.mb-update-row')) {
+                    _showMBCompareBanner(
+                        '<i class="bi bi-check-circle-fill text-success me-2"></i>All MusicBrainz suggestions have been handled.',
+                        'success', true
+                    );
+                }
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+                alert('Failed to ignore MusicBrainz field: ' + (result.error || 'Unknown error'));
+            }
+        } catch (err) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+            alert('Network error: ' + err.message);
         }
     }
 
@@ -2749,8 +3122,9 @@
     }
 
     async function updateAllTracksFromMB() {
-        if (!mbComparisonData) return;
-        const tracksToUpdate = mbComparisonData.comparison.filter(c => c.needs_update && c.library_track_id);
+        const tracksToUpdate = mbComparisonData
+            ? mbComparisonData.comparison.filter(c => c.needs_update && c.library_track_id)
+            : _getTracksFromDOM();
         if (tracksToUpdate.length === 0) return;
         if (!confirm(`Update metadata for ${tracksToUpdate.length} track(s) from MusicBrainz?\n\nThis will update the database and MP3 file tags.`)) return;
 
@@ -2811,6 +3185,8 @@
     function clearMBComparison() {
         document.querySelectorAll('.mb-update-row').forEach(el => el.remove());
         document.querySelectorAll('.mb-missing-row').forEach(el => el.remove());
+        document.querySelectorAll('.mb-extra-row').forEach(el => el.remove());
+        document.querySelectorAll('.mb-extra-badge-dynamic').forEach(el => el.remove());
         const banner = document.getElementById('mb-compare-banner');
         if (banner) banner.remove();
         mbComparisonData = null;
@@ -2905,6 +3281,34 @@
         
         // Load track-level genre recommendations
         loadTrackRecommendations();
+
+        // Show "Update All" banner if the server pre-rendered any MusicBrainz update rows
+        const existingUpdateRows = document.querySelectorAll('.mb-update-row');
+        if (existingUpdateRows.length > 0) {
+            const trackIds = new Set([...existingUpdateRows].map(r => r.dataset.trackId).filter(Boolean));
+            const count = trackIds.size;
+            let banner = document.getElementById('mb-compare-banner');
+            if (!banner) {
+                const container = _getMBCompareBannerContainer();
+                if (container) {
+                    banner = document.createElement('div');
+                    banner.id = 'mb-compare-banner';
+                    const tableResponsive = document.querySelector('.table-responsive');
+                    container.insertBefore(banner, tableResponsive);
+                }
+            }
+            if (banner) {
+                banner.innerHTML = `
+                    <div class="alert alert-warning d-flex align-items-center gap-2 mb-2 py-2 flex-wrap">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        <div><strong>${escapeHtml(String(count))}</strong> track${count !== 1 ? 's have' : ' has'} metadata that can be updated from MusicBrainz.</div>
+                        <button class="btn btn-warning btn-sm ms-auto" onclick="updateAllTracksFromMB()">
+                            <i class="bi bi-arrow-repeat"></i> Update All
+                        </button>
+                        <button type="button" class="btn-close" onclick="clearMBComparison()" aria-label="Dismiss"></button>
+                    </div>`;
+            }
+        }
     });
     
     // Toggle apply button when album source-tag checkboxes change

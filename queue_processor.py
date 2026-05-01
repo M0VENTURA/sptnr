@@ -165,6 +165,10 @@ _IMPORT_GROUP_COMPLETION_WINDOW_MINUTES = 30
 # same track is not hammered on every run.
 _SLSKD_LONG_RETRY_DELAY_MINUTES = 1440
 
+# Remotely-queued transfers that stay in "Queued, Remotely" for longer than
+# this are cancelled and re-queued so the item can be searched again.
+_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES = 60
+
 # Quality thresholds for the low-quality fallback download logic.
 # A candidate is considered "low quality" when its bitrate is known, is below
 # _QUALITY_TARGET_BITRATE, and the file is not a lossless format (FLAC/WAV).
@@ -476,6 +480,57 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # on a compilation may have been originally released in very different years.
     if _year_mismatch_rejects(norm_filename, queue_item):
         return 0.0
+
+    # Conflicting-artist-in-folder guard: when the directory portion of the
+    # Soulseek path contains a clearly different artist name (e.g. the path is
+    # "@@user\The Jesus and Mary Chain\Darklands\10 About You.mp3" but the
+    # queue artist is "The Pretty Reckless"), hard-reject.
+    #
+    # We extract each folder segment of the path (everything before the
+    # filename), split on separators, and test whether any segment is a strong
+    # fuzzy match against a named artist that is NOT the queue artist or
+    # album_artist.  "Strong" means ≥ 0.80 similarity so short common words
+    # (e.g. "The", "Band") never trigger this guard by themselves.
+    #
+    # Exempt compilations where the queue artist is a generic placeholder
+    # because we don't know the track artist and the folder may legitimately
+    # contain any artist name.
+    if not _is_compilation_release(queue_item) and artist_norm not in _GENERIC_COMPILATION_ARTISTS:
+        _dir_part = os.path.dirname(norm_filename)
+        # Soulseek paths use backslash separators; split on either.
+        _dir_segments = [s for s in re.split(r'[/\\]', _dir_part) if s and not s.startswith('@')]
+        for _seg in _dir_segments:
+            _seg_norm = _normalize_match_text(_seg)
+            # A segment must contain at least 2 meaningful tokens to be
+            # considered an artist candidate (avoids single-word false hits).
+            if not _seg_norm or len(_tokenize_meaningful(_seg_norm)) < 2:
+                continue
+            # If the segment matches the queue artist or album_artist it's fine.
+            if _seq_ratio(artist_norm, _seg_norm) >= 0.80:
+                break
+            if album_artist_norm and _seq_ratio(album_artist_norm, _seg_norm) >= 0.80:
+                break
+            # If the segment matches a generic compilation placeholder, skip it.
+            if _seg_norm.lower() in _GENERIC_COMPILATION_ARTISTS:
+                continue
+            # Hard-reject: the folder segment is a plausible artist-level name
+            # AND it clearly does not match the queue artist.  For example,
+            # "thejesusandmarychain" (segment) vs "theprettyreckless" (queue)
+            # have near-zero similarity → reject.
+            # We only fire when the queue artist itself is NOT found in the
+            # segment — that means the segment represents a genuinely different
+            # artist, not an alternate spelling of the same one.
+            if _seq_ratio(artist_norm, _seg_norm) < 0.60 and (
+                not album_artist_norm or _seq_ratio(album_artist_norm, _seg_norm) < 0.60
+            ):
+                logger.debug(
+                    "Queue scorer: rejecting '%s' — folder segment '%s' "
+                    "conflicts with queue artist '%s'",
+                    os.path.basename(norm_filename),
+                    _seg,
+                    queue_item.get('artist', ''),
+                )
+                return 0.0
 
     # Variant tokens are defined at module level as TITLE_VARIANT_TOKENS and
     # aliased here for brevity; they are needed by both the early matching block
@@ -1754,8 +1809,9 @@ def check_track_exists_in_db(queue_item):
             if row:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
-                reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
-                return True, reason, file_path, True
+                if file_path and os.path.isfile(file_path):
+                    reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
+                    return True, reason, file_path, True
 
             # Step 2: same artist+title but possibly different album.
             cursor.execute(
@@ -1774,11 +1830,12 @@ def check_track_exists_in_db(queue_item):
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
                 found_album = (row["album"] if hasattr(row, "keys") else row[2]) or ""
-                reason = (
-                    f"Track '{artist} - {title}' already exists in local database "
-                    f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
-                )
-                return True, reason, file_path, False
+                if file_path and os.path.isfile(file_path):
+                    reason = (
+                        f"Track '{artist} - {title}' already exists in local database "
+                        f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
+                    )
+                    return True, reason, file_path, False
         else:
             cursor.execute(
                 f"""
@@ -1795,8 +1852,9 @@ def check_track_exists_in_db(queue_item):
             if row:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
-                reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
-                return True, reason, file_path, True
+                if file_path and os.path.isfile(file_path):
+                    reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
+                    return True, reason, file_path, True
 
     except Exception as e:
         logger.debug(f"DB existence check error for '{artist} - {title}': {e}")
@@ -1805,6 +1863,37 @@ def check_track_exists_in_db(queue_item):
             conn.close()
 
     return False, "", None, True
+
+
+def check_target_folder_exists(queue_item):
+    """
+    Check if a file matching the queue item already exists in the target music folder.
+
+    Returns:
+        tuple: (exists: bool, reason: str, source_path: str|None)
+    """
+    artist = queue_item.get("artist", "").strip()
+    title = queue_item.get("title", "").strip()
+    if not artist or not title:
+        return False, "", None
+
+    music_root = os.environ.get("MUSIC_ROOT", "/music")
+    try:
+        for root, _, files in os.walk(music_root):
+            for f in files:
+                if not f.lower().endswith((".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac")):
+                    continue
+                if title.lower() in f.lower():
+                    full_path = os.path.join(root, f)
+                    if os.path.isfile(full_path):
+                        return (
+                            True,
+                            f"Track '{artist} - {title}' already exists in target folder ({full_path})",
+                            full_path,
+                        )
+    except Exception as e:
+        logger.debug(f"Target folder existence check error for '{artist} - {title}': {e}")
+    return False, "", None
 
 
 def check_track_exists_in_navidrome(queue_item):
@@ -2126,14 +2215,86 @@ def _get_banned_words() -> set:
         return set()
 
 
-def _filter_banned_words(query: str, banned: set) -> str:
-    """Remove banned words from a query string."""
-    if not banned:
+def _get_dismissed_words() -> set:
+    """Fetch the set of dismissed words from the persistent JSON file."""
+    dismissed_path = os.environ.get("DISMISSED_WORDS_PATH", "/config/dismissed_words.json")
+    try:
+        if os.path.exists(dismissed_path):
+            with open(dismissed_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return set(str(w).lower().strip() for w in data if w)
+    except Exception as e:
+        logger.debug(f"[banned_words] Could not load dismissed words: {e}")
+    return set()
+
+
+def _save_dismissed_words(dismissed: set) -> None:
+    """Persist the dismissed words set to JSON."""
+    dismissed_path = os.environ.get("DISMISSED_WORDS_PATH", "/config/dismissed_words.json")
+    try:
+        with open(dismissed_path, "w", encoding="utf-8") as f:
+            json.dump(sorted(dismissed), f)
+    except Exception as e:
+        logger.warning(f"[banned_words] Could not save dismissed words: {e}")
+
+
+def _filter_banned_words(query: str, banned: set, dismissed: set | None = None) -> str:
+    """Remove banned (and optionally dismissed) words from a query string."""
+    excluded = banned | (dismissed or set())
+    if not excluded:
         return query
     words = query.split()
-    filtered = [w for w in words if w.lower() not in banned]
+    filtered = [w for w in words if w.lower() not in excluded]
     result = ' '.join(filtered).strip()
     return result if len(result) >= 3 else query  # don't return empty/trivial queries
+
+
+def _build_safe_search_query(queue_item, banned: set, dismissed: set) -> str | None:
+    """
+    Build a Soulseek search query that excludes banned and dismissed words.
+
+    Strategy:
+    1. Gather candidate tokens from artist, album, and title.
+    2. Remove any token that appears in *banned* or *dismissed*.
+    3. If any title token was removed, drop the entire title from the query
+       (reverting to Artist + Album only) so we never search with a partial
+       or corrupted title.
+    4. If all tokens are removed, return None so the caller can skip the search.
+    """
+    artist = (queue_item.get('artist') or '').strip()
+    album = (queue_item.get('album') or '').strip()
+    title = (queue_item.get('title') or '').strip()
+
+    excluded = banned | dismissed
+
+    def _tokens(s: str) -> list[str]:
+        return [t for t in s.split() if t]
+
+    artist_tokens = _tokens(artist)
+    album_tokens = _tokens(album)
+    title_tokens = _tokens(title)
+
+    # Filter each field
+    artist_filtered = [t for t in artist_tokens if t.lower() not in excluded]
+    album_filtered = [t for t in album_tokens if t.lower() not in excluded]
+    title_filtered = [t for t in title_tokens if t.lower() not in excluded]
+
+    # If any title token was banned/dismissed, drop the whole title
+    if len(title_filtered) != len(title_tokens):
+        title_filtered = []
+
+    # Prefer Artist + Album; fall back to Artist alone; then Album alone
+    tokens_out = []
+    if artist_filtered:
+        tokens_out.extend(artist_filtered)
+    if album_filtered:
+        tokens_out.extend(album_filtered)
+    if not tokens_out and title_filtered:
+        tokens_out.extend(title_filtered)
+
+    if not tokens_out:
+        return None
+    return ' '.join(tokens_out)
 
 
 _BANNED_WORDS_SUSPECTED_THRESHOLD = 3  # must match the frontend filter (zero_result_count >= 3)
@@ -2211,6 +2372,8 @@ def _track_zero_result_words(query: str, client=None) -> None:
     Words shorter than 4 characters, pure digits, and common stop words are skipped.
     Only words that returned 0 results for 3+ distinct searches are suggested as banned.
 
+    Banned and dismissed words are never suggested again, so they are skipped here.
+
     When a word's count would reach _BANNED_WORDS_SUSPECTED_THRESHOLD for the first
     time, a single-word Soulseek verification search is performed via *client*.
     The word is only tracked if that verification search also returns 0 results,
@@ -2225,6 +2388,14 @@ def _track_zero_result_words(query: str, client=None) -> None:
         words = [w for w in re.findall(r'[a-zA-Z]{4,}', query.lower()) if w not in _STOP_WORDS]
         if not words:
             return
+
+        # Skip banned and dismissed words — they must never appear as suggestions.
+        _banned = _get_banned_words()
+        _dismissed = _get_dismissed_words()
+        words = [w for w in words if w not in _banned and w not in _dismissed]
+        if not words:
+            return
+
         from download_queue_manager import _get_postgres_conn_from_app_or_fallback, _ensure_banned_words_table
         conn = _get_postgres_conn_from_app_or_fallback()
         cursor = conn.cursor()
@@ -2332,6 +2503,13 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                         )
                         continue
 
+                    if not getattr(resp, 'has_free_upload_slot', True):
+                        logger.debug(
+                            f"Queue {queue_id}: Response {resp_idx} from {resp.username} "
+                            f"has no free upload slots — skipping"
+                        )
+                        continue
+
                     logger.debug(
                         f"Queue {queue_id}: Response {resp_idx} from {resp.username} "
                         f"has {len(resp.files)} files"
@@ -2428,6 +2606,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                                 "title_sim": round(_diag_title_sim, 3),
                                 "artist_sim": round(_diag_artist_sim, 3),
                                 "duration_diff_s": _diag_dur_diff,
+                                "has_free_upload_slot": getattr(resp, 'has_free_upload_slot', True),
                             }
 
                 # Exit early once we have a high-confidence match.
@@ -2542,6 +2721,169 @@ def search_and_download(queue_id, queue_item, client):
         except Exception as _mb_fresh_err:
             logger.debug(f"Queue {queue_id}: MB freshness check failed (non-fatal): {_mb_fresh_err}")
 
+        # MB recording pre-lookup: for items that have no recording_mbid yet
+        # (e.g. tracks added from a Spotify CSV), search MusicBrainz for the
+        # recording so that we can store the canonical artist, release MBID, and
+        # recording MBID before the Soulseek search begins.  This ensures the
+        # search query and stored metadata are correct even when the queue item
+        # was created with only partial Spotify metadata.
+        try:
+            _has_recording_mbid = bool((queue_item.get('recording_mbid') or '').strip())
+            _artist_val = (queue_item.get('artist') or '').strip()
+            _title_val  = (queue_item.get('title') or '').strip()
+            if not _has_recording_mbid and _artist_val and _title_val:
+                # Normalise semicolon-joined multi-artist strings (Spotify CSV
+                # style) to just the primary artist for the MB query.
+                _mb_query_artist = _artist_val.split(';')[0].strip()
+                logger.debug(
+                    f"Queue {queue_id}: no recording_mbid — attempting MB recording lookup "
+                    f"for '{_mb_query_artist} - {_title_val}'"
+                )
+                try:
+                    import time as _time_mod
+                    import re as _pre_re
+                    import requests as _mb_pre_req
+                    from api_clients.musicbrainz import _USER_AGENT as _MB_PRE_UA
+                    import difflib as _pre_difflib
+
+                    def _escape_mb(text):
+                        """Escape Lucene special characters for MB query."""
+                        return _pre_re.sub(r'([\+\-\&\|\!\(\)\{\}\[\]\^"~\*\?:\\\/])', r'\\\1', text)
+
+                    def _norm_title_text(t):
+                        return _pre_re.sub(r'\s+', ' ', (t or '').lower().strip())
+
+                    _mb_params = {
+                        "query": (
+                            f'recording:"{_escape_mb(_title_val)}"'
+                            f' AND artist:"{_escape_mb(_mb_query_artist)}"'
+                        ),
+                        "fmt": "json",
+                        "limit": 10,
+                        "inc": "releases+artist-credits",
+                    }
+                    _mb_pre_resp = _mb_pre_req.get(
+                        "https://musicbrainz.org/ws/2/recording/",
+                        headers={"User-Agent": _MB_PRE_UA, "Accept": "application/json"},
+                        params=_mb_params,
+                        timeout=12,
+                    )
+                    _time_mod.sleep(1.1)  # respect MB rate limit after the request
+                    if _mb_pre_resp.status_code == 200:
+                        _mb_pre_data = _mb_pre_resp.json()
+                        _recordings = _mb_pre_data.get("recordings") or []
+                        _title_norm = _norm_title_text(_title_val)
+
+                        # Pick the best recording by title similarity + year match
+                        _year_hint = str(queue_item.get('year') or queue_item.get('release_year') or '')[:4]
+                        _best_rec = None
+                        _best_rec_score = 0.0
+                        for _rec in _recordings:
+                            _rec_title_norm = _norm_title_text(_rec.get("title") or "")
+                            _sim = _pre_difflib.SequenceMatcher(None, _title_norm, _rec_title_norm).ratio()
+                            if _sim < 0.75:
+                                continue
+                            # Optional: favour recordings whose release date matches
+                            _year_bonus = 0.0
+                            if _year_hint:
+                                for _rel in (_rec.get("releases") or []):
+                                    _rel_date = str(_rel.get("date") or "")[:4]
+                                    if _rel_date == _year_hint:
+                                        _year_bonus = 0.05
+                                        break
+                            _score = _sim + _year_bonus
+                            if _score > _best_rec_score:
+                                _best_rec_score = _score
+                                _best_rec = _rec
+
+                        if _best_rec and _best_rec_score >= 0.75:
+                            _new_recording_mbid = (_best_rec.get("id") or "").strip()
+                            _mb_ac = _best_rec.get("artist-credit") or []
+                            _ac_parts = []
+                            for _cr in _mb_ac:
+                                if isinstance(_cr, dict):
+                                    _n = _cr.get("name") or (_cr.get("artist") or {}).get("name") or ""
+                                    _j = _cr.get("joinphrase") or ""
+                                    _ac_parts.append(_n + _j)
+                            _mb_canonical_artist = "".join(_ac_parts).strip()
+
+                            # Pick the best release from this recording for release_mbid
+                            _new_release_mbid = (queue_item.get('release_mbid') or '').strip()
+                            _existing_has_release = bool(_new_release_mbid)
+                            if not _existing_has_release:
+                                for _rel in (_best_rec.get("releases") or []):
+                                    _rid = (_rel.get("id") or "").strip()
+                                    if _rid:
+                                        _new_release_mbid = _rid
+                                        break
+
+                            _pre_updates = {}
+                            if _new_recording_mbid:
+                                _pre_updates['recording_mbid'] = _new_recording_mbid
+                            if _new_release_mbid and not _existing_has_release:
+                                _pre_updates['release_mbid'] = _new_release_mbid
+                                _pre_updates['release_source'] = 'musicbrainz'
+                            if _mb_canonical_artist and not (queue_item.get('artist') or '').strip():
+                                _pre_updates['artist'] = _mb_canonical_artist
+                            _pre_updates['mb_last_checked_at'] = datetime.now().isoformat()
+
+                            if _pre_updates:
+                                update_queue_item(queue_id, **_pre_updates)
+                                queue_item = dict(queue_item)
+                                queue_item.update(_pre_updates)
+                                # Update search_query to use canonical MB artist when the
+                                # stored artist was blank and we just populated it.
+                                if 'artist' in _pre_updates:
+                                    _new_a = queue_item.get('artist', '')
+                                    _new_t = queue_item.get('title', '')
+                                    if _new_a and _new_t:
+                                        from download_queue_manager import _sanitize_search_query_for_slskd as _pre_sanitize
+                                        _primary = _new_a.split(';')[0].strip()
+                                        queue_item['search_query'] = _pre_sanitize(f"{_primary} - {_new_t}")
+                                        search_query = queue_item['search_query']
+
+                                # Also update the tracks table placeholder so the
+                                # correct MBIDs are visible immediately on the page.
+                                try:
+                                    from download_queue_manager import _add_queue_item_to_tracks_table, get_db as _dqm_get_db
+                                    _tc = _dqm_get_db()
+                                    _tcc = _tc.cursor()
+                                    _add_queue_item_to_tracks_table(
+                                        _tc, _tcc,
+                                        queue_item.get('artist'),
+                                        queue_item.get('title'),
+                                        queue_item.get('album'),
+                                        queue_item.get('album_artist'),
+                                        queue_item.get('track_number'),
+                                        queue_item.get('year') or queue_item.get('release_year'),
+                                        queue_item.get('duration'),
+                                        queue_item.get('disc_number'),
+                                        _new_release_mbid or None,
+                                        _new_recording_mbid or None,
+                                        queue_id,
+                                        queue_item.get('status'),
+                                        isrc=queue_item.get('isrc'),
+                                        composer=queue_item.get('composer'),
+                                    )
+                                    _tc.close()
+                                except Exception as _tc_err:
+                                    logger.debug(f"Queue {queue_id}: tracks table sync after MB pre-lookup failed (non-fatal): {_tc_err}")
+
+                                logger.info(
+                                    f"Queue {queue_id}: MB pre-lookup → recording_mbid={_new_recording_mbid}, "
+                                    f"release_mbid={_new_release_mbid or '(kept)'}, "
+                                    f"score={_best_rec_score:.2f}"
+                                )
+                        else:
+                            logger.debug(
+                                f"Queue {queue_id}: MB pre-lookup found no confident match "
+                                f"(best_score={_best_rec_score:.2f})"
+                            )
+                except Exception as _mb_pre_inner:
+                    logger.debug(f"Queue {queue_id}: MB recording pre-lookup inner error (non-fatal): {_mb_pre_inner}")
+        except Exception as _mb_pre_err:
+            logger.debug(f"Queue {queue_id}: MB recording pre-lookup failed (non-fatal): {_mb_pre_err}")
+
         # Pre-download existence checks: skip download if the track already exists
         # in the local database or in Navidrome (catches items indexed there but not
         # yet scanned into the local DB).
@@ -2579,18 +2921,43 @@ def search_and_download(queue_id, queue_item, client):
                 update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
             return False
 
+        # Also check whether the expected destination already exists on disk
+        # even if it has not yet been scanned into the local DB.
+        target_exists, target_reason, target_path = check_target_folder_exists(queue_item)
+        if target_exists:
+            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {target_reason}")
+            update_queue_status(
+                queue_id, 'in_collection',
+                failure_reason=target_reason,
+                source_music_path=target_path,
+            )
+            return False
+
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')
 
-        # Load banned words and filter them from the primary query
+        # Load banned and dismissed words and build a safe query that excludes them.
         _banned = _get_banned_words()
-        if _banned:
-            _filtered_sq = _filter_banned_words(search_query, _banned)
-            if _filtered_sq and _filtered_sq != search_query:
-                logger.info(f"Queue {queue_id}: Banned-word filter changed query '{search_query}' → '{_filtered_sq}'")
-                search_query = _filtered_sq
-                queue_item = dict(queue_item)
-                queue_item['search_query'] = search_query
+        _dismissed = _get_dismissed_words()
+        _safe_query = _build_safe_search_query(queue_item, _banned, _dismissed)
+        if _safe_query is None:
+            logger.warning(
+                f"Queue {queue_id}: All search tokens are banned or dismissed — skipping Soulseek search"
+            )
+            mark_failed(
+                queue_id,
+                "All search tokens banned or dismissed",
+                schedule_retry=True,
+                retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
+            )
+            return False
+        if _safe_query != search_query:
+            logger.info(
+                f"Queue {queue_id}: Banned/dismissed filter changed query '{search_query}' → '{_safe_query}'"
+            )
+            search_query = _safe_query
+            queue_item = dict(queue_item)
+            queue_item['search_query'] = search_query
 
         poll_start_time = datetime.now()
 
@@ -2604,18 +2971,26 @@ def search_and_download(queue_id, queue_item, client):
         best_score = 0.0
         stripped_query = _build_bracketsanitized_query(queue_item)
         if stripped_query:
-            logger.info(
-                f"Queue {queue_id}: Trying bracket-stripped query '{stripped_query}'..."
-            )
-            best_result, best_score = _run_soulseek_search(
-                queue_id, stripped_query, queue_item, client
-            )
-            if best_result and best_score >= _SLSKD_MIN_ACCEPT_SCORE:
+            _filtered_stripped = _filter_banned_words(stripped_query, _banned, _dismissed)
+            if _filtered_stripped and _filtered_stripped != stripped_query:
                 logger.info(
-                    f"Queue {queue_id}: Bracket-stripped query succeeded (score={best_score:.2f})"
+                    f"Queue {queue_id}: Banned/dismissed filter changed stripped query "
+                    f"'{stripped_query}' → '{_filtered_stripped}'"
                 )
+                stripped_query = _filtered_stripped
+            if stripped_query:
+                logger.info(
+                    f"Queue {queue_id}: Trying bracket-stripped query '{stripped_query}'..."
+                )
+                best_result, best_score = _run_soulseek_search(
+                    queue_id, stripped_query, queue_item, client
+                )
+                if best_result and best_score >= _SLSKD_MIN_ACCEPT_SCORE:
+                    logger.info(
+                        f"Queue {queue_id}: Bracket-stripped query succeeded (score={best_score:.2f})"
+                    )
 
-        # Primary plain-text search using the stored search_query when the
+        # Primary plain-text search using the safe search_query when the
         # bracket-stripped query returned nothing useful.
         if not best_result or best_score < _SLSKD_MIN_ACCEPT_SCORE:
             plain_result, plain_score = _run_soulseek_search(
@@ -2626,13 +3001,18 @@ def search_and_download(queue_id, queue_item, client):
                 best_score = plain_score
 
         # If the primary search found nothing useful, retry with fallback queries.
-        # This handles tracks where the track artist contains featured guests
-        # (e.g. "KNEECAP feat. Fawzi - Palestine") but Soulseek files are tagged
-        # with the album artist only ("KNEECAP - Palestine").
-        # _build_fallback_search_queries returns (query, min_score) tuples;
-        # min_score overrides _SLSKD_MIN_ACCEPT_SCORE for broader queries.
+        # Fallback queries are also filtered for banned/dismissed words.
         if not best_result or best_score < _SLSKD_MIN_ACCEPT_SCORE:
             for fallback_query, fb_min_score in _build_fallback_search_queries(queue_item, search_query):
+                _filtered_fb = _filter_banned_words(fallback_query, _banned, _dismissed)
+                if not _filtered_fb:
+                    continue
+                if _filtered_fb != fallback_query:
+                    logger.info(
+                        f"Queue {queue_id}: Banned/dismissed filter changed fallback query "
+                        f"'{fallback_query}' → '{_filtered_fb}'"
+                    )
+                    fallback_query = _filtered_fb
                 effective_min = fb_min_score if fb_min_score is not None else _SLSKD_MIN_ACCEPT_SCORE
                 logger.info(
                     f"Queue {queue_id}: Primary search insufficient "
@@ -2708,6 +3088,19 @@ def search_and_download(queue_id, queue_item, client):
             return False
 
         # Download the result
+        if not best_result.get('has_free_upload_slot', True):
+            logger.warning(
+                f"Queue {queue_id}: Best match peer {best_result['username']} has 0 free slots — "
+                "skipping download"
+            )
+            mark_failed(
+                queue_id,
+                "Peer has no free upload slots",
+                schedule_retry=True,
+                retry_delay_minutes=15,
+            )
+            return False
+
         logger.info(
             f"Queue {queue_id}: Downloading '{best_result['filename']}' from "
             f"{best_result['username']} (score={best_score:.2f})..."
@@ -3177,6 +3570,33 @@ def check_completed_downloads():
                                 schedule_retry=True,
                                 retry_delay_minutes=10,
                             )
+                        elif transfer_state == getattr(slskd_client, "STATE_QUEUED_REMOTELY", "Queued, Remotely"):
+                            if _is_stale_queue_item(item, stale_minutes=_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES):
+                                logger.warning(
+                                    f"Queue {item_id}: slskd reports remotely queued for > {_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES} min, "
+                                    f"cancelling transfer and scheduling retry"
+                                )
+                                try:
+                                    _stale_id = str(transfer.get("id") or "")
+                                    _stale_user = str(transfer.get("username") or "")
+                                    if _stale_id and _stale_user:
+                                        slskd_client.cancel_download(
+                                            _stale_user, _stale_id, remove=True
+                                        )
+                                        logger.debug(
+                                            f"Queue {item_id}: cancelled stale remotely-queued transfer "
+                                            f"{_stale_id} (user={_stale_user}) from slskd"
+                                        )
+                                except Exception as _cancel_err:
+                                    logger.debug(
+                                        f"Queue {item_id}: could not cancel stale transfer: {_cancel_err}"
+                                    )
+                                mark_failed(
+                                    item_id,
+                                    "Remotely queued for > 1 hour",
+                                    schedule_retry=True,
+                                    retry_delay_minutes=10,
+                                )
                         # Active/unknown transfer states are left untouched —
                         # the download may still be in progress.  Skip to the
                         # next item and let it be re-evaluated next cycle.
@@ -3410,6 +3830,12 @@ def check_completed_downloads():
         if scan_needed:
             if not _trigger_navidrome_scan():
                 logger.warning("[NAVIDROME-SCAN] Imports occurred but scan trigger failed — safety-net will retry")
+            try:
+                from helpers.library_sync import request_library_sync
+                request_library_sync()
+                logger.info("[NAVIDROME-SCAN] Library sync requested after imports")
+            except Exception as sync_err:
+                logger.warning(f"[NAVIDROME-SCAN] Could not request library sync: {sync_err}")
 
     except Exception as e:
         logger.error(f"Error checking completed downloads: {e}")
@@ -3811,6 +4237,12 @@ def trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds
                 f"— triggering safety-net scan"
             )
             _trigger_navidrome_scan()
+            try:
+                from helpers.library_sync import request_library_sync
+                request_library_sync()
+                logger.info("[NAVIDROME-SCAN] Library sync requested after safety-net scan")
+            except Exception as sync_err:
+                logger.warning(f"[NAVIDROME-SCAN] Could not request library sync: {sync_err}")
         else:
             logger.debug("[NAVIDROME-SCAN] No new imports since last check, scan not needed")
     except Exception as e:
@@ -3996,6 +4428,12 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
                     "[RETRY_MOVES] Imports occurred but Navidrome scan trigger failed "
                     "— safety-net will retry"
                 )
+            try:
+                from helpers.library_sync import request_library_sync
+                request_library_sync()
+                logger.info("[RETRY_MOVES] Library sync requested after retry moves")
+            except Exception as sync_err:
+                logger.warning(f"[RETRY_MOVES] Could not request library sync: {sync_err}")
 
     except Exception as e:
         logger.error(f"[RETRY_MOVES] Sweep error: {e}")
@@ -4132,6 +4570,12 @@ def process_copy_recommended_items(now_ts, last_run_ts, interval_seconds=120):
             logger.warning(
                 "[COPY_RECOMMENDED] Imports occurred but Navidrome scan trigger failed"
             )
+        try:
+            from helpers.library_sync import request_library_sync
+            request_library_sync()
+            logger.info("[COPY_RECOMMENDED] Library sync requested after copy-recommended")
+        except Exception as sync_err:
+            logger.warning(f"[COPY_RECOMMENDED] Could not request library sync: {sync_err}")
 
     return now_ts
 
@@ -4440,6 +4884,21 @@ def run_processor(interval=30):
 
     # Clear suspected (unconfirmed) banned words carried over from any previous run.
     _clear_suspected_words()
+
+    # One-off background migration: link existing queue rows to normalised
+    # metadata tables where the FKs are not yet populated.  Non-fatal if the
+    # metadata tables or columns don't exist yet (they are created by
+    # ensure_schema() and startup_queue_columns_fast.py on first run).
+    try:
+        from download_queue_manager import backfill_queue_metadata_ids
+        _bf = backfill_queue_metadata_ids(limit=1000)
+        if _bf.get('releases_linked') or _bf.get('tracks_linked'):
+            logger.info(
+                "[STARTUP] Backfilled metadata FK links — releases: %d, tracks: %d",
+                _bf['releases_linked'], _bf['tracks_linked'],
+            )
+    except Exception as _bf_err:
+        logger.debug(f"[STARTUP] backfill_queue_metadata_ids skipped: {_bf_err}")
 
     client = get_slskd_client()
     if not client:

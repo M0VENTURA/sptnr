@@ -46,7 +46,10 @@
             <span><i class="bi bi-exclamation-triangle me-1 text-warning"></i>Suggested Words to Ban
                 <small class="text-muted ms-2">(appeared in 3+ zero-result searches, not yet banned)</small>
             </span>
-            <span class="badge bg-warning text-dark" id="suggestedCount">0</span>
+            <div class="d-flex align-items-center gap-2">
+                <span class="badge bg-warning text-dark" id="suggestedCount">0</span>
+                <button class="btn btn-sm btn-secondary" onclick="dismissAllSuggested()">Dismiss All</button>
+            </div>
         </div>
         <div class="card-body p-0">
             <div id="suggestedWordsList" class="p-3">
@@ -148,6 +151,24 @@ async function banSuggested(word) {
         const data = await resp.json();
         if (data.success) { loadWords(); }
         else { alert('Error: ' + (data.error || 'Unknown error')); }
+    } catch(e) {
+        alert('Network error: ' + e.message);
+    }
+}
+
+async function dismissAllSuggested() {
+    if (!confirm('Dismiss all suggested words? They will not be suggested again.')) return;
+    try {
+        const resp = await fetch('/api/slsk/banned-words/dismiss-all', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        const data = await resp.json();
+        if (data.success) {
+            loadWords();
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+        }
     } catch(e) {
         alert('Network error: ' + e.message);
     }

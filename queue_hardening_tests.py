@@ -520,10 +520,12 @@ class SlskdDownloadTimeoutTests(unittest.TestCase):
 class SlskdIsStaleQueueItemTests(unittest.TestCase):
     """Tests confirming _is_stale_queue_item is wired into the timeout logic."""
 
-    def test_queued_remotely_timeout_is_120_minutes(self):
-        """Timeout for Queued, Remotely must be 120 minutes."""
+    def test_queued_remotely_timeout_is_60_minutes(self):
+        """Timeout for Queued, Remotely must be 60 minutes."""
         processor_text = _read("queue_processor.py")
-        self.assertIn('"Queued, Remotely": 120', processor_text)
+        self.assertIn("_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES = 60", processor_text)
+        self.assertIn("STATE_QUEUED_REMOTELY", processor_text)
+        self.assertIn("Remotely queued for > 1 hour", processor_text)
 
     def test_in_progress_timeout_is_240_minutes(self):
         """Timeout for InProgress must be 240 minutes."""

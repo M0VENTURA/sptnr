@@ -14,6 +14,7 @@ from helpers.db_utils import (
     ensure_artists_name_unique_constraint,
     verify_album_artist_column,
     ensure_pending_mb_updates_column,
+    ensure_mb_ignored_fields_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
@@ -668,6 +669,9 @@ ensure_track_release_year_column()
 
 # Ensure pending_mb_updates column exists for persistent MusicBrainz update banners
 ensure_pending_mb_updates_column()
+
+# Ensure mb_ignored_fields column exists for permanently dismissing MB suggestions
+ensure_mb_ignored_fields_column()
 
 # Ensure mood scan columns exist in tracks table
 ensure_mood_columns()
@@ -4095,21 +4099,12 @@ def _start_navidrome_incremental_scheduler():
                             break
                         continue
 
-                    result = _scan_new_navidrome_files_since_last_import()
-                    if result.get("success"):
-                        if result.get("missing_tracks_detected", 0) > 0:
-                            log_unified(
-                                f"[NAV_INCREMENTAL] Imported missing tracks from new files: "
-                                f"tracks={result.get('missing_tracks_detected', 0)}, "
-                                f"artists={result.get('rescanned_artists', 0)}"
-                            )
-                        else:
-                            logging.info(
-                                "[NAV_INCREMENTAL] No new files detected (checked=%s)",
-                                result.get("candidate_tracks_checked", 0),
-                            )
-                    else:
-                        logging.warning(f"[NAV_INCREMENTAL] Incremental check failed: {result.get('error', 'unknown error')}")
+                    from helpers.library_sync import request_library_sync
+                    sync_result = request_library_sync()
+                    if sync_result.get("started"):
+                        logging.info("[NAV_INCREMENTAL] Library sync requested via scheduler")
+                    elif sync_result.get("coalesced"):
+                        logging.debug("[NAV_INCREMENTAL] Library sync coalesced (already running)")
 
                     if stop_event.wait(timeout=interval_seconds):
                         break
@@ -13275,53 +13270,141 @@ def api_album_queue_status():
         return jsonify({"error": str(e)}), 500
 
 
-
+@app.route("/api/album/set-art", methods=["POST"])
 def api_album_set_art():
-    """Set custom album art"""
+    """Set custom album art from a URL – downloads the image and stores it in the database"""
     data = request.json or {}
     artist_name = data.get("artist", "").strip()
     album_name = data.get("album", "").strip()
     image_url = data.get("image_url", "").strip()
-    
+
     if not artist_name or not album_name or not image_url:
         return jsonify({"error": "Artist, album name, and image URL required"}), 400
-    
+
     # Validate that image_url is a valid HTTP/HTTPS URL, not a data URI or other scheme
     if not image_url.startswith(('http://', 'https://')):
         return jsonify({"error": "Image URL must be a valid HTTP or HTTPS URL"}), 400
-    
+
+    # Block SSRF: reject URLs resolving to private/loopback addresses
+    try:
+        from urllib.parse import urlparse as _up
+        import ipaddress as _ipaddress
+        import socket as _socket
+        _parsed_url = _up(image_url)
+        _hostname = _parsed_url.hostname or ""
+        if not _hostname:
+            return jsonify({"error": "Invalid URL: no hostname"}), 400
+        # Reject obvious internal hostnames
+        _lower_host = _hostname.lower()
+        if _lower_host in ("localhost", "127.0.0.1", "::1") or _lower_host.endswith(".local"):
+            return jsonify({"error": "Image URL hostname is not permitted"}), 400
+        # Resolve and block private IP ranges
+        try:
+            _addr = _socket.getaddrinfo(_hostname, None)[0][4][0]
+            _ip = _ipaddress.ip_address(_addr)
+            if _ip.is_private or _ip.is_loopback or _ip.is_link_local or _ip.is_reserved:
+                return jsonify({"error": "Image URL hostname is not permitted"}), 400
+        except Exception:
+            pass  # If resolution fails let requests handle the error
+        # Reconstruct safe URL from parsed components to avoid tainted-URL attacks
+        _safe_image_url = _up(image_url).geturl()
+    except Exception:
+        return jsonify({"error": "Invalid image URL"}), 400
+
     logger = logging.getLogger('sptnr')
+    try:
+        resp = requests.get(_safe_image_url, timeout=10, allow_redirects=True,
+                            headers={"User-Agent": "sptnr/1.0 +https://github.com/M0VENTURA/sptnr"})
+        if resp.status_code != 200 or not resp.content:
+            return jsonify({"error": f"Could not download image: HTTP {resp.status_code}"}), 400
+
+        mime_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+        if not mime_type.startswith("image/"):
+            return jsonify({"error": "URL did not return an image"}), 400
+
+        saved = _save_album_art_to_db(artist_name, album_name, resp.content, source="manual", mime_type=mime_type)
+        if not saved:
+            return jsonify({"error": "Failed to save image to database"}), 500
+
+        logger.info(f"Album art updated for '{artist_name} - {album_name}' from URL")
+        return jsonify({"success": True, "message": "Album art updated"})
+
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Error downloading album art: {e}")
+        return jsonify({"error": "Failed to download image from the provided URL"}), 400
+    except Exception as e:
+        logger.error(f"Error setting album art: {e}")
+        return jsonify({"error": "An internal error occurred"}), 500
+
+
+@app.route("/api/album/upload-art", methods=["POST"])
+def api_album_upload_art():
+    """Set custom album art from a directly uploaded image file"""
+    artist_name = request.form.get("artist", "").strip()
+    album_name = request.form.get("album", "").strip()
+    image_file = request.files.get("image")
+
+    if not artist_name or not album_name:
+        return jsonify({"error": "Artist and album name required"}), 400
+    if not image_file or not image_file.filename:
+        return jsonify({"error": "No image file provided"}), 400
+
+    mime_type = image_file.mimetype or "image/jpeg"
+    if not mime_type.startswith("image/"):
+        return jsonify({"error": "Uploaded file must be an image"}), 400
+
+    logger = logging.getLogger('sptnr')
+    try:
+        image_data = image_file.read()
+        if not image_data:
+            return jsonify({"error": "Uploaded image is empty"}), 400
+
+        saved = _save_album_art_to_db(artist_name, album_name, image_data, source="manual_upload", mime_type=mime_type)
+        if not saved:
+            return jsonify({"error": "Failed to save image to database"}), 500
+
+        logger.info(f"Album art uploaded for '{artist_name} - {album_name}'")
+        return jsonify({"success": True, "message": "Album art uploaded"})
+
+    except Exception as e:
+        logger.error(f"Error uploading album art: {e}")
+        return jsonify({"error": "An internal error occurred"}), 500
+
+
+@app.route("/api/album/ignore-missing-track", methods=["POST"])
+def api_album_ignore_missing_track():
+    """Mark a persisted missing track as ignored so it no longer shows on the album page"""
+    data = request.get_json(force=True, silent=True) or {}
+    missing_track_id = data.get("id")
+    artist = (data.get("artist") or "").strip()
+    album_name = (data.get("album") or "").strip()
+    title = (data.get("title") or "").strip()
+    disc_number = int(data.get("disc_number") or 1)
+
+    if not missing_track_id and not (artist and album_name and title):
+        return jsonify({"error": "Provide id or (artist, album, title)"}), 400
+
     try:
         conn = get_db()
         cursor = conn.cursor()
-        # Create album_art table if it doesn't exist
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS album_art (
-                artist_name TEXT NOT NULL,
-                album_name TEXT NOT NULL,
-                image_url TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (artist_name, album_name)
+        _ensure_missing_album_tracks_table(cursor)
+        ph = "%s"
+        if missing_track_id:
+            cursor.execute(
+                f"UPDATE missing_album_tracks SET ignored = TRUE WHERE id = {ph}",
+                (missing_track_id,),
             )
-        """)
-        
-        # Insert or update
-        cursor.execute("""
-            INSERT INTO album_art (artist_name, album_name, image_url, updated_at)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (artist_name, album_name)
-            DO UPDATE SET
-                image_url = EXCLUDED.image_url,
-                updated_at = EXCLUDED.updated_at
-        """, (artist_name, album_name, image_url, datetime.now().isoformat()))
+        else:
+            cursor.execute(
+                f"UPDATE missing_album_tracks SET ignored = TRUE "
+                f"WHERE artist_name = {ph} AND album_name = {ph} AND title = {ph} AND disc_number = {ph}",
+                (artist, album_name, title, disc_number),
+            )
         conn.commit()
         conn.close()
-        
-        logger.info(f"Album art updated for '{artist_name} - {album_name}': {image_url}")
-        return jsonify({"success": True, "message": "Album art updated"})
-        
+        return jsonify({"success": True})
     except Exception as e:
-        logger.error(f"Error setting album art: {e}")
+        logging.error(f"Error ignoring missing track: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -14001,6 +14084,51 @@ def album_detail(artist, album):
 
         tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
 
+        # Load persisted missing tracks from the database and merge them in so they
+        # survive page refreshes without requiring another MusicBrainz comparison.
+        try:
+            conn_mt = get_db()
+            cursor_mt = conn_mt.cursor()
+            ph_mt = "%s"
+            _ensure_missing_album_tracks_table(cursor_mt)
+            cursor_mt.execute(
+                f"SELECT id, title, track_number, disc_number, track_artist, year, "
+                f"release_id, recording_mbid, duration "
+                f"FROM missing_album_tracks "
+                f"WHERE LOWER(artist_name) = LOWER({ph_mt}) AND LOWER(album_name) = LOWER({ph_mt}) "
+                f"AND ignored = FALSE "
+                f"ORDER BY disc_number, track_number",
+                (artist, album),
+            )
+            for mt_row in cursor_mt.fetchall():
+                mt = dict(mt_row) if hasattr(mt_row, "keys") else {
+                    "id": mt_row[0], "title": mt_row[1], "track_number": mt_row[2],
+                    "disc_number": mt_row[3], "track_artist": mt_row[4], "year": mt_row[5],
+                    "release_id": mt_row[6], "recording_mbid": mt_row[7], "duration": mt_row[8],
+                }
+                tracks_with_genre_fit.append({
+                    "is_missing": True,
+                    "missing_track_id": mt.get("id"),
+                    "title": mt.get("title", ""),
+                    "track_number": mt.get("track_number"),
+                    "disc_number": mt.get("disc_number") or 1,
+                    "artist": mt.get("track_artist") or artist,
+                    "album_artist": artist,
+                    "album": album,
+                    "year": mt.get("year") or "",
+                    "release_id": mt.get("release_id") or "",
+                    "recording_mbid": mt.get("recording_mbid") or "",
+                    "duration": mt.get("duration"),
+                    "_mb_diff_items": [],
+                    "_mb_comp_json": "",
+                })
+            conn_mt.close()
+            # Re-sort to interleave missing tracks at the right positions
+            tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
+        except Exception as _mt_err:
+            logging.debug(f"Could not load persisted missing tracks: {_mt_err}")
+
+
         # Pre-compute MusicBrainz pending update banner data from the stored
         # pending_mb_updates JSON so banners are rendered server-side and survive
         # page refreshes without requiring another round-trip to MusicBrainz.
@@ -14011,38 +14139,96 @@ def album_detail(artist, album):
             if _raw:
                 try:
                     _comp = _json_local.loads(_raw)
+
+                    # Track is marked as extra (not part of MB release) — show badge only.
+                    if _comp.get('is_extra'):
+                        _td['_mb_is_extra'] = True
+                        _td['_mb_diff_items'] = []
+                        _td['_mb_comp_json'] = ''
+                        continue
+
+                    _td['_mb_is_extra'] = False
                     _diff_fields = _comp.get('diff_fields', [])
-                    _parts = []
+
+                    # Filter out permanently-ignored fields for this track
+                    _raw_ignored = _td.get('mb_ignored_fields') or '[]'
+                    try:
+                        _ignored_set = set(_json_local.loads(_raw_ignored))
+                    except Exception:
+                        _ignored_set = set()
+                    _diff_fields = [f for f in _diff_fields if f not in _ignored_set]
+
+                    # Skip title rename if the only difference is a "(Artist Cover)" suffix
                     if 'title' in _diff_fields:
-                        _parts.append(
-                            f"Title: {_comp.get('library_title', '')} \u2192 {_comp.get('mb_title', '')}"
-                        )
+                        _lib_title = _comp.get('library_title', '')
+                        _mb_title = _comp.get('mb_title', '')
+                        if re.search(r'\([^)]*\bcover\b[^)]*\)', _lib_title, re.IGNORECASE):
+                            _stripped = re.sub(r'\s*\([^)]*\bcover\b[^)]*\)', '', _lib_title, flags=re.IGNORECASE).strip()
+                            if _stripped.lower() == _mb_title.lower():
+                                _diff_fields = [f for f in _diff_fields if f != 'title']
+
+                    # Build per-field items list used to render one row per change
+                    _items = []
+                    if 'title' in _diff_fields:
+                        _items.append({
+                            'field': 'title',
+                            'html': _html_mod.escape(
+                                f"Title: {_comp.get('library_title', '')} \u2192 {_comp.get('mb_title', '')}"
+                            ),
+                        })
                     if 'track_number' in _diff_fields:
-                        _parts.append(
-                            f"Track#: {_comp.get('library_track_number', '?')} \u2192 {_comp.get('mb_track_number', '?')}"
-                        )
+                        _items.append({
+                            'field': 'track_number',
+                            'html': _html_mod.escape(
+                                f"Track#: {_comp.get('library_track_number', '?')} \u2192 {_comp.get('mb_track_number', '?')}"
+                            ),
+                        })
                     if 'year' in _diff_fields:
-                        _parts.append(
-                            f"Year: {_comp.get('library_year', '—')} \u2192 {_comp.get('mb_year', '')}"
-                        )
+                        _items.append({
+                            'field': 'year',
+                            'html': _html_mod.escape(
+                                f"Year: {_comp.get('library_year', '—')} \u2192 {_comp.get('mb_year', '')}"
+                            ),
+                        })
                     if 'mbid' in _diff_fields:
-                        _parts.append("MusicBrainz ID: missing \u2192 added")
+                        _items.append({
+                            'field': 'mbid',
+                            'html': _html_mod.escape("MusicBrainz ID: missing \u2192 added"),
+                        })
                     if 'duration' in _diff_fields:
-                        _parts.append(
-                            f"Length: {_comp.get('library_duration', '—')} \u2192 {_comp.get('mb_duration', '—')}"
-                        )
+                        _items.append({
+                            'field': 'duration',
+                            'html': _html_mod.escape(
+                                f"Length: {_comp.get('library_duration', '—')} \u2192 {_comp.get('mb_duration', '—')}"
+                            ),
+                        })
                     if 'disc_number' in _diff_fields:
-                        _parts.append(
-                            f"Disc: {_comp.get('library_disc_number', 1)} \u2192 {_comp.get('mb_disc_number', '')}"
-                        )
-                    # Build HTML-safe joined display string (avoids double-escaping in the template)
-                    _td['_mb_diff_html'] = ' &nbsp;&middot;&nbsp; '.join(_html_mod.escape(p) for p in _parts)
-                    _td['_mb_comp_json'] = _raw
+                        if _comp.get('cross_disc_match'):
+                            _html_disc = _html_mod.escape(
+                                f"Move to Disc {_comp.get('mb_disc_number', '')} (track {_comp.get('mb_track_number', '?')})"
+                            )
+                        else:
+                            _html_disc = _html_mod.escape(
+                                f"Disc: {_comp.get('library_disc_number', 1)} \u2192 {_comp.get('mb_disc_number', '')}"
+                            )
+                        _items.append({
+                            'field': 'disc_number',
+                            'html': _html_disc,
+                        })
+
+                    if _items:
+                        _td['_mb_diff_items'] = _items
+                        _td['_mb_comp_json'] = _raw
+                    else:
+                        _td['_mb_diff_items'] = []
+                        _td['_mb_comp_json'] = ''
                 except Exception:
-                    _td['_mb_diff_html'] = ''
+                    _td['_mb_is_extra'] = False
+                    _td['_mb_diff_items'] = []
                     _td['_mb_comp_json'] = ''
             else:
-                _td['_mb_diff_html'] = ''
+                _td['_mb_is_extra'] = False
+                _td['_mb_diff_items'] = []
                 _td['_mb_comp_json'] = ''
 
         # If album-level IDs are missing, infer from track-level IDs in this album.
@@ -19999,6 +20185,19 @@ def scan_combined():
     return redirect(url_for("dashboard"))
 
 
+def _load_dismissed_words() -> set:
+    """Load dismissed words from the JSON file."""
+    dismissed_path = os.environ.get("DISMISSED_WORDS_PATH", "/config/dismissed_words.json")
+    try:
+        if os.path.exists(dismissed_path):
+            with open(dismissed_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return set(str(w).lower().strip() for w in data if w)
+    except Exception as e:
+        logging.debug(f"[banned_words] Could not load dismissed words: {e}")
+    return set()
+
+
 @app.route("/api/slsk/banned-words", methods=["GET"])
 def api_get_banned_words():
     """Get banned words and suggested words (high zero-result count)."""
@@ -20022,11 +20221,18 @@ def api_get_banned_words():
         """)
         rows = cursor.fetchall()
         conn.close()
+        dismissed = _load_dismissed_words()
         result = []
         for r in rows:
             if isinstance(r, dict):
+                row_word = str(r.get('word', '')).lower().strip()
+                if row_word in dismissed:
+                    continue
                 result.append(r)
             else:
+                row_word = str(r[0]).lower().strip()
+                if row_word in dismissed:
+                    continue
                 result.append({
                     'word': r[0], 'is_banned': r[1], 'zero_result_count': r[2],
                     'added_at': str(r[3]) if r[3] else None, 'updated_at': str(r[4]) if r[4] else None
@@ -20085,6 +20291,45 @@ def api_delete_banned_word(word):
         return jsonify({'success': True, 'word': word}), 200
     except Exception as e:
         logging.error(f"[banned_words] DELETE error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route("/api/slsk/banned-words/dismiss-all", methods=["POST"])
+def api_dismiss_all_suggested_words():
+    """Move all current suggested words into dismissed_words without banning them."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT word FROM slsk_banned_words
+            WHERE is_banned = FALSE AND zero_result_count >= 3
+        """)
+        rows = cursor.fetchall() or []
+        conn.close()
+
+        suggested = set()
+        for r in rows:
+            word = (r[0] if isinstance(r, tuple) else r.get('word', '')).strip().lower()
+            if word:
+                suggested.add(word)
+
+        if not suggested:
+            return jsonify({'success': True, 'dismissed': 0}), 200
+
+        dismissed = _load_dismissed_words()
+        dismissed.update(suggested)
+        dismissed_path = os.environ.get("DISMISSED_WORDS_PATH", "/config/dismissed_words.json")
+        try:
+            with open(dismissed_path, "w", encoding="utf-8") as f:
+                json.dump(sorted(dismissed), f)
+        except Exception as e:
+            logging.error(f"[banned_words] Could not save dismissed words: {e}")
+            return jsonify({'error': 'Could not save dismissed words'}), 500
+
+        logging.info(f"[banned_words] Dismissed {len(suggested)} suggested word(s)")
+        return jsonify({'success': True, 'dismissed': len(suggested)}), 200
+    except Exception as e:
+        logging.error(f"[banned_words] DISMISS-ALL error: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
 
@@ -23659,6 +23904,44 @@ _pg_album_art_schema_ensured = False
 # concurrent workers.  The value must be unique within the PostgreSQL instance
 # but is otherwise arbitrary — a CRC-32 of the string "album_art_schema_init".
 _ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY = 1986627450
+
+_missing_album_tracks_table_ensured = False
+
+
+def _ensure_missing_album_tracks_table(cursor) -> None:
+    """Create the missing_album_tracks table if it doesn't already exist.
+
+    The module-level flag is intentionally NOT used as a skip-guard here.
+    ``CREATE TABLE IF NOT EXISTS`` is idempotent so it is safe to run on
+    every call.  Using a cached flag was unreliable: if the first call
+    executed the DDL inside a transaction that was later rolled back (before
+    the caller called ``commit()``), the flag would be set to True while the
+    table had never actually been committed to the database.  Subsequent calls
+    would then skip the creation and the following DML would fail with
+    "relation does not exist".
+    """
+    global _missing_album_tracks_table_ensured
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS missing_album_tracks (
+                id BIGSERIAL PRIMARY KEY,
+                artist_name TEXT NOT NULL,
+                album_name  TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                track_number TEXT,
+                disc_number  INTEGER DEFAULT 1,
+                track_artist TEXT,
+                year         TEXT,
+                release_id   TEXT,
+                recording_mbid TEXT,
+                duration     INTEGER,
+                ignored      BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        _missing_album_tracks_table_ensured = True
+    except Exception as _tbl_err:
+        logging.debug(f"[MISSING_ALBUM_TRACKS] Could not create table: {_tbl_err}")
 
 
 def _ensure_album_art_pg_schema(conn, cursor) -> None:
@@ -33747,11 +34030,18 @@ def api_playlist_import_csv():
                     return normalised[alias]
             return None
 
-        title_col  = col(["track name", "name", "title"])
-        artist_col = col(["artist name(s)", "artist names", "artist name", "artist", "artists"])
-        album_col  = col(["album name", "album"])
-        isrc_col   = col(["isrc"])
-        uri_col    = col(["spotify uri", "track uri", "uri"])
+        title_col    = col(["track name", "name", "title"])
+        artist_col   = col(["artist name(s)", "artist names", "artist name", "artist", "artists"])
+        album_col    = col(["album name", "album"])
+        album_artist_col = col(["album artist", "album_artist", "albumartist"])
+        isrc_col     = col(["isrc"])
+        uri_col      = col(["spotify uri", "track uri", "uri"])
+        duration_col = col(["duration (ms)", "duration_ms", "duration"])
+        date_col     = col(["release date", "release_date", "date"])
+        genres_col   = col(["genres", "genre"])
+        label_col    = col(["record label", "label"])
+        popularity_col = col(["popularity"])
+        explicit_col   = col(["explicit"])
 
         if not title_col or not artist_col:
             return jsonify({
@@ -33759,22 +34049,71 @@ def api_playlist_import_csv():
                          "Please export using Exportify (exportify.net)."
             }), 400
 
+        def _extract_year(date_str):
+            """Extract a 4-digit year from a date string (e.g. '24/04/2026' or '2026-04-24')."""
+            if not date_str:
+                return None
+            # Try ISO format first (YYYY-MM-DD or YYYY-…)
+            import re
+            m = re.search(r'\b(\d{4})\b', str(date_str))
+            return m.group(1) if m else None
+
         tracks_from_csv = []
         for row in reader:
             title  = (row.get(title_col) or "").strip()
             artist = (row.get(artist_col) or "").strip()
             if not title and not artist:
                 continue  # skip blank rows
+
+            # Album artist from CSV.  When absent, fall back to the first artist
+            # from the (possibly semicolon-joined) track artist field so that
+            # single-artist releases are handled correctly without hardcoding
+            # "Various Artists" here — that decision is left to the caller.
+            raw_album_artist = (row.get(album_artist_col) or "").strip() if album_artist_col else ""
+            album_artist = raw_album_artist or artist.split(';')[0].strip()
+
+            # Duration: CSV stores milliseconds; convert to whole seconds for queue
+            duration_s = None
+            if duration_col:
+                raw_dur = (row.get(duration_col) or "").strip()
+                try:
+                    duration_s = int(round(float(raw_dur) / 1000)) if raw_dur else None
+                except (ValueError, TypeError):
+                    duration_s = None
+
+            # Year from release date
+            year = _extract_year(row.get(date_col)) if date_col else None
+
             tracks_from_csv.append({
-                "title":      title,
-                "artist":     artist,
-                "album":      (row.get(album_col) or "").strip() if album_col else "",
-                "isrc":       (row.get(isrc_col) or "").strip() if isrc_col else "",
-                "spotify_id": (row.get(uri_col) or "").strip().split(":")[-1] if uri_col else "",
+                "title":        title,
+                "artist":       artist,
+                "album_artist": album_artist,
+                "album":        (row.get(album_col) or "").strip() if album_col else "",
+                "isrc":         (row.get(isrc_col) or "").strip() if isrc_col else "",
+                "spotify_id":   (row.get(uri_col) or "").strip().split(":")[-1] if uri_col else "",
+                "duration_s":   duration_s,
+                "year":         year,
+                "genres":       (row.get(genres_col) or "").strip() if genres_col else "",
+                "record_label": (row.get(label_col) or "").strip() if label_col else "",
+                "popularity":   (row.get(popularity_col) or "").strip() if popularity_col else "",
+                "explicit":     (row.get(explicit_col) or "").strip().upper() if explicit_col else "",
             })
 
         if not tracks_from_csv:
             return jsonify({"error": "No tracks found in CSV"}), 400
+
+        # --- Skip matching if caller only wants parsed track metadata ---
+        skip_matching = request.form.get("skip_matching", "").lower() in ("true", "1", "yes")
+        if skip_matching:
+            logging.info(
+                f"CSV parse-only (skip_matching) for '{playlist_name}': "
+                f"{len(tracks_from_csv)} tracks parsed"
+            )
+            return jsonify({
+                "success":    True,
+                "all_tracks": tracks_from_csv,
+                "total":      len(tracks_from_csv),
+            })
 
         # --- Match tracks using same 3-tier strategy as Spotify URL import ---
         matched_tracks = []
@@ -33808,12 +34147,19 @@ def api_playlist_import_csv():
                 match_stats[strategy] += 1
             else:
                 missing_tracks.append({
-                    "title":      track["title"],
-                    "artist":     track["artist"],
-                    "album":      track["album"],
-                    "spotify_id": track["spotify_id"],
-                    "isrc":       track["isrc"],
-                    "best_score": confidence,
+                    "title":        track["title"],
+                    "artist":       track["artist"],
+                    "album_artist": track.get("album_artist", ""),
+                    "album":        track["album"],
+                    "spotify_id":   track["spotify_id"],
+                    "isrc":         track["isrc"],
+                    "best_score":   confidence,
+                    "duration_s":   track.get("duration_s"),
+                    "year":         track.get("year"),
+                    "genres":       track.get("genres"),
+                    "record_label": track.get("record_label"),
+                    "popularity":   track.get("popularity"),
+                    "explicit":     track.get("explicit"),
                 })
                 match_stats["unmatched"] += 1
 
@@ -34836,7 +35182,7 @@ def api_album_musicbrainz_compare():
         placeholder = "%s"
 
         cursor.execute(f"""
-            SELECT id, title, track_number, disc_number, artist, year, mbid, file_path, duration
+            SELECT id, title, track_number, disc_number, artist, year, mbid, file_path, duration, mb_ignored_fields
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
               AND album = {placeholder}
@@ -34993,9 +35339,18 @@ def api_album_musicbrainz_compare():
                 entry["library_year"] = str(lib_track.get("year") or "")
 
                 diff_fields = []
-                # Title differs?
+                # Title differs? — skip if the only difference is a "(Artist Cover)" suffix
+                # in the library title, e.g. "Song (Bob Dylan Cover)" vs MB "Song".
                 if mb_track_title and mb_track_title != lib_track.get("title", ""):
-                    diff_fields.append("title")
+                    lib_title = lib_track.get("title", "")
+                    if re.search(r'\([^)]*\bcover\b[^)]*\)', lib_title, re.IGNORECASE):
+                        # Strip the cover notation and compare again; if they now match,
+                        # this is an expected cover-version annotation — don't flag it.
+                        stripped = re.sub(r'\s*\([^)]*\bcover\b[^)]*\)', '', lib_title, flags=re.IGNORECASE).strip()
+                        if stripped.lower() != mb_track_title.lower():
+                            diff_fields.append("title")
+                    else:
+                        diff_fields.append("title")
                 # Track number differs?
                 if mb_num is not None and str(mb_num) != str(lib_track.get("track_number") or ""):
                     diff_fields.append("track_number")
@@ -35040,12 +35395,184 @@ def api_album_musicbrainz_compare():
                 if lib_disc_val != disc:
                     diff_fields.append("disc_number")
 
+                # Remove any fields the user has permanently ignored for this track
+                import json as _json_cmp
+                _raw_ignored = lib_track.get("mb_ignored_fields") or "[]"
+                try:
+                    _ignored_set = set(_json_cmp.loads(_raw_ignored))
+                except Exception:
+                    _ignored_set = set()
+                diff_fields = [f for f in diff_fields if f not in _ignored_set]
+
                 entry["diff_fields"] = diff_fields
                 entry["needs_update"] = len(diff_fields) > 0
 
             comparison.append(entry)
 
         tracks_needing_update = sum(1 for c in comparison if c["needs_update"])
+
+        # ── Cross-disc matching pass ──────────────────────────────────────────
+        # After the same-disc pass, some MB tracks may remain unmatched because
+        # the library stores them under a different disc number (e.g. library has
+        # tracks 23–37 on disc 1 but MusicBrainz places them on disc 2).
+        # For each still-unmatched MB track, try a fuzzy title match against
+        # still-unmatched library tracks on *any* disc.  When a cross-disc match
+        # is found the track is promoted to a regular comparison entry with
+        # "disc_number" in diff_fields so the UI can suggest the corrective move.
+        matched_mb_recording_ids: set = {
+            e.get("mb_recording_id", "") for e in comparison if e.get("matched")
+        }
+        for mb_track in mb_tracks:
+            mb_recording_id = mb_track.get("recording_mbid", "")
+            if mb_recording_id and mb_recording_id in matched_mb_recording_ids:
+                continue
+            mb_track_title = mb_track.get("title", "")
+            mb_num = mb_track.get("track_number")
+            disc = int(mb_track.get("disc_number") or 1)
+
+            # Check whether this MB track was already matched in the main pass.
+            already_matched = any(
+                e.get("matched") and e.get("mb_title") == mb_track_title
+                and int(e.get("mb_disc_number") or 1) == disc
+                and e.get("mb_track_number") == mb_num
+                for e in comparison
+            )
+            if already_matched:
+                continue
+
+            # Fuzzy title search across all discs (excluding already-matched library tracks)
+            norm_mb = re.sub(r"\s+", " ", mb_track_title.lower().strip())
+            # Derive a "core" title by truncating at the first parenthetical/bracket.
+            # Use str.find to avoid catastrophic backtracking on user-supplied text.
+            _paren = norm_mb.find('(')
+            _brack = norm_mb.find('[')
+            _cut = min(x for x in (_paren, _brack, len(norm_mb)) if x >= 0)
+            norm_mb_core = norm_mb[:_cut].rstrip()
+
+            best_ratio = 0.0
+            best_lib = None
+            for t in library_tracks:
+                if t.get("id") in matched_lib_ids:
+                    continue
+                # Must be on a different disc to be a cross-disc candidate
+                lib_disc = int(t.get("disc_number") or 1)
+                if lib_disc == disc:
+                    continue
+                lib_norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
+                ratio = _difflib.SequenceMatcher(None, norm_mb, lib_norm).ratio()
+                if ratio < 0.80 and norm_mb_core and norm_mb_core != norm_mb:
+                    ratio = max(ratio, _difflib.SequenceMatcher(None, norm_mb_core, lib_norm).ratio())
+                if ratio > best_ratio and ratio >= 0.80:
+                    best_ratio = ratio
+                    best_lib = t
+
+            if best_lib is None:
+                continue
+
+            # We have a cross-disc match — build a comparison entry identical to
+            # the same-disc path but with disc_number guaranteed in diff_fields.
+            lib_track = best_lib
+            matched_lib_ids.add(lib_track["id"])
+            if mb_recording_id:
+                matched_mb_recording_ids.add(mb_recording_id)
+
+            mb_year = mb_release.get("release_year", "")
+            mb_duration_ms_raw = mb_track.get("duration")
+            mb_duration_sec_raw = int(mb_duration_ms_raw // 1000) if mb_duration_ms_raw else None
+
+            entry = {
+                "mb_track_number": mb_num,
+                "mb_disc_number": disc,
+                "mb_title": mb_track_title,
+                "mb_artist": mb_track.get("artist", ""),
+                "mb_recording_id": mb_recording_id,
+                "mb_year": mb_year,
+                "library_track_id": lib_track["id"],
+                "library_title": lib_track.get("title", ""),
+                "library_track_number": lib_track.get("track_number"),
+                "library_disc_number": int(lib_track.get("disc_number") or 1),
+                "library_artist": lib_track.get("artist", ""),
+                "library_year": str(lib_track.get("year") or ""),
+                "mb_duration": None,
+                "mb_duration_sec": mb_duration_sec_raw,
+                "library_duration": None,
+                "matched": True,
+                "cross_disc_match": True,
+            }
+
+            diff_fields = []
+            if mb_track_title and mb_track_title != lib_track.get("title", ""):
+                lib_title = lib_track.get("title", "")
+                if re.search(r'\([^)]*\bcover\b[^)]*\)', lib_title, re.IGNORECASE):
+                    stripped = re.sub(r'\s*\([^)]*\bcover\b[^)]*\)', '', lib_title, flags=re.IGNORECASE).strip()
+                    if stripped.lower() != mb_track_title.lower():
+                        diff_fields.append("title")
+                else:
+                    diff_fields.append("title")
+            if mb_num is not None and str(mb_num) != str(lib_track.get("track_number") or ""):
+                diff_fields.append("track_number")
+            if mb_year and str(mb_year) != str(lib_track.get("year") or ""):
+                diff_fields.append("year")
+            lib_mbid = (lib_track.get("mbid") or "").strip()
+            if mb_recording_id and not lib_mbid:
+                diff_fields.append("mbid")
+
+            mb_duration_sec = (mb_duration_ms_raw / 1000.0) if mb_duration_ms_raw else None
+            raw_lib_dur = lib_track.get("duration")
+            if raw_lib_dur not in (None, "", 0, "0"):
+                try:
+                    lib_dur_val = float(raw_lib_dur)
+                    lib_duration_sec = (lib_dur_val / 1000.0) if lib_dur_val > 10000 else lib_dur_val
+                    lib_duration_sec = lib_duration_sec if lib_duration_sec > 0 else None
+                except (TypeError, ValueError):
+                    lib_duration_sec = None
+            else:
+                lib_duration_sec = None
+
+            def _fmt_dur2(sec):
+                if sec is None:
+                    return None
+                s = int(round(sec))
+                return f"{s // 60}:{s % 60:02d}"
+
+            entry["mb_duration"] = _fmt_dur2(mb_duration_sec)
+            entry["library_duration"] = _fmt_dur2(lib_duration_sec)
+            if mb_duration_sec is not None and lib_duration_sec is not None:
+                if abs(mb_duration_sec - lib_duration_sec) > 5:
+                    diff_fields.append("duration")
+
+            # disc_number mismatch is the whole point of this match
+            diff_fields.append("disc_number")
+
+            import json as _json_xdisc
+            _raw_ignored = lib_track.get("mb_ignored_fields") or "[]"
+            try:
+                _ignored_set = set(_json_xdisc.loads(_raw_ignored))
+            except Exception:
+                _ignored_set = set()
+            diff_fields = [f for f in diff_fields if f not in _ignored_set]
+            diff_fields = list(dict.fromkeys(diff_fields))  # deduplicate, preserve order
+
+            entry["diff_fields"] = diff_fields
+            entry["needs_update"] = len(diff_fields) > 0
+            comparison.append(entry)
+
+        # Recount after cross-disc pass
+        tracks_needing_update = sum(1 for c in comparison if c["needs_update"])
+
+        # Identify library tracks that were never matched by any MB track —
+        # these are "extra" tracks that exist locally but are not part of the
+        # official release according to MusicBrainz.
+        extra_tracks = []
+        for t in library_tracks:
+            if t["id"] not in matched_lib_ids:
+                extra_tracks.append({
+                    "library_track_id": t["id"],
+                    "library_title": t.get("title", ""),
+                    "library_track_number": t.get("track_number"),
+                    "library_disc_number": int(t.get("disc_number") or 1),
+                    "library_artist": t.get("artist", ""),
+                })
 
         # Persist comparison results to the database so that the "MusicBrainz
         # update available" banners survive page refreshes.
@@ -35068,10 +35595,53 @@ def api_album_musicbrainz_compare():
                         f"UPDATE tracks SET pending_mb_updates = {ph_p} WHERE id = {ph_p}",
                         (_json.dumps(entry), entry["library_track_id"]),
                     )
+            # Mark extra tracks (not in MB metadata) so the badge persists on page refresh.
+            for extra in extra_tracks:
+                cursor_p.execute(
+                    f"UPDATE tracks SET pending_mb_updates = {ph_p} WHERE id = {ph_p}",
+                    (_json.dumps({"is_extra": True}), extra["library_track_id"]),
+                )
             conn_p.commit()
             conn_p.close()
         except Exception as _save_err:
             logging.warning(f"[MB_COMPARE] Could not persist comparison results: {_save_err}")
+
+        # Persist unmatched (missing) tracks so they survive page refreshes.
+        # Only non-ignored entries from a previous comparison are replaced; ignored
+        # entries remain untouched so the user's "Ignore" choice is preserved.
+        try:
+            conn_m = get_db()
+            cursor_m = conn_m.cursor()
+            ph_m = "%s"
+            _ensure_missing_album_tracks_table(cursor_m)
+            # Remove only non-ignored entries for this album so we get a fresh set
+            cursor_m.execute(
+                f"DELETE FROM missing_album_tracks "
+                f"WHERE artist_name = {ph_m} AND album_name = {ph_m} AND ignored = FALSE",
+                (artist, album),
+            )
+            for entry in comparison:
+                if not entry.get("matched"):
+                    cursor_m.execute(
+                        f"INSERT INTO missing_album_tracks "
+                        f"(artist_name, album_name, title, track_number, disc_number, track_artist, year, release_id, recording_mbid, duration) "
+                        f"VALUES ({ph_m},{ph_m},{ph_m},{ph_m},{ph_m},{ph_m},{ph_m},{ph_m},{ph_m},{ph_m})",
+                        (
+                            artist, album,
+                            entry.get("mb_title", ""),
+                            str(entry.get("mb_track_number") or ""),
+                            int(entry.get("mb_disc_number") or 1),
+                            entry.get("mb_artist") or artist,
+                            str(mb_year or ""),
+                            release_group_mbid,
+                            entry.get("mb_recording_id") or "",
+                            entry.get("mb_duration_sec"),
+                        ),
+                    )
+            conn_m.commit()
+            conn_m.close()
+        except Exception as _miss_err:
+            logging.warning(f"[MB_COMPARE] Could not persist missing tracks: {_miss_err}")
 
         return jsonify({
             "success": True,
@@ -35080,6 +35650,7 @@ def api_album_musicbrainz_compare():
             "mb_artist": mb_release.get("artist", ""),
             "release_group_mbid": release_group_mbid,
             "comparison": comparison,
+            "extra_tracks": extra_tracks,
             "tracks_needing_update": tracks_needing_update,
             "total_tracks": len(comparison),
         }), 200
@@ -36456,6 +37027,72 @@ def api_track_update_metadata():
                 conn.close()
             except Exception:
                 pass
+
+@app.route("/api/track/ignore-mb-field", methods=["POST"])
+def api_track_ignore_mb_field():
+    """Permanently ignore a specific MusicBrainz diff field for a track.
+
+    Accepts ``{track_id, field}`` in the request body.  The field name is
+    appended to the ``mb_ignored_fields`` JSON array stored on the track row so
+    that future comparisons skip it automatically.
+    """
+    import json as _json_ignore
+    conn = None
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        track_id = str(data.get("track_id") or "").strip()
+        field = str(data.get("field") or "").strip()
+        clear_pending = bool(data.get("clear_mb_pending", False))
+
+        valid_fields = {"title", "track_number", "year", "mbid", "duration", "disc_number"}
+        if not track_id or field not in valid_fields:
+            return jsonify({"error": "track_id and a valid field are required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        cursor.execute(f"SELECT mb_ignored_fields FROM tracks WHERE id = {placeholder}", (track_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Track not found"}), 404
+
+        raw = (row["mb_ignored_fields"] if isinstance(row, dict) else row[0]) or "[]"
+        try:
+            ignored = _json_ignore.loads(raw)
+            if not isinstance(ignored, list):
+                ignored = []
+        except Exception:
+            ignored = []
+
+        if field not in ignored:
+            ignored.append(field)
+
+        updates = {"mb_ignored_fields": _json_ignore.dumps(ignored)}
+        if clear_pending:
+            updates["pending_mb_updates"] = None
+
+        set_clause = ", ".join([f"{k} = {placeholder}" for k in updates])
+        cursor.execute(
+            f"UPDATE tracks SET {set_clause} WHERE id = {placeholder}",
+            list(updates.values()) + [track_id],
+        )
+        conn.commit()
+        conn.close()
+        conn = None
+        return jsonify({"success": True, "ignored_fields": ignored}), 200
+
+    except Exception as e:
+        logging.error(f"[ignore_mb_field] Error: {e}")
+        return jsonify({"error": "Failed to ignore field"}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 @app.route("/api/navidrome/scan/start", methods=["POST"])
 def api_start_navidrome_scan():

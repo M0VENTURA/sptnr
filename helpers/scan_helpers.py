@@ -571,9 +571,166 @@ def save_navidrome_scan_progress(current_artist, processed_artists, total_artist
     except Exception as e:
         logging.error(f"Failed to save Navidrome scan progress: {e}")
 
-def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, filter_missing: bool = False, processed_artists: int = 0, total_artists: int = 0, album_filter: str = None, progress_file: str = None, progress_scan_type: str = None):
+def _artist_folder_mtime_gate(artist_name: str) -> bool:
+    """Return True if the artist's album folders have not changed since last scan.
+
+    This is a *hint* only – it avoids fetching Navidrome payloads when the local
+    filesystem shows no directory-level changes (files added/removed/renamed).
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT file_path, last_scanned
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+              AND file_path IS NOT NULL
+              AND TRIM(file_path) <> ''
+              AND file_path NOT LIKE '__queued_for_download__%%'
+            """,
+            (artist_name,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            return False  # No local files yet – can't gate
+
+        max_mtime = 0.0
+        last_scanned_iso = None
+        for row in rows:
+            fp = str(row[0] or "").strip()
+            ls = row[1]
+            if fp:
+                folder = os.path.dirname(fp)
+                if folder and os.path.isdir(folder):
+                    try:
+                        mtime = os.path.getmtime(folder)
+                        if mtime > max_mtime:
+                            max_mtime = mtime
+                    except OSError:
+                        pass
+            if ls and (last_scanned_iso is None or str(ls) > last_scanned_iso):
+                last_scanned_iso = str(ls)
+
+        if not last_scanned_iso:
+            return False
+
+        try:
+            from datetime import datetime, timezone
+            # Parse ISO timestamp (handles both 'Z' and '+00:00' offsets)
+            ls_clean = last_scanned_iso.replace("Z", "+00:00")
+            ls_dt = datetime.fromisoformat(ls_clean)
+            if ls_dt.tzinfo is None:
+                ls_dt = ls_dt.replace(tzinfo=timezone.utc)
+            ls_ts = ls_dt.timestamp()
+        except Exception:
+            return False
+
+        if max_mtime <= ls_ts:
+            logging.debug(
+                "[NAVIDROME_SCAN] Artist '%s' early-exit: max folder mtime (%.0f) <= last_scanned (%.0f)",
+                artist_name, max_mtime, ls_ts,
+            )
+            return True
+    except Exception as exc:
+        logging.debug("[NAVIDROME_SCAN] mtime gate failed for '%s': %s", artist_name, exc)
+    return False
+
+
+def _artist_album_name_diff(artist_name: str, artist_id: str) -> tuple[bool, set[str]]:
+    """Compare Navidrome album names to DB album names for the artist.
+
+    Returns:
+        (skip_artist, changed_album_names)
+        - skip_artist: True if no changes detected (early-exit whole artist).
+        - changed_album_names: set of album names that are new or missing.
+          Empty when skip_artist is True.
+
+    Note: The tracks table does not store Navidrome album IDs, so album
+    names are used as the comparison key.
+    """
+    from start import fetch_artist_albums
+
+    try:
+        nav_albums = fetch_artist_albums(artist_id)
+    except Exception as exc:
+        logging.debug(
+            "[NAVIDROME_SCAN] Could not fetch albums for '%s' (id=%s): %s",
+            artist_name, artist_id, exc,
+        )
+        return False, set()  # Degrade gracefully – don't skip on error
+
+    nav_names = {a.get("name") or "" for a in nav_albums if a.get("name")}
+    nav_names.discard("")
+
+    conn = None
+    db_names: set[str] = set()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT album
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+              AND album IS NOT NULL AND TRIM(album) <> ''
+            """,
+            (artist_name,),
+        )
+        for row in cursor.fetchall():
+            if row[0]:
+                db_names.add(str(row[0]))
+        conn.close()
+    except Exception as exc:
+        logging.debug(
+            "[NAVIDROME_SCAN] Could not query DB albums for '%s': %s",
+            artist_name, exc,
+        )
+        return False, set()
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    changed = nav_names.symmetric_difference(db_names)
+    if not changed:
+        logging.debug(
+            "[NAVIDROME_SCAN] Artist '%s' early-exit: album names unchanged (%d albums)",
+            artist_name, len(nav_names),
+        )
+        return True, set()
+
+    logging.debug(
+        "[NAVIDROME_SCAN] Artist '%s' album diff: %d changed album(s) (%d nav vs %d db)",
+        artist_name, len(changed), len(nav_names), len(db_names),
+    )
+    return False, changed
+
+
+def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, filter_missing: bool = False, processed_artists: int = 0, total_artists: int = 0, album_filter: str = None, progress_file: str = None, progress_scan_type: str = None, diff_mode: bool = False):
     """
     Scan a single artist from Navidrome and persist tracks to DB.
+
+    Args:
+        artist_name: Name of the artist to scan
+        artist_id: Navidrome ID of the artist
+        verbose: Enable verbose logging
+        force: Force re-import even if cached
+        filter_missing: Only scan artists/albums with missing fields
+        processed_artists: Current artist index (1-based) for progress tracking
+        total_artists: Total number of artists for progress tracking
+        album_filter: Only scan this specific album (if provided)
+        progress_file: Override the progress file written by save_navidrome_scan_progress.
+                       Pass the caller's own progress file (e.g. combined_scan_progress.json)
+                       so that navidrome_scan_progress.json is not written during a combined scan.
+        progress_scan_type: Override the scan_type written into the progress file.
+        diff_mode: When True, enable aggressive early-exit gates (mtime + album diff)
+                   and only process albums that appear changed.  Used by the library
+                   sync worker to avoid redundant work.
 
     Args:
         artist_name: Name of the artist to scan
@@ -679,9 +836,32 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         except Exception as sanitize_err:
             logging.debug(f"[NAVIDROME_SANITIZE] Skipped for {canonical_artist_name}: {sanitize_err}")
 
+        # ------------------------------------------------------------------
+        # Diff-mode early-exit gates (library sync worker only)
+        # ------------------------------------------------------------------
+        changed_album_names: set[str] | None = None
+        if diff_mode and not force and not album_filter and not filter_missing:
+            # i) Folder mtime gate (hint only)
+            if _artist_folder_mtime_gate(canonical_artist_name):
+                log_debug(
+                    f"[NAVIDROME_SCAN] Artist '{artist_name}' skipped by mtime gate"
+                )
+                return {"skipped_mtime": True}
+
+            # ii) Album name diff (album ID proxy – DB does not store album IDs)
+            skip_artist, changed = _artist_album_name_diff(
+                canonical_artist_name, artist_id
+            )
+            if skip_artist:
+                log_debug(
+                    f"[NAVIDROME_SCAN] Artist '{artist_name}' skipped by album name diff"
+                )
+                return {"skipped_album_diff": True}
+            changed_album_names = changed
+
         albums = fetch_artist_albums(artist_id)
         log_debug(f"[NAVIDROME_SCAN] fetch_artist_albums('{artist_name}') returned {len(albums)} albums")
-        
+
         # If filter_missing is enabled and this artist has no missing fields, skip it
         if filter_missing and len(albums_needing_reimport) == 0 and len(existing_track_ids) > 0:
             logging.debug(f"Skipping artist '{artist_name}' - no albums with missing fields (filter_missing=True)")
@@ -711,6 +891,17 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             if album_filter and album_name.strip() != album_filter.strip():
                 logging.debug(f"Skipping album '{album_name}' - does not match filter '{album_filter}'")
                 continue
+
+            # In diff_mode, only process albums detected as changed.
+            # Albums that exist in both Navidrome and DB with unchanged names are
+            # skipped entirely (no track fetch) to save API calls.
+            if diff_mode and changed_album_names is not None:
+                if album_name not in changed_album_names:
+                    logging.debug(
+                        f"Skipping album '{album_name}' - not in changed set (diff_mode)"
+                    )
+                    continue
+
             album_id = alb.get("id")
             if not album_id:
                 continue
@@ -981,7 +1172,8 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         # (e.g. files deleted from disk that show as grey in Navidrome).
         # Only perform this cleanup during a full artist scan, not when using
         # album_filter or filter_missing which intentionally skip some albums.
-        can_cleanup = not filter_missing and not album_filter
+        # diff_mode also skips this because we don't fetch tracks for unchanged albums.
+        can_cleanup = not filter_missing and not album_filter and not diff_mode
         if can_cleanup and existing_track_ids:
             stale_ids = existing_track_ids - navidrome_track_ids
             if stale_ids:
@@ -1022,6 +1214,13 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                                 logging.debug(f"Could not remove directory '{dirpath}': {rmdir_err}")
             except Exception as e:
                 logging.debug(f"Empty-folder cleanup skipped for artist '{artist_name}': {e}")
+
+        # In diff_mode, return metadata so the caller can observe what happened.
+        if diff_mode and changed_album_names is not None:
+            return {
+                "changed": True,
+                "changed_albums": len(changed_album_names),
+            }
     except Exception as e:
         logging.error(f"scan_artist_to_db failed for {artist_name}: {e}")
         log_debug(f"[NAVIDROME_SCAN] scan_artist_to_db raised exception for '{artist_name}': {e}", exc_info=True)

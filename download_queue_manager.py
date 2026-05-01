@@ -25,7 +25,7 @@ import requests
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
-from helpers.db_utils import get_db_connection, is_postgres_configured, _is_postgres_connection
+from helpers.db_utils import get_db_connection, is_postgres_configured, _is_postgres_connection, is_transient_pg_startup_error
 from helpers.metadata_reader import read_mp3_metadata
 from api_clients import session  # Use shared session with retry logic & connection pooling
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
@@ -1350,6 +1350,17 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 # for this queue item.  Used by the freshness check in
                 # search_and_download() to avoid hitting MB on every retry.
                 'mb_last_checked_at': "TIMESTAMP",
+                # FK → musicbrainz_release_tracks.id: links this queue row to its
+                # authoritative per-track metadata record.  Nullable so legacy rows
+                # that pre-date this column are unaffected.
+                'metadata_id': "BIGINT",
+                # FK → musicbrainz_releases.id: links this queue row to its
+                # authoritative album-level metadata record.  Nullable for legacy rows.
+                'release_metadata_id': "BIGINT",
+                # Final path in /music after the file has been moved there.  Stored
+                # separately from file_path (which points to the /downloads source)
+                # so both can be tracked independently during the move workflow.
+                'music_file_path': "TEXT",
             }
 
             for col, col_type in required_cols.items():
@@ -1818,6 +1829,228 @@ def _add_queue_item_to_tracks_table(conn, cursor, artist, title, album, album_ar
             pass
 
 
+
+def _override_if_set(d, key, new_val):
+    """Set d[key] = new_val only when new_val is a non-empty, non-None value."""
+    if new_val is not None and new_val != '':
+        d[key] = new_val
+
+
+def _upsert_release_metadata(conn, cursor, release_key, release_title, artist,
+                              release_year=None, album_artist=None, genres=None,
+                              cover_art_url=None, release_source=None,
+                              total_tracks=None):
+    """Upsert into musicbrainz_releases and return the db id.
+
+    *release_key* is the external release identifier (MusicBrainz UUID or
+    Discogs numeric string) stored in musicbrainz_releases.release_id.
+    Returns the integer ``id`` of the row, or ``None`` on failure.
+    """
+    try:
+        cursor.execute(
+            """
+            INSERT INTO musicbrainz_releases
+                (release_id, release_title, artist, release_year, total_tracks,
+                 album_artist, genres, cover_art_url, release_source, status,
+                 created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (release_id) DO UPDATE SET
+                release_title  = COALESCE(NULLIF(EXCLUDED.release_title, ''), musicbrainz_releases.release_title),
+                artist         = COALESCE(NULLIF(EXCLUDED.artist, ''), musicbrainz_releases.artist),
+                release_year   = COALESCE(EXCLUDED.release_year, musicbrainz_releases.release_year),
+                total_tracks   = COALESCE(EXCLUDED.total_tracks, musicbrainz_releases.total_tracks),
+                album_artist   = COALESCE(NULLIF(EXCLUDED.album_artist, ''), musicbrainz_releases.album_artist),
+                genres         = COALESCE(NULLIF(EXCLUDED.genres, ''), musicbrainz_releases.genres),
+                cover_art_url  = COALESCE(NULLIF(EXCLUDED.cover_art_url, ''), musicbrainz_releases.cover_art_url),
+                release_source = COALESCE(NULLIF(EXCLUDED.release_source, ''), musicbrainz_releases.release_source),
+                updated_at     = CURRENT_TIMESTAMP
+            RETURNING id
+            """,
+            (
+                release_key,
+                release_title or 'Unknown Album',
+                artist or 'Unknown Artist',
+                release_year,
+                total_tracks,
+                album_artist,
+                genres,
+                cover_art_url,
+                release_source,
+            ),
+        )
+        row = cursor.fetchone()
+        if row:
+            rm_id = row.get('id') if hasattr(row, 'get') else row[0]
+            conn.commit()
+            return rm_id
+        # RETURNING returned nothing — this should not happen with ON CONFLICT DO UPDATE
+        # but fall back gracefully to a plain SELECT rather than rolling back.
+        logger.warning(
+            "[_upsert_release_metadata] RETURNING returned no row for release %s; "
+            "falling back to SELECT",
+            release_key,
+        )
+        cursor.execute(
+            "SELECT id FROM musicbrainz_releases WHERE release_id = %s",
+            (release_key,),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            return existing.get('id') if hasattr(existing, 'get') else existing[0]
+        return None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.debug(f"[_upsert_release_metadata] Failed for release {release_key}: {e}")
+        return None
+
+
+def _upsert_track_metadata(conn, cursor, release_key, queue_id,
+                            disc_number=None, track_number=None,
+                            track_title=None, track_artist=None, duration=None,
+                            isrc=None, recording_mbid=None, composer=None,
+                            album_artist=None, year=None):
+    """Upsert a track row into musicbrainz_release_tracks and return the db id.
+
+    Matches on ``queue_id`` first; falls back to ``recording_mbid`` then
+    ``(track_number, disc_number)`` within the same release.  Returns ``None``
+    on failure.
+    """
+    def _safe_int(value, default=None):
+        try:
+            return int(str(value).split('/')[0])
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        # Primary lookup: by queue_id (unique per queue row)
+        existing_id = None
+        if queue_id is not None:
+            cursor.execute(
+                "SELECT id FROM musicbrainz_release_tracks WHERE queue_id = %s LIMIT 1",
+                (queue_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                existing_id = row.get('id') if hasattr(row, 'get') else row[0]
+
+        # Secondary: by recording MBID within the same release
+        if existing_id is None and recording_mbid:
+            cursor.execute(
+                """
+                SELECT id FROM musicbrainz_release_tracks
+                WHERE release_id = %s AND recording_mbid = %s
+                LIMIT 1
+                """,
+                (release_key, recording_mbid),
+            )
+            row = cursor.fetchone()
+            if row:
+                existing_id = row.get('id') if hasattr(row, 'get') else row[0]
+
+        # Tertiary: by track position within the same release
+        if existing_id is None and track_number is not None:
+            _tn = _safe_int(track_number)
+            _dn = _safe_int(disc_number, 1)
+            if _tn is not None:
+                cursor.execute(
+                    """
+                    SELECT id FROM musicbrainz_release_tracks
+                    WHERE release_id = %s AND track_number = %s AND disc_number = %s
+                    LIMIT 1
+                    """,
+                    (release_key, _tn, _dn),
+                )
+                row = cursor.fetchone()
+                if row:
+                    existing_id = row.get('id') if hasattr(row, 'get') else row[0]
+
+        if existing_id is not None:
+            cursor.execute(
+                """
+                UPDATE musicbrainz_release_tracks SET
+                    queue_id       = COALESCE(%s, queue_id),
+                    disc_number    = COALESCE(%s, disc_number),
+                    track_number   = COALESCE(%s, track_number),
+                    track_title    = COALESCE(NULLIF(%s, ''), track_title),
+                    track_artist   = COALESCE(NULLIF(%s, ''), track_artist),
+                    duration       = COALESCE(%s, duration),
+                    isrc           = COALESCE(NULLIF(%s, ''), isrc),
+                    recording_mbid = COALESCE(NULLIF(%s, ''), recording_mbid),
+                    composer       = COALESCE(NULLIF(%s, ''), composer),
+                    album_artist   = COALESCE(NULLIF(%s, ''), album_artist),
+                    year           = COALESCE(NULLIF(%s, ''), year),
+                    updated_at     = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (
+                    queue_id,
+                    _safe_int(disc_number),
+                    _safe_int(track_number),
+                    track_title,
+                    track_artist,
+                    _safe_int(duration) if duration else None,
+                    isrc,
+                    recording_mbid,
+                    composer,
+                    album_artist,
+                    str(year) if year else None,
+                    existing_id,
+                ),
+            )
+            conn.commit()
+            return existing_id
+
+        # Insert a new track row
+        _disc = _safe_int(disc_number, 1)
+        _trk  = _safe_int(track_number)
+        cursor.execute(
+            """
+            INSERT INTO musicbrainz_release_tracks
+                (release_id, queue_id, disc_number, track_number, track_title,
+                 track_artist, duration, isrc, recording_mbid,
+                 composer, album_artist, year,
+                 status, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            """,
+            (
+                release_key,
+                queue_id,
+                _disc,
+                _trk,
+                track_title or '',
+                track_artist or '',
+                _safe_int(duration) if duration else None,
+                isrc,
+                recording_mbid,
+                composer,
+                album_artist,
+                str(year) if year else None,
+            ),
+        )
+        row = cursor.fetchone()
+        if row:
+            mt_id = row.get('id') if hasattr(row, 'get') else row[0]
+            conn.commit()
+            return mt_id
+        conn.rollback()
+        return None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.debug(
+            f"[_upsert_track_metadata] Failed for queue {queue_id}, release {release_key}: {e}"
+        )
+        return None
+
+
 def add_to_queue(artist, title, album=None, source='soulseek', priority=5, import_group=None, import_type='song',
                  track_number=None, album_artist=None, year=None, release_id=None, release_source=None,
                  duration=None, disc_number=None, release_mbid=None, recording_mbid=None, status=None,
@@ -1882,7 +2115,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         # so the stored search_query is already clean for display and retry use.
         artist_text = str(artist or '').strip()
         title_text = str(title or '').strip()
-        if artist_text.lower() in _GENERIC_ARTIST_NAMES:
+        # Spotify/Exportify CSVs use semicolons to join multiple artists
+        # (e.g. "Nine Inch Nails;Boys Noize").  Use only the primary (first)
+        # artist for the Soulseek query so the search term stays clean, while
+        # the full multi-artist string is preserved in the stored artist field.
+        _query_artist = artist_text.split(';')[0].strip() if ';' in artist_text else artist_text
+        if _query_artist.lower() in _GENERIC_ARTIST_NAMES:
             if ' - ' in title_text:
                 left, right = [part.strip() for part in title_text.split(' - ', 1)]
                 if left and right and left.lower() not in _GENERIC_ARTIST_NAMES:
@@ -1892,7 +2130,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             else:
                 search_query = _sanitize_search_query_for_slskd(title_text)
         else:
-            search_query = _sanitize_search_query_for_slskd(f"{artist_text} - {title_text}")
+            search_query = _sanitize_search_query_for_slskd(f"{_query_artist} - {title_text}")
 
         # Normalize duration to seconds. Some MusicBrainz paths supply milliseconds.
         if duration not in (None, ""):
@@ -2232,6 +2470,58 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             except Exception as e_tracks:
                 # Non-fatal - queue still created successfully
                 logger.warning(f"Failed to sync queue item to tracks table: {e_tracks}")
+
+            # Link to normalised metadata tables when enough info is available.
+            # Non-fatal: inline queue columns remain the fallback for legacy rows.
+            _release_key = (release_mbid or release_id or '').strip()
+            if _release_key and album:
+                try:
+                    _rm_id = _upsert_release_metadata(
+                        conn, cursor,
+                        release_key=_release_key,
+                        release_title=album,
+                        artist=album_artist or artist,
+                        release_year=release_year,
+                        album_artist=album_artist,
+                        genres=genres,
+                        cover_art_url=cover_art_url,
+                        release_source=release_source,
+                    )
+                    _mt_id = _upsert_track_metadata(
+                        conn, cursor,
+                        release_key=_release_key,
+                        queue_id=queue_id,
+                        disc_number=disc_number,
+                        track_number=track_number,
+                        track_title=title,
+                        track_artist=artist,
+                        duration=duration,
+                        isrc=isrc,
+                        recording_mbid=recording_mbid,
+                        composer=composer,
+                        album_artist=album_artist,
+                        year=year,
+                    )
+                    _meta_set = {}
+                    if _rm_id:
+                        _meta_set['release_metadata_id'] = _rm_id
+                    if _mt_id:
+                        _meta_set['metadata_id'] = _mt_id
+                    if _meta_set:
+                        _set_clause = ', '.join(f"{k} = %s" for k in _meta_set)
+                        cursor.execute(
+                            f"UPDATE download_queue SET {_set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                            list(_meta_set.values()) + [queue_id],
+                        )
+                        conn.commit()
+                except Exception as _meta_err:
+                    logger.debug(
+                        f"[add_to_queue] Could not link queue item {queue_id} to metadata tables: {_meta_err}"
+                    )
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
             
             # Return the item
             cursor.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
@@ -2366,10 +2656,189 @@ def get_queue(status=None, source=None, limit=50):
         return items
 
     except Exception as e:
-        logger.error(f"Error getting queue: {type(e).__name__}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        if is_transient_pg_startup_error(e):
+            logger.debug(f"Error getting queue (transient, will retry): {e}")
+        else:
+            logger.error(f"Error getting queue: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         return []
+
+
+def get_queue_item_full_metadata(queue_id):
+    """Return enriched metadata for a queue item by joining with the MB tables.
+
+    Prefers FK-joined values from ``musicbrainz_release_tracks`` /
+    ``musicbrainz_releases`` over the inline ``download_queue`` columns for all
+    metadata fields.  Falls back transparently to the inline columns when no FK
+    link exists (legacy rows), so callers always receive a single merged dict.
+
+    Returns:
+        dict with merged fields, or ``None`` if the queue item is not found.
+    """
+    conn = None
+    try:
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                dq.*,
+                mrt.id           AS _mrt_id,
+                mrt.track_number AS _mrt_track_number,
+                mrt.disc_number  AS _mrt_disc_number,
+                mrt.track_title  AS _mrt_track_title,
+                mrt.track_artist AS _mrt_track_artist,
+                mrt.duration     AS _mrt_duration,
+                mrt.isrc         AS _mrt_isrc,
+                mrt.recording_mbid AS _mrt_recording_mbid,
+                mrt.composer     AS _mrt_composer,
+                mrt.album_artist AS _mrt_album_artist,
+                mrt.year         AS _mrt_year,
+                mr.id            AS _mr_id,
+                mr.release_id    AS _mr_release_id,
+                mr.release_title AS _mr_release_title,
+                mr.artist        AS _mr_artist,
+                mr.album_artist  AS _mr_release_album_artist,
+                mr.release_year  AS _mr_release_year,
+                mr.cover_art_url AS _mr_cover_art_url,
+                mr.genres        AS _mr_genres,
+                mr.release_source AS _mr_release_source
+            FROM download_queue dq
+            LEFT JOIN musicbrainz_release_tracks mrt ON dq.metadata_id = mrt.id
+            LEFT JOIN musicbrainz_releases mr ON dq.release_metadata_id = mr.id
+            WHERE dq.id = %s
+            """,
+            (queue_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        base = dict(row) if hasattr(row, 'keys') else {}
+
+        # Prefer FK-joined values over inline columns for metadata fields.
+        # _override_if_set only replaces when the new value is non-empty/non-None.
+        _override_if_set(base, 'track_number',   base.pop('_mrt_track_number', None))
+        _override_if_set(base, 'disc_number',    base.pop('_mrt_disc_number', None))
+        _override_if_set(base, 'duration',       base.pop('_mrt_duration', None))
+        _override_if_set(base, 'isrc',           base.pop('_mrt_isrc', None))
+        _override_if_set(base, 'recording_mbid', base.pop('_mrt_recording_mbid', None))
+        _override_if_set(base, 'composer',       base.pop('_mrt_composer', None))
+        _override_if_set(base, 'album_artist',   base.pop('_mrt_album_artist', None))
+        _override_if_set(base, 'year',           base.pop('_mrt_year', None))
+
+        # Album-level overrides from musicbrainz_releases
+        _override_if_set(base, 'release_year',   base.pop('_mr_release_year', None))
+        _override_if_set(base, 'cover_art_url',  base.pop('_mr_cover_art_url', None))
+        _override_if_set(base, 'genres',         base.pop('_mr_genres', None))
+        _override_if_set(base, 'release_source', base.pop('_mr_release_source', None))
+        # album_artist from release table only if not already set by track table
+        if not base.get('album_artist'):
+            _override_if_set(base, 'album_artist', base.pop('_mr_release_album_artist', None))
+        else:
+            base.pop('_mr_release_album_artist', None)
+        _override_if_set(base, 'release_id',     base.pop('_mr_release_id', None))
+
+        # Clean up internal columns not needed by callers
+        for _tmp in ('_mrt_id', '_mrt_track_title', '_mrt_track_artist',
+                     '_mr_id', '_mr_release_title', '_mr_artist'):
+            base.pop(_tmp, None)
+
+        return base
+    except Exception as e:
+        logger.debug(f"get_queue_item_full_metadata({queue_id}): {e}")
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def backfill_queue_metadata_ids(limit=500):
+    """Populate ``metadata_id`` / ``release_metadata_id`` on existing queue rows.
+
+    Matches rows that already have ``release_mbid`` / ``release_id`` against
+    ``musicbrainz_releases`` and rows that are linked via the
+    ``musicbrainz_release_tracks.queue_id`` FK.
+
+    Runs as a background one-off; non-fatal on any error.
+
+    Returns:
+        dict with 'releases_linked' and 'tracks_linked' counts.
+    """
+    releases_linked = 0
+    tracks_linked = 0
+    conn = None
+    try:
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor()
+
+        # Link release_metadata_id via release_mbid / release_id.
+        # PostgreSQL does not support LIMIT directly on UPDATE; use a CTE with
+        # ctid to safely cap the number of rows touched per run.
+        cursor.execute(
+            """
+            UPDATE download_queue dq
+               SET release_metadata_id = sub.mr_id,
+                   updated_at = CURRENT_TIMESTAMP
+              FROM (
+                  SELECT dq2.ctid AS row_ctid, mr.id AS mr_id
+                    FROM download_queue dq2
+                    JOIN musicbrainz_releases mr
+                      ON mr.release_id = COALESCE(
+                             NULLIF(dq2.release_mbid, ''),
+                             NULLIF(dq2.release_id, '')
+                         )
+                   WHERE dq2.release_metadata_id IS NULL
+                     AND COALESCE(dq2.release_mbid, dq2.release_id, '') <> ''
+                   LIMIT %s
+              ) sub
+             WHERE dq.ctid = sub.row_ctid
+            """,
+            (limit,),
+        )
+        releases_linked = cursor.rowcount or 0
+        conn.commit()
+
+        # Link metadata_id via musicbrainz_release_tracks.queue_id
+        cursor.execute(
+            """
+            UPDATE download_queue dq
+               SET metadata_id = sub.mrt_id,
+                   updated_at = CURRENT_TIMESTAMP
+              FROM (
+                  SELECT dq2.ctid AS row_ctid, mrt.id AS mrt_id
+                    FROM download_queue dq2
+                    JOIN musicbrainz_release_tracks mrt ON mrt.queue_id = dq2.id
+                   WHERE dq2.metadata_id IS NULL
+                   LIMIT %s
+              ) sub
+             WHERE dq.ctid = sub.row_ctid
+            """,
+            (limit,),
+        )
+
+        if releases_linked or tracks_linked:
+            logger.info(
+                "[BACKFILL] metadata_id backfill: %d release links, %d track links",
+                releases_linked, tracks_linked,
+            )
+    except Exception as e:
+        logger.warning(f"[BACKFILL] backfill_queue_metadata_ids failed: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return {'releases_linked': releases_linked, 'tracks_linked': tracks_linked}
 
 
 def update_queue_item(queue_id, **kwargs):
@@ -2522,6 +2991,30 @@ def update_queue_item(queue_id, **kwargs):
                 return None
             
             logger.debug(f"Updated {cursor.rowcount} row(s) for queue item {queue_id}: {list(kwargs.keys())}")
+
+            # Propagate status change to musicbrainz_release_tracks (non-fatal).
+            # Matching via queue_id FK covers rows both with and without metadata_id set.
+            if 'status' in kwargs:
+                try:
+                    cursor.execute(
+                        """
+                        UPDATE musicbrainz_release_tracks
+                           SET status = %s, updated_at = CURRENT_TIMESTAMP
+                         WHERE queue_id = %s
+                        """,
+                        (kwargs['status'], queue_id),
+                    )
+                    # Commit regardless of rowcount — zero rows updated is fine
+                    # (no mrt entry for this queue item yet).
+                    conn.commit()
+                except Exception as _mrt_err:
+                    logger.debug(
+                        f"[update_queue_item] status propagation to mrt for queue {queue_id}: {_mrt_err}"
+                    )
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
             
             # Return updated item
             cursor.execute(f"SELECT * FROM download_queue WHERE id = {placeholder}", (queue_id,))
@@ -3568,6 +4061,27 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             downloads_root = os.environ.get('DOWNLOADS_DIR', '/downloads')
 
         queue_id = queue_item_dict.get('id', 'unknown')
+
+        # Pre-enrich queue_item_dict from the normalised metadata tables so that
+        # metadata fields (ISRC, composer, disc_number, cover_art_url, etc.) are
+        # available without an extra MusicBrainz API call.  Only fills in fields
+        # that are absent in the inline dict; never overwrites existing values.
+        if queue_id not in (None, 'unknown'):
+            try:
+                _full_meta = get_queue_item_full_metadata(queue_id)
+                if _full_meta:
+                    for _mk in (
+                        'track_number', 'disc_number', 'duration', 'isrc',
+                        'recording_mbid', 'album_artist', 'release_year',
+                        'year', 'cover_art_url', 'genres', 'composer',
+                        'release_mbid', 'release_id',
+                    ):
+                        if _full_meta.get(_mk) and not queue_item_dict.get(_mk):
+                            queue_item_dict[_mk] = _full_meta[_mk]
+            except Exception as _enrich_err:
+                logger.debug(
+                    f"[MOVE] Queue {queue_id}: DB metadata enrichment skipped: {_enrich_err}"
+                )
         canonical_release_mbid = _resolve_canonical_release_mbid(queue_item_dict)
         if canonical_release_mbid:
             current_release_mbid = (queue_item_dict.get('release_mbid') or '').strip()
@@ -5596,9 +6110,12 @@ def check_downloads_folder():
         return completed_items
         
     except Exception as e:
-        logger.error(f"Error checking downloads folder: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        if is_transient_pg_startup_error(e):
+            logger.debug(f"Error checking downloads folder (transient, will retry): {e}")
+        else:
+            logger.error(f"Error checking downloads folder: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         return []
     finally:
         if conn is not None:
@@ -6030,6 +6547,7 @@ def _enrich_stale_unmatched_queue_items():
             WHERE status = 'unmatched'
               AND (release_mbid IS NULL OR release_mbid = '')
               AND (release_id   IS NULL OR release_id   = '')
+              AND COALESCE(import_type, '') != 'playlist'
               AND file_path IS NOT NULL
               AND created_at <= CURRENT_TIMESTAMP - %s * INTERVAL '1 minute'
             LIMIT 50
@@ -7091,7 +7609,10 @@ def get_completed_queue(limit=50):
         return [{k: v for k, v in row.items()} for row in rows] if rows else []
 
     except Exception as e:
-        logger.error(f"Error getting completed queue: {e}")
+        if is_transient_pg_startup_error(e):
+            logger.debug(f"Error getting completed queue (transient, will retry): {e}")
+        else:
+            logger.error(f"Error getting completed queue: {e}")
         return []
     finally:
         if conn is not None:
@@ -8888,6 +9409,12 @@ def process_complete_albums():
                 trigger_navidrome_scan()
             except Exception as scan_error:
                 logger.warning(f"Could not trigger Navidrome scan: {scan_error}")
+            try:
+                from helpers.library_sync import request_library_sync
+                request_library_sync()
+                logger.info("Library sync requested after album processing")
+            except Exception as sync_err:
+                logger.warning(f"Could not request library sync: {sync_err}")
 
         return stats
 
@@ -9332,6 +9859,12 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 trigger_navidrome_scan()
             except Exception as scan_err:
                 logger.warning(f"[AUTO_MOVE] Could not trigger Navidrome scan: {scan_err}")
+            try:
+                from helpers.library_sync import request_library_sync
+                request_library_sync()
+                logger.info("[AUTO_MOVE] Library sync requested after auto-move")
+            except Exception as sync_err:
+                logger.warning(f"[AUTO_MOVE] Could not request library sync: {sync_err}")
 
         logger.info(
             f"[AUTO_MOVE] Album complete: {dest_album_artist} – {dest_album} | "

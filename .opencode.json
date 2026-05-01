@@ -1,0 +1,72 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "project": {
+    "name": "sptnr",
+    "description": "Backend service integrating Soulseek automation and open music metadata APIs, with an emphasis on safe enrichment, canonical metadata resolution, and controlled side effects.",
+
+    "principles": [
+      "Prefer explanation over modification",
+      "Treat external APIs with explicit intent and constraints",
+      "Avoid side effects unless explicitly requested"
+    ],
+
+    "externalApis": {
+      "slskd": {
+        "purpose": "Automate searching, queueing, downloading, and monitoring files via a self-hosted Soulseek daemon.",
+        "documentation": "https://slskd-api.readthedocs.io/en/latest/",
+        "constraints": [
+          "Authenticated via API token.",
+          "Stateful and side-effect heavy (downloads, queues).",
+          "Do not initiate downloads or alter queue behavior unless explicitly requested.",
+          "Prefer explaining behavior or data flow over changing logic."
+        ]
+      },
+
+      "lastfm": {
+        "purpose": "Provide social and historical music metadata such as scrobbles, charts, and popularity signals for enrichment only.",
+        "documentation": "https://www.last.fm/api",
+        "constraints": [
+          "Requires API key and identifiable User-Agent.",
+          "Subject to rate limiting and acceptable-use policies.",
+          "Must not be treated as a canonical metadata source."
+        ]
+      },
+
+      "listenbrainz": {
+        "purpose": "Access user-controlled listening history, statistics, and recommendations from the MetaBrainz ecosystem.",
+        "documentation": "https://listenbrainz.readthedocs.io/en/latest/users/api/index.html",
+        "constraints": [
+          "Requires user token authentication via Authorization header.",
+          "HTTPS-only API.",
+          "Strict rate-limiting enforced via response headers.",
+          "User tokens must be treated as sensitive secrets."
+        ]
+      },
+
+      "musicbrainz": {
+        "purpose": "Provide authoritative, canonical music metadata and MBID-based identity resolution.",
+        "documentation": "https://musicbrainz.org/doc/MusicBrainz_API",
+        "constraints": [
+          "Mandatory User-Agent identification.",
+          "Polite rate-limited access required.",
+          "Read-only usage unless explicitly submitting allowed fields.",
+          "Source of truth for artist, release, and recording identity."
+        ]
+      }
+    }
+  },
+
+  "agent": {
+    "build": {
+      "description": "Implements minimal, safe changes while respecting external API intent and side-effect boundaries.",
+      "instructions": [
+        "Do not modify external API integrations unless explicitly requested.",
+        "Respect authentication, rate limits, and stated constraints for all APIs.",
+        "Avoid introducing new API calls without justification.",
+        "Prefer adding comments or documentation over behavioral changes.",
+        "Operate with a review-first mindset when risk is non-trivial."
+      ]
+    }
+  }
+}

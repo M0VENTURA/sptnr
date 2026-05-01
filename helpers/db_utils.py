@@ -1138,6 +1138,47 @@ def ensure_pending_mb_updates_column():
             conn.close()
 
 
+def ensure_mb_ignored_fields_column():
+    """Ensure the mb_ignored_fields TEXT column exists on the tracks table.
+
+    This column stores a JSON array of MusicBrainz diff-field names that the
+    user has permanently dismissed for a track, e.g. ``["title", "year"]``.
+    Ignored fields are excluded from future comparison banners.
+    """
+    import logging
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not _table_exists(cursor, "tracks"):
+            logging.warning("Tracks table does not exist yet, skipping mb_ignored_fields migration")
+            return False
+
+        existing = _get_table_columns(cursor, "tracks")
+        if "mb_ignored_fields" in existing:
+            logging.debug("mb_ignored_fields column already present; skipping migration")
+            return True
+
+        cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS mb_ignored_fields TEXT")
+        conn.commit()
+        logging.info("✓ Added 'mb_ignored_fields' column to tracks table")
+        return True
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping mb_ignored_fields migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping mb_ignored_fields migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring mb_ignored_fields column exists: {e}", exc_info=True)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def ensure_artists_name_unique_constraint():
     """Ensure a UNIQUE constraint exists on the artists.name column.
 

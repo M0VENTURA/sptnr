@@ -4,14 +4,19 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <div class="mb-4">
-    <h1 class="h2 mb-2">
-      <i class="bi bi-download"></i> Music Downloads
-      <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2" title="Help for Downloads">
-          <i class="bi bi-question-circle"></i>
-      </a>
-    </h1>
-    <p class="text-muted mb-0">Search and download music from qBittorrent and Soulseek</p>
+  <div class="mb-4 d-flex flex-wrap align-items-start gap-2">
+    <div class="flex-grow-1">
+      <h1 class="h2 mb-2">
+        <i class="bi bi-download"></i> Music Downloads
+        <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2" title="Help for Downloads">
+            <i class="bi bi-question-circle"></i>
+        </a>
+      </h1>
+      <p class="text-muted mb-0">Search and download music from qBittorrent and Soulseek</p>
+    </div>
+    <a href="/downloads/banned-words" class="btn btn-outline-danger btn-sm align-self-center">
+      <i class="bi bi-slash-circle"></i> Banned Words
+    </a>
   </div>
 <!-- Add to Queue Section -->
   <div class="card mb-4">
@@ -67,40 +72,298 @@
 
   <!-- Download from Playlist Section -->
   <div class="card mb-4">
-    <div class="card-header" style="cursor:pointer;" data-bs-toggle="collapse" data-bs-target="#playlistImportCollapse">
-      <h5 class="card-title mb-0 d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-collection-play"></i> Download from Playlist</span>
-        <i class="bi bi-chevron-down"></i>
+    <div class="card-header">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-collection-play"></i> Download from Playlist
       </h5>
     </div>
-    <div class="collapse" id="playlistImportCollapse">
-      <div class="card-body">
-        <p class="text-muted small mb-3">Enter a Spotify playlist URL to preview and add all tracks to the download queue. Apple Music support coming soon.</p>
-        <div class="input-group mb-3">
-          <input type="url" id="playlistImportUrl" class="form-control" placeholder="https://open.spotify.com/playlist/...">
-          <button class="btn btn-outline-primary" onclick="previewPlaylistImport()">
-            <i class="bi bi-search"></i> Preview
+    <div class="card-body">
+
+      <!-- Step 1 -->
+      <div class="card border-success mb-3">
+        <div class="card-body d-flex flex-column flex-md-row align-items-md-center gap-3">
+          <div class="flex-grow-1">
+            <h6 class="mb-1"><i class="bi bi-cloud-download text-success"></i> Step 1 — Get your playlist CSV</h6>
+            <p class="mb-0 text-secondary small">
+              Click <strong>Open Exportify</strong> to log in with Spotify, export any playlist, and save the <code>.csv</code> file. The site opens in a popup you can close when done.
+            </p>
+          </div>
+          <button type="button" class="btn btn-success btn-lg text-nowrap" data-bs-toggle="modal" data-bs-target="#exportifyModal">
+            <i class="bi bi-spotify"></i> Open Exportify
           </button>
         </div>
-        <div id="playlistImportStatus" class="alert" style="display:none;"></div>
-        <div id="playlistImportPreview" style="display:none;">
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <h6 class="mb-0" id="playlistImportTitle"></h6>
-            <button class="btn btn-sm btn-success" onclick="addPlaylistToQueue()" id="playlistImportAddBtn">
-              <i class="bi bi-plus-circle"></i> Add All to Queue
-            </button>
-          </div>
-          <div id="playlistImportAlbumArtist" class="text-muted small mb-2"></div>
-          <div class="table-responsive" style="max-height:400px;overflow-y:auto;">
-            <table class="table table-sm table-striped">
-              <thead><tr><th>#</th><th>Artist</th><th>Title</th><th>Duration</th></tr></thead>
-              <tbody id="playlistImportTrackList"></tbody>
-            </table>
+      </div>
+
+      <!-- Exportify modal -->
+      <div class="modal fade" id="exportifyModal" tabindex="-1" aria-labelledby="exportifyModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-centered" style="max-width:90vw;">
+          <div class="modal-content" style="height:85vh;">
+            <div class="modal-header py-2">
+              <h5 class="modal-title" id="exportifyModalLabel">
+                <i class="bi bi-spotify text-success"></i> Exportify — Export Spotify Playlists
+              </h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-0" style="height:100%;">
+              <iframe id="exportifyFrame" src="" style="width:100%;height:100%;border:none;" allow="cross-origin-isolated" title="Exportify"></iframe>
+            </div>
+            <div class="modal-footer py-2 justify-content-between">
+              <small class="text-muted">Log in with Spotify, click Export next to a playlist, then save the <code>.csv</code> file.</small>
+              <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+            </div>
           </div>
         </div>
       </div>
+      <script>
+        (function () {
+          var modal = document.getElementById('exportifyModal');
+          if (modal) {
+            modal.addEventListener('show.bs.modal', function () {
+              var frame = document.getElementById('exportifyFrame');
+              if (frame && !frame.src) {
+                frame.src = 'https://exportify.net';
+              }
+            });
+            // Stop loading the iframe when the modal is hidden to free resources.
+            modal.addEventListener('hidden.bs.modal', function () {
+              var frame = document.getElementById('exportifyFrame');
+              if (frame) { frame.src = ''; }
+            });
+          }
+        })();
+      </script>
+
+      <!-- Step 2 — inline CSV upload form -->
+      <div class="card" id="csvImportCard">
+        <div class="card-header">
+          <h6 class="mb-0"><i class="bi bi-upload"></i> Step 2 — Upload your CSV</h6>
+        </div>
+
+        <!-- Form state -->
+        <div class="card-body" id="csvInlineForm">
+          <form id="csvInlineFormEl" onsubmit="csvInlineImport(event)">
+            <div class="row g-3">
+              <div class="col-12 col-md-6">
+                <label for="csvInlineFile" class="form-label fw-semibold">CSV File <span class="text-danger">*</span></label>
+                <input type="file" id="csvInlineFile" class="form-control" accept=".csv" required />
+                <div class="form-text"><i class="bi bi-info-circle"></i> Exportify CSV — must contain <code>Track Name</code> and <code>Artist Name(s)</code>.</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <label for="csvInlineName" class="form-label fw-semibold">Import Name <span class="text-danger">*</span></label>
+                <input type="text" id="csvInlineName" class="form-control" placeholder="e.g., My Exported Playlist" required />
+                <div class="form-text">Label applied to all queue items for this import.</div>
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-primary" id="csvInlineSubmitBtn">
+                  <i class="bi bi-upload"></i> Import &amp; Queue All Tracks
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <!-- Progress state -->
+        <div class="card-body" id="csvInlineProgress" style="display:none;">
+          <div class="mb-2 d-flex justify-content-between align-items-center">
+            <span id="csvInlineProgressLabel" class="fw-semibold">Processing CSV…</span>
+            <span id="csvInlineProgressPct" class="text-secondary small">0%</span>
+          </div>
+          <div class="progress mb-2" style="height:10px;">
+            <div id="csvInlineProgressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+                 role="progressbar" style="width:0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+          </div>
+          <p class="text-secondary small mb-0" id="csvInlineProgressSub">Reading track metadata from the file, please wait.</p>
+        </div>
+
+        <!-- Result state -->
+        <div class="card-body" id="csvInlineResult" style="display:none;">
+          <div class="row g-3 mb-3" id="csvInlineResultStats"></div>
+          <div id="csvInlineQueuedSection" style="display:none;">
+            <hr class="my-2">
+            <h6 class="text-info mb-2"><i class="bi bi-cloud-arrow-down-fill"></i> Added to queue</h6>
+            <div id="csvInlineQueuedList" style="max-height:240px;overflow-y:auto;font-size:0.9rem;"></div>
+          </div>
+          <div class="mt-3 d-flex gap-2 flex-wrap">
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="csvInlineReset()">
+              <i class="bi bi-arrow-counterclockwise"></i> Import Another
+            </button>
+            <a href="/downloads/monitor" class="btn btn-info btn-sm">
+              <i class="bi bi-cloud-arrow-down"></i> Refresh Queue
+            </a>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
+
+  <script>
+  (function () {
+    function escapeHtml(text) {
+      const d = document.createElement('div');
+      d.textContent = String(text ?? '');
+      return d.innerHTML;
+    }
+
+    function csvSetProgress(pct, label, sub) {
+      document.getElementById('csvInlineProgressBar').style.width = pct + '%';
+      document.getElementById('csvInlineProgressBar').setAttribute('aria-valuenow', pct);
+      document.getElementById('csvInlineProgressPct').textContent = pct + '%';
+      if (label !== undefined) document.getElementById('csvInlineProgressLabel').textContent = label;
+      if (sub !== undefined) document.getElementById('csvInlineProgressSub').textContent = sub;
+    }
+
+    window.csvInlineReset = function () {
+      document.getElementById('csvInlineForm').style.display = '';
+      document.getElementById('csvInlineProgress').style.display = 'none';
+      document.getElementById('csvInlineResult').style.display = 'none';
+      document.getElementById('csvInlineFormEl').reset();
+    };
+
+    window.csvInlineImport = async function (event) {
+      event.preventDefault();
+
+      const fileInput  = document.getElementById('csvInlineFile');
+      const importName = document.getElementById('csvInlineName').value.trim();
+      if (!fileInput.files.length || !importName) return;
+
+      // Switch to progress view
+      document.getElementById('csvInlineForm').style.display = 'none';
+      document.getElementById('csvInlineProgress').style.display = '';
+      document.getElementById('csvInlineResult').style.display = 'none';
+      csvSetProgress(5, 'Parsing CSV…', 'Reading track metadata from the file.');
+
+      try {
+        // Step 1 – parse CSV
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('playlist_name', importName);
+        formData.append('skip_matching', 'true');
+
+        const parseRes  = await fetch('/api/playlist/import/csv', { method: 'POST', body: formData });
+        const parseData = await parseRes.json();
+        if (!parseRes.ok) throw new Error(parseData.error || 'CSV processing failed');
+
+        const allTracks = parseData.all_tracks || [];
+        if (!allTracks.length) throw new Error('No tracks found in CSV');
+
+        // Step 2 – queue all tracks
+        csvSetProgress(50, 'Adding to queue…',
+          `Sending ${allTracks.length} track${allTracks.length !== 1 ? 's' : ''} to the download queue.`);
+
+        const nameSlug    = importName.replace(/\s+/g, '_').substring(0, 80);
+        const currentYear = String(new Date().getFullYear());
+        const items = allTracks.map((t, idx) => ({
+          artist:       t.artist,
+          title:        t.title,
+          album:        importName,
+          album_artist: 'Various Artists',
+          year:         currentYear,
+          track_number: idx + 1,
+          duration:     t.duration_s  || null,
+          genres:       t.genres      || null,
+          isrc:         t.isrc        || null,
+          // Playlists don't have an album release — omit per-track Spotify IDs
+          // so tracks aren't grouped as individual releases in the queue UI.
+        }));
+
+        let totalAdded = 0, totalSkipped = 0, totalFailed = 0;
+        try {
+          const res  = await fetch('/api/queue/add-batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items, import_group: nameSlug, import_type: 'playlist', source: 'soulseek' }),
+          });
+          const data = await res.json();
+          // Read real counts from response body regardless of HTTP status.
+          // The API returns accurate added/skipped/failed even when it responds
+          // with 500 (e.g. "all failed" edge-case uses 500 but includes counts).
+          if (data && (data.added !== undefined || data.failed !== undefined)) {
+            totalAdded   = data.added   || 0;
+            totalSkipped = data.skipped || 0;
+            totalFailed  = data.failed  || 0;
+          } else if (!res.ok) {
+            totalFailed = items.length;
+          }
+        } catch (batchErr) {
+          console.error('CSV queue batch error:', batchErr);
+          totalFailed = items.length;
+        }
+
+        csvSetProgress(100, 'Done!', `${totalAdded} track${totalAdded !== 1 ? 's' : ''} added to the queue.`);
+
+        // Switch to result view
+        document.getElementById('csvInlineProgress').style.display = 'none';
+        document.getElementById('csvInlineResult').style.display = '';
+
+        const queueOk = totalFailed === 0;
+        document.getElementById('csvInlineResultStats').innerHTML = `
+          <div class="col-6 col-md-4">
+            <div class="card text-center bg-info bg-opacity-10 border-info h-100">
+              <div class="card-body py-3">
+                <div class="h3 text-info mb-1">${allTracks.length}</div>
+                <div class="small text-secondary">Total Tracks</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-6 col-md-4">
+            <div class="card text-center bg-success bg-opacity-10 border-success h-100">
+              <div class="card-body py-3">
+                <div class="h3 text-success mb-1">${totalAdded}</div>
+                <div class="small text-secondary">Added to Queue</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-6 col-md-4">
+            <div class="card text-center bg-secondary bg-opacity-10 border-secondary h-100">
+              <div class="card-body py-3">
+                <div class="h3 text-secondary mb-1">${totalSkipped}</div>
+                <div class="small text-secondary">Already Queued</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12">
+            <div class="alert alert-${queueOk ? 'success' : 'warning'} mb-0 py-2">
+              <i class="bi bi-${queueOk ? 'check-circle-fill' : 'exclamation-triangle-fill'} me-2"></i>
+              ${queueOk
+                ? `<strong>${totalAdded}</strong> track${totalAdded !== 1 ? 's' : ''} queued.
+                   ${totalSkipped > 0 ? `<span class="text-secondary">(${totalSkipped} already in queue)</span>` : ''}
+                   Matching &amp; tagging can now be done in the queue.`
+                : `Queued ${totalAdded}, skipped ${totalSkipped}, failed ${totalFailed}.`
+              }
+            </div>
+          </div>`;
+
+        if (allTracks.length) {
+          document.getElementById('csvInlineQueuedSection').style.display = '';
+          document.getElementById('csvInlineQueuedList').innerHTML = allTracks.map(t => {
+            const esc = v => escapeHtml(String(v ?? ''));
+            return `<div style="padding:0.4rem 0;border-bottom:1px solid #495057;font-size:0.9rem;">
+              <span class="fw-semibold">${esc(t.title)}</span>
+              <span class="text-secondary ms-2">${esc(t.artist)}</span>
+            </div>`;
+          }).join('');
+        }
+
+      } catch (err) {
+        console.error('CSV import error:', err);
+        csvSetProgress(0, 'Error', err.message);
+        // Show an error alert and return to form
+        document.getElementById('csvInlineProgress').style.display = 'none';
+        document.getElementById('csvInlineForm').style.display = '';
+        const alertDiv = document.createElement('div');
+        alertDiv.className = 'alert alert-danger mt-3 mb-0';
+        alertDiv.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-2"></i><strong>Error:</strong> ${escapeHtml(err.message)}`;
+        // Insert after the form, remove after 8 s
+        const formBody = document.getElementById('csvInlineForm');
+        const existing = formBody.querySelector('.alert');
+        if (existing) existing.remove();
+        formBody.appendChild(alertDiv);
+        setTimeout(() => alertDiv.remove(), 8000);
+      }
+    };
+  })();
+  </script>
 
   <!-- Upcoming Releases Section -->
   <div class="card mb-4" id="upcomingReleasesMonitorCard">
@@ -219,6 +482,11 @@
       <div class="d-flex align-items-center gap-2 flex-wrap">
         <span class="badge bg-info" id="folderGroupsBadge">0 items</span>
         <span class="text-muted small" id="queuePageSummary">Showing 0 of 0</span>
+        <select id="queueSortMode" class="form-select form-select-sm" style="width:auto;" onchange="loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true })">
+          <option value="folder">Sort: Folder</option>
+          <option value="artist">Sort: Artist</option>
+          <option value="album">Sort: Album</option>
+        </select>
         <button class="btn btn-sm btn-outline-secondary" id="queuePrevPageBtn" onclick="changeQueuePage(-1)" disabled>
           <i class="bi bi-chevron-left"></i> Prev
         </button>
@@ -2513,6 +2781,14 @@ async function loadFolderGroups(options = {}) {
     const individualItems = [];
     
     queueItemsToShow.forEach(item => {
+      // Items with an import_group belong to a playlist/batch import.
+      // Route them to individualItems so they are grouped by their shared
+      // import_group key rather than by a per-track release_id.
+      if ((item.import_group || '').trim()) {
+        individualItems.push(item);
+        return;
+      }
+
       const itemReleaseId = item.release_mbid || item.release_id;
       if (itemReleaseId) {
         // Group by release_id for album releases
@@ -2567,18 +2843,26 @@ async function loadFolderGroups(options = {}) {
       is_musicbrainz_release: release.release_source === 'musicbrainz'
     }));
     
-    // Group individual queue items by artist+album so tracks from the same album
-    // are combined into one entry instead of showing as separate "Possible Duplicate" rows.
+    // Group individual queue items by import_group first (playlists/CSV imports),
+    // then fall back to artist+album so tracks from the same source are combined
+    // into one entry instead of showing as separate rows.
     const individualAlbumGroups = {};
     individualItems.forEach(item => {
+      const importGroup = (item.import_group || '').trim();
       const artist = (item.artist || '').trim();
       const album = (item.album || '').trim();
-      // Only merge items that share both an artist and an album; otherwise keep solo
-      const groupKey = (artist && album)
-        ? `${artist.toLowerCase()}|||${album.toLowerCase()}`
-        : `__solo_${item.id}`;
+      const groupKey = importGroup
+        ? `__ig_${importGroup}`
+        : (artist && album)
+          ? `${artist.toLowerCase()}|||${album.toLowerCase()}`
+          : `__solo_${item.id}`;
       if (!individualAlbumGroups[groupKey]) {
-        individualAlbumGroups[groupKey] = { artist: item.artist || '', album: item.album || '', items: [] };
+        // For import_group entries use album_artist (e.g. "Various Artists") as the
+        // display artist so the group header doesn't show a single track's artist.
+        const displayArtist = importGroup
+          ? (item.album_artist || item.artist || '')
+          : (item.artist || '');
+        individualAlbumGroups[groupKey] = { artist: displayArtist, album: item.album || '', items: [] };
       }
       individualAlbumGroups[groupKey].items.push(item);
     });
@@ -2740,7 +3024,24 @@ async function loadFolderGroups(options = {}) {
     let filteredGroups = groups;
 
     // Keep ordering stable to prevent unnecessary re-renders on refresh.
+    const sortMode = document.getElementById('queueSortMode')?.value || 'folder';
     filteredGroups = filteredGroups.sort((a, b) => {
+      if (sortMode === 'artist') {
+        const artistA = String(a.artist || '').toLowerCase();
+        const artistB = String(b.artist || '').toLowerCase();
+        if (artistA !== artistB) return artistA.localeCompare(artistB);
+        const albumA = String(a.album || '').toLowerCase();
+        const albumB = String(b.album || '').toLowerCase();
+        return albumA.localeCompare(albumB);
+      }
+      if (sortMode === 'album') {
+        const albumA = String(a.album || '').toLowerCase();
+        const albumB = String(b.album || '').toLowerCase();
+        if (albumA !== albumB) return albumA.localeCompare(albumB);
+        const artistA = String(a.artist || '').toLowerCase();
+        const artistB = String(b.artist || '').toLowerCase();
+        return artistA.localeCompare(artistB);
+      }
       const keyA = String(a.folder_path || a.folder_name || '').toLowerCase();
       const keyB = String(b.folder_path || b.folder_name || '').toLowerCase();
       return keyA.localeCompare(keyB);
@@ -2752,6 +3053,7 @@ async function loadFolderGroups(options = {}) {
 
     const nextSignature = JSON.stringify({
       filter: 'queue',
+      sort: sortMode,
       groups: filteredGroups.map(group => ({
         folder_path: group.folder_path,
         folder_name: group.folder_name,
@@ -6687,12 +6989,18 @@ function toggleQueueLogPause() {
 // Load queue status on page load
 document.addEventListener('DOMContentLoaded', function() {
   // Load queue status and folder groups together to keep them in sync
-  async function loadBothAsync() {
+  async function loadBothAsync({ forceRender: explicitForce } = {}) {
     await loadQueueStatus();
-    await loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+    // Skip a forced list re-render while any Bootstrap modal is open.
+    // Replacing list.innerHTML during a modal causes a full DOM reflow that
+    // makes the modal flash/flicker.  The signature-based change detection
+    // (forceRender: false) still updates the list when data actually changes.
+    const anyModalOpen = !!document.querySelector('.modal.show');
+    const shouldForce = explicitForce !== undefined ? explicitForce : !anyModalOpen;
+    await loadFolderGroups({ forceRender: shouldForce, keepVisibleOnEmpty: true });
   }
   
-  setTimeout(loadBothAsync, 500);
+  setTimeout(() => loadBothAsync({ forceRender: true }), 500);
   // Delay upcoming releases so the critical queue / folder data renders first.
   // It reads from the local database; there is no Wikipedia fetch on load.
   setTimeout(refreshUpcomingReleasesMonitor, 2000);
@@ -6706,7 +7014,7 @@ document.addEventListener('DOMContentLoaded', function() {
   setTimeout(async () => {
     try {
       await fetchJsonOrThrow('/api/queue/requeue-all-unmatched', { method: 'POST' });
-      await loadBothAsync();
+      await loadBothAsync({ forceRender: true });
     } catch (error) {
       console.debug('Auto-requeue unmatched failed:', error);
     }

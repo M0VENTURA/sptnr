@@ -201,6 +201,36 @@ class MusicBrainzReleaseManager:
                 except Exception as alter_err:
                     logger.debug(f"[SCHEMA] recording_mbid column check: {alter_err}")
 
+                # Extend musicbrainz_releases with metadata fields that used to
+                # live only on download_queue, enabling a single authoritative
+                # source for album-level metadata.
+                for _col, _type in (
+                    ("album_artist",    "TEXT"),
+                    ("genres",          "TEXT"),
+                    ("cover_art_url",   "TEXT"),
+                    ("release_source",  "TEXT"),
+                ):
+                    try:
+                        db_query.execute(
+                            f"ALTER TABLE musicbrainz_releases ADD COLUMN IF NOT EXISTS {_col} {_type}"
+                        )
+                    except Exception as _alter_err:
+                        logger.debug(f"[SCHEMA] musicbrainz_releases.{_col} column add: {_alter_err}")
+
+                # Extend musicbrainz_release_tracks with per-track metadata fields
+                # that previously only lived as inline columns on download_queue.
+                for _col, _type in (
+                    ("composer",     "TEXT"),
+                    ("album_artist", "TEXT"),
+                    ("year",         "TEXT"),
+                ):
+                    try:
+                        db_query.execute(
+                            f"ALTER TABLE musicbrainz_release_tracks ADD COLUMN IF NOT EXISTS {_col} {_type}"
+                        )
+                    except Exception as _alter_err:
+                        logger.debug(f"[SCHEMA] musicbrainz_release_tracks.{_col} column add: {_alter_err}")
+
                 db_query.execute("""
                     CREATE INDEX IF NOT EXISTS idx_mb_releases_status
                     ON musicbrainz_releases(status)
@@ -279,7 +309,8 @@ class MusicBrainzReleaseManager:
         return folder_path
 
     def create_release_entry(self, release_id, release_title, artist, release_year, 
-                            total_tracks, monitoring_folder_path, method='slskd'):
+                            total_tracks, monitoring_folder_path, method='slskd',
+                            album_artist=None, release_source=None):
         """
         Create or update release entry in database
         
@@ -302,20 +333,28 @@ class MusicBrainzReleaseManager:
                 release_db_id = self._row_get(existing, 'id', 0, 0)
                 cursor.execute(f"""
                     UPDATE musicbrainz_releases
-                    SET status = 'active', updated_at = CURRENT_TIMESTAMP
+                    SET status = 'active',
+                        album_artist = COALESCE(NULLIF({placeholder}, ''), album_artist),
+                        release_source = COALESCE(NULLIF({placeholder}, ''), release_source),
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE id = {placeholder}
-                """, (release_db_id,))
+                """, (album_artist, release_source or 'musicbrainz', release_db_id))
                 logger.info(f"[RELEASE_ENTRY] Updated existing release entry {release_db_id}")
             else:
                 try:
                     cursor.execute(f"""
                         INSERT INTO musicbrainz_releases
                         (release_id, release_title, artist, release_year, total_tracks,
-                         monitoring_folder_path, status, method, created_at, updated_at)
-                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'active', {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                         monitoring_folder_path, status, method,
+                         album_artist, release_source,
+                         created_at, updated_at)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'active', {placeholder},
+                                {placeholder}, {placeholder},
+                                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                         RETURNING id
                     """, (release_id, release_title, artist, release_year, total_tracks,
-                          str(monitoring_folder_path), method))
+                          str(monitoring_folder_path), method,
+                          album_artist, release_source or 'musicbrainz'))
                     inserted = cursor.fetchone()
                     if inserted:
                         release_db_id = inserted[0] if isinstance(inserted, tuple) else self._row_get(inserted, 'id', 0, None)
@@ -559,12 +598,42 @@ class MusicBrainzReleaseManager:
                         cursor.execute(f"""
                             INSERT INTO musicbrainz_release_tracks
                             (release_id, queue_id, disc_number, track_number, track_title, 
-                             track_artist, duration, isrc, status, 
+                             track_artist, duration, isrc, recording_mbid, status, 
                              created_at, updated_at)
-                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', 
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', 
                                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            RETURNING id
                         """, (release_id, queue_id, disc_number, track_number, track_title,
-                              track_artist, duration_ms, isrc))
+                              track_artist, duration_ms, isrc, recording_mbid))
+
+                        mrt_row = cursor.fetchone()
+                        mrt_id = self._row_get(mrt_row, 'id', 0, None)
+
+                        # Fallback: if RETURNING returned nothing, look up the existing row
+                        if not mrt_id:
+                            cursor.execute(
+                                f"SELECT id FROM musicbrainz_release_tracks WHERE queue_id = {placeholder} LIMIT 1",
+                                (queue_id,),
+                            )
+                            fb_row = cursor.fetchone()
+                            mrt_id = self._row_get(fb_row, 'id', 0, None)
+
+                        if mrt_id:
+                            try:
+                                cursor.execute(
+                                    f"""UPDATE download_queue
+                                           SET metadata_id = {placeholder},
+                                               release_metadata_id = {placeholder},
+                                               updated_at = CURRENT_TIMESTAMP
+                                         WHERE id = {placeholder}""",
+                                    (mrt_id, mb_release_db_id, queue_id),
+                                )
+                            except Exception as _fk_err:
+                                logger.debug(f"[QUEUE_ADD] Could not set metadata FK on queue {queue_id}: {_fk_err}")
+                                try:
+                                    conn.rollback()
+                                except Exception:
+                                    pass
                         
                         # Also add to tracks table with 'downloading' status
                         # This allows the track to appear on artist/album pages as "Downloading".
@@ -672,18 +741,20 @@ class MusicBrainzReleaseManager:
                     for medium in release.get('media', []):
                         total_tracks += len(medium.get('tracks', []))
             
-            # Create release entry
-            mb_release_db_id = self.create_release_entry(
-                release_id, release_title, artist, release_year, 
-                total_tracks, monitoring_folder, method
-            )
-            
             # Derive album artist from release artist-credit (e.g. "Various Artists" for compilations)
             release_album_artist = artist
             if 'releases' in mb_data and mb_data['releases']:
                 rel_credits = mb_data['releases'][0].get('artist-credit', [])
                 if rel_credits:
                     release_album_artist = _build_artist_credit_string(rel_credits) or artist
+
+            # Create release entry (pass album_artist so the release row carries it)
+            mb_release_db_id = self.create_release_entry(
+                release_id, release_title, artist, release_year,
+                total_tracks, monitoring_folder, method,
+                album_artist=release_album_artist,
+                release_source='musicbrainz',
+            )
 
             # Add tracks to queue
             queue_source = 'soulseek' if str(method).strip().lower() == 'slskd' else 'qbittorrent'
