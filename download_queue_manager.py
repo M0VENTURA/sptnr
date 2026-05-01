@@ -1361,6 +1361,10 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 # separately from file_path (which points to the /downloads source)
                 # so both can be tracked independently during the move workflow.
                 'music_file_path': "TEXT",
+                # Timestamp of the last time the processor attempted to search/download
+                # this item.  Used to spread retries fairly across the queue instead of
+                # hammering the same recently-failed item repeatedly.
+                'last_attempted_at': "TIMESTAMP",
             }
 
             for col, col_type in required_cols.items():
@@ -3154,63 +3158,78 @@ def update_queue_item(queue_id, **kwargs):
     return None
 
 
+# Synced with queue_processor.py – prevents rapid 5-minute retry loops.
+_DQM_MIN_RETRY_DELAY_MINUTES = 60
+_DQM_MAX_RETRY_DELAY_MINUTES = 1440
+
+
+def _dqm_calculate_retry_delay(retry_count, requested_delay_minutes):
+    """Compute an exponentially-backing-off retry delay.
+
+    Formula: max(requested_delay, MIN_RETRY_DELAY_MINUTES * 2^(retry_count-1))
+    Capped at _DQM_MAX_RETRY_DELAY_MINUTES (24 h).
+    """
+    base = int(requested_delay_minutes or 0)
+    exponential = _DQM_MIN_RETRY_DELAY_MINUTES * (2 ** max(0, retry_count - 1))
+    return min(max(base, exponential), _DQM_MAX_RETRY_DELAY_MINUTES)
+
+
 def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
     """
-    Mark queue item as failed and schedule retry with retry logic for database locks
-    
-    Args:
-        queue_id: Queue item ID
-        reason: Failure reason
-        retry_delay_minutes: Minutes until next retry
-    
-    Returns:
-        Updated item or None
+    Mark queue item as failed and schedule retry with retry logic for database locks.
+
+    Uses exponential backoff based on retry_count so repeatedly-failed items do
+    not starve the queue with short retry loops.
     """
     max_retries = 5
     retry_delay = 0.1
-    
+
     for attempt in range(max_retries):
         try:
             conn = _get_postgres_conn_from_app_or_fallback()
 
             cursor = conn.cursor()
             placeholder = "%s"
-            
-            # Get current retry count
+
+            # Get current retry count and max_retries
             cursor.execute(f"SELECT retry_count, max_retries FROM download_queue WHERE id = {placeholder}", (queue_id,))
             row = cursor.fetchone()
-            
+
             if not row:
                 conn.close()
                 return None
-            
+
             retry_count = (row['retry_count'] or 0) + 1
             max_r = row['max_retries']
-            next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
-            
+            effective_delay = _dqm_calculate_retry_delay(retry_count, retry_delay_minutes)
+            next_retry = datetime.now() + timedelta(minutes=effective_delay)
+
             # Check if we've exceeded max retries
             if max_r and retry_count >= max_r:
                 new_status = 'failed'
                 logger.warning(f"Queue item {queue_id} exceeded max retries ({retry_count}/{max_r}): {reason}")
             else:
                 new_status = 'queued'
-                logger.info(f"Queue item {queue_id} scheduled for retry (attempt {retry_count}/{max_r}) at {next_retry}: {reason}")
-            
+                logger.info(
+                    f"Queue item {queue_id} scheduled for retry (attempt {retry_count}/{max_r}) "
+                    f"at {next_retry} (delay={effective_delay}m): {reason}"
+                )
+
             cursor.execute(f"""
-                UPDATE download_queue 
+                UPDATE download_queue
                 SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP, next_retry_at = {placeholder}, updated_at = CURRENT_TIMESTAMP
                 WHERE id = {placeholder}
             """, (new_status, retry_count, reason, next_retry.isoformat(), queue_id))
-            
+
             conn.commit()
-            
+
             # Return updated item
             cursor.execute(f"SELECT * FROM download_queue WHERE id = {placeholder}", (queue_id,))
             item = cursor.fetchone()
             conn.close()
-            
+
             return dict(item) if item else None
-        
+
         except psycopg2.OperationalError as e:
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
@@ -3222,7 +3241,7 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
         except Exception as e:
             logger.error(f"Error marking queue item as failed: {e}")
             return None
-    
+
     logger.error(f"Failed to mark queue item {queue_id} as failed after {max_retries} retries")
     return None
 
@@ -7897,10 +7916,13 @@ def check_and_remove_failed_downloads():
                 if queue_item:
                     queue_id = queue_item['id'] if hasattr(queue_item, 'keys') else queue_item[0]
                     logger.info(f"Marking queue item {queue_id} for retry (failed download: {state!r})")
+                    # Let mark_as_failed apply exponential backoff; passing 15 here
+                    # is only a floor hint — the actual delay will be at least
+                    # 60 minutes for the first retry and doubles from there.
                     mark_as_failed(
                         queue_id,
                         f"Download failed: {state}",
-                        retry_delay_minutes=5,
+                        retry_delay_minutes=15,
                     )
                     stats["retry_scheduled"] += 1
                 
