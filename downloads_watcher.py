@@ -254,6 +254,187 @@ def track_exists_in_library(artist, album, title):
         logger.error(f"Error checking if track exists: {e}")
         return False
 
+
+def find_active_queue_item(artist, album, title):
+    """Find a queue item matching artist/album/title with an active status."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute("""
+            SELECT * FROM download_queue
+            WHERE LOWER(COALESCE(artist, '')) = LOWER(%s)
+              AND LOWER(COALESCE(album, '')) = LOWER(%s)
+              AND LOWER(COALESCE(title, '')) = LOWER(%s)
+              AND status IN ('queued', 'searching', 'downloading')
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """, (artist.strip(), album.strip(), title.strip()))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+    except Exception as e:
+        logger.debug(f"Error finding active queue item: {e}")
+        return None
+
+
+def _seq_ratio(a: str, b: str) -> float:
+    """Simple similarity ratio fallback."""
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    try:
+        from difflib import SequenceMatcher
+        return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+    except Exception:
+        return 0.0
+
+
+def verify_metadata_matches_queue(file_path, queue_item):
+    """
+    Verify that a torrent file's metadata matches the expected queue item.
+    Returns (ok: bool, reason: str).
+    """
+    metadata = extract_mp3_metadata(file_path) or {}
+    file_artist = (metadata.get('artist') or '').strip()
+    file_title = (metadata.get('title') or '').strip()
+    if not file_artist or not file_title:
+        return False, "unreadable metadata"
+
+    queue_artist = (queue_item.get('artist') or '').strip()
+    queue_title = (queue_item.get('title') or '').strip()
+    if not queue_artist or not queue_title:
+        return False, "missing queue metadata"
+
+    # Title must be a strong fuzzy match
+    title_score = _seq_ratio(file_title, queue_title)
+    if title_score < 0.70:
+        # Allow version-stripped fallback
+        import re
+        _ft = re.sub(r'\s*[\(\[][^\)\]]*[\)\]]\s*', ' ', file_title).strip()
+        _qt = re.sub(r'\s*[\(\[][^\)\]]*[\)\]]\s*', ' ', queue_title).strip()
+        if _ft and _qt:
+            title_score = max(title_score, _seq_ratio(_ft, _qt))
+        if title_score < 0.70:
+            return False, f"title mismatch (score={title_score:.2f})"
+
+    # Artist must at least be included in the file artist (handles featured artists)
+    if queue_artist.lower() not in file_artist.lower():
+        # Also allow fuzzy match as fallback
+        artist_score = _seq_ratio(file_artist, queue_artist)
+        if artist_score < 0.55:
+            return False, f"artist mismatch (score={artist_score:.2f})"
+
+    return True, "ok"
+
+
+def copy_organized_file(file_path, metadata):
+    """
+    Compute target path and copy file there (leaving original intact).
+    Returns dict like organize_file().
+    """
+    try:
+        from download_queue_manager import (
+            _normalize_album_artist_for_path,
+            _read_track_file_name_format,
+            _sanitize_path_component,
+        )
+
+        artist = metadata.get('artist', 'Unknown Artist').strip() or 'Unknown Artist'
+        album_artist = metadata.get('album_artist', artist).strip() or artist
+        album = metadata.get('album', 'Unknown Album').strip() or 'Unknown Album'
+        title = metadata.get('title', Path(file_path).stem).strip() or Path(file_path).stem
+        year = metadata.get('year', metadata.get('date', '')).strip()
+        if year and len(year) >= 4:
+            year = year[:4]
+        elif not year:
+            year = 'Unknown'
+        track_num = determine_track_number(metadata)
+
+        file_name_format = _read_track_file_name_format()
+        format_vars = {
+            'track_number': track_num,
+            'artist': _sanitize_path_component(artist) or 'Unknown Artist',
+            'album_artist': _sanitize_path_component(_normalize_album_artist_for_path(album_artist)) or 'Unknown Artist',
+            'title': _sanitize_path_component(title) or Path(file_path).stem,
+            'album': _sanitize_path_component(album) or 'Unknown Album',
+            'year': year or 'Unknown',
+        }
+        fallback_rel = (
+            f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
+            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+        )
+        try:
+            relative_path = file_name_format.format(**format_vars)
+        except Exception:
+            relative_path = fallback_rel
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            relative_path = fallback_rel
+
+        relative_path = relative_path.strip().replace('\\', '/').lstrip('/')
+        safe_parts = []
+        for part in relative_path.split('/'):
+            clean = _sanitize_path_component(part)
+            if clean and clean not in ('.', '..'):
+                safe_parts.append(clean)
+        if not safe_parts:
+            safe_parts = [
+                format_vars['album_artist'],
+                f"{format_vars['year']} - {format_vars['album']}",
+                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
+            ]
+
+        ext = os.path.splitext(file_path)[1].lower() or '.mp3'
+        safe_parts[-1] = f"{safe_parts[-1]}{ext}"
+        target_path = os.path.join(MUSIC_DIR, *safe_parts)
+        target_dir = os.path.dirname(target_path)
+        os.makedirs(target_dir, exist_ok=True)
+
+        if os.path.exists(target_path):
+            filename = os.path.basename(target_path)
+            base, ext = os.path.splitext(filename)
+            counter = 1
+            while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
+                counter += 1
+            target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+
+        shutil.copy2(file_path, target_path)
+        logger.info(f"Copied: {file_path} -> {target_path}")
+
+        return {
+            'success': True,
+            'target_path': target_path,
+            'artist': artist,
+            'album': album,
+            'title': title,
+            'year': year,
+            'track_num': track_num
+        }
+    except Exception as e:
+        logger.error(f"Error copying organized file {file_path}: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def mark_queue_item_matched_from_torrent(queue_id, target_path):
+    """Update a queue item to reflect that its torrent file has been matched and copied."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE download_queue
+            SET status = 'completed',
+                file_path = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (target_path, queue_id))
+        conn.commit()
+        conn.close()
+        logger.info(f"Queue item {queue_id} marked as completed from torrent match")
+        return True
+    except Exception as e:
+        logger.error(f"Error marking queue item {queue_id} as matched: {e}")
+        return False
+
 def queue_incomplete_download(file_path, metadata):
     """Queue an incomplete download for retry"""
     try:
@@ -675,7 +856,63 @@ def scan_downloads_folder():
                 metadata = extract_mp3_metadata(file_path)
                 logger.info(f"Extracted metadata: {metadata}")
 
-                # Organize file
+                # Try to match against an active queue item
+                queue_item = find_active_queue_item(
+                    metadata.get('artist', ''),
+                    metadata.get('album', ''),
+                    metadata.get('title', '')
+                )
+
+                if queue_item:
+                    logger.info(
+                        f"Torrent file matched queue item {queue_item['id']}: "
+                        f"{queue_item.get('artist')} - {queue_item.get('title')}"
+                    )
+                    # Verify metadata before copying
+                    meta_ok, meta_reason = verify_metadata_matches_queue(file_path, queue_item)
+                    if not meta_ok:
+                        logger.warning(
+                            f"Metadata verification failed for queue item {queue_item['id']}: {meta_reason}. "
+                            f"Deleting file."
+                        )
+                        try:
+                            os.remove(file_path)
+                        except Exception as del_err:
+                            logger.error(f"Could not delete mismatched torrent file {file_path}: {del_err}")
+                        results.append({
+                            'status': 'error',
+                            'filename': filename,
+                            'error': f"Metadata verification failed: {meta_reason}"
+                        })
+                        continue
+
+                    file_info = copy_organized_file(file_path, metadata)
+                    if file_info.get('success'):
+                        add_to_database(file_info, metadata, source_file_path=file_path)
+                        mark_queue_item_matched_from_torrent(
+                            queue_item['id'], file_info['target_path']
+                        )
+                        try:
+                            os.remove(file_path)
+                        except Exception as del_err:
+                            logger.warning(f"Could not remove original torrent file {file_path}: {del_err}")
+                        results.append({
+                            'status': 'success',
+                            'filename': filename,
+                            'artist': file_info.get('artist'),
+                            'album': file_info.get('album'),
+                            'title': file_info.get('title'),
+                            'target_path': file_info.get('target_path')
+                        })
+                    else:
+                        results.append({
+                            'status': 'error',
+                            'filename': filename,
+                            'error': file_info.get('error', 'Copy failed')
+                        })
+                    continue
+
+                # Standard path for torrents that do not match a queue item
                 file_info = organize_file(file_path, metadata)
 
                 if file_info.get('success'):

@@ -4099,21 +4099,12 @@ def _start_navidrome_incremental_scheduler():
                             break
                         continue
 
-                    result = _scan_new_navidrome_files_since_last_import()
-                    if result.get("success"):
-                        if result.get("missing_tracks_detected", 0) > 0:
-                            log_unified(
-                                f"[NAV_INCREMENTAL] Imported missing tracks from new files: "
-                                f"tracks={result.get('missing_tracks_detected', 0)}, "
-                                f"artists={result.get('rescanned_artists', 0)}"
-                            )
-                        else:
-                            logging.info(
-                                "[NAV_INCREMENTAL] No new files detected (checked=%s)",
-                                result.get("candidate_tracks_checked", 0),
-                            )
-                    else:
-                        logging.warning(f"[NAV_INCREMENTAL] Incremental check failed: {result.get('error', 'unknown error')}")
+                    from helpers.library_sync import request_library_sync
+                    sync_result = request_library_sync()
+                    if sync_result.get("started"):
+                        logging.info("[NAV_INCREMENTAL] Library sync requested via scheduler")
+                    elif sync_result.get("coalesced"):
+                        logging.debug("[NAV_INCREMENTAL] Library sync coalesced (already running)")
 
                     if stop_event.wait(timeout=interval_seconds):
                         break
@@ -20194,6 +20185,19 @@ def scan_combined():
     return redirect(url_for("dashboard"))
 
 
+def _load_dismissed_words() -> set:
+    """Load dismissed words from the JSON file."""
+    dismissed_path = os.environ.get("DISMISSED_WORDS_PATH", "/config/dismissed_words.json")
+    try:
+        if os.path.exists(dismissed_path):
+            with open(dismissed_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return set(str(w).lower().strip() for w in data if w)
+    except Exception as e:
+        logging.debug(f"[banned_words] Could not load dismissed words: {e}")
+    return set()
+
+
 @app.route("/api/slsk/banned-words", methods=["GET"])
 def api_get_banned_words():
     """Get banned words and suggested words (high zero-result count)."""
@@ -20217,11 +20221,18 @@ def api_get_banned_words():
         """)
         rows = cursor.fetchall()
         conn.close()
+        dismissed = _load_dismissed_words()
         result = []
         for r in rows:
             if isinstance(r, dict):
+                row_word = str(r.get('word', '')).lower().strip()
+                if row_word in dismissed:
+                    continue
                 result.append(r)
             else:
+                row_word = str(r[0]).lower().strip()
+                if row_word in dismissed:
+                    continue
                 result.append({
                     'word': r[0], 'is_banned': r[1], 'zero_result_count': r[2],
                     'added_at': str(r[3]) if r[3] else None, 'updated_at': str(r[4]) if r[4] else None
@@ -20280,6 +20291,45 @@ def api_delete_banned_word(word):
         return jsonify({'success': True, 'word': word}), 200
     except Exception as e:
         logging.error(f"[banned_words] DELETE error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route("/api/slsk/banned-words/dismiss-all", methods=["POST"])
+def api_dismiss_all_suggested_words():
+    """Move all current suggested words into dismissed_words without banning them."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT word FROM slsk_banned_words
+            WHERE is_banned = FALSE AND zero_result_count >= 3
+        """)
+        rows = cursor.fetchall() or []
+        conn.close()
+
+        suggested = set()
+        for r in rows:
+            word = (r[0] if isinstance(r, tuple) else r.get('word', '')).strip().lower()
+            if word:
+                suggested.add(word)
+
+        if not suggested:
+            return jsonify({'success': True, 'dismissed': 0}), 200
+
+        dismissed = _load_dismissed_words()
+        dismissed.update(suggested)
+        dismissed_path = os.environ.get("DISMISSED_WORDS_PATH", "/config/dismissed_words.json")
+        try:
+            with open(dismissed_path, "w", encoding="utf-8") as f:
+                json.dump(sorted(dismissed), f)
+        except Exception as e:
+            logging.error(f"[banned_words] Could not save dismissed words: {e}")
+            return jsonify({'error': 'Could not save dismissed words'}), 500
+
+        logging.info(f"[banned_words] Dismissed {len(suggested)} suggested word(s)")
+        return jsonify({'success': True, 'dismissed': len(suggested)}), 200
+    except Exception as e:
+        logging.error(f"[banned_words] DISMISS-ALL error: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
 

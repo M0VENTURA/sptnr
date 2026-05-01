@@ -63,7 +63,8 @@ class SearchResponse:
     """Represents a response from a single peer."""
     username: str
     files: list[SearchFile]
-    
+    has_free_upload_slot: bool = True
+
     def __post_init__(self):
         """Parse raw file dicts into SearchFile objects."""
         if not self.files:
@@ -255,7 +256,8 @@ class SlskdClient:
                         logger.debug(f"Response {idx}: username={username}, files={len(files)}")
                         sr = SearchResponse(
                             username=username,
-                            files=files
+                            files=files,
+                            has_free_upload_slot=raw_resp.get("hasFreeUploadSlot", raw_resp.get("HasFreeUploadSlot", True)),
                         )
                         responses.append(sr)
                     else:
@@ -470,6 +472,7 @@ class SlskdClient:
                         "sample_rate": file.sample_rate,
                         "duration": file.duration_formatted,
                         "length_seconds": file.length,
+                        "has_free_upload_slot": getattr(resp, 'has_free_upload_slot', True),
                     })
         
         # Sort by bitrate (descending), then sample rate (descending)

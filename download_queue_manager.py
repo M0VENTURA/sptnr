@@ -9409,6 +9409,12 @@ def process_complete_albums():
                 trigger_navidrome_scan()
             except Exception as scan_error:
                 logger.warning(f"Could not trigger Navidrome scan: {scan_error}")
+            try:
+                from helpers.library_sync import request_library_sync
+                request_library_sync()
+                logger.info("Library sync requested after album processing")
+            except Exception as sync_err:
+                logger.warning(f"Could not request library sync: {sync_err}")
 
         return stats
 
@@ -9853,6 +9859,12 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 trigger_navidrome_scan()
             except Exception as scan_err:
                 logger.warning(f"[AUTO_MOVE] Could not trigger Navidrome scan: {scan_err}")
+            try:
+                from helpers.library_sync import request_library_sync
+                request_library_sync()
+                logger.info("[AUTO_MOVE] Library sync requested after auto-move")
+            except Exception as sync_err:
+                logger.warning(f"[AUTO_MOVE] Could not request library sync: {sync_err}")
 
         logger.info(
             f"[AUTO_MOVE] Album complete: {dest_album_artist} – {dest_album} | "
