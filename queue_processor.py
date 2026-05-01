@@ -4281,6 +4281,7 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
             _try_claim_for_move,
             _release_move_claim,
             update_queue_item,
+            mark_as_failed,
         )
         from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
@@ -4355,8 +4356,14 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
                 # Standalone track — attempt a direct move.
                 file_path = item.get('file_path', '')
                 if not file_path or not os.path.isfile(file_path):
-                    logger.debug(
-                        f"[RETRY_MOVES] Queue {item['id']}: file not found at {file_path!r}"
+                    logger.warning(
+                        f"[RETRY_MOVES] Queue {item['id']}: file not found at {file_path!r}, "
+                        "marking failed for re-download"
+                    )
+                    mark_as_failed(
+                        item['id'],
+                        "Source file missing during retry move — re-download required",
+                        retry_delay_minutes=60,
                     )
                     continue
                 try:
