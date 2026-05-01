@@ -2332,6 +2332,13 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                         )
                         continue
 
+                    if not getattr(resp, 'has_free_upload_slot', True):
+                        logger.debug(
+                            f"Queue {queue_id}: Response {resp_idx} from {resp.username} "
+                            f"has no free upload slots — skipping"
+                        )
+                        continue
+
                     logger.debug(
                         f"Queue {queue_id}: Response {resp_idx} from {resp.username} "
                         f"has {len(resp.files)} files"
@@ -2428,6 +2435,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                                 "title_sim": round(_diag_title_sim, 3),
                                 "artist_sim": round(_diag_artist_sim, 3),
                                 "duration_diff_s": _diag_dur_diff,
+                                "has_free_upload_slot": getattr(resp, 'has_free_upload_slot', True),
                             }
 
                 # Exit early once we have a high-confidence match.
@@ -2708,6 +2716,19 @@ def search_and_download(queue_id, queue_item, client):
             return False
 
         # Download the result
+        if not best_result.get('has_free_upload_slot', True):
+            logger.warning(
+                f"Queue {queue_id}: Best match peer {best_result['username']} has 0 free slots — "
+                "skipping download"
+            )
+            mark_failed(
+                queue_id,
+                "Peer has no free upload slots",
+                schedule_retry=True,
+                retry_delay_minutes=15,
+            )
+            return False
+
         logger.info(
             f"Queue {queue_id}: Downloading '{best_result['filename']}' from "
             f"{best_result['username']} (score={best_score:.2f})..."
