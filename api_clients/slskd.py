@@ -85,10 +85,10 @@ class SearchResponse:
 class SlskdClient:
     """Soulseek (slskd) API wrapper for search and downloads."""
     
-    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: Optional[int] = 10):
+    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: Optional[int] = 15):
         """
         Initialize slskd client.
-        
+
         Args:
             web_url: slskd web URL (e.g., "http://localhost:5030")
             api_key: slskd API key (optional)
@@ -745,6 +745,33 @@ class SlskdClient:
         except Exception as e:
             logger.debug(f"Slskd get events failed: {e}")
             return []
+
+    def get_server_state(self, timeout: Optional[int] = None) -> dict:
+        """Return slskd's Soulseek server connection state.
+
+        Returns a dict with at least a 'state' key (e.g. 'Connected',
+        'Disconnected', 'Connecting').  Returns an empty dict on any error.
+        """
+        if not self.enabled:
+            return {}
+
+        timeout = timeout or self.default_timeout
+        try:
+            url = f"{self.base_url}/server"
+            resp = self.session.get(url, headers=self.headers, timeout=timeout)
+            if resp.status_code == 200:
+                return resp.json() or {}
+            logger.debug(f"Slskd server state endpoint failed: {resp.status_code}")
+            return {}
+        except Exception as e:
+            logger.debug(f"Slskd get server state failed: {e}")
+            return {}
+
+    def is_connected(self, timeout: Optional[int] = None) -> bool:
+        """Return True if slskd reports it is connected to the Soulseek server."""
+        state = self.get_server_state(timeout=timeout)
+        raw = str(state.get("state") or state.get("status") or "").strip().lower()
+        return raw == "connected"
 
     def get_completed_transfers(self, timeout: Optional[int] = None) -> list[dict]:
         """
