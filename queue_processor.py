@@ -1654,7 +1654,7 @@ def _calculate_retry_delay(retry_count, requested_delay_minutes):
     return min(max(base, exponential), _SLSKD_LONG_RETRY_DELAY_MINUTES)
 
 
-def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
+def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60, clear_file_fields=False):
     """Mark queue item as failed, optionally scheduling retry.
 
     Respects the per-item max_retries column and applies exponential backoff
@@ -1702,10 +1702,14 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
             new_status = 'failed'
             logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - retry not requested")
 
+        extra_sets = ""
+        if clear_file_fields:
+            extra_sets = ", file_path = NULL, found_filename = NULL"
+
         cursor.execute(f"""
             UPDATE download_queue
             SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP,
-                next_retry_at = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                next_retry_at = {placeholder}{extra_sets}, updated_at = CURRENT_TIMESTAMP
             WHERE id = {placeholder}
         """, (new_status, retry_count, reason, next_retry.isoformat() if next_retry else None, queue_id))
 
@@ -3520,6 +3524,7 @@ def check_completed_downloads():
                             f"deleted and rescheduled",
                             schedule_retry=True,
                             retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
                         )
                         continue
 
@@ -3552,6 +3557,7 @@ def check_completed_downloads():
                                 f"deleted and rescheduled",
                                 schedule_retry=True,
                                 retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                                clear_file_fields=True,
                             )
                             break
                         match_found = rel_file
@@ -3722,6 +3728,7 @@ def check_completed_downloads():
                             "deleted and rescheduled",
                             schedule_retry=True,
                             retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
                         )
                         continue
 
@@ -3768,6 +3775,7 @@ def check_completed_downloads():
                                     f"got {_actual_dur}s (diff={_dur_diff}s); deleted and rescheduled",
                                     schedule_retry=True,
                                     retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
+                                    clear_file_fields=True,
                                 )
                                 continue
                         else:
@@ -3839,25 +3847,41 @@ def check_completed_downloads():
                             newly_completed.append(item)
                         else:
                             # Verification failed: the file could not be confirmed at the
-                            # target path.  Release the move claim so the next processor
-                            # cycle retries the transfer rather than leaving the item in a
-                            # permanently-inconsistent 'imported' state pointing at a file
-                            # that may not exist.
+                            # target path.  Requeue the item so a fresh download can be
+                            # attempted rather than leaving it in an inconsistent state.
                             logger.error(
                                 f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
-                                f"({verify_result.get('error')}), releasing claim for retry"
+                                f"({verify_result.get('error')}), requeuing for retry"
                             )
-                            _release_move_claim(item_id, restore_status='completed', file_path=file_path)
+                            mark_failed(
+                                item_id,
+                                f"Move verification failed: {verify_result.get('error')}",
+                                schedule_retry=True,
+                                retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                                clear_file_fields=True,
+                            )
                     else:
                         logger.warning(
                             f"[AUTO_MOVE] Queue {item_id}: could not move "
-                            f"({move_result.get('error')}), releasing claim back to 'completed'"
+                            f"({move_result.get('error')}), requeuing for retry"
                         )
-                        _release_move_claim(item_id, restore_status='completed', file_path=file_path)
+                        mark_failed(
+                            item_id,
+                            f"Move to music library failed: {move_result.get('error')}",
+                            schedule_retry=True,
+                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
+                        )
                 except Exception as move_err:
                     logger.warning(f"[AUTO_MOVE] Queue {item_id}: move error: {move_err}")
                     try:
-                        _release_move_claim(item_id, restore_status='completed', file_path=file_path)
+                        mark_failed(
+                            item_id,
+                            f"Move error: {move_err}",
+                            schedule_retry=True,
+                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
+                        )
                     except Exception:
                         pass
 
@@ -4343,7 +4367,6 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
             _try_claim_for_move,
             _release_move_claim,
             update_queue_item,
-            mark_as_failed,
         )
         from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
@@ -4419,13 +4442,15 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
                 file_path = item.get('file_path', '')
                 if not file_path or not os.path.isfile(file_path):
                     logger.warning(
-                        f"[RETRY_MOVES] Queue {item['id']}: file not found at {file_path!r}, "
-                        "marking failed for re-download"
+                        f"[RETRY_MOVES] Queue {item['id']}: file not found at {file_path!r}, requeuing"
                     )
-                    mark_as_failed(
+                    mark_failed(
                         item['id'],
-                        "Source file missing during retry move — re-download required",
-                        retry_delay_minutes=60,
+                        "Source file missing for retry move",
+                        schedule_retry=True,
+                        retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                        clear_file_fields=True,
+
                     )
                     continue
                 try:
@@ -4464,26 +4489,38 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
                         else:
                             logger.warning(
                                 f"[RETRY_MOVES] Queue {item['id']}: move verification failed "
-                                f"({verify_result.get('error')}), releasing claim"
+                                f"({verify_result.get('error')}), requeuing"
                             )
-                            _release_move_claim(
-                                item['id'], restore_status='completed', file_path=file_path
+                            mark_failed(
+                                item['id'],
+                                f"Move verification failed: {verify_result.get('error')}",
+                                schedule_retry=True,
+                                retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                                clear_file_fields=True,
                             )
                     else:
                         logger.warning(
                             f"[RETRY_MOVES] Queue {item['id']}: move failed "
-                            f"({move_result.get('error')}), releasing claim"
+                            f"({move_result.get('error')}), requeuing"
                         )
-                        _release_move_claim(
-                            item['id'], restore_status='completed', file_path=file_path
+                        mark_failed(
+                            item['id'],
+                            f"Move to music library failed: {move_result.get('error')}",
+                            schedule_retry=True,
+                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
                         )
                 except Exception as mv_err:
                     logger.warning(
                         f"[RETRY_MOVES] Queue {item['id']}: error during move: {mv_err}"
                     )
                     try:
-                        _release_move_claim(
-                            item['id'], restore_status='completed', file_path=file_path
+                        mark_failed(
+                            item['id'],
+                            f"Move error: {mv_err}",
+                            schedule_retry=True,
+                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
                         )
                     except Exception:
                         pass
