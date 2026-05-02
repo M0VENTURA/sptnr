@@ -134,6 +134,24 @@ def resolve_downloads_dir():
 
 DOWNLOADS_DIR = resolve_downloads_dir()
 
+
+def _is_path_under_downloads_dir(file_path):
+    """Return True if the resolved *file_path* is strictly inside DOWNLOADS_DIR.
+
+    Uses ``os.path.realpath`` to resolve symlinks and ``os.path.abspath`` to
+    normalise relative paths.  Returns False for the DOWNLOADS_DIR root itself
+    so that the directory is never deleted.
+    """
+    if not file_path:
+        return False
+    try:
+        abs_file = os.path.realpath(os.path.abspath(file_path))
+        abs_downloads = os.path.realpath(os.path.abspath(DOWNLOADS_DIR))
+        return abs_file.startswith(abs_downloads + os.sep)
+    except Exception:
+        return False
+
+
 # Enforce a floor between retries so unavailable tracks do not churn.
 MIN_RETRY_DELAY_MINUTES = 60
 
@@ -1235,6 +1253,12 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
                                 f"min={_CLEANUP_SIBLING_MIN_AGE_SECONDS}s): {fpath}"
                             )
                             continue
+                        if not _is_path_under_downloads_dir(fpath):
+                            logger.warning(
+                                f"[CLEANUP] REFUSING to remove file outside downloads "
+                                f"directory: {fpath}"
+                            )
+                            continue
                         os.remove(fpath)
                         logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
                         # Remove now-empty parent directories up to DOWNLOADS_DIR
@@ -1256,8 +1280,16 @@ def _delete_mismatched_download(file_path, item_id, reason):
 
     Removes the file from disk, cleans up any now-empty parent directories
     up to DOWNLOADS_DIR, and logs the action.  Returns True on success.
+
+    Safety: refuses to delete files that are not strictly inside DOWNLOADS_DIR.
     """
     if not file_path:
+        return False
+    if not _is_path_under_downloads_dir(file_path):
+        logger.warning(
+            f"Queue {item_id}: REFUSING to delete mismatched file outside "
+            f"downloads directory: {file_path}"
+        )
         return False
     try:
         if not os.path.isfile(file_path):
