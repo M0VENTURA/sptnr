@@ -2283,14 +2283,16 @@ def _build_safe_search_query(queue_item, banned: set, dismissed: set) -> str | N
     if len(title_filtered) != len(title_tokens):
         title_filtered = []
 
-    # Prefer Artist + Album; fall back to Artist alone; then Album alone
+    # Primary search must include the track title so Soulseek looks for the
+    # song, not the album.  Only fall back to Artist + Album when the title
+    # was dropped above (e.g. because a title token was banned).
     tokens_out = []
     if artist_filtered:
         tokens_out.extend(artist_filtered)
-    if album_filtered:
-        tokens_out.extend(album_filtered)
-    if not tokens_out and title_filtered:
+    if title_filtered:
         tokens_out.extend(title_filtered)
+    if not tokens_out and album_filtered:
+        tokens_out.extend(album_filtered)
 
     if not tokens_out:
         return None
@@ -3781,12 +3783,28 @@ def check_completed_downloads():
                             logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
                             scan_needed = True
                             newly_completed.append(item)
+                        elif target_path and os.path.isfile(target_path):
+                            # Verification can fail transiently (e.g. DB hiccup while
+                            # writing verified_in_music_at).  When the file genuinely
+                            # exists at the target path, promote it to imported so the
+                            # item does not get stuck in completed/retry loops.
+                            logger.warning(
+                                f"[AUTO_MOVE] Queue {item_id}: verification API failed but "
+                                f"file exists at {target_path} — promoting to imported"
+                            )
+                            mark_queue_item_moved(item_id, target_path)
+                            update_queue_item(
+                                item_id,
+                                status='imported',
+                                music_file_path=target_path,
+                                copied_individually=1,
+                                copied_individually_at=datetime.now().isoformat()
+                            )
+                            scan_needed = True
+                            newly_completed.append(item)
                         else:
-                            # Verification failed: the file could not be confirmed at the
-                            # target path.  Release the move claim so the next processor
-                            # cycle retries the transfer rather than leaving the item in a
-                            # permanently-inconsistent 'imported' state pointing at a file
-                            # that may not exist.
+                            # Verification failed and file is not present: release the
+                            # move claim so the next cycle can retry.
                             logger.error(
                                 f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
                                 f"({verify_result.get('error')}), releasing claim for retry"
