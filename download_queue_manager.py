@@ -3228,9 +3228,13 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
                     f"at {next_retry} (delay={effective_delay}m): {reason}"
                 )
 
+            extra_sets = ""
+            if new_status == 'queued':
+                extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL"
+
             cursor.execute(f"""
                 UPDATE download_queue
-                SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP, next_retry_at = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP, next_retry_at = {placeholder}{extra_sets}, updated_at = CURRENT_TIMESTAMP
                 WHERE id = {placeholder}
             """, (new_status, retry_count, reason, next_retry.isoformat(), queue_id))
 
@@ -5490,6 +5494,20 @@ def check_downloads_folder():
                     return None
                 return row_value.get('file_path')
 
+            def _verify_meta(path_value):
+                if not path_value or not _is_within_music(path_value) or not os.path.isfile(path_value):
+                    return False
+                file_meta = read_mp3_metadata(path_value) or {}
+                meta_match = _metadata_matches_queue_item(
+                    file_meta, queue_item, file_path=path_value, check_quality=False
+                )
+                if meta_match is False:
+                    logger.debug(
+                        f"[RECONCILE] Metadata mismatch for queue {queue_item.get('id')} at {path_value}"
+                    )
+                    return False
+                return True
+
             queue_item_id = queue_item.get('id') if queue_item else None
             try:
                 # 1) Strongest match: recording MBID already present on tracks.mbid
@@ -5511,7 +5529,7 @@ def check_downloads_folder():
                     row = cursor.fetchone()
                     if row:
                         path_value = _row_file_path(row)
-                        if path_value and _is_within_music(path_value) and os.path.isfile(path_value):
+                        if _verify_meta(path_value):
                             return path_value
 
                 # 2) Fallback: artist+title (+album preference) against imported tracks
@@ -5542,7 +5560,7 @@ def check_downloads_folder():
                 rows = cursor.fetchall() or []
                 for row in rows:
                     path_value = _row_file_path(row)
-                    if path_value and _is_within_music(path_value) and os.path.isfile(path_value):
+                    if _verify_meta(path_value):
                         return path_value
 
                 return None
@@ -6762,18 +6780,39 @@ def auto_discover_and_queue_files():
                 """,
                 (artist_value, album_value, title_value),
             )
-            valid_row = _pick_valid_collection_track_row(
-                cursor.fetchall(),
-                artist_value,
-                album_value,
-                album_artist_value,
-            )
-            if not valid_row:
-                return None
-            return {
-                'id': _row_get(valid_row, 'id', 0, None),
-                'file_path': _row_get(valid_row, 'file_path', 1, None),
-            }
+            rows = cursor.fetchall()
+            for row in rows or []:
+                valid_row = _pick_valid_collection_track_row(
+                    [row],
+                    artist_value,
+                    album_value,
+                    album_artist_value,
+                )
+                if not valid_row:
+                    continue
+                path_value = _row_get(valid_row, 'file_path', 1, None)
+                if path_value and os.path.isfile(path_value):
+                    file_meta = read_mp3_metadata(path_value) or {}
+                    # Build a minimal queue-item dict for metadata comparison
+                    _mini_queue = {
+                        'artist': artist_value,
+                        'album': album_value,
+                        'title': title_value,
+                        'album_artist': album_artist_value or artist_value,
+                    }
+                    meta_match = _metadata_matches_queue_item(
+                        file_meta, _mini_queue, file_path=path_value, check_quality=False
+                    )
+                    if meta_match is False:
+                        logger.debug(
+                            f"[AUTO-DISCOVER] Metadata mismatch for library track at {path_value}"
+                        )
+                        continue
+                return {
+                    'id': _row_get(valid_row, 'id', 0, None),
+                    'file_path': _row_get(valid_row, 'file_path', 1, None),
+                }
+            return None
 
         def _find_library_path_match(source_full_path):
             """Location-based match: /downloads/<rel> -> /music/<rel>."""
