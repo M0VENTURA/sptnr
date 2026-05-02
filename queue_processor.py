@@ -2263,7 +2263,13 @@ def _build_fallback_search_queries(queue_item, primary_query):
     # only matches files in a folder named "Innuendo", not files from an artist
     # folder whose name happens to contain the same words as the title).
     # A minimum score of 0.55 is required because artist evidence is absent.
-    if album:
+    #
+    # SKIPPED for album-queue items: the album-level search is (or should be)
+    # performed once at the start of the album batch; repeating it as a per-track
+    # fallback is redundant and hammers Soulseek with the same broad query for
+    # every song on the album.
+    _is_album_queue = (queue_item.get('import_type') or 'song').lower() == 'album'
+    if album and not _is_album_queue:
         _add(_dqm_sanitize_query(f"{title} {album}"), min_score=0.55)
 
     # Fallback 3c/3d/3e: year-based queries.  When a release year is known,
@@ -2272,9 +2278,11 @@ def _build_fallback_search_queries(queue_item, primary_query):
     year_raw = queue_item.get('year') or queue_item.get('release_year')
     year_str = str(year_raw).strip() if year_raw else ''
     if year_str and re.fullmatch(r'\d{4}', year_str) and artist and album:
-        _add(_dqm_sanitize_query(f"{artist} {album} {year_str}"), min_score=0.55)
+        if not _is_album_queue:
+            _add(_dqm_sanitize_query(f"{artist} {album} {year_str}"), min_score=0.55)
         _add(_dqm_sanitize_query(f"{artist} {year_str}"), min_score=0.60)
-        _add(_dqm_sanitize_query(f"{album} {year_str}"), min_score=0.60)
+        if not _is_album_queue:
+            _add(_dqm_sanitize_query(f"{album} {year_str}"), min_score=0.60)
 
     # Fallback 4: title only.  Used when even a partial artist token blocks
     # results (e.g. the artist name is not present in any shared filename at
