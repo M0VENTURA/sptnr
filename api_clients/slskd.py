@@ -747,10 +747,14 @@ class SlskdClient:
             return []
 
     def get_server_state(self, timeout: Optional[int] = None) -> dict:
-        """Return slskd's Soulseek server connection state.
+        """Fetch slskd server state, with backward-compatible fallbacks.
 
-        Returns a dict with at least a 'state' key (e.g. 'Connected',
-        'Disconnected', 'Connecting').  Returns an empty dict on any error.
+        Modern slskd exposes ``GET /api/v0/server``.  Older versions nest the
+        state inside ``GET /api/v0/application``.  This method tries the
+        canonical endpoint first and falls back to the legacy one on 404.
+
+        Returns:
+            Parsed JSON dict (may be empty on error).
         """
         if not self.enabled:
             return {}
@@ -761,17 +765,40 @@ class SlskdClient:
             resp = self.session.get(url, headers=self.headers, timeout=timeout)
             if resp.status_code == 200:
                 return resp.json() or {}
-            logger.debug(f"Slskd server state endpoint failed: {resp.status_code}")
-            return {}
+            if resp.status_code == 404:
+                # Fallback for older slskd versions
+                app_url = f"{self.base_url}/application"
+                app_resp = self.session.get(app_url, headers=self.headers, timeout=timeout)
+                if app_resp.status_code == 200:
+                    app_data = app_resp.json() or {}
+                    return app_data.get("server") or {}
+            logger.debug(f"Slskd get_server_state failed: {resp.status_code}")
         except Exception as e:
-            logger.debug(f"Slskd get server state failed: {e}")
-            return {}
+            logger.debug(f"Slskd get_server_state error: {e}")
+        return {}
 
     def is_connected(self, timeout: Optional[int] = None) -> bool:
-        """Return True if slskd reports it is connected to the Soulseek server."""
+        """Return True when slskd reports it is connected to the Soulseek network.
+
+        Handles the C# enum-flags string that slskd returns in its ``state``
+        field (e.g. ``"Connected, LoggedIn"``) as well as the modern
+        ``isConnected`` boolean field.
+        """
+        if not self.enabled:
+            return False
+
         state = self.get_server_state(timeout=timeout)
+        # Modern slskd versions expose an explicit boolean
+        if "isConnected" in state:
+            return bool(state["isConnected"])
+
         raw = str(state.get("state") or state.get("status") or "").strip().lower()
-        return raw == "connected"
+        if not raw:
+            return False
+
+        # C# enum flags are comma-separated, e.g. "Connected, LoggedIn"
+        flags = {f.strip() for f in raw.split(",") if f.strip()}
+        return "connected" in flags
 
     def get_completed_transfers(self, timeout: Optional[int] = None) -> list[dict]:
         """
