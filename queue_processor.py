@@ -1735,8 +1735,8 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60, c
             logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - retry not requested")
 
         extra_sets = ""
-        if clear_file_fields:
-            extra_sets = ", file_path = NULL, found_filename = NULL"
+        if schedule_retry:
+            extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL"
 
         cursor.execute(f"""
             UPDATE download_queue
@@ -1860,6 +1860,17 @@ def check_track_exists_in_db(queue_item):
         # file_path IS NULL are incomplete imports, and rows matching
         # '__queued_for_download__%' are queue placeholders — both must be
         # excluded so pending downloads are not falsely detected as existing.
+        def _verify_db_match(file_path):
+            if not file_path or not os.path.isfile(file_path):
+                return False
+            meta_match = _metadata_matches_queue_item(file_path, queue_item)
+            if meta_match is False:
+                logger.debug(
+                    f"DB track metadata mismatch for '{artist} - {title}' at {file_path}, skipping"
+                )
+                return False
+            return True
+
         if album:
             # Step 1: exact album match.
             cursor.execute(
@@ -1870,15 +1881,13 @@ def check_track_exists_in_db(queue_item):
                   AND LOWER(album) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
-                LIMIT 1
                 """,
                 (artist, title, album),
             )
-            row = cursor.fetchone()
-            if row:
+            for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
-                if file_path and os.path.isfile(file_path):
+                if _verify_db_match(file_path):
                     reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
                     return True, reason, file_path, True
 
@@ -1890,16 +1899,14 @@ def check_track_exists_in_db(queue_item):
                   AND LOWER(title) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
-                LIMIT 1
                 """,
                 (artist, title),
             )
-            row = cursor.fetchone()
-            if row:
+            for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
                 found_album = (row["album"] if hasattr(row, "keys") else row[2]) or ""
-                if file_path and os.path.isfile(file_path):
+                if _verify_db_match(file_path):
                     reason = (
                         f"Track '{artist} - {title}' already exists in local database "
                         f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
@@ -1913,15 +1920,13 @@ def check_track_exists_in_db(queue_item):
                   AND LOWER(title) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
-                LIMIT 1
                 """,
                 (artist, title),
             )
-            row = cursor.fetchone()
-            if row:
+            for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
-                if file_path and os.path.isfile(file_path):
+                if _verify_db_match(file_path):
                     reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
                     return True, reason, file_path, True
 
@@ -1955,6 +1960,12 @@ def check_target_folder_exists(queue_item):
                 if title.lower() in f.lower():
                     full_path = os.path.join(root, f)
                     if os.path.isfile(full_path):
+                        meta_match = _metadata_matches_queue_item(full_path, queue_item)
+                        if meta_match is False:
+                            logger.debug(
+                                f"Target folder metadata mismatch for '{artist} - {title}' at {full_path}, skipping"
+                            )
+                            continue
                         return (
                             True,
                             f"Track '{artist} - {title}' already exists in target folder ({full_path})",
