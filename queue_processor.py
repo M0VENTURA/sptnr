@@ -187,6 +187,12 @@ _SLSKD_LONG_RETRY_DELAY_MINUTES = 1440
 # this are cancelled and re-queued so the item can be searched again.
 _SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES = 60
 
+# Seconds to sleep between queue items in process_queue().  A short pause
+# gives slskd breathing room to handle its own network duties (e.g. responding
+# to distributed search requests from other peers) so that internal
+# GetUserEndPoint timeouts are less likely to cascade.
+_SLSKD_INTER_ITEM_DELAY_SECONDS = 5
+
 # Quality thresholds for the low-quality fallback download logic.
 # A candidate is considered "low quality" when its bitrate is known, is below
 # _QUALITY_TARGET_BITRATE, and the file is not a lossless format (FLAC/WAV).
@@ -3984,32 +3990,52 @@ def process_queue(client):
     each Soulseek search can take 30-150 s, so processing hundreds of
     items in one cycle would block the loop for hours and let short-
     delay retries starve fresh items.
+
+    A small delay between items gives slskd breathing room to handle
+    distributed network traffic and reduces internal timeout cascades.
     """
     try:
         items = get_queued_items(limit=10)
-        
+
         if not items:
             logger.debug("No queued items to process")
         else:
             logger.info(f"Processing {len(items)} queue items...")
-        
+
         processed = 0
-        for item in items:
+        for idx, item in enumerate(items):
             if not client:
                 logger.error("SlskdClient not available, skipping")
                 break
-            
+
+            # Skip this cycle if slskd is not connected to the Soulseek server.
+            # Processing searches while disconnected just burns retries.
+            try:
+                if not client.is_connected():
+                    logger.warning(
+                        "slskd is not connected to the Soulseek server; "
+                        "pausing queue processing for this cycle"
+                    )
+                    break
+            except Exception as _conn_err:
+                logger.debug(f"Could not verify slskd connection state: {_conn_err}")
+
             try:
                 if search_and_download(item['id'], item, client):
                     processed += 1
             except Exception as e:
                 logger.error(f"Error processing queue {item['id']}: {e}")
                 mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
-        
+
+            # Brief pause between items so slskd can service distributed
+            # search responses and avoid internal timeout storms.
+            if idx < len(items) - 1:
+                time.sleep(_SLSKD_INTER_ITEM_DELAY_SECONDS)
+
         # Always check for completed downloads, even if no new items were processed
         # This ensures downloads that complete between processing cycles are detected
         check_completed_downloads()
-        
+
         # Process completed downloads with MusicBrainz/Discogs metadata
         try:
             from post_download_processor import process_pending_completed_items
@@ -4018,9 +4044,9 @@ def process_queue(client):
                 logger.info(f"Post-download processing: {post_stats['processed']} items organized")
         except Exception as e:
             logger.error(f"Error in post-download processing: {e}")
-        
+
         return processed
-        
+
     except Exception as e:
         logger.error(f"Error in process_queue: {e}")
         return 0
