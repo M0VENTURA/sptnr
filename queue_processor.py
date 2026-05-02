@@ -1534,13 +1534,19 @@ def get_queued_items(limit=None):
         except Exception as source_diag_err:
             logger.debug(f"Could not compute queue source skip diagnostics: {source_diag_err}")
         
-        # Get queued items and items scheduled for retry
+        # Get queued items and items scheduled for retry.
+        # Ordering:
+        #   1. priority ASC        – explicit user priority (1 = highest)
+        #   2. retry_count ASC     – try fresh items before retried ones
+        #   3. next_retry_at ASC   – items whose retry window opened earliest first
+        #   4. last_attempted_at ASC NULLS FIRST – never-attempted first, then least-recently attempted
+        #   5. created_at ASC      – oldest items first (FIFO tie-breaker)
         base_query = """
             SELECT * FROM download_queue
             WHERE TRIM(LOWER(COALESCE(status, ''))) = 'queued'
             AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
             AND TRIM(LOWER(COALESCE(source, 'soulseek'))) NOT IN ('local', 'discovered')
-            ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
+            ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, last_attempted_at ASC NULLS FIRST, created_at ASC
         """.format(placeholder=placeholder)
 
         if isinstance(limit, int) and limit > 0:
@@ -1637,27 +1643,54 @@ def increment_retry_count(queue_id, retry_delay_minutes=60):
         if conn:
             conn.close()
 
+def _calculate_retry_delay(retry_count, requested_delay_minutes):
+    """Compute an exponentially-backing-off retry delay.
+
+    Formula: max(requested_delay, MIN_RETRY_DELAY_MINUTES * 2^(retry_count-1))
+    Capped at _SLSKD_LONG_RETRY_DELAY_MINUTES (24 h).
+    """
+    base = int(requested_delay_minutes or 0)
+    exponential = MIN_RETRY_DELAY_MINUTES * (2 ** max(0, retry_count - 1))
+    return min(max(base, exponential), _SLSKD_LONG_RETRY_DELAY_MINUTES)
+
+
 def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
-    """Mark queue item as failed, optionally scheduling retry"""
+    """Mark queue item as failed, optionally scheduling retry.
+
+    Respects the per-item max_retries column and applies exponential backoff
+    so that repeatedly-failed items do not starve the queue with short
+    5-minute retry loops.
+    """
     conn = None
     try:
         from app import get_db as app_get_db
         conn = app_get_db()
         cursor = conn.cursor()
         placeholder = "%s"
-        
-        # Get current retry count
-        cursor.execute(f"SELECT retry_count FROM download_queue WHERE id = {placeholder}", (queue_id,))
+
+        # Get current retry count and max_retries
+        cursor.execute(
+            f"SELECT retry_count, max_retries FROM download_queue WHERE id = {placeholder}",
+            (queue_id,),
+        )
         row = cursor.fetchone()
-        
+
         if not row:
             return False
-        
+
         retry_count = (row['retry_count'] or 0) + 1
-        
-        # Always schedule retry if requested - no max retry limit for Soulseek searches
+        max_retries = row['max_retries'] or 0
+
+        # Honour max_retries when it is configured (>0)
+        if schedule_retry and max_retries > 0 and retry_count > max_retries:
+            schedule_retry = False
+            logger.warning(
+                f"Queue {queue_id}: retry_count ({retry_count}) exceeds max_retries ({max_retries}) — "
+                f"failing permanently ({reason})"
+            )
+
         if schedule_retry:
-            effective_retry_delay = max(int(retry_delay_minutes or 0), MIN_RETRY_DELAY_MINUTES)
+            effective_retry_delay = _calculate_retry_delay(retry_count, retry_delay_minutes)
             next_retry = datetime.now() + timedelta(minutes=effective_retry_delay)
             new_status = 'queued'
             logger.warning(
@@ -1668,18 +1701,18 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
             next_retry = None
             new_status = 'failed'
             logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - retry not requested")
-        
+
         cursor.execute(f"""
-            UPDATE download_queue 
+            UPDATE download_queue
             SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP,
                 next_retry_at = {placeholder}, updated_at = CURRENT_TIMESTAMP
             WHERE id = {placeholder}
         """, (new_status, retry_count, reason, next_retry.isoformat() if next_retry else None, queue_id))
-        
+
         conn.commit()
-        
+
         return schedule_retry  # Return whether retry was scheduled
-        
+
     except Exception as e:
         logger.error(f"Error marking queue item as failed: {e}")
         return False
@@ -2481,10 +2514,17 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
     is_complete = False
 
     while time.monotonic() < poll_deadline:
-        # Back-off: poll quickly for the first 10 attempts (responses start
-        # arriving within a few seconds), then slow to 2 s to reduce HTTP
-        # round-trips during the long tail of the search window.
-        time.sleep(1 if poll_attempt < 10 else 2)
+        # Back-off: poll quickly while responses are arriving, then slow down
+        # to reduce HTTP round-trips during the long tail of the search window.
+        # 1 s for the first 5 polls (~5 s), 2 s for the next 5 (~15 s total),
+        # then 5 s intervals.  For a 150 s search this cuts ~75 polls down to
+        # ~30 without materially affecting result quality.
+        if poll_attempt < 5:
+            time.sleep(1)
+        elif poll_attempt < 10:
+            time.sleep(2)
+        else:
+            time.sleep(5)
         poll_attempt += 1
         try:
             responses, state, is_complete = client.get_search_results(search_id)
@@ -2935,6 +2975,22 @@ def search_and_download(queue_id, queue_item, client):
 
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')
+
+        # Stamp last_attempted_at so the queue selector deprioritises this
+        # item on the next cycle if other items with the same retry_count are
+        # also eligible — prevents the same recently-failed track from being
+        # re-selected immediately.
+        try:
+            _stamp_conn = get_db()
+            _stamp_cur = _stamp_conn.cursor()
+            _stamp_cur.execute(
+                "UPDATE download_queue SET last_attempted_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (queue_id,),
+            )
+            _stamp_conn.commit()
+            _stamp_conn.close()
+        except Exception as _stamp_err:
+            logger.debug(f"Queue {queue_id}: could not stamp last_attempted_at: {_stamp_err}")
 
         # Load banned and dismissed words and build a safe query that excludes them.
         _banned = _get_banned_words()
@@ -3855,9 +3911,15 @@ def matches_queue_item(filename, queue_item, file_path=None):
         return False
 
 def process_queue(client):
-    """Process all currently eligible queued items for this cycle."""
+    """Process currently eligible queued items for this cycle.
+
+    We limit to 10 items per cycle so the processor stays responsive:
+    each Soulseek search can take 30-150 s, so processing hundreds of
+    items in one cycle would block the loop for hours and let short-
+    delay retries starve fresh items.
+    """
     try:
-        items = get_queued_items()
+        items = get_queued_items(limit=10)
         
         if not items:
             logger.debug("No queued items to process")
