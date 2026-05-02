@@ -1945,9 +1945,21 @@ def check_track_exists_in_db(queue_item):
     return False, "", None, True
 
 
+# Cache for target-folder existence checks so we don't walk the music
+# directory repeatedly on every queue-item cycle.
+_target_folder_cache: dict[str, tuple[bool, str, str | None]] = {}
+_target_folder_cache_ts: float = 0.0
+_TARGET_FOLDER_CACHE_TTL_SECONDS = 60.0
+
+
 def check_target_folder_exists(queue_item):
     """
     Check if a file matching the queue item already exists in the target music folder.
+
+    Uses a short-lived cache (60 s) so large libraries are not walked on every
+    queue-item cycle.  A match requires *both* the artist and the title to appear
+    in the filename (case-insensitive) — a title-only substring match produced
+    too many false positives (e.g. title "Love" matching "I Love You.mp3").
 
     Returns:
         tuple: (exists: bool, reason: str, source_path: str|None)
@@ -1957,13 +1969,28 @@ def check_target_folder_exists(queue_item):
     if not artist or not title:
         return False, "", None
 
+    cache_key = f"{artist.lower()}::{title.lower()}"
+    global _target_folder_cache_ts, _target_folder_cache
+    now = time.monotonic()
+    if now - _target_folder_cache_ts < _TARGET_FOLDER_CACHE_TTL_SECONDS:
+        if cache_key in _target_folder_cache:
+            return _target_folder_cache[cache_key]
+    else:
+        _target_folder_cache = {}
+        _target_folder_cache_ts = now
+
     music_root = os.environ.get("MUSIC_ROOT", "/music")
     try:
+        artist_lower = artist.lower()
+        title_lower = title.lower()
         for root, _, files in os.walk(music_root):
             for f in files:
                 if not f.lower().endswith((".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac")):
                     continue
-                if title.lower() in f.lower():
+                f_lower = f.lower()
+                # Require both artist and title tokens to appear in the filename
+                # so common title words don't produce false positives.
+                if title_lower in f_lower and artist_lower in f_lower:
                     full_path = os.path.join(root, f)
                     if os.path.isfile(full_path):
                         meta_match = _metadata_matches_queue_item(full_path, queue_item)
@@ -1972,14 +1999,19 @@ def check_target_folder_exists(queue_item):
                                 f"Target folder metadata mismatch for '{artist} - {title}' at {full_path}, skipping"
                             )
                             continue
-                        return (
+                        result = (
                             True,
                             f"Track '{artist} - {title}' already exists in target folder ({full_path})",
                             full_path,
                         )
+                        _target_folder_cache[cache_key] = result
+                        return result
     except Exception as e:
         logger.debug(f"Target folder existence check error for '{artist} - {title}': {e}")
-    return False, "", None
+
+    result = (False, "", None)
+    _target_folder_cache[cache_key] = result
+    return result
 
 
 def check_track_exists_in_navidrome(queue_item):
@@ -2377,15 +2409,14 @@ def _build_safe_search_query(queue_item, banned: set, dismissed: set) -> str | N
     if len(title_filtered) != len(title_tokens):
         title_filtered = []
 
-    # Primary search must include the track title so Soulseek looks for the
-    # song, not the album.  Only fall back to Artist + Album when the title
-    # was dropped above (e.g. because a title token was banned).
+    # Build query: Artist + Title is the primary search target.
+    # If title was dropped (banned/dismissed), fall back to Artist + Album.
     tokens_out = []
     if artist_filtered:
         tokens_out.extend(artist_filtered)
     if title_filtered:
         tokens_out.extend(title_filtered)
-    if not tokens_out and album_filtered:
+    elif album_filtered:
         tokens_out.extend(album_filtered)
 
     if not tokens_out:
