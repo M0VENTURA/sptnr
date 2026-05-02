@@ -2304,17 +2304,15 @@ def _build_fallback_search_queries(queue_item, primary_query):
     if album and not _is_album_queue:
         _add(_dqm_sanitize_query(f"{title} {album}"), min_score=0.55)
 
-    # Fallback 3c/3d/3e: year-based queries.  When a release year is known,
-    # combining it with the artist and/or album name helps Soulseek narrow
-    # results to the correct release without relying on an exact title match.
+    # Fallback 3c: artist + year.  When a release year is known, combining it
+    # with the artist name helps Soulseek narrow results to the correct release
+    # without relying on an exact title match.  Album-only queries (artist+album+year,
+    # album+year) are intentionally omitted here — they are album-level searches
+    # that should not be repeated for every track in an album queue.
     year_raw = queue_item.get('year') or queue_item.get('release_year')
     year_str = str(year_raw).strip() if year_raw else ''
-    if year_str and re.fullmatch(r'\d{4}', year_str) and artist and album:
-        if not _is_album_queue:
-            _add(_dqm_sanitize_query(f"{artist} {album} {year_str}"), min_score=0.55)
+    if year_str and re.fullmatch(r'\d{4}', year_str) and artist:
         _add(_dqm_sanitize_query(f"{artist} {year_str}"), min_score=0.60)
-        if not _is_album_queue:
-            _add(_dqm_sanitize_query(f"{album} {year_str}"), min_score=0.60)
 
     # Fallback 4: title only.  Used when even a partial artist token blocks
     # results (e.g. the artist name is not present in any shared filename at
@@ -4063,37 +4061,45 @@ def process_queue(client):
             logger.info(f"Processing {len(items)} queue items...")
 
         processed = 0
-        for idx, item in enumerate(items):
-            if not client:
-                logger.error("SlskdClient not available, skipping")
-                break
 
-            # Skip this cycle if slskd is not connected to the Soulseek server.
-            # Processing searches while disconnected just burns retries.
+        # Connection check — run once per cycle, outside the per-item loop.
+        # We still proceed to check_completed_downloads() below even when
+        # disconnected so that files downloaded during a previous connected
+        # session are not left stranded.
+        _slskd_ready = bool(client)
+        if _slskd_ready and client.enabled:
             try:
                 if not client.is_connected():
                     logger.warning(
-                        "slskd is not connected to the Soulseek server; "
-                        "pausing queue processing for this cycle"
+                        "Soulseek (slskd) is not connected — skipping search/download loop"
                     )
+                    _slskd_ready = False
+            except Exception as conn_err:
+                logger.warning(
+                    f"Could not verify slskd connection: {conn_err} — continuing anyway"
+                )
+
+        if _slskd_ready:
+            for idx, item in enumerate(items):
+                if not client:
+                    logger.error("SlskdClient not available, skipping")
                     break
-            except Exception as _conn_err:
-                logger.debug(f"Could not verify slskd connection state: {_conn_err}")
 
-            try:
-                if search_and_download(item['id'], item, client):
-                    processed += 1
-            except Exception as e:
-                logger.error(f"Error processing queue {item['id']}: {e}")
-                mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
+                try:
+                    if search_and_download(item['id'], item, client):
+                        processed += 1
+                except Exception as e:
+                    logger.error(f"Error processing queue {item['id']}: {e}")
+                    mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
 
-            # Brief pause between items so slskd can service distributed
-            # search responses and avoid internal timeout storms.
-            if idx < len(items) - 1:
-                time.sleep(_SLSKD_INTER_ITEM_DELAY_SECONDS)
+                # Brief pause between items so slskd can service distributed
+                # search responses and avoid internal timeout storms.
+                if idx < len(items) - 1:
+                    time.sleep(_SLSKD_INTER_ITEM_DELAY_SECONDS)
 
         # Always check for completed downloads, even if no new items were processed
-        # This ensures downloads that complete between processing cycles are detected
+        # or slskd is currently disconnected.  This ensures downloads that complete
+        # between processing cycles (or while disconnected) are detected.
         check_completed_downloads()
 
         # Process completed downloads with MusicBrainz/Discogs metadata
