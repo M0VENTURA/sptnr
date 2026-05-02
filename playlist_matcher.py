@@ -84,6 +84,11 @@ def normalize_artist(artist: str) -> str:
     if not artist:
         return ""
     
+    # Exportify/Spotify CSVs join multiple artists with semicolons.
+    # For matching purposes we only need the primary (first) artist.
+    if ";" in artist:
+        artist = artist.split(";")[0].strip()
+
     # Remove collaboration indicators
     collab_patterns = [
         r"\bfeat\.?",
@@ -96,7 +101,7 @@ def normalize_artist(artist: str) -> str:
     ]
     for pattern in collab_patterns:
         artist = re.sub(pattern, " ", artist, flags=re.IGNORECASE)
-    
+
     return normalize_string(artist)
 
 
@@ -294,8 +299,8 @@ def match_by_fuzzy(
     if not raw_title or not raw_artist:
         return None
     
-    # Get primary artist (before comma)
-    primary_artist = raw_artist.split(",")[0].strip()
+    # Get primary artist (before comma or semicolon – Exportify uses semicolons)
+    primary_artist = raw_artist.split(";")[0].strip() if ";" in raw_artist else raw_artist.split(",")[0].strip()
     
     # Search for candidates using LIKE
     title_like = f"%{raw_title.lower()}%"
