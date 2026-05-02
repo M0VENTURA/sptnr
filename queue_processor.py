@@ -134,6 +134,24 @@ def resolve_downloads_dir():
 
 DOWNLOADS_DIR = resolve_downloads_dir()
 
+
+def _is_path_under_downloads_dir(file_path):
+    """Return True if the resolved *file_path* is strictly inside DOWNLOADS_DIR.
+
+    Uses ``os.path.realpath`` to resolve symlinks and ``os.path.abspath`` to
+    normalise relative paths.  Returns False for the DOWNLOADS_DIR root itself
+    so that the directory is never deleted.
+    """
+    if not file_path:
+        return False
+    try:
+        abs_file = os.path.realpath(os.path.abspath(file_path))
+        abs_downloads = os.path.realpath(os.path.abspath(DOWNLOADS_DIR))
+        return abs_file.startswith(abs_downloads + os.sep)
+    except Exception:
+        return False
+
+
 # Enforce a floor between retries so unavailable tracks do not churn.
 MIN_RETRY_DELAY_MINUTES = 60
 
@@ -168,6 +186,12 @@ _SLSKD_LONG_RETRY_DELAY_MINUTES = 1440
 # Remotely-queued transfers that stay in "Queued, Remotely" for longer than
 # this are cancelled and re-queued so the item can be searched again.
 _SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES = 60
+
+# Seconds to sleep between queue items in process_queue().  A short pause
+# gives slskd breathing room to handle its own network duties (e.g. responding
+# to distributed search requests from other peers) so that internal
+# GetUserEndPoint timeouts are less likely to cascade.
+_SLSKD_INTER_ITEM_DELAY_SECONDS = 5
 
 # Quality thresholds for the low-quality fallback download logic.
 # A candidate is considered "low quality" when its bitrate is known, is below
@@ -1235,6 +1259,12 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
                                 f"min={_CLEANUP_SIBLING_MIN_AGE_SECONDS}s): {fpath}"
                             )
                             continue
+                        if not _is_path_under_downloads_dir(fpath):
+                            logger.warning(
+                                f"[CLEANUP] REFUSING to remove file outside downloads "
+                                f"directory: {fpath}"
+                            )
+                            continue
                         os.remove(fpath)
                         logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
                         # Remove now-empty parent directories up to DOWNLOADS_DIR
@@ -1256,8 +1286,16 @@ def _delete_mismatched_download(file_path, item_id, reason):
 
     Removes the file from disk, cleans up any now-empty parent directories
     up to DOWNLOADS_DIR, and logs the action.  Returns True on success.
+
+    Safety: refuses to delete files that are not strictly inside DOWNLOADS_DIR.
     """
     if not file_path:
+        return False
+    if not _is_path_under_downloads_dir(file_path):
+        logger.warning(
+            f"Queue {item_id}: REFUSING to delete mismatched file outside "
+            f"downloads directory: {file_path}"
+        )
         return False
     try:
         if not os.path.isfile(file_path):
@@ -1534,13 +1572,19 @@ def get_queued_items(limit=None):
         except Exception as source_diag_err:
             logger.debug(f"Could not compute queue source skip diagnostics: {source_diag_err}")
         
-        # Get queued items and items scheduled for retry
+        # Get queued items and items scheduled for retry.
+        # Ordering:
+        #   1. priority ASC        – explicit user priority (1 = highest)
+        #   2. retry_count ASC     – try fresh items before retried ones
+        #   3. next_retry_at ASC   – items whose retry window opened earliest first
+        #   4. last_attempted_at ASC NULLS FIRST – never-attempted first, then least-recently attempted
+        #   5. created_at ASC      – oldest items first (FIFO tie-breaker)
         base_query = """
             SELECT * FROM download_queue
             WHERE TRIM(LOWER(COALESCE(status, ''))) = 'queued'
             AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
             AND TRIM(LOWER(COALESCE(source, 'soulseek'))) NOT IN ('local', 'discovered')
-            ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
+            ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, last_attempted_at ASC NULLS FIRST, created_at ASC
         """.format(placeholder=placeholder)
 
         if isinstance(limit, int) and limit > 0:
@@ -1637,27 +1681,54 @@ def increment_retry_count(queue_id, retry_delay_minutes=60):
         if conn:
             conn.close()
 
-def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
-    """Mark queue item as failed, optionally scheduling retry"""
+def _calculate_retry_delay(retry_count, requested_delay_minutes):
+    """Compute an exponentially-backing-off retry delay.
+
+    Formula: max(requested_delay, MIN_RETRY_DELAY_MINUTES * 2^(retry_count-1))
+    Capped at _SLSKD_LONG_RETRY_DELAY_MINUTES (24 h).
+    """
+    base = int(requested_delay_minutes or 0)
+    exponential = MIN_RETRY_DELAY_MINUTES * (2 ** max(0, retry_count - 1))
+    return min(max(base, exponential), _SLSKD_LONG_RETRY_DELAY_MINUTES)
+
+
+def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60, clear_file_fields=False):
+    """Mark queue item as failed, optionally scheduling retry.
+
+    Respects the per-item max_retries column and applies exponential backoff
+    so that repeatedly-failed items do not starve the queue with short
+    5-minute retry loops.
+    """
     conn = None
     try:
         from app import get_db as app_get_db
         conn = app_get_db()
         cursor = conn.cursor()
         placeholder = "%s"
-        
-        # Get current retry count
-        cursor.execute(f"SELECT retry_count FROM download_queue WHERE id = {placeholder}", (queue_id,))
+
+        # Get current retry count and max_retries
+        cursor.execute(
+            f"SELECT retry_count, max_retries FROM download_queue WHERE id = {placeholder}",
+            (queue_id,),
+        )
         row = cursor.fetchone()
-        
+
         if not row:
             return False
-        
+
         retry_count = (row['retry_count'] or 0) + 1
-        
-        # Always schedule retry if requested - no max retry limit for Soulseek searches
+        max_retries = row['max_retries'] or 0
+
+        # Honour max_retries when it is configured (>0)
+        if schedule_retry and max_retries > 0 and retry_count > max_retries:
+            schedule_retry = False
+            logger.warning(
+                f"Queue {queue_id}: retry_count ({retry_count}) exceeds max_retries ({max_retries}) — "
+                f"failing permanently ({reason})"
+            )
+
         if schedule_retry:
-            effective_retry_delay = max(int(retry_delay_minutes or 0), MIN_RETRY_DELAY_MINUTES)
+            effective_retry_delay = _calculate_retry_delay(retry_count, retry_delay_minutes)
             next_retry = datetime.now() + timedelta(minutes=effective_retry_delay)
             new_status = 'queued'
             logger.warning(
@@ -1668,18 +1739,22 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
             next_retry = None
             new_status = 'failed'
             logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - retry not requested")
-        
+
+        extra_sets = ""
+        if schedule_retry:
+            extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL"
+
         cursor.execute(f"""
-            UPDATE download_queue 
+            UPDATE download_queue
             SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP,
-                next_retry_at = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                next_retry_at = {placeholder}{extra_sets}, updated_at = CURRENT_TIMESTAMP
             WHERE id = {placeholder}
         """, (new_status, retry_count, reason, next_retry.isoformat() if next_retry else None, queue_id))
-        
+
         conn.commit()
-        
+
         return schedule_retry  # Return whether retry was scheduled
-        
+
     except Exception as e:
         logger.error(f"Error marking queue item as failed: {e}")
         return False
@@ -1791,6 +1866,17 @@ def check_track_exists_in_db(queue_item):
         # file_path IS NULL are incomplete imports, and rows matching
         # '__queued_for_download__%' are queue placeholders — both must be
         # excluded so pending downloads are not falsely detected as existing.
+        def _verify_db_match(file_path):
+            if not file_path or not os.path.isfile(file_path):
+                return False
+            meta_match = _metadata_matches_queue_item(file_path, queue_item)
+            if meta_match is False:
+                logger.debug(
+                    f"DB track metadata mismatch for '{artist} - {title}' at {file_path}, skipping"
+                )
+                return False
+            return True
+
         if album:
             # Step 1: exact album match.
             cursor.execute(
@@ -1801,15 +1887,13 @@ def check_track_exists_in_db(queue_item):
                   AND LOWER(album) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
-                LIMIT 1
                 """,
                 (artist, title, album),
             )
-            row = cursor.fetchone()
-            if row:
+            for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
-                if file_path and os.path.isfile(file_path):
+                if _verify_db_match(file_path):
                     reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
                     return True, reason, file_path, True
 
@@ -1821,16 +1905,14 @@ def check_track_exists_in_db(queue_item):
                   AND LOWER(title) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
-                LIMIT 1
                 """,
                 (artist, title),
             )
-            row = cursor.fetchone()
-            if row:
+            for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
                 found_album = (row["album"] if hasattr(row, "keys") else row[2]) or ""
-                if file_path and os.path.isfile(file_path):
+                if _verify_db_match(file_path):
                     reason = (
                         f"Track '{artist} - {title}' already exists in local database "
                         f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
@@ -1844,15 +1926,13 @@ def check_track_exists_in_db(queue_item):
                   AND LOWER(title) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
-                LIMIT 1
                 """,
                 (artist, title),
             )
-            row = cursor.fetchone()
-            if row:
+            for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
-                if file_path and os.path.isfile(file_path):
+                if _verify_db_match(file_path):
                     reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
                     return True, reason, file_path, True
 
@@ -1913,6 +1993,12 @@ def check_target_folder_exists(queue_item):
                 if title_lower in f_lower and artist_lower in f_lower:
                     full_path = os.path.join(root, f)
                     if os.path.isfile(full_path):
+                        meta_match = _metadata_matches_queue_item(full_path, queue_item)
+                        if meta_match is False:
+                            logger.debug(
+                                f"Target folder metadata mismatch for '{artist} - {title}' at {full_path}, skipping"
+                            )
+                            continue
                         result = (
                             True,
                             f"Track '{artist} - {title}' already exists in target folder ({full_path})",
@@ -2209,7 +2295,13 @@ def _build_fallback_search_queries(queue_item, primary_query):
     # only matches files in a folder named "Innuendo", not files from an artist
     # folder whose name happens to contain the same words as the title).
     # A minimum score of 0.55 is required because artist evidence is absent.
-    if album:
+    #
+    # SKIPPED for album-queue items: the album-level search is (or should be)
+    # performed once at the start of the album batch; repeating it as a per-track
+    # fallback is redundant and hammers Soulseek with the same broad query for
+    # every song on the album.
+    _is_album_queue = (queue_item.get('import_type') or 'song').lower() == 'album'
+    if album and not _is_album_queue:
         _add(_dqm_sanitize_query(f"{title} {album}"), min_score=0.55)
 
     # Fallback 3c/3d/3e: year-based queries.  When a release year is known,
@@ -2218,9 +2310,11 @@ def _build_fallback_search_queries(queue_item, primary_query):
     year_raw = queue_item.get('year') or queue_item.get('release_year')
     year_str = str(year_raw).strip() if year_raw else ''
     if year_str and re.fullmatch(r'\d{4}', year_str) and artist and album:
-        _add(_dqm_sanitize_query(f"{artist} {album} {year_str}"), min_score=0.55)
+        if not _is_album_queue:
+            _add(_dqm_sanitize_query(f"{artist} {album} {year_str}"), min_score=0.55)
         _add(_dqm_sanitize_query(f"{artist} {year_str}"), min_score=0.60)
-        _add(_dqm_sanitize_query(f"{album} {year_str}"), min_score=0.60)
+        if not _is_album_queue:
+            _add(_dqm_sanitize_query(f"{album} {year_str}"), min_score=0.60)
 
     # Fallback 4: title only.  Used when even a partial artist token blocks
     # results (e.g. the artist name is not present in any shared filename at
@@ -2514,10 +2608,17 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
     is_complete = False
 
     while time.monotonic() < poll_deadline:
-        # Back-off: poll quickly for the first 10 attempts (responses start
-        # arriving within a few seconds), then slow to 2 s to reduce HTTP
-        # round-trips during the long tail of the search window.
-        time.sleep(1 if poll_attempt < 10 else 2)
+        # Back-off: poll quickly while responses are arriving, then slow down
+        # to reduce HTTP round-trips during the long tail of the search window.
+        # 1 s for the first 5 polls (~5 s), 2 s for the next 5 (~15 s total),
+        # then 5 s intervals.  For a 150 s search this cuts ~75 polls down to
+        # ~30 without materially affecting result quality.
+        if poll_attempt < 5:
+            time.sleep(1)
+        elif poll_attempt < 10:
+            time.sleep(2)
+        else:
+            time.sleep(5)
         poll_attempt += 1
         try:
             responses, state, is_complete = client.get_search_results(search_id)
@@ -2968,6 +3069,22 @@ def search_and_download(queue_id, queue_item, client):
 
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')
+
+        # Stamp last_attempted_at so the queue selector deprioritises this
+        # item on the next cycle if other items with the same retry_count are
+        # also eligible — prevents the same recently-failed track from being
+        # re-selected immediately.
+        try:
+            _stamp_conn = get_db()
+            _stamp_cur = _stamp_conn.cursor()
+            _stamp_cur.execute(
+                "UPDATE download_queue SET last_attempted_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (queue_id,),
+            )
+            _stamp_conn.commit()
+            _stamp_conn.close()
+        except Exception as _stamp_err:
+            logger.debug(f"Queue {queue_id}: could not stamp last_attempted_at: {_stamp_err}")
 
         # Load banned and dismissed words and build a safe query that excludes them.
         _banned = _get_banned_words()
@@ -3497,6 +3614,7 @@ def check_completed_downloads():
                             f"deleted and rescheduled",
                             schedule_retry=True,
                             retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
                         )
                         continue
 
@@ -3529,6 +3647,7 @@ def check_completed_downloads():
                                 f"deleted and rescheduled",
                                 schedule_retry=True,
                                 retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                                clear_file_fields=True,
                             )
                             break
                         match_found = rel_file
@@ -3699,6 +3818,7 @@ def check_completed_downloads():
                             "deleted and rescheduled",
                             schedule_retry=True,
                             retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
                         )
                         continue
 
@@ -3745,6 +3865,7 @@ def check_completed_downloads():
                                     f"got {_actual_dur}s (diff={_dur_diff}s); deleted and rescheduled",
                                     schedule_retry=True,
                                     retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
+                                    clear_file_fields=True,
                                 )
                                 continue
                         else:
@@ -3814,27 +3935,62 @@ def check_completed_downloads():
                             logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
                             scan_needed = True
                             newly_completed.append(item)
+                        elif target_path and os.path.isfile(target_path):
+                            # Verification can fail transiently (e.g. DB hiccup while
+                            # writing verified_in_music_at).  When the file genuinely
+                            # exists at the target path, promote it to imported so the
+                            # item does not get stuck in completed/retry loops.
+                            logger.warning(
+                                f"[AUTO_MOVE] Queue {item_id}: verification API failed but "
+                                f"file exists at {target_path} — promoting to imported"
+                            )
+                            mark_queue_item_moved(item_id, target_path)
+                            update_queue_item(
+                                item_id,
+                                status='imported',
+                                music_file_path=target_path,
+                                copied_individually=1,
+                                copied_individually_at=datetime.now().isoformat()
+                            )
+                            scan_needed = True
+                            newly_completed.append(item)
                         else:
                             # Verification failed: the file could not be confirmed at the
-                            # target path.  Release the move claim so the next processor
-                            # cycle retries the transfer rather than leaving the item in a
-                            # permanently-inconsistent 'imported' state pointing at a file
-                            # that may not exist.
+                            # target path.  Requeue the item so a fresh download can be
+                            # attempted rather than leaving it in an inconsistent state.
                             logger.error(
                                 f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
-                                f"({verify_result.get('error')}), releasing claim for retry"
+                                f"({verify_result.get('error')}), requeuing for retry"
                             )
-                            _release_move_claim(item_id, restore_status='completed', file_path=file_path)
+                            mark_failed(
+                                item_id,
+                                f"Move verification failed: {verify_result.get('error')}",
+                                schedule_retry=True,
+                                retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                                clear_file_fields=True,
+                            )
                     else:
                         logger.warning(
                             f"[AUTO_MOVE] Queue {item_id}: could not move "
-                            f"({move_result.get('error')}), releasing claim back to 'completed'"
+                            f"({move_result.get('error')}), requeuing for retry"
                         )
-                        _release_move_claim(item_id, restore_status='completed', file_path=file_path)
+                        mark_failed(
+                            item_id,
+                            f"Move to music library failed: {move_result.get('error')}",
+                            schedule_retry=True,
+                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
+                        )
                 except Exception as move_err:
                     logger.warning(f"[AUTO_MOVE] Queue {item_id}: move error: {move_err}")
                     try:
-                        _release_move_claim(item_id, restore_status='completed', file_path=file_path)
+                        mark_failed(
+                            item_id,
+                            f"Move error: {move_err}",
+                            schedule_retry=True,
+                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
+                        )
                     except Exception:
                         pass
 
@@ -3888,32 +4044,58 @@ def matches_queue_item(filename, queue_item, file_path=None):
         return False
 
 def process_queue(client):
-    """Process all currently eligible queued items for this cycle."""
+    """Process currently eligible queued items for this cycle.
+
+    We limit to 10 items per cycle so the processor stays responsive:
+    each Soulseek search can take 30-150 s, so processing hundreds of
+    items in one cycle would block the loop for hours and let short-
+    delay retries starve fresh items.
+
+    A small delay between items gives slskd breathing room to handle
+    distributed network traffic and reduces internal timeout cascades.
+    """
     try:
-        items = get_queued_items()
-        
+        items = get_queued_items(limit=10)
+
         if not items:
             logger.debug("No queued items to process")
         else:
             logger.info(f"Processing {len(items)} queue items...")
-        
+
         processed = 0
-        for item in items:
+        for idx, item in enumerate(items):
             if not client:
                 logger.error("SlskdClient not available, skipping")
                 break
-            
+
+            # Skip this cycle if slskd is not connected to the Soulseek server.
+            # Processing searches while disconnected just burns retries.
+            try:
+                if not client.is_connected():
+                    logger.warning(
+                        "slskd is not connected to the Soulseek server; "
+                        "pausing queue processing for this cycle"
+                    )
+                    break
+            except Exception as _conn_err:
+                logger.debug(f"Could not verify slskd connection state: {_conn_err}")
+
             try:
                 if search_and_download(item['id'], item, client):
                     processed += 1
             except Exception as e:
                 logger.error(f"Error processing queue {item['id']}: {e}")
                 mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
-        
+
+            # Brief pause between items so slskd can service distributed
+            # search responses and avoid internal timeout storms.
+            if idx < len(items) - 1:
+                time.sleep(_SLSKD_INTER_ITEM_DELAY_SECONDS)
+
         # Always check for completed downloads, even if no new items were processed
         # This ensures downloads that complete between processing cycles are detected
         check_completed_downloads()
-        
+
         # Process completed downloads with MusicBrainz/Discogs metadata
         try:
             from post_download_processor import process_pending_completed_items
@@ -3922,9 +4104,9 @@ def process_queue(client):
                 logger.info(f"Post-download processing: {post_stats['processed']} items organized")
         except Exception as e:
             logger.error(f"Error in post-download processing: {e}")
-        
+
         return processed
-        
+
     except Exception as e:
         logger.error(f"Error in process_queue: {e}")
         return 0
@@ -4388,8 +4570,16 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
                 # Standalone track — attempt a direct move.
                 file_path = item.get('file_path', '')
                 if not file_path or not os.path.isfile(file_path):
-                    logger.debug(
-                        f"[RETRY_MOVES] Queue {item['id']}: file not found at {file_path!r}"
+                    logger.warning(
+                        f"[RETRY_MOVES] Queue {item['id']}: file not found at {file_path!r}, requeuing"
+                    )
+                    mark_failed(
+                        item['id'],
+                        "Source file missing for retry move",
+                        schedule_retry=True,
+                        retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                        clear_file_fields=True,
+
                     )
                     continue
                 try:
@@ -4428,26 +4618,38 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
                         else:
                             logger.warning(
                                 f"[RETRY_MOVES] Queue {item['id']}: move verification failed "
-                                f"({verify_result.get('error')}), releasing claim"
+                                f"({verify_result.get('error')}), requeuing"
                             )
-                            _release_move_claim(
-                                item['id'], restore_status='completed', file_path=file_path
+                            mark_failed(
+                                item['id'],
+                                f"Move verification failed: {verify_result.get('error')}",
+                                schedule_retry=True,
+                                retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                                clear_file_fields=True,
                             )
                     else:
                         logger.warning(
                             f"[RETRY_MOVES] Queue {item['id']}: move failed "
-                            f"({move_result.get('error')}), releasing claim"
+                            f"({move_result.get('error')}), requeuing"
                         )
-                        _release_move_claim(
-                            item['id'], restore_status='completed', file_path=file_path
+                        mark_failed(
+                            item['id'],
+                            f"Move to music library failed: {move_result.get('error')}",
+                            schedule_retry=True,
+                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
                         )
                 except Exception as mv_err:
                     logger.warning(
                         f"[RETRY_MOVES] Queue {item['id']}: error during move: {mv_err}"
                     )
                     try:
-                        _release_move_claim(
-                            item['id'], restore_status='completed', file_path=file_path
+                        mark_failed(
+                            item['id'],
+                            f"Move error: {mv_err}",
+                            schedule_retry=True,
+                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            clear_file_fields=True,
                         )
                     except Exception:
                         pass

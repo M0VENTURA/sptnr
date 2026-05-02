@@ -47,6 +47,11 @@ try:
 except ImportError:
     _HAVE_MATCHING_UTILS = False
 
+try:
+    from mutagen import File as MutagenFile
+except ImportError:
+    MutagenFile = None
+
 logger = logging.getLogger("download_queue")
 if not logger.handlers:
     _queue_log_handler = logging.FileHandler("/config/download_queue.log")
@@ -872,6 +877,14 @@ def cleanup_stale_non_torrent_downloads(downloads_dir, max_age_hours=24):
                 file_path = os.path.join(root, filename)
                 try:
                     if os.path.getmtime(file_path) < cutoff:
+                        # Safety: never delete outside the downloads directory.
+                        real_file = os.path.realpath(os.path.abspath(file_path))
+                        if not real_file.startswith(abs_downloads + os.sep):
+                            logger.warning(
+                                f"[CLEANUP] REFUSING to delete stale file outside "
+                                f"downloads directory: {file_path}"
+                            )
+                            continue
                         os.remove(file_path)
                         deleted += 1
                         logger.info(f"[CLEANUP] Deleted stale non-torrent file: {file_path}")
@@ -1361,6 +1374,10 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 # separately from file_path (which points to the /downloads source)
                 # so both can be tracked independently during the move workflow.
                 'music_file_path': "TEXT",
+                # Timestamp of the last time the processor attempted to search/download
+                # this item.  Used to spread retries fairly across the queue instead of
+                # hammering the same recently-failed item repeatedly.
+                'last_attempted_at': "TIMESTAMP",
             }
 
             for col, col_type in required_cols.items():
@@ -3154,63 +3171,82 @@ def update_queue_item(queue_id, **kwargs):
     return None
 
 
+# Synced with queue_processor.py – prevents rapid 5-minute retry loops.
+_DQM_MIN_RETRY_DELAY_MINUTES = 60
+_DQM_MAX_RETRY_DELAY_MINUTES = 1440
+
+
+def _dqm_calculate_retry_delay(retry_count, requested_delay_minutes):
+    """Compute an exponentially-backing-off retry delay.
+
+    Formula: max(requested_delay, MIN_RETRY_DELAY_MINUTES * 2^(retry_count-1))
+    Capped at _DQM_MAX_RETRY_DELAY_MINUTES (24 h).
+    """
+    base = int(requested_delay_minutes or 0)
+    exponential = _DQM_MIN_RETRY_DELAY_MINUTES * (2 ** max(0, retry_count - 1))
+    return min(max(base, exponential), _DQM_MAX_RETRY_DELAY_MINUTES)
+
+
 def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
     """
-    Mark queue item as failed and schedule retry with retry logic for database locks
-    
-    Args:
-        queue_id: Queue item ID
-        reason: Failure reason
-        retry_delay_minutes: Minutes until next retry
-    
-    Returns:
-        Updated item or None
+    Mark queue item as failed and schedule retry with retry logic for database locks.
+
+    Uses exponential backoff based on retry_count so repeatedly-failed items do
+    not starve the queue with short retry loops.
     """
     max_retries = 5
     retry_delay = 0.1
-    
+
     for attempt in range(max_retries):
         try:
             conn = _get_postgres_conn_from_app_or_fallback()
 
             cursor = conn.cursor()
             placeholder = "%s"
-            
-            # Get current retry count
+
+            # Get current retry count and max_retries
             cursor.execute(f"SELECT retry_count, max_retries FROM download_queue WHERE id = {placeholder}", (queue_id,))
             row = cursor.fetchone()
-            
+
             if not row:
                 conn.close()
                 return None
-            
+
             retry_count = (row['retry_count'] or 0) + 1
             max_r = row['max_retries']
-            next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
-            
+            effective_delay = _dqm_calculate_retry_delay(retry_count, retry_delay_minutes)
+            next_retry = datetime.now() + timedelta(minutes=effective_delay)
+
             # Check if we've exceeded max retries
             if max_r and retry_count >= max_r:
                 new_status = 'failed'
                 logger.warning(f"Queue item {queue_id} exceeded max retries ({retry_count}/{max_r}): {reason}")
             else:
                 new_status = 'queued'
-                logger.info(f"Queue item {queue_id} scheduled for retry (attempt {retry_count}/{max_r}) at {next_retry}: {reason}")
-            
+                logger.info(
+                    f"Queue item {queue_id} scheduled for retry (attempt {retry_count}/{max_r}) "
+                    f"at {next_retry} (delay={effective_delay}m): {reason}"
+                )
+
+            extra_sets = ""
+            if new_status == 'queued':
+                extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL"
+
             cursor.execute(f"""
-                UPDATE download_queue 
-                SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP, next_retry_at = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                UPDATE download_queue
+                SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP, next_retry_at = {placeholder}{extra_sets}, updated_at = CURRENT_TIMESTAMP
                 WHERE id = {placeholder}
             """, (new_status, retry_count, reason, next_retry.isoformat(), queue_id))
-            
+
             conn.commit()
-            
+
             # Return updated item
             cursor.execute(f"SELECT * FROM download_queue WHERE id = {placeholder}", (queue_id,))
             item = cursor.fetchone()
             conn.close()
-            
+
             return dict(item) if item else None
-        
+
         except psycopg2.OperationalError as e:
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
@@ -3222,7 +3258,7 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
         except Exception as e:
             logger.error(f"Error marking queue item as failed: {e}")
             return None
-    
+
     logger.error(f"Failed to mark queue item {queue_id} as failed after {max_retries} retries")
     return None
 
@@ -3859,6 +3895,10 @@ def _prune_empty_download_folders(downloads_root):
                 candidate = os.path.join(current_root, d)
                 try:
                     if os.path.abspath(candidate) == abs_root:
+                        continue
+                    # Safety: never remove a folder outside the downloads root.
+                    real_candidate = os.path.realpath(os.path.abspath(candidate))
+                    if not real_candidate.startswith(abs_root + os.sep):
                         continue
                     if os.path.isdir(candidate) and not os.listdir(candidate):
                         os.rmdir(candidate)
@@ -5354,10 +5394,17 @@ def check_downloads_folder():
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         ph = "%s"
 
-        # Get all active queue items (not yet completed or imported)
+        # Get active queue items that have NOT yet been dispatched to slskd.
+        # 'downloading' items are intentionally EXCLUDED here — they are
+        # exclusively handled by queue_processor.check_completed_downloads()
+        # which performs slskd-transfer-state reconciliation and proper
+        # metadata verification.  Including 'downloading' in this filesystem
+        # scan creates a race where check_downloads_folder can flip an item
+        # to 'completed' before slskd-aware logic has a chance to verify it,
+        # leaving non-MusicBrainz or partial-album matches orphaned.
         cursor.execute("""
             SELECT * FROM download_queue 
-            WHERE status IN ('queued', 'searching', 'downloading')
+            WHERE status IN ('queued', 'searching')
             ORDER BY created_at ASC
         """)
         queue_items = cursor.fetchall()
@@ -5374,6 +5421,17 @@ def check_downloads_folder():
 
         conversion_settings = _read_download_conversion_settings()
         original_subfolder = (conversion_settings.get("original_subfolder") or "Original").strip().lower()
+
+        # Lazy imports to avoid circular references at module load time.
+        # queue_processor imports from download_queue_manager, so we must not
+        # import it at the top level.
+        try:
+            from queue_processor import _metadata_matches_queue_item as _qp_metadata_matches
+            from queue_processor import matches_queue_item as _qp_matches_queue_item
+        except Exception as _imp_err:
+            logger.warning(f"[check_downloads_folder] Could not import queue_processor matchers: {_imp_err}")
+            _qp_metadata_matches = None
+            _qp_matches_queue_item = None
 
         # Recursively get all supported audio files in downloads folder and subdirectories.
         # Queue scanner is intentionally strict: mp3/flac only.
@@ -5436,6 +5494,20 @@ def check_downloads_folder():
                     return None
                 return row_value.get('file_path')
 
+            def _verify_meta(path_value):
+                if not path_value or not _is_within_music(path_value) or not os.path.isfile(path_value):
+                    return False
+                file_meta = read_mp3_metadata(path_value) or {}
+                meta_match = _metadata_matches_queue_item(
+                    file_meta, queue_item, file_path=path_value, check_quality=False
+                )
+                if meta_match is False:
+                    logger.debug(
+                        f"[RECONCILE] Metadata mismatch for queue {queue_item.get('id')} at {path_value}"
+                    )
+                    return False
+                return True
+
             queue_item_id = queue_item.get('id') if queue_item else None
             try:
                 # 1) Strongest match: recording MBID already present on tracks.mbid
@@ -5457,7 +5529,7 @@ def check_downloads_folder():
                     row = cursor.fetchone()
                     if row:
                         path_value = _row_file_path(row)
-                        if path_value and _is_within_music(path_value) and os.path.isfile(path_value):
+                        if _verify_meta(path_value):
                             return path_value
 
                 # 2) Fallback: artist+title (+album preference) against imported tracks
@@ -5488,7 +5560,7 @@ def check_downloads_folder():
                 rows = cursor.fetchall() or []
                 for row in rows:
                     path_value = _row_file_path(row)
-                    if path_value and _is_within_music(path_value) and os.path.isfile(path_value):
+                    if _verify_meta(path_value):
                         return path_value
 
                 return None
@@ -5558,11 +5630,10 @@ def check_downloads_folder():
                         except Exception:
                             metadata = None
 
-                        meta_state = _metadata_matches_queue_item(
-                            metadata or {},
-                            queue_item,
-                            file_path=file_info['full_path'],
-                            check_quality=False,
+                        meta_state = (
+                            _qp_metadata_matches(file_info['full_path'], queue_item)
+                            if _qp_metadata_matches is not None
+                            else None
                         )
                         if meta_state is False:
                             # File metadata doesn't match queue item, skip this file
@@ -5588,11 +5659,10 @@ def check_downloads_folder():
                     except Exception:
                         metadata = None
 
-                    meta_state = _metadata_matches_queue_item(
-                        metadata or {},
-                        queue_item,
-                        file_path=file_info['full_path'],
-                        check_quality=False,
+                    meta_state = (
+                        _qp_metadata_matches(file_info['full_path'], queue_item)
+                        if _qp_metadata_matches is not None
+                        else None
                     )
 
                     # If tags exist and disagree, never allow filename fallback.
@@ -5613,7 +5683,9 @@ def check_downloads_folder():
                     # "first file wins" is still avoided because is_match requires
                     # both the artist AND the title to appear in the path.
                     rel_path = file_info['rel_path']
-                    if is_match(rel_path, queue_item):
+                    if _qp_matches_queue_item is not None and _qp_matches_queue_item(
+                        rel_path, queue_item, file_info['full_path']
+                    ):
                         # Duration double-check: hard-reject when both sides have a
                         # known duration and they differ by more than 5 seconds.
                         file_dur_ms = (metadata or {}).get('duration_ms')
@@ -5660,13 +5732,17 @@ def check_downloads_folder():
                 folder_all_audio = _folder_files_map.get(match_dir, [])
                 folder_audio_count = len(folder_all_audio)
 
-                # First mark as completed so the item has file_path set
+                # First mark as completed so the item has file_path set.
+                # Do NOT set imported_at here — that column is reserved for the
+                # 'imported' terminal state.  Setting it prematurely prevents
+                # post_download_processor from picking this item up (it filters
+                # on imported_at IS NULL) and leaves the row stuck in
+                # 'completed' indefinitely.
                 updated_item = update_queue_item(
                     queue_item['id'],
                     status='completed',
                     found_filename=match_found,
                     file_path=match_path,
-                    imported_at=datetime.now().isoformat()
                 )
 
                 if updated_item:
@@ -5845,20 +5921,23 @@ def check_downloads_folder():
                                     'verification_soft_failed': True
                                 })
                             else:
-                                # Verification failed - update path to target location since file was moved
+                                # Verification failed and the file is not at the target
+                                # path.  Release the claim so retry_pending_completed_moves
+                                # can attempt the move again on the next sweep.
                                 logger.warning(
-                                    f"[MOVE] Queue {queue_item['id']}: verification FAILED ({verify_result.get('error')}), "
-                                    f"updating path to moved location"
+                                    f"[MOVE] Queue {queue_item['id']}: verification FAILED "
+                                    f"({verify_result.get('error')}) and file not found at "
+                                    f"{target_path} — releasing claim for retry"
                                 )
-                                update_queue_item(
+                                _release_move_claim(
                                     queue_item['id'],
-                                    status='completed',
-                                    music_file_path=target_path  # File was moved to target_path
+                                    restore_status='completed',
+                                    file_path=match_path
                                 )
                                 completed_items.append({
                                     'queue_id': queue_item['id'],
                                     'filename': match_found,
-                                    'file_path': target_path,
+                                    'file_path': match_path,
                                     'artist': queue_item['artist'],
                                     'title': queue_item['title'],
                                     'album': queue_item['album'],
@@ -6704,18 +6783,39 @@ def auto_discover_and_queue_files():
                 """,
                 (artist_value, album_value, title_value),
             )
-            valid_row = _pick_valid_collection_track_row(
-                cursor.fetchall(),
-                artist_value,
-                album_value,
-                album_artist_value,
-            )
-            if not valid_row:
-                return None
-            return {
-                'id': _row_get(valid_row, 'id', 0, None),
-                'file_path': _row_get(valid_row, 'file_path', 1, None),
-            }
+            rows = cursor.fetchall()
+            for row in rows or []:
+                valid_row = _pick_valid_collection_track_row(
+                    [row],
+                    artist_value,
+                    album_value,
+                    album_artist_value,
+                )
+                if not valid_row:
+                    continue
+                path_value = _row_get(valid_row, 'file_path', 1, None)
+                if path_value and os.path.isfile(path_value):
+                    file_meta = read_mp3_metadata(path_value) or {}
+                    # Build a minimal queue-item dict for metadata comparison
+                    _mini_queue = {
+                        'artist': artist_value,
+                        'album': album_value,
+                        'title': title_value,
+                        'album_artist': album_artist_value or artist_value,
+                    }
+                    meta_match = _metadata_matches_queue_item(
+                        file_meta, _mini_queue, file_path=path_value, check_quality=False
+                    )
+                    if meta_match is False:
+                        logger.debug(
+                            f"[AUTO-DISCOVER] Metadata mismatch for library track at {path_value}"
+                        )
+                        continue
+                return {
+                    'id': _row_get(valid_row, 'id', 0, None),
+                    'file_path': _row_get(valid_row, 'file_path', 1, None),
+                }
+            return None
 
         def _find_library_path_match(source_full_path):
             """Location-based match: /downloads/<rel> -> /music/<rel>."""
@@ -7897,10 +7997,13 @@ def check_and_remove_failed_downloads():
                 if queue_item:
                     queue_id = queue_item['id'] if hasattr(queue_item, 'keys') else queue_item[0]
                     logger.info(f"Marking queue item {queue_id} for retry (failed download: {state!r})")
+                    # Let mark_as_failed apply exponential backoff; passing 15 here
+                    # is only a floor hint — the actual delay will be at least
+                    # 60 minutes for the first retry and doubles from there.
                     mark_as_failed(
                         queue_id,
                         f"Download failed: {state}",
-                        retry_delay_minutes=5,
+                        retry_delay_minutes=15,
                     )
                     stats["retry_scheduled"] += 1
                 
@@ -7942,14 +8045,15 @@ def check_and_remove_failed_downloads():
 
 def cleanup_imported(days=7):
     """
-    Remove imported items older than X days to keep queue clean
+    Remove imported AND stale completed items older than *days* to keep queue clean.
     
     Args:
-        days: Days to keep imported items
+        days: Days to keep terminal items
     
     Returns:
-        Number of items removed
+        Total number of items removed
     """
+    total_removed = 0
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -7957,6 +8061,7 @@ def cleanup_imported(days=7):
         
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
         
+        # 1) Purge old imported rows
         execute_write_with_retry(
             cursor,
             conn,
@@ -7968,14 +8073,30 @@ def cleanup_imported(days=7):
             (cutoff_date,),
             context="cleanup_imported delete"
         )
-
-        removed = cursor.rowcount
+        total_removed += int(cursor.rowcount or 0)
+        
+        # 2) Purge old completed rows that were never promoted to imported.
+        # These can accumulate when a file was matched but the move pipeline
+        # repeatedly failed or the source file vanished.
+        execute_write_with_retry(
+            cursor,
+            conn,
+            f"""
+            DELETE FROM download_queue
+            WHERE status = 'completed'
+              AND updated_at < {placeholder}
+        """,
+            (cutoff_date,),
+            context="cleanup_stale_completed delete"
+        )
+        total_removed += int(cursor.rowcount or 0)
+        
         conn.close()
         
-        if removed > 0:
-            logger.info(f"Cleaned up {removed} old imported queue items")
+        if total_removed > 0:
+            logger.info(f"Cleaned up {total_removed} old queue items (imported/completed)")
         
-        return removed
+        return total_removed
         
     except Exception as e:
         logger.error(f"Error cleaning up queue: {e}")

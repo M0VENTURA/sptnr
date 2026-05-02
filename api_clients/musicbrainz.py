@@ -1254,6 +1254,100 @@ def get_artist_country(artist: str, enabled: bool = True) -> str:
     return client.get_artist_country(artist)
 
 
+def lookup_recording_clean_names(title: str, artist: str, enabled: bool = True) -> dict:
+    """
+    Search MusicBrainz for a recording and return clean canonical artist/title names.
+
+    Exportify CSVs often have semicolon-joined artists (e.g. "Atreyu;Soulfly;Max Cavalera").
+    This function queries MusicBrainz recordings and returns the primary artist credit
+    and recording title so downstream matching (library fuzzy-match and Soulseek search)
+    use clean names.
+
+    Args:
+        title: Track title (from CSV / external source)
+        artist: Artist name (may contain semicolons from Exportify)
+        enabled: Whether MusicBrainz lookups are enabled
+
+    Returns:
+        Dict with keys:
+            - artist: Clean primary artist name (empty string if lookup failed)
+            - title: Clean recording title (empty string if lookup failed)
+            - recording_mbid: MusicBrainz recording UUID (empty string if not found)
+            - confidence: 0.0–1.0 title-similarity score
+    """
+    result = {"artist": "", "title": "", "recording_mbid": "", "confidence": 0.0}
+    if not enabled:
+        return result
+
+    # Use the first artist if semicolon-separated
+    primary_artist = artist.split(";")[0].strip() if ";" in artist else artist.strip()
+    if not primary_artist or not title:
+        return result
+
+    try:
+        client = _get_musicbrainz_client(enabled)
+
+        if _rate_limiter:
+            _rate_limiter.throttle_musicbrainz()
+        else:
+            time.sleep(1.0)
+
+        escaped_title = _escape_lucene_special_chars(title)
+        escaped_artist = _escape_lucene_special_chars(primary_artist)
+        query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
+        params = {
+            "query": query,
+            "fmt": "json",
+            "limit": 3,
+            "inc": "artist-credits",
+        }
+        r = client.session.get(
+            f"{client.base_url}recording/",
+            params=params,
+            headers=client.headers,
+            timeout=(5, 10),
+        )
+        r.raise_for_status()
+        recordings = r.json().get("recordings", []) or []
+        if not recordings:
+            return result
+
+        # Pick the best match by title similarity
+        best_rec = None
+        best_score = 0.0
+        nav_title = (title or "").lower()
+        for rec in recordings:
+            rec_title = (rec.get("title") or "").lower()
+            score = difflib.SequenceMatcher(None, nav_title, rec_title).ratio()
+            if score > best_score:
+                best_score = score
+                best_rec = rec
+
+        if not best_rec or best_score < 0.5:
+            return result
+
+        # Extract primary artist from artist-credit
+        artist_credits = best_rec.get("artist-credit", [])
+        clean_artist = ""
+        if artist_credits and isinstance(artist_credits[0], dict):
+            clean_artist = (artist_credits[0].get("name") or "").strip()
+
+        clean_title = (best_rec.get("title") or "").strip()
+        recording_mbid = (best_rec.get("id") or "").strip()
+
+        result["artist"] = clean_artist or primary_artist
+        result["title"] = clean_title or title
+        result["recording_mbid"] = recording_mbid
+        result["confidence"] = round(best_score, 3)
+        return result
+    except requests.exceptions.Timeout:
+        logger.debug(f"MusicBrainz clean-name lookup timed out for '{title}' by '{artist}'")
+        return result
+    except Exception as e:
+        logger.debug(f"MusicBrainz clean-name lookup failed for '{title}' by '{artist}': {e}")
+        return result
+
+
 def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: str = None, enabled: bool = True, track_count: int = None, release_group_mbid: str = None) -> tuple[str, str, str | None]:
     """
     Get album type from MusicBrainz with Spotify fallback using intelligent candidate scoring.

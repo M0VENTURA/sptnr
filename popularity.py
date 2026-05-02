@@ -4986,7 +4986,7 @@ def popularity_scan(
                                 if mbid_row:
                                     release_group_mbid = row_get(mbid_row, 'musicbrainz_album_mbid')
                                     if release_group_mbid:
-                                        log_debug(f'Using release group MBID {release_group_mbid} for direct MusicBrainz lookup')
+                                        log_debug(f'Using stored MBID {release_group_mbid} for direct MusicBrainz lookup')
                             except Exception:
                                 pass  # Column may not exist in older schemas
                             detected_album_type, type_detection_source, discovered_release_group_mbid = get_album_type_with_fallback(
@@ -4996,8 +4996,26 @@ def popularity_scan(
                             log_debug(f'MusicBrainz album type: "{detected_album_type}" (source: {type_detection_source})')
                             # Capture a newly-discovered MBID (text-search path) so it can
                             # be propagated to all tracks that are currently missing it.
+                            # The value returned by get_album_type_with_fallback is a
+                            # release-group MBID, but musicbrainz_album_mbid stores a
+                            # release MBID (specific pressing). Resolve a representative
+                            # release before writing so Navidrome groups tracks correctly.
                             if discovered_release_group_mbid and not release_group_mbid:
-                                release_group_mbid = discovered_release_group_mbid
+                                _representative_release_mbid = None
+                                try:
+                                    from post_download_processor import fetch_musicbrainz_release_metadata
+                                    _mb_meta = fetch_musicbrainz_release_metadata(discovered_release_group_mbid)
+                                    if _mb_meta and _mb_meta.get('release_mbid'):
+                                        _representative_release_mbid = _mb_meta['release_mbid']
+                                        log_debug(f'Resolved release-group {discovered_release_group_mbid} to release {_representative_release_mbid}')
+                                except Exception as _conv_err:
+                                    log_debug(f'Could not resolve release-group MBID to release MBID: {_conv_err}')
+                                if _representative_release_mbid:
+                                    release_group_mbid = _representative_release_mbid
+                                else:
+                                    # Skip writing rather than storing a release-group ID
+                                    # in the release-level column.
+                                    release_group_mbid = None
                         except Exception as e:
                             log_debug(f'Failed to fetch album type from MusicBrainz: {e}')
                             detected_album_type = current_album_type or 'album'
