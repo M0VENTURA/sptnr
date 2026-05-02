@@ -877,6 +877,14 @@ def cleanup_stale_non_torrent_downloads(downloads_dir, max_age_hours=24):
                 file_path = os.path.join(root, filename)
                 try:
                     if os.path.getmtime(file_path) < cutoff:
+                        # Safety: never delete outside the downloads directory.
+                        real_file = os.path.realpath(os.path.abspath(file_path))
+                        if not real_file.startswith(abs_downloads + os.sep):
+                            logger.warning(
+                                f"[CLEANUP] REFUSING to delete stale file outside "
+                                f"downloads directory: {file_path}"
+                            )
+                            continue
                         os.remove(file_path)
                         deleted += 1
                         logger.info(f"[CLEANUP] Deleted stale non-torrent file: {file_path}")
@@ -3883,6 +3891,10 @@ def _prune_empty_download_folders(downloads_root):
                 candidate = os.path.join(current_root, d)
                 try:
                     if os.path.abspath(candidate) == abs_root:
+                        continue
+                    # Safety: never remove a folder outside the downloads root.
+                    real_candidate = os.path.realpath(os.path.abspath(candidate))
+                    if not real_candidate.startswith(abs_root + os.sep):
                         continue
                     if os.path.isdir(candidate) and not os.listdir(candidate):
                         os.rmdir(candidate)

@@ -100,6 +100,16 @@ STATUS_DISPLAY_CONFIG: dict[str, dict[str, str]] = {
         'css': 'bg-primary',
         'icon': 'hand-index',
     },
+    'in_collection': {
+        'label': 'In Collection',
+        'css': 'bg-success',
+        'icon': 'collection',
+    },
+    'matched': {
+        'label': 'Matched',
+        'css': 'bg-info text-dark',
+        'icon': 'check-circle',
+    },
 }
 
 # Fallback entry used when a status value is not found in STATUS_DISPLAY_CONFIG.
