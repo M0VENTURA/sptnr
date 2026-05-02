@@ -5921,20 +5921,23 @@ def check_downloads_folder():
                                     'verification_soft_failed': True
                                 })
                             else:
-                                # Verification failed - update path to target location since file was moved
+                                # Verification failed and the file is not at the target
+                                # path.  Release the claim so retry_pending_completed_moves
+                                # can attempt the move again on the next sweep.
                                 logger.warning(
-                                    f"[MOVE] Queue {queue_item['id']}: verification FAILED ({verify_result.get('error')}), "
-                                    f"updating path to moved location"
+                                    f"[MOVE] Queue {queue_item['id']}: verification FAILED "
+                                    f"({verify_result.get('error')}) and file not found at "
+                                    f"{target_path} — releasing claim for retry"
                                 )
-                                update_queue_item(
+                                _release_move_claim(
                                     queue_item['id'],
-                                    status='completed',
-                                    music_file_path=target_path  # File was moved to target_path
+                                    restore_status='completed',
+                                    file_path=match_path
                                 )
                                 completed_items.append({
                                     'queue_id': queue_item['id'],
                                     'filename': match_found,
-                                    'file_path': target_path,
+                                    'file_path': match_path,
                                     'artist': queue_item['artist'],
                                     'title': queue_item['title'],
                                     'album': queue_item['album'],
