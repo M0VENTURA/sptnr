@@ -1563,6 +1563,30 @@
     </div>
 </div>
 
+<!-- Release Picker Modal (shown when auto-match is not confident) -->
+<div class="modal fade" id="releasePickerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-list-ul me-2"></i>Select Specific Release</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3">
+                    The automatic match was not confident enough. Please select the release that best matches your local tracks.
+                    Expand a release to view its track list.
+                </p>
+                <div id="releasePickerStatus" class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <p class="mt-2 text-muted">Fetching releases…</p>
+                </div>
+                <div id="releasePickerError" class="alert alert-danger" style="display:none;"></div>
+                <div id="releasePickerResults"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
     // Global variables for album page
     let currentEditTrackId = null;
@@ -1768,14 +1792,13 @@
                                         ? `<button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.mbid}', '', '${result.cover_art_url || ''}', '')">
                                             <i class="bi bi-check-circle"></i> Use This Album
                                         </button>`
-                                        : `<button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '', '', '${result.cover_art_url || ''}', '', '${result.mbid}')">
+                                        : `<button class="btn btn-sm btn-primary" onclick="autoPickRelease('${result.mbid}', '${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.cover_art_url || ''}')">
                                             <i class="bi bi-check-circle"></i> Use This Album
                                         </button>`}
-                                    <button class="btn btn-sm btn-outline-secondary" onclick="showReleaseGroupReleases('${result.mbid}', '${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', this)" title="Show all specific releases in this release group">
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="openReleasePickerModal('${result.mbid}', '${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}')" title="Show all specific releases in this release group">
                                         <i class="bi bi-list-ul"></i> Pick Release
                                     </button>
                                 </div>
-                                <div id="rg-releases-${result.mbid}" class="mt-2" style="display:none;"></div>
                             </div>
                         </div>
                     </div>
@@ -1842,65 +1865,177 @@
         resultsDiv.innerHTML = html;
     }
 
-    async function showReleaseGroupReleases(rgMbid, title, year, albumType, btn) {
-        const containerId = 'rg-releases-' + rgMbid;
-        const container = document.getElementById(containerId);
-        if (!container) return;
-
-        if (container.style.display !== 'none') {
-            container.style.display = 'none';
-            btn.innerHTML = '<i class="bi bi-list-ul"></i> Pick Release';
-            return;
-        }
-
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+    // ── Auto-pick release from a release group ──────────────────────────────
+    async function autoPickRelease(rgMbid, title, year, albumType, coverArtUrl) {
+        const artist = {{ artist_name|tojson }};
+        const album = {{ album_name|tojson }};
 
         try {
-            const resp = await fetch('/api/album/musicbrainz/release-group/releases', {
+            const resp = await fetch('/api/album/musicbrainz/best-release', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ release_group_mbid: rgMbid })
+                body: JSON.stringify({ release_group_mbid: rgMbid, artist, album })
             });
             const data = await resp.json();
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-list-ul"></i> Pick Release';
 
-            if (!data.success || !data.releases || data.releases.length === 0) {
-                container.innerHTML = '<small class="text-muted">No specific releases found.</small>';
-                container.style.display = '';
+            if (!data.success) {
+                openReleasePickerModal(rgMbid, title, year, albumType);
                 return;
             }
 
-            let html = '<div class="list-group list-group-flush mt-1" style="font-size: 0.82rem;">';
-            for (const r of data.releases) {
-                const fmt = escapeHtml(r.formats.join(' + ') || 'Unknown format');
-                const discs = r.disc_count > 1 ? ` · ${r.disc_count} discs` : '';
-                const country = r.country ? ` · ${escapeHtml(r.country)}` : '';
-                const disambiguation = r.disambiguation ? ` (${escapeHtml(r.disambiguation)})` : '';
-                const safeTitle = escapeHtml(r.title);
-                const safeId = escapeHtml(r.id);
-                html += `
-                    <div class="list-group-item list-group-item-action py-1 px-2 d-flex justify-content-between align-items-center">
-                        <div>
-                            <strong>${safeTitle}${disambiguation}</strong>
-                            <span class="text-muted ms-2">${escapeHtml(r.date || '?')}${country} · ${fmt} · ${r.track_count} tracks${discs}</span>
-                        </div>
-                        <button class="btn btn-xs btn-primary btn-sm py-0 px-1 ms-2" style="font-size:0.75rem; white-space:nowrap;"
-                            onclick="populateAlbumFields('${escapeJsString(r.title)}', '${escapeHtml(r.date ? r.date.slice(0,4) : year)}', '${escapeHtml(albumType)}', '${safeId}', '', '${escapeJsString(r.cover_art_url || '')}', '', '')">
-                            Use
-                        </button>
-                    </div>`;
+            // If we have a confident match, use it directly
+            if (data.best_release && data.confidence >= 0.8) {
+                const r = data.best_release;
+                populateAlbumFields(
+                    r.title || title,
+                    (r.date ? r.date.slice(0, 4) : year) || year,
+                    albumType,
+                    r.id,
+                    '',
+                    r.cover_art_url || coverArtUrl || '',
+                    '',
+                    ''
+                );
+                return;
             }
-            html += '</div>';
 
-            container.innerHTML = html;
-            container.style.display = '';
+            // Not confident enough — open the picker modal
+            openReleasePickerModal(rgMbid, title, year, albumType, data.releases, data.best_release);
         } catch (e) {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-list-ul"></i> Pick Release';
-            container.innerHTML = `<small class="text-danger">Error: ${escapeHtml(e.message)}</small>`;
-            container.style.display = '';
+            openReleasePickerModal(rgMbid, title, year, albumType);
+        }
+    }
+
+    // ── Release Picker Modal ────────────────────────────────────────────────
+    let _releasePickerCache = null; // { rgMbid, title, year, albumType, releases, bestRelease }
+
+    async function openReleasePickerModal(rgMbid, title, year, albumType, preloadedReleases = null, preloadedBest = null) {
+        const statusEl = document.getElementById('releasePickerStatus');
+        const errorEl = document.getElementById('releasePickerError');
+        const resultsEl = document.getElementById('releasePickerResults');
+
+        statusEl.style.display = 'block';
+        errorEl.style.display = 'none';
+        resultsEl.innerHTML = '';
+
+        const modal = new bootstrap.Modal(document.getElementById('releasePickerModal'));
+        modal.show();
+
+        let releases = preloadedReleases;
+        let bestRelease = preloadedBest;
+
+        if (!releases) {
+            try {
+                const resp = await fetch('/api/album/musicbrainz/release-group/releases', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ release_group_mbid: rgMbid })
+                });
+                const data = await resp.json();
+                if (!data.success || !data.releases || data.releases.length === 0) {
+                    statusEl.style.display = 'none';
+                    errorEl.textContent = 'No specific releases found for this release group.';
+                    errorEl.style.display = 'block';
+                    return;
+                }
+                releases = data.releases;
+            } catch (e) {
+                statusEl.style.display = 'none';
+                errorEl.textContent = 'Error fetching releases: ' + e.message;
+                errorEl.style.display = 'block';
+                return;
+            }
+        }
+
+        _releasePickerCache = { rgMbid, title, year, albumType, releases, bestRelease };
+        statusEl.style.display = 'none';
+        _renderReleasePickerResults(releases, year, albumType, bestRelease);
+    }
+
+    function _renderReleasePickerResults(releases, year, albumType, bestRelease) {
+        const resultsEl = document.getElementById('releasePickerResults');
+        let html = '<div class="list-group list-group-flush">';
+
+        for (let idx = 0; idx < releases.length; idx++) {
+            const r = releases[idx];
+            const isBest = bestRelease && r.id === bestRelease.id;
+            const fmt = escapeHtml(r.formats.join(' + ') || 'Unknown format');
+            const discs = r.disc_count > 1 ? ` · ${r.disc_count} discs` : '';
+            const country = r.country ? ` · ${escapeHtml(r.country)}` : '';
+            const disambiguation = r.disambiguation ? ` (${escapeHtml(r.disambiguation)})` : '';
+            const safeTitle = escapeHtml(r.title);
+            const safeId = escapeHtml(r.id);
+            const bestBadge = isBest ? '<span class="badge bg-success ms-2">Best Match</span>' : '';
+
+            html += `
+                <div class="list-group-item">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <div>
+                            <strong>${safeTitle}${disambiguation}</strong>${bestBadge}
+                            <div class="text-muted small">
+                                ${escapeHtml(r.date || '?')}${country} · ${fmt} · ${r.track_count} tracks${discs}
+                                ${r.status ? ' · <span class="badge bg-light text-dark border">' + escapeHtml(r.status) + '</span>' : ''}
+                            </div>
+                        </div>
+                        <div class="d-flex gap-2 align-items-center">
+                            <button class="btn btn-sm btn-outline-info" onclick="toggleReleaseTracks('${safeId}', ${idx})" id="btn-toggle-tracks-${safeId}">
+                                <i class="bi bi-music-note-list"></i> Tracks
+                            </button>
+                            <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(r.title)}', '${escapeHtml(r.date ? r.date.slice(0,4) : year)}', '${escapeHtml(albumType)}', '${safeId}', '', '${escapeJsString(r.cover_art_url || '')}', '', '')">
+                                <i class="bi bi-check-circle"></i> Select
+                            </button>
+                        </div>
+                    </div>
+                    <div id="release-tracks-${safeId}" class="mt-2" style="display:none;">
+                        <div class="text-muted small ps-3">
+                            <span class="spinner-border spinner-border-sm" role="status"></span> Loading tracks…
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        html += '</div>';
+        resultsEl.innerHTML = html;
+    }
+
+    async function toggleReleaseTracks(releaseMbid, idx) {
+        const container = document.getElementById('release-tracks-' + releaseMbid);
+        const btn = document.getElementById('btn-toggle-tracks-' + releaseMbid);
+        if (!container || !btn) return;
+
+        if (container.style.display !== 'none') {
+            container.style.display = 'none';
+            btn.innerHTML = '<i class="bi bi-music-note-list"></i> Tracks';
+            return;
+        }
+
+        container.style.display = '';
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+
+        try {
+            const resp = await fetch('/api/album/musicbrainz/release/tracks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ release_mbid: releaseMbid })
+            });
+            const data = await resp.json();
+            btn.innerHTML = '<i class="bi bi-music-note-list"></i> Tracks';
+
+            if (!data.success || !data.tracks || data.tracks.length === 0) {
+                container.innerHTML = '<div class="text-muted small ps-3">No track data available.</div>';
+                return;
+            }
+
+            let html = '<div class="small ps-3"><ol class="mb-0">';
+            for (const t of data.tracks) {
+                const dur = t.duration_ms ? ` (${Math.round(t.duration_ms / 1000)}s)` : '';
+                html += `<li>${escapeHtml(t.title)}${dur}</li>`;
+            }
+            html += '</ol></div>';
+            container.innerHTML = html;
+        } catch (e) {
+            btn.innerHTML = '<i class="bi bi-music-note-list"></i> Tracks';
+            container.innerHTML = `<div class="text-danger small ps-3">Error: ${escapeHtml(e.message)}</div>`;
         }
     }
 
@@ -2525,9 +2660,11 @@
     
     // Album metadata form population function
     function populateAlbumFields(title, year, albumType, mbid, discogsId, coverArtUrl, genres, releaseGroupMbid) {
-        // Close the modal
-        const modal = bootstrap.Modal.getInstance(document.getElementById('albumLookupModal'));
-        if (modal) modal.hide();
+        // Close any open lookup modals
+        const lookupModal = bootstrap.Modal.getInstance(document.getElementById('albumLookupModal'));
+        if (lookupModal) lookupModal.hide();
+        const pickerModal = bootstrap.Modal.getInstance(document.getElementById('releasePickerModal'));
+        if (pickerModal) pickerModal.hide();
         
         // Populate form fields
         if (title) {
