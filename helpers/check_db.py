@@ -103,6 +103,50 @@ def update_schema(_db_path: str | None = None) -> bool:
             "CREATE INDEX IF NOT EXISTS idx_recommendation_candidates_user_generator ON recommendation_candidates (app_user, generator_key, candidate_index)"
         )
 
+        _ensure_table(
+            cursor,
+            "weekly_sync_state",
+            """
+            CREATE TABLE IF NOT EXISTS weekly_sync_state (
+                username TEXT NOT NULL,
+                source TEXT NOT NULL,
+                last_synced_week TEXT,
+                last_synced_at TEXT,
+                navidrome_playlist_id TEXT,
+                PRIMARY KEY (username, source)
+            )
+            """,
+        )
+
+        _ensure_table(
+            cursor,
+            "weekly_playlist_tracks",
+            """
+            CREATE TABLE IF NOT EXISTS weekly_playlist_tracks (
+                id SERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                source TEXT NOT NULL,
+                artist_name TEXT,
+                track_name TEXT,
+                release_name TEXT,
+                recording_mbid TEXT,
+                release_mbid TEXT,
+                match_status TEXT NOT NULL DEFAULT 'missing',
+                local_track_id INTEGER,
+                file_path TEXT,
+                queue_id INTEGER,
+                synced_at TEXT NOT NULL,
+                week_key TEXT NOT NULL
+            )
+            """,
+        )
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_weekly_playlist_unique ON weekly_playlist_tracks (username, source, artist_name, track_name)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_weekly_playlist_status ON weekly_playlist_tracks (username, source, match_status)"
+        )
+
         conn.commit()
         return True
     except Exception as exc:

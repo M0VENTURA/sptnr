@@ -9,6 +9,16 @@
     <div class="mb-3">
         <div class="row g-2 align-items-center">
             <div class="col-auto">
+                <select id="logSelector" class="form-select form-select-sm">
+                    <option value="main">Main Log</option>
+                    <option value="webui">Web UI Log</option>
+                    <option value="beets">Beets Log</option>
+                    <option value="navidrome">Navidrome Log</option>
+                    <option value="popularity">Popularity Log</option>
+                    <option value="downloads">Downloads Log</option>
+                </select>
+            </div>
+            <div class="col-auto">
                 <button id="toggleStream" class="btn btn-primary btn-sm">Start Live Stream</button>
             </div>
             <div class="col-auto">
@@ -53,6 +63,7 @@
 let eventSource = null;
 let isStreaming = false;
 let isPaused = false;
+let currentLogType = 'main';
 
 document.getElementById('toggleStream').addEventListener('click', function() {
     if (isStreaming) {
@@ -77,6 +88,14 @@ document.getElementById('pauseStream').addEventListener('click', function() {
 
 document.getElementById('clearLogs').addEventListener('click', function() {
     document.getElementById('logOutput').textContent = '';
+});
+
+document.getElementById('logSelector').addEventListener('change', function() {
+    currentLogType = this.value;
+    if (isStreaming) {
+        stopStream();
+        startStream();
+    }
 });
 
 function startStream() {

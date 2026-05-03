@@ -303,6 +303,7 @@ from compilation_manager import (
 )
 from genre_tag_aggregator import get_artist_genres_summary, get_album_genres_summary
 from queue_status_constants import STATUS_DISPLAY_CONFIG, get_status_display
+import weekly_playlist_sync
 
 # Import centralized logging configuration
 from helpers.logging_config import (
@@ -1012,9 +1013,11 @@ def api_download_log(log_type):
         # Read log file and filter for last hour
         cutoff_time = datetime.now() - timedelta(hours=1)
         filtered_lines = []
+        all_lines = []
         
         with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
+                all_lines.append(line)
                 # Try to parse timestamp from log line (format: YYYY-MM-DD HH:MM:SS)
                 try:
                     # Extract timestamp from beginning of line
@@ -1027,6 +1030,10 @@ def api_download_log(log_type):
                 except (ValueError, IndexError):
                     # If we can't parse timestamp, include the line anyway
                     filtered_lines.append(line)
+        
+        # If no lines matched the last hour, fall back to last 1000 lines so the user gets useful content
+        if not filtered_lines and all_lines:
+            filtered_lines = all_lines[-1000:]
         
         # Create response with log content
         log_content = ''.join(filtered_lines)
@@ -2493,6 +2500,12 @@ listenbrainz_createdfor_scheduler = {
     "stop_event": None,
 }
 listenbrainz_createdfor_scheduler_lock = threading.Lock()
+_weekly_playlist_sync_scheduler = {
+    "thread": None,
+    "running": False,
+    "stop_event": None,
+}
+_weekly_playlist_sync_scheduler_lock = threading.Lock()
 _startup_leader_lock_conn = None
 
 
@@ -2867,7 +2880,6 @@ def _start_listenbrainz_createdfor_scheduler():
 
         def scheduler_worker():
             try:
-                # Small startup delay so app boot can complete first.
                 time.sleep(20)
                 interval_seconds = 10 * 60
                 while not stop_event.is_set():
@@ -2876,6 +2888,11 @@ def _start_listenbrainz_createdfor_scheduler():
                         _run_monday_lastfm_playlist_sync()
                     except Exception as loop_err:
                         logging.error(f"[LB_CREATED_FOR] Scheduler loop error: {loop_err}")
+                    try:
+                        if weekly_playlist_sync.should_run_weekly_sync():
+                            weekly_playlist_sync.run_weekly_sync_for_all_users()
+                    except Exception as loop_err:
+                        logging.error(f"[WEEKLY_SYNC] Scheduler loop error: {loop_err}")
 
                     if stop_event.wait(timeout=interval_seconds):
                         break
@@ -2888,6 +2905,42 @@ def _start_listenbrainz_createdfor_scheduler():
         listenbrainz_createdfor_scheduler["thread"] = thread
         listenbrainz_createdfor_scheduler["running"] = True
         logging.info("[LB_CREATED_FOR] Scheduler started (checks every 10 minutes, runs sync at Monday 1am)")
+
+
+def _start_weekly_playlist_sync_scheduler():
+    """Start hourly scheduler to update Navidrome playlists with newly downloaded tracks."""
+    global _weekly_playlist_sync_scheduler
+
+    with _weekly_playlist_sync_scheduler_lock:
+        existing_thread = _weekly_playlist_sync_scheduler.get("thread")
+        if existing_thread and hasattr(existing_thread, "is_alive") and existing_thread.is_alive():
+            _weekly_playlist_sync_scheduler["running"] = True
+            return
+
+        stop_event = threading.Event()
+        _weekly_playlist_sync_scheduler["stop_event"] = stop_event
+
+        def scheduler_worker():
+            try:
+                time.sleep(60)
+                interval_seconds = 60 * 60
+                while not stop_event.is_set():
+                    try:
+                        weekly_playlist_sync.run_hourly_playlist_update()
+                    except Exception as loop_err:
+                        logging.error(f"[WEEKLY_SYNC_HOURLY] Scheduler loop error: {loop_err}")
+
+                    if stop_event.wait(timeout=interval_seconds):
+                        break
+            finally:
+                with _weekly_playlist_sync_scheduler_lock:
+                    _weekly_playlist_sync_scheduler["running"] = False
+
+        thread = threading.Thread(target=scheduler_worker, daemon=True, name="weekly-playlist-sync-hourly")
+        thread.start()
+        _weekly_playlist_sync_scheduler["thread"] = thread
+        _weekly_playlist_sync_scheduler["running"] = True
+        logging.info("[WEEKLY_SYNC] Hourly playlist update scheduler started")
 
 
 def _run_daily_5am_lb_rematch():
@@ -4926,6 +4979,11 @@ if _is_startup_leader_worker:
         _start_listenbrainz_createdfor_scheduler()
     except Exception as e:
         logging.error(f"Failed to start ListenBrainz/Last.fm weekly playlist scheduler: {e}")
+
+    try:
+        _start_weekly_playlist_sync_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start weekly playlist sync hourly scheduler: {e}")
 else:
     logging.debug("[BOOT] Non-leader worker: startup background schedulers not started in this process")
 
@@ -38871,6 +38929,87 @@ def api_listenbrainz_rss_sync_status():
         finally:
             conn.close()
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# WEEKLY PLAYLIST SYNC API
+# =============================================================================
+
+@app.route("/api/weekly-sync/trigger", methods=["POST"])
+def api_weekly_sync_trigger():
+    """Manually trigger weekly playlist sync for all users or a specific user."""
+    try:
+        data = request.get_json(silent=True) or {}
+        user = (data.get("user") or session.get("username") or "").strip()
+        if user:
+            cfg = get_config()
+            nav_users = cfg.get("navidrome_users", []) or []
+            user_cfg = next((u for u in nav_users if (u.get("user") or "").strip() == user), None)
+            if not user_cfg:
+                return jsonify({"error": "User not found in configuration"}), 404
+            result = weekly_playlist_sync.run_weekly_sync_for_user(
+                app_user=user,
+                base_url=user_cfg.get("base_url", ""),
+                navidrome_user=user_cfg.get("user", ""),
+                navidrome_pass=user_cfg.get("pass", ""),
+                lastfm_username=(user_cfg.get("lastfm_username") or "").strip() or None,
+                lastfm_api_key=(cfg.get("api_integrations", {}).get("lastfm", {}).get("api_key") or "").strip() or None,
+                listenbrainz_username=(user_cfg.get("listenbrainz_username") or user).strip() or None,
+                listenbrainz_token=(user_cfg.get("listenbrainz_user_token") or "").strip() or None,
+            )
+            return jsonify(result)
+        else:
+            result = weekly_playlist_sync.run_weekly_sync_for_all_users()
+            return jsonify(result)
+    except Exception as e:
+        logging.error(f"Weekly sync trigger failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/weekly-sync/status", methods=["GET"])
+def api_weekly_sync_status():
+    """Get weekly sync status for the current user or all users."""
+    try:
+        from helpers.db_utils import get_db_connection
+        user = (request.args.get("user") or session.get("username") or "").strip()
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            if user:
+                cursor.execute(
+                    "SELECT username, source, last_synced_week, last_synced_at, navidrome_playlist_id FROM weekly_sync_state WHERE username = %s",
+                    (user,),
+                )
+            else:
+                cursor.execute(
+                    "SELECT username, source, last_synced_week, last_synced_at, navidrome_playlist_id FROM weekly_sync_state"
+                )
+            rows = cursor.fetchall() or []
+            results = []
+            for row in rows:
+                results.append({
+                    "username": row.get("username") if isinstance(row, dict) else row[0],
+                    "source": row.get("source") if isinstance(row, dict) else row[1],
+                    "last_synced_week": row.get("last_synced_week") if isinstance(row, dict) else row[2],
+                    "last_synced_at": row.get("last_synced_at") if isinstance(row, dict) else row[3],
+                    "navidrome_playlist_id": row.get("navidrome_playlist_id") if isinstance(row, dict) else row[4],
+                })
+            return jsonify({"success": True, "status": results})
+        finally:
+            conn.close()
+    except Exception as e:
+        logging.error(f"Weekly sync status failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/weekly-sync/hourly-update", methods=["POST"])
+def api_weekly_sync_hourly_update():
+    """Manually trigger the hourly playlist update job."""
+    try:
+        result = weekly_playlist_sync.run_hourly_playlist_update()
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"Hourly playlist update failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
