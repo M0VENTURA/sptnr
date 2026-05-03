@@ -19567,7 +19567,7 @@ def slskd_search():
             # Start attempts exhausted — check whether an active (non-terminal)
             # search is genuinely holding the slot.  If so, let the client queue
             # the request and auto-retry rather than surfacing a hard error.
-            _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
+            _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
             try:
                 active_searches = [
                     s for s in client.list_searches(timeout=4)
@@ -19626,7 +19626,7 @@ def slskd_search_slot():
         plain_session = requests.Session()
         client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
         searches = client.list_searches(timeout=4)
-        _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
+        _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
         active = [
             s for s in searches
             if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
