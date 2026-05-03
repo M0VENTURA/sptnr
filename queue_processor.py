@@ -1948,7 +1948,7 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60, c
 
         extra_sets = ""
         if schedule_retry:
-            extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL"
+            extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL, source_music_path = NULL"
 
         cursor.execute(f"""
             UPDATE download_queue
@@ -2082,6 +2082,43 @@ def check_track_exists_in_db(queue_item):
                 )
                 return False
             return True
+
+        # Step 0: recording MBID match — most reliable, especially for
+        # compilation tracks where the track artist differs from the queue
+        # artist (e.g. "Various Artists" vs the actual performer).
+        recording_mbid = (queue_item.get('recording_mbid') or '').strip()
+        if recording_mbid:
+            cursor.execute(
+                f"""
+                SELECT id, file_path, album FROM tracks
+                WHERE mbid = {placeholder}
+                  AND file_path IS NOT NULL
+                  AND file_path != ''
+                  AND file_path NOT LIKE '__queued_for_download__%'
+                ORDER BY id DESC
+                LIMIT 5
+                """,
+                (recording_mbid,),
+            )
+            for row in cursor.fetchall() or []:
+                track_id = row["id"] if hasattr(row, "keys") else row[0]
+                file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
+                found_album = (row["album"] if hasattr(row, "keys") else row[2]) or ""
+                if _verify_db_match(file_path):
+                    album_matches = (
+                        not album
+                        or not found_album
+                        or found_album.lower() == album.lower()
+                    )
+                    if album_matches:
+                        reason = f"Track '{artist} - {title}' already exists in local database by recording MBID (track ID {track_id})"
+                        return True, reason, file_path, True
+                    else:
+                        reason = (
+                            f"Track '{artist} - {title}' already exists in local database by recording MBID "
+                            f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
+                        )
+                        return True, reason, file_path, False
 
         if album:
             # Step 1: exact album match.

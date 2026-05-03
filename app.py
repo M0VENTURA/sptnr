@@ -30112,12 +30112,6 @@ def _perform_queue_move_to_music(queue_id):
                 "error": "Queue item marked in_collection can only be moved when its source file is still under /downloads",
             }, 400
 
-        if item_status in ('queued', 'discovered') and not file_in_downloads:
-            return {
-                "success": False,
-                "error": "Queue item can only be manually moved when its file is under the downloads directory",
-            }, 400
-
         conn2 = get_db()
         try:
             placeholder_conn2 = "%s"
@@ -30138,6 +30132,7 @@ def _perform_queue_move_to_music(queue_id):
             or queue_item.get('matched_file_path')
             or queue_item.get('music_file_path')
             or queue_item.get('found_filename')
+            or queue_item.get('source_music_path')
         )
         if source_path:
             queue_item['file_path'] = source_path
@@ -30147,6 +30142,17 @@ def _perform_queue_move_to_music(queue_id):
                 "success": False,
                 "error": f"Queue item {queue_id} has no file path detected. Cannot move to music directory until a file is found.",
             }, 400
+
+        # For queued/discovered items, only allow manual move when the source file
+        # is under /downloads, OR when source_music_path points to a file under
+        # /music (treated like copy_recommended).
+        if item_status in ('queued', 'discovered') and not file_in_downloads:
+            _source_music_path = queue_item.get('source_music_path')
+            if not _source_music_path or not _is_under_root(_source_music_path, music_root):
+                return {
+                    "success": False,
+                    "error": "Queue item can only be manually moved when its file is under the downloads directory",
+                }, 400
 
         if not _try_claim_for_move(queue_id, item_status):
             return {
