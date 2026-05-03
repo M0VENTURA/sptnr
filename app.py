@@ -6798,6 +6798,8 @@ def api_artist_corrections_apply_album_mbid():
         artist_name = str(payload.get("artist") or "").strip()
         album_name = str(payload.get("album") or "").strip()
         album_mbid = str(payload.get("mbid") or "").strip()
+        if album_mbid:
+            album_mbid = _resolve_mbid_to_release(album_mbid)
         release_group_mbid = str(payload.get("release_group_mbid") or "").strip()
 
         if not artist_name or not album_name or not album_mbid:
@@ -8618,6 +8620,8 @@ def api_track_match_missing():
         mb_title = (data.get("mb_title") or "").strip()
         mb_track_number = data.get("mb_track_number")
         mb_release_id = (data.get("mb_release_id") or "").strip()
+        if mb_release_id:
+            mb_release_id = _resolve_mbid_to_release(mb_release_id)
 
         if not track_id or not mb_title:
             return jsonify({"success": False, "error": "track_id and mb_title are required"}), 400
@@ -11943,6 +11947,8 @@ def api_album_update_ids():
         album_name = data.get("album")
         spotify_album_id = data.get("spotify_album_id", "").strip()
         musicbrainz_release_id = data.get("musicbrainz_release_id", "").strip()
+        if musicbrainz_release_id:
+            musicbrainz_release_id = _resolve_mbid_to_release(musicbrainz_release_id)
         discogs_release_id = data.get("discogs_release_id", "").strip()
         
         if not artist_name or not album_name:
@@ -14869,6 +14875,8 @@ def album_edit(artist, album):
         album_type = "album+compilation"
     
     album_mbid = request.form.get("album_mbid", "").strip() or None
+    if album_mbid:
+        album_mbid = _resolve_mbid_to_release(album_mbid)
     album_discogs_id = request.form.get("album_discogs_id", "").strip() or None
     artist_mbid = request.form.get("artist_mbid", "").strip() or None
     album_genres = request.form.get("album_genres", "").strip()
@@ -35188,6 +35196,7 @@ def api_album_musicbrainz_lookup():
                 "artist_similarity": round(artist_similarity, 3),
                 "source": "musicbrainz",
                 "is_stored_mbid": False,
+                "mbid_type": "release-group",
             })
         
         # Sort by confidence; keep stored MBID always first
@@ -39504,6 +39513,54 @@ def _build_artist_credit_string(artist_credit):
         else:
             result += str(credit)
     return result.strip()
+
+
+def _resolve_mbid_to_release(mbid: str) -> str:
+    """
+    Ensure the given MBID is a MusicBrainz *release* MBID.
+
+    If ``mbid`` is a release-group MBID, MusicBrainz returns 404 on the
+    direct release lookup.  We then browse the releases belonging to that
+    release group and return the first representative release's MBID.
+
+    If the lookup fails or the ID is already a release MBID, the original
+    value is returned unchanged.
+    """
+    if not mbid:
+        return mbid
+    try:
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        import time
+        time.sleep(1)
+        resp = requests.get(
+            f"https://musicbrainz.org/ws/2/release/{mbid}",
+            params={"fmt": "json"},
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return mbid
+        if resp.status_code == 404:
+            time.sleep(1)
+            browse_resp = requests.get(
+                "https://musicbrainz.org/ws/2/release",
+                params={"fmt": "json", "release-group": mbid, "limit": 1},
+                headers=headers,
+                timeout=10,
+            )
+            browse_resp.raise_for_status()
+            releases = browse_resp.json().get("releases", [])
+            if releases:
+                resolved = releases[0].get("id", "").strip()
+                if resolved:
+                    logging.info(
+                        f"[_resolve_mbid_to_release] Resolved release-group {mbid} "
+                        f"to release {resolved}"
+                    )
+                    return resolved
+    except Exception as e:
+        logging.debug(f"[_resolve_mbid_to_release] Could not resolve MBID {mbid}: {e}")
+    return mbid
 
 
 @app.route("/api/upcoming-releases/search-musicbrainz", methods=["POST"])

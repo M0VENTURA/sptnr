@@ -1764,9 +1764,13 @@
                                     <strong>MBID:</strong> <code style="font-size: 0.75rem;">${result.mbid}</code>
                                 </div>
                                  <div class="d-flex gap-2 flex-wrap">
-                                    <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.mbid}', '', '${result.cover_art_url || ''}', '')">
-                                        <i class="bi bi-check-circle"></i> Use This Album
-                                    </button>
+                                    ${result.mbid_type === 'release'
+                                        ? `<button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.mbid}', '', '${result.cover_art_url || ''}', '')">
+                                            <i class="bi bi-check-circle"></i> Use This Album
+                                        </button>`
+                                        : `<button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '', '', '${result.cover_art_url || ''}', '', '${result.mbid}')">
+                                            <i class="bi bi-check-circle"></i> Use This Album
+                                        </button>`}
                                     <button class="btn btn-sm btn-outline-secondary" onclick="showReleaseGroupReleases('${result.mbid}', '${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', this)" title="Show all specific releases in this release group">
                                         <i class="bi bi-list-ul"></i> Pick Release
                                     </button>
@@ -1823,7 +1827,7 @@
                                         inferredType = 'album';
                                     }
                                     
-                                    return `<button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${result.year || ''}', '${inferredType}', '', '${result.discogs_id || ''}', '', '${genres.replace(/'/g, "\\'")}')" style="width: 100%;">
+                                     return `<button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${result.year || ''}', '${inferredType}', '', '${result.discogs_id || ''}', '', '${genres.replace(/'/g, "\\'")}', '')" style="width: 100%;">
                                         <i class="bi bi-check-circle"></i> Use This Album
                                     </button>`;
                                 })()}
@@ -1883,7 +1887,7 @@
                             <span class="text-muted ms-2">${escapeHtml(r.date || '?')}${country} · ${fmt} · ${r.track_count} tracks${discs}</span>
                         </div>
                         <button class="btn btn-xs btn-primary btn-sm py-0 px-1 ms-2" style="font-size:0.75rem; white-space:nowrap;"
-                            onclick="populateAlbumFields('${escapeJsString(r.title)}', '${escapeHtml(r.date ? r.date.slice(0,4) : year)}', '${escapeHtml(albumType)}', '${safeId}', '', '${escapeJsString(r.cover_art_url || '')}', '')">
+                            onclick="populateAlbumFields('${escapeJsString(r.title)}', '${escapeHtml(r.date ? r.date.slice(0,4) : year)}', '${escapeHtml(albumType)}', '${safeId}', '', '${escapeJsString(r.cover_art_url || '')}', '', '')">
                             Use
                         </button>
                     </div>`;
@@ -2520,7 +2524,7 @@
     }
     
     // Album metadata form population function
-    function populateAlbumFields(title, year, albumType, mbid, discogsId, coverArtUrl, genres) {
+    function populateAlbumFields(title, year, albumType, mbid, discogsId, coverArtUrl, genres, releaseGroupMbid) {
         // Close the modal
         const modal = bootstrap.Modal.getInstance(document.getElementById('albumLookupModal'));
         if (modal) modal.hide();
@@ -2576,8 +2580,9 @@
         }
 
         // If a MusicBrainz release group MBID is provided, compare MB tracks with library
-        if (mbid) {
-            compareMBTracksWithLibrary(mbid);
+        const mbCompareId = releaseGroupMbid || mbid;
+        if (mbCompareId) {
+            compareMBTracksWithLibrary(mbCompareId);
         }
     }
 
