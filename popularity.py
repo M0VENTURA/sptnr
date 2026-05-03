@@ -4964,6 +4964,7 @@ def popularity_scan(
                             _stored_mb_type in ('ep', 'single')
                         )
                     )
+                    release_group_mbid = None
                     if _type_already_confirmed:
                         detected_album_type = album_tracks[0].get('musicbrainz_albumtype')
                         type_detection_source = 'cached (musicbrainz_albumtype column)'
@@ -4972,7 +4973,6 @@ def popularity_scan(
                         try:
                             from api_clients.musicbrainz import get_album_type_with_fallback
                             # Look up release group MBID for a direct, accurate lookup if available
-                            release_group_mbid = None
                             try:
                                 cursor.execute(f"""
                                     SELECT musicbrainz_album_mbid FROM tracks
