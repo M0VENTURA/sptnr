@@ -32309,9 +32309,9 @@ def api_lastfm_sync_now():
         return jsonify({"error": "Last.fm API key not configured"}), 400
     
     # Allow username override from POST body; fall back to per-user config
+    current_user = session.get("username")
     username = (data.get("username") or "").strip()
     if not username:
-        current_user = session.get("username")
         if current_user:
             navidrome_users = cfg.get("navidrome_users", [])
             user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
