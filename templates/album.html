@@ -5028,6 +5028,7 @@ function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
     const POLL_INTERVAL_MS = 8000;
     const ACTIVE_STATUSES = new Set(['queued', 'searching', 'downloading', 'unmatched', 'moving', 'queried', 'copy_recommended']);
     let _pollTimer = null;
+    let _sawActiveStatus = false;
 
     // Map existing "In Queue" static badges to JS-controlled spans so we can
     // update them without touching anything else.
@@ -5054,6 +5055,9 @@ function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
         // Build label with icon
         badge.innerHTML = `<i class="bi bi-${info.icon} me-1"></i>${escapeHtml(info.label)}`;
         badge.title = `Download status: ${info.label}`;
+        if (ACTIVE_STATUSES.has(info.status)) {
+            _sawActiveStatus = true;
+        }
     }
 
     async function pollQueueStatus() {
@@ -5088,8 +5092,20 @@ function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
 
             if (!hasActiveBadges()) {
                 stopPolling();
-                // All queued tracks are now done — reload the page to show real rows.
-                setTimeout(() => location.reload(), 2500);
+                // Only reload if we actually saw an active status during this polling
+                // session and they have since become terminal.  This prevents an
+                // infinite reload loop when a track is already terminal (e.g. failed,
+                // completed, imported) but its tracks row still carries the
+                // __queued_for_download__ marker.
+                if (_sawActiveStatus) {
+                    const reloadKey = `album_reload_${_albumArtist}_${_albumName}`;
+                    const lastReload = sessionStorage.getItem(reloadKey);
+                    const now = Date.now();
+                    if (!lastReload || (now - parseInt(lastReload, 10)) > 60000) {
+                        sessionStorage.setItem(reloadKey, String(now));
+                        setTimeout(() => location.reload(), 2500);
+                    }
+                }
             }
         } catch (_e) {
             // Silently ignore network errors during polling
