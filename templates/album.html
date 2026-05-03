@@ -273,11 +273,15 @@
                                 <input type="text" class="form-control" id="album_mbid" name="album_mbid" value="{{ album_data.musicbrainz_album_mbid or '' }}" placeholder="MusicBrainz release MBID">
                             </div>
                             <div class="col-12 col-md-6">
-                                <label for="album_discogs_id" class="form-label">Discogs Release ID</label>
-                                <input type="text" class="form-control" id="album_discogs_id" name="album_discogs_id" value="{{ album_data.discogs_album_id or '' }}" placeholder="Discogs release ID">
+                                <label for="album_release_group_mbid" class="form-label">MusicBrainz Album ID</label>
+                                <input type="text" class="form-control" id="album_release_group_mbid" name="album_release_group_mbid" value="{{ album_data.musicbrainz_releasegroupid or '' }}" placeholder="MusicBrainz album (release-group) MBID">
                             </div>
                         </div>
                         <div class="row g-2 mb-3">
+                            <div class="col-12 col-md-6">
+                                <label for="album_discogs_id" class="form-label">Discogs Release ID</label>
+                                <input type="text" class="form-control" id="album_discogs_id" name="album_discogs_id" value="{{ album_data.discogs_album_id or '' }}" placeholder="Discogs release ID">
+                            </div>
                             <div class="col-12 col-md-6">
                                 <label for="artist_mbid" class="form-label">MusicBrainz Artist ID</label>
                                 <input type="text" class="form-control" id="artist_mbid" name="artist_mbid" value="{{ album_artist_mbid or '' }}" placeholder="MusicBrainz artist MBID">
@@ -417,48 +421,7 @@
     </form>
     
     <!-- FULL-WIDTH SECTIONS BELOW FORM -->
-    <!-- Album IDs Card -->
-    {% if album_data %}
-    <div class="card mb-4" id="album-ids-section">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-link-45deg"></i> Album IDs
-                        </h5>
-                        <button class="btn btn-sm btn-primary" onclick="openEditAlbumIdsModal()">
-                            <i class="bi bi-pencil"></i> Edit
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <label class="form-label fw-bold small">MusicBrainz</label>
-                                <div class="input-group input-group-sm">
-                                    <input type="text" class="form-control" id="musicbrainzReleaseId" value="{{ album_data.musicbrainz_album_mbid or '' }}" readonly style="font-size: 0.8rem;">
-                                    {% if album_data.musicbrainz_album_mbid %}
-                                    <a href="https://musicbrainz.org/release/{{ album_data.musicbrainz_album_mbid }}" target="_blank" class="btn btn-outline-secondary btn-sm" title="Open on MusicBrainz">
-                                        <i class="bi bi-box-arrow-up-right"></i>
-                                    </a>
-                                    {% endif %}
-                                </div>
-                            </div>
-                            <div class="col-6">
-                                <label class="form-label fw-bold small">Discogs</label>
-                                <div class="input-group input-group-sm">
-                                    <input type="text" class="form-control" id="discogsReleaseId" value="{{ album_data.discogs_album_id or '' }}" readonly style="font-size: 0.8rem;">
-                                    {% if album_data.discogs_album_id %}
-                                    <a href="https://www.discogs.com/release/{{ album_data.discogs_album_id }}" target="_blank" class="btn btn-outline-secondary btn-sm" title="Open on Discogs">
-                                        <i class="bi bi-box-arrow-up-right"></i>
-                                    </a>
-                                    {% endif %}
-                                </div>
-                            </div>
-                        </div>
-                        <small class="text-muted d-block mt-2">
-                            <i class="bi bi-info-circle"></i> Used for API lookups and future scans.
-                        </small>
-                    </div>
-                </div>
-    {% endif %}
+
     
     <!-- Genres & Tags Card -->
     <div class="card mb-4" id="album-genres-section">
@@ -1635,7 +1598,7 @@
         const artist = {{ artist_name|tojson }};
         // Pass the existing stored MBID (release MBID) so the API can do a direct
         // lookup for it and include it in results for comparison.
-        const existingMbid = (document.getElementById('musicbrainzReleaseId') || {}).value || '';
+        const existingMbid = (document.getElementById('album_mbid') || {}).value || '';
         
         const resultsDiv = document.getElementById('albumLookupResults');
         resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching MusicBrainz...';
@@ -1894,7 +1857,7 @@
                     '',
                     r.cover_art_url || coverArtUrl || '',
                     '',
-                    ''
+                    rgMbid
                 );
                 return;
             }
@@ -1981,7 +1944,7 @@
                             <button class="btn btn-sm btn-outline-info" onclick="toggleReleaseTracks('${safeId}', ${idx})" id="btn-toggle-tracks-${safeId}">
                                 <i class="bi bi-music-note-list"></i> Tracks
                             </button>
-                            <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(r.title)}', '${escapeHtml(r.date ? r.date.slice(0,4) : year)}', '${escapeHtml(albumType)}', '${safeId}', '', '${escapeJsString(r.cover_art_url || '')}', '', '')">
+                            <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(r.title)}', '${escapeHtml(r.date ? r.date.slice(0,4) : year)}', '${escapeHtml(albumType)}', '${safeId}', '', '${escapeJsString(r.cover_art_url || '')}', '', '${escapeJsString(_releasePickerCache.rgMbid || '')}')">
                                 <i class="bi bi-check-circle"></i> Select
                             </button>
                         </div>
@@ -2689,6 +2652,10 @@
         }
         if (mbid) {
             document.getElementById('album_mbid').value = mbid;
+        }
+        if (releaseGroupMbid) {
+            const rgField = document.getElementById('album_release_group_mbid');
+            if (rgField) rgField.value = releaseGroupMbid;
         }
         if (discogsId) {
             const discogsField = document.getElementById('album_discogs_id');
