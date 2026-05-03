@@ -30153,6 +30153,22 @@ def _perform_queue_move_to_music(queue_id):
                     "success": False,
                     "error": "Queue item can only be manually moved when its file is under the downloads directory",
                 }, 400
+            # Copy to downloads first so the full metadata pipeline runs.
+            try:
+                _staging_dir = os.path.join(downloads_root, "queue_staging")
+                os.makedirs(_staging_dir, exist_ok=True)
+                _staging_path = os.path.join(
+                    _staging_dir,
+                    f"queue_{queue_id}_{os.path.basename(_source_music_path)}"
+                )
+                shutil.copy2(_source_music_path, _staging_path)
+                queue_item['file_path'] = _staging_path
+                file_in_downloads = True
+            except Exception as copy_err:
+                return {
+                    "success": False,
+                    "error": f"Could not stage file from music to downloads: {copy_err}",
+                }, 500
 
         if not _try_claim_for_move(queue_id, item_status):
             return {

@@ -2062,11 +2062,24 @@ def check_track_exists_in_db(queue_item):
     if not artist or not title:
         return False, "", None, True
 
+    is_compilation = _is_compilation_release(queue_item)
+
     conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
         placeholder = _get_placeholder(conn)
+
+        # Build the artist filter SQL.  For compilation releases where the queue
+        # artist is a generic placeholder ("Various Artists", etc.) the actual
+        # track artist in the database will differ, so we also match against
+        # album_artist so that properly-tagged compilation tracks are found.
+        if is_compilation:
+            _artist_sql = f"(LOWER(artist) = LOWER({placeholder}) OR LOWER(album_artist) = LOWER({placeholder}))"
+            _artist_params = (artist, artist)
+        else:
+            _artist_sql = f"LOWER(artist) = LOWER({placeholder})"
+            _artist_params = (artist,)
 
         # Only match tracks that have a real on-disk path.  Rows with
         # file_path IS NULL are incomplete imports, and rows matching
@@ -2125,13 +2138,13 @@ def check_track_exists_in_db(queue_item):
             cursor.execute(
                 f"""
                 SELECT id, file_path, album FROM tracks
-                WHERE LOWER(artist) = LOWER({placeholder})
+                WHERE {_artist_sql}
                   AND LOWER(title) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
                 """,
-                (artist, title, album),
+                _artist_params + (title, album),
             )
             for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
@@ -2144,12 +2157,12 @@ def check_track_exists_in_db(queue_item):
             cursor.execute(
                 f"""
                 SELECT id, file_path, album FROM tracks
-                WHERE LOWER(artist) = LOWER({placeholder})
+                WHERE {_artist_sql}
                   AND LOWER(title) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
                 """,
-                (artist, title),
+                _artist_params + (title,),
             )
             for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
@@ -2165,12 +2178,12 @@ def check_track_exists_in_db(queue_item):
             cursor.execute(
                 f"""
                 SELECT id, file_path FROM tracks
-                WHERE LOWER(artist) = LOWER({placeholder})
+                WHERE {_artist_sql}
                   AND LOWER(title) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
                 """,
-                (artist, title),
+                _artist_params + (title,),
             )
             for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
