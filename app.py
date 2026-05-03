@@ -13999,6 +13999,7 @@ def album_detail(artist, album):
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
+                    MAX(musicbrainz_releasegroupid) as musicbrainz_releasegroupid,
                     COALESCE(MAX(discogs_album_id), MAX(discogs_release_id)) as discogs_album_id,
                     MAX(spotify_album_id) as spotify_album_id,
                     MAX(spotify_artist_id) as spotify_artist_id,
@@ -14022,6 +14023,7 @@ def album_detail(artist, album):
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     NULL as musicbrainz_album_mbid,
+                    NULL as musicbrainz_releasegroupid,
                     NULL as discogs_album_id,
                     NULL as spotify_album_id,
                     NULL as spotify_artist_id,
@@ -14370,9 +14372,8 @@ def album_detail(artist, album):
             cursor2.execute(
                 f"SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) AS mbid"
                 f" FROM tracks"
-                f" WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder2}"
-                f" AND LOWER(COALESCE(album, '')) = LOWER({placeholder2})",
-                (db_artist_name, db_album_name),
+                f" WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder2})",
+                (db_artist_name,),
             )
             _mbid_row = cursor2.fetchone()
             if _mbid_row:
@@ -14877,6 +14878,7 @@ def album_edit(artist, album):
     album_mbid = request.form.get("album_mbid", "").strip() or None
     if album_mbid:
         album_mbid = _resolve_mbid_to_release(album_mbid, artist, album)
+    album_release_group_mbid = request.form.get("album_release_group_mbid", "").strip() or None
     album_discogs_id = request.form.get("album_discogs_id", "").strip() or None
     artist_mbid = request.form.get("artist_mbid", "").strip() or None
     album_genres = request.form.get("album_genres", "").strip()
@@ -14942,6 +14944,11 @@ def album_edit(artist, album):
             update_fields.append(f"musicbrainz_album_mbid = {placeholder}")
             update_values.append(album_mbid)
 
+        # Update album release-group MBID if provided
+        if album_release_group_mbid:
+            update_fields.append(f"musicbrainz_releasegroupid = {placeholder}")
+            update_values.append(album_release_group_mbid)
+
         # Update artist MBID if provided
         if artist_mbid:
             update_fields.append(f"musicbrainz_artist_id = {placeholder}")
@@ -14971,7 +14978,7 @@ def album_edit(artist, album):
             # All field assignments should be in the format "column_name = <placeholder>"
             allowed_columns = {
                 'album', 'artist', 'album_artist', 'year', 'spotify_album_type',
-                'musicbrainz_album_mbid', 'musicbrainz_artist_id',
+                'musicbrainz_album_mbid', 'musicbrainz_releasegroupid', 'musicbrainz_artist_id',
                 'discogs_album_id', 'discogs_release_id',
                 'genres', 'composer', 'comment', 'cover_art_url'
             }
@@ -15139,8 +15146,12 @@ def album_edit(artist, album):
                                     tags_to_write["album_artist"] = album_artist
                                 if album_mbid:
                                     tags_to_write["musicbrainz_album_mbid"] = album_mbid
+                                    tags_to_write["musicbrainz_albumid"] = album_mbid
+                                if album_release_group_mbid:
+                                    tags_to_write["musicbrainz_releasegroupid"] = album_release_group_mbid
                                 if artist_mbid:
                                     tags_to_write["musicbrainz_artistid"] = artist_mbid
+                                    tags_to_write["musicbrainz_artist_id"] = artist_mbid
                                 if cover_art_bytes:
                                     tags_to_write["cover_art_data"] = cover_art_bytes
                                     tags_to_write["cover_art_mime"] = cover_art_mime
@@ -19556,7 +19567,7 @@ def slskd_search():
             # Start attempts exhausted — check whether an active (non-terminal)
             # search is genuinely holding the slot.  If so, let the client queue
             # the request and auto-retry rather than surfacing a hard error.
-            _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
+            _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
             try:
                 active_searches = [
                     s for s in client.list_searches(timeout=4)
@@ -19615,7 +19626,7 @@ def slskd_search_slot():
         plain_session = requests.Session()
         client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
         searches = client.list_searches(timeout=4)
-        _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
+        _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
         active = [
             s for s in searches
             if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES

@@ -3146,6 +3146,23 @@ def search_and_download(queue_id, queue_item, client):
                 # Normalise semicolon-joined multi-artist strings (Spotify CSV
                 # style) to just the primary artist for the MB query.
                 _mb_query_artist = _artist_val.split(';')[0].strip()
+                # Try to find a local Artist MBID to improve lookup accuracy
+                _artist_mbid = None
+                try:
+                    _local_conn = get_db()
+                    _local_cur = _local_conn.cursor()
+                    _ph = _get_placeholder(_local_conn)
+                    _local_cur.execute(
+                        f"SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) AS mbid "
+                        f"FROM tracks WHERE artist = {_ph}",
+                        (_mb_query_artist,),
+                    )
+                    _local_row = _local_cur.fetchone()
+                    if _local_row:
+                        _artist_mbid = (_local_row.get('mbid') if hasattr(_local_row, 'get') else _local_row[0]) or None
+                    _local_conn.close()
+                except Exception as _local_err:
+                    logger.debug(f"Queue {queue_id}: could not fetch local artist MBID: {_local_err}")
                 logger.debug(
                     f"Queue {queue_id}: no recording_mbid — attempting MB recording lookup "
                     f"for '{_mb_query_artist} - {_title_val}'"
@@ -3164,11 +3181,13 @@ def search_and_download(queue_id, queue_item, client):
                     def _norm_title_text(t):
                         return _pre_re.sub(r'\s+', ' ', (t or '').lower().strip())
 
+                    _query_parts = [f'recording:"{_escape_mb(_title_val)}"']
+                    if _artist_mbid:
+                        _query_parts.append(f'arid:"{_artist_mbid}"')
+                    else:
+                        _query_parts.append(f'artist:"{_escape_mb(_mb_query_artist)}"')
                     _mb_params = {
-                        "query": (
-                            f'recording:"{_escape_mb(_title_val)}"'
-                            f' AND artist:"{_escape_mb(_mb_query_artist)}"'
-                        ),
+                        "query": " AND ".join(_query_parts),
                         "fmt": "json",
                         "limit": 10,
                         "inc": "releases+artist-credits",
