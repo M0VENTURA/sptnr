@@ -6798,6 +6798,8 @@ def api_artist_corrections_apply_album_mbid():
         artist_name = str(payload.get("artist") or "").strip()
         album_name = str(payload.get("album") or "").strip()
         album_mbid = str(payload.get("mbid") or "").strip()
+        if album_mbid:
+            album_mbid = _resolve_mbid_to_release(album_mbid, artist_name, album_name)
         release_group_mbid = str(payload.get("release_group_mbid") or "").strip()
 
         if not artist_name or not album_name or not album_mbid:
@@ -8618,6 +8620,8 @@ def api_track_match_missing():
         mb_title = (data.get("mb_title") or "").strip()
         mb_track_number = data.get("mb_track_number")
         mb_release_id = (data.get("mb_release_id") or "").strip()
+        if mb_release_id:
+            mb_release_id = _resolve_mbid_to_release(mb_release_id)
 
         if not track_id or not mb_title:
             return jsonify({"success": False, "error": "track_id and mb_title are required"}), 400
@@ -11943,6 +11947,8 @@ def api_album_update_ids():
         album_name = data.get("album")
         spotify_album_id = data.get("spotify_album_id", "").strip()
         musicbrainz_release_id = data.get("musicbrainz_release_id", "").strip()
+        if musicbrainz_release_id:
+            musicbrainz_release_id = _resolve_mbid_to_release(musicbrainz_release_id, artist_name, album_name)
         discogs_release_id = data.get("discogs_release_id", "").strip()
         
         if not artist_name or not album_name:
@@ -14869,6 +14875,8 @@ def album_edit(artist, album):
         album_type = "album+compilation"
     
     album_mbid = request.form.get("album_mbid", "").strip() or None
+    if album_mbid:
+        album_mbid = _resolve_mbid_to_release(album_mbid, artist, album)
     album_discogs_id = request.form.get("album_discogs_id", "").strip() or None
     artist_mbid = request.form.get("artist_mbid", "").strip() or None
     album_genres = request.form.get("album_genres", "").strip()
@@ -35188,6 +35196,7 @@ def api_album_musicbrainz_lookup():
                 "artist_similarity": round(artist_similarity, 3),
                 "source": "musicbrainz",
                 "is_stored_mbid": False,
+                "mbid_type": "release-group",
             })
         
         # Sort by confidence; keep stored MBID always first
@@ -39504,6 +39513,271 @@ def _build_artist_credit_string(artist_credit):
         else:
             result += str(credit)
     return result.strip()
+
+
+def _resolve_mbid_to_release(mbid: str, artist: str = None, album: str = None) -> str:
+    """
+    Ensure the given MBID is a MusicBrainz *release* MBID.
+
+    If ``mbid`` is a release-group MBID, MusicBrainz returns 404 on the
+    direct release lookup.  We then browse the releases belonging to that
+    release group and pick the best match.
+
+    When ``artist`` and ``album`` are provided, the function queries the
+    local library for the album's track count and scores each candidate
+    release by track-count similarity (official status and earlier date
+    are used as tie-breakers).  This avoids blindly picking the first
+    release, which often leads to the wrong pressing / track listing.
+
+    If the lookup fails or the ID is already a release MBID, the original
+    value is returned unchanged.
+    """
+    if not mbid:
+        return mbid
+    try:
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        import time
+        time.sleep(1)
+        resp = requests.get(
+            f"https://musicbrainz.org/ws/2/release/{mbid}",
+            params={"fmt": "json"},
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return mbid
+        if resp.status_code == 404:
+            time.sleep(1)
+            browse_resp = requests.get(
+                "https://musicbrainz.org/ws/2/release",
+                params={"fmt": "json", "release-group": mbid, "inc": "media", "limit": 50},
+                headers=headers,
+                timeout=10,
+            )
+            browse_resp.raise_for_status()
+            releases = browse_resp.json().get("releases", [])
+            if not releases:
+                return mbid
+
+            # ------------------------------------------------------------------
+            # Try to match by local track count when artist + album are known
+            # ------------------------------------------------------------------
+            local_track_count = None
+            if artist and album:
+                try:
+                    conn = get_db()
+                    cursor = conn.cursor()
+                    ph = "%s"
+                    cursor.execute(
+                        f"""
+                        SELECT COUNT(*) AS cnt
+                        FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {ph}
+                          AND LOWER(COALESCE(album, '')) = LOWER({ph})
+                        """,
+                        (artist, album),
+                    )
+                    row = cursor.fetchone()
+                    local_track_count = row["cnt"] if row else 0
+                    conn.close()
+                except Exception:
+                    local_track_count = None
+
+            def _score_release(r):
+                media = r.get("media", [])
+                release_track_count = sum(m.get("track-count", 0) for m in media)
+                score = 0
+                if local_track_count is not None:
+                    diff = abs(local_track_count - release_track_count)
+                    score -= diff * 100  # heavy penalty for track-count mismatch
+                # Prefer official releases
+                if (r.get("status") or "").lower() == "official":
+                    score += 50
+                # Slight preference for earlier dates
+                date = (r.get("date") or "").strip()
+                if date and date[:4].isdigit():
+                    score += max(0, 2100 - int(date[:4])) * 0.01
+                return score
+
+            releases.sort(key=_score_release, reverse=True)
+            best = releases[0]
+            resolved = best.get("id", "").strip()
+            if resolved:
+                logging.info(
+                    f"[_resolve_mbid_to_release] Resolved release-group {mbid} "
+                    f"to release {resolved} (track_count={sum(m.get('track-count', 0) for m in best.get('media', []))}, "
+                    f"local_track_count={local_track_count})"
+                )
+                return resolved
+    except Exception as e:
+        logging.debug(f"[_resolve_mbid_to_release] Could not resolve MBID {mbid}: {e}")
+    return mbid
+
+
+@app.route("/api/album/musicbrainz/best-release", methods=["POST"])
+def api_album_musicbrainz_best_release():
+    """Find the best matching release inside a release group for a local album.
+
+    Returns the highest-scoring release (based on local track-count match)
+    together with the full list of releases so the frontend can show a picker
+    when the automatic match is not confident enough.
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        rg_mbid = (data.get("release_group_mbid") or "").strip()
+        artist = (data.get("artist") or "").strip()
+        album = (data.get("album") or "").strip()
+
+        if not rg_mbid:
+            return jsonify({"success": False, "error": "release_group_mbid is required"}), 400
+
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        time.sleep(1)
+        browse_resp = requests.get(
+            "https://musicbrainz.org/ws/2/release",
+            params={"fmt": "json", "release-group": rg_mbid, "inc": "media", "limit": 50},
+            headers=headers,
+            timeout=10,
+        )
+        browse_resp.raise_for_status()
+        releases_data = browse_resp.json().get("releases", []) or []
+
+        # ------------------------------------------------------------------
+        # Build release list (same logic as api_release_group_releases)
+        # ------------------------------------------------------------------
+        releases = []
+        for r in releases_data:
+            media = r.get("media", [])
+            total_tracks = sum(m.get("track-count", 0) for m in media)
+            disc_count = len(media)
+            formats = list({m.get("format", "") for m in media if m.get("format")})
+            releases.append({
+                "id": r.get("id", ""),
+                "title": r.get("title", ""),
+                "date": r.get("date", ""),
+                "country": r.get("country", ""),
+                "status": r.get("status", ""),
+                "disambiguation": r.get("disambiguation", ""),
+                "track_count": total_tracks,
+                "disc_count": disc_count,
+                "formats": formats,
+                "cover_art_url": f"https://coverartarchive.org/release/{r.get('id')}/front-250" if r.get("id") else "",
+            })
+
+        releases.sort(key=lambda x: (x["date"] == "", x["date"]))
+
+        if not releases:
+            return jsonify({"success": True, "releases": [], "best_release": None, "confidence": 0}), 200
+
+        # ------------------------------------------------------------------
+        # Score by local track count when artist + album are known
+        # ------------------------------------------------------------------
+        local_track_count = None
+        if artist and album:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                ph = "%s"
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) AS cnt
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {ph}
+                      AND LOWER(COALESCE(album, '')) = LOWER({ph})
+                    """,
+                    (artist, album),
+                )
+                row = cursor.fetchone()
+                local_track_count = row["cnt"] if row else 0
+                conn.close()
+            except Exception:
+                local_track_count = None
+
+        def _score_release(r):
+            score = 0
+            if local_track_count is not None:
+                diff = abs(local_track_count - r["track_count"])
+                score -= diff * 100
+            if (r.get("status") or "").lower() == "official":
+                score += 50
+            date = (r.get("date") or "").strip()
+            if date and date[:4].isdigit():
+                score += max(0, 2100 - int(date[:4])) * 0.01
+            return score
+
+        scored = [(r, _score_release(r)) for r in releases]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        best_release = scored[0][0]
+        best_score = scored[0][1]
+
+        # Confidence: 1.0 if exact track count match, otherwise scale down
+        confidence = 0.0
+        if local_track_count is not None:
+            if best_release["track_count"] == local_track_count:
+                confidence = 1.0
+            else:
+                diff = abs(local_track_count - best_release["track_count"])
+                confidence = max(0.0, 1.0 - (diff * 0.2))
+        else:
+            confidence = 0.5  # no local data, not confident
+
+        return jsonify({
+            "success": True,
+            "releases": releases,
+            "best_release": best_release,
+            "confidence": round(confidence, 2),
+            "local_track_count": local_track_count,
+        }), 200
+
+    except Exception as e:
+        logging.error(f"[best-release] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/album/musicbrainz/release/tracks", methods=["POST"])
+def api_album_musicbrainz_release_tracks():
+    """Fetch the track list for a specific MusicBrainz release."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        release_mbid = (data.get("release_mbid") or "").strip()
+        if not release_mbid:
+            return jsonify({"success": False, "error": "release_mbid is required"}), 400
+
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        time.sleep(1)
+        resp = requests.get(
+            f"https://musicbrainz.org/ws/2/release/{release_mbid}",
+            params={"fmt": "json", "inc": "recordings"},
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        release_data = resp.json()
+
+        tracks = []
+        for media in release_data.get("media", []):
+            disc_num = media.get("position", 1)
+            for track in media.get("tracks", []):
+                recording = track.get("recording", {})
+                tracks.append({
+                    "disc_number": disc_num,
+                    "position": track.get("position", ""),
+                    "title": track.get("title") or recording.get("title", "Unknown"),
+                    "recording_title": recording.get("title", ""),
+                    "duration_ms": track.get("length") or recording.get("length"),
+                    "recording_mbid": recording.get("id", ""),
+                })
+
+        return jsonify({
+            "success": True,
+            "release_mbid": release_mbid,
+            "release_title": release_data.get("title", ""),
+            "tracks": tracks,
+        }), 200
+
+    except Exception as e:
+        logging.error(f"[release-tracks] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/upcoming-releases/search-musicbrainz", methods=["POST"])

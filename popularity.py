@@ -4965,6 +4965,7 @@ def popularity_scan(
                         )
                     )
                     release_group_mbid = None
+                    _mbid_was_newly_discovered = False
                     if _type_already_confirmed:
                         detected_album_type = album_tracks[0].get('musicbrainz_albumtype')
                         type_detection_source = 'cached (musicbrainz_albumtype column)'
@@ -5001,6 +5002,7 @@ def popularity_scan(
                             # release MBID (specific pressing). Resolve a representative
                             # release before writing so Navidrome groups tracks correctly.
                             if discovered_release_group_mbid and not release_group_mbid:
+                                _mbid_was_newly_discovered = True
                                 _representative_release_mbid = None
                                 try:
                                     from post_download_processor import fetch_musicbrainz_release_metadata
@@ -5052,7 +5054,10 @@ def popularity_scan(
                 # missing it.  This ensures all tracks benefit from the MBID discovered
                 # during the album type lookup (text-search path), not just the one track
                 # that originally carried it.
-                if release_group_mbid:
+                # Only propagate when we discovered a NEW MBID this scan — do not
+                # propagate existing DB values that might be release-group MBIDs stored
+                # in the wrong column.
+                if release_group_mbid and _mbid_was_newly_discovered:
                     try:
                         # Fetch file paths for tracks that are about to receive the album MBID,
                         # so we can write the tag to the actual audio files after the DB update.

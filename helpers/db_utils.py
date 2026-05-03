@@ -402,66 +402,23 @@ def ensure_musicbrainz_album_mbid_column():
         has_new = "musicbrainz_album_mbid" in columns
 
         if has_legacy and not has_new:
-            logging.info("Renaming tracks.beets_album_mbid -> tracks.musicbrainz_album_mbid")
+            # Do NOT rename beets_album_mbid to musicbrainz_album_mbid.
+            # beets_album_mbid stores release-group MBIDs (from beets albums.mb_albumid),
+            # whereas musicbrainz_album_mbid should store release MBIDs (specific pressings).
+            # Renaming would copy release-group IDs into the release-level column,
+            # causing tracks to split in Navidrome.  Just add the new column empty.
+            logging.info("Adding musicbrainz_album_mbid as a new column (not renaming beets_album_mbid)")
             try:
-                cursor.execute(
-                    "ALTER TABLE tracks RENAME COLUMN beets_album_mbid TO musicbrainz_album_mbid"
-                )
+                cursor.execute("ALTER TABLE tracks ADD COLUMN musicbrainz_album_mbid TEXT")
                 conn.commit()
-                logging.info("✓ Renamed beets_album_mbid to musicbrainz_album_mbid")
-            except Exception as rename_error:
-                logging.warning(f"Rename failed (may already be done): {rename_error}")
-                columns_after = _get_table_columns(cursor, "tracks")
-                if "musicbrainz_album_mbid" not in columns_after:
-                    logging.info("New column doesn't exist; adding it instead")
-                    cursor.execute("ALTER TABLE tracks ADD COLUMN musicbrainz_album_mbid TEXT")
-                    conn.commit()
-                    logging.info("✓ Added musicbrainz_album_mbid column")
+                logging.info("✓ Added musicbrainz_album_mbid column")
+            except Exception as add_error:
+                logging.warning(f"Add column failed (may already exist): {add_error}")
         elif has_legacy and has_new:
-            mbid_lock_key = 915317412
-            cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (mbid_lock_key,))
-            lock_row = cursor.fetchone()
-            lock_acquired = bool(lock_row.get("acquired")) if isinstance(lock_row, dict) else bool(lock_row[0])
-            if not lock_acquired:
-                logging.info("Another worker is already running musicbrainz_album_mbid backfill; skipping")
-                return True
-            try:
-                total_updated = 0
-                batch_size = 500
-                while True:
-                    cursor.execute(
-                        """
-                        WITH to_update AS (
-                            SELECT id
-                            FROM tracks
-                            WHERE (musicbrainz_album_mbid IS NULL OR musicbrainz_album_mbid = '')
-                              AND beets_album_mbid IS NOT NULL
-                              AND beets_album_mbid != ''
-                            ORDER BY id
-                            FOR UPDATE SKIP LOCKED
-                            LIMIT %s
-                        )
-                        UPDATE tracks t
-                        SET musicbrainz_album_mbid = t.beets_album_mbid
-                        FROM to_update u
-                        WHERE t.id = u.id
-                        """,
-                        (batch_size,)
-                    )
-                    batch_updated = cursor.rowcount or 0
-                    conn.commit()
-                    total_updated += batch_updated
-                    if batch_updated == 0:
-                        break
-                logging.info(f"✓ Backfilled musicbrainz_album_mbid from legacy beets_album_mbid ({total_updated} rows)")
-            except Exception as backfill_error:
-                logging.warning(f"Backfill failed: {backfill_error}")
-            finally:
-                try:
-                    cursor.execute("SELECT pg_advisory_unlock(%s)", (mbid_lock_key,))
-                    conn.commit()
-                except Exception:
-                    pass
+            # Do NOT backfill musicbrainz_album_mbid from beets_album_mbid.
+            # beets_album_mbid contains release-group MBIDs which are semantically
+            # wrong for musicbrainz_album_mbid (which should hold release MBIDs).
+            logging.info("Skipping backfill of musicbrainz_album_mbid from beets_album_mbid (beets stores release-group IDs)")
         elif not has_new:
             logging.info("Adding missing musicbrainz_album_mbid column")
             try:
