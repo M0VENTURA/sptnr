@@ -1948,7 +1948,7 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60, c
 
         extra_sets = ""
         if schedule_retry:
-            extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL"
+            extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL, source_music_path = NULL"
 
         cursor.execute(f"""
             UPDATE download_queue
@@ -2062,11 +2062,24 @@ def check_track_exists_in_db(queue_item):
     if not artist or not title:
         return False, "", None, True
 
+    is_compilation = _is_compilation_release(queue_item)
+
     conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
         placeholder = _get_placeholder(conn)
+
+        # Build the artist filter SQL.  For compilation releases where the queue
+        # artist is a generic placeholder ("Various Artists", etc.) the actual
+        # track artist in the database will differ, so we also match against
+        # album_artist so that properly-tagged compilation tracks are found.
+        if is_compilation:
+            _artist_sql = f"(LOWER(artist) = LOWER({placeholder}) OR LOWER(album_artist) = LOWER({placeholder}))"
+            _artist_params = (artist, artist)
+        else:
+            _artist_sql = f"LOWER(artist) = LOWER({placeholder})"
+            _artist_params = (artist,)
 
         # Only match tracks that have a real on-disk path.  Rows with
         # file_path IS NULL are incomplete imports, and rows matching
@@ -2083,18 +2096,55 @@ def check_track_exists_in_db(queue_item):
                 return False
             return True
 
+        # Step 0: recording MBID match — most reliable, especially for
+        # compilation tracks where the track artist differs from the queue
+        # artist (e.g. "Various Artists" vs the actual performer).
+        recording_mbid = (queue_item.get('recording_mbid') or '').strip()
+        if recording_mbid:
+            cursor.execute(
+                f"""
+                SELECT id, file_path, album FROM tracks
+                WHERE mbid = {placeholder}
+                  AND file_path IS NOT NULL
+                  AND file_path != ''
+                  AND file_path NOT LIKE '__queued_for_download__%'
+                ORDER BY id DESC
+                LIMIT 5
+                """,
+                (recording_mbid,),
+            )
+            for row in cursor.fetchall() or []:
+                track_id = row["id"] if hasattr(row, "keys") else row[0]
+                file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
+                found_album = (row["album"] if hasattr(row, "keys") else row[2]) or ""
+                if _verify_db_match(file_path):
+                    album_matches = (
+                        not album
+                        or not found_album
+                        or found_album.lower() == album.lower()
+                    )
+                    if album_matches:
+                        reason = f"Track '{artist} - {title}' already exists in local database by recording MBID (track ID {track_id})"
+                        return True, reason, file_path, True
+                    else:
+                        reason = (
+                            f"Track '{artist} - {title}' already exists in local database by recording MBID "
+                            f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
+                        )
+                        return True, reason, file_path, False
+
         if album:
             # Step 1: exact album match.
             cursor.execute(
                 f"""
                 SELECT id, file_path, album FROM tracks
-                WHERE LOWER(artist) = LOWER({placeholder})
+                WHERE {_artist_sql}
                   AND LOWER(title) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
                 """,
-                (artist, title, album),
+                _artist_params + (title, album),
             )
             for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
@@ -2107,12 +2157,12 @@ def check_track_exists_in_db(queue_item):
             cursor.execute(
                 f"""
                 SELECT id, file_path, album FROM tracks
-                WHERE LOWER(artist) = LOWER({placeholder})
+                WHERE {_artist_sql}
                   AND LOWER(title) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
                 """,
-                (artist, title),
+                _artist_params + (title,),
             )
             for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]
@@ -2128,12 +2178,12 @@ def check_track_exists_in_db(queue_item):
             cursor.execute(
                 f"""
                 SELECT id, file_path FROM tracks
-                WHERE LOWER(artist) = LOWER({placeholder})
+                WHERE {_artist_sql}
                   AND LOWER(title) = LOWER({placeholder})
                   AND file_path IS NOT NULL
                   AND file_path NOT LIKE '__queued_for_download__%'
                 """,
-                (artist, title),
+                _artist_params + (title,),
             )
             for row in cursor.fetchall() or []:
                 track_id = row["id"] if hasattr(row, "keys") else row[0]

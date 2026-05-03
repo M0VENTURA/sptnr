@@ -3377,8 +3377,8 @@ async function loadFolderGroups(options = {}) {
                   const inferredAlbumEnc = encodeInlineArg(inferredAlbum || '');
                   const inferredTitleEnc = encodeInlineArg(track.title || '');
                   const showRetry = queueStatusRow === 'failed';
-                  const canCopyFromLocal = queueStatusRow === 'copy_recommended' && queueId > 0 && !!(track.source_music_path);
-                  const hasFilePath = !!(track.file_path || track.matched_file_path || track.music_file_path || group.matched_folder_path);
+                  const canCopyFromLocal = (queueStatusRow === 'copy_recommended' || queueStatusRow === 'queued') && queueId > 0 && !!(track.source_music_path);
+                  const hasFilePath = !!(track.file_path || track.matched_file_path || track.music_file_path || group.matched_folder_path || track.source_music_path);
                   const hasReleaseMbid = !!(track.release_mbid || group.release_id);
                   const canMoveStatuses = ['matched', 'completed', 'pending_match'];
                   const canMoveToMusic = (
