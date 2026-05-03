@@ -791,6 +791,7 @@ def _run_deferred_startup_migrations():
         ensure_spotify_metadata_columns as _ensure_spotify,
         ensure_popularity_freeze_columns as _ensure_popularity,
         ensure_artists_name_unique_constraint as _ensure_artists_unique,
+        ensure_lastfm_tables as _ensure_lastfm_tables,
     )
     from download_file_verification import (
         ensure_verification_columns as _ensure_verification,
@@ -831,6 +832,7 @@ def _run_deferred_startup_migrations():
         _ensure_artists_unique,
         _ensure_verification,
         _ensure_queue_mbid,
+        _ensure_lastfm_tables,
     ):
         try:
             fn()
@@ -32384,6 +32386,14 @@ def api_lastfm_sync_now():
     conn = get_db()
     cursor = conn.cursor()
     placeholder = "%s"
+    
+    # Safety-net: ensure Last.fm tables have proper schema (id sequence) before inserting.
+    # This helps when deferred startup migrations have not yet run.
+    try:
+        from helpers.db_utils import ensure_lastfm_tables
+        ensure_lastfm_tables()
+    except Exception:
+        pass
     
     artists_count = 0
     albums_count = 0

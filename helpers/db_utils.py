@@ -1239,3 +1239,150 @@ def ensure_artists_name_unique_constraint():
     finally:
         if conn is not None:
             conn.close()
+
+
+def ensure_lastfm_tables():
+    """Ensure lastfm_recommendations and lastfm_sync_history tables exist
+    with proper PostgreSQL schema (id SERIAL PRIMARY KEY).
+
+    Fixes existing tables that were created by the legacy SQLite migration
+    script where ``id INTEGER PRIMARY KEY AUTOINCREMENT`` was interpreted
+    by PostgreSQL as ``id INTEGER PRIMARY KEY`` with no default/sequence,
+    causing "null value in column id violates not-null constraint" errors.
+    """
+    import logging
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Create lastfm_recommendations if missing (PostgreSQL-native schema)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lastfm_recommendations (
+                id SERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                recommendation_type TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                artist_name TEXT,
+                image_url TEXT,
+                playcount INTEGER DEFAULT 0,
+                lastfm_url TEXT,
+                mbid TEXT,
+                metadata TEXT,
+                synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(username, recommendation_type, item_name, artist_name)
+            )
+        """)
+
+        # Create lastfm_sync_history if missing (PostgreSQL-native schema)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lastfm_sync_history (
+                id SERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                sync_type TEXT NOT NULL,
+                artists_count INTEGER DEFAULT 0,
+                albums_count INTEGER DEFAULT 0,
+                tracks_count INTEGER DEFAULT 0,
+                filtered_count INTEGER DEFAULT 0,
+                sync_status TEXT DEFAULT 'success',
+                error_message TEXT,
+                sync_start TIMESTAMP,
+                sync_end TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Indexes
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_lastfm_username_type
+            ON lastfm_recommendations(username, recommendation_type)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_lastfm_synced_at
+            ON lastfm_recommendations(synced_at)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sync_history_username_time
+            ON lastfm_sync_history(username, created_at)
+        """)
+
+        # Fix existing tables created by legacy SQLite migration where id has no default.
+        # Table names are hard-coded safe literals, so simple string formatting is fine here.
+        for table_name in ("lastfm_recommendations", "lastfm_sync_history"):
+            try:
+                cursor.execute(f"""
+                    DO $$
+                    DECLARE
+                        v_has_id boolean;
+                        v_has_default boolean;
+                    BEGIN
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = '{table_name}' AND column_name = 'id'
+                        ) INTO v_has_id;
+
+                        IF NOT v_has_id THEN
+                            EXECUTE format(
+                                'CREATE SEQUENCE IF NOT EXISTS %I_id_seq;',
+                                '{table_name}'
+                            );
+                            EXECUTE format(
+                                'ALTER TABLE %I ADD COLUMN id BIGINT DEFAULT nextval(%L);',
+                                '{table_name}', '{table_name}_id_seq'
+                            );
+                            EXECUTE format(
+                                'UPDATE %I SET id = nextval(%L) WHERE id IS NULL;',
+                                '{table_name}', '{table_name}_id_seq'
+                            );
+                            EXECUTE format(
+                                'ALTER TABLE %I ALTER COLUMN id SET NOT NULL;',
+                                '{table_name}'
+                            );
+                        ELSE
+                            SELECT column_default IS NOT NULL
+                              INTO v_has_default
+                              FROM information_schema.columns
+                             WHERE table_name = '{table_name}' AND column_name = 'id';
+
+                            IF NOT v_has_default THEN
+                                EXECUTE format(
+                                    'CREATE SEQUENCE IF NOT EXISTS %I_id_seq;',
+                                    '{table_name}'
+                                );
+                                EXECUTE format(
+                                    'SELECT setval(%L, COALESCE((SELECT MAX(id) FROM %I), 0) + 1);',
+                                    '{table_name}_id_seq', '{table_name}'
+                                );
+                                EXECUTE format(
+                                    'ALTER TABLE %I ALTER COLUMN id SET DEFAULT nextval(%L);',
+                                    '{table_name}', '{table_name}_id_seq'
+                                );
+                                EXECUTE format(
+                                    'UPDATE %I SET id = nextval(%L) WHERE id IS NULL;',
+                                    '{table_name}', '{table_name}_id_seq'
+                                );
+                            END IF;
+                        END IF;
+                    END $$;
+                """)
+            except Exception as fix_err:
+                logging.warning(f"⚠ lastfm table fix for {table_name} encountered an issue (may already be correct): {fix_err}")
+
+        conn.commit()
+        logging.debug("✓ lastfm_recommendations and lastfm_sync_history tables ensured")
+        return True
+
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping lastfm tables migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping lastfm tables migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring lastfm tables: {e}", exc_info=True)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
