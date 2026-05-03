@@ -337,6 +337,139 @@ def _tokenize_meaningful(value):
     return [t for t in normalized.split() if len(t) >= 3 and t not in stop_words]
 
 
+# ---------------------------------------------------------------------------
+# Step 1-3: Fuzzy artist-matching hard gate helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_for_fuzzy(value):
+    """Consistent normalization for fuzzy artist/title matching.
+
+    - Convert to lowercase
+    - Remove content in () and []
+    - Remove common feature terms: feat, featuring, ft
+    - Remove punctuation and special characters
+    - Collapse multiple spaces
+    """
+    if not value:
+        return ""
+    value = str(value).lower()
+    value = _BRACKET_RE.sub(' ', value)
+    value = _FEAT_SUFFIX_RE.sub(' ', value)
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return " ".join(value.split())
+
+
+def _extract_artist_candidates(norm_filename):
+    """Extract artist candidate strings from a Soulseek file path.
+
+    Returns normalized candidates from:
+    - The filename (basename without extension)
+    - Directory names (up to 3 levels up)
+    """
+    candidates = []
+    basename = os.path.basename(norm_filename)
+    basename_no_ext = os.path.splitext(basename)[0]
+    candidates.append(_normalize_for_fuzzy(basename_no_ext))
+
+    dir_part = os.path.dirname(norm_filename)
+    segments = [s for s in re.split(r'[/\\]', dir_part) if s and not s.startswith('@')]
+    meaningful = []
+    for seg in reversed(segments):
+        norm_seg = _normalize_for_fuzzy(seg)
+        if norm_seg and len(norm_seg) >= 3:
+            meaningful.append(norm_seg)
+        if len(meaningful) >= 3:
+            break
+    candidates.extend(meaningful)
+    return [c for c in candidates if c]
+
+
+def _fuzzy_artist_match_score(queue_artist, album_artist, candidate_texts):
+    """Return the best fuzzy artist match score (0-100) across candidates.
+
+    Uses RapidFuzz token_set_ratio when available.  Compares both the track
+    artist and the album_artist (if different) against every candidate.
+    """
+    if not queue_artist:
+        return 0.0
+
+    queue_artist_norm = _normalize_for_fuzzy(queue_artist)
+    album_artist_norm = _normalize_for_fuzzy(album_artist) if album_artist else ""
+
+    if not queue_artist_norm:
+        return 0.0
+
+    def _token_overlap_score(a, b):
+        """Pure-Python fallback when RapidFuzz is unavailable.
+
+        Splits both strings into tokens and returns the Jaccard-like overlap
+        score (0-100).  Also awards 100 when the full artist string is a
+        substring of the candidate so that short artist names in long filenames
+        still score perfectly.
+        """
+        if not a or not b:
+            return 0.0
+        if a in b:
+            return 100.0
+        tokens_a = set(a.split())
+        tokens_b = set(b.split())
+        if not tokens_a or not tokens_b:
+            return 0.0
+        intersection = tokens_a & tokens_b
+        union = tokens_a | tokens_b
+        if not union:
+            return 0.0
+        # Scale to 0-100, with a small boost when the intersection equals
+        # the smaller set (all artist tokens are present).
+        score = (len(intersection) / len(union)) * 100.0
+        if intersection == tokens_a or intersection == tokens_b:
+            score = max(score, 85.0)
+        return score
+
+    scores = []
+    for cand in candidate_texts:
+        if not cand:
+            continue
+        if _HAVE_RAPIDFUZZ:
+            scores.append(_fuzz.token_set_ratio(queue_artist_norm, cand))
+        else:
+            scores.append(_token_overlap_score(queue_artist_norm, cand))
+
+        if album_artist_norm and album_artist_norm != queue_artist_norm:
+            if _HAVE_RAPIDFUZZ:
+                scores.append(_fuzz.token_set_ratio(album_artist_norm, cand))
+            else:
+                scores.append(_token_overlap_score(album_artist_norm, cand))
+
+    return max(scores) if scores else 0.0
+
+
+# Step 4: Compilation / playlist penalty keywords
+_COMPILATION_KEYWORDS = frozenset({
+    "various artists", "various artist", "various", "compilation",
+    "itunes", "playlist", "best of", "charts",
+})
+
+
+def _compilation_path_penalty(norm_path):
+    """Return penalty (0.0-1.0) if the path looks like a compilation or playlist.
+
+    A higher penalty means the result is more likely to be a compilation.
+    """
+    if not norm_path:
+        return 0.0
+    path_lower = norm_path.lower()
+    penalty = 0.0
+    hits = 0
+    for keyword in _COMPILATION_KEYWORDS:
+        if keyword in path_lower:
+            hits += 1
+            penalty = max(penalty, 0.25)
+    if hits >= 2:
+        penalty = max(penalty, 0.40)
+    return penalty
+
+
 def _normalize_duration_seconds(value):
     """Normalize duration values to whole seconds."""
     if value in (None, "", 0, "0"):
@@ -505,6 +638,35 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     if _year_mismatch_rejects(norm_filename, queue_item):
         return 0.0
 
+    # ------------------------------------------------------------------
+    # Step 3: Fuzzy artist match (MANDATORY gate)
+    # ------------------------------------------------------------------
+    # Extract artist candidates from the filename and directory path, then
+    # fuzzy-match them against the queued artist.  Results with no artist
+    # reference (e.g. compilation tracks, playlist MP3s) are rejected
+    # regardless of how high their title similarity is.
+    _artist_candidates = _extract_artist_candidates(norm_filename)
+    best_artist_score = _fuzzy_artist_match_score(
+        queue_item.get('artist'), queue_item.get('album_artist'), _artist_candidates
+    )
+    _ARTIST_GATE_MIN = 70.0
+    # For compilation releases ("Various Artists", etc.) the real track artist
+    # is unknown, so the strict gate is skipped and the existing scoring logic
+    # handles the match.  The compilation penalty still applies to VA results.
+    if not _is_compilation_release(queue_item) and best_artist_score < _ARTIST_GATE_MIN:
+        logger.debug(
+            "Queue scorer: rejecting '%s' — artist gate FAILED "
+            "(best_score=%.1f, min=%.1f, candidates=%s)",
+            os.path.basename(norm_filename),
+            best_artist_score,
+            _ARTIST_GATE_MIN,
+            _artist_candidates,
+        )
+        return 0.0
+
+    # Step 4: Compute compilation penalty (applied after all bonuses)
+    _compilation_penalty = _compilation_path_penalty(filename_norm)
+
     # Conflicting-artist-in-folder guard: when the directory portion of the
     # Soulseek path contains a clearly different artist name (e.g. the path is
     # "@@user\The Jesus and Mary Chain\Darklands\10 About You.mp3" but the
@@ -536,6 +698,11 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
                 break
             # If the segment matches a generic compilation placeholder, skip it.
             if _seg_norm.lower() in _GENERIC_COMPILATION_ARTISTS:
+                continue
+            # Also skip segments that clearly indicate a compilation or
+            # playlist folder (e.g. "best of charts", "itunes playlist").
+            _seg_lower = _seg_norm.lower()
+            if any(kw in _seg_lower for kw in _COMPILATION_KEYWORDS):
                 continue
             # Hard-reject: the folder segment is a plausible artist-level name
             # AND it clearly does not match the queue artist.  For example,
@@ -658,14 +825,10 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # Similarity scores use bracket-stripped core strings so that a candidate
     # with a bracket suffix (e.g. "(Radio Edit)") is not penalised against a
     # plain queue title, and vice-versa.
-    # When the track artist contains featured guests (e.g. "KNEECAP feat. Fawzi"),
-    # files are often tagged with the album artist only ("KNEECAP"), so also
-    # consider the album_artist similarity and take whichever is higher.
-    # Rec 1/6: use RapidFuzz-backed _seq_ratio for C-extension speed.
-    artist_sim = _seq_ratio(artist_norm, basename_norm)
-    if album_artist_norm and album_artist_norm != artist_norm:
-        album_artist_sim = _seq_ratio(album_artist_norm, basename_norm)
-        artist_sim = max(artist_sim, album_artist_sim)
+    # Use the best fuzzy artist score (already computed for the hard gate) so
+    # that flexible matches (feat. variants, case differences, folder names)
+    # are rewarded correctly in the scoring formula.
+    artist_sim = best_artist_score / 100.0
     # Rec 5 (version-stripped fallback): score the bracket-stripped core first,
     # then also try strip_search_parentheses on the raw queue title so that a
     # queue entry like "Song (Radio Edit)" still matches "Song.flac".
@@ -692,6 +855,24 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # prevent "Track 01" from matching "Track 02".
     if _HAVE_MATCHING_UTILS and _track_numbers_conflict(core_title_norm, core_basename_norm):
         return 0.0
+
+    # Step 7: Low-confidence safety net
+    # If artist barely passed the gate (70-79) but title similarity is low,
+    # reject to prevent edge-case near-matches from slipping through.
+    if best_artist_score < 80.0:
+        if _HAVE_RAPIDFUZZ:
+            _title_fuzzy_score = _fuzz.token_set_ratio(core_title_norm, core_basename_norm)
+        else:
+            _title_fuzzy_score = title_sim * 100.0
+        if _title_fuzzy_score < 85.0:
+            logger.debug(
+                "Queue scorer: rejecting '%s' — safety net triggered "
+                "(artist_score=%.1f, title_fuzzy_score=%.1f)",
+                os.path.basename(norm_filename),
+                best_artist_score,
+                _title_fuzzy_score,
+            )
+            return 0.0
 
     # Artist absence from the filename is permitted — the track title and
     # duration are the primary evidence.  A low artist_sim simply contributes
@@ -819,6 +1000,22 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # cannot rescue a wrong-track candidate.  Cap the accumulated score first so
     # the penalty is applied on a [0, 1] base, then floor at 0.
     score = max(0.0, min(1.0, score) - _orphan_penalty)
+
+    # Step 4: Apply compilation penalty after all bonuses.
+    if _compilation_penalty > 0.0:
+        score = max(0.0, score - _compilation_penalty)
+
+    # Step 9: Diagnostic logging
+    logger.debug(
+        "Queue scorer: '%s' artist_score=%.1f title_sim=%.2f "
+        "compilation_penalty=%.2f orphan_penalty=%.2f final_score=%.2f",
+        os.path.basename(norm_filename),
+        best_artist_score,
+        title_sim,
+        _compilation_penalty,
+        _orphan_penalty,
+        score,
+    )
 
     return max(0.0, score)
 
@@ -1067,6 +1264,15 @@ def _filename_matches_queue_item(filename, queue_item):
     # queue item has a known release year, reject when they differ by more than
     # one year (unless the queue item is a compilation).
     if _year_mismatch_rejects(norm_path, queue_item):
+        return False
+
+    # Step 3: Fuzzy artist hard gate — reject compilation/playlist files
+    # even when title similarity is high.
+    _artist_candidates_fn = _extract_artist_candidates(norm_path)
+    _best_artist_score_fn = _fuzzy_artist_match_score(
+        queue_item.get('artist'), queue_item.get('album_artist'), _artist_candidates_fn
+    )
+    if _best_artist_score_fn < 70.0:
         return False
 
     # Gate: using os.path.basename ensures the title is checked against the
