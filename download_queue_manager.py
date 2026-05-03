@@ -7204,6 +7204,7 @@ def auto_discover_and_queue_files():
                     'album_artist': album_artist,
                     'track_number': track_number,
                     'disc_number': disc_number,
+                    'duration_ms': metadata.get('duration_ms'),
                 }
                 cursor.execute(f"""
                     SELECT id, artist, title, album, album_artist, year, track_number, disc_number,
@@ -7416,14 +7417,22 @@ def auto_discover_and_queue_files():
 
                 # Before creating a new entry, check if this file belongs to an existing album group
                 # in the queue. If so, update the existing item instead of creating a duplicate.
+                # CRITICAL: verify metadata (artist + title) so track 11 "Oblivion" is not
+                # incorrectly attached to queue item for track 9 "Adrift" just because they
+                # share the same album import_group.
+                existing_group = None
                 cursor.execute(f"""
-                    SELECT id, status FROM download_queue
+                    SELECT id, artist, title, album, album_artist, duration, found_filename
+                    FROM download_queue
                     WHERE import_group = {placeholder}
                       AND status IN ('queued', 'searching', 'downloading')
                       AND (file_path IS NULL OR file_path = '')
-                    LIMIT 1
                 """, (release_group,))
-                existing_group = cursor.fetchone()
+                for cand_row in cursor.fetchall():
+                    cand_item = _rows_to_dicts([cand_row], cursor.description)[0]
+                    if _metadata_matches_queue_item(file_meta, cand_item, file_path=full_path):
+                        existing_group = cand_item
+                        break
 
                 # Normalized album name fallback: handle album name variants such as
                 # "Frozen (Original Motion Picture Soundtrack)" matching against
@@ -7434,43 +7443,47 @@ def auto_discover_and_queue_files():
                     if norm_album:
                         eff_artist = (album_artist or artist or '').strip()
                         cursor.execute(f"""
-                            SELECT id, status, album, import_group FROM download_queue
+                            SELECT id, artist, title, album, album_artist, duration, found_filename, import_group
+                            FROM download_queue
                             WHERE LOWER(COALESCE(album_artist, artist, '')) = LOWER({placeholder})
                               AND status IN ('queued', 'searching', 'downloading')
                               AND (file_path IS NULL OR file_path = '')
                         """, (eff_artist,))
                         for cand_row in cursor.fetchall():
+                            cand_item = _rows_to_dicts([cand_row], cursor.description)[0]
                             cand_album = _row_get(cand_row, 'album', None, None)
                             if cand_album and _normalize_album_for_dedup(cand_album) == norm_album:
-                                existing_group = cand_row
-                                release_group = (
-                                    _row_get(cand_row, 'import_group', None, None) or release_group
-                                )
-                                logger.info(
-                                    f"[AUTO-DISCOVER] Normalized album match: '{album}' → '{cand_album}' "
-                                    f"(new file joins group {release_group})"
-                                )
-                                break
+                                if _metadata_matches_queue_item(file_meta, cand_item, file_path=full_path):
+                                    existing_group = cand_item
+                                    release_group = (
+                                        _row_get(cand_row, 'import_group', None, None) or release_group
+                                    )
+                                    logger.info(
+                                        f"[AUTO-DISCOVER] Normalized album match: '{album}' → '{cand_album}' "
+                                        f"(new file joins group {release_group})"
+                                    )
+                                    break
 
                 if existing_group:
                     # File belongs to an existing album group - just update that item with the file path
-                    existing_id = _row_get(existing_group, 'id', 0, None)
-                    execute_write_with_retry(
-                        cursor,
-                        conn,
-                        f"""
-                        UPDATE download_queue 
-                        SET file_path = {placeholder},
-                            found_filename = {placeholder},
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {placeholder}
-                        """,
-                        (full_path, filename, existing_id),
-                        context="auto_discover match to existing album group"
-                    )
-                    stats['queued'] += 1
-                    logger.info(f"✅ Matched to existing album group {existing_id}: {filename}")
-                    continue
+                    existing_id = existing_group.get('id')
+                    if existing_id:
+                        execute_write_with_retry(
+                            cursor,
+                            conn,
+                            f"""
+                            UPDATE download_queue 
+                            SET file_path = {placeholder},
+                                found_filename = {placeholder},
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = {placeholder}
+                            """,
+                            (full_path, filename, existing_id),
+                            context="auto_discover match to existing album group"
+                        )
+                        stats['queued'] += 1
+                        logger.info(f"✅ Matched to existing album group {existing_id}: {filename}")
+                        continue
 
                 # No pending queue item or album group matches → add as 'unmatched'
                 if not auto_discover_settings.get("queue_unmatched_discovered_files", False):
