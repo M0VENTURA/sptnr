@@ -1575,11 +1575,18 @@ def get_slskd_client():
             return None
         
         from api_clients.slskd import SlskdClient
-        
+        import requests
+
         web_url = slskd_config.get("web_url", "http://localhost:5030")
         api_key = slskd_config.get("api_key", "")
-        
-        _slskd_client_cache = SlskdClient(web_url, api_key, enabled=True)
+
+        # Use a plain session (no automatic 429 retries) for the queue processor.
+        # The shared api_clients session retries 429 responses with exponential
+        # backoff, which turns a fast "slot busy" into a ~31 s wait per
+        # start_search attempt and can exceed HTTP timeouts.  A plain session
+        # lets start_search()'s own retry loop control the cadence.
+        _plain_session = requests.Session()
+        _slskd_client_cache = SlskdClient(web_url, api_key, http_session=_plain_session, enabled=True)
         return _slskd_client_cache
         
     except Exception as e:
@@ -2094,6 +2101,14 @@ def check_track_exists_in_db(queue_item):
                     f"DB track metadata mismatch for '{artist} - {title}' at {file_path}, skipping"
                 )
                 return False
+            # When metadata is unavailable (None) we cannot confirm the match.
+            # Reject so the item proceeds to Soulseek search rather than being
+            # silently skipped based on an unverified database row.
+            if meta_match is None:
+                logger.debug(
+                    f"DB track metadata unavailable for '{artist} - {title}' at {file_path}, skipping"
+                )
+                return False
             return True
 
         # Step 0: recording MBID match — most reliable, especially for
@@ -2253,6 +2268,14 @@ def check_target_folder_exists(queue_item):
                         if meta_match is False:
                             logger.debug(
                                 f"Target folder metadata mismatch for '{artist} - {title}' at {full_path}, skipping"
+                            )
+                            continue
+                        # When metadata is unavailable (None) we cannot confirm the match.
+                        # Reject so the item proceeds to Soulseek search rather than being
+                        # silently skipped based on an unverified filename match.
+                        if meta_match is None:
+                            logger.debug(
+                                f"Target folder metadata unavailable for '{artist} - {title}' at {full_path}, skipping"
                             )
                             continue
                         result = (
@@ -4322,8 +4345,8 @@ def process_queue(client):
         # We still proceed to check_completed_downloads() below even when
         # disconnected so that files downloaded during a previous connected
         # session are not left stranded.
-        _slskd_ready = bool(client)
-        if _slskd_ready and client.enabled:
+        _slskd_ready = bool(client) and getattr(client, "enabled", False)
+        if _slskd_ready:
             try:
                 if not client.is_connected():
                     logger.warning(
