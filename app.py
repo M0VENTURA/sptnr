@@ -5769,17 +5769,19 @@ def api_artists_corrections():
             missing_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("missing_count") or 0)
 
         # Query 3: Find duplicate artists (same MBID, different names)
-        cursor.execute(f"""
+        # Use track artist (not album_artist) so compilation appearances
+        # (e.g. album_artist = "Various Artists") don't skew detection.
+        cursor.execute("""
             SELECT
                 musicbrainz_artist_id,
-                COUNT(DISTINCT {artist_expr}) as distinct_artist_names
+                COUNT(DISTINCT artist) as distinct_artist_names
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL
               AND musicbrainz_artist_id != ''
-              AND {artist_expr} IS NOT NULL
-              AND TRIM({artist_expr}) != ''
+              AND artist IS NOT NULL
+              AND TRIM(artist) != ''
             GROUP BY musicbrainz_artist_id
-            HAVING COUNT(DISTINCT {artist_expr}) > 1
+            HAVING COUNT(DISTINCT artist) > 1
         """)
         mbid_to_artists_map = {}
         for row in cursor.fetchall():
@@ -5788,15 +5790,15 @@ def api_artists_corrections():
             if mbid:
                 mbid_to_artists_map[mbid] = row_dict.get("distinct_artist_names", 0)
 
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT DISTINCT
-                {artist_expr} as effective_artist,
+                artist as effective_artist,
                 musicbrainz_artist_id
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL
               AND musicbrainz_artist_id != ''
-              AND {artist_expr} IS NOT NULL
-              AND TRIM({artist_expr}) != ''
+              AND artist IS NOT NULL
+              AND TRIM(artist) != ''
         """)
         for row in cursor.fetchall():
             row_dict = dict(row)
@@ -9934,6 +9936,19 @@ def api_artist_missing_releases():
         else:
             category = "Album"
 
+        # Filter: exclude Live and Remix albums entirely.
+        # Only include singles released in the current calendar year.
+        if category in ("Live Album", "Remix"):
+            continue
+        if category == "Single":
+            release_year_str = (rg.get("first_release_date") or "").split("-")[0]
+            try:
+                release_year = int(release_year_str)
+            except (ValueError, TypeError):
+                release_year = 0
+            if release_year < datetime.now().year:
+                continue
+
         dedupe_key = (norm_title, category)
         if dedupe_key in seen_missing_keys:
             continue
@@ -10361,6 +10376,19 @@ def api_scan_all_missing_releases():
                             category = "Single"
                         else:
                             category = "Album"
+
+                        # Filter: exclude Live and Remix albums entirely.
+                        # Only include singles released in the current calendar year.
+                        if category in ("Live Album", "Remix"):
+                            continue
+                        if category == "Single":
+                            release_year_str = (rg.get("first_release_date") or "").split("-")[0]
+                            try:
+                                release_year = int(release_year_str)
+                            except (ValueError, TypeError):
+                                release_year = 0
+                            if release_year < datetime.now().year:
+                                continue
 
                         missing_for_artist.append({
                             "id": rg.get("id", ""),
@@ -13870,7 +13898,20 @@ def api_add_artist():
                 category = "EP"
             elif primary_type == "single" or "single" in secondary:
                 category = "Single"
-            
+
+            # Filter: exclude Live and Remix albums entirely.
+            # Only include singles released in the current calendar year.
+            if category in ("Live Album", "Remix"):
+                continue
+            if category == "Single":
+                release_year_str = (rg.get("first_release_date") or "").split("-")[0]
+                try:
+                    release_year = int(release_year_str)
+                except (ValueError, TypeError):
+                    release_year = 0
+                if release_year < datetime.now().year:
+                    continue
+
             # Insert into missing_releases with DB-aware upsert
             try:
                 cursor.execute(
@@ -15384,30 +15425,31 @@ def api_get_duplicate_artists(artist):
         placeholder = "%s"
         cursor = conn.cursor()
         
-        # Get the MBID for the current artist (use the same album_artist fallback as Artists page)
+        # Get the MBID for the current artist using track artist so compilation
+        # albums (album_artist = "Various Artists") don't contaminate detection.
         cursor.execute("""
             SELECT DISTINCT musicbrainz_artist_id
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+            WHERE artist = {placeholder}
                 AND musicbrainz_artist_id IS NOT NULL
                 AND musicbrainz_artist_id != ''
             LIMIT 1
         """.format(placeholder=placeholder), (artist,))
-        
+
         artist_mbid_row = cursor.fetchone()
         artist_mbid = _row_get(artist_mbid_row, 'musicbrainz_artist_id', 0) if artist_mbid_row else None
-        
+
         duplicates = []
-        
+
         if artist_mbid:
-            # Get all album_artist name variations for this MBID (not track artist)
+            # Get all track-artist name variations for this MBID.
             cursor.execute("""
-                SELECT 
-                    COALESCE(NULLIF(album_artist, ''), artist) as artist,
+                SELECT
+                    artist as artist,
                     COUNT(*) as track_count
                 FROM tracks
                 WHERE musicbrainz_artist_id = {placeholder}
-                GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+                GROUP BY artist
                 ORDER BY track_count DESC
             """.format(placeholder=placeholder), (artist_mbid,))
             
