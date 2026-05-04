@@ -489,7 +489,14 @@ class MusicBrainzReleaseManager:
                             isrc = isrcs[0]
                         
                         # Create search query (artist - title format, no album)
-                        search_query = f"{track_artist} - {track_title}".strip()
+                        # Sanitize apostrophes and curly quotes so the stored query
+                        # is already clean for Soulseek's tokenizer.
+                        try:
+                            from download_queue_manager import _sanitize_search_query_for_slskd
+                        except ImportError:
+                            def _sanitize_search_query_for_slskd(q):
+                                return " ".join(q.split())
+                        search_query = _sanitize_search_query_for_slskd(f"{track_artist} - {track_title}")
 
                         # Duplicate check: skip insert if an active queue entry already
                         # exists for the same (artist, album, title, source) combination.

@@ -21256,7 +21256,14 @@ def api_musicbrainz_download():
                         recording_mbid = recording.get('id') or None
                         
                         # Create search query for individual track (artist - title format, no album)
-                        search_query = f"{track_artist} - {track_title}".strip()
+                        # Sanitize apostrophes and curly quotes so the stored query
+                        # is already clean for Soulseek's tokenizer.
+                        try:
+                            from download_queue_manager import _sanitize_search_query_for_slskd
+                        except ImportError:
+                            def _sanitize_search_query_for_slskd(q):
+                                return " ".join(q.split())
+                        search_query = _sanitize_search_query_for_slskd(f"{track_artist} - {track_title}")
                         
                         # Add to download_queue
                         cursor.execute(f"""
