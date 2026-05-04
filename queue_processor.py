@@ -2593,8 +2593,23 @@ def _build_fallback_search_queries(queue_item, primary_query):
     if year_str and re.fullmatch(r'\d{4}', year_str) and artist:
         _add(_dqm_sanitize_query(f"{artist} {year_str}"), min_score=0.60)
 
+    # Fallback 3d: title with trailing numeric tokens stripped.  Soulseek
+    # requires every query token to appear in the filename, so a number
+    # suffix such as "'68" or "#5" that is missing from some shared files
+    # can cause zero results.  Stripping the trailing number broadens the
+    # search while the candidate scorer still validates the match.
+    # Only strips short trailing numbers (1-2 digits) or any number
+    # preceded by # / ' / " so that year-only titles like "1999" are kept.
+    _NUM_SUFFIX_RE = re.compile(r"(\s*[#'\"]\s*\d+|\s+\d{1,2})\s*$")
+    num_stripped_title = _NUM_SUFFIX_RE.sub("", title).strip()
+    if num_stripped_title and num_stripped_title.lower() != title.lower():
+        if artist:
+            _add(_dqm_sanitize_query(f"{artist} - {num_stripped_title}"))
+        if album_artist and album_artist.lower() != artist.lower():
+            _add(_dqm_sanitize_query(f"{album_artist} - {num_stripped_title}"))
+
     # Fallback 4: title only.  Used when even a partial artist token blocks
-    # results (e.g. the artist name is not present in any shared filename at
+    # results (e.g.  the artist name is not present in any shared filename at
     # all).  No artist anchor means Soulseek may return files from folders whose
     # name simply contains the title words; a stricter score threshold (0.60)
     # is enforced to reduce the risk of false positives.
@@ -2688,17 +2703,20 @@ def _build_safe_search_query(queue_item, banned: set, dismissed: set) -> str | N
 
     # Build query: Artist + Title is the primary search target.
     # If title was dropped (banned/dismissed), fall back to Artist + Album.
-    tokens_out = []
+    # Preserve the " - " separator and apply Soulseek sanitization so the
+    # query stays consistent with the stored search_query format.
+    parts = []
     if artist_filtered:
-        tokens_out.extend(artist_filtered)
+        parts.append(' '.join(artist_filtered))
     if title_filtered:
-        tokens_out.extend(title_filtered)
+        parts.append(' '.join(title_filtered))
     elif album_filtered:
-        tokens_out.extend(album_filtered)
+        parts.append(' '.join(album_filtered))
 
-    if not tokens_out:
+    if not parts:
         return None
-    return ' '.join(tokens_out)
+    query = ' - '.join(parts)
+    return _dqm_sanitize_query(query)
 
 
 _BANNED_WORDS_SUSPECTED_THRESHOLD = 3  # must match the frontend filter (zero_result_count >= 3)
@@ -3123,7 +3141,7 @@ def search_and_download(queue_id, queue_item, client):
                                 _new_artist = queue_item.get('artist', '')
                                 _new_title = queue_item.get('title', '')
                                 if _new_artist and _new_title:
-                                    queue_item['search_query'] = f"{_new_artist} {_new_title}"
+                                    queue_item['search_query'] = _dqm_sanitize_query(f"{_new_artist} - {_new_title}")
                                     search_query = queue_item['search_query']
                         else:
                             update_queue_item(queue_id, mb_last_checked_at=datetime.now().isoformat())
