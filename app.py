@@ -274,7 +274,6 @@ from api_clients.slskd import SlskdClient
 from api_clients.musicbrainz import (
     _USER_AGENT as MUSICBRAINZ_USER_AGENT,
     _escape_lucene_special_chars as _escape_mb_phrase,
-    lookup_recording_clean_names,
 )
 from helpers.metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
 import io
@@ -34329,18 +34328,13 @@ def api_playlist_import_csv():
                 continue  # skip blank rows
 
             # Exportify CSVs join multiple artists with semicolons
-            # (e.g. "Atreyu;Soulfly;Max Cavalera").  Attempt a MusicBrainz
-            # recording lookup to get the canonical primary artist and clean
-            # title.  If that fails, fall back to splitting on the semicolon.
+            # (e.g. "Atreyu;Soulfly;Max Cavalera").  Use only the first
+            # (primary) artist so downstream matching and Soulseek search
+            # stay clean.  MusicBrainz canonical-name enrichment is done
+            # asynchronously by the queue processor so the CSV import
+            # endpoint stays fast and doesn't timeout on large playlists.
             if ";" in artist:
-                mb_clean = lookup_recording_clean_names(title, artist, enabled=True)
-                if mb_clean.get("artist"):
-                    artist = mb_clean["artist"]
-                    if mb_clean.get("title"):
-                        title = mb_clean["title"]
-                else:
-                    # Fallback: use only the first (primary) artist
-                    artist = artist.split(";")[0].strip()
+                artist = artist.split(";")[0].strip()
 
             # Album artist from CSV.  When absent, fall back to the first artist
             # from the (possibly semicolon-joined) track artist field so that
