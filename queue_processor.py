@@ -5052,6 +5052,21 @@ def process_copy_recommended_items(now_ts, last_run_ts, interval_seconds=120):
             logger.debug(
                 f"[COPY_RECOMMENDED] Queue {item['id']}: source not found at {src!r}, skipping"
             )
+            # If the local source file no longer exists, clear the stale path
+            # and requeue so the track can be downloaded instead of staying
+            # stuck in copy_recommended forever.
+            if src:
+                try:
+                    update_queue_item(
+                        item['id'],
+                        status='queued',
+                        source_music_path=None,
+                        failure_reason='Local copy source no longer exists; requeued for download',
+                    )
+                except Exception as _rq_err:
+                    logger.warning(
+                        f"[COPY_RECOMMENDED] Queue {item['id']}: could not requeue after missing source: {_rq_err}"
+                    )
             continue
 
         # Optional: check duration matches within 5-second tolerance.
