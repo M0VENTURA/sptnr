@@ -3271,17 +3271,38 @@ def search_and_download(queue_id, queue_item, client):
                             if _new_release_mbid and not _existing_has_release:
                                 _pre_updates['release_mbid'] = _new_release_mbid
                                 _pre_updates['release_source'] = 'musicbrainz'
-                            if _mb_canonical_artist and not (queue_item.get('artist') or '').strip():
+
+                            # Overwrite the stored artist with the canonical MB name when:
+                            #  - the artist field is blank, OR
+                            #  - the artist contains semicolons (Exportify-style multi-artist)
+                            _existing_artist = (queue_item.get('artist') or '').strip()
+                            _artist_is_dirty = ';' in _existing_artist
+                            if _mb_canonical_artist and (not _existing_artist or _artist_is_dirty):
                                 _pre_updates['artist'] = _mb_canonical_artist
+
+                            # Also overwrite the title if MusicBrainz returned a cleaner
+                            # canonical title and the existing title looks similar.
+                            _existing_title = (queue_item.get('title') or '').strip()
+                            if _best_rec and _existing_title:
+                                _mb_title = (_best_rec.get('title') or '').strip()
+                                if _mb_title:
+                                    _title_sim = _pre_difflib.SequenceMatcher(
+                                        None, _existing_title.lower(), _mb_title.lower()
+                                    ).ratio()
+                                    # Only update the title if it's clearly the same track
+                                    # (high similarity) and the MB title is shorter/cleaner.
+                                    if _title_sim >= 0.8 and len(_mb_title) <= len(_existing_title) and _mb_title != _existing_title:
+                                        _pre_updates['title'] = _mb_title
+
                             _pre_updates['mb_last_checked_at'] = datetime.now().isoformat()
 
                             if _pre_updates:
                                 update_queue_item(queue_id, **_pre_updates)
                                 queue_item = dict(queue_item)
                                 queue_item.update(_pre_updates)
-                                # Update search_query to use canonical MB artist when the
-                                # stored artist was blank and we just populated it.
-                                if 'artist' in _pre_updates:
+                                # Update search_query whenever the artist or title changed
+                                # so the Soulseek search uses clean canonical names.
+                                if 'artist' in _pre_updates or 'title' in _pre_updates:
                                     _new_a = queue_item.get('artist', '')
                                     _new_t = queue_item.get('title', '')
                                     if _new_a and _new_t:
