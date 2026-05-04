@@ -26303,6 +26303,11 @@ def api_downloads_get_queue():
                         for path_field in ('file_path', 'music_file_path', 'matched_file_path', 'source_music_path'):
                             path_val = _row_get(prow, path_field)
                             if path_val and _is_under_music_root(path_val):
+                                # source_music_path intentionally points to a different album
+                                # in the library; validating it against the target album
+                                # location would always fail and incorrectly clear it.
+                                if path_field == 'source_music_path':
+                                    continue
                                 if not _is_valid_collection_location(
                                     path_val, prow_artist, prow_album, prow_album_artist
                                 ):
@@ -30212,7 +30217,7 @@ def _perform_queue_move_to_music(queue_id):
             "deleted": True,
         }, 200
 
-    if item_status in ('completed', 'pending_match', 'in_collection', 'queued', 'discovered'):
+    if item_status in ('completed', 'pending_match', 'in_collection', 'queued', 'discovered', 'copy_recommended'):
         from download_queue_manager import _try_claim_for_move, _release_move_claim, move_single_track_to_music_dir, update_queue_item
         from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
@@ -30329,7 +30334,7 @@ def _perform_queue_move_to_music(queue_id):
 
     return {
         "success": False,
-        "error": f"Track must be matched, completed, pending_match, in_collection, queued (with file+MBID), or discovered (with file+MBID) (current status: {item_status})",
+        "error": f"Track must be matched, completed, pending_match, in_collection, queued (with file+MBID), discovered (with file+MBID), or copy_recommended (current status: {item_status})",
     }, 400
 
 
