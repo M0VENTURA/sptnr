@@ -3230,7 +3230,7 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
 
             extra_sets = ""
             if new_status == 'queued':
-                extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL"
+                extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL, source_music_path = NULL"
 
             cursor.execute(f"""
                 UPDATE download_queue

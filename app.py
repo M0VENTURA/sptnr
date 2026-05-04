@@ -26070,19 +26070,23 @@ def api_downloads_get_queue():
                         )
                         normalized_count += cursor.rowcount or 0
 
-                # Safety net: downgrade invalid completed rows missing file_path so the
-                # UI no longer shows them as move-ready when no source file is known.
+                # Safety net: downgrade invalid completed rows missing any valid
+                # file path so the UI no longer shows them as move-ready when no
+                # source file is known.
                 cursor.execute(
                     f"""
                     UPDATE download_queue
                     SET status = 'unmatched',
                         failure_reason = COALESCE(
                             failure_reason,
-                            'Auto-corrected: completed status without file_path'
+                            'Auto-corrected: completed status without valid file path'
                         ),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE status = 'completed'
                       AND TRIM(COALESCE(file_path, '')) = ''
+                      AND TRIM(COALESCE(matched_file_path, '')) = ''
+                      AND TRIM(COALESCE(music_file_path, '')) = ''
+                      AND TRIM(COALESCE(source_music_path, '')) = ''
                     """
                 )
                 normalized_count += cursor.rowcount or 0
@@ -26239,6 +26243,96 @@ def api_downloads_get_queue():
                     logging.debug(
                         f"[QUEUE_NORMALIZE] Skipped metadata-only matched normalization: {metadata_only_match_err}"
                     )
+
+                # Safety net: clear stale file paths on queued/searching items.
+                # These pre-download statuses should never carry paths from earlier
+                # match attempts, failed moves, or stale scans.
+                try:
+                    cursor.execute(
+                        f"""
+                        UPDATE download_queue
+                        SET file_path = NULL,
+                            matched_file_path = NULL,
+                            music_file_path = NULL,
+                            found_filename = NULL,
+                            source_music_path = NULL,
+                            failure_reason = COALESCE(
+                                failure_reason,
+                                'Auto-corrected: cleared stale paths from pre-download state'
+                            ),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE status IN ('queued', 'searching')
+                          AND (
+                              TRIM(COALESCE(file_path, '')) != ''
+                              OR TRIM(COALESCE(matched_file_path, '')) != ''
+                              OR TRIM(COALESCE(music_file_path, '')) != ''
+                              OR TRIM(COALESCE(found_filename, '')) != ''
+                              OR TRIM(COALESCE(source_music_path, '')) != ''
+                          )
+                        """
+                    )
+                    normalized_count += cursor.rowcount or 0
+                except Exception as stale_queued_err:
+                    logging.debug(f"[QUEUE_NORMALIZE] Skipped stale-queued path clearing: {stale_queued_err}")
+
+                # Safety net: validate /music/ paths for all statuses.  Wrong
+                # matches from previous scans (e.g. a Dimmu Borgir track pointing
+                # to a Caligula's Horse file) are cleared so the UI doesn't
+                # display an invalid "Local music path".
+                try:
+                    cursor.execute(
+                        f"""
+                        SELECT id, status, file_path, music_file_path, matched_file_path, source_music_path,
+                               artist, album, album_artist
+                        FROM download_queue
+                        WHERE (
+                            TRIM(COALESCE(file_path, '')) != ''
+                            OR TRIM(COALESCE(music_file_path, '')) != ''
+                            OR TRIM(COALESCE(matched_file_path, '')) != ''
+                            OR TRIM(COALESCE(source_music_path, '')) != ''
+                        )
+                        """
+                    )
+                    all_path_rows = cursor.fetchall() or []
+                    stale_path_ids = []
+                    for prow in all_path_rows:
+                        prow_id = _row_get(prow, 'id', 0)
+                        prow_artist = _row_get(prow, 'artist', 6)
+                        prow_album = _row_get(prow, 'album', 7)
+                        prow_album_artist = _row_get(prow, 'album_artist', 8)
+                        for path_field in ('file_path', 'music_file_path', 'matched_file_path', 'source_music_path'):
+                            path_val = _row_get(prow, path_field)
+                            if path_val and _is_under_music_root(path_val):
+                                if not _is_valid_collection_location(
+                                    path_val, prow_artist, prow_album, prow_album_artist
+                                ):
+                                    stale_path_ids.append(prow_id)
+                                    break
+
+                    if stale_path_ids:
+                        cursor.execute(
+                            f"""
+                            UPDATE download_queue
+                            SET file_path = NULL,
+                                matched_file_path = NULL,
+                                music_file_path = NULL,
+                                source_music_path = NULL,
+                                failure_reason = COALESCE(
+                                    failure_reason,
+                                    'Auto-corrected: cleared incorrect /music/ path from previous scan'
+                                ),
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ANY({placeholder})
+                            """,
+                            (stale_path_ids,),
+                        )
+                        batch_count = cursor.rowcount or 0
+                        normalized_count += batch_count
+                        logging.info(
+                            f"[QUEUE_NORMALIZE] Cleared stale /music/ paths for {batch_count} item(s)"
+                        )
+                except Exception as stale_music_err:
+                    logging.debug(f"[QUEUE_NORMALIZE] Skipped stale /music/ path validation: {stale_music_err}")
 
                 if normalized_count:
                     conn.commit()
@@ -32020,9 +32114,11 @@ def api_queue_reset_match(queue_id):
                 mb_matched_year = NULL,
                 mb_last_match_at = NULL,
                 status = 'unmatched',
+                file_path = NULL,
                 matched_file_path = NULL,
                 music_file_path = NULL,
                 found_filename = NULL,
+                source_music_path = NULL,
                 in_collection = 0,
                 collection_track_id = NULL,
                 collection_matched_at = NULL,
