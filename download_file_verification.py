@@ -441,6 +441,9 @@ def _reset_matched_item_to_queued(queue_id):
             UPDATE download_queue
             SET status = 'queued',
                 file_path = NULL,
+                matched_file_path = NULL,
+                music_file_path = NULL,
+                source_music_path = NULL,
                 found_filename = NULL,
                 failure_reason = 'Matched file no longer exists on disk; re-queued for download'
             WHERE id = {placeholder} AND status = 'matched'
