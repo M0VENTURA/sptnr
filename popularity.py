@@ -4974,6 +4974,7 @@ def popularity_scan(
                     _type_already_confirmed = bool(
                         _stored_mb_type and (
                             '+' in _stored_mb_type or
+                            '(' in _stored_mb_type or
                             _stored_mb_type in ('ep', 'single')
                         )
                     )
