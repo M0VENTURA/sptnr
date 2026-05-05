@@ -844,29 +844,41 @@ class SlskdClient:
     def cancel_search(self, search_id: str, timeout: Optional[int] = None) -> bool:
         """
         Cancel an active search.
-        
+
         Args:
             search_id: Search ID from start_search()
             timeout: Request timeout (uses default_timeout if not specified)
-            
+
         Returns:
             True if cancelled successfully
         """
         if not self.enabled:
             return False
-        
+
         timeout = timeout or self.default_timeout
-        
+
         try:
             url = f"{self.base_url}/searches/{search_id}"
             resp = self.session.delete(url, headers=self.headers, timeout=timeout)
-            
+
             if resp.status_code in [200, 204]:
                 logger.info(f"Slskd search {search_id} cancelled successfully")
                 return True
-            else:
-                logger.warning(f"Slskd search cancel failed: {resp.status_code} - {resp.text[:200]}")
-                return False
+
+            body_preview = (resp.text or "")[:400]
+            # slskd sometimes throws DbUpdateConcurrencyException when its
+            # internal finalization modifies the search row at the same time
+            # we call DELETE. The row is already gone or updated — treat that
+            # as success rather than a hard failure.
+            if resp.status_code in [409, 500] and "concurrency" in body_preview.lower():
+                logger.debug(
+                    f"Slskd search {search_id} cancel hit concurrency conflict; "
+                    f"treating as already removed"
+                )
+                return True
+
+            logger.warning(f"Slskd search cancel failed: {resp.status_code} - {body_preview[:200]}")
+            return False
         except Exception as e:
             logger.error(f"Slskd cancel search failed for {search_id}: {e}")
             return False
@@ -945,6 +957,10 @@ class SlskdClient:
                             self.session.put(put_url, headers=self.headers, timeout=cancel_timeout)
                         except Exception:
                             pass
+                        # Brief pause so slskd can finish its internal state
+                        # transition before we DELETE, reducing the race window
+                        # that triggers DbUpdateConcurrencyException.
+                        time.sleep(0.15)
                     self.cancel_search(sid, timeout=cancel_timeout)
                     if state in _TERMINAL_STATES:
                         logger.info(
