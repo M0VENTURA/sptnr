@@ -746,21 +746,24 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
 
         # Get release ID if not provided
         if not release_group_mbid:
-            # Try to get from database
+            # Try to get from database. Prefer release-group MBID since the tracklist
+            # lookup supports it natively; fall back to release MBID for compatibility.
             if conn:
                 placeholder = "%s"
                 cursor = conn.cursor()
                 cursor.execute(f"""
-                    SELECT musicbrainz_album_mbid FROM tracks
+                    SELECT musicbrainz_releasegroupid, musicbrainz_album_mbid FROM tracks
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                       AND album = {placeholder}
-                      AND musicbrainz_album_mbid IS NOT NULL
-                      AND musicbrainz_album_mbid != ''
+                      AND (musicbrainz_releasegroupid IS NOT NULL AND musicbrainz_releasegroupid != ''
+                           OR musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != '')
                     LIMIT 1
                 """, (artist, album))
                 mbid_row = cursor.fetchone()
                 if mbid_row:
-                    release_group_mbid = row_get(mbid_row, 'musicbrainz_album_mbid')
+                    _rg_mbid = row_get(mbid_row, 'musicbrainz_releasegroupid')
+                    _rel_mbid = row_get(mbid_row, 'musicbrainz_album_mbid')
+                    release_group_mbid = _rg_mbid or _rel_mbid
 
         if not release_group_mbid:
             log_debug(f"No MusicBrainz release ID found for '{artist} - {album}', skipping missing track detection")
@@ -2258,26 +2261,34 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
         track_columns = {row['column_name'] for row in cursor.fetchall()}
 
         mb_album_column = "musicbrainz_album_mbid" if "musicbrainz_album_mbid" in track_columns else None
+        mb_rg_column = "musicbrainz_releasegroupid" if "musicbrainz_releasegroupid" in track_columns else None
 
-        result = None
-        if mb_album_column:
+        album_mbid = None
+        release_group_mbid_art = None
+        if mb_album_column or mb_rg_column:
+            select_cols = []
+            if mb_album_column:
+                select_cols.append(f"{mb_album_column} AS album_mbid")
+            if mb_rg_column:
+                select_cols.append(f"{mb_rg_column} AS release_group_mbid")
             cursor = db_query.execute(
                 f"""
-                SELECT {mb_album_column} AS album_mbid FROM tracks
+                SELECT {', '.join(select_cols)} FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                   AND album = {placeholder}
-                  AND {mb_album_column} IS NOT NULL
+                  AND ({' OR '.join([f"{col} IS NOT NULL" for col in [c for c in [mb_album_column, mb_rg_column] if c]])})
                 LIMIT 1
                 """,
                 (artist, album),
             )
             result = cursor.fetchone()
+            if result:
+                album_mbid = result.get('album_mbid') or None
+                release_group_mbid_art = result.get('release_group_mbid') or None
         conn.close()
 
-        album_mbid = result['album_mbid'] if result else None
-
         # If we don't have MBID, try to search for it
-        if not album_mbid:
+        if not album_mbid and not release_group_mbid_art:
             try:
                 search_url = "https://musicbrainz.org/ws/2/release-group"
                 params = {
@@ -2291,20 +2302,37 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
                 data = resp.json()
                 rgs = data.get("release-groups", [])
                 if rgs:
-                    album_mbid = rgs[0].get("id")
-                    log_debug(f"[ALBUM_ART] Found MBID via search - {artist} - {album}: {album_mbid}")
+                    release_group_mbid_art = rgs[0].get("id")
+                    log_debug(f"[ALBUM_ART] Found MBID via search - {artist} - {album}: {release_group_mbid_art}")
             except Exception as e:
                 log_debug(f"[ALBUM_ART] MusicBrainz album search failed: {e}")
                 return None
 
-        if not album_mbid:
+        if not album_mbid and not release_group_mbid_art:
             log_debug(f"[ALBUM_ART] No MBID found for {artist} - {album}")
             return None
 
-        # Construct Cover Art Archive URL
-        cover_url = f"https://coverartarchive.org/release-group/{album_mbid}/front-500"
-        log_debug(f"[ALBUM_ART] Constructed CAA URL for {artist} - {album}: {cover_url}")
-        return cover_url
+        # Build candidate CAA URLs: prefer release-group art, fall back to release-specific art.
+        _caa_urls = []
+        if release_group_mbid_art:
+            _caa_urls.append(f"https://coverartarchive.org/release-group/{release_group_mbid_art}/front-500")
+        if album_mbid:
+            _caa_urls.append(f"https://coverartarchive.org/release/{album_mbid}/front-500")
+
+        for cover_url in _caa_urls:
+            try:
+                head_resp = requests.head(cover_url, timeout=3, allow_redirects=True)
+                if head_resp.status_code == 200:
+                    log_debug(f"[ALBUM_ART] Constructed CAA URL for {artist} - {album}: {cover_url}")
+                    return cover_url
+            except Exception as e:
+                log_debug(f"[ALBUM_ART] CAA HEAD check failed for {cover_url}: {e}")
+
+        # If none of the URLs validated, return the first one anyway and let the downloader handle it.
+        if _caa_urls:
+            log_debug(f"[ALBUM_ART] Constructed CAA URL for {artist} - {album}: {_caa_urls[0]} (unverified)")
+            return _caa_urls[0]
+        return None
 
     except Exception as e:
         log_debug(f"[ALBUM_ART] Failed to fetch album art URL from MusicBrainz: {e}")
@@ -4948,6 +4976,9 @@ def popularity_scan(
                 current_album_type = album_tracks[0].get('spotify_album_type', '') if album_tracks else ''
                 detected_album_type = None
                 type_detection_source = None
+                release_group_mbid = None
+                _mbid_was_newly_discovered = False
+                discovered_release_group_mbid = None
 
                 # Auto-detect Various Artists / Compilation / Soundtrack album_artist → Album (Compilation)
                 # These album_artist values indicate multi-artist compilation albums and should all
@@ -4978,8 +5009,6 @@ def popularity_scan(
                             _stored_mb_type in ('ep', 'single')
                         )
                     )
-                    release_group_mbid = None
-                    _mbid_was_newly_discovered = False
                     if _type_already_confirmed:
                         detected_album_type = album_tracks[0].get('musicbrainz_albumtype')
                         type_detection_source = 'cached (musicbrainz_albumtype column)'
@@ -4987,21 +5016,28 @@ def popularity_scan(
                     else:
                         try:
                             from api_clients.musicbrainz import get_album_type_with_fallback
-                            # Look up release group MBID for a direct, accurate lookup if available
+                            # Look up release group MBID for a direct, accurate lookup if available.
+                            # Prefer musicbrainz_releasegroupid (the canonical release-group UUID)
+                            # and fall back to musicbrainz_album_mbid for backwards compatibility.
                             try:
                                 cursor.execute(f"""
-                                    SELECT musicbrainz_album_mbid FROM tracks
+                                    SELECT musicbrainz_releasegroupid, musicbrainz_album_mbid FROM tracks
                                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                                       AND album = {placeholder}
-                                      AND musicbrainz_album_mbid IS NOT NULL
-                                      AND musicbrainz_album_mbid != ''
+                                      AND (musicbrainz_releasegroupid IS NOT NULL AND musicbrainz_releasegroupid != ''
+                                           OR musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != '')
                                     LIMIT 1
                                 """, (artist, album))
                                 mbid_row = cursor.fetchone()
                                 if mbid_row:
-                                    release_group_mbid = row_get(mbid_row, 'musicbrainz_album_mbid')
-                                    if release_group_mbid:
-                                        log_debug(f'Using stored MBID {release_group_mbid} for direct MusicBrainz lookup')
+                                    _rg_mbid = row_get(mbid_row, 'musicbrainz_releasegroupid')
+                                    _rel_mbid = row_get(mbid_row, 'musicbrainz_album_mbid')
+                                    if _rg_mbid:
+                                        release_group_mbid = _rg_mbid
+                                        log_debug(f'Using stored release-group MBID {release_group_mbid} for direct MusicBrainz lookup')
+                                    elif _rel_mbid:
+                                        release_group_mbid = _rel_mbid
+                                        log_debug(f'Using stored release MBID {release_group_mbid} for direct MusicBrainz lookup')
                             except Exception:
                                 pass  # Column may not exist in older schemas
                             detected_album_type, type_detection_source, discovered_release_group_mbid = get_album_type_with_fallback(
@@ -5018,6 +5054,7 @@ def popularity_scan(
                             if discovered_release_group_mbid and not release_group_mbid:
                                 _mbid_was_newly_discovered = True
                                 _representative_release_mbid = None
+                                _mb_meta = None
                                 try:
                                     from post_download_processor import fetch_musicbrainz_release_metadata
                                     _mb_meta = fetch_musicbrainz_release_metadata(discovered_release_group_mbid)
@@ -5032,6 +5069,25 @@ def popularity_scan(
                                     # Skip writing rather than storing a release-group ID
                                     # in the release-level column.
                                     release_group_mbid = None
+                                # Update album name to the canonical MusicBrainz release-group title
+                                # so the library stays consistent with MB naming.
+                                _mb_title = (_mb_meta.get('release_title') or '').strip() if _mb_meta else ''
+                                if _mb_title and _mb_title.lower() != album.lower():
+                                    try:
+                                        cursor.execute(f"""
+                                            UPDATE tracks
+                                            SET album = {placeholder}
+                                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                              AND album = {placeholder}
+                                        """, (_mb_title, artist, album))
+                                        conn.commit()
+                                        log_info(f'Updated album name from "{album}" to "{_mb_title}" (MusicBrainz release-group title)')
+                                    except Exception as _name_err:
+                                        log_debug(f'Could not update album name for "{artist} - {album}": {_name_err}')
+                                        try:
+                                            conn.rollback()
+                                        except Exception:
+                                            pass
                         except Exception as e:
                             log_debug(f'Failed to fetch album type from MusicBrainz: {e}')
                             detected_album_type = current_album_type or 'album'
@@ -5091,15 +5147,32 @@ def popularity_scan(
                             for r in cursor.fetchall()
                         ]
 
+                        _set_parts = [
+                            f"musicbrainz_album_mbid = {placeholder}",
+                            f"musicbrainz_albumid    = {placeholder}",
+                        ]
+                        _set_params = [release_group_mbid, release_group_mbid]
+                        # Also store the original release-group MBID in the dedicated column.
+                        if discovered_release_group_mbid:
+                            try:
+                                cursor.execute("""
+                                    SELECT column_name FROM information_schema.columns
+                                    WHERE table_schema = 'public' AND table_name = 'tracks' AND column_name = 'musicbrainz_releasegroupid'
+                                """)
+                                if cursor.fetchone():
+                                    _set_parts.append(f"musicbrainz_releasegroupid = {placeholder}")
+                                    _set_params.append(discovered_release_group_mbid)
+                            except Exception:
+                                pass
+                        _set_params.extend([artist, album])
                         cursor.execute(f"""
                             UPDATE tracks
-                            SET musicbrainz_album_mbid = {placeholder},
-                                musicbrainz_albumid    = {placeholder}
+                            SET {', '.join(_set_parts)}
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                               AND album = {placeholder}
                               AND (musicbrainz_album_mbid IS NULL
                                    OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = '')
-                        """, (release_group_mbid, release_group_mbid, artist, album))
+                        """, tuple(_set_params))
                         _mbid_rows = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else 0
                         if _mbid_rows > 0:
                             conn.commit()
@@ -5107,14 +5180,17 @@ def popularity_scan(
 
                             # Also write the MBID into the physical audio files so that
                             # media servers (Navidrome, etc.) group all tracks under the
-                            # correct album without needing a separate "Save" action.
+                            # correct album without needing a "Save" action.
                             try:
                                 from helpers.tag_manager import write_tags_to_file as _write_album_mbid_tag
                                 _files_written = 0
                                 for _fp in _fps_to_tag:
                                     if _fp and os.path.exists(str(_fp)):
                                         try:
-                                            if _write_album_mbid_tag(str(_fp), {"musicbrainz_album_mbid": release_group_mbid}):
+                                            _tags = {"musicbrainz_album_mbid": release_group_mbid, "musicbrainz_albumid": release_group_mbid}
+                                            if discovered_release_group_mbid:
+                                                _tags["musicbrainz_releasegroupid"] = discovered_release_group_mbid
+                                            if _write_album_mbid_tag(str(_fp), _tags):
                                                 _files_written += 1
                                         except Exception as _fp_tag_err:
                                             log_debug(
