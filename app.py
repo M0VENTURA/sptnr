@@ -13367,6 +13367,39 @@ def api_album_queue_status():
         return jsonify({"error": str(e)}), 500
 
 
+def _apply_album_art_to_tracks(artist_name: str, album_name: str, image_data: bytes, mime_type: str = "image/jpeg") -> int:
+    """
+    Embed album art into all audio files for the given artist/album.
+    Returns the number of files successfully updated.
+    """
+    files_updated = 0
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = get_placeholder(conn)
+        cursor.execute(
+            f"SELECT id, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}",
+            (artist_name, album_name),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        from helpers.tag_manager import write_tags_to_file
+
+        for row in rows:
+            file_path = str(row.get("file_path") or "").strip() if hasattr(row, "get") else str(row[1] or "").strip()
+            if not file_path or not os.path.exists(file_path):
+                continue
+            try:
+                if write_tags_to_file(file_path, {"cover_art_data": image_data, "cover_art_mime": mime_type}):
+                    files_updated += 1
+            except Exception as e:
+                logging.debug(f"Failed to embed album art in {file_path}: {e}")
+    except Exception as e:
+        logging.debug(f"Failed to apply album art to tracks: {e}")
+    return files_updated
+
+
 @app.route("/api/album/set-art", methods=["POST"])
 def api_album_set_art():
     """Set custom album art from a URL – downloads the image and stores it in the database"""
@@ -13423,8 +13456,9 @@ def api_album_set_art():
         if not saved:
             return jsonify({"error": "Failed to save image to database"}), 500
 
-        logger.info(f"Album art updated for '{artist_name} - {album_name}' from URL")
-        return jsonify({"success": True, "message": "Album art updated"})
+        files_updated = _apply_album_art_to_tracks(artist_name, album_name, resp.content, mime_type=mime_type)
+        logger.info(f"Album art updated for '{artist_name} - {album_name}' from URL ({files_updated} files)")
+        return jsonify({"success": True, "message": "Album art updated", "files_updated": files_updated})
 
     except requests.exceptions.RequestException as e:
         logger.warning(f"Error downloading album art: {e}")
@@ -13460,8 +13494,9 @@ def api_album_upload_art():
         if not saved:
             return jsonify({"error": "Failed to save image to database"}), 500
 
-        logger.info(f"Album art uploaded for '{artist_name} - {album_name}'")
-        return jsonify({"success": True, "message": "Album art uploaded"})
+        files_updated = _apply_album_art_to_tracks(artist_name, album_name, image_data, mime_type=mime_type)
+        logger.info(f"Album art uploaded for '{artist_name} - {album_name}' ({files_updated} files)")
+        return jsonify({"success": True, "message": "Album art uploaded", "files_updated": files_updated})
 
     except Exception as e:
         logger.error(f"Error uploading album art: {e}")
