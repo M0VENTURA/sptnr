@@ -111,7 +111,12 @@
           <span class="visually-hidden">Processing…</span>
         </div>
         <h5 id="csvProgressLabel" class="mb-1">Processing CSV…</h5>
-        <p class="text-secondary small mb-0" id="csvProgressSub">Reading track metadata from the file, please wait.</p>
+        <p class="text-secondary small mb-2" id="csvProgressSub">Reading track metadata from the file, please wait.</p>
+        <div class="progress" style="height: 1.5rem; max-width: 400px; margin: 0 auto;">
+          <div id="csvProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+               role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+        </div>
+        <p class="text-secondary small mt-2 mb-0" id="csvProgressDetail"></p>
       </div>
 
       <!-- Body: result (shown after completion) -->
@@ -163,6 +168,14 @@
         <i class="bi bi-upload"></i> Import &amp; Queue All Tracks
       </button>`;
     document.getElementById('csvForm').reset();
+    const bar = document.getElementById('csvProgressBar');
+    if (bar) {
+      bar.style.width = '0%';
+      bar.setAttribute('aria-valuenow', 0);
+      bar.textContent = '0%';
+    }
+    const detailEl = document.getElementById('csvProgressDetail');
+    if (detailEl) detailEl.textContent = '';
   }
 
   // Reset form whenever the modal is opened
@@ -189,14 +202,23 @@
     document.getElementById('csvModalProgress').style.display = '';
     document.getElementById('csvModalFooter').innerHTML = '';
 
-    const setProgress = (label, sub) => {
+    const setProgress = (label, sub, pct, detail) => {
       document.getElementById('csvProgressLabel').textContent = label;
       if (sub !== undefined) document.getElementById('csvProgressSub').textContent = sub;
+      const bar = document.getElementById('csvProgressBar');
+      if (pct !== undefined && bar) {
+        const v = Math.max(0, Math.min(100, Math.round(pct)));
+        bar.style.width = v + '%';
+        bar.setAttribute('aria-valuenow', v);
+        bar.textContent = v + '%';
+      }
+      const detailEl = document.getElementById('csvProgressDetail');
+      if (detailEl && detail !== undefined) detailEl.textContent = detail;
     };
 
     try {
       // Step 1 – parse CSV (no library matching)
-      setProgress('Parsing CSV…', 'Reading track metadata from the file.');
+      setProgress('Parsing CSV…', 'Reading track metadata from the file.', 0, '');
       const formData = new FormData();
       formData.append('file', fileInput.files[0]);
       formData.append('playlist_name', importName);
@@ -209,13 +231,9 @@
       const allTracks = parseData.all_tracks || [];
       if (!allTracks.length) throw new Error('No tracks found in CSV');
 
-      // Step 2 – queue ALL tracks as a single playlist album group
-      setProgress('Adding to queue…', `Sending ${allTracks.length} track${allTracks.length !== 1 ? 's' : ''} to the download queue.`);
-
       // All tracks share one import_group (the playlist name) so they appear as a single
       // album group in the queue with all tracks nested below it.
       const nameSlug = importName.replace(/\s+/g, '_').substring(0, 80);
-
       const currentYear = String(new Date().getFullYear());
       const items = allTracks.map(t => ({
         artist:         t.artist,
@@ -230,30 +248,60 @@
         release_source: t.spotify_id ? 'spotify' : null,
       }));
 
+      // Step 2 – queue tracks in small batches so the progress bar moves and we
+      // can reliably detect when every item has finished processing.
+      const BATCH_SIZE = 10;
       let totalAdded = 0, totalSkipped = 0, totalFailed = 0;
+      let processedCount = 0;
 
-      try {
-        const res = await fetch('/api/queue/add-batch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            items,
-            import_group: nameSlug,
-            import_type:  'playlist',
-            source:       'soulseek',
-          }),
-        });
-        const data = await res.json();
-        if (res.ok && data.success !== false) {
-          totalAdded   = data.added   || 0;
-          totalSkipped = data.skipped || 0;
-          totalFailed  = data.failed  || 0;
-        } else {
-          totalFailed = items.length;
+      for (let i = 0; i < items.length; i += BATCH_SIZE) {
+        const batch = items.slice(i, i + BATCH_SIZE);
+        const pct = (i / items.length) * 100;
+        setProgress(
+          'Adding to queue…',
+          `Sending ${items.length} track${items.length !== 1 ? 's' : ''} to the download queue.`,
+          pct,
+          `Processing ${i + 1}–${Math.min(i + batch.length, items.length)} of ${items.length}`
+        );
+
+        let batchAdded = 0, batchSkipped = 0, batchFailed = 0;
+        try {
+          const res = await fetch('/api/queue/add-batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              items: batch,
+              import_group: nameSlug,
+              import_type:  'playlist',
+              source:       'soulseek',
+            }),
+          });
+          const data = await res.json();
+          if (data && typeof data === 'object') {
+            batchAdded   = data.added   ?? 0;
+            batchSkipped = data.skipped ?? 0;
+            batchFailed  = data.failed  ?? 0;
+          }
+          // If the response was not OK and the server gave no breakdown, treat the
+          // whole batch as failed so we don't silently under-report errors.
+          if (!res.ok && !(data && typeof data === 'object' && 'failed' in data)) {
+            batchFailed = batch.length;
+            batchAdded = 0;
+            batchSkipped = 0;
+          }
+        } catch (err) {
+          console.warn('Batch queue add error:', err);
+          batchFailed = batch.length;
         }
-      } catch (_) {
-        totalFailed = items.length;
+
+        totalAdded   += batchAdded;
+        totalSkipped += batchSkipped;
+        totalFailed  += batchFailed;
+        processedCount += batch.length;
       }
+
+      // Final progress update before switching to results
+      setProgress('Finishing up…', '', 100, `Processed ${processedCount} of ${items.length}`);
 
       const albumCount = 1;
 
