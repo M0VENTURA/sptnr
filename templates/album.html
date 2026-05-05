@@ -2287,7 +2287,11 @@
                 if (img) {
                     img.src = img.src.split('?')[0] + '?t=' + Date.now();
                 }
-                alert('✅ Album art uploaded successfully!');
+                const filesUpdated = typeof data.files_updated === 'number' ? data.files_updated : null;
+                const msg = filesUpdated !== null
+                    ? `✅ Album art uploaded successfully! Embedded in ${filesUpdated} track file(s).`
+                    : '✅ Album art uploaded successfully!';
+                alert(msg);
             } else {
                 alert('❌ Error: ' + (data.error || 'Failed to upload album art'));
             }
@@ -2357,7 +2361,11 @@
                     img.src = img.src.split('?')[0] + '?t=' + Date.now();
                 }
                 
-                alert('✅ Album art updated successfully!');
+                const filesUpdated = typeof data.files_updated === 'number' ? data.files_updated : null;
+                const msg = filesUpdated !== null
+                    ? `✅ Album art updated successfully! Embedded in ${filesUpdated} track file(s).`
+                    : '✅ Album art updated successfully!';
+                alert(msg);
             } else {
                 alert('❌ Error: ' + (data.error || 'Failed to update album art'));
             }
