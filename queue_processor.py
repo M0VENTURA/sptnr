@@ -2738,6 +2738,7 @@ def _slsk_word_has_results(word: str, client) -> bool:
         deadline = time.monotonic() + max_wait
         poll_count = 0
         found = False
+        is_done = False
         try:
             while time.monotonic() < deadline:
                 time.sleep(1 if poll_count < 10 else 2)
@@ -2757,7 +2758,11 @@ def _slsk_word_has_results(word: str, client) -> bool:
                     logger.debug(f"[banned_words] Verification poll error for '{word}': {_poll_err}")
         finally:
             try:
-                client.cancel_search(search_id)
+                # Only cancel if the search is still active; calling DELETE on a
+                # search that slskd is already finalizing can trigger a
+                # DbUpdateConcurrencyException inside slskd.
+                if not is_done:
+                    client.cancel_search(search_id)
             except Exception as _cancel_err:
                 logger.debug(f"[banned_words] Could not cancel verification search for '{word}': {_cancel_err}")
         return found
