@@ -208,10 +208,9 @@
         const allTracks = parseData.all_tracks || [];
         if (!allTracks.length) throw new Error('No tracks found in CSV');
 
-        // Step 2 – queue all tracks
-        csvSetProgress(50, 'Adding to queue…',
-          `Sending ${allTracks.length} track${allTracks.length !== 1 ? 's' : ''} to the download queue.`);
-
+        // Step 2 – queue tracks in small batches so the progress bar moves
+        // and we don't hit gateway timeouts on large playlists.
+        const BATCH_SIZE = 10;
         const nameSlug    = importName.replace(/\s+/g, '_').substring(0, 80);
         const currentYear = String(new Date().getFullYear());
         const items = allTracks.map((t, idx) => ({
@@ -229,26 +228,46 @@
         }));
 
         let totalAdded = 0, totalSkipped = 0, totalFailed = 0;
-        try {
-          const res  = await fetch('/api/queue/add-batch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items, import_group: nameSlug, import_type: 'playlist', source: 'soulseek' }),
-          });
-          const data = await res.json();
-          // Read real counts from response body regardless of HTTP status.
-          // The API returns accurate added/skipped/failed even when it responds
-          // with 500 (e.g. "all failed" edge-case uses 500 but includes counts).
-          if (data && (data.added !== undefined || data.failed !== undefined)) {
-            totalAdded   = data.added   || 0;
-            totalSkipped = data.skipped || 0;
-            totalFailed  = data.failed  || 0;
-          } else if (!res.ok) {
-            totalFailed = items.length;
+        let processedCount = 0;
+
+        csvSetProgress(2, 'Adding to queue…',
+          `Sending ${items.length} track${items.length !== 1 ? 's' : ''} to the download queue.`);
+
+        for (let i = 0; i < items.length; i += BATCH_SIZE) {
+          const batch = items.slice(i, i + BATCH_SIZE);
+          let batchAdded = 0, batchSkipped = 0, batchFailed = 0;
+          try {
+            const res = await fetch('/api/queue/add-batch', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                items: batch,
+                import_group: nameSlug,
+                import_type: 'playlist',
+                source: 'soulseek',
+              }),
+            });
+            const data = await res.json();
+            if (data && (data.added !== undefined || data.failed !== undefined)) {
+              batchAdded   = data.added   || 0;
+              batchSkipped = data.skipped || 0;
+              batchFailed  = data.failed  || 0;
+            } else if (!res.ok) {
+              batchFailed = batch.length;
+            }
+          } catch (batchErr) {
+            console.warn('Batch queue add error:', batchErr);
+            batchFailed = batch.length;
           }
-        } catch (batchErr) {
-          console.error('CSV queue batch error:', batchErr);
-          totalFailed = items.length;
+
+          totalAdded   += batchAdded;
+          totalSkipped += batchSkipped;
+          totalFailed  += batchFailed;
+          processedCount += batch.length;
+
+          const pct = (processedCount / items.length) * 100;
+          csvSetProgress(pct, 'Adding to queue…',
+            `Processed ${processedCount} of ${items.length}  •  Added ${totalAdded}  •  Failed ${totalFailed}`);
         }
 
         csvSetProgress(100, 'Done!', `${totalAdded} track${totalAdded !== 1 ? 's' : ''} added to the queue.`);

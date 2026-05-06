@@ -254,16 +254,16 @@
       let totalAdded = 0, totalSkipped = 0, totalFailed = 0;
       let processedCount = 0;
 
+      // Show a small starting bump so the bar doesn't sit at 0 %
+      setProgress(
+        'Adding to queue…',
+        `Sending ${items.length} track${items.length !== 1 ? 's' : ''} to the download queue.`,
+        2,
+        `Starting…`
+      );
+
       for (let i = 0; i < items.length; i += BATCH_SIZE) {
         const batch = items.slice(i, i + BATCH_SIZE);
-        const pct = (i / items.length) * 100;
-        setProgress(
-          'Adding to queue…',
-          `Sending ${items.length} track${items.length !== 1 ? 's' : ''} to the download queue.`,
-          pct,
-          `Processing ${i + 1}–${Math.min(i + batch.length, items.length)} of ${items.length}`
-        );
-
         let batchAdded = 0, batchSkipped = 0, batchFailed = 0;
         try {
           const res = await fetch('/api/queue/add-batch', {
@@ -298,10 +298,19 @@
         totalSkipped += batchSkipped;
         totalFailed  += batchFailed;
         processedCount += batch.length;
+
+        // Update progress AFTER the batch response so it reflects real work done
+        const pct = (processedCount / items.length) * 100;
+        setProgress(
+          'Adding to queue…',
+          `Sending ${items.length} track${items.length !== 1 ? 's' : ''} to the download queue.`,
+          pct,
+          `Processed ${processedCount} of ${items.length}  •  Added ${totalAdded}  •  Failed ${totalFailed}`
+        );
       }
 
       // Final progress update before switching to results
-      setProgress('Finishing up…', '', 100, `Processed ${processedCount} of ${items.length}`);
+      setProgress('Finishing up…', '', 100, `Processed ${processedCount} of ${items.length}  •  Added ${totalAdded}  •  Failed ${totalFailed}`);
 
       const albumCount = 1;
 
