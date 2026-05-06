@@ -15156,6 +15156,29 @@ def album_edit(artist, album):
                                         logging.warning(f"Failed to download cover art from {_safe_url}: HTTP {_resp.status_code}")
                             except Exception as _download_err:
                                 logging.warning(f"Could not download cover art: {_download_err}")
+                        else:
+                            # No cover_art_url provided in form — try to use existing album art from DB
+                            try:
+                                # Try new artist/album names first, then fall back to original names
+                                _art_candidates = [(album_artist, album_title)]
+                                if names_changed:
+                                    _art_candidates.append((artist, album))
+                                for _art_artist, _art_album in _art_candidates:
+                                    cursor.execute(f"""
+                                        SELECT image_data, image_mime_type
+                                        FROM album_art
+                                        WHERE LOWER(COALESCE(artist_name, '')) = LOWER({placeholder})
+                                          AND LOWER(COALESCE(album_name, '')) = LOWER({placeholder})
+                                        LIMIT 1
+                                    """, (_art_artist, _art_album))
+                                    art_row = cursor.fetchone()
+                                    if art_row:
+                                        cover_art_bytes = art_row['image_data'] if hasattr(art_row, 'keys') else art_row[0]
+                                        cover_art_mime = (art_row['image_mime_type'] if hasattr(art_row, 'keys') else art_row[1]) or 'image/jpeg'
+                                        logging.debug(f"Using existing album art from database for {_art_artist} - {_art_album}")
+                                        break
+                            except Exception as _art_db_err:
+                                logging.debug(f"Could not fetch existing album art from database: {_art_db_err}")
 
                         def _resolve_music_file_path(path_value):
                             if not path_value:

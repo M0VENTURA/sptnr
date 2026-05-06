@@ -1154,7 +1154,7 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
         return tokens & TITLE_VARIANT_TOKENS
 
     expected_variants = _variant_tokens(queue_title)
-    candidate_variants = _variant_tokens(file_title)
+    candidate_variants = _variant_tokens(file_title) | _variant_tokens(os.path.basename(file_path or ''))
     if expected_variants or candidate_variants:
         if not expected_variants or not candidate_variants:
             # One side has variant qualifiers, the other doesn't.

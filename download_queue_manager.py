@@ -5281,7 +5281,18 @@ def _metadata_matches_queue_item(
     if artist_score < _FIELD_MIN or title_score < _FIELD_MIN:
         return False
 
-    if not _title_variants_are_compatible(queue_title, file_title):
+    # Also consider filename for variant detection so poorly-tagged live files
+    # (e.g. title tag says "Down Again" but filename is "Down Again - Live.mp3")
+    # are not incorrectly matched to plain studio queue items.
+    _basename_variants = _extract_title_variant_tokens(os.path.basename(file_path or ''))
+    _file_variants = _extract_title_variant_tokens(file_title)
+    _hard_from_basename = _basename_variants - SOFT_VARIANT_TOKENS
+    if _hard_from_basename and not (_file_variants & _hard_from_basename):
+        _augmented_file_title = file_title + " " + " ".join(_hard_from_basename)
+    else:
+        _augmented_file_title = file_title
+
+    if not _title_variants_are_compatible(queue_title, _augmented_file_title):
         # Fallback 1: duration confirms the version (within 5 s).
         _file_dur_ms = file_meta.get('duration_ms')
         _queue_dur = queue_item.get('duration')
