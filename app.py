@@ -15687,6 +15687,151 @@ def artist_update_metadata(name):
     return redirect(url_for("artist_detail", name=name))
 
 
+@app.route("/scan/artist-custom", methods=["POST"])
+def scan_artist_custom():
+    """Run a specific scan type for an artist."""
+    from urllib.parse import unquote
+    scan_type = request.form.get("scan_type", "full")
+    artist = (request.form.get("artist") or "").strip()
+    force = str(request.form.get("force", "")).strip().lower() in ("1", "true", "yes", "on")
+
+    if not artist:
+        flash("Error: No artist name provided", "danger")
+        return redirect(url_for("dashboard"))
+
+    mode_label = "Forced" if force else "Changes Only"
+
+    if scan_type == "full":
+        threading.Thread(target=_run_artist_scan_pipeline, args=(artist, force), daemon=True).start()
+        flash(f"Full scan started for artist: {artist} ({mode_label})", "success")
+    elif scan_type == "navidrome":
+        def _run():
+            log_unified(f"Navidrome import started for artist: {artist}")
+            try:
+                conn = get_db()
+                try:
+                    cursor = conn.cursor()
+                    placeholder = "%s"
+                    cursor.execute(f"SELECT artist_id FROM artist_stats WHERE artist_name = {placeholder}", (artist,))
+                    row = cursor.fetchone()
+                    artist_id = row["artist_id"] if row else None
+                finally:
+                    conn.close()
+                if not artist_id:
+                    idx = build_artist_index()
+                    artist_data = idx.get(artist, {})
+                    artist_id = artist_data.get("id")
+                if artist_id:
+                    scan_artist_to_db(artist, artist_id, verbose=True, force=force)
+                    log_unified(f"Navidrome import completed for artist: {artist}")
+                else:
+                    log_unified(f"Artist not found for Navidrome import: {artist}")
+            except Exception as e:
+                log_unified(f"Error in Navidrome import for {artist}: {e}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Navidrome import started for artist: {artist} ({mode_label})", "success")
+    elif scan_type == "popularity":
+        def _run():
+            log_unified(f"Popularity scan started for artist: {artist}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist)
+            log_unified(f"Popularity scan completed for artist: {artist}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Popularity scan started for artist: {artist} ({mode_label})", "success")
+    elif scan_type == "metadata":
+        def _run():
+            log_unified(f"Metadata scan started for artist: {artist}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist, metadata_only=True)
+            log_unified(f"Metadata scan completed for artist: {artist}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Metadata scan started for artist: {artist} ({mode_label})", "success")
+    elif scan_type == "singles":
+        def _run():
+            log_unified(f"Singles scan started for artist: {artist}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist, singles_with_missing_popularity=True)
+            log_unified(f"Singles scan completed for artist: {artist}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Singles scan started for artist: {artist} ({mode_label})", "success")
+    elif scan_type == "essentia":
+        return redirect(url_for("scan_essentia_mood"), code=307)
+    else:
+        flash(f"Unknown scan type: {scan_type}", "danger")
+
+    return redirect(url_for("artist_detail", name=artist))
+
+
+@app.route("/scan/album-custom", methods=["POST"])
+def scan_album_custom():
+    """Run a specific scan type for an album."""
+    from urllib.parse import unquote
+    scan_type = request.form.get("scan_type", "full")
+    artist = (request.form.get("artist") or "").strip()
+    album = (request.form.get("album") or "").strip()
+    force = str(request.form.get("force", "")).strip().lower() in ("1", "true", "yes", "on")
+
+    if not artist or not album:
+        flash("Error: Artist and album name are required", "danger")
+        return redirect(url_for("dashboard"))
+
+    mode_label = "Forced" if force else "Changes Only"
+
+    if scan_type == "full":
+        threading.Thread(target=_run_album_scan_pipeline, args=(artist, album, force), daemon=True).start()
+        flash(f"Full scan started for album '{album}' by {artist} ({mode_label})", "success")
+    elif scan_type == "navidrome":
+        def _run():
+            log_unified(f"Navidrome import started for album: {artist} - {album}")
+            try:
+                conn = get_db()
+                try:
+                    cursor = conn.cursor()
+                    placeholder = "%s"
+                    cursor.execute(f"SELECT artist_id FROM artist_stats WHERE artist_name = {placeholder}", (artist,))
+                    row = cursor.fetchone()
+                    artist_id = row["artist_id"] if row else None
+                finally:
+                    conn.close()
+                if not artist_id:
+                    idx = build_artist_index()
+                    artist_data = idx.get(artist, {})
+                    artist_id = artist_data.get("id")
+                if artist_id:
+                    scan_artist_to_db(artist, artist_id, verbose=True, force=force, album_filter=album)
+                    log_unified(f"Navidrome import completed for album: {artist} - {album}")
+                else:
+                    log_unified(f"Artist not found for Navidrome import: {artist}")
+            except Exception as e:
+                log_unified(f"Error in Navidrome import for {artist} - {album}: {e}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Navidrome import started for album '{album}' by {artist} ({mode_label})", "success")
+    elif scan_type == "popularity":
+        def _run():
+            log_unified(f"Popularity scan started for album: {artist} - {album}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist, album_filter=album)
+            log_unified(f"Popularity scan completed for album: {artist} - {album}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Popularity scan started for album '{album}' by {artist} ({mode_label})", "success")
+    elif scan_type == "metadata":
+        def _run():
+            log_unified(f"Metadata scan started for album: {artist} - {album}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist, album_filter=album, metadata_only=True)
+            log_unified(f"Metadata scan completed for album: {artist} - {album}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Metadata scan started for album '{album}' by {artist} ({mode_label})", "success")
+    elif scan_type == "singles":
+        def _run():
+            log_unified(f"Singles scan started for album: {artist} - {album}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist, album_filter=album, singles_with_missing_popularity=True)
+            log_unified(f"Singles scan completed for album: {artist} - {album}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Singles scan started for album '{album}' by {artist} ({mode_label})", "success")
+    elif scan_type == "essentia":
+        return redirect(url_for("scan_essentia_mood"), code=307)
+    else:
+        flash(f"Unknown scan type: {scan_type}", "danger")
+
+    return redirect(url_for("album_detail", artist=artist, album=album))
+
+
 @app.route("/track/<path:artist>/<path:album>/<path:track_id>/rescan", methods=["POST"])
 def scan_track_rescan(artist, album, track_id):
     """Trigger per-track rescan: Navidrome fetch -> popularity -> single detection."""
