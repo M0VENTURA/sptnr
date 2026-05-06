@@ -139,25 +139,23 @@
                     {% endif %}
                 </ul>
             </div>
-            <form method="POST" action="{{ url_for('album_rescan', artist=artist_name, album=album_name) }}" class="d-flex align-items-center gap-2">
+            <form method="POST" action="{{ url_for('scan_album_custom') }}" class="d-flex align-items-center gap-2 flex-wrap">
+                <input type="hidden" name="artist" value="{{ artist_name }}">
+                <input type="hidden" name="album" value="{{ album_name }}">
+                <select name="scan_type" class="form-select form-select-sm" style="min-width: 140px; width: auto;" title="Select scan type">
+                    <option value="full">Full</option>
+                    <option value="navidrome">Navidrome</option>
+                    <option value="popularity">Popularity</option>
+                    <option value="metadata">Metadata</option>
+                    <option value="singles">Singles</option>
+                    <option value="essentia">Essentia</option>
+                </select>
                 <div class="form-check form-check-inline mb-0" title="Force full rescan for this album">
                     <input class="form-check-input" type="checkbox" id="albumForceScan" name="force" value="1">
                     <label class="form-check-label small" for="albumForceScan">Force</label>
                 </div>
-                <button class="btn btn-warning btn-sm" type="submit" title="Full scan: Navidrome + Popularity + Singles">
+                <button class="btn btn-warning btn-sm" type="submit" title="Run selected scan for this album">
                     <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan</span>
-                </button>
-            </form>
-            <form method="POST" action="{{ url_for('scan_essentia_mood') }}" class="d-inline">
-                <input type="hidden" name="artist" value="{{ artist_name }}">
-                <input type="hidden" name="album" value="{{ album_name }}">
-                <button class="btn btn-sm" style="border-color:#6f42c1;color:#6f42c1;" type="submit" title="Run Essentia ML mood/genre scan for this album">
-                    <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
-                </button>
-            </form>
-            <form method="POST" action="{{ url_for('album_update_metadata', artist=artist_name, album=album_name) }}" class="d-inline">
-                <button class="btn btn-sm btn-musicbrainz-scan" type="submit" title="Force metadata update scan for this album">
-                    <span class="d-none d-sm-inline">Update Metadata</span><span class="d-sm-none">Metadata</span>
                 </button>
             </form>
             <button class="btn btn-secondary btn-sm" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" title="Rename all album files based on current metadata">

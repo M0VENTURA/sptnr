@@ -74,26 +74,22 @@
       <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
         <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
       </a>
-      <form action="{{ url_for('scan_start') }}" method="post" class="d-flex align-items-center gap-2">
-        <input type="hidden" name="scan_type" value="artist">
+      <form action="{{ url_for('scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
         <input type="hidden" name="artist" value="{{ artist_name }}">
+        <select name="scan_type" class="form-select form-select-sm" style="min-width: 160px; width: auto;" title="Select scan type">
+          <option value="full">Full</option>
+          <option value="navidrome">Navidrome</option>
+          <option value="popularity">Popularity</option>
+          <option value="metadata">Metadata</option>
+          <option value="singles">Singles</option>
+          <option value="essentia">Essentia</option>
+        </select>
         <div class="form-check form-check-inline mb-0" title="Force full rescan for this artist">
           <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
           <label class="form-check-label small" for="artistForceScan">Force</label>
         </div>
-        <button type="submit" class="btn btn-warning" title="Full scan: Navidrome + Popularity + Singles">
+        <button type="submit" class="btn btn-warning" title="Run selected scan for this artist">
           <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan Artist</span>
-        </button>
-      </form>
-      <form action="{{ url_for('scan_essentia_mood') }}" method="post" class="d-flex align-items-center gap-2">
-        <input type="hidden" name="artist" value="{{ artist_name }}">
-        <button type="submit" class="btn" style="border-color:#6f42c1;color:#6f42c1;" title="Run Essentia ML mood/genre scan for this artist">
-          <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
-        </button>
-      </form>
-      <form action="{{ url_for('artist_update_metadata', name=artist_name) }}" method="post" class="d-flex align-items-center gap-2">
-        <button type="submit" class="btn btn-info" title="Force metadata update scan for this artist">
-          <i class="bi bi-tags"></i> <span class="d-none d-sm-inline">Update Metadata</span>
         </button>
       </form>
     </div>
