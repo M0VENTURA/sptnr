@@ -19799,13 +19799,13 @@ def slskd_search():
         # (each with a 4s timeout); with even 15 stale background-search entries that
         # path can exceed the 60s browser timeout *before* the POST to slskd is sent —
         # which is why users observe "Request timed out" even when slskd appears idle.
-        search_id = client.start_search(query, timeout=6, max_attempts=1)
+        search_id = client.start_search(query, timeout=10, max_attempts=1)
 
         if search_id is None:
             # First attempt failed (likely 429 due to a stale/blocking search).
             # Run the stale-search cleanup once and retry with a few more attempts.
             _clear_stale_slskd_searches(client, context="manual search")
-            search_id = client.start_search(query, timeout=6, max_attempts=3)
+            search_id = client.start_search(query, timeout=10, max_attempts=3)
 
         if not search_id:
             # Start attempts exhausted — check whether an active (non-terminal)
@@ -19902,7 +19902,11 @@ def slskd_search_results(search_id):
     api_key = slskd_config.get("api_key", "")
     
     try:
-        client = SlskdClient(web_url, api_key, enabled=True)
+        # Use a plain session (no automatic retry backoff) for interactive polling
+        # so that transient 5xx/429 responses fail fast rather than hanging the
+        # backend for tens of seconds and exceeding the frontend's 30 s timeout.
+        plain_session = requests.Session()
+        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True, default_timeout=10)
         responses, state, is_complete = client.get_search_results(search_id)
         
         results = []
@@ -21149,13 +21153,13 @@ def slskd_search_again():
         # per accumulated completed search (each with a 4 s timeout); with many
         # stale entries that can exceed the 60 s browser timeout before the POST
         # to slskd is even sent.
-        search_id = client.start_search(filename, timeout=6, max_attempts=1)
+        search_id = client.start_search(filename, timeout=10, max_attempts=1)
 
         if search_id is None:
             # First attempt failed (likely 429 — stale search blocking the slot).
             # Run stale-search cleanup once, then retry.
             _clear_stale_slskd_searches(client, context="search-again")
-            search_id = client.start_search(filename, timeout=6, max_attempts=3)
+            search_id = client.start_search(filename, timeout=10, max_attempts=3)
         
         if search_id:
             return jsonify({
