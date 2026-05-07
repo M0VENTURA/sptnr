@@ -1699,6 +1699,28 @@ function performSlskdSearch() {
       `;
       return;
     }
+
+    if (data.slotBusy) {
+      document.getElementById('slskdResults').innerHTML = `
+        <div class="alert alert-warning">
+          <i class="bi bi-clock"></i> <strong>Soulseek search slot is busy.</strong>
+          An active search is in progress. Retrying automatically…
+        </div>
+      `;
+      // Poll /api/slskd/search-slot until free, then retry
+      const slotPoll = setInterval(() => {
+        fetch('/api/slskd/search-slot')
+          .then(r => r.json())
+          .then(slotData => {
+            if (slotData.slotFree) {
+              clearInterval(slotPoll);
+              performSlskdSearch();
+            }
+          })
+          .catch(() => {});
+      }, 2000);
+      return;
+    }
     
     const searchId = data.searchId;
     // Poll for results
