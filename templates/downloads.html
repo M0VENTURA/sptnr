@@ -1171,6 +1171,23 @@ function performSlskdSearch() {
       showSlskdError(data.error);
       return;
     }
+
+    if (data.slotBusy) {
+      document.getElementById('slskdStatusText').textContent = 'Soulseek search slot is busy — retrying automatically…';
+      // Poll /api/slskd/search-slot until free, then retry
+      const slotPoll = setInterval(() => {
+        fetch('/api/slskd/search-slot')
+          .then(r => r.json())
+          .then(slotData => {
+            if (slotData.slotFree) {
+              clearInterval(slotPoll);
+              searchSoulseek({ preventDefault: () => {} });
+            }
+          })
+          .catch(() => {});
+      }, 2000);
+      return;
+    }
     
     currentSlskdSearchId = data.searchId;
     document.getElementById('slskdStatusText').textContent = 'Searching the Soulseek network...';

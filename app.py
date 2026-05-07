@@ -604,6 +604,108 @@ def _clear_stale_slskd_searches(client, context="search", budget_seconds=8):
     except Exception as cleanup_err:
         logging.warning(f"[SLSKD] Could not clear stale searches before {context}: {cleanup_err}")
 
+
+def _find_active_search_by_query(client, query, within_seconds=60):
+    """Return the most-recent active search whose query matches *query*.
+
+    Used to recover a search that slskd started even though the HTTP
+    response to ``start_search()`` timed out or was lost.
+    """
+    _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
+    try:
+        searches = client.list_searches(timeout=4)
+    except Exception:
+        return None
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    matches = []
+    for s in searches:
+        state = s.get("state") or s.get("State") or ""
+        if state not in _ACTIVE_STATES:
+            continue
+        search_text = (s.get("searchText") or s.get("query") or "").strip()
+        if search_text.lower() != query.strip().lower():
+            continue
+        started_at = s.get("startedAt") or s.get("StartedAt") or s.get("started_at")
+        if not started_at:
+            matches.append(s)
+            continue
+        try:
+            if isinstance(started_at, str):
+                started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            else:
+                started_dt = started_at
+            if started_dt.tzinfo is None:
+                started_dt = started_dt.replace(tzinfo=timezone.utc)
+            elapsed = (now - started_dt).total_seconds()
+            if elapsed <= within_seconds:
+                matches.append(s)
+        except Exception:
+            matches.append(s)
+    if not matches:
+        return None
+    # Return the most recent match
+    matches.sort(key=lambda s: s.get("startedAt") or s.get("StartedAt") or "", reverse=True)
+    return matches[0]
+
+
+def _start_slskd_search_with_recovery(client, query):
+    """Start a Soulseek search, recovering from timeouts and slot-busy states.
+
+    Returns one of:
+        (search_id, None)          – search started successfully
+        (None, slot_busy_payload)  – slot is busy, caller should queue/retry
+        (None, None)               – hard failure, caller should surface error
+    """
+    # 1. Optimistic fast path with a generous timeout so slskd has plenty of
+    #    time to accept the request even when under load.
+    search_id = client.start_search(query, timeout=20, max_attempts=1)
+    if search_id:
+        return search_id, None
+
+    # 2. The POST may have timed out even though slskd actually started the
+    #    search.  Check for a recently-started active search with the same
+    #    query and recover its ID rather than treating this as a failure.
+    recovered = _find_active_search_by_query(client, query, within_seconds=60)
+    if recovered:
+        recovered_id = recovered.get("id") or recovered.get("searchId") or recovered.get("Id") or ""
+        logging.info(
+            f"[SLSKD] Recovered search {recovered_id!r} for '{query}' "
+            f"after start_search timed out or returned None"
+        )
+        return recovered_id, None
+
+    # 3. No matching active search — clear stale ones and retry once with a
+    #    slightly shorter timeout.  We keep the budget tight so the total
+    #    wall-clock time stays well under common proxy/browser limits (~60 s).
+    _clear_stale_slskd_searches(client, context="manual search", budget_seconds=5)
+    search_id = client.start_search(query, timeout=15, max_attempts=1)
+    if search_id:
+        return search_id, None
+
+    # 4. Still blocked — check whether an active search is genuinely holding
+    #    the slot so the frontend can queue and auto-retry.
+    _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
+    try:
+        active_searches = [
+            s for s in client.list_searches(timeout=4)
+            if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
+        ]
+    except Exception:
+        active_searches = []
+
+    if active_searches:
+        a = active_searches[0]
+        return None, {
+            "slotBusy": True,
+            "activeSearchId": a.get("id") or a.get("searchId") or a.get("Id") or "",
+            "activeSearchQuery": a.get("searchText") or a.get("query") or "",
+            "activeSearchState": a.get("state") or a.get("State") or "",
+        }
+
+    return None, None
+
+
 @app.template_filter('format_datetime')
 def format_datetime(value):
     """Format ISO datetime string to DD-MM-YY at HH:MM AM/PM"""
@@ -19786,60 +19888,24 @@ def slskd_search():
         # Use a plain session with no automatic retries for interactive searches.
         # The shared api_clients session retries 429 responses up to 3 times with
         # exponential backoff (1s+2s+4s per attempt), which turns a fast 429 into
-        # a ~31s wait per start_search attempt.  With max_attempts=3 that can exceed
-        # the 60s browser timeout.  A plain session returns 429 immediately so the
-        # manual retry loop in start_search() controls the cadence instead.
+        # a ~31s wait per start_search attempt.  A plain session returns 429
+        # immediately so the manual retry loop in start_search() controls the
+        # cadence instead.
         plain_session = requests.Session()
         client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
 
-        # Optimistic fast path: attempt the search without pre-emptive cleanup.
-        # When slskd has no active searches (the common interactive case), this
-        # returns immediately (<1s).  Pre-emptively calling _clear_stale_slskd_searches
-        # before every search issues a DELETE for every accumulated completed search
-        # (each with a 4s timeout); with even 15 stale background-search entries that
-        # path can exceed the 60s browser timeout *before* the POST to slskd is sent —
-        # which is why users observe "Request timed out" even when slskd appears idle.
-        search_id = client.start_search(query, timeout=10, max_attempts=1)
-
-        if search_id is None:
-            # First attempt failed (likely 429 due to a stale/blocking search).
-            # Run the stale-search cleanup once and retry with a few more attempts.
-            _clear_stale_slskd_searches(client, context="manual search")
-            search_id = client.start_search(query, timeout=10, max_attempts=3)
-
-        if not search_id:
-            # Start attempts exhausted — check whether an active (non-terminal)
-            # search is genuinely holding the slot.  If so, let the client queue
-            # the request and auto-retry rather than surfacing a hard error.
-            _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
-            try:
-                active_searches = [
-                    s for s in client.list_searches(timeout=4)
-                    if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
-                ]
-            except Exception:
-                active_searches = []
-
-            if active_searches:
-                a = active_searches[0]
-                active_id = a.get("id") or a.get("searchId") or a.get("Id") or ""
-                active_query = a.get("searchText") or a.get("query") or ""
-                active_state = a.get("state") or a.get("State") or ""
-                logging.info(
-                    f"[SLSKD] Manual search slot busy — active search "
-                    f"{active_id!r} ({active_state!r}) for '{active_query}'; "
-                    f"returning slotBusy so client can queue and auto-retry"
-                )
-                return jsonify({
-                    "slotBusy": True,
-                    "activeSearchId": active_id,
-                    "activeSearchQuery": active_query,
-                    "activeSearchState": active_state,
-                }), 202
-
-            return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
-
-        return jsonify({"searchId": search_id, "status": "searching"})
+        search_id, slot_busy = _start_slskd_search_with_recovery(client, query)
+        if slot_busy:
+            logging.info(
+                f"[SLSKD] Manual search slot busy — active search "
+                f"{slot_busy['activeSearchId']!r} ({slot_busy['activeSearchState']!r}) "
+                f"for '{slot_busy['activeSearchQuery']}'; returning slotBusy so client "
+                f"can queue and auto-retry"
+            )
+            return jsonify(slot_busy), 202
+        if search_id:
+            return jsonify({"searchId": search_id, "status": "searching"})
+        return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -19906,7 +19972,7 @@ def slskd_search_results(search_id):
         # so that transient 5xx/429 responses fail fast rather than hanging the
         # backend for tens of seconds and exceeding the frontend's 30 s timeout.
         plain_session = requests.Session()
-        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True, default_timeout=10)
+        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True, default_timeout=15)
         responses, state, is_complete = client.get_search_results(search_id)
         
         results = []
@@ -21148,27 +21214,20 @@ def slskd_search_again():
         plain_session = requests.Session()
         client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
 
-        # Optimistic fast path: attempt without pre-emptive cleanup.
-        # Pre-emptively calling _clear_stale_slskd_searches issues one DELETE
-        # per accumulated completed search (each with a 4 s timeout); with many
-        # stale entries that can exceed the 60 s browser timeout before the POST
-        # to slskd is even sent.
-        search_id = client.start_search(filename, timeout=10, max_attempts=1)
-
-        if search_id is None:
-            # First attempt failed (likely 429 — stale search blocking the slot).
-            # Run stale-search cleanup once, then retry.
-            _clear_stale_slskd_searches(client, context="search-again")
-            search_id = client.start_search(filename, timeout=10, max_attempts=3)
-        
+        search_id, slot_busy = _start_slskd_search_with_recovery(client, filename)
+        if slot_busy:
+            return jsonify({
+                "error": "slskd search slot is busy. Another search is in progress. Try again shortly.",
+                "slotBusy": True,
+                **slot_busy,
+            }), 202
         if search_id:
             return jsonify({
                 "success": True,
                 "message": f"Searching for '{filename}'",
                 "search_id": search_id
             })
-        if not search_id:
-            return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
+        return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
             
     except Exception as e:
         logging.error(f"[SLSKD] Search again error: {str(e)}")
