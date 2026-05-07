@@ -250,7 +250,7 @@
 
       // Step 2 – queue tracks in small batches so the progress bar moves and we
       // can reliably detect when every item has finished processing.
-      const BATCH_SIZE = 10;
+      const BATCH_SIZE = 5;
       let totalAdded = 0, totalSkipped = 0, totalFailed = 0;
       let processedCount = 0;
 
@@ -299,8 +299,10 @@
         totalFailed  += batchFailed;
         processedCount += batch.length;
 
-        // Update progress AFTER the batch response so it reflects real work done
-        const pct = (processedCount / items.length) * 100;
+        // Update progress based on successfully-added items so the bar only
+        // moves when work is actually confirmed, preventing the "jump to 50 %"
+        // effect when batches fail quickly.
+        const pct = ((totalAdded + totalSkipped) / items.length) * 100;
         setProgress(
           'Adding to queue…',
           `Sending ${items.length} track${items.length !== 1 ? 's' : ''} to the download queue.`,
@@ -310,7 +312,8 @@
       }
 
       // Final progress update before switching to results
-      setProgress('Finishing up…', '', 100, `Processed ${processedCount} of ${items.length}  •  Added ${totalAdded}  •  Failed ${totalFailed}`);
+      const finalPct = ((totalAdded + totalSkipped) / items.length) * 100;
+      setProgress('Finishing up…', '', finalPct, `Processed ${processedCount} of ${items.length}  •  Added ${totalAdded}  •  Failed ${totalFailed}`);
 
       const albumCount = 1;
 
