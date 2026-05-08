@@ -611,7 +611,10 @@ def _find_active_search_by_query(client, query, within_seconds=60):
     Used to recover a search that slskd started even though the HTTP
     response to ``start_search()`` timed out or was lost.
     """
-    _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
+    # ACTIVE_STATES from slskd includes "In Progress" (with space) which some
+    # slskd versions return; keep the local set in sync so we don't miss active
+    # searches and incorrectly report the slot as free.
+    _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing", "In Progress"}
     try:
         searches = client.list_searches(timeout=8)
     except Exception:
@@ -688,7 +691,10 @@ def _start_slskd_search_with_recovery(client, query):
     # 3. Still blocked — check whether an active search is genuinely holding
     #    the slot so the frontend can queue and auto-retry.
     time_left = deadline - time.monotonic()
-    _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
+    # Include "In Progress" (with space) so slskd versions that emit it are
+    # correctly recognised as busy; otherwise the slot looks free while the
+    # backend keeps getting HTTP 429.
+    _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing", "In Progress"}
     active_searches = []
     if time_left > 0:
         try:
@@ -1128,32 +1134,54 @@ def api_download_log(log_type):
         return jsonify({"error": f"Log file not found for type: {log_type}"}), 404
     
     try:
-        # Read log file and filter for last hour
+        # Read log file and filter for last hour.
+        # For large files we read from the tail to avoid loading the entire
+        # history into memory.  Unparseable lines (traceback continuations,
+        # multi-line messages) are only kept when they follow a timestamp that
+        # falls inside the last hour — otherwise old exceptions leak into every
+        # download.
         cutoff_time = datetime.now() - timedelta(hours=1)
         filtered_lines = []
-        all_lines = []
-        
-        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                all_lines.append(line)
-                # Try to parse timestamp from log line (format: YYYY-MM-DD HH:MM:SS)
-                try:
-                    # Extract timestamp from beginning of line
-                    parts = line.split('[', 1)
-                    if parts and len(parts[0].strip()) >= 19:
-                        timestamp_str = parts[0].strip()[:19]
-                        line_time = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-                        if line_time >= cutoff_time:
-                            filtered_lines.append(line)
-                except (ValueError, IndexError):
-                    # If we can't parse timestamp, include the line anyway
+
+        def _parse_log_timestamp(line):
+            """Return a naive datetime or None for the leading timestamp."""
+            try:
+                parts = line.split('[', 1)
+                if parts and len(parts[0].strip()) >= 19:
+                    ts = parts[0].strip()[:19]
+                    return datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+            except (ValueError, IndexError):
+                pass
+            return None
+
+        file_size = os.path.getsize(log_path)
+        max_tail = 2 * 1024 * 1024  # 2 MB tail covers most recent hours
+
+        if file_size > max_tail:
+            with open(log_path, "rb") as fh:
+                fh.seek(file_size - max_tail)
+                fh.readline()  # discard partial first line
+                chunk = fh.read().decode("utf-8", errors="ignore")
+                lines_to_process = chunk.splitlines(keepends=True)
+        else:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                lines_to_process = f.readlines()
+
+        last_parseable_time = None
+        for line in lines_to_process:
+            line_time = _parse_log_timestamp(line)
+            if line_time is not None:
+                last_parseable_time = line_time
+                if line_time >= cutoff_time:
                     filtered_lines.append(line)
-        
-        # If no lines matched the last hour, fall back to last 1000 lines so the user gets useful content
-        if not filtered_lines and all_lines:
-            filtered_lines = all_lines[-1000:]
-        
-        # Create response with log content
+            elif last_parseable_time is not None and last_parseable_time >= cutoff_time:
+                # Continuation of a recent log entry (traceback, multi-line msg)
+                filtered_lines.append(line)
+
+        # Fallback: if nothing matched the last hour, return the newest 1000 lines
+        if not filtered_lines and lines_to_process:
+            filtered_lines = lines_to_process[-1000:]
+
         log_content = ''.join(filtered_lines)
         
         # Generate filename with timestamp
@@ -19954,7 +19982,9 @@ def slskd_search_slot():
         with requests.Session() as plain_session:
             client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
             searches = client.list_searches(timeout=4)
-            _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
+            # Include "In Progress" (with space) — some slskd versions emit this
+            # state string and if we ignore it the UI thinks the slot is free.
+            _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing", "In Progress"}
             active = [
                 s for s in searches
                 if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
