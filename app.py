@@ -19906,25 +19906,25 @@ def slskd_search():
         # a ~31s wait per start_search attempt.  A plain session returns 429
         # immediately so the manual retry loop in start_search() controls the
         # cadence instead.
-        plain_session = requests.Session()
-        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
+        with requests.Session() as plain_session:
+            client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
 
-        # Clear terminal/stuck searches so they don't block the slot.
-        # Budget is tight so the total request stays under proxy timeouts.
-        client.clear_stale_searches(budget_seconds=2)
+            # Clear terminal/stuck searches so they don't block the slot.
+            # Budget is tight so the total request stays under proxy timeouts.
+            client.clear_stale_searches(budget_seconds=2)
 
-        search_id, slot_busy = _start_slskd_search_with_recovery(client, query)
-        if slot_busy:
-            logging.info(
-                f"[SLSKD] Manual search slot busy — active search "
-                f"{slot_busy['activeSearchId']!r} ({slot_busy['activeSearchState']!r}) "
-                f"for '{slot_busy['activeSearchQuery']}'; returning slotBusy so client "
-                f"can queue and auto-retry"
-            )
-            return jsonify(slot_busy), 202
-        if search_id:
-            return jsonify({"searchId": search_id, "status": "searching"})
-        return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
+            search_id, slot_busy = _start_slskd_search_with_recovery(client, query)
+            if slot_busy:
+                logging.info(
+                    f"[SLSKD] Manual search slot busy — active search "
+                    f"{slot_busy['activeSearchId']!r} ({slot_busy['activeSearchState']!r}) "
+                    f"for '{slot_busy['activeSearchQuery']}'; returning slotBusy so client "
+                    f"can queue and auto-retry"
+                )
+                return jsonify(slot_busy), 202
+            if search_id:
+                return jsonify({"searchId": search_id, "status": "searching"})
+            return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -19952,23 +19952,23 @@ def slskd_search_slot():
     api_key = slskd_config.get("api_key", "")
 
     try:
-        plain_session = requests.Session()
-        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
-        searches = client.list_searches(timeout=4)
-        _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
-        active = [
-            s for s in searches
-            if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
-        ]
-        if active:
-            a = active[0]
-            return jsonify({
-                "slotFree": False,
-                "activeSearchId": a.get("id") or a.get("searchId") or a.get("Id") or "",
-                "activeSearchQuery": a.get("searchText") or a.get("query") or "",
-                "activeSearchState": a.get("state") or a.get("State") or "",
-            })
-        return jsonify({"slotFree": True})
+        with requests.Session() as plain_session:
+            client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
+            searches = client.list_searches(timeout=4)
+            _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
+            active = [
+                s for s in searches
+                if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
+            ]
+            if active:
+                a = active[0]
+                return jsonify({
+                    "slotFree": False,
+                    "activeSearchId": a.get("id") or a.get("searchId") or a.get("Id") or "",
+                    "activeSearchQuery": a.get("searchText") or a.get("query") or "",
+                    "activeSearchState": a.get("state") or a.get("State") or "",
+                })
+            return jsonify({"slotFree": True})
     except Exception as e:
         logging.error(f"[SLSKD] Error checking search slot: {e}")
         return jsonify({"error": "Failed to check search slot status"}), 500
@@ -19990,40 +19990,42 @@ def slskd_search_results(search_id):
         # Use a plain session (no automatic retry backoff) for interactive polling
         # so that transient 5xx/429 responses fail fast rather than hanging the
         # backend for tens of seconds and exceeding the frontend's 30 s timeout.
-        plain_session = requests.Session()
-        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True, default_timeout=10)
-        responses, state, is_complete = client.get_search_results(search_id)
-        
-        results = []
-        for resp in responses:
-            if hasattr(resp, 'files'):
-                for file in resp.files:
-                    results.append({
-                        "username": resp.username,
-                        "filename": file.filename,
-                        "size": file.size,
-                        "size_mb": f"{file.size_mb:.2f}",
-                        "bitrate": file.bitrate,
-                        "sample_rate": file.sample_rate,
-                        "length": file.length,
-                        "duration": file.duration_formatted,
-                    })
-        
-        response_count = len(responses) if responses else 0
-        logging.info(f"[SLSKD] search_id={search_id}, responses={response_count}, files={len(results)}, state={state}, complete={is_complete}")
-        
-        if is_complete and response_count == 0:
-            logging.warning(f"[SLSKD] Search {search_id} completed with 0 responses - check if slskd service is reachable at {web_url}")
-        elif is_complete and len(results) == 0:
-            logging.warning(f"[SLSKD] Search {search_id} got {response_count} responses but 0 files - peers may not have matching files")
-        
-        return jsonify({
-            "results": results,
-            "state": state,
-            "responseCount": response_count,
-            "fileCount": len(results),
-            "isComplete": is_complete
-        })
+        # default_timeout=8 keeps the total backend time well under typical proxy
+        # limits while still giving slskd time to respond.
+        with requests.Session() as plain_session:
+            client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True, default_timeout=8)
+            responses, state, is_complete = client.get_search_results(search_id)
+
+            results = []
+            for resp in responses:
+                if hasattr(resp, 'files'):
+                    for file in resp.files:
+                        results.append({
+                            "username": resp.username,
+                            "filename": file.filename,
+                            "size": file.size,
+                            "size_mb": f"{file.size_mb:.2f}",
+                            "bitrate": file.bitrate,
+                            "sample_rate": file.sample_rate,
+                            "length": file.length,
+                            "duration": file.duration_formatted,
+                        })
+
+            response_count = len(responses) if responses else 0
+            logging.info(f"[SLSKD] search_id={search_id}, responses={response_count}, files={len(results)}, state={state}, complete={is_complete}")
+
+            if is_complete and response_count == 0:
+                logging.warning(f"[SLSKD] Search {search_id} completed with 0 responses - check if slskd service is reachable at {web_url}")
+            elif is_complete and len(results) == 0:
+                logging.warning(f"[SLSKD] Search {search_id} got {response_count} responses but 0 files - peers may not have matching files")
+
+            return jsonify({
+                "results": results,
+                "state": state,
+                "responseCount": response_count,
+                "fileCount": len(results),
+                "isComplete": is_complete
+            })
     except Exception as e:
         logging.error(f"[SLSKD] Error getting search results for {search_id}: {str(e)}")
         import traceback
@@ -21230,27 +21232,26 @@ def slskd_search_again():
     try:
         # Use a plain session (no automatic retry backoff) so the optimistic
         # fast path returns immediately when slskd is idle.
-        plain_session = requests.Session()
-        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
+        with requests.Session() as plain_session:
+            client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
 
-        # Clear terminal/stuck searches so they don't block the slot.
-        client.clear_stale_searches(budget_seconds=2)
+            # Clear terminal/stuck searches so they don't block the slot.
+            client.clear_stale_searches(budget_seconds=2)
 
-        search_id, slot_busy = _start_slskd_search_with_recovery(client, filename)
-        if slot_busy:
-            return jsonify({
-                "error": "slskd search slot is busy. Another search is in progress. Try again shortly.",
-                "slotBusy": True,
-                **slot_busy,
-            }), 202
-        if search_id:
-            return jsonify({
-                "success": True,
-                "message": f"Searching for '{filename}'",
-                "search_id": search_id
-            })
-        return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
-            
+            search_id, slot_busy = _start_slskd_search_with_recovery(client, filename)
+            if slot_busy:
+                return jsonify({
+                    "error": "slskd search slot is busy. Another search is in progress. Try again shortly.",
+                    "slotBusy": True,
+                    **slot_busy,
+                }), 202
+            if search_id:
+                return jsonify({
+                    "success": True,
+                    "message": f"Searching for '{filename}'",
+                    "search_id": search_id
+                })
+            return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
     except Exception as e:
         logging.error(f"[SLSKD] Search again error: {str(e)}")
         return jsonify({"error": str(e)}), 500

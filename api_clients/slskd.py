@@ -195,11 +195,11 @@ class SlskdClient:
     def get_search_results(self, search_id: str, timeout: Optional[int] = None) -> tuple[list[SearchResponse], str, bool]:
         """
         Poll for search results from Soulseek.
-        
+
         Args:
             search_id: Search ID from start_search()
             timeout: Request timeout (uses default_timeout if not specified)
-            
+
         Returns:
             Tuple of (responses, state, is_complete)
             - responses: List of SearchResponse objects
@@ -208,34 +208,40 @@ class SlskdClient:
         """
         if not self.enabled:
             return [], "Error", True
-        
+
         timeout = timeout or self.default_timeout
-        
+        state = "InProgress"
+
+        # ---- Fetch search state (lightweight) ----
         try:
-            # First, get the search state
             state_url = f"{self.base_url}/searches/{search_id}"
             state_resp = self.session.get(state_url, headers=self.headers, timeout=timeout)
-            
+
             if state_resp.status_code != 200:
                 logger.warning(f"Slskd status failed: {state_resp.status_code} - {state_resp.text[:200]}")
-                return [], "Error", True
-            
+                # We don't know the real state; tell caller to keep polling.
+                return [], state, False
+
             state_data = state_resp.json()
             state = state_data.get("state", "InProgress")
             logger.debug(f"Slskd search {search_id} state: {state}")
-            
-            # Terminal states that carry no search results (the search was
-            # cancelled or failed before collecting any peers).  Skip the
-            # second HTTP call to /responses — it would return an empty list
-            # anyway, and saving the round-trip matters in busy queues.
-            if state in _EMPTY_TERMINAL_STATES:
-                logger.debug(f"Slskd search {search_id} is in terminal no-result state ({state}); skipping responses fetch")
-                return [], state, True
-            
-            # Get the actual responses from the responses endpoint
+        except Exception as e:
+            logger.error(f"Slskd get state failed for search {search_id}: {e}")
+            return [], "InProgress", False
+
+        # Terminal states that carry no search results (the search was
+        # cancelled or failed before collecting any peers).  Skip the
+        # second HTTP call to /responses — it would return an empty list
+        # anyway, and saving the round-trip matters in busy queues.
+        if state in _EMPTY_TERMINAL_STATES:
+            logger.debug(f"Slskd search {search_id} is in terminal no-result state ({state}); skipping responses fetch")
+            return [], state, True
+
+        # ---- Fetch responses (can be slow / large) ----
+        try:
             responses_url = f"{self.base_url}/searches/{search_id}/responses"
             resp = self.session.get(responses_url, headers=self.headers, timeout=timeout)
-            
+
             if resp.status_code != 200:
                 logger.debug(f"Slskd responses endpoint returned {resp.status_code}")
                 _active_states = {"None", "Queued", "Requested", "InProgress", "Initializing"}
@@ -275,11 +281,14 @@ class SlskdClient:
             _active_states = {"None", "Queued", "Requested", "InProgress", "Initializing"}
             is_complete = state not in _active_states
             logger.info(f"Slskd search {search_id}: state={state}, peers={len(responses)}, is_complete={is_complete}")
-            
+
             return responses, state, is_complete
         except Exception as e:
-            logger.error(f"Slskd get results failed for search {search_id}: {e}")
-            return [], "Error", True
+            # If we can't fetch responses (timeout, network hiccup, etc.)
+            # assume the search is still active so the caller keeps polling.
+            logger.warning(f"Slskd get responses failed for search {search_id}: {e}")
+            _active_states = {"None", "Queued", "Requested", "InProgress", "Initializing"}
+            return [], state, state not in _active_states
     
     def download_file(self, username: str, filename: str, size: int = 0, timeout: Optional[int] = None) -> bool:
         """
