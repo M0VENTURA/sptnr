@@ -947,20 +947,30 @@ class SlskdClient:
                         )
 
                 if should_cancel:
-                    cancel_timeout = min(2, max(1, int(deadline - time.monotonic())))
+                    # Strict budget check before each HTTP call so a large backlog
+                    # of stale searches cannot exceed the caller's timeout.
+                    time_left = deadline - time.monotonic()
+                    if time_left <= 0:
+                        logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                        break
+                    cancel_timeout = max(0.5, min(2, time_left))
                     # For active searches use PUT (calls slskd TryCancel) so the
                     # underlying Soulseek operation is stopped before we delete the
                     # record.  For terminal searches DELETE is sufficient.
                     if state in _ACTIVE_STATES:
+                        time_left = deadline - time.monotonic()
+                        if time_left <= 0:
+                            logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                            break
                         try:
                             put_url = f"{self.base_url}/searches/{sid}"
                             self.session.put(put_url, headers=self.headers, timeout=cancel_timeout)
                         except Exception:
                             pass
-                        # Brief pause so slskd can finish its internal state
-                        # transition before we DELETE, reducing the race window
-                        # that triggers DbUpdateConcurrencyException.
-                        time.sleep(0.15)
+                    time_left = deadline - time.monotonic()
+                    if time_left <= 0:
+                        logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                        break
                     self.cancel_search(sid, timeout=cancel_timeout)
                     if state in _TERMINAL_STATES:
                         logger.info(
