@@ -628,6 +628,28 @@
     </div>
     <div class="card-body p-2">
       <pre id="queueActivityLog" style="height:250px; overflow-y:auto; font-family:monospace; font-size:12px; background:#111; color:#ccc; padding:8px; margin:0; border-radius:4px;"></pre>
+      <div class="mt-2">
+        <a href="/api/download-log/queue" class="btn btn-sm btn-outline-info" download>
+          <i class="bi bi-download"></i> Download Last Hour
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-search"></i> Soulseek Search Log</span>
+      <button id="searchLogPauseBtn" type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleSearchLogPause()">
+        <i class="bi bi-pause-fill"></i> Pause
+      </button>
+    </div>
+    <div class="card-body p-2">
+      <pre id="soulseekSearchLog" style="height:250px; overflow-y:auto; font-family:monospace; font-size:12px; background:#111; color:#ccc; padding:8px; margin:0; border-radius:4px;"></pre>
+      <div class="mt-2">
+        <a href="/api/download-log/search" class="btn btn-sm btn-outline-info" download>
+          <i class="bi bi-download"></i> Download Last Hour
+        </a>
+      </div>
     </div>
   </div>
 
@@ -664,6 +686,7 @@
 // Queue management functions for downloads monitor
 
 let queueLogPaused = false;
+let searchLogPaused = false;
 const QUEUE_PAGE_LIMIT = 500;  // Show up to 500 items per page to avoid pagination
 let queuePageOffset = 0;
 
@@ -6991,6 +7014,78 @@ function toggleQueueLogPause() {
   }
 }
 
+async function loadSearchLog() {
+  if (searchLogPaused) {
+    return;
+  }
+
+  const logEl = document.getElementById('soulseekSearchLog');
+  if (!logEl) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/search-events?limit=100');
+    const events = Array.isArray(data.events) ? data.events : [];
+    const chunks = [];
+    events.slice().reverse().forEach(event => {
+      const ts = event.timestamp ? new Date(event.timestamp) : null;
+      const timeLabel = ts && !Number.isNaN(ts.getTime())
+        ? ts.toLocaleTimeString([], { hour12: false })
+        : '--:--:--';
+      const typeLabel = String(event.search_type || 'unknown').toUpperCase().padEnd(10, ' ');
+      const query = event.query || '';
+      const artist = event.artist || '';
+      const title = event.title || '';
+      const rc = event.result_count ?? 0;
+      const dur = event.duration_seconds != null ? `${event.duration_seconds}s` : 'n/a';
+      let line = `[${timeLabel}] ${typeLabel} query="${query}" results=${rc} duration=${dur}`;
+      if (artist || title) {
+        line += ` | ${artist} - ${title}`;
+      }
+      if (event.notes) {
+        line += ` | ${event.notes}`;
+      }
+      chunks.push(line);
+      if (event.selected_result) {
+        const sel = event.selected_result;
+        chunks.push(`  -> SELECTED: score=${sel.score ?? '?'} user=${sel.username ?? '?'} file=${sel.filename ?? '?'}`);
+      }
+      const results = event.results || [];
+      if (results.length) {
+        chunks.push(`  -> RESULTS:`);
+        results.forEach((r, idx) => {
+          const score = r.score != null ? r.score.toFixed(2) : '?';
+          const len = r.length != null ? `${Math.round(r.length)}s` : '?';
+          chunks.push(`     ${idx + 1}. score=${score} len=${len} user=${r.username ?? '?'} file=${r.filename ?? '?'}`);
+        });
+      }
+    });
+
+    logEl.textContent = chunks.length ? chunks.join('\n') : 'No Soulseek search events yet.';
+    logEl.scrollTop = logEl.scrollHeight;
+  } catch (error) {
+    console.error('Error loading Soulseek search log:', error);
+    logEl.textContent = 'Failed to load Soulseek search log.';
+  }
+}
+
+function toggleSearchLogPause() {
+  searchLogPaused = !searchLogPaused;
+  const btn = document.getElementById('searchLogPauseBtn');
+  if (!btn) {
+    return;
+  }
+
+  btn.innerHTML = searchLogPaused
+    ? '<i class="bi bi-play-fill"></i> Resume'
+    : '<i class="bi bi-pause-fill"></i> Pause';
+
+  if (!searchLogPaused) {
+    loadSearchLog();
+  }
+}
+
 // Load queue status on page load
 document.addEventListener('DOMContentLoaded', function() {
   // Load queue status and folder groups together to keep them in sync
@@ -7010,9 +7105,11 @@ document.addEventListener('DOMContentLoaded', function() {
   // It reads from the local database; there is no Wikipedia fetch on load.
   setTimeout(refreshUpcomingReleasesMonitor, 2000);
   loadQueueLog();
+  loadSearchLog();
   // Refresh both together every 5 seconds to keep them synchronized
   setInterval(loadBothAsync, 5000);
   setInterval(loadQueueLog, 5000);
+  setInterval(loadSearchLog, 5000);
   // Auto-discover files every 60 seconds
   setInterval(autoDiscoverFiles, 60000);
 
@@ -7032,6 +7129,7 @@ document.addEventListener('DOMContentLoaded', function() {
       loadQueueStatus();
       loadFolderGroups({ keepVisibleOnEmpty: true });
       loadQueueLog();
+      loadSearchLog();
     }
   });
 });

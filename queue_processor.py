@@ -2902,6 +2902,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
 
     best_result = None
     best_score = 0.0
+    all_candidates = []
     poll_deadline = time.monotonic() + max_wait_seconds
     poll_attempt = 0
     total_files_seen = 0
@@ -3028,20 +3029,22 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                             _diag_artist_sim,
                             f"{_diag_dur_diff:.0f}s" if _diag_dur_diff is not None else "n/a",
                         )
+                        candidate_entry = {
+                            "username": resp.username,
+                            "filename": filename,
+                            "size": size,
+                            "length": candidate_length,
+                            "bitrate": candidate_bitrate,
+                            "score": candidate_score,
+                            "title_sim": round(_diag_title_sim, 3),
+                            "artist_sim": round(_diag_artist_sim, 3),
+                            "duration_diff_s": _diag_dur_diff,
+                            "has_free_upload_slot": getattr(resp, 'has_free_upload_slot', True),
+                        }
+                        all_candidates.append(candidate_entry)
                         if candidate_score > best_score:
                             best_score = candidate_score
-                            best_result = {
-                                "username": resp.username,
-                                "filename": filename,
-                                "size": size,
-                                "length": candidate_length,
-                                "bitrate": candidate_bitrate,
-                                "score": candidate_score,
-                                "title_sim": round(_diag_title_sim, 3),
-                                "artist_sim": round(_diag_artist_sim, 3),
-                                "duration_diff_s": _diag_dur_diff,
-                                "has_free_upload_slot": getattr(resp, 'has_free_upload_slot', True),
-                            }
+                            best_result = candidate_entry
 
                 # Exit early once we have a high-confidence match.
                 if best_result and best_score >= 0.72:
@@ -3075,7 +3078,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
     if total_files_seen == 0 and is_complete:
         _track_zero_result_words(query, client)
 
-    return best_result, best_score
+    return best_result, best_score, all_candidates
 
 
 def search_and_download(queue_id, queue_item, client):
@@ -3459,7 +3462,8 @@ def search_and_download(queue_id, queue_item, client):
         # which validates artist, title, and duration against the queue item.
         best_result = None
         best_score = 0.0
-        stripped_query = _build_bracketsanitized_query(queue_item)
+        all_search_candidates = []
+        stripped_query = _build_bracketsanitized_query(queue_item) or None
         if stripped_query:
             _filtered_stripped = _filter_banned_words(stripped_query, _banned, _dismissed)
             if _filtered_stripped and _filtered_stripped != stripped_query:
@@ -3472,9 +3476,10 @@ def search_and_download(queue_id, queue_item, client):
                 logger.info(
                     f"Queue {queue_id}: Trying bracket-stripped query '{stripped_query}'..."
                 )
-                best_result, best_score = _run_soulseek_search(
+                best_result, best_score, stripped_candidates = _run_soulseek_search(
                     queue_id, stripped_query, queue_item, client
                 )
+                all_search_candidates.extend(stripped_candidates)
                 if best_result and best_score >= _SLSKD_MIN_ACCEPT_SCORE:
                     logger.info(
                         f"Queue {queue_id}: Bracket-stripped query succeeded (score={best_score:.2f})"
@@ -3483,9 +3488,10 @@ def search_and_download(queue_id, queue_item, client):
         # Primary plain-text search using the safe search_query when the
         # bracket-stripped query returned nothing useful.
         if not best_result or best_score < _SLSKD_MIN_ACCEPT_SCORE:
-            plain_result, plain_score = _run_soulseek_search(
+            plain_result, plain_score, plain_candidates = _run_soulseek_search(
                 queue_id, search_query, queue_item, client
             )
+            all_search_candidates.extend(plain_candidates)
             if plain_score > best_score:
                 best_result = plain_result
                 best_score = plain_score
@@ -3509,10 +3515,11 @@ def search_and_download(queue_id, queue_item, client):
                     f"(score={best_score:.2f}), trying fallback query '{fallback_query}'"
                     f" (min_score={effective_min:.2f})..."
                 )
-                fb_result, fb_score = _run_soulseek_search(
+                fb_result, fb_score, fb_candidates = _run_soulseek_search(
                     queue_id, fallback_query, queue_item, client,
                     max_wait_seconds=_SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS,
                 )
+                all_search_candidates.extend(fb_candidates)
                 if fb_score > best_score:
                     best_score = fb_score
                     best_result = fb_result
@@ -3526,6 +3533,20 @@ def search_and_download(queue_id, queue_item, client):
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")
+            try:
+                from download_queue_manager import log_slskd_search_event
+                log_slskd_search_event(
+                    search_type='automatic',
+                    query=search_query,
+                    queue_id=queue_id,
+                    queue_item=queue_item,
+                    results=all_search_candidates,
+                    selected_result=None,
+                    duration_seconds=round(elapsed, 1),
+                    notes="no_results"
+                )
+            except Exception as _log_err:
+                logger.debug(f"Queue {queue_id}: Could not log slskd search event: {_log_err}")
             mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES)
             return False
 
@@ -3543,6 +3564,20 @@ def search_and_download(queue_id, queue_item, client):
                 f"Queue {queue_id}: ✗ Results found but no safe match for '{search_query}' "
                 f"(best_score={best_score:.2f}, min_score={_effective_min_score:.2f}, elapsed={elapsed:.0f}s)"
             )
+            try:
+                from download_queue_manager import log_slskd_search_event
+                log_slskd_search_event(
+                    search_type='automatic',
+                    query=search_query,
+                    queue_id=queue_id,
+                    queue_item=queue_item,
+                    results=all_search_candidates,
+                    selected_result=best_result,
+                    duration_seconds=round(elapsed, 1),
+                    notes=f"no_safe_match: best_score={best_score:.2f}, min_score={_effective_min_score:.2f}"
+                )
+            except Exception as _log_err:
+                logger.debug(f"Queue {queue_id}: Could not log slskd search event: {_log_err}")
             mark_failed(
                 queue_id,
                 f"No safe Soulseek match for '{search_query}' (best_score={best_score:.2f})",
@@ -3596,6 +3631,22 @@ def search_and_download(queue_id, queue_item, client):
             f"{best_result['username']} (score={best_score:.2f})..."
         )
         update_queue_status(queue_id, 'downloading', found_filename=best_result['filename'])
+
+        try:
+            from download_queue_manager import log_slskd_search_event
+            elapsed = (datetime.now() - poll_start_time).total_seconds()
+            log_slskd_search_event(
+                search_type='automatic',
+                query=search_query,
+                queue_id=queue_id,
+                queue_item=queue_item,
+                results=all_search_candidates,
+                selected_result=best_result,
+                duration_seconds=round(elapsed, 1),
+                notes=f"final_score={best_score:.2f}, stripped_query={'yes' if stripped_query else 'no'}"
+            )
+        except Exception as _log_err:
+            logger.debug(f"Queue {queue_id}: Could not log slskd search event: {_log_err}")
 
         success = client.download_file(best_result['username'], best_result['filename'], best_result['size'])
 
