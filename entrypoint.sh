@@ -71,7 +71,10 @@ exec gunicorn \
     --bind 0.0.0.0:5000 \
     --workers 4 \
     --worker-class sync \
-    --timeout 120 \
+    --timeout 300 \
+    --graceful-timeout 60 \
+    --keep-alive 5 \
+    --worker-tmp-dir /dev/shm \
     --access-logfile /config/access.log \
     --error-logfile /config/error.log \
     --log-level info \
