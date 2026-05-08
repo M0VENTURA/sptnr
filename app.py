@@ -613,7 +613,7 @@ def _find_active_search_by_query(client, query, within_seconds=60):
     """
     _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
     try:
-        searches = client.list_searches(timeout=4)
+        searches = client.list_searches(timeout=2)
     except Exception:
         return None
     from datetime import datetime, timezone
@@ -652,47 +652,52 @@ def _find_active_search_by_query(client, query, within_seconds=60):
 def _start_slskd_search_with_recovery(client, query):
     """Start a Soulseek search, recovering from timeouts and slot-busy states.
 
+    Designed to complete in < 25 seconds so it stays well under common
+    proxy/gunicorn timeouts (~30 s).
+
     Returns one of:
         (search_id, None)          – search started successfully
         (None, slot_busy_payload)  – slot is busy, caller should queue/retry
         (None, None)               – hard failure, caller should surface error
     """
-    # 1. Optimistic fast path with a generous timeout so slskd has plenty of
-    #    time to accept the request even when under load.
-    search_id = client.start_search(query, timeout=20, max_attempts=1)
+    deadline = time.monotonic() + 25
+
+    # 1. Optimistic fast path — keep the timeout tight so we have room for
+    #    recovery steps without blowing the overall deadline.
+    time_left = deadline - time.monotonic()
+    search_id = client.start_search(
+        query, timeout=min(12, max(5, int(time_left))), max_attempts=1
+    )
     if search_id:
         return search_id, None
 
     # 2. The POST may have timed out even though slskd actually started the
     #    search.  Check for a recently-started active search with the same
     #    query and recover its ID rather than treating this as a failure.
-    recovered = _find_active_search_by_query(client, query, within_seconds=60)
-    if recovered:
-        recovered_id = recovered.get("id") or recovered.get("searchId") or recovered.get("Id") or ""
-        logging.info(
-            f"[SLSKD] Recovered search {recovered_id!r} for '{query}' "
-            f"after start_search timed out or returned None"
-        )
-        return recovered_id, None
+    time_left = deadline - time.monotonic()
+    if time_left > 0:
+        recovered = _find_active_search_by_query(client, query, within_seconds=60)
+        if recovered:
+            recovered_id = recovered.get("id") or recovered.get("searchId") or recovered.get("Id") or ""
+            logging.info(
+                f"[SLSKD] Recovered search {recovered_id!r} for '{query}' "
+                f"after start_search timed out or returned None"
+            )
+            return recovered_id, None
 
-    # 3. No matching active search — clear stale ones and retry once with a
-    #    slightly shorter timeout.  We keep the budget tight so the total
-    #    wall-clock time stays well under common proxy/browser limits (~60 s).
-    _clear_stale_slskd_searches(client, context="manual search", budget_seconds=5)
-    search_id = client.start_search(query, timeout=15, max_attempts=1)
-    if search_id:
-        return search_id, None
-
-    # 4. Still blocked — check whether an active search is genuinely holding
+    # 3. Still blocked — check whether an active search is genuinely holding
     #    the slot so the frontend can queue and auto-retry.
+    time_left = deadline - time.monotonic()
     _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
-    try:
-        active_searches = [
-            s for s in client.list_searches(timeout=4)
-            if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
-        ]
-    except Exception:
-        active_searches = []
+    active_searches = []
+    if time_left > 0:
+        try:
+            active_searches = [
+                s for s in client.list_searches(timeout=min(3, max(1, int(time_left))))
+                if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
+            ]
+        except Exception:
+            pass
 
     if active_searches:
         a = active_searches[0]
@@ -702,6 +707,16 @@ def _start_slskd_search_with_recovery(client, query):
             "activeSearchQuery": a.get("searchText") or a.get("query") or "",
             "activeSearchState": a.get("state") or a.get("State") or "",
         }
+
+    # 4. Slot appears free but start_search failed — try once more with
+    #    whatever time we have left.
+    time_left = deadline - time.monotonic()
+    if time_left > 0:
+        search_id = client.start_search(
+            query, timeout=min(8, max(3, int(time_left))), max_attempts=1
+        )
+        if search_id:
+            return search_id, None
 
     return None, None
 
@@ -19894,6 +19909,10 @@ def slskd_search():
         plain_session = requests.Session()
         client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
 
+        # Clear terminal/stuck searches so they don't block the slot.
+        # Budget is tight so the total request stays under proxy timeouts.
+        client.clear_stale_searches(budget_seconds=2)
+
         search_id, slot_busy = _start_slskd_search_with_recovery(client, query)
         if slot_busy:
             logging.info(
@@ -19972,7 +19991,7 @@ def slskd_search_results(search_id):
         # so that transient 5xx/429 responses fail fast rather than hanging the
         # backend for tens of seconds and exceeding the frontend's 30 s timeout.
         plain_session = requests.Session()
-        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True, default_timeout=15)
+        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True, default_timeout=10)
         responses, state, is_complete = client.get_search_results(search_id)
         
         results = []
@@ -21213,6 +21232,9 @@ def slskd_search_again():
         # fast path returns immediately when slskd is idle.
         plain_session = requests.Session()
         client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
+
+        # Clear terminal/stuck searches so they don't block the slot.
+        client.clear_stale_searches(budget_seconds=2)
 
         search_id, slot_busy = _start_slskd_search_with_recovery(client, filename)
         if slot_busy:

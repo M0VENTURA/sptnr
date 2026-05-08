@@ -16,8 +16,12 @@ _STUCK_SEARCH_TIMEOUT_MS = 3 * 60 * 1000  # 3 minutes
 # was cancelled or failed before collecting any peer responses).  Used by
 # get_search_results() to skip a redundant /responses HTTP call.
 # slskd serialises C# flag enums as comma-separated strings (e.g.
-# "Completed, TimedOut", "Completed, Cancelled").
-_EMPTY_TERMINAL_STATES = frozenset({"Completed, Cancelled", "Completed, Errored"})
+# "Completed, TimedOut", "Completed, Cancelled").  We also keep the plain
+# legacy strings for backward compatibility.
+_EMPTY_TERMINAL_STATES = frozenset({
+    "Completed, Cancelled", "Completed, Errored",
+    "Cancelled", "Errored",
+})
 
 
 @dataclass
@@ -899,12 +903,20 @@ class SlskdClient:
         """
         # slskd serialises C# SearchStates flag enums as "Completed, <suffix>".
         # The exact strings are taken from slskd's SearchStatusIcon.jsx (as of 3/26/25).
+        # We also keep plain "Completed" / "Succeeded" and the legacy simple
+        # strings so searches from older slskd versions (or searches that finish
+        # with only the Completed flag) are still cleaned up.
         _TERMINAL_STATES = {
             "Completed, TimedOut",
             "Completed, ResponseLimitReached",
             "Completed, FileLimitReached",
             "Completed, Cancelled",
             "Completed, Errored",
+            "Completed",
+            "Succeeded",
+            "Cancelled",
+            "Errored",
+            "TimedOut",
         }
         _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
 
@@ -947,20 +959,30 @@ class SlskdClient:
                         )
 
                 if should_cancel:
-                    cancel_timeout = min(2, max(1, int(deadline - time.monotonic())))
+                    # Strict budget check before each HTTP call so a large backlog
+                    # of stale searches cannot exceed the caller's timeout.
+                    time_left = deadline - time.monotonic()
+                    if time_left <= 0:
+                        logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                        break
+                    cancel_timeout = max(0.5, min(2, time_left))
                     # For active searches use PUT (calls slskd TryCancel) so the
                     # underlying Soulseek operation is stopped before we delete the
                     # record.  For terminal searches DELETE is sufficient.
                     if state in _ACTIVE_STATES:
+                        time_left = deadline - time.monotonic()
+                        if time_left <= 0:
+                            logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                            break
                         try:
                             put_url = f"{self.base_url}/searches/{sid}"
                             self.session.put(put_url, headers=self.headers, timeout=cancel_timeout)
                         except Exception:
                             pass
-                        # Brief pause so slskd can finish its internal state
-                        # transition before we DELETE, reducing the race window
-                        # that triggers DbUpdateConcurrencyException.
-                        time.sleep(0.15)
+                    time_left = deadline - time.monotonic()
+                    if time_left <= 0:
+                        logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                        break
                     self.cancel_search(sid, timeout=cancel_timeout)
                     if state in _TERMINAL_STATES:
                         logger.info(
