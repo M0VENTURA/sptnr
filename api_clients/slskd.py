@@ -244,8 +244,7 @@ class SlskdClient:
 
             if resp.status_code != 200:
                 logger.debug(f"Slskd responses endpoint returned {resp.status_code}")
-                _active_states = {"None", "Queued", "Requested", "InProgress", "Initializing"}
-                return [], state, state not in _active_states
+                return [], state, state not in self.ACTIVE_STATES
 
             raw_responses = resp.json() or []
 
@@ -278,8 +277,7 @@ class SlskdClient:
                 except Exception as e:
                     logger.warning(f"Failed to parse slskd response {idx}: {e}")
 
-            _active_states = {"None", "Queued", "Requested", "InProgress", "Initializing"}
-            is_complete = state not in _active_states
+            is_complete = state not in self.ACTIVE_STATES
             logger.info(f"Slskd search {search_id}: state={state}, peers={len(responses)}, is_complete={is_complete}")
 
             return responses, state, is_complete
@@ -287,8 +285,7 @@ class SlskdClient:
             # If we can't fetch responses (timeout, network hiccup, etc.)
             # assume the search is still active so the caller keeps polling.
             logger.warning(f"Slskd get responses failed for search {search_id}: {e}")
-            _active_states = {"None", "Queued", "Requested", "InProgress", "Initializing"}
-            return [], state, state not in _active_states
+            return [], state, state not in self.ACTIVE_STATES
     
     def download_file(self, username: str, filename: str, size: int = 0, timeout: Optional[int] = None) -> bool:
         """
@@ -927,8 +924,6 @@ class SlskdClient:
             "Errored",
             "TimedOut",
         }
-        _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
-
         deadline = time.monotonic() + budget_seconds
         try:
             time_left = deadline - time.monotonic()
@@ -943,7 +938,7 @@ class SlskdClient:
                     continue
 
                 should_cancel = state in _TERMINAL_STATES
-                if not should_cancel and state in _ACTIVE_STATES:
+                if not should_cancel and state in self.ACTIVE_STATES:
                     # Also cancel searches that have been running too long.
                     # slskd does not expose elapsedMilliseconds; compute from startedAt.
                     started_at = s.get("startedAt") or s.get("StartedAt") or s.get("started_at")
@@ -978,7 +973,7 @@ class SlskdClient:
                     # For active searches use PUT (calls slskd TryCancel) so the
                     # underlying Soulseek operation is stopped before we delete the
                     # record.  For terminal searches DELETE is sufficient.
-                    if state in _ACTIVE_STATES:
+                    if state in self.ACTIVE_STATES:
                         time_left = deadline - time.monotonic()
                         if time_left <= 0:
                             logger.warning("[SLSKD] Stale search cleanup budget exhausted")
