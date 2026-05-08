@@ -16,8 +16,12 @@ _STUCK_SEARCH_TIMEOUT_MS = 3 * 60 * 1000  # 3 minutes
 # was cancelled or failed before collecting any peer responses).  Used by
 # get_search_results() to skip a redundant /responses HTTP call.
 # slskd serialises C# flag enums as comma-separated strings (e.g.
-# "Completed, TimedOut", "Completed, Cancelled").
-_EMPTY_TERMINAL_STATES = frozenset({"Completed, Cancelled", "Completed, Errored"})
+# "Completed, TimedOut", "Completed, Cancelled").  We also keep the plain
+# legacy strings for backward compatibility.
+_EMPTY_TERMINAL_STATES = frozenset({
+    "Completed, Cancelled", "Completed, Errored",
+    "Cancelled", "Errored",
+})
 
 
 @dataclass
@@ -899,12 +903,20 @@ class SlskdClient:
         """
         # slskd serialises C# SearchStates flag enums as "Completed, <suffix>".
         # The exact strings are taken from slskd's SearchStatusIcon.jsx (as of 3/26/25).
+        # We also keep plain "Completed" / "Succeeded" and the legacy simple
+        # strings so searches from older slskd versions (or searches that finish
+        # with only the Completed flag) are still cleaned up.
         _TERMINAL_STATES = {
             "Completed, TimedOut",
             "Completed, ResponseLimitReached",
             "Completed, FileLimitReached",
             "Completed, Cancelled",
             "Completed, Errored",
+            "Completed",
+            "Succeeded",
+            "Cancelled",
+            "Errored",
+            "TimedOut",
         }
         _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing"}
 
