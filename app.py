@@ -1084,12 +1084,61 @@ def api_unified_log():
 def api_download_log(log_type):
     """
     Download the last hour of a specific log file.
-    
+
     Args:
-        log_type: One of 'unified', 'info', 'debug', 'queue'
+        log_type: One of 'unified', 'info', 'debug', 'queue', 'search'
     """
     from datetime import datetime, timedelta
-    
+
+    if log_type not in {'unified', 'info', 'debug', 'queue', 'search'}:
+        return jsonify({"error": "Invalid log type. Must be 'unified', 'info', 'debug', 'queue', or 'search'"}), 400
+
+    # --- In-memory search log (no file on disk) ---
+    if log_type == 'search':
+        try:
+            from download_queue_manager import get_slskd_search_logs
+            cutoff_time = datetime.now() - timedelta(hours=1)
+            logs = get_slskd_search_logs(limit=200)
+            lines = []
+            for entry in logs:
+                ts = entry.get('timestamp') or ''
+                try:
+                    entry_dt = datetime.fromisoformat(ts)
+                    if entry_dt < cutoff_time:
+                        continue
+                except Exception:
+                    pass
+                st = entry.get('search_type', 'unknown')
+                q = entry.get('query', '')
+                artist = entry.get('artist') or ''
+                title = entry.get('title') or ''
+                album = entry.get('album') or ''
+                rc = entry.get('result_count', 0)
+                dur = entry.get('duration_seconds')
+                notes = entry.get('notes') or ''
+                sel = entry.get('selected_result')
+                lines.append(f"[{ts}] [{st.upper()}] query='{q}' artist='{artist}' title='{title}' album='{album}' results={rc} duration={dur}s notes={notes}")
+                if sel:
+                    lines.append(f"  -> SELECTED: user={sel.get('username')} file={sel.get('filename')} score={sel.get('score')} size={sel.get('size')} length={sel.get('length')}")
+                for r in (entry.get('results') or [])[:20]:
+                    lines.append(f"  -> RESULT: user={r.get('username')} file={r.get('filename')} score={r.get('score')} size={r.get('size')} length={r.get('length')}")
+            if not lines:
+                lines.append("No Soulseek search events in the last hour.")
+            log_content = '\n'.join(lines) + '\n'
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"search_log_{timestamp}.txt"
+            return Response(
+                log_content,
+                mimetype='text/plain',
+                headers={
+                    'Content-Disposition': f'attachment; filename={filename}',
+                    'Content-Type': 'text/plain; charset=utf-8'
+                }
+            )
+        except Exception as e:
+            logging.error(f"Error generating search log: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+
     def _resolve_log_path(requested_type):
         candidates = []
         if requested_type == 'unified':
@@ -1125,14 +1174,11 @@ def api_download_log(log_type):
                     continue
         return newest_path
 
-    if log_type not in {'unified', 'info', 'debug', 'queue'}:
-        return jsonify({"error": "Invalid log type. Must be 'unified', 'info', 'debug', or 'queue'"}), 400
-
     log_path = _resolve_log_path(log_type)
-    
+
     if not log_path or not os.path.exists(log_path):
         return jsonify({"error": f"Log file not found for type: {log_type}"}), 404
-    
+
     try:
         # Read log file and filter for last hour.
         # For large files we read from the tail to avoid loading the entire
@@ -1183,11 +1229,11 @@ def api_download_log(log_type):
             filtered_lines = lines_to_process[-1000:]
 
         log_content = ''.join(filtered_lines)
-        
+
         # Generate filename with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"{log_type}_log_{timestamp}.txt"
-        
+
         # Return as downloadable file
         return Response(
             log_content,
@@ -1197,10 +1243,34 @@ def api_download_log(log_type):
                 'Content-Type': 'text/plain; charset=utf-8'
             }
         )
-        
+
     except Exception as e:
-        log_info(f"Error downloading {log_type} log: {e}")
-        return jsonify({"error": str(e)}), 500
+        logging.error(f"Error retrieving queue events: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route("/api/queue/search-events", methods=["GET"])
+def api_queue_search_events():
+    """Get recent Soulseek search log events for UI display.
+
+    Query params:
+    - limit: Number of events to return (default 50, max 200)
+    """
+    try:
+        from download_queue_manager import get_slskd_search_logs
+
+        limit = request.args.get("limit", 50, type=int)
+        limit = min(max(limit, 1), 200)
+
+        logs = get_slskd_search_logs(limit=limit)
+        return jsonify({
+            'success': True,
+            'count': len(logs),
+            'events': logs
+        })
+    except Exception as e:
+        logging.error(f"Error retrieving search log events: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # --- Navidrome Playlists API ---
 @app.route("/api/navidrome/playlists", methods=["GET"])
@@ -19950,6 +20020,20 @@ def slskd_search():
                 )
                 return jsonify(slot_busy), 202
             if search_id:
+                try:
+                    from download_queue_manager import log_slskd_search_event
+                    log_slskd_search_event(
+                        search_type='manual',
+                        query=query,
+                        queue_id=None,
+                        queue_item=None,
+                        results=None,
+                        selected_result=None,
+                        duration_seconds=None,
+                        notes=f"search_id={search_id}"
+                    )
+                except Exception:
+                    pass
                 return jsonify({"searchId": search_id, "status": "searching"})
             return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
     except Exception as e:

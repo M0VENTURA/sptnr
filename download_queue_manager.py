@@ -218,6 +218,11 @@ _queue_events = []
 _queue_events_lock = threading.Lock()
 _MAX_QUEUE_EVENTS = 200
 
+# In-memory soulseek search log for UI display (keep last 200 searches)
+_slskd_search_logs = []
+_slskd_search_logs_lock = threading.Lock()
+_MAX_SLSKD_SEARCH_LOGS = 200
+
 # Time-windowed deduplication for log_queue_event.
 # Identical events (same type + item_id + status) that arrive within this
 # window are silently dropped so that retry bursts don't flood the UI log.
@@ -561,6 +566,80 @@ def clear_queue_events_for_items(queue_ids):
     
     if queue_ids_to_remove:
         logger.debug(f"Cleared event log entries for queue items: {queue_ids_to_remove}")
+
+
+def log_slskd_search_event(search_type, query, queue_id=None, queue_item=None, results=None, selected_result=None, duration_seconds=None, notes=None):
+    """Log a Soulseek search event for UI display and diagnostics.
+
+    Args:
+        search_type: 'automatic' or 'manual'
+        query: The search query string submitted to slskd
+        queue_id: Optional queue item ID that triggered this search
+        queue_item: Optional dict with artist/title/album context
+        results: Optional list of result dicts (will be truncated for memory)
+        selected_result: Optional dict for the result chosen for download
+        duration_seconds: Optional float for how long the search took
+        notes: Optional string for extra context (e.g. fallback reason)
+    """
+    global _slskd_search_logs
+
+    event = {
+        'timestamp': datetime.now().isoformat(),
+        'search_type': search_type,
+        'query': query,
+        'queue_id': queue_id,
+        'artist': (queue_item.get('artist') or '') if queue_item else None,
+        'title': (queue_item.get('title') or '') if queue_item else None,
+        'album': (queue_item.get('album') or '') if queue_item else None,
+        'result_count': len(results) if results else 0,
+        'results': _truncate_slskd_results(results),
+        'selected_result': selected_result,
+        'duration_seconds': duration_seconds,
+        'notes': notes,
+    }
+
+    with _slskd_search_logs_lock:
+        _slskd_search_logs.append(event)
+        if len(_slskd_search_logs) > _MAX_SLSKD_SEARCH_LOGS:
+            _slskd_search_logs = _slskd_search_logs[-_MAX_SLSKD_SEARCH_LOGS:]
+
+
+def _truncate_slskd_results(results):
+    """Truncate result list to keep memory bounded while preserving key fields."""
+    if not results:
+        return []
+    truncated = []
+    for r in results[:50]:  # cap at 50 results
+        truncated.append({
+            'username': r.get('username'),
+            'filename': r.get('filename'),
+            'size': r.get('size'),
+            'length': r.get('length'),
+            'bitrate': r.get('bitrate'),
+            'score': r.get('score'),
+            'title_sim': r.get('title_sim'),
+            'artist_sim': r.get('artist_sim'),
+            'duration_diff_s': r.get('duration_diff_s'),
+            'has_free_upload_slot': r.get('has_free_upload_slot', True),
+        })
+    return truncated
+
+
+def get_slskd_search_logs(limit=50):
+    """Get recent Soulseek search logs for UI display.
+
+    Returns:
+        List of search log events in reverse chronological order (newest first)
+    """
+    with _slskd_search_logs_lock:
+        return list(reversed(_slskd_search_logs))[:limit]
+
+
+def clear_slskd_search_logs():
+    """Clear all Soulseek search logs."""
+    global _slskd_search_logs
+    with _slskd_search_logs_lock:
+        _slskd_search_logs = []
 
 def get_scan_progress():
     """Get current scan progress state."""
