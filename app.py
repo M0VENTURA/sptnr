@@ -5863,8 +5863,22 @@ def _ensure_recommendation_candidates_table(conn):
     lock_acquired = False
 
     if _is_postgres_connection(conn):
-        cursor.execute("SELECT pg_advisory_lock(hashtext(%s))", ("recommendation_candidates_schema",))
-        lock_acquired = True
+        for _lock_attempt in range(5):
+            try:
+                cursor.execute(
+                    "SELECT pg_try_advisory_lock(hashtext(%s)) AS acquired",
+                    ("recommendation_candidates_schema",),
+                )
+                if cursor.fetchone()['acquired']:
+                    lock_acquired = True
+                    break
+            except Exception as _adv_err:
+                logging.debug(f"Recommendation candidates advisory lock unavailable: {_adv_err}")
+                break
+            time.sleep(0.3)
+        if not lock_acquired:
+            logging.warning("Could not acquire recommendation candidates advisory lock; deferring")
+            return
 
     try:
         cursor.execute("SAVEPOINT sptnr_reco_candidates_ddl")
@@ -24998,18 +25012,25 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
         return
 
     # Acquire a session-level advisory lock so that only one connection runs the
-    # migration at a time.  The lock is released explicitly after the migration
-    # completes (or fails) so other waiters can proceed without doing redundant work.
+    # migration at a time.  Use the non-blocking variant with retries so a dead
+    # lock holder cannot hang this worker forever.
     lock_acquired = False
-    try:
-        cursor.execute("SELECT pg_advisory_lock(%s)", (_ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY,))
-        lock_acquired = True
-    except Exception as _lock_err:
-        logging.debug(f"[ALBUM_ART] Could not acquire advisory lock: {_lock_err}")
+    for _lock_attempt in range(5):
         try:
-            conn.rollback()
-        except Exception:
-            pass
+            cursor.execute(
+                "SELECT pg_try_advisory_lock(%s) AS acquired",
+                (_ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY,),
+            )
+            if cursor.fetchone()['acquired']:
+                lock_acquired = True
+                break
+        except Exception as _lock_err:
+            logging.debug(f"[ALBUM_ART] Could not acquire advisory lock: {_lock_err}")
+            break
+        time.sleep(0.3)
+    if not lock_acquired:
+        logging.warning("[ALBUM_ART] Could not acquire advisory lock; deferring schema migration")
+        return
 
     # Step 1: Ensure table exists and fix the id column default if needed.
     # Committed independently so the fix is durable even if the unique-index

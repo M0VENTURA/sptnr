@@ -2364,18 +2364,25 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
         return
 
     # Acquire a session-level advisory lock so that only one connection runs the
-    # migration at a time.  The lock is released explicitly after the migration
-    # completes (or fails) so other waiters can proceed without doing redundant work.
+    # migration at a time.  Use the non-blocking variant with retries so a dead
+    # lock holder cannot hang this worker forever.
     lock_acquired = False
-    try:
-        cursor.execute("SELECT pg_advisory_lock(%s)", (_ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY,))
-        lock_acquired = True
-    except Exception as _lock_err:
-        log_debug(f"[ALBUM_ART] Could not acquire advisory lock: {_lock_err}")
+    for _lock_attempt in range(5):
         try:
-            conn.rollback()
-        except Exception:
-            pass
+            cursor.execute(
+                "SELECT pg_try_advisory_lock(%s) AS acquired",
+                (_ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY,),
+            )
+            if cursor.fetchone()['acquired']:
+                lock_acquired = True
+                break
+        except Exception as _lock_err:
+            log_debug(f"[ALBUM_ART] Could not acquire advisory lock: {_lock_err}")
+            break
+        time.sleep(0.3)
+    if not lock_acquired:
+        log_debug("[ALBUM_ART] Could not acquire advisory lock; deferring schema migration")
+        return
 
     # Step 1: Ensure table exists and fix the id column default if needed.
     # This sub-step is committed independently so the fix is durable even if
