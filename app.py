@@ -28560,27 +28560,24 @@ def api_queue_migrate_arm_next_load():
 
 @app.route("/api/queue/status", methods=["GET"])
 def api_queue_status():
-    """Get queue status and items"""
+    """Get queue status and items.
+
+    This endpoint is intentionally read-only and fast. Heavy side-effect
+    operations (reconciling failed slskd downloads and scanning the
+    downloads folder) run in the background queue processor instead of
+    inside the HTTP request path, where they previously blocked gunicorn
+    workers and caused Cloudflare "context canceled" timeouts.
+    """
     try:
         from download_queue_manager import (
             get_queue,
             get_completed_queue,
-            check_downloads_folder,
-            check_and_remove_failed_downloads,
         )
 
         status = request.args.get('status')
         # source=None returns all sources (soulseek, qbittorrent, discovered/unmatched)
         source = request.args.get('source') or None
         limit = int(request.args.get('limit', 50))
-        reconcile = str(request.args.get('reconcile', 'false')).strip().lower() in ('1', 'true', 'yes', 'on')
-
-        # Reconciliation is optional to keep this endpoint side-effect free by default.
-        if reconcile:
-            try:
-                check_and_remove_failed_downloads()
-            except Exception as reconcile_err:
-                logging.debug(f"Queue status reconcile skipped: {reconcile_err}")
 
         # Get queue items (all sources by default)
         active_queue = get_queue(status=status, source=source, limit=limit)
@@ -28588,8 +28585,12 @@ def api_queue_status():
         # Get completed items (includes 'unmatched')
         completed = get_completed_queue(limit=20)
 
-        # Check downloads folder for new files
-        newly_completed = check_downloads_folder()
+        # NOTE: check_downloads_folder() and check_and_remove_failed_downloads()
+        # are deliberately NOT called here. They perform filesystem walks and
+        # slskd HTTP calls that can take 30-60s. With 450+ queue items and
+        # only 4 gunicorn workers this exhausted all workers and stalled the
+        # server. Both functions already run on a schedule in queue_processor.py.
+        newly_completed = []
 
         return jsonify({
             "success": True,
