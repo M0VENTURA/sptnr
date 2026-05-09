@@ -10,6 +10,7 @@ during parallel scan operations. PostgreSQL provides reliable concurrent access.
 """
 
 import os
+import random
 import re
 import shutil
 import concurrent.futures
@@ -598,10 +599,55 @@ def log_slskd_search_event(search_type, query, queue_id=None, queue_item=None, r
         'notes': notes,
     }
 
-    with _slskd_search_logs_lock:
-        _slskd_search_logs.append(event)
-        if len(_slskd_search_logs) > _MAX_SLSKD_SEARCH_LOGS:
-            _slskd_search_logs = _slskd_search_logs[-_MAX_SLSKD_SEARCH_LOGS:]
+    # Persist to PostgreSQL so all processes (gunicorn workers + queue
+    # processor) share the same log history.
+    try:
+        conn = get_db()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO slskd_search_logs
+                    (search_type, query, queue_id, artist, title, album,
+                     result_count, duration_seconds, notes,
+                     selected_result, results)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    search_type,
+                    query,
+                    queue_id,
+                    event.get('artist'),
+                    event.get('title'),
+                    event.get('album'),
+                    event.get('result_count'),
+                    duration_seconds,
+                    notes,
+                    json.dumps(selected_result) if selected_result is not None else None,
+                    json.dumps(event['results']) if event['results'] else None,
+                ),
+            )
+            # Keep only the last N rows so the table does not grow unbounded.
+            cursor.execute(
+                """
+                DELETE FROM slskd_search_logs
+                WHERE id NOT IN (
+                    SELECT id FROM slskd_search_logs
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                )
+                """,
+                (_MAX_SLSKD_SEARCH_LOGS,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as db_err:
+        logger.debug(f"[SEARCH_LOG] Could not persist to DB, falling back to in-memory: {db_err}")
+        with _slskd_search_logs_lock:
+            _slskd_search_logs.append(event)
+            if len(_slskd_search_logs) > _MAX_SLSKD_SEARCH_LOGS:
+                _slskd_search_logs = _slskd_search_logs[-_MAX_SLSKD_SEARCH_LOGS:]
 
 
 def _truncate_slskd_results(results):
@@ -631,13 +677,54 @@ def get_slskd_search_logs(limit=50):
     Returns:
         List of search log events in reverse chronological order (newest first)
     """
-    with _slskd_search_logs_lock:
-        return list(reversed(_slskd_search_logs))[:limit]
+    try:
+        conn = get_db()
+        try:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cursor.execute(
+                """
+                SELECT created_at AS timestamp, search_type, query, queue_id,
+                       artist, title, album, result_count, duration_seconds,
+                       notes, selected_result, results
+                FROM slskd_search_logs
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+            logs = []
+            for row in rows:
+                log = dict(row)
+                ts = log.get('timestamp')
+                log['timestamp'] = ts.isoformat() if ts else ''
+                if log.get('selected_result') is not None and isinstance(log['selected_result'], str):
+                    log['selected_result'] = json.loads(log['selected_result'])
+                if log.get('results') is not None and isinstance(log['results'], str):
+                    log['results'] = json.loads(log['results'])
+                logs.append(log)
+            return logs
+        finally:
+            conn.close()
+    except Exception as db_err:
+        logger.debug(f"[SEARCH_LOG] Could not read from DB, falling back to in-memory: {db_err}")
+        with _slskd_search_logs_lock:
+            return list(reversed(_slskd_search_logs))[:limit]
 
 
 def clear_slskd_search_logs():
     """Clear all Soulseek search logs."""
     global _slskd_search_logs
+    try:
+        conn = get_db()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("TRUNCATE TABLE slskd_search_logs")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as db_err:
+        logger.debug(f"[SEARCH_LOG] Could not truncate DB table: {db_err}")
     with _slskd_search_logs_lock:
         _slskd_search_logs = []
 
@@ -10450,6 +10537,7 @@ def backfill_queued_track_metadata():
                   OR t.isrc IS NULL
                   OR t.writer IS NULL
               )
+            ORDER BY t.id
         """, ('__queued_for_download__%',))
         rows = cursor.fetchall() or []
 
@@ -10507,22 +10595,38 @@ def backfill_queued_track_metadata():
                     continue
 
                 params.append(track_id)
-                # Use a savepoint so that a failure on this single row does not
-                # discard the accumulated updates from earlier rows in the batch.
-                cursor.execute("SAVEPOINT bf_row")
-                try:
-                    cursor.execute(
-                        f"UPDATE tracks SET {', '.join(set_parts)} WHERE id = %s",
-                        params,
-                    )
-                    cursor.execute("RELEASE SAVEPOINT bf_row")
+                # Retry transient deadlocks a few times before giving up on this row.
+                # Rows are fetched in deterministic order (ORDER BY t.id) so deadlocks
+                # are rare, but concurrent backfills from multiple workers can still
+                # collide on the same row.
+                _max_update_retries = 3
+                _update_delay = 0.2
+                _update_success = False
+                for _upd_attempt in range(_max_update_retries):
+                    cursor.execute("SAVEPOINT bf_row")
+                    try:
+                        cursor.execute(
+                            f"UPDATE tracks SET {', '.join(set_parts)} WHERE id = %s",
+                            params,
+                        )
+                        cursor.execute("RELEASE SAVEPOINT bf_row")
+                        _update_success = True
+                        break
+                    except Exception as _update_err:
+                        cursor.execute("ROLLBACK TO SAVEPOINT bf_row")
+                        cursor.execute("RELEASE SAVEPOINT bf_row")
+                        _err_str = str(_update_err).lower()
+                        _is_deadlock = "deadlock" in _err_str or "could not serialize" in _err_str
+                        if _is_deadlock and _upd_attempt < _max_update_retries - 1:
+                            _jitter = random.uniform(0, _update_delay * 0.5)
+                            time.sleep(_update_delay + _jitter)
+                            _update_delay = min(_update_delay * 2, 2.0)
+                            continue
+                        logger.debug(f"[BACKFILL] Skipping track {track_id} due to update error: {_update_err}")
+                        skipped += 1
+                        break
+                if _update_success:
                     updated += 1
-                except Exception as _update_err:
-                    cursor.execute("ROLLBACK TO SAVEPOINT bf_row")
-                    cursor.execute("RELEASE SAVEPOINT bf_row")
-                    logger.debug(f"[BACKFILL] Skipping track {track_id} due to update error: {_update_err}")
-                    skipped += 1
-                    continue
 
                 # Commit in batches to bound transaction size without
                 # holding a single long-running transaction for the full run.

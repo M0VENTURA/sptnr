@@ -320,6 +320,37 @@ def _ensure_postgres_musicbrainz_releases_columns(conn):
     return added
 
 
+def _ensure_slskd_search_logs_table(conn):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS slskd_search_logs (
+            id              SERIAL PRIMARY KEY,
+            created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            search_type     TEXT,
+            query           TEXT,
+            queue_id        INTEGER,
+            artist          TEXT,
+            title           TEXT,
+            album           TEXT,
+            result_count    INTEGER DEFAULT 0,
+            duration_seconds REAL,
+            notes           TEXT,
+            selected_result JSONB,
+            results         JSONB
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_slskd_search_logs_created_at
+        ON slskd_search_logs (created_at DESC)
+        """
+    )
+    conn.commit()
+    return ["slskd_search_logs"]
+
+
 def _ensure_postgres_musicbrainz_release_conflict_target(conn):
     cur = conn.cursor()
     # Avoid indefinite startup hangs if another process is currently migrating.
@@ -387,11 +418,13 @@ def main():
             track_added = _ensure_postgres_track_columns(conn)
             mb_releases_added = _ensure_postgres_musicbrainz_releases_columns(conn)
             mb_added = _ensure_postgres_musicbrainz_release_conflict_target(conn)
+            search_logs_added = _ensure_slskd_search_logs_table(conn)
             added = (
                 queue_added
                 + [f"tracks.{c}" for c in track_added]
                 + [f"musicbrainz_releases.{c}" for c in mb_releases_added]
                 + mb_added
+                + search_logs_added
             )
             if added:
                 print(f"✓ startup schema migration (postgres): added {', '.join(added)}")
