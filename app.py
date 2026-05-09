@@ -5253,6 +5253,11 @@ if _is_startup_leader_worker:
         _start_weekly_playlist_sync_scheduler()
     except Exception as e:
         logging.error(f"Failed to start weekly playlist sync hourly scheduler: {e}")
+
+    try:
+        _start_queue_normalize_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start queue normalize scheduler: {e}")
 else:
     logging.debug("[BOOT] Non-leader worker: startup background schedulers not started in this process")
 
@@ -5385,6 +5390,425 @@ def _row_get(row, key, index=None, default=None):
             return default
 
     return default
+
+
+def _normalize_download_queue():
+    """Run queue normalization in the background (cross-process safe via PG advisory lock)."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        # Use a dedicated advisory lock so only one worker normalizes at a time
+        lock_key = 915317500  # app-specific queue normalize lock
+        cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,))
+        row = cursor.fetchone()
+        acquired = bool(row['acquired'] if row is not None else False)
+        if not acquired:
+            conn.close()
+            return
+    except Exception:
+        return
+
+    placeholder = "%s"
+    normalized_count = 0
+    try:
+        cursor.execute(
+            f"""
+            SELECT id, status, in_collection, file_path, music_file_path,
+                   artist, album, album_artist
+            FROM download_queue
+            WHERE status = 'in_collection' OR COALESCE(in_collection, 0) = 1
+            """
+        )
+        flagged_rows = cursor.fetchall()
+
+        music_root = os.path.normpath(os.environ.get("MUSIC_ROOT", "/music"))
+        music_root_norm = music_root.replace("\\", "/").rstrip("/").lower()
+
+        def _is_under_music_root(path_value):
+            if not path_value:
+                return False
+            norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/").lower()
+            return norm == music_root_norm or norm.startswith(music_root_norm + "/")
+
+        def _sanitize_collection_segment(value):
+            value = str(value or "").strip()
+            invalid = '<>:"|?*\\'
+            for ch in invalid:
+                value = value.replace(ch, '_')
+            return value.strip('. ').lower()
+
+        def _is_valid_collection_location(path_value, artist_value, album_value, album_artist_value=None):
+            if not path_value:
+                return False
+            norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
+            lowered = norm.lower()
+            if lowered.startswith("__queued_for_download__"):
+                return False
+            if not _is_under_music_root(norm):
+                return False
+            try:
+                rel_path = os.path.relpath(norm, music_root).replace("\\", "/")
+            except Exception:
+                return False
+            rel_parts = [part for part in rel_path.split("/") if part and part not in (".", "..")]
+            if len(rel_parts) < 3:
+                return False
+            expected_artist = _sanitize_collection_segment(album_artist_value or artist_value or "Unknown Artist")
+            expected_album = _sanitize_collection_segment(album_value or "Unknown Album")
+            artist_dir = _sanitize_collection_segment(rel_parts[0])
+            album_dir = _sanitize_collection_segment(rel_parts[-2])
+            return artist_dir == expected_artist and (album_dir == expected_album or album_dir.endswith(f" - {expected_album}"))
+
+        unmatched_ids = []
+        non_collection_ids = {}
+        for row in flagged_rows:
+            row_id = _row_get(row, 'id', 0)
+            row_status = _row_get(row, 'status', 1)
+            file_path = _row_get(row, 'file_path', 3)
+            music_file_path = _row_get(row, 'music_file_path', 4)
+            artist_value = _row_get(row, 'artist', 5)
+            album_value = _row_get(row, 'album', 6)
+            album_artist_value = _row_get(row, 'album_artist', 7)
+            if (
+                _is_valid_collection_location(music_file_path, artist_value, album_value, album_artist_value)
+                or _is_valid_collection_location(file_path, artist_value, album_value, album_artist_value)
+            ):
+                continue
+            if row_status == 'in_collection':
+                unmatched_ids.append(row_id)
+            else:
+                non_collection_ids.setdefault(row_status, []).append(row_id)
+
+        if unmatched_ids:
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'unmatched',
+                    in_collection = 0,
+                    collection_track_id = NULL,
+                    collection_matched_at = NULL,
+                    failure_reason = 'Queue normalization: item marked in_collection but file is not in /music',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ANY({placeholder})
+                """,
+                (unmatched_ids,),
+            )
+            normalized_count += cursor.rowcount or 0
+
+        for orig_status, ids in non_collection_ids.items():
+            if ids:
+                cursor.execute(
+                    f"""
+                    UPDATE download_queue
+                    SET in_collection = 0,
+                        collection_track_id = NULL,
+                        collection_matched_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ANY({placeholder})
+                    """,
+                    (ids,),
+                )
+                normalized_count += cursor.rowcount or 0
+
+        cursor.execute(
+            f"""
+            UPDATE download_queue
+            SET status = 'unmatched',
+                failure_reason = COALESCE(
+                    failure_reason,
+                    'Auto-corrected: completed status without valid file path'
+                ),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'completed'
+              AND TRIM(COALESCE(file_path, '')) = ''
+              AND TRIM(COALESCE(matched_file_path, '')) = ''
+              AND TRIM(COALESCE(music_file_path, '')) = ''
+              AND TRIM(COALESCE(source_music_path, '')) = ''
+            """
+        )
+        normalized_count += cursor.rowcount or 0
+
+        try:
+            try:
+                from download_queue_manager import get_downloads_dir
+                downloads_root = get_downloads_dir()
+            except Exception:
+                downloads_root = os.environ.get("DOWNLOADS_DIR", "/downloads")
+
+            def _existing_match_path(path_value):
+                path_value = (path_value or "").strip()
+                if not path_value:
+                    return ""
+                if os.path.isfile(path_value):
+                    return path_value
+                if os.path.isabs(path_value):
+                    return ""
+                resolved_path = os.path.join(downloads_root, path_value)
+                if os.path.isfile(resolved_path):
+                    return resolved_path
+                basename_value = os.path.basename(path_value)
+                if basename_value and basename_value != path_value:
+                    resolved_basename = os.path.join(downloads_root, basename_value)
+                    if os.path.isfile(resolved_basename):
+                        return resolved_basename
+                return ""
+
+            cursor.execute(
+                """
+                SELECT id, file_path, matched_file_path, music_file_path, found_filename
+                FROM download_queue
+                WHERE status = 'matched'
+                  AND (
+                    TRIM(COALESCE(file_path, '')) != ''
+                    OR TRIM(COALESCE(matched_file_path, '')) != ''
+                    OR TRIM(COALESCE(music_file_path, '')) != ''
+                    OR TRIM(COALESCE(found_filename, '')) != ''
+                  )
+                """
+            )
+            matched_with_path = cursor.fetchall() or []
+            try:
+                if normalized_count:
+                    conn.commit()
+                else:
+                    conn.rollback()
+            except Exception:
+                pass
+
+            stale_matched_ids = []
+            for mrow in matched_with_path:
+                mrow_id = _row_get(mrow, 'id', 0)
+                mrow_file_path = _row_get(mrow, 'file_path', 1) or ''
+                mrow_matched_file_path = _row_get(mrow, 'matched_file_path', 2) or ''
+                mrow_music_file_path = _row_get(mrow, 'music_file_path', 3) or ''
+                mrow_found_filename = _row_get(mrow, 'found_filename', 4) or ''
+                existing_match_paths = [
+                    path_value for path_value in (
+                        mrow_file_path,
+                        mrow_matched_file_path,
+                        mrow_music_file_path,
+                        mrow_found_filename,
+                    )
+                    if _existing_match_path(path_value)
+                ]
+                if not existing_match_paths:
+                    stale_matched_ids.append(mrow_id)
+
+            if stale_matched_ids:
+                cursor.execute(
+                    f"""
+                    UPDATE download_queue
+                    SET status = 'unmatched',
+                        file_path = NULL,
+                        matched_file_path = NULL,
+                        music_file_path = NULL,
+                        found_filename = NULL,
+                        failure_reason = 'Auto-corrected: matched file no longer exists on disk',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ANY({placeholder})
+                    """,
+                    (stale_matched_ids,),
+                )
+                batch_count = cursor.rowcount or 0
+                normalized_count += batch_count
+                logging.info(
+                    f"[QUEUE_NORMALIZE] Reset {batch_count} matched item(s) to unmatched "
+                    f"— no valid matched file remains on disk"
+                )
+        except Exception as matched_norm_err:
+            logging.debug(f"[QUEUE_NORMALIZE] Skipped matched-file normalization: {matched_norm_err}")
+
+        try:
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'unmatched',
+                    failure_reason = 'Auto-corrected: release match had no linked file path',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'matched'
+                  AND TRIM(COALESCE(file_path, '')) = ''
+                  AND TRIM(COALESCE(matched_file_path, '')) = ''
+                  AND TRIM(COALESCE(music_file_path, '')) = ''
+                  AND TRIM(COALESCE(found_filename, '')) = ''
+                  AND LOWER(COALESCE(source, '')) = 'local'
+                """
+            )
+            normalized_count += cursor.rowcount or 0
+
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'queued',
+                    failure_reason = 'Auto-corrected: release match had no linked file path',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'matched'
+                  AND TRIM(COALESCE(file_path, '')) = ''
+                  AND TRIM(COALESCE(matched_file_path, '')) = ''
+                  AND TRIM(COALESCE(music_file_path, '')) = ''
+                  AND TRIM(COALESCE(found_filename, '')) = ''
+                  AND LOWER(COALESCE(source, '')) != 'local'
+                """
+            )
+            normalized_count += cursor.rowcount or 0
+        except Exception as metadata_only_match_err:
+            logging.debug(
+                f"[QUEUE_NORMALIZE] Skipped metadata-only matched normalization: {metadata_only_match_err}"
+            )
+
+        try:
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET file_path = NULL,
+                    matched_file_path = NULL,
+                    music_file_path = NULL,
+                    found_filename = NULL,
+                    source_music_path = NULL,
+                    failure_reason = COALESCE(
+                        failure_reason,
+                        'Auto-corrected: cleared stale paths from pre-download state'
+                    ),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status IN ('queued', 'searching')
+                  AND (
+                      TRIM(COALESCE(file_path, '')) != ''
+                      OR TRIM(COALESCE(matched_file_path, '')) != ''
+                      OR TRIM(COALESCE(music_file_path, '')) != ''
+                      OR TRIM(COALESCE(found_filename, '')) != ''
+                      OR TRIM(COALESCE(source_music_path, '')) != ''
+                  )
+                """
+            )
+            normalized_count += cursor.rowcount or 0
+        except Exception as stale_queued_err:
+            logging.debug(f"[QUEUE_NORMALIZE] Skipped stale-queued path clearing: {stale_queued_err}")
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT id, status, file_path, music_file_path, matched_file_path, source_music_path,
+                       artist, album, album_artist
+                FROM download_queue
+                WHERE (
+                    TRIM(COALESCE(file_path, '')) != ''
+                    OR TRIM(COALESCE(music_file_path, '')) != ''
+                    OR TRIM(COALESCE(matched_file_path, '')) != ''
+                    OR TRIM(COALESCE(source_music_path, '')) != ''
+                )
+                """
+            )
+            all_path_rows = cursor.fetchall() or []
+            stale_path_ids = []
+            for prow in all_path_rows:
+                prow_id = _row_get(prow, 'id', 0)
+                prow_artist = _row_get(prow, 'artist', 6)
+                prow_album = _row_get(prow, 'album', 7)
+                prow_album_artist = _row_get(prow, 'album_artist', 8)
+                for path_field in ('file_path', 'music_file_path', 'matched_file_path', 'source_music_path'):
+                    path_val = _row_get(prow, path_field)
+                    if path_val and _is_under_music_root(path_val):
+                        if path_field == 'source_music_path':
+                            continue
+                        if not _is_valid_collection_location(
+                            path_val, prow_artist, prow_album, prow_album_artist
+                        ):
+                            stale_path_ids.append(prow_id)
+                            break
+
+            if stale_path_ids:
+                cursor.execute(
+                    f"""
+                    UPDATE download_queue
+                    SET file_path = NULL,
+                        matched_file_path = NULL,
+                        music_file_path = NULL,
+                        source_music_path = NULL,
+                        failure_reason = COALESCE(
+                            failure_reason,
+                            'Auto-corrected: cleared incorrect /music/ path from previous scan'
+                        ),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ANY({placeholder})
+                    """,
+                    (stale_path_ids,),
+                )
+                batch_count = cursor.rowcount or 0
+                normalized_count += batch_count
+                logging.info(
+                    f"[QUEUE_NORMALIZE] Cleared stale /music/ paths for {batch_count} item(s)"
+                )
+        except Exception as stale_music_err:
+            logging.debug(f"[QUEUE_NORMALIZE] Skipped stale /music/ path validation: {stale_music_err}")
+
+        if normalized_count:
+            conn.commit()
+            logging.info(
+                f"[QUEUE_NORMALIZE] Corrected {normalized_count} queue row(s) with invalid file-linked state"
+            )
+
+        try:
+            cursor.execute(
+                """
+                UPDATE download_queue
+                SET status = 'queued',
+                    failure_reason = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'unmatched'
+                  AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
+                  AND TRIM(COALESCE(file_path, '')) = ''
+                  AND TRIM(COALESCE(matched_file_path, '')) = ''
+                  AND TRIM(COALESCE(music_file_path, '')) = ''
+                """
+            )
+            recovered = cursor.rowcount or 0
+            if recovered:
+                conn.commit()
+                logging.info(
+                    f"[QUEUE_NORMALIZE] Promoted {recovered} stuck unmatched soulseek "
+                    f"item(s) back to queued for Soulseek dispatch"
+                )
+        except Exception as recover_err:
+            logging.debug(f"[QUEUE_NORMALIZE] Skipped unmatched soulseek recovery: {recover_err}")
+    except Exception as normalize_err:
+        logging.debug(f"[QUEUE_NORMALIZE] Skipped in_collection normalization: {normalize_err}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+_queue_normalize_scheduler_thread = None
+_queue_normalize_scheduler_stop = None
+
+
+def _start_queue_normalize_scheduler():
+    """Start a background thread that normalizes the download queue periodically."""
+    global _queue_normalize_scheduler_thread, _queue_normalize_scheduler_stop
+
+    if _queue_normalize_scheduler_thread and _queue_normalize_scheduler_thread.is_alive():
+        logging.debug("Queue normalize scheduler already running; skipping duplicate start")
+        return
+
+    _queue_normalize_scheduler_stop = threading.Event()
+
+    def _worker():
+        interval = int(os.environ.get("QUEUE_NORMALIZE_COOLDOWN_SECONDS", "300"))
+        logging.info(f"[QUEUE_NORMALIZE] Background scheduler started (interval: {interval}s)")
+        while not _queue_normalize_scheduler_stop.is_set():
+            try:
+                _normalize_download_queue()
+            except Exception as exc:
+                logging.debug(f"[QUEUE_NORMALIZE] Background normalization error: {exc}")
+            if _queue_normalize_scheduler_stop.wait(timeout=interval):
+                break
+        logging.info("[QUEUE_NORMALIZE] Background scheduler stopped")
+
+    _queue_normalize_scheduler_thread = threading.Thread(
+        target=_worker, daemon=True, name="queue-normalize-scheduler"
+    )
+    _queue_normalize_scheduler_thread.start()
+    logging.info("[QUEUE_NORMALIZE] Queue normalize scheduler thread started")
 
 
 def _coerce_optional_int(value, allow_prefix=False):
@@ -26473,441 +26897,6 @@ def api_downloads_get_queue():
     try:
         from downloads_watcher import get_download_queue
 
-        # Keep queue semantics strict: "in_collection" only applies to files
-        # that are actually under the configured /music root.
-        run_normalization = False
-        now_ts = time.time()
-        if _queue_normalize_gate_lock.acquire(blocking=False):
-            try:
-                global _queue_normalize_last_run_ts
-                if (now_ts - _queue_normalize_last_run_ts) >= _QUEUE_NORMALIZE_COOLDOWN_SECONDS:
-                    _queue_normalize_last_run_ts = now_ts
-                    run_normalization = True
-            finally:
-                _queue_normalize_gate_lock.release()
-
-        if run_normalization:
-            try:
-                conn = get_db()
-                cursor = conn.cursor()
-                placeholder = "%s"
-
-                cursor.execute(
-                    f"""
-                    SELECT id, status, in_collection, file_path, music_file_path,
-                           artist, album, album_artist
-                    FROM download_queue
-                    WHERE status = 'in_collection' OR COALESCE(in_collection, 0) = 1
-                    """
-                )
-                flagged_rows = cursor.fetchall()
-
-                music_root = os.path.normpath(os.environ.get("MUSIC_ROOT", "/music"))
-                music_root_norm = music_root.replace("\\", "/").rstrip("/").lower()
-
-                def _is_under_music_root(path_value):
-                    if not path_value:
-                        return False
-                    norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/").lower()
-                    return norm == music_root_norm or norm.startswith(music_root_norm + "/")
-
-                def _sanitize_collection_segment(value):
-                    value = str(value or "").strip()
-                    invalid = '<>:"|?*\\'
-                    for ch in invalid:
-                        value = value.replace(ch, '_')
-                    return value.strip('. ').lower()
-
-                def _is_valid_collection_location(path_value, artist_value, album_value, album_artist_value=None):
-                    if not path_value:
-                        return False
-                    norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
-                    lowered = norm.lower()
-                    if lowered.startswith("__queued_for_download__"):
-                        return False
-                    if not _is_under_music_root(norm):
-                        return False
-                    try:
-                        rel_path = os.path.relpath(norm, music_root).replace("\\", "/")
-                    except Exception:
-                        return False
-                    rel_parts = [part for part in rel_path.split("/") if part and part not in (".", "..")]
-                    if len(rel_parts) < 3:
-                        return False
-                    expected_artist = _sanitize_collection_segment(album_artist_value or artist_value or "Unknown Artist")
-                    expected_album = _sanitize_collection_segment(album_value or "Unknown Album")
-                    artist_dir = _sanitize_collection_segment(rel_parts[0])
-                    album_dir = _sanitize_collection_segment(rel_parts[-2])
-                    return artist_dir == expected_artist and (album_dir == expected_album or album_dir.endswith(f" - {expected_album}"))
-
-                normalized_count = 0
-                # Collect IDs that need correction, separated by target status to
-                # allow batch UPDATEs instead of a per-row N+1 pattern.
-                unmatched_ids = []        # rows becoming 'unmatched'
-                non_collection_ids = {}  # {original_status: [ids]} for rows keeping their status
-
-                for row in flagged_rows:
-                    row_id = _row_get(row, 'id', 0)
-                    row_status = _row_get(row, 'status', 1)
-                    file_path = _row_get(row, 'file_path', 3)
-                    music_file_path = _row_get(row, 'music_file_path', 4)
-                    artist_value = _row_get(row, 'artist', 5)
-                    album_value = _row_get(row, 'album', 6)
-                    album_artist_value = _row_get(row, 'album_artist', 7)
-
-                    if (
-                        _is_valid_collection_location(music_file_path, artist_value, album_value, album_artist_value)
-                        or _is_valid_collection_location(file_path, artist_value, album_value, album_artist_value)
-                    ):
-                        continue
-
-                    # Invalid in_collection rows should return to unmatched so users can rematch.
-                    if row_status == 'in_collection':
-                        unmatched_ids.append(row_id)
-                    else:
-                        non_collection_ids.setdefault(row_status, []).append(row_id)
-
-                # Batch UPDATE rows that become 'unmatched'
-                if unmatched_ids:
-                    cursor.execute(
-                        f"""
-                        UPDATE download_queue
-                        SET status = 'unmatched',
-                            in_collection = 0,
-                            collection_track_id = NULL,
-                            collection_matched_at = NULL,
-                            failure_reason = 'Queue normalization: item marked in_collection but file is not in /music',
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ANY({placeholder})
-                        """,
-                        (unmatched_ids,),
-                    )
-                    normalized_count += cursor.rowcount or 0
-
-                # Batch UPDATE rows that keep their original status (just clear in_collection flag)
-                for orig_status, ids in non_collection_ids.items():
-                    if ids:
-                        cursor.execute(
-                            f"""
-                            UPDATE download_queue
-                            SET in_collection = 0,
-                                collection_track_id = NULL,
-                                collection_matched_at = NULL,
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ANY({placeholder})
-                            """,
-                            (ids,),
-                        )
-                        normalized_count += cursor.rowcount or 0
-
-                # Safety net: downgrade invalid completed rows missing any valid
-                # file path so the UI no longer shows them as move-ready when no
-                # source file is known.
-                cursor.execute(
-                    f"""
-                    UPDATE download_queue
-                    SET status = 'unmatched',
-                        failure_reason = COALESCE(
-                            failure_reason,
-                            'Auto-corrected: completed status without valid file path'
-                        ),
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE status = 'completed'
-                      AND TRIM(COALESCE(file_path, '')) = ''
-                      AND TRIM(COALESCE(matched_file_path, '')) = ''
-                      AND TRIM(COALESCE(music_file_path, '')) = ''
-                      AND TRIM(COALESCE(source_music_path, '')) = ''
-                    """
-                )
-                normalized_count += cursor.rowcount or 0
-
-                # Safety net: reset 'matched' items whose source file no longer exists
-                # on disk. This prevents queue entries from showing "Match confirmed and
-                # ready to move to music" indefinitely when the file was deleted after
-                # the match was confirmed.
-                try:
-                    try:
-                        from download_queue_manager import get_downloads_dir
-                        downloads_root = get_downloads_dir()
-                    except Exception:
-                        downloads_root = os.environ.get("DOWNLOADS_DIR", "/downloads")
-
-                    def _existing_match_path(path_value):
-                        path_value = (path_value or "").strip()
-                        if not path_value:
-                            return ""
-
-                        if os.path.isfile(path_value):
-                            return path_value
-
-                        if os.path.isabs(path_value):
-                            return ""
-
-                        resolved_path = os.path.join(downloads_root, path_value)
-                        if os.path.isfile(resolved_path):
-                            return resolved_path
-
-                        basename_value = os.path.basename(path_value)
-                        if basename_value and basename_value != path_value:
-                            resolved_basename = os.path.join(downloads_root, basename_value)
-                            if os.path.isfile(resolved_basename):
-                                return resolved_basename
-
-                        return ""
-
-                    cursor.execute(
-                        """
-                        SELECT id, file_path, matched_file_path, music_file_path, found_filename
-                        FROM download_queue
-                        WHERE status = 'matched'
-                          AND (
-                            TRIM(COALESCE(file_path, '')) != ''
-                            OR TRIM(COALESCE(matched_file_path, '')) != ''
-                            OR TRIM(COALESCE(music_file_path, '')) != ''
-                            OR TRIM(COALESCE(found_filename, '')) != ''
-                          )
-                        """
-                    )
-                    matched_with_path = cursor.fetchall() or []
-
-                    # End the current transaction *before* the per-row filesystem
-                    # checks below.  While os.path.isfile() runs for each matched
-                    # row the connection would otherwise sit idle-in-transaction,
-                    # which can exceed idle_in_transaction_session_timeout and kill
-                    # the connection (seen as FATAL in pg logs).  After commit/
-                    # rollback the connection is in the plain idle state; the next
-                    # cursor.execute() will start a fresh transaction automatically.
-                    try:
-                        if normalized_count:
-                            conn.commit()
-                        else:
-                            conn.rollback()
-                    except Exception:
-                        pass
-
-                    # Collect IDs of rows whose matched file no longer exists on disk,
-                    # then batch-UPDATE them instead of issuing one UPDATE per row.
-                    stale_matched_ids = []
-                    for mrow in matched_with_path:
-                        mrow_id = _row_get(mrow, 'id', 0)
-                        mrow_file_path = _row_get(mrow, 'file_path', 1) or ''
-                        mrow_matched_file_path = _row_get(mrow, 'matched_file_path', 2) or ''
-                        mrow_music_file_path = _row_get(mrow, 'music_file_path', 3) or ''
-                        mrow_found_filename = _row_get(mrow, 'found_filename', 4) or ''
-                        existing_match_paths = [
-                            path_value for path_value in (
-                                mrow_file_path,
-                                mrow_matched_file_path,
-                                mrow_music_file_path,
-                                mrow_found_filename,
-                            )
-                            if _existing_match_path(path_value)
-                        ]
-                        if not existing_match_paths:
-                            stale_matched_ids.append(mrow_id)
-
-                    if stale_matched_ids:
-                        cursor.execute(
-                            f"""
-                            UPDATE download_queue
-                            SET status = 'unmatched',
-                                file_path = NULL,
-                                matched_file_path = NULL,
-                                music_file_path = NULL,
-                                found_filename = NULL,
-                                failure_reason = 'Auto-corrected: matched file no longer exists on disk',
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ANY({placeholder})
-                            """,
-                            (stale_matched_ids,),
-                        )
-                        batch_count = cursor.rowcount or 0
-                        normalized_count += batch_count
-                        logging.info(
-                            f"[QUEUE_NORMALIZE] Reset {batch_count} matched item(s) to unmatched "
-                            f"— no valid matched file remains on disk"
-                        )
-                except Exception as matched_norm_err:
-                    logging.debug(f"[QUEUE_NORMALIZE] Skipped matched-file normalization: {matched_norm_err}")
-
-                # Safety net: repair legacy rows where a MusicBrainz release match
-                # incorrectly overwrote the queue status to 'matched' even though no
-                # file path had ever been linked. Those rows should stay operationally
-                # queued (or unmatched for local-file workflows), not look like a
-                # confirmed file match.
-                # Uses two batch UPDATEs (local vs non-local source) instead of a
-                # per-row N+1 loop to reduce WAL write pressure.
-                try:
-                    cursor.execute(
-                        f"""
-                        UPDATE download_queue
-                        SET status = 'unmatched',
-                            failure_reason = 'Auto-corrected: release match had no linked file path',
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE status = 'matched'
-                          AND TRIM(COALESCE(file_path, '')) = ''
-                          AND TRIM(COALESCE(matched_file_path, '')) = ''
-                          AND TRIM(COALESCE(music_file_path, '')) = ''
-                          AND TRIM(COALESCE(found_filename, '')) = ''
-                          AND LOWER(COALESCE(source, '')) = 'local'
-                        """
-                    )
-                    normalized_count += cursor.rowcount or 0
-
-                    cursor.execute(
-                        f"""
-                        UPDATE download_queue
-                        SET status = 'queued',
-                            failure_reason = 'Auto-corrected: release match had no linked file path',
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE status = 'matched'
-                          AND TRIM(COALESCE(file_path, '')) = ''
-                          AND TRIM(COALESCE(matched_file_path, '')) = ''
-                          AND TRIM(COALESCE(music_file_path, '')) = ''
-                          AND TRIM(COALESCE(found_filename, '')) = ''
-                          AND LOWER(COALESCE(source, '')) != 'local'
-                        """
-                    )
-                    normalized_count += cursor.rowcount or 0
-                except Exception as metadata_only_match_err:
-                    logging.debug(
-                        f"[QUEUE_NORMALIZE] Skipped metadata-only matched normalization: {metadata_only_match_err}"
-                    )
-
-                # Safety net: clear stale file paths on queued/searching items.
-                # These pre-download statuses should never carry paths from earlier
-                # match attempts, failed moves, or stale scans.
-                try:
-                    cursor.execute(
-                        f"""
-                        UPDATE download_queue
-                        SET file_path = NULL,
-                            matched_file_path = NULL,
-                            music_file_path = NULL,
-                            found_filename = NULL,
-                            source_music_path = NULL,
-                            failure_reason = COALESCE(
-                                failure_reason,
-                                'Auto-corrected: cleared stale paths from pre-download state'
-                            ),
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE status IN ('queued', 'searching')
-                          AND (
-                              TRIM(COALESCE(file_path, '')) != ''
-                              OR TRIM(COALESCE(matched_file_path, '')) != ''
-                              OR TRIM(COALESCE(music_file_path, '')) != ''
-                              OR TRIM(COALESCE(found_filename, '')) != ''
-                              OR TRIM(COALESCE(source_music_path, '')) != ''
-                          )
-                        """
-                    )
-                    normalized_count += cursor.rowcount or 0
-                except Exception as stale_queued_err:
-                    logging.debug(f"[QUEUE_NORMALIZE] Skipped stale-queued path clearing: {stale_queued_err}")
-
-                # Safety net: validate /music/ paths for all statuses.  Wrong
-                # matches from previous scans (e.g. a Dimmu Borgir track pointing
-                # to a Caligula's Horse file) are cleared so the UI doesn't
-                # display an invalid "Local music path".
-                try:
-                    cursor.execute(
-                        f"""
-                        SELECT id, status, file_path, music_file_path, matched_file_path, source_music_path,
-                               artist, album, album_artist
-                        FROM download_queue
-                        WHERE (
-                            TRIM(COALESCE(file_path, '')) != ''
-                            OR TRIM(COALESCE(music_file_path, '')) != ''
-                            OR TRIM(COALESCE(matched_file_path, '')) != ''
-                            OR TRIM(COALESCE(source_music_path, '')) != ''
-                        )
-                        """
-                    )
-                    all_path_rows = cursor.fetchall() or []
-                    stale_path_ids = []
-                    for prow in all_path_rows:
-                        prow_id = _row_get(prow, 'id', 0)
-                        prow_artist = _row_get(prow, 'artist', 6)
-                        prow_album = _row_get(prow, 'album', 7)
-                        prow_album_artist = _row_get(prow, 'album_artist', 8)
-                        for path_field in ('file_path', 'music_file_path', 'matched_file_path', 'source_music_path'):
-                            path_val = _row_get(prow, path_field)
-                            if path_val and _is_under_music_root(path_val):
-                                # source_music_path intentionally points to a different album
-                                # in the library; validating it against the target album
-                                # location would always fail and incorrectly clear it.
-                                if path_field == 'source_music_path':
-                                    continue
-                                if not _is_valid_collection_location(
-                                    path_val, prow_artist, prow_album, prow_album_artist
-                                ):
-                                    stale_path_ids.append(prow_id)
-                                    break
-
-                    if stale_path_ids:
-                        cursor.execute(
-                            f"""
-                            UPDATE download_queue
-                            SET file_path = NULL,
-                                matched_file_path = NULL,
-                                music_file_path = NULL,
-                                source_music_path = NULL,
-                                failure_reason = COALESCE(
-                                    failure_reason,
-                                    'Auto-corrected: cleared incorrect /music/ path from previous scan'
-                                ),
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ANY({placeholder})
-                            """,
-                            (stale_path_ids,),
-                        )
-                        batch_count = cursor.rowcount or 0
-                        normalized_count += batch_count
-                        logging.info(
-                            f"[QUEUE_NORMALIZE] Cleared stale /music/ paths for {batch_count} item(s)"
-                        )
-                except Exception as stale_music_err:
-                    logging.debug(f"[QUEUE_NORMALIZE] Skipped stale /music/ path validation: {stale_music_err}")
-
-                if normalized_count:
-                    conn.commit()
-                    logging.info(
-                        f"[QUEUE_NORMALIZE] Corrected {normalized_count} queue row(s) with invalid file-linked state"
-                    )
-
-                # Recover soulseek items that were incorrectly set to 'unmatched'
-                # because check_track_exists_in_db matched a __queued_for_download__
-                # placeholder row in the tracks table (album title written as track
-                # title).  Those items have no linked file and should be dispatched
-                # to Soulseek, not left stranded.
-                try:
-                    cursor.execute(
-                        """
-                        UPDATE download_queue
-                        SET status = 'queued',
-                            failure_reason = NULL,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE status = 'unmatched'
-                          AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
-                          AND TRIM(COALESCE(file_path, '')) = ''
-                          AND TRIM(COALESCE(matched_file_path, '')) = ''
-                          AND TRIM(COALESCE(music_file_path, '')) = ''
-                        """
-                    )
-                    recovered = cursor.rowcount or 0
-                    if recovered:
-                        conn.commit()
-                        logging.info(
-                            f"[QUEUE_NORMALIZE] Promoted {recovered} stuck unmatched soulseek "
-                            f"item(s) back to queued for Soulseek dispatch"
-                        )
-                except Exception as recover_err:
-                    logging.debug(f"[QUEUE_NORMALIZE] Skipped unmatched soulseek recovery: {recover_err}")
-
-                conn.close()
-            except Exception as normalize_err:
-                logging.debug(f"[QUEUE_NORMALIZE] Skipped in_collection normalization: {normalize_err}")
-        
         status = request.args.get('status')
         limit = int(request.args.get('limit', 100))
         offset = int(request.args.get('offset', 0))
@@ -27491,30 +27480,33 @@ def api_downloads_folder_status():
             ORDER BY f.updated_at DESC
         """)
         
-        folder_matches = []
-        for row in cursor.fetchall():
-            folder_id = _row_get(row, 'id', 0)
-            
-            # Get matched tracks for this folder
+        rows = cursor.fetchall()
+        
+        # Fetch all tracks in one query to avoid N+1
+        folder_ids = [_row_get(r, 'id', 0) for r in rows]
+        tracks_by_folder = {}
+        if folder_ids:
             placeholder = "%s"
             cursor.execute(f"""
-                SELECT file_path, organized_path, track_number, track_title, track_artist
+                SELECT folder_match_id, file_path, organized_path, track_number, track_title, track_artist
                 FROM folder_track_matches
-                WHERE folder_match_id = {placeholder}
+                WHERE folder_match_id = ANY({placeholder})
                 ORDER BY track_number
-            """, (folder_id,))
-            
-            matched_tracks = [
-                {
-                    'file_path': _row_get(t, 'file_path', 0),
-                    'organized_path': _row_get(t, 'organized_path', 1),
-                    'track_number': _row_get(t, 'track_number', 2),
-                    'track_title': _row_get(t, 'track_title', 3),
-                    'track_artist': _row_get(t, 'track_artist', 4)
-                }
-                for t in cursor.fetchall()
-            ]
-
+            """, (folder_ids,))
+            for t in cursor.fetchall():
+                fid = _row_get(t, 'folder_match_id', 0)
+                tracks_by_folder.setdefault(fid, []).append({
+                    'file_path': _row_get(t, 'file_path', 1),
+                    'organized_path': _row_get(t, 'organized_path', 2),
+                    'track_number': _row_get(t, 'track_number', 3),
+                    'track_title': _row_get(t, 'track_title', 4),
+                    'track_artist': _row_get(t, 'track_artist', 5)
+                })
+        
+        folder_matches = []
+        for row in rows:
+            folder_id = _row_get(row, 'id', 0)
+            matched_tracks = tracks_by_folder.get(folder_id, [])
             total_expected = _row_get(row, 'total_expected_tracks', 7, 0) or 0
             matched_count = _row_get(row, 'matched_tracks_count', 8, 0) or 0
             
