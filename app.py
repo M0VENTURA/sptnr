@@ -1139,6 +1139,53 @@ def api_download_log(log_type):
             logging.error(f"Error generating search log: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
 
+    # --- In-memory queue activity log (events, not the raw log file) ---
+    if log_type == 'queue':
+        try:
+            from download_queue_manager import get_queue_events
+            cutoff_time = datetime.now() - timedelta(hours=1)
+            events = get_queue_events(limit=500)
+            lines = []
+            for event in events:
+                ts = event.get('timestamp') or ''
+                try:
+                    event_dt = datetime.fromisoformat(ts)
+                    if event_dt < cutoff_time:
+                        continue
+                except Exception:
+                    pass
+                etype = event.get('type', 'info')
+                msg = event.get('message', '')
+                item_id = event.get('item_id')
+                details = event.get('details') or {}
+                line = f"[{ts}] [{etype.upper()}] {msg}"
+                if item_id:
+                    line += f" (item_id={item_id})"
+                if details:
+                    detail_parts = []
+                    for k, v in details.items():
+                        if v not in (None, '', []):
+                            detail_parts.append(f"{k}={v}")
+                    if detail_parts:
+                        line += " | " + ", ".join(detail_parts)
+                lines.append(line)
+            if not lines:
+                lines.append("No queue activity events in the last hour.")
+            log_content = '\n'.join(lines) + '\n'
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"queue_activity_log_{timestamp}.txt"
+            return Response(
+                log_content,
+                mimetype='text/plain',
+                headers={
+                    'Content-Disposition': f'attachment; filename={filename}',
+                    'Content-Type': 'text/plain; charset=utf-8'
+                }
+            )
+        except Exception as e:
+            logging.error(f"Error generating queue activity log: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+
     def _resolve_log_path(requested_type):
         candidates = []
         if requested_type == 'unified':
@@ -2118,6 +2165,12 @@ scan_process_combined = None  # Combined scan process (Navidrome + Popularity + 
 scan_process_missing_releases = None  # Missing releases scan process
 scan_process_mp3_import = None  # MP3 metadata import scan process
 scan_lock = threading.Lock()
+# Track manual Soulseek search queries so completed searches can be logged
+# with their full results.  {search_id: query}
+_slskd_manual_search_queries = {}
+_slskd_manual_search_queries_lock = threading.Lock()
+_MAX_SLSKD_MANUAL_SEARCH_CACHE = 200
+
 # Cache MB release metadata lookups so repeated album checks avoid redundant API calls.
 _mb_release_metadata_cache = {}
 _MB_RELEASE_CACHE_TTL_SECONDS = int(os.environ.get("MB_RELEASE_CACHE_TTL_SECONDS", "21600"))
@@ -20034,6 +20087,13 @@ def slskd_search():
                     )
                 except Exception:
                     pass
+                with _slskd_manual_search_queries_lock:
+                    _slskd_manual_search_queries[search_id] = query
+                    # Prune old entries to prevent unbounded growth
+                    if len(_slskd_manual_search_queries) > _MAX_SLSKD_MANUAL_SEARCH_CACHE:
+                        oldest = sorted(_slskd_manual_search_queries.keys())[:50]
+                        for old_id in oldest:
+                            _slskd_manual_search_queries.pop(old_id, None)
                 return jsonify({"searchId": search_id, "status": "searching"})
             return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
     except Exception as e:
@@ -20131,6 +20191,26 @@ def slskd_search_results(search_id):
                 logging.warning(f"[SLSKD] Search {search_id} completed with 0 responses - check if slskd service is reachable at {web_url}")
             elif is_complete and len(results) == 0:
                 logging.warning(f"[SLSKD] Search {search_id} got {response_count} responses but 0 files - peers may not have matching files")
+
+            # Log completed manual searches with full results for diagnostics.
+            if is_complete:
+                with _slskd_manual_search_queries_lock:
+                    manual_query = _slskd_manual_search_queries.pop(search_id, None)
+                if manual_query:
+                    try:
+                        from download_queue_manager import log_slskd_search_event
+                        log_slskd_search_event(
+                            search_type='manual',
+                            query=manual_query,
+                            queue_id=None,
+                            queue_item=None,
+                            results=results,
+                            selected_result=None,
+                            duration_seconds=None,
+                            notes=f"completed: state={state}, responses={response_count}, files={len(results)}, search_id={search_id}"
+                        )
+                    except Exception as _log_err:
+                        logging.debug(f"[SLSKD] Could not log manual search results: {_log_err}")
 
             return jsonify({
                 "results": results,

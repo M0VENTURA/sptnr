@@ -7033,33 +7033,52 @@ async function loadSearchLog() {
       const timeLabel = ts && !Number.isNaN(ts.getTime())
         ? ts.toLocaleTimeString([], { hour12: false })
         : '--:--:--';
-      const typeLabel = String(event.search_type || 'unknown').toUpperCase().padEnd(10, ' ');
+      const searchType = String(event.search_type || 'unknown').toUpperCase();
+      const typeBadge = searchType === 'AUTOMATIC' ? '[AUTO] ' : '[MANUAL]';
       const query = event.query || '';
       const artist = event.artist || '';
       const title = event.title || '';
       const rc = event.result_count ?? 0;
       const dur = event.duration_seconds != null ? `${event.duration_seconds}s` : 'n/a';
-      let line = `[${timeLabel}] ${typeLabel} query="${query}" results=${rc} duration=${dur}`;
+
+      // Header line
+      let header = `${typeBadge} [${timeLabel}]  Query: "${query}"`;
       if (artist || title) {
-        line += ` | ${artist} - ${title}`;
+        header += `  |  ${artist} - ${title}`;
       }
+      chunks.push(header);
+      chunks.push(`    Results: ${rc}  |  Duration: ${dur}`);
       if (event.notes) {
-        line += ` | ${event.notes}`;
+        chunks.push(`    Notes: ${event.notes}`);
       }
-      chunks.push(line);
+
+      // Selected result (prominent)
       if (event.selected_result) {
         const sel = event.selected_result;
-        chunks.push(`  -> SELECTED: score=${sel.score ?? '?'} user=${sel.username ?? '?'} file=${sel.filename ?? '?'}`);
+        const selScore = sel.score != null ? sel.score.toFixed(2) : '?';
+        const selSize = sel.size != null ? formatBytes(sel.size) : '?';
+        const selLen = sel.length != null ? `${Math.round(sel.length)}s` : '?';
+        chunks.push(`    >>> SELECTED FOR DOWNLOAD <<<`);
+        chunks.push(`        Score: ${selScore}  |  User: ${sel.username || '?'}  |  Size: ${selSize}  |  Length: ${selLen}`);
+        chunks.push(`        File:  ${sel.filename || '?'}`);
       }
+
+      // All returned results
       const results = event.results || [];
       if (results.length) {
-        chunks.push(`  -> RESULTS:`);
+        chunks.push(`    --- All Returned Results (${results.length}) ---`);
         results.forEach((r, idx) => {
           const score = r.score != null ? r.score.toFixed(2) : '?';
           const len = r.length != null ? `${Math.round(r.length)}s` : '?';
-          chunks.push(`     ${idx + 1}. score=${score} len=${len} user=${r.username ?? '?'} file=${r.filename ?? '?'}`);
+          const size = r.size != null ? formatBytes(r.size) : '?';
+          const user = r.username || '?';
+          const file = r.filename || '?';
+          chunks.push(`      ${String(idx + 1).padStart(2)}.  score=${score}  len=${len}  size=${size}  user=${user}`);
+          chunks.push(`          file: ${file}`);
         });
       }
+
+      chunks.push(''); // blank line between events
     });
 
     logEl.textContent = chunks.length ? chunks.join('\n') : 'No Soulseek search events yet.';
