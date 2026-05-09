@@ -70,7 +70,8 @@ echo "Starting Flask web application (port 5000)..."
 exec gunicorn \
     --bind 0.0.0.0:5000 \
     --workers 4 \
-    --worker-class sync \
+    --worker-class gthread \
+    --threads 4 \
     --timeout 300 \
     --graceful-timeout 60 \
     --keep-alive 5 \
