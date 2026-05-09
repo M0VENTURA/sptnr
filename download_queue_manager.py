@@ -10,6 +10,7 @@ during parallel scan operations. PostgreSQL provides reliable concurrent access.
 """
 
 import os
+import random
 import re
 import shutil
 import concurrent.futures
@@ -10450,6 +10451,7 @@ def backfill_queued_track_metadata():
                   OR t.isrc IS NULL
                   OR t.writer IS NULL
               )
+            ORDER BY t.id
         """, ('__queued_for_download__%',))
         rows = cursor.fetchall() or []
 
@@ -10507,22 +10509,38 @@ def backfill_queued_track_metadata():
                     continue
 
                 params.append(track_id)
-                # Use a savepoint so that a failure on this single row does not
-                # discard the accumulated updates from earlier rows in the batch.
-                cursor.execute("SAVEPOINT bf_row")
-                try:
-                    cursor.execute(
-                        f"UPDATE tracks SET {', '.join(set_parts)} WHERE id = %s",
-                        params,
-                    )
-                    cursor.execute("RELEASE SAVEPOINT bf_row")
+                # Retry transient deadlocks a few times before giving up on this row.
+                # Rows are fetched in deterministic order (ORDER BY t.id) so deadlocks
+                # are rare, but concurrent backfills from multiple workers can still
+                # collide on the same row.
+                _max_update_retries = 3
+                _update_delay = 0.2
+                _update_success = False
+                for _upd_attempt in range(_max_update_retries):
+                    cursor.execute("SAVEPOINT bf_row")
+                    try:
+                        cursor.execute(
+                            f"UPDATE tracks SET {', '.join(set_parts)} WHERE id = %s",
+                            params,
+                        )
+                        cursor.execute("RELEASE SAVEPOINT bf_row")
+                        _update_success = True
+                        break
+                    except Exception as _update_err:
+                        cursor.execute("ROLLBACK TO SAVEPOINT bf_row")
+                        cursor.execute("RELEASE SAVEPOINT bf_row")
+                        _err_str = str(_update_err).lower()
+                        _is_deadlock = "deadlock" in _err_str or "could not serialize" in _err_str
+                        if _is_deadlock and _upd_attempt < _max_update_retries - 1:
+                            _jitter = random.uniform(0, _update_delay * 0.5)
+                            time.sleep(_update_delay + _jitter)
+                            _update_delay = min(_update_delay * 2, 2.0)
+                            continue
+                        logger.debug(f"[BACKFILL] Skipping track {track_id} due to update error: {_update_err}")
+                        skipped += 1
+                        break
+                if _update_success:
                     updated += 1
-                except Exception as _update_err:
-                    cursor.execute("ROLLBACK TO SAVEPOINT bf_row")
-                    cursor.execute("RELEASE SAVEPOINT bf_row")
-                    logger.debug(f"[BACKFILL] Skipping track {track_id} due to update error: {_update_err}")
-                    skipped += 1
-                    continue
 
                 # Commit in batches to bound transaction size without
                 # holding a single long-running transaction for the full run.
