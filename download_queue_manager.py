@@ -599,10 +599,55 @@ def log_slskd_search_event(search_type, query, queue_id=None, queue_item=None, r
         'notes': notes,
     }
 
-    with _slskd_search_logs_lock:
-        _slskd_search_logs.append(event)
-        if len(_slskd_search_logs) > _MAX_SLSKD_SEARCH_LOGS:
-            _slskd_search_logs = _slskd_search_logs[-_MAX_SLSKD_SEARCH_LOGS:]
+    # Persist to PostgreSQL so all processes (gunicorn workers + queue
+    # processor) share the same log history.
+    try:
+        conn = get_db()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO slskd_search_logs
+                    (search_type, query, queue_id, artist, title, album,
+                     result_count, duration_seconds, notes,
+                     selected_result, results)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    search_type,
+                    query,
+                    queue_id,
+                    event.get('artist'),
+                    event.get('title'),
+                    event.get('album'),
+                    event.get('result_count'),
+                    duration_seconds,
+                    notes,
+                    json.dumps(selected_result) if selected_result is not None else None,
+                    json.dumps(event['results']) if event['results'] else None,
+                ),
+            )
+            # Keep only the last N rows so the table does not grow unbounded.
+            cursor.execute(
+                """
+                DELETE FROM slskd_search_logs
+                WHERE id NOT IN (
+                    SELECT id FROM slskd_search_logs
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                )
+                """,
+                (_MAX_SLSKD_SEARCH_LOGS,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as db_err:
+        logger.debug(f"[SEARCH_LOG] Could not persist to DB, falling back to in-memory: {db_err}")
+        with _slskd_search_logs_lock:
+            _slskd_search_logs.append(event)
+            if len(_slskd_search_logs) > _MAX_SLSKD_SEARCH_LOGS:
+                _slskd_search_logs = _slskd_search_logs[-_MAX_SLSKD_SEARCH_LOGS:]
 
 
 def _truncate_slskd_results(results):
@@ -632,13 +677,54 @@ def get_slskd_search_logs(limit=50):
     Returns:
         List of search log events in reverse chronological order (newest first)
     """
-    with _slskd_search_logs_lock:
-        return list(reversed(_slskd_search_logs))[:limit]
+    try:
+        conn = get_db()
+        try:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cursor.execute(
+                """
+                SELECT created_at AS timestamp, search_type, query, queue_id,
+                       artist, title, album, result_count, duration_seconds,
+                       notes, selected_result, results
+                FROM slskd_search_logs
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+            logs = []
+            for row in rows:
+                log = dict(row)
+                ts = log.get('timestamp')
+                log['timestamp'] = ts.isoformat() if ts else ''
+                if log.get('selected_result') is not None and isinstance(log['selected_result'], str):
+                    log['selected_result'] = json.loads(log['selected_result'])
+                if log.get('results') is not None and isinstance(log['results'], str):
+                    log['results'] = json.loads(log['results'])
+                logs.append(log)
+            return logs
+        finally:
+            conn.close()
+    except Exception as db_err:
+        logger.debug(f"[SEARCH_LOG] Could not read from DB, falling back to in-memory: {db_err}")
+        with _slskd_search_logs_lock:
+            return list(reversed(_slskd_search_logs))[:limit]
 
 
 def clear_slskd_search_logs():
     """Clear all Soulseek search logs."""
     global _slskd_search_logs
+    try:
+        conn = get_db()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("TRUNCATE TABLE slskd_search_logs")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as db_err:
+        logger.debug(f"[SEARCH_LOG] Could not truncate DB table: {db_err}")
     with _slskd_search_logs_lock:
         _slskd_search_logs = []
 
