@@ -10,6 +10,7 @@ is unavailable.
 from __future__ import annotations
 
 import logging
+import time
 
 from helpers.db_utils import get_db_connection, _table_exists, is_transient_pg_startup_error
 
@@ -49,7 +50,20 @@ def update_schema(_db_path: str | None = None) -> bool:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT pg_advisory_lock(hashtext(%s))", ("sptnr_schema_bootstrap",))
+        _lock_acquired = False
+        for _lock_attempt in range(10):
+            try:
+                cursor.execute("SELECT pg_try_advisory_lock(hashtext(%s)) AS acquired", ("sptnr_schema_bootstrap",))
+                if cursor.fetchone()[0]:
+                    _lock_acquired = True
+                    break
+            except Exception as _adv_err:
+                logging.debug("Schema bootstrap advisory lock unavailable: %s", _adv_err)
+                break
+            time.sleep(0.3)
+        if not _lock_acquired:
+            logging.warning("Could not acquire schema bootstrap advisory lock; deferring schema initialization")
+            return False
 
         _ensure_table(
             cursor,
@@ -158,8 +172,9 @@ def update_schema(_db_path: str | None = None) -> bool:
     finally:
         if conn:
             try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))", ("sptnr_schema_bootstrap",))
+                if _lock_acquired:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))", ("sptnr_schema_bootstrap",))
             except Exception:
                 pass
         if conn:

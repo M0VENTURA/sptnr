@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import threading
+import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -117,7 +118,23 @@ class MusicBrainzReleaseManager:
 
             try:
                 if is_postgres_connection(conn):
-                    db_query.execute("SELECT pg_advisory_lock(hashtext(%s))", ("sptnr_mb_schema_init_v1",))
+                    _lock_acquired = False
+                    for _lock_attempt in range(5):
+                        try:
+                            db_query.execute(
+                                "SELECT pg_try_advisory_lock(hashtext(%s)) AS acquired",
+                                ("sptnr_mb_schema_init_v1",),
+                            )
+                            if db_query.cursor.fetchone()['acquired']:
+                                _lock_acquired = True
+                                break
+                        except Exception as _adv_err:
+                            logger.debug(f"MusicBrainz schema advisory lock unavailable: {_adv_err}")
+                            break
+                        time.sleep(0.3)
+                    if not _lock_acquired:
+                        logger.warning("Could not acquire MusicBrainz schema advisory lock; deferring")
+                        return
 
                 db_query.execute("""
                     CREATE TABLE IF NOT EXISTS musicbrainz_releases (

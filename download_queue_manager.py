@@ -1434,117 +1434,118 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
         if not is_pg:
             raise RuntimeError("download_queue schema ensure requires PostgreSQL connection")
 
-        # Acquire a session-level advisory lock so only one worker/process runs
-        # the full DDL at a time.  Other workers wait here WITHOUT holding any
-        # table-level lock, which prevents the classic PostgreSQL lock-cascade:
-        #   Worker A: CREATE INDEX (ShareLock) → Worker B: ALTER TABLE waiting
-        #   (AccessExclusiveLock) → Worker C: SELECT blocked behind B.
-        # Using session-level (not xact-level) so the lock survives the multiple
-        # individual conn.commit() calls made below for each DDL statement.
-        # If advisory locks are unavailable the intra-process _queue_schema_lock
-        # above still prevents duplicate work within a single process; we fall
-        # through gracefully rather than refusing to start.
-        _adv_lock_acquired = False
+        # Fast-path: check whether any columns are missing BEFORE acquiring the
+        # advisory lock.  On a warm database the schema is already up-to-date,
+        # so we can skip the lock entirely and avoid the indefinite hang that
+        # occurs when a dead process still holds the session lock.
         try:
-            cursor.execute(
-                "SELECT pg_advisory_lock(hashtext('download_queue_schema_migration'))"
-            )
-            _adv_lock_acquired = True
-        except Exception as _adv_err:
-            logger.debug(f"Schema migration advisory lock unavailable: {_adv_err}")
+            conn.rollback()
+        except Exception:
+            pass
+
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'download_queue'
+              AND table_schema = 'public'
+            ORDER BY column_name
+        """)
+        columns = []
+        for row in cursor.fetchall():
+            col_name = row.get('column_name') if row else None
+            if col_name:
+                columns.append(col_name)
+
+        required_cols = {
+            'search_query': "TEXT",
+            'source': "TEXT DEFAULT 'soulseek'",
+            'priority': "INTEGER DEFAULT 5",
+            'import_group': "TEXT",
+            'import_type': "TEXT DEFAULT 'song'",
+            'track_number': "TEXT",
+            'disc_number': "TEXT",
+            'album_artist': "TEXT",
+            'year': "TEXT",
+            'release_id': "TEXT",
+            'release_source': "TEXT",
+            'release_mbid': "TEXT",
+            'recording_mbid': "TEXT",
+            'isrc': "TEXT",
+            'composer': "TEXT",
+            'genres': "TEXT",
+            'release_year': "INTEGER",
+            'duration': "INTEGER",
+            'matched_file_path': "TEXT",
+            'in_collection': "INTEGER DEFAULT 0",
+            'collection_track_id': "TEXT",
+            'collection_matched_at': "TEXT",
+            'auto_delete_at': "TIMESTAMP",
+            'copied_individually': "INTEGER DEFAULT 0",
+            'copied_individually_at': "TEXT",
+            'cover_art_url': "TEXT",
+            'source_music_path': "TEXT",
+            'queue_folder': "TEXT",
+            'match_confidence': "REAL",
+            'match_method': "TEXT",
+            'slskd_transfer_id': "TEXT",
+            'slskd_username': "TEXT",
+            'slskd_state': "TEXT",
+            'slskd_queue_position': "INTEGER",
+            'slskd_last_sync_at': "TEXT",
+            'status_changed_at': "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            'low_quality_download': "INTEGER DEFAULT 0",
+            'low_quality_bitrate': "INTEGER",
+            'is_manual_download': "INTEGER DEFAULT 0",
+            'mb_last_checked_at': "TIMESTAMP",
+            'metadata_id': "BIGINT",
+            'release_metadata_id': "BIGINT",
+            'music_file_path': "TEXT",
+            'status_last_checked_at': "TIMESTAMP",
+            'move_attempt_count': "INTEGER DEFAULT 0",
+            'last_move_attempt_at': "TIMESTAMP",
+            'last_error': "TEXT",
+            'error_count': "INTEGER DEFAULT 0",
+            'last_search_query': "TEXT",
+            'search_attempt_count': "INTEGER DEFAULT 0",
+            'last_search_attempt_at': "TIMESTAMP",
+            'discogs_album_id': "TEXT",
+            'discogs_release_id': "TEXT",
+            'wikipedia_url': "TEXT",
+            'wikidata_id': "TEXT",
+            'last_attempted_at': "TIMESTAMP",
+        }
+
+        missing = [col for col in required_cols if col not in columns]
+        if not missing:
+            _queue_schema_checked = True
+            return
+
+        # Schema changes are actually needed.  Acquire a session-level advisory
+        # lock so only one worker/process runs DDL at a time.  We use the
+        # non-blocking pg_try_advisory_lock with retries so a dead lock holder
+        # cannot hang this worker forever.
+        _adv_lock_acquired = False
+        for _lock_attempt in range(5):
+            try:
+                cursor.execute(
+                    "SELECT pg_try_advisory_lock(hashtext('download_queue_schema_migration')) AS acquired"
+                )
+                if cursor.fetchone()['acquired']:
+                    _adv_lock_acquired = True
+                    break
+            except Exception as _adv_err:
+                logger.debug(f"Schema migration advisory lock unavailable: {_adv_err}")
+                break
+            time.sleep(0.3)
+
+        if not _adv_lock_acquired:
+            logger.warning("Could not acquire schema migration advisory lock; deferring queue column migration")
+            return
 
         try:
             try:
                 conn.rollback()
             except Exception:
                 pass
-
-            # PostgreSQL column checking
-            cursor.execute("""
-                SELECT column_name FROM information_schema.columns
-                WHERE table_name = 'download_queue'
-                  AND table_schema = 'public'
-                ORDER BY column_name
-            """)
-            columns = []
-            for row in cursor.fetchall():
-                col_name = row.get('column_name') if row else None
-                if col_name:
-                    columns.append(col_name)
-
-            required_cols = {
-                'search_query': "TEXT",
-                'source': "TEXT DEFAULT 'soulseek'",
-                'priority': "INTEGER DEFAULT 5",
-                'import_group': "TEXT",
-                'import_type': "TEXT DEFAULT 'song'",
-                'track_number': "TEXT",
-                'disc_number': "TEXT",
-                'album_artist': "TEXT",
-                'year': "TEXT",
-                'release_id': "TEXT",
-                'release_source': "TEXT",
-                'release_mbid': "TEXT",
-                'recording_mbid': "TEXT",
-                'isrc': "TEXT",
-                'composer': "TEXT",
-                'genres': "TEXT",
-                'release_year': "INTEGER",
-                'duration': "INTEGER",
-                'matched_file_path': "TEXT",
-                'in_collection': "INTEGER DEFAULT 0",
-                'collection_track_id': "TEXT",
-                'collection_matched_at': "TEXT",
-                'auto_delete_at': "TIMESTAMP",
-                'copied_individually': "INTEGER DEFAULT 0",
-                'copied_individually_at': "TEXT",
-                'cover_art_url': "TEXT",
-                'source_music_path': "TEXT",
-                'queue_folder': "TEXT",
-                'match_confidence': "REAL",
-                'match_method': "TEXT",
-                'slskd_transfer_id': "TEXT",
-                'slskd_username': "TEXT",
-                'slskd_state': "TEXT",
-                'slskd_queue_position': "INTEGER",
-                'slskd_last_sync_at': "TEXT",
-                # Tracks the last time the status column changed value, useful
-                # for detecting stalled items (e.g. stuck in 'queued' for days).
-                # Backfilled with CURRENT_TIMESTAMP on first ADD COLUMN.
-                'status_changed_at': "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-                # Set to 1 when the downloaded file is low-quality (< target
-                # bitrate and not FLAC).  The item is re-queued after import so
-                # the processor keeps searching for a better copy.
-                'low_quality_download': "INTEGER DEFAULT 0",
-                # Bitrate (kbps) of the provisional low-quality download.
-                'low_quality_bitrate': "INTEGER",
-                # Set to 1 when the download was initiated by the user via the
-                # manual Soulseek search modal (as opposed to being started
-                # automatically by the queue processor).  Allows check_completed_
-                # downloads() to trust the user's file selection without applying
-                # the strict metadata/duration validation that guards automatic
-                # downloads from mis-matches.
-                'is_manual_download': "INTEGER DEFAULT 0",
-                # Timestamp of the last time MusicBrainz metadata was refreshed
-                # for this queue item.  Used by the freshness check in
-                # search_and_download() to avoid hitting MB on every retry.
-                'mb_last_checked_at': "TIMESTAMP",
-                # FK → musicbrainz_release_tracks.id: links this queue row to its
-                # authoritative per-track metadata record.  Nullable so legacy rows
-                # that pre-date this column are unaffected.
-                'metadata_id': "BIGINT",
-                # FK → musicbrainz_releases.id: links this queue row to its
-                # authoritative album-level metadata record.  Nullable for legacy rows.
-                'release_metadata_id': "BIGINT",
-                # Final path in /music after the file has been moved there.  Stored
-                # separately from file_path (which points to the /downloads source)
-                # so both can be tracked independently during the move workflow.
-                'music_file_path': "TEXT",
-                # Timestamp of the last time the processor attempted to search/download
-                # this item.  Used to spread retries fairly across the queue instead of
-                # hammering the same recently-failed item repeatedly.
-                'last_attempted_at': "TIMESTAMP",
-            }
 
             for col, col_type in required_cols.items():
                 if col not in columns:
