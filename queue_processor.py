@@ -1543,8 +1543,16 @@ def _file_matches_queue_item(file_path, queue_item, relative_name=None):
 
 def get_db():
     """Get database connection — PostgreSQL only. Fails fast if unavailable."""
-    from app import get_db as app_get_db
-    return app_get_db()
+    try:
+        from app import get_db as app_get_db
+        return app_get_db()
+    except Exception:
+        # Fallback to direct PostgreSQL connection when app.get_db is in
+        # backoff or otherwise unavailable.  This prevents the queue processor
+        # from silently skipping entire cycles due to transient connection
+        # issues that only affect the app's connection pool.
+        from download_queue_manager import get_db as dqm_get_db
+        return dqm_get_db()
 
 def get_slskd_client():
     """Get configured SlskdClient instance (cached — config does not change at runtime)."""
@@ -1914,8 +1922,7 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60, c
     """
     conn = None
     try:
-        from app import get_db as app_get_db
-        conn = app_get_db()
+        conn = get_db()
         cursor = conn.cursor()
         placeholder = "%s"
 
@@ -3960,77 +3967,45 @@ def check_completed_downloads():
             _move_helpers_available = False
 
         for item in downloading:
-            match_found = None
-            match_meta_state = None
-
-            found_fn = item.get("found_filename") or ""
-            item_id = item["id"]
-
-            # 1. Exact match via slskd localFilePath (most reliable)
-            if found_fn:
-                found_norm = _normalize_transfer_key(found_fn)
-                abs_path = slskd_completed.get(found_norm) or slskd_completed.get(os.path.basename(found_norm))
-            else:
-                abs_path = None
-
-            if abs_path:
-                candidate_rel = os.path.relpath(abs_path, DOWNLOADS_DIR)
-                if item.get('is_manual_download'):
-                    # The user explicitly chose this file via the manual search
-                    # modal; trust their selection without metadata validation.
-                    match_found = candidate_rel
-                    match_meta_state = 'manual'
-                    logger.debug(f"Queue {item_id}: manual download accepted via slskd localFilePath: {abs_path}")
+            try:
+                match_found = None
+                match_meta_state = None
+    
+                found_fn = item.get("found_filename") or ""
+                item_id = item["id"]
+    
+                # 1. Exact match via slskd localFilePath (most reliable)
+                if found_fn:
+                    found_norm = _normalize_transfer_key(found_fn)
+                    abs_path = slskd_completed.get(found_norm) or slskd_completed.get(os.path.basename(found_norm))
                 else:
-                    is_match, match_source = _file_matches_queue_item(abs_path, item, candidate_rel)
-                    if is_match:
+                    abs_path = None
+    
+                if abs_path:
+                    candidate_rel = os.path.relpath(abs_path, DOWNLOADS_DIR)
+                    if item.get('is_manual_download'):
+                        # The user explicitly chose this file via the manual search
+                        # modal; trust their selection without metadata validation.
                         match_found = candidate_rel
-                        match_meta_state = match_source
-                        logger.debug(f"Queue {item_id}: matched via slskd localFilePath: {abs_path}")
+                        match_meta_state = 'manual'
+                        logger.debug(f"Queue {item_id}: manual download accepted via slskd localFilePath: {abs_path}")
                     else:
-                        logger.info(
-                            f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
-                        )
-                        # The file was downloaded specifically for this queue item but its
-                        # content (metadata / duration) does not match what we expected.
-                        # Delete it so the retry downloads a different source rather than
-                        # looping indefinitely on the same mismatched file.
-                        _delete_mismatched_download(
-                            abs_path, item_id,
-                            f"metadata mismatch for slskd-completed file ({match_source})"
-                        )
-                        mark_failed(
-                            item_id,
-                            f"Downloaded file did not match queue item ({match_source} mismatch); "
-                            f"deleted and rescheduled",
-                            schedule_retry=True,
-                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
-                            clear_file_fields=True,
-                        )
-                        continue
-
-            # 2. Exact filename match against filesystem files
-            if match_found is None and found_fn:
-                for rel_file in fs_files:
-                    rel_norm = rel_file.replace('\\', '/')
-                    found_norm = found_fn.replace('\\', '/')
-                    if rel_norm == found_norm or os.path.basename(rel_norm) == os.path.basename(found_norm):
-                        file_path = os.path.join(DOWNLOADS_DIR, rel_file)
-                        if item.get('is_manual_download'):
-                            # Manual selection: trust the user, skip metadata check.
-                            match_found = rel_file
-                            match_meta_state = 'manual'
-                            break
-                        is_match, match_source = _file_matches_queue_item(file_path, item, rel_file)
-                        if not is_match:
+                        is_match, match_source = _file_matches_queue_item(abs_path, item, candidate_rel)
+                        if is_match:
+                            match_found = candidate_rel
+                            match_meta_state = match_source
+                            logger.debug(f"Queue {item_id}: matched via slskd localFilePath: {abs_path}")
+                        else:
                             logger.info(
-                                f"Queue {item_id}: rejecting exact filename match due to queue mismatch: {rel_file}"
+                                f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
                             )
-                            # Delete the mismatched file so the retry can fetch a
-                            # better source instead of re-matching the same file.
+                            # The file was downloaded specifically for this queue item but its
+                            # content (metadata / duration) does not match what we expected.
+                            # Delete it so the retry downloads a different source rather than
+                            # looping indefinitely on the same mismatched file.
                             _delete_mismatched_download(
-                                file_path, item_id,
-                                f"metadata mismatch for exact-filename match ({match_source})"
+                                abs_path, item_id,
+                                f"metadata mismatch for slskd-completed file ({match_source})"
                             )
                             mark_failed(
                                 item_id,
@@ -4040,84 +4015,90 @@ def check_completed_downloads():
                                 retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
                                 clear_file_fields=True,
                             )
-                            break
-                        match_found = rel_file
-                        match_meta_state = match_source
-                        break
-
-            # 3. Fuzzy match against filesystem files
-            if match_found is None:
-                for filename in fs_files:
-                    # Skip files already owned by another queue item.
-                    fn_key = filename.replace('\\', '/').strip()
-                    if fn_key in claimed_files or os.path.basename(fn_key) in claimed_files:
-                        continue
-                    file_path = os.path.join(DOWNLOADS_DIR, filename)
-                    is_match, match_source = _file_matches_queue_item(file_path, item, filename)
-                    if is_match:
-                        match_found = filename
-                        match_meta_state = match_source
-                        # Register so later queue items in this cycle can't also claim it.
-                        claimed_files.add(fn_key)
-                        claimed_files.add(os.path.basename(fn_key))
-                        logger.debug(f"Queue {item_id}: fuzzy match found: {filename}")
-                        break
-
-            # 4. No file match found. Reconcile against live slskd transfers so
-            # stale 'downloading' rows do not remain stuck forever.
-            if match_found is None:
-                if slskd_status_available:
-                    found_fn = item.get("found_filename") or ""
-                    transfer = _get_transfer_entry(found_fn)
-
-                    if transfer:
-                        transfer_state = transfer.get("state", "")
-                        if transfer_state in getattr(slskd_client, "FAILED_STATES", set()):
-                            logger.warning(
-                                f"Queue {item_id}: slskd reports terminal failed state {transfer_state!r}, scheduling retry"
-                            )
-                            mark_failed(
-                                item_id,
-                                f"slskd transfer failed: {transfer_state}",
-                                schedule_retry=True,
-                                retry_delay_minutes=10,
-                            )
-                        elif transfer_state == getattr(slskd_client, "STATE_SUCCEEDED", None):
-                            # slskd reports success but no local file was found — the file
-                            # was deleted before the queue processor could match it.
-                            # Remove the stale "Completed, Succeeded" entry from slskd so
-                            # that the next retry actually queues a fresh download instead
-                            # of slskd seeing the old completed entry and skipping it.
-                            logger.warning(
-                                f"Queue {item_id}: slskd reports succeeded but no file found; "
-                                f"removing stale transfer and scheduling retry"
-                            )
-                            try:
-                                _stale_id = str(transfer.get("id") or "")
-                                _stale_user = str(transfer.get("username") or "")
-                                if _stale_id and _stale_user:
-                                    slskd_client.cancel_download(
-                                        _stale_user, _stale_id, remove=True
-                                    )
-                                    logger.debug(
-                                        f"Queue {item_id}: removed stale completed transfer "
-                                        f"{_stale_id} (user={_stale_user}) from slskd"
-                                    )
-                            except Exception as _cancel_err:
-                                logger.debug(
-                                    f"Queue {item_id}: could not remove stale transfer: {_cancel_err}"
+                            continue
+    
+                # 2. Exact filename match against filesystem files
+                if match_found is None and found_fn:
+                    for rel_file in fs_files:
+                        rel_norm = rel_file.replace('\\', '/')
+                        found_norm = found_fn.replace('\\', '/')
+                        if rel_norm == found_norm or os.path.basename(rel_norm) == os.path.basename(found_norm):
+                            file_path = os.path.join(DOWNLOADS_DIR, rel_file)
+                            if item.get('is_manual_download'):
+                                # Manual selection: trust the user, skip metadata check.
+                                match_found = rel_file
+                                match_meta_state = 'manual'
+                                break
+                            is_match, match_source = _file_matches_queue_item(file_path, item, rel_file)
+                            if not is_match:
+                                logger.info(
+                                    f"Queue {item_id}: rejecting exact filename match due to queue mismatch: {rel_file}"
                                 )
-                            mark_failed(
-                                item_id,
-                                "slskd transfer succeeded but local file not found",
-                                schedule_retry=True,
-                                retry_delay_minutes=10,
-                            )
-                        elif transfer_state == getattr(slskd_client, "STATE_QUEUED_REMOTELY", "Queued, Remotely"):
-                            if _is_stale_queue_item(item, stale_minutes=_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES):
+                                # Delete the mismatched file so the retry can fetch a
+                                # better source instead of re-matching the same file.
+                                _delete_mismatched_download(
+                                    file_path, item_id,
+                                    f"metadata mismatch for exact-filename match ({match_source})"
+                                )
+                                mark_failed(
+                                    item_id,
+                                    f"Downloaded file did not match queue item ({match_source} mismatch); "
+                                    f"deleted and rescheduled",
+                                    schedule_retry=True,
+                                    retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                                    clear_file_fields=True,
+                                )
+                                break
+                            match_found = rel_file
+                            match_meta_state = match_source
+                            break
+    
+                # 3. Fuzzy match against filesystem files
+                if match_found is None:
+                    for filename in fs_files:
+                        # Skip files already owned by another queue item.
+                        fn_key = filename.replace('\\', '/').strip()
+                        if fn_key in claimed_files or os.path.basename(fn_key) in claimed_files:
+                            continue
+                        file_path = os.path.join(DOWNLOADS_DIR, filename)
+                        is_match, match_source = _file_matches_queue_item(file_path, item, filename)
+                        if is_match:
+                            match_found = filename
+                            match_meta_state = match_source
+                            # Register so later queue items in this cycle can't also claim it.
+                            claimed_files.add(fn_key)
+                            claimed_files.add(os.path.basename(fn_key))
+                            logger.debug(f"Queue {item_id}: fuzzy match found: {filename}")
+                            break
+    
+                # 4. No file match found. Reconcile against live slskd transfers so
+                # stale 'downloading' rows do not remain stuck forever.
+                if match_found is None:
+                    if slskd_status_available:
+                        found_fn = item.get("found_filename") or ""
+                        transfer = _get_transfer_entry(found_fn)
+    
+                        if transfer:
+                            transfer_state = transfer.get("state", "")
+                            if transfer_state in getattr(slskd_client, "FAILED_STATES", set()):
                                 logger.warning(
-                                    f"Queue {item_id}: slskd reports remotely queued for > {_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES} min, "
-                                    f"cancelling transfer and scheduling retry"
+                                    f"Queue {item_id}: slskd reports terminal failed state {transfer_state!r}, scheduling retry"
+                                )
+                                mark_failed(
+                                    item_id,
+                                    f"slskd transfer failed: {transfer_state}",
+                                    schedule_retry=True,
+                                    retry_delay_minutes=10,
+                                )
+                            elif transfer_state == getattr(slskd_client, "STATE_SUCCEEDED", None):
+                                # slskd reports success but no local file was found — the file
+                                # was deleted before the queue processor could match it.
+                                # Remove the stale "Completed, Succeeded" entry from slskd so
+                                # that the next retry actually queues a fresh download instead
+                                # of slskd seeing the old completed entry and skipping it.
+                                logger.warning(
+                                    f"Queue {item_id}: slskd reports succeeded but no file found; "
+                                    f"removing stale transfer and scheduling retry"
                                 )
                                 try:
                                     _stale_id = str(transfer.get("id") or "")
@@ -4127,264 +4108,298 @@ def check_completed_downloads():
                                             _stale_user, _stale_id, remove=True
                                         )
                                         logger.debug(
-                                            f"Queue {item_id}: cancelled stale remotely-queued transfer "
+                                            f"Queue {item_id}: removed stale completed transfer "
                                             f"{_stale_id} (user={_stale_user}) from slskd"
                                         )
                                 except Exception as _cancel_err:
                                     logger.debug(
-                                        f"Queue {item_id}: could not cancel stale transfer: {_cancel_err}"
+                                        f"Queue {item_id}: could not remove stale transfer: {_cancel_err}"
                                     )
                                 mark_failed(
                                     item_id,
-                                    "Remotely queued for > 1 hour",
+                                    "slskd transfer succeeded but local file not found",
                                     schedule_retry=True,
                                     retry_delay_minutes=10,
                                 )
-                        # Active/unknown transfer states are left untouched —
-                        # the download may still be in progress.  Skip to the
-                        # next item and let it be re-evaluated next cycle.
-                        continue
-
-                    # Transfer no longer exists in slskd. If the item has been
-                    # stale for a while and no file is present, queue it for retry.
-                    if _is_stale_queue_item(item, stale_minutes=10):
-                        logger.warning(
-                            f"Queue {item_id}: missing from slskd transfers and stale in downloading state; scheduling retry"
-                        )
-                        mark_failed(
-                            item_id,
-                            "Transfer missing from slskd API while marked downloading",
-                            schedule_retry=True,
-                            retry_delay_minutes=10,
-                        )
-
-                elif _is_stale_queue_item(item, stale_minutes=10):
-                    # slskd API was unavailable but the item has been stuck in
-                    # 'downloading' for too long with no file present.  Re-queue
-                    # so it can be retried once slskd becomes reachable again.
-                    logger.warning(
-                        f"Queue {item_id}: no file found and slskd unavailable; item stale in downloading state, scheduling retry"
-                    )
-                    mark_failed(
-                        item_id,
-                        "No file found and slskd unavailable while marked downloading",
-                        schedule_retry=True,
-                        retry_delay_minutes=15,
-                    )
-                    continue
-
-            if match_found:
-                file_path = os.path.join(DOWNLOADS_DIR, match_found)
-                if match_meta_state == 'metadata':
-                    logger.info(
-                        f"Queue {item_id}: matched file '{match_found}' by metadata — claiming for move"
-                    )
-                else:
-                    logger.info(
-                        f"Queue {item_id}: matched file '{match_found}' by filename/path — claiming for move"
-                    )
-
-                # For filename-only matches, the file's embedded metadata was either
-                # absent or incomplete when _metadata_matches_queue_item ran.  Do a
-                # secondary check: if the file now has readable artist+title tags and
-                # those tags clearly contradict the queue item, reject and delete the
-                # file rather than importing wrong content.
-                # Skip this check for manually-initiated downloads: the user already
-                # confirmed the selection so metadata differences are acceptable.
-                if match_meta_state not in ('metadata', 'manual'):
-                    _sec_meta = _metadata_matches_queue_item(file_path, item)
-                    if _sec_meta is False:
-                        logger.warning(
-                            f"Queue {item_id}: ✗ secondary metadata check FAILED on filename-only match "
-                            f"'{match_found}' — file tags do not match queue item; "
-                            f"deleting and rescheduling"
-                        )
-                        _delete_mismatched_download(
-                            file_path, item_id,
-                            "secondary metadata check failed on filename-only match"
-                        )
-                        mark_failed(
-                            item_id,
-                            "File tags do not match queue item (secondary check after filename match); "
-                            "deleted and rescheduled",
-                            schedule_retry=True,
-                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
-                            clear_file_fields=True,
-                        )
-                        continue
-
-                # Pre-copy duration validation: confirm the actual file duration
-                # matches the queue item's expected duration before moving to the
-                # collection.  This catches cases where the search selected the
-                # right filename but the audio content is a wrong version (e.g. a
-                # 9:35 medley downloaded for a 3:40 remastered LP track).
-                # The check is only applied when the queue item carries an
-                # expected duration; items without one are left through because we
-                # have no reliable reference to compare against.
-                # Manual downloads bypass the strict reject/delete path — the user
-                # chose the file intentionally, so duration differences are allowed
-                # (though a warning is logged for transparency).
-                _expected_dur = _normalize_duration_seconds(item.get('duration'))
-                if _expected_dur:
-                    _actual_dur = _extract_audio_file_duration_seconds(file_path)
-                    if _actual_dur:
-                        _dur_diff = abs(_expected_dur - _actual_dur)
-                        _dur_tolerance = SLSKD_DURATION_TOLERANCE_SECONDS
-                        if _dur_diff > _dur_tolerance:
-                            if item.get('is_manual_download'):
-                                # Manual selection: log the discrepancy but do
-                                # not delete or reject — the user chose this file.
-                                logger.info(
-                                    f"Queue {item_id}: manual download duration differs from expected "
-                                    f"({_actual_dur}s vs {_expected_dur}s, diff={_dur_diff}s) — "
-                                    f"proceeding at user's request"
-                                )
-                            else:
-                                logger.warning(
-                                    f"Queue {item_id}: ✗ pre-copy duration check FAILED — "
-                                    f"expected {_expected_dur}s, file is {_actual_dur}s "
-                                    f"(diff={_dur_diff}s, tolerance={_dur_tolerance}s); "
-                                    f"deleting '{match_found}' and scheduling retry"
-                                )
-                                _delete_mismatched_download(
-                                    file_path, item_id,
-                                    f"duration mismatch: expected {_expected_dur}s, got {_actual_dur}s"
-                                )
-                                mark_failed(
-                                    item_id,
-                                    f"Pre-copy duration mismatch: expected {_expected_dur}s, "
-                                    f"got {_actual_dur}s (diff={_dur_diff}s); deleted and rescheduled",
-                                    schedule_retry=True,
-                                    retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
-                                    clear_file_fields=True,
-                                )
-                                continue
-                        else:
-                            logger.debug(
-                                f"Queue {item_id}: pre-copy duration OK "
-                                f"(expected {_expected_dur}s, file {_actual_dur}s, diff={_dur_diff}s)"
-                            )
-                    else:
-                        logger.debug(
-                            f"Queue {item_id}: pre-copy duration check skipped — "
-                            f"could not read duration from '{match_found}'"
-                        )
-
-                if not _move_helpers_available:
-                    logger.error(f"Queue {item_id}: move helpers unavailable, skipping auto-move")
-                    update_queue_status(item_id, 'completed', file_path=file_path, found_filename=match_found)
-                    newly_completed.append(item)
-                    continue
-
-                # Atomically transition from 'downloading' → 'moving' so that a
-                # concurrent caller (e.g. UI button) cannot also attempt to move
-                # this file.  If the claim fails the other caller already owns
-                # it; skip this item to avoid a double-move.
-                claimed = _try_claim_for_move(item_id, 'downloading')
-                if not claimed:
-                    logger.info(
-                        f"Queue {item_id}: move already claimed by another process — skipping"
-                    )
-                    continue
-
-                # Also persist found_filename now that we've claimed the item.
-                update_queue_item(item_id, found_filename=match_found, file_path=file_path)
-
-                # Immediately move the file to /music
-                try:
-                    # Extract duration from the downloaded file and persist it when the
-                    # queue item has no duration yet (e.g. it was added without MusicBrainz
-                    # metadata). MutagenFile may be None when mutagen is not installed.
-                    if not item.get('duration') and MutagenFile is not None:
-                        try:
-                            audio = MutagenFile(file_path)
-                            if audio is not None and audio.info and hasattr(audio.info, 'length'):
-                                file_duration = _normalize_duration_seconds(audio.info.length)
-                                if file_duration:
-                                    update_queue_item(item_id, duration=file_duration)
-                                    logger.debug(
-                                        f"Queue {item_id}: updated duration from file to {file_duration}s"
+                            elif transfer_state == getattr(slskd_client, "STATE_QUEUED_REMOTELY", "Queued, Remotely"):
+                                if _is_stale_queue_item(item, stale_minutes=_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES):
+                                    logger.warning(
+                                        f"Queue {item_id}: slskd reports remotely queued for > {_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES} min, "
+                                        f"cancelling transfer and scheduling retry"
                                     )
-                        except Exception as dur_err:
-                            logger.debug(f"Queue {item_id}: could not extract duration from file: {dur_err}")
-
-                    item_for_move = dict(item)
-                    item_for_move['file_path'] = file_path
-                    move_result = move_single_track_to_music_dir(item_for_move)
-                    if move_result.get('success'):
-                        target_path = move_result.get('target_path')
-                        verify_result = verify_file_in_music(item_id, target_path)
-                        if verify_result['success']:
-                            mark_queue_item_moved(item_id, target_path)
-                            update_queue_item(
-                                item_id,
-                                status='imported',
-                                music_file_path=target_path,
-                                copied_individually=1,
-                                copied_individually_at=datetime.now().isoformat()
-                            )
-                            logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
-                            scan_needed = True
-                            newly_completed.append(item)
-                        elif target_path and os.path.isfile(target_path):
-                            # Verification can fail transiently (e.g. DB hiccup while
-                            # writing verified_in_music_at).  When the file genuinely
-                            # exists at the target path, promote it to imported so the
-                            # item does not get stuck in completed/retry loops.
+                                    try:
+                                        _stale_id = str(transfer.get("id") or "")
+                                        _stale_user = str(transfer.get("username") or "")
+                                        if _stale_id and _stale_user:
+                                            slskd_client.cancel_download(
+                                                _stale_user, _stale_id, remove=True
+                                            )
+                                            logger.debug(
+                                                f"Queue {item_id}: cancelled stale remotely-queued transfer "
+                                                f"{_stale_id} (user={_stale_user}) from slskd"
+                                            )
+                                    except Exception as _cancel_err:
+                                        logger.debug(
+                                            f"Queue {item_id}: could not cancel stale transfer: {_cancel_err}"
+                                        )
+                                    mark_failed(
+                                        item_id,
+                                        "Remotely queued for > 1 hour",
+                                        schedule_retry=True,
+                                        retry_delay_minutes=10,
+                                    )
+                            # Active/unknown transfer states are left untouched —
+                            # the download may still be in progress.  Skip to the
+                            # next item and let it be re-evaluated next cycle.
+                            continue
+    
+                        # Transfer no longer exists in slskd. If the item has been
+                        # stale for a while and no file is present, queue it for retry.
+                        if _is_stale_queue_item(item, stale_minutes=10):
                             logger.warning(
-                                f"[AUTO_MOVE] Queue {item_id}: verification API failed but "
-                                f"file exists at {target_path} — promoting to imported"
-                            )
-                            mark_queue_item_moved(item_id, target_path)
-                            update_queue_item(
-                                item_id,
-                                status='imported',
-                                music_file_path=target_path,
-                                copied_individually=1,
-                                copied_individually_at=datetime.now().isoformat()
-                            )
-                            scan_needed = True
-                            newly_completed.append(item)
-                        else:
-                            # Verification failed: the file could not be confirmed at the
-                            # target path.  Requeue the item so a fresh download can be
-                            # attempted rather than leaving it in an inconsistent state.
-                            logger.error(
-                                f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
-                                f"({verify_result.get('error')}), requeuing for retry"
+                                f"Queue {item_id}: missing from slskd transfers and stale in downloading state; scheduling retry"
                             )
                             mark_failed(
                                 item_id,
-                                f"Move verification failed: {verify_result.get('error')}",
+                                "Transfer missing from slskd API while marked downloading",
+                                schedule_retry=True,
+                                retry_delay_minutes=10,
+                            )
+    
+                    elif _is_stale_queue_item(item, stale_minutes=10):
+                        # slskd API was unavailable but the item has been stuck in
+                        # 'downloading' for too long with no file present.  Re-queue
+                        # so it can be retried once slskd becomes reachable again.
+                        logger.warning(
+                            f"Queue {item_id}: no file found and slskd unavailable; item stale in downloading state, scheduling retry"
+                        )
+                        mark_failed(
+                            item_id,
+                            "No file found and slskd unavailable while marked downloading",
+                            schedule_retry=True,
+                            retry_delay_minutes=15,
+                        )
+                        continue
+    
+                if match_found:
+                    file_path = os.path.join(DOWNLOADS_DIR, match_found)
+                    if match_meta_state == 'metadata':
+                        logger.info(
+                            f"Queue {item_id}: matched file '{match_found}' by metadata — claiming for move"
+                        )
+                    else:
+                        logger.info(
+                            f"Queue {item_id}: matched file '{match_found}' by filename/path — claiming for move"
+                        )
+    
+                    # For filename-only matches, the file's embedded metadata was either
+                    # absent or incomplete when _metadata_matches_queue_item ran.  Do a
+                    # secondary check: if the file now has readable artist+title tags and
+                    # those tags clearly contradict the queue item, reject and delete the
+                    # file rather than importing wrong content.
+                    # Skip this check for manually-initiated downloads: the user already
+                    # confirmed the selection so metadata differences are acceptable.
+                    if match_meta_state not in ('metadata', 'manual'):
+                        _sec_meta = _metadata_matches_queue_item(file_path, item)
+                        if _sec_meta is False:
+                            logger.warning(
+                                f"Queue {item_id}: ✗ secondary metadata check FAILED on filename-only match "
+                                f"'{match_found}' — file tags do not match queue item; "
+                                f"deleting and rescheduling"
+                            )
+                            _delete_mismatched_download(
+                                file_path, item_id,
+                                "secondary metadata check failed on filename-only match"
+                            )
+                            mark_failed(
+                                item_id,
+                                "File tags do not match queue item (secondary check after filename match); "
+                                "deleted and rescheduled",
                                 schedule_retry=True,
                                 retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
                                 clear_file_fields=True,
                             )
-                    else:
-                        logger.warning(
-                            f"[AUTO_MOVE] Queue {item_id}: could not move "
-                            f"({move_result.get('error')}), requeuing for retry"
+                            continue
+    
+                    # Pre-copy duration validation: confirm the actual file duration
+                    # matches the queue item's expected duration before moving to the
+                    # collection.  This catches cases where the search selected the
+                    # right filename but the audio content is a wrong version (e.g. a
+                    # 9:35 medley downloaded for a 3:40 remastered LP track).
+                    # The check is only applied when the queue item carries an
+                    # expected duration; items without one are left through because we
+                    # have no reliable reference to compare against.
+                    # Manual downloads bypass the strict reject/delete path — the user
+                    # chose the file intentionally, so duration differences are allowed
+                    # (though a warning is logged for transparency).
+                    _expected_dur = _normalize_duration_seconds(item.get('duration'))
+                    if _expected_dur:
+                        _actual_dur = _extract_audio_file_duration_seconds(file_path)
+                        if _actual_dur:
+                            _dur_diff = abs(_expected_dur - _actual_dur)
+                            _dur_tolerance = SLSKD_DURATION_TOLERANCE_SECONDS
+                            if _dur_diff > _dur_tolerance:
+                                if item.get('is_manual_download'):
+                                    # Manual selection: log the discrepancy but do
+                                    # not delete or reject — the user chose this file.
+                                    logger.info(
+                                        f"Queue {item_id}: manual download duration differs from expected "
+                                        f"({_actual_dur}s vs {_expected_dur}s, diff={_dur_diff}s) — "
+                                        f"proceeding at user's request"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"Queue {item_id}: ✗ pre-copy duration check FAILED — "
+                                        f"expected {_expected_dur}s, file is {_actual_dur}s "
+                                        f"(diff={_dur_diff}s, tolerance={_dur_tolerance}s); "
+                                        f"deleting '{match_found}' and scheduling retry"
+                                    )
+                                    _delete_mismatched_download(
+                                        file_path, item_id,
+                                        f"duration mismatch: expected {_expected_dur}s, got {_actual_dur}s"
+                                    )
+                                    mark_failed(
+                                        item_id,
+                                        f"Pre-copy duration mismatch: expected {_expected_dur}s, "
+                                        f"got {_actual_dur}s (diff={_dur_diff}s); deleted and rescheduled",
+                                        schedule_retry=True,
+                                        retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
+                                        clear_file_fields=True,
+                                    )
+                                    continue
+                            else:
+                                logger.debug(
+                                    f"Queue {item_id}: pre-copy duration OK "
+                                    f"(expected {_expected_dur}s, file {_actual_dur}s, diff={_dur_diff}s)"
+                                )
+                        else:
+                            logger.debug(
+                                f"Queue {item_id}: pre-copy duration check skipped — "
+                                f"could not read duration from '{match_found}'"
+                            )
+    
+                    if not _move_helpers_available:
+                        logger.error(f"Queue {item_id}: move helpers unavailable, skipping auto-move")
+                        update_queue_status(item_id, 'completed', file_path=file_path, found_filename=match_found)
+                        newly_completed.append(item)
+                        continue
+    
+                    # Atomically transition from 'downloading' → 'moving' so that a
+                    # concurrent caller (e.g. UI button) cannot also attempt to move
+                    # this file.  If the claim fails the other caller already owns
+                    # it; skip this item to avoid a double-move.
+                    claimed = _try_claim_for_move(item_id, 'downloading')
+                    if not claimed:
+                        logger.info(
+                            f"Queue {item_id}: move already claimed by another process — skipping"
                         )
-                        mark_failed(
-                            item_id,
-                            f"Move to music library failed: {move_result.get('error')}",
-                            schedule_retry=True,
-                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
-                            clear_file_fields=True,
-                        )
-                except Exception as move_err:
-                    logger.warning(f"[AUTO_MOVE] Queue {item_id}: move error: {move_err}")
+                        continue
+    
+                    # Also persist found_filename now that we've claimed the item.
+                    update_queue_item(item_id, found_filename=match_found, file_path=file_path)
+    
+                    # Immediately move the file to /music
                     try:
-                        mark_failed(
-                            item_id,
-                            f"Move error: {move_err}",
-                            schedule_retry=True,
-                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
-                            clear_file_fields=True,
-                        )
-                    except Exception:
-                        pass
+                        # Extract duration from the downloaded file and persist it when the
+                        # queue item has no duration yet (e.g. it was added without MusicBrainz
+                        # metadata). MutagenFile may be None when mutagen is not installed.
+                        if not item.get('duration') and MutagenFile is not None:
+                            try:
+                                audio = MutagenFile(file_path)
+                                if audio is not None and audio.info and hasattr(audio.info, 'length'):
+                                    file_duration = _normalize_duration_seconds(audio.info.length)
+                                    if file_duration:
+                                        update_queue_item(item_id, duration=file_duration)
+                                        logger.debug(
+                                            f"Queue {item_id}: updated duration from file to {file_duration}s"
+                                        )
+                            except Exception as dur_err:
+                                logger.debug(f"Queue {item_id}: could not extract duration from file: {dur_err}")
+    
+                        item_for_move = dict(item)
+                        item_for_move['file_path'] = file_path
+                        move_result = move_single_track_to_music_dir(item_for_move)
+                        if move_result.get('success'):
+                            target_path = move_result.get('target_path')
+                            verify_result = verify_file_in_music(item_id, target_path)
+                            if verify_result['success']:
+                                mark_queue_item_moved(item_id, target_path)
+                                update_queue_item(
+                                    item_id,
+                                    status='imported',
+                                    music_file_path=target_path,
+                                    copied_individually=1,
+                                    copied_individually_at=datetime.now().isoformat()
+                                )
+                                logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
+                                scan_needed = True
+                                newly_completed.append(item)
+                            elif target_path and os.path.isfile(target_path):
+                                # Verification can fail transiently (e.g. DB hiccup while
+                                # writing verified_in_music_at).  When the file genuinely
+                                # exists at the target path, promote it to imported so the
+                                # item does not get stuck in completed/retry loops.
+                                logger.warning(
+                                    f"[AUTO_MOVE] Queue {item_id}: verification API failed but "
+                                    f"file exists at {target_path} — promoting to imported"
+                                )
+                                mark_queue_item_moved(item_id, target_path)
+                                update_queue_item(
+                                    item_id,
+                                    status='imported',
+                                    music_file_path=target_path,
+                                    copied_individually=1,
+                                    copied_individually_at=datetime.now().isoformat()
+                                )
+                                scan_needed = True
+                                newly_completed.append(item)
+                            else:
+                                # Verification failed: the file could not be confirmed at the
+                                # target path.  Requeue the item so a fresh download can be
+                                # attempted rather than leaving it in an inconsistent state.
+                                logger.error(
+                                    f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
+                                    f"({verify_result.get('error')}), requeuing for retry"
+                                )
+                                mark_failed(
+                                    item_id,
+                                    f"Move verification failed: {verify_result.get('error')}",
+                                    schedule_retry=True,
+                                    retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                                    clear_file_fields=True,
+                                )
+                        else:
+                            logger.warning(
+                                f"[AUTO_MOVE] Queue {item_id}: could not move "
+                                f"({move_result.get('error')}), requeuing for retry"
+                            )
+                            mark_failed(
+                                item_id,
+                                f"Move to music library failed: {move_result.get('error')}",
+                                schedule_retry=True,
+                                retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                                clear_file_fields=True,
+                            )
+                    except Exception as move_err:
+                        logger.warning(f"[AUTO_MOVE] Queue {item_id}: move error: {move_err}")
+                        try:
+                            mark_failed(
+                                item_id,
+                                f"Move error: {move_err}",
+                                schedule_retry=True,
+                                retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                                clear_file_fields=True,
+                            )
+                        except Exception:
+                            pass
+    
 
+            except Exception as _item_err:
+                logger.error(
+                    f"Queue {item.get('id')}: unhandled error in check_completed_downloads — "
+                    f"this item will be retried next cycle: {_item_err}",
+                    exc_info=True,
+                )
         for item in newly_completed:
             # Only attempt the album-completion check when there is enough context
             # to query meaningfully; without a release_id or album name the call
@@ -5583,18 +5598,24 @@ def run_processor(interval=30):
                 last_verify_ts = check_missing_moved_files(now_ts, last_verify_ts)
                 last_stale_cleanup_ts = cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
                 last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
-                last_slskd_clear_ts = clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
                 last_mb_enrich_ts = maybe_enrich_queue_items_from_mb(now_ts, last_mb_enrich_ts)
 
                 # process_queue() (which contains check_completed_downloads()) must
                 # run BEFORE check_downloads_folder() so that items in 'downloading'
                 # state are claimed and auto-moved by the slskd-aware path first.
                 # If check_downloads_folder() ran first it would transition those
-                # items from 'downloading' → 'completed', and check_completed_downloads
+                # items from 'downloading' -> 'completed', and check_completed_downloads
                 # (which only queries WHERE status='downloading') would find nothing —
                 # leaving non-MusicBrainz and incomplete-album items stuck in
                 # 'completed' permanently.
                 processed = process_queue(client)
+
+                # Clear slskd completed transfers AFTER process_queue has had a
+                # chance to reconcile them.  Previously this ran before process_queue,
+                # creating a race where freshly-completed transfers were erased from
+                # slskd before check_completed_downloads() could read their
+                # localFilePath, causing items to be missed entirely.
+                last_slskd_clear_ts = clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
 
                 last_downloads_folder_ts = check_downloads_folder(now_ts, last_downloads_folder_ts)
 
