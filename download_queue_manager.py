@@ -10539,6 +10539,7 @@ def backfill_queued_track_metadata():
                   OR t.writer IS NULL
               )
             ORDER BY t.id
+            FOR UPDATE OF t SKIP LOCKED
         """, ('__queued_for_download__%',))
         rows = cursor.fetchall() or []
 
