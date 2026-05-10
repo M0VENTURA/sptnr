@@ -649,7 +649,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     best_artist_score = _fuzzy_artist_match_score(
         queue_item.get('artist'), queue_item.get('album_artist'), _artist_candidates
     )
-    _ARTIST_GATE_MIN = 70.0
+    _ARTIST_GATE_MIN = 60.0
     # For compilation releases ("Various Artists", etc.) the real track artist
     # is unknown, so the strict gate is skipped and the existing scoring logic
     # handles the match.  The compilation penalty still applies to VA results.
@@ -775,7 +775,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
 
         if len(title_tokens) <= 2 and shared_title_tokens < len(title_tokens):
             return 0.0
-        if len(title_tokens) >= 3 and title_token_ratio < 0.67:
+        if len(title_tokens) >= 3 and title_token_ratio < 0.50:
             # When the ratio is depressed solely by soft-variant tokens absent
             # from the basename (e.g. "version" in "edited version" queue title
             # but not in the file name), re-check the ratio after excluding those
@@ -795,7 +795,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
                     sum(1 for t in _effective_tokens if t in basename_tokens)
                     / len(_effective_tokens)
                 )
-                if _effective_ratio < 0.67:
+                if _effective_ratio < 0.50:
                     return 0.0
             else:
                 return 0.0
@@ -857,14 +857,14 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         return 0.0
 
     # Step 7: Low-confidence safety net
-    # If artist barely passed the gate (70-79) but title similarity is low,
+    # If artist barely passed the gate (60-74) but title similarity is low,
     # reject to prevent edge-case near-matches from slipping through.
-    if best_artist_score < 80.0:
+    if best_artist_score < 75.0:
         if _HAVE_RAPIDFUZZ:
             _title_fuzzy_score = _fuzz.token_set_ratio(core_title_norm, core_basename_norm)
         else:
             _title_fuzzy_score = title_sim * 100.0
-        if _title_fuzzy_score < 85.0:
+        if _title_fuzzy_score < 80.0:
             logger.debug(
                 "Queue scorer: rejecting '%s' — safety net triggered "
                 "(artist_score=%.1f, title_fuzzy_score=%.1f)",
@@ -892,6 +892,12 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         score += 0.18
     if core_title_norm in core_basename_norm:
         score += 0.25
+    # Bonus when both artist AND title tokens are present in the basename.
+    # This rewards files that clearly identify both the artist and the song.
+    _artist_in_path = artist_norm in basename_norm or (album_artist_norm and album_artist_norm in basename_norm)
+    _title_in_path = core_title_norm in core_basename_norm or title_token_ratio >= 0.67
+    if _artist_in_path and _title_in_path:
+        score += 0.15
 
     # Orphan-token penalty: tokens in the full (non-stripped) basename that
     # cannot be explained by the artist, title, or album strongly suggest a
@@ -922,7 +928,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
             # Title tokens are all present in the album name, so the title being
             # found in the basename is expected (album folder = track title) and
             # provides no additional track-identity evidence.  Penalise heavily.
-            _orphan_penalty = 0.70
+            _orphan_penalty = 0.50
 
     # Album disambiguation: use full path so the folder name acts as evidence.
     if album_norm:
@@ -954,8 +960,13 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
             score += 0.22
         elif duration_diff <= duration_tolerance:
             score += 0.12
+        elif duration_diff <= 30:
+            # Within 30 s is still plausible (e.g. different intro/outro cuts);
+            # apply a small penalty rather than a hard reject so the scorer can
+            # still accept the file when artist+title evidence is strong.
+            score -= 0.10
         else:
-            # Hard reject: duration deviates by more than the allowed tolerance.
+            # Only hard-reject when the deviation is extreme (>30 s).
             return 0.0
     elif expected_duration and not candidate_duration:
         # We know the expected duration but the candidate has no duration
@@ -994,7 +1005,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
                 and re.search(r'[a-z]', _te_stripped)
                 and ' - ' not in _te_prefix
             ):
-                _orphan_penalty = max(_orphan_penalty, 0.70)
+                _orphan_penalty = max(_orphan_penalty, 0.50)
 
     # Apply orphan-token penalty after all bonuses so the album-in-path reward
     # cannot rescue a wrong-track candidate.  Cap the accumulated score first so
@@ -2956,6 +2967,11 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                         f"Queue {queue_id}: Response {resp_idx} from {resp.username} "
                         f"has {len(resp.files)} files"
                     )
+                    # Deduplicate results within this search by (user, filename, size)
+                    # so the scorer never overweights a single source with duplicate
+                    # shares (common on Soulseek when a user lists the same file
+                    # multiple times under different folder aliases).
+                    _seen_files: set[tuple[str, str, int]] = set()
                     for file_info in resp.files:
                         total_files_seen += 1
                         filename = file_info.filename
@@ -2969,20 +2985,24 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                             )
                             continue
                         size = file_info.size
+                        _dedup_key = (resp.username, filename, size)
+                        if _dedup_key in _seen_files:
+                            continue
+                        _seen_files.add(_dedup_key)
                         candidate_bitrate = file_info.bitrate
                         candidate_length = _extract_candidate_length_seconds(file_info)
                         # Pre-filter by duration before running the full scorer.
-                        # When both the expected and candidate durations are known,
-                        # discard any file whose length falls outside the ±5s window
-                        # so we never waste scorer CPU on clearly wrong tracks.
+                        # Only hard-reject files whose length deviates by more than
+                        # 30 s — everything else is allowed through and scored so
+                        # that near-matches aren't discarded prematurely.
                         _expected_dur = _normalize_duration_seconds(queue_item.get('duration'))
                         if _expected_dur and candidate_length:
-                            _dur_tol = SLSKD_DURATION_TOLERANCE_SECONDS
-                            if abs(_expected_dur - candidate_length) > _dur_tol:
+                            _dur_diff = abs(_expected_dur - candidate_length)
+                            if _dur_diff > 30:
                                 logger.debug(
                                     f"Queue {queue_id}: Skipping {os.path.basename(filename)} "
                                     f"— length {candidate_length:.0f}s outside "
-                                    f"±{_dur_tol:.0f}s of expected {_expected_dur:.0f}s"
+                                    f"±30s of expected {_expected_dur:.0f}s"
                                 )
                                 continue
                         candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
@@ -3539,7 +3559,20 @@ def search_and_download(queue_id, queue_item, client):
 
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
-            logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")
+            # Distinguish "zero responses from Soulseek" from "results arrived
+            # but the scorer rejected every candidate".  The latter is usually a
+            # sign that the scorer gates are too strict, not that the track is
+            # absent from the network.
+            if all_search_candidates:
+                _log_msg = (
+                    f"Queue {queue_id}: ✗ {len(all_search_candidates)} results returned but "
+                    f"none passed scorer after {elapsed:.0f}s of polling"
+                )
+                _notes = f"no_acceptable_match: candidates={len(all_search_candidates)}"
+            else:
+                _log_msg = f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling"
+                _notes = "no_results"
+            logger.warning(_log_msg)
             try:
                 from download_queue_manager import log_slskd_search_event
                 log_slskd_search_event(
@@ -3550,7 +3583,7 @@ def search_and_download(queue_id, queue_item, client):
                     results=all_search_candidates,
                     selected_result=None,
                     duration_seconds=round(elapsed, 1),
-                    notes="no_results"
+                    notes=_notes
                 )
             except Exception as _log_err:
                 logger.debug(f"Queue {queue_id}: Could not log slskd search event: {_log_err}")
@@ -3563,7 +3596,7 @@ def search_and_download(queue_id, queue_item, client):
         _item_import_type = (queue_item.get('import_type') or 'song').lower()
         _effective_min_score = _SLSKD_MIN_ACCEPT_SCORE
         if _item_import_type != 'album':
-            _effective_min_score = max(_SLSKD_MIN_ACCEPT_SCORE, 0.55)
+            _effective_min_score = max(_SLSKD_MIN_ACCEPT_SCORE, 0.50)
 
         if best_score < _effective_min_score:
             elapsed = (datetime.now() - poll_start_time).total_seconds()

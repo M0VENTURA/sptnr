@@ -219,6 +219,11 @@ def strip_search_parentheses(title: str) -> str:
                 'extended', 'extended edition',     # Extended editions
                 'expanded', 'expanded edition',     # Expanded editions
                 'edition',                          # Generic edition marker
+                'live', 'live at', 'live from',     # Live recordings
+                'feat', 'ft', 'featuring',          # Featured artists
+                'without', 'no',                    # Alternate cuts
+                'original', 'original mix',         # Original mixes
+                'airplay', 'promo',                 # Promo cuts
             )
     except Exception:
         # Fall back to defaults if config loading fails
@@ -231,6 +236,11 @@ def strip_search_parentheses(title: str) -> str:
             'extended', 'extended edition',     # Extended editions
             'expanded', 'expanded edition',     # Expanded editions
             'edition',                          # Generic edition marker
+            'live', 'live at', 'live from',     # Live recordings
+            'feat', 'ft', 'featuring',          # Featured artists
+            'without', 'no',                    # Alternate cuts
+            'original', 'original mix',         # Original mixes
+            'airplay', 'promo',                 # Promo cuts
         )
     
     # Remove content in parentheses/brackets if it contains any search-strip keyword
