@@ -589,6 +589,21 @@ def _normalize_slskd_query(value):
     return text.strip()
 
 
+def _parse_manual_slskd_query(query: str):
+    """Extract artist/title/album from a raw manual search query.
+
+    Uses the same "Artist - Title" heuristic as the automatic queue parser.
+    Returns a dict with keys artist, title, album.
+    """
+    text = str(query or '').strip()
+    if not text:
+        return {'artist': '', 'title': '', 'album': ''}
+    if ' - ' in text:
+        parts = text.split(' - ', 1)
+        return {'artist': parts[0].strip(), 'title': parts[1].strip(), 'album': ''}
+    return {'artist': '', 'title': text, 'album': ''}
+
+
 def _clear_stale_slskd_searches(client, context="search", budget_seconds=8):
     """
     Delete any terminal-state (or long-running stuck) searches from slskd
@@ -20513,11 +20528,12 @@ def slskd_search():
             if search_id:
                 try:
                     from download_queue_manager import log_slskd_search_event
+                    _parsed = _parse_manual_slskd_query(query)
                     log_slskd_search_event(
                         search_type='manual',
                         query=query,
                         queue_id=None,
-                        queue_item=None,
+                        queue_item=_parsed,
                         results=None,
                         selected_result=None,
                         duration_seconds=None,
@@ -20637,11 +20653,12 @@ def slskd_search_results(search_id):
                 if manual_query:
                     try:
                         from download_queue_manager import log_slskd_search_event
+                        _parsed = _parse_manual_slskd_query(manual_query)
                         log_slskd_search_event(
                             search_type='manual',
                             query=manual_query,
                             queue_id=None,
-                            queue_item=None,
+                            queue_item=_parsed,
                             results=results,
                             selected_result=None,
                             duration_seconds=None,
