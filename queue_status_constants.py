@@ -149,3 +149,21 @@ SOFT_VARIANT_TOKENS = frozenset(["version", "edit", "radio"])
 # caller skips the check entirely; this value only applies when a
 # duration reference is available.
 SLSKD_DURATION_TOLERANCE_SECONDS = 5
+
+
+def _is_live_track_from_genre(genre_value):
+    """Return True when *genre_value* indicates a live recording.
+
+    Checks the raw genre string (which may be backslash-separated in ID3)
+    for the word ``live`` as a standalone token.  This lets the local-file
+    matcher reject a studio queue item against a track whose tags say
+    ``Genre: Live`` even when the title tag omits the ``(Live)`` suffix.
+    """
+    if not genre_value:
+        return False
+    # Handle backslash-separated multi-genre strings (ID3 TCON style)
+    parts = str(genre_value).replace("/", "\\").split("\\")
+    for part in parts:
+        if part.strip().lower() == "live":
+            return True
+    return False

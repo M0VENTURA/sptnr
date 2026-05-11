@@ -25,6 +25,7 @@ from queue_status_constants import (
     TITLE_VARIANT_TOKENS,
     SOFT_VARIANT_TOKENS,
     SLSKD_DURATION_TOLERANCE_SECONDS,
+    _is_live_track_from_genre,
 )
 try:
     from mutagen import File as MutagenFile
@@ -1166,6 +1167,12 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
 
     expected_variants = _variant_tokens(queue_title)
     candidate_variants = _variant_tokens(file_title) | _variant_tokens(os.path.basename(file_path or ''))
+    # Genre guard: a file tagged Genre=Live is treated as carrying the "live"
+    # variant even when the title tag omits it.  This prevents a studio queue
+    # item from being incorrectly matched to a live recording that only
+    # advertises its nature via the genre field.
+    if _is_live_track_from_genre(metadata.get('genre')):
+        candidate_variants = candidate_variants | {"live"}
     if expected_variants or candidate_variants:
         if not expected_variants or not candidate_variants:
             # One side has variant qualifiers, the other doesn't.
