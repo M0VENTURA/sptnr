@@ -957,6 +957,12 @@ def _is_valid_collection_track_path(path_value, artist, album, album_artist=None
     if not path_value:
         return False
 
+    # Stale-path guard: the file must actually exist on disk.  A database row
+    # may retain a path from an earlier scan even though the file has since
+    # been moved or deleted.
+    if not os.path.isfile(path_value):
+        return False
+
     normalized_path = _normalize_path_for_compare(path_value)
     if not normalized_path or normalized_path.startswith("__queued_for_download__"):
         return False
