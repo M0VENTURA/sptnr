@@ -5429,7 +5429,7 @@ def _normalize_download_queue():
         cursor.execute(
             f"""
             SELECT id, status, in_collection, file_path, music_file_path,
-                   artist, album, album_artist
+                   source_music_path, artist, album, album_artist
             FROM download_queue
             WHERE status = 'in_collection' OR COALESCE(in_collection, 0) = 1
             """
@@ -5455,6 +5455,12 @@ def _normalize_download_queue():
         def _is_valid_collection_location(path_value, artist_value, album_value, album_artist_value=None):
             if not path_value:
                 return False
+            # Stale-path guard: the file must actually exist on disk.  A path
+            # that was valid when the track was first scanned may have since
+            # been moved or deleted, and without this check the queue item
+            # stays stuck in "in_collection" forever.
+            if not os.path.isfile(path_value):
+                return False
             norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
             lowered = norm.lower()
             if lowered.startswith("__queued_for_download__"):
@@ -5474,6 +5480,17 @@ def _normalize_download_queue():
             album_dir = _sanitize_collection_segment(rel_parts[-2])
             return artist_dir == expected_artist and (album_dir == expected_album or album_dir.endswith(f" - {expected_album}"))
 
+        def _is_valid_source_music_path(path_value):
+            """Lightweight validation for source_music_path: must exist and be under /music."""
+            if not path_value:
+                return False
+            if not os.path.isfile(path_value):
+                return False
+            norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
+            if norm.lower().startswith("__queued_for_download__"):
+                return False
+            return _is_under_music_root(norm)
+
         unmatched_ids = []
         non_collection_ids = {}
         for row in flagged_rows:
@@ -5481,12 +5498,14 @@ def _normalize_download_queue():
             row_status = _row_get(row, 'status', 1)
             file_path = _row_get(row, 'file_path', 3)
             music_file_path = _row_get(row, 'music_file_path', 4)
+            source_music_path = _row_get(row, 'source_music_path')
             artist_value = _row_get(row, 'artist', 5)
             album_value = _row_get(row, 'album', 6)
             album_artist_value = _row_get(row, 'album_artist', 7)
             if (
                 _is_valid_collection_location(music_file_path, artist_value, album_value, album_artist_value)
                 or _is_valid_collection_location(file_path, artist_value, album_value, album_artist_value)
+                or _is_valid_source_music_path(source_music_path)
             ):
                 continue
             if row_status == 'in_collection':
