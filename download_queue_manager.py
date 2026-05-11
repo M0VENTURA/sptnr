@@ -162,6 +162,7 @@ from queue_status_constants import (
     ACTIVE_QUEUE_STATUS_SQL as _ACTIVE_QUEUE_STATUS_SQL,
     TITLE_VARIANT_TOKENS,
     SOFT_VARIANT_TOKENS,
+    _is_live_track_from_genre,
 )
 
 # Throttle expensive downloads-folder checks triggered by frequent UI polling.
@@ -5453,6 +5454,11 @@ def _metadata_matches_queue_item(
     # are not incorrectly matched to plain studio queue items.
     _basename_variants = _extract_title_variant_tokens(os.path.basename(file_path or ''))
     _file_variants = _extract_title_variant_tokens(file_title)
+    # Genre guard: treat Genre=Live as a "live" variant token even when the
+    # title tag omits it.  This stops studio queue items from matching live
+    # recordings that only advertise their nature via the genre field.
+    if _is_live_track_from_genre(file_meta.get('genre')):
+        _file_variants = _file_variants | {"live"}
     _hard_from_basename = _basename_variants - SOFT_VARIANT_TOKENS
     if _hard_from_basename and not (_file_variants & _hard_from_basename):
         _augmented_file_title = file_title + " " + " ".join(_hard_from_basename)
