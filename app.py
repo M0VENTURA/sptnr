@@ -28790,7 +28790,7 @@ def api_queue_copy_from_local(queue_id):
                     f"'{_source_path_capture}' → '{_dest_path_capture}'"
                 )
                 from download_queue_manager import update_queue_item as _uqi
-                _uqi(queue_id, status='matched', file_path=_dest_path_capture)
+                _uqi(queue_id, status='matched', file_path=_dest_path_capture, matched_file_path=None, music_file_path=None)
             except Exception as _bg_err:
                 logging.error(
                     f"[COPY_FROM_LOCAL] Background copy failed for queue {queue_id}: {_bg_err}"
