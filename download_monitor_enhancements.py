@@ -478,7 +478,7 @@ def move_to_music_collection(queue_id):
         if queue_item['status'] not in ('matched', 'moving'):
             return {'error': f"Track must be matched first (current status: {queue_item['status']})"}
         
-        source_path = queue_item.get('matched_file_path') or queue_item.get('file_path')
+        source_path = queue_item.get('file_path') or queue_item.get('matched_file_path')
         logger.debug(f"[MOVE] Queue {queue_id}: raw source candidate='{source_path}'")
 
         def _resolve_source_path(path_value):
