@@ -136,6 +136,56 @@ def resolve_downloads_dir():
 DOWNLOADS_DIR = resolve_downloads_dir()
 
 
+def _get_music_dir_files(music_root: str) -> list[str]:
+    """Return a cached list of all audio file paths under *music_root*.
+
+    The list is rebuilt at most once every
+    ``_MUSIC_DIR_FILES_CACHE_TTL_SECONDS`` so that batch operations (e.g.
+    the background pre-scan) do not trigger a full ``os.walk`` for every
+    unique queue item.
+    """
+    global _music_dir_files_cache, _music_dir_files_cache_ts
+    now = time.monotonic()
+    if (
+        _music_dir_files_cache is not None
+        and now - _music_dir_files_cache_ts < _MUSIC_DIR_FILES_CACHE_TTL_SECONDS
+    ):
+        return _music_dir_files_cache
+    files: list[str] = []
+    if os.path.isdir(music_root):
+        for root, _, filenames in os.walk(music_root):
+            for f in filenames:
+                if f.lower().endswith(
+                    (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".opus", ".aiff")
+                ):
+                    files.append(os.path.join(root, f))
+    _music_dir_files_cache = files
+    _music_dir_files_cache_ts = now
+    return files
+
+
+def _get_downloads_dir_files() -> list[str]:
+    """Return a cached list of all audio file paths under ``DOWNLOADS_DIR``."""
+    global _downloads_dir_files_cache, _downloads_dir_files_cache_ts
+    now = time.monotonic()
+    if (
+        _downloads_dir_files_cache is not None
+        and now - _downloads_dir_files_cache_ts < _DOWNLOADS_DIR_FILES_CACHE_TTL_SECONDS
+    ):
+        return _downloads_dir_files_cache
+    files: list[str] = []
+    if os.path.isdir(DOWNLOADS_DIR):
+        for root, _, filenames in os.walk(DOWNLOADS_DIR):
+            for f in filenames:
+                if f.lower().endswith(
+                    (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".opus", ".aiff")
+                ):
+                    files.append(os.path.join(root, f))
+    _downloads_dir_files_cache = files
+    _downloads_dir_files_cache_ts = now
+    return files
+
+
 def _is_path_under_downloads_dir(file_path):
     """Return True if the resolved *file_path* is strictly inside DOWNLOADS_DIR.
 
@@ -169,6 +219,16 @@ _SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS = 60
 # Minimum candidate score for a Soulseek result to be accepted as a valid match.
 # Scores below this threshold trigger fallback queries (e.g. using album_artist).
 _SLSKD_MIN_ACCEPT_SCORE = 0.45
+
+# Automatic-search performance tuning: track-length-aware candidate pruning.
+# Only the top-N candidates (after length-based prioritisation) receive full
+# scoring.  This prevents candidate explosion on popular/ambiguous queries.
+_AUTO_SEARCH_TOP_N_CANDIDATES = 50
+
+# Early-acceptance length tolerance: when artist and title match exactly and
+# the candidate duration is within this many seconds, the match is accepted
+# immediately without scoring the remaining candidates.
+_AUTO_SEARCH_EARLY_ACCEPT_LENGTH_TOLERANCE = 2
 
 # MusicBrainz freshness threshold: re-check recording metadata if older than this.
 _MB_FRESHNESS_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -205,6 +265,22 @@ _QUALITY_UPGRADE_RETRY_HOURS = 24  # hours before re-searching for a better copy
 # Cached SlskdClient instance — config does not change at runtime so we build
 # the object once and reuse it for the lifetime of the process.
 _slskd_client_cache = None
+
+# Music-directory filesystem index cache (used by check_target_folder_exists)
+# so large libraries are not walked repeatedly during batch pre-scans.
+_MUSIC_DIR_FILES_CACHE_TTL_SECONDS = 60.0
+_music_dir_files_cache: list[str] | None = None
+_music_dir_files_cache_ts: float = 0.0
+
+# Downloads-directory file list cache (used by _cleanup_sibling_downloads)
+# to avoid repeated recursive walks.
+_DOWNLOADS_DIR_FILES_CACHE_TTL_SECONDS = 30.0
+_downloads_dir_files_cache: list[str] | None = None
+_downloads_dir_files_cache_ts: float = 0.0
+
+# Background pre-scan task tuning
+_PRE_SCAN_INTERVAL_SECONDS = 120
+_PRE_SCAN_BATCH_SIZE = 50
 
 # Shared constants for orphan-token detection used in both
 # _score_soulseek_candidate and _filename_matches_queue_item.
@@ -958,21 +1034,23 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         duration_diff = abs(expected_duration - candidate_duration)
         duration_tolerance = SLSKD_DURATION_TOLERANCE_SECONDS
         if duration_diff <= 2:
+            # Exact or near match → strong positive boost
             score += 0.22
         elif duration_diff <= duration_tolerance:
+            # Close match (±3–5 s) → moderate positive score
             score += 0.12
+        elif duration_diff <= 10:
+            # Within 10 s → small penalty
+            score -= 0.05
         elif duration_diff <= 30:
-            # Within 30 s is still plausible (e.g. different intro/outro cuts);
-            # apply a small penalty rather than a hard reject so the scorer can
-            # still accept the file when artist+title evidence is strong.
-            score -= 0.10
+            # Large mismatch (>10 s) → negative penalty
+            score -= 0.15
         else:
-            # Only hard-reject when the deviation is extreme (>30 s).
-            return 0.0
+            # Extreme mismatch (>30 s) — strong penalty but not a hard reject,
+            # so that fallback logic can still surface the candidate if needed.
+            score -= 0.25
     elif expected_duration and not candidate_duration:
-        # We know the expected duration but the candidate has no duration
-        # information — we cannot confirm it matches within 5 s.  Penalise the
-        # candidate so it always loses to a duration-confirmed alternative.
+        # Missing or zero length → moderate negative penalty
         score -= 0.15
 
     # Title-embedded penalty: the queue title appears as a *suffix* of a longer
@@ -1466,41 +1544,46 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
         return
 
     keep_abs = os.path.abspath(keep_path) if keep_path else None
+    artist_lower = (queue_item.get('artist') or '').lower()
+    title_lower = (queue_item.get('title') or '').lower()
 
     try:
-        for root, _dirs, files in os.walk(DOWNLOADS_DIR):
-            for fname in files:
-                fpath = os.path.join(root, fname)
-                if keep_abs and os.path.abspath(fpath) == keep_abs:
+        for fpath in _get_downloads_dir_files():
+            if keep_abs and os.path.abspath(fpath) == keep_abs:
+                continue
+            # Fast age check before expensive filename matching
+            try:
+                age_seconds = time.time() - os.path.getmtime(fpath)
+                if age_seconds < _CLEANUP_SIBLING_MIN_AGE_SECONDS:
                     continue
-                rel_path = os.path.relpath(fpath, DOWNLOADS_DIR)
-                if _filename_matches_queue_item(rel_path, queue_item):
+            except OSError:
+                continue
+            # Fast basename pre-filter: skip files whose name clearly doesn't
+            # contain either the artist or the title.
+            basename_lower = os.path.basename(fpath).lower()
+            if artist_lower not in basename_lower and title_lower not in basename_lower:
+                continue
+            rel_path = os.path.relpath(fpath, DOWNLOADS_DIR)
+            if _filename_matches_queue_item(rel_path, queue_item):
+                try:
+                    if not _is_path_under_downloads_dir(fpath):
+                        logger.warning(
+                            f"[CLEANUP] REFUSING to remove file outside downloads "
+                            f"directory: {fpath}"
+                        )
+                        continue
+                    os.remove(fpath)
+                    logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
+                    # Remove now-empty parent directories up to DOWNLOADS_DIR
                     try:
-                        age_seconds = time.time() - os.path.getmtime(fpath)
-                        if age_seconds < _CLEANUP_SIBLING_MIN_AGE_SECONDS:
-                            logger.debug(
-                                f"[CLEANUP] Skipping recent file ({age_seconds:.0f}s old, "
-                                f"min={_CLEANUP_SIBLING_MIN_AGE_SECONDS}s): {fpath}"
-                            )
-                            continue
-                        if not _is_path_under_downloads_dir(fpath):
-                            logger.warning(
-                                f"[CLEANUP] REFUSING to remove file outside downloads "
-                                f"directory: {fpath}"
-                            )
-                            continue
-                        os.remove(fpath)
-                        logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
-                        # Remove now-empty parent directories up to DOWNLOADS_DIR
-                        try:
-                            parent = os.path.dirname(fpath)
-                            while parent != DOWNLOADS_DIR and os.path.isdir(parent) and not os.listdir(parent):
-                                os.rmdir(parent)
-                                parent = os.path.dirname(parent)
-                        except OSError:
-                            pass
-                    except OSError as e:
-                        logger.warning(f"[CLEANUP] Could not remove {fpath}: {e}")
+                        parent = os.path.dirname(fpath)
+                        while parent != DOWNLOADS_DIR and os.path.isdir(parent) and not os.listdir(parent):
+                            os.rmdir(parent)
+                            parent = os.path.dirname(parent)
+                    except OSError:
+                        pass
+                except OSError as e:
+                    logger.warning(f"[CLEANUP] Could not remove {fpath}: {e}")
     except Exception as e:
         logger.warning(f"[CLEANUP] Error during sibling cleanup: {e}")
 
@@ -2279,16 +2362,13 @@ def check_target_folder_exists(queue_item):
     try:
         artist_lower = artist.lower()
         title_lower = title.lower()
-        for root, _, files in os.walk(music_root):
-            for f in files:
-                if not f.lower().endswith((".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac")):
-                    continue
-                f_lower = f.lower()
-                # Require both artist and title tokens to appear in the filename
-                # so common title words don't produce false positives.
-                if title_lower in f_lower and artist_lower in f_lower:
-                    full_path = os.path.join(root, f)
-                    if os.path.isfile(full_path):
+        for full_path in _get_music_dir_files(music_root):
+            f = os.path.basename(full_path)
+            f_lower = f.lower()
+            # Require both artist and title tokens to appear in the filename
+            # so common title words don't produce false positives.
+            if title_lower in f_lower and artist_lower in f_lower:
+                if os.path.isfile(full_path):
                         meta_match = _metadata_matches_queue_item(full_path, queue_item)
                         if meta_match is False:
                             logger.debug(
@@ -2890,6 +2970,36 @@ def _track_zero_result_words(query: str, client=None) -> None:
         logger.debug(f"[banned_words] Could not track zero-result words for '{query}': {e}")
 
 
+def _is_early_accept_match(candidate, queue_item):
+    """Return True when a candidate exactly matches artist, title, and length.
+
+    Used for short-circuiting automatic searches: if a candidate's basename
+    contains the exact normalized artist and title strings and the duration
+    is within ±_AUTO_SEARCH_EARLY_ACCEPT_LENGTH_TOLERANCE seconds, it is
+    auto-accepted immediately.
+    """
+    _expected_dur = _normalize_duration_seconds(queue_item.get('duration'))
+    _cand_length = _normalize_duration_seconds(candidate.get('length'))
+    if not _expected_dur or not _cand_length:
+        return False
+    if abs(_expected_dur - _cand_length) > _AUTO_SEARCH_EARLY_ACCEPT_LENGTH_TOLERANCE:
+        return False
+
+    norm_filename = candidate['filename'].replace("\\", "/")
+    basename_norm = _normalize_match_text(os.path.basename(norm_filename))
+    artist_norm = _normalize_match_text(queue_item.get('artist'))
+    title_norm = _normalize_match_text(queue_item.get('title'))
+
+    if not artist_norm or not title_norm or not basename_norm:
+        return False
+
+    if artist_norm not in basename_norm:
+        return False
+    if title_norm not in basename_norm:
+        return False
+    return True
+
+
 def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=None):
     """Submit a single Soulseek search and collect the best-scoring candidate.
 
@@ -2918,20 +3028,21 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
     search_id = client.start_search(query)
     if not search_id:
         logger.warning(f"Queue {queue_id}: Failed to start search for '{query}'")
-        return None, 0.0
+        return None, 0.0, []
 
     logger.info(
         "Queue %s: slskd search submitted (search_id=%s) for query '%s'",
         queue_id, search_id, query,
     )
 
-    best_result = None
-    best_score = 0.0
-    all_candidates = []
+    raw_candidates = []
     poll_deadline = time.monotonic() + max_wait_seconds
     poll_attempt = 0
     total_files_seen = 0
     is_complete = False
+    # Deduplicate across the entire search, not just a single response,
+    # so duplicate shares from the same user are only counted once.
+    _seen_files: set[tuple[str, str, int]] = set()
 
     while time.monotonic() < poll_deadline:
         # Back-off: poll quickly while responses are arriving, then slow down
@@ -2974,11 +3085,6 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                         f"Queue {queue_id}: Response {resp_idx} from {resp.username} "
                         f"has {len(resp.files)} files"
                     )
-                    # Deduplicate results within this search by (user, filename, size)
-                    # so the scorer never overweights a single source with duplicate
-                    # shares (common on Soulseek when a user lists the same file
-                    # multiple times under different folder aliases).
-                    _seen_files: set[tuple[str, str, int]] = set()
                     for file_info in resp.files:
                         total_files_seen += 1
                         filename = file_info.filename
@@ -2998,102 +3104,14 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
                         _seen_files.add(_dedup_key)
                         candidate_bitrate = file_info.bitrate
                         candidate_length = _extract_candidate_length_seconds(file_info)
-                        # Pre-filter by duration before running the full scorer.
-                        # Only hard-reject files whose length deviates by more than
-                        # 30 s — everything else is allowed through and scored so
-                        # that near-matches aren't discarded prematurely.
-                        _expected_dur = _normalize_duration_seconds(queue_item.get('duration'))
-                        if _expected_dur and candidate_length:
-                            _dur_diff = abs(_expected_dur - candidate_length)
-                            if _dur_diff > 30:
-                                logger.debug(
-                                    f"Queue {queue_id}: Skipping {os.path.basename(filename)} "
-                                    f"— length {candidate_length:.0f}s outside "
-                                    f"±30s of expected {_expected_dur:.0f}s"
-                                )
-                                continue
-                        candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
-                        # Rec D – ISRC + tight-duration early-accept: when the
-                        # queue item is backed by an ISRC (high-confidence
-                        # expected duration) and the candidate's duration matches
-                        # within ±1 s, treat it as a near-certain match provided
-                        # the scorer already gave a non-trivial score.  This
-                        # mirrors the _duration_confirms path in
-                        # _metadata_matches_queue_item and avoids discarding a
-                        # correct file because of minor filename formatting.
-                        _item_isrc = (queue_item.get('isrc') or '').strip()
-                        if (
-                            _item_isrc
-                            and _expected_dur
-                            and candidate_length
-                            and abs(_expected_dur - candidate_length) <= 1
-                            and candidate_score >= 0.30
-                        ):
-                            candidate_score = max(candidate_score, 0.95)
-                        # Rec F – per-component diagnostic scores: compute
-                        # title_sim / artist_sim inline so they can be stored in
-                        # best_result and logged at DEBUG level.  Using the same
-                        # helpers already called by _score_soulseek_candidate
-                        # keeps the overhead minimal.
-                        _cand_bn = os.path.basename(filename.replace("\\", "/"))
-                        _cand_bn_norm = _normalize_match_text(_cand_bn)
-                        _diag_title_sim = (
-                            _best_title_match_score(_cand_bn, queue_item.get('title') or '')
-                            if _HAVE_MATCHING_UTILS
-                            else _seq_ratio(
-                                _normalize_match_text(queue_item.get('title') or ''),
-                                _cand_bn_norm,
-                            )
-                        )
-                        _diag_artist_sim = _seq_ratio(
-                            _normalize_match_text(queue_item.get('artist') or ''),
-                            _cand_bn_norm,
-                        )
-                        _diag_dur_diff = (
-                            abs(_expected_dur - candidate_length)
-                            if (_expected_dur and candidate_length)
-                            else None
-                        )
-                        logger.debug(
-                            "Queue %s: %s score=%.2f title_sim=%.2f artist_sim=%.2f dur_diff=%s",
-                            queue_id,
-                            _cand_bn,
-                            candidate_score,
-                            _diag_title_sim,
-                            _diag_artist_sim,
-                            f"{_diag_dur_diff:.0f}s" if _diag_dur_diff is not None else "n/a",
-                        )
-                        candidate_entry = {
+                        raw_candidates.append({
                             "username": resp.username,
                             "filename": filename,
                             "size": size,
                             "length": candidate_length,
                             "bitrate": candidate_bitrate,
-                            "score": candidate_score,
-                            "title_sim": round(_diag_title_sim, 3),
-                            "artist_sim": round(_diag_artist_sim, 3),
-                            "duration_diff_s": _diag_dur_diff,
                             "has_free_upload_slot": getattr(resp, 'has_free_upload_slot', True),
-                        }
-                        all_candidates.append(candidate_entry)
-                        if candidate_score > best_score:
-                            best_score = candidate_score
-                            best_result = candidate_entry
-
-                # Exit early once we have a high-confidence match.
-                if best_result and best_score >= 0.72:
-                    logger.info(
-                        f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt}s "
-                        f"(score={best_score:.2f})"
-                    )
-                    # Free the slskd search slot immediately rather than waiting
-                    # for it to time out naturally; clear_stale_searches() will
-                    # not need to clean it up on the next search.
-                    try:
-                        client.cancel_search(search_id)
-                    except Exception:
-                        pass
-                    break
+                        })
 
             # Stop as soon as slskd says the search is finished (including
             # 'Completed, TimedOut').  All results are already in *responses*
@@ -3112,6 +3130,180 @@ def _run_soulseek_search(queue_id, query, queue_item, client, max_wait_seconds=N
     if total_files_seen == 0 and is_complete:
         _track_zero_result_words(query, client)
 
+    # ------------------------------------------------------------------
+    # Phase 1: Length-aware prioritisation (cheap, no full scoring)
+    # ------------------------------------------------------------------
+    _expected_dur = _normalize_duration_seconds(queue_item.get('duration'))
+    _item_isrc = (queue_item.get('isrc') or '').strip()
+
+    def _length_priority_key(cand):
+        """Return sort key where lower = higher priority."""
+        length = _normalize_duration_seconds(cand.get('length'))
+        if not _expected_dur:
+            return (0, 0)  # no expected duration → neutral
+        if length is None or length <= 0:
+            return (3, 0)  # missing/zero length → de-prioritised
+        diff = abs(_expected_dur - length)
+        if diff > 600:
+            return (4, diff)  # wildly different (podcasts, DJ sets)
+        if diff > 120:
+            return (3, diff)
+        if diff <= 2:
+            return (0, diff)  # exact/near match
+        if diff <= 5:
+            return (1, diff)  # close match
+        if diff <= 10:
+            return (2, diff)
+        return (3, diff)
+
+    raw_candidates.sort(key=_length_priority_key)
+
+    # ------------------------------------------------------------------
+    # Phase 2: Early acceptance / short-circuiting
+    # ------------------------------------------------------------------
+    for cand in raw_candidates:
+        if _is_early_accept_match(cand, queue_item):
+            logger.info(
+                f"Queue {queue_id}: ✓ Early-accept match (exact artist/title ±2s) "
+                f"after {poll_attempt}s — '{os.path.basename(cand['filename'])}'"
+            )
+            cand['score'] = 1.0
+            try:
+                client.cancel_search(search_id)
+            except Exception:
+                pass
+            return cand, 1.0, [cand]
+
+    # ------------------------------------------------------------------
+    # Phase 3: Full scoring on top-N candidates
+    # ------------------------------------------------------------------
+    best_result = None
+    best_score = 0.0
+    all_candidates = raw_candidates[:]  # preserve full list for logging
+    top_n = _AUTO_SEARCH_TOP_N_CANDIDATES
+
+    for cand in raw_candidates[:top_n]:
+        filename = cand['filename']
+        candidate_length = cand['length']
+        candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
+        # ISRC + tight-duration boost (preserved from original logic)
+        _cand_len_norm = _normalize_duration_seconds(candidate_length)
+        if (
+            _item_isrc
+            and _expected_dur
+            and _cand_len_norm
+            and abs(_expected_dur - _cand_len_norm) <= 1
+            and candidate_score >= 0.30
+        ):
+            candidate_score = max(candidate_score, 0.95)
+
+        _cand_bn = os.path.basename(filename.replace("\\", "/"))
+        _cand_bn_norm = _normalize_match_text(_cand_bn)
+        _diag_title_sim = (
+            _best_title_match_score(_cand_bn, queue_item.get('title') or '')
+            if _HAVE_MATCHING_UTILS
+            else _seq_ratio(
+                _normalize_match_text(queue_item.get('title') or ''),
+                _cand_bn_norm,
+            )
+        )
+        _diag_artist_sim = _seq_ratio(
+            _normalize_match_text(queue_item.get('artist') or ''),
+            _cand_bn_norm,
+        )
+        _diag_dur_diff = (
+            abs(_expected_dur - _cand_len_norm)
+            if (_expected_dur and _cand_len_norm)
+            else None
+        )
+        logger.debug(
+            "Queue %s: %s score=%.2f title_sim=%.2f artist_sim=%.2f dur_diff=%s",
+            queue_id,
+            _cand_bn,
+            candidate_score,
+            _diag_title_sim,
+            _diag_artist_sim,
+            f"{_diag_dur_diff:.0f}s" if _diag_dur_diff is not None else "n/a",
+        )
+        cand['score'] = candidate_score
+        cand['title_sim'] = round(_diag_title_sim, 3)
+        cand['artist_sim'] = round(_diag_artist_sim, 3)
+        cand['duration_diff_s'] = _diag_dur_diff
+        if candidate_score > best_score:
+            best_score = candidate_score
+            best_result = cand
+
+    # Exit early if we already have a high-confidence match from the top N.
+    if best_result and best_score >= 0.72:
+        logger.info(
+            f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt}s "
+            f"(score={best_score:.2f})"
+        )
+        try:
+            client.cancel_search(search_id)
+        except Exception:
+            pass
+        return best_result, best_score, all_candidates
+
+    # ------------------------------------------------------------------
+    # Phase 4: Fallback — score remaining candidates with relaxed criteria
+    # ------------------------------------------------------------------
+    if len(raw_candidates) > top_n:
+        logger.info(
+            f"Queue {queue_id}: Top-{top_n} scoring found no acceptable match "
+            f"(best={best_score:.2f}), falling back to remaining "
+            f"{len(raw_candidates) - top_n} candidates..."
+        )
+        for cand in raw_candidates[top_n:]:
+            filename = cand['filename']
+            candidate_length = cand['length']
+            candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
+            _cand_len_norm = _normalize_duration_seconds(candidate_length)
+            if (
+                _item_isrc
+                and _expected_dur
+                and _cand_len_norm
+                and abs(_expected_dur - _cand_len_norm) <= 1
+                and candidate_score >= 0.30
+            ):
+                candidate_score = max(candidate_score, 0.95)
+
+            _cand_bn = os.path.basename(filename.replace("\\", "/"))
+            _cand_bn_norm = _normalize_match_text(_cand_bn)
+            _diag_title_sim = (
+                _best_title_match_score(_cand_bn, queue_item.get('title') or '')
+                if _HAVE_MATCHING_UTILS
+                else _seq_ratio(
+                    _normalize_match_text(queue_item.get('title') or ''),
+                    _cand_bn_norm,
+                )
+            )
+            _diag_artist_sim = _seq_ratio(
+                _normalize_match_text(queue_item.get('artist') or ''),
+                _cand_bn_norm,
+            )
+            _diag_dur_diff = (
+                abs(_expected_dur - _cand_len_norm)
+                if (_expected_dur and _cand_len_norm)
+                else None
+            )
+            logger.debug(
+                "Queue %s: %s score=%.2f title_sim=%.2f artist_sim=%.2f dur_diff=%s",
+                queue_id,
+                _cand_bn,
+                candidate_score,
+                _diag_title_sim,
+                _diag_artist_sim,
+                f"{_diag_dur_diff:.0f}s" if _diag_dur_diff is not None else "n/a",
+            )
+            cand['score'] = candidate_score
+            cand['title_sim'] = round(_diag_title_sim, 3)
+            cand['artist_sim'] = round(_diag_artist_sim, 3)
+            cand['duration_diff_s'] = _diag_dur_diff
+            if candidate_score > best_score:
+                best_score = candidate_score
+                best_result = cand
+
     return best_result, best_score, all_candidates
 
 
@@ -3119,6 +3311,27 @@ def search_and_download(queue_id, queue_item, client):
     """Search Soulseek for queue item and download top result"""
     try:
         search_query = queue_item['search_query']
+
+        # Quick guard: the background pre-scan may have already handled this
+        # item between get_queued_items() and now.
+        try:
+            _guard_conn = get_db()
+            _guard_cur = _guard_conn.cursor()
+            _guard_cur.execute(
+                "SELECT status FROM download_queue WHERE id = %s",
+                (queue_id,),
+            )
+            _guard_row = _guard_cur.fetchone()
+            _guard_conn.close()
+            if _guard_row and _guard_row.get('status') != 'queued':
+                logger.info(
+                    "Queue %s: Item no longer queued (status=%s), skipping search",
+                    queue_id,
+                    _guard_row.get('status'),
+                )
+                return False
+        except Exception:
+            pass
 
         # MB freshness check: if the item has a recording_mbid and the metadata
         # was last verified more than 24 hours ago (or never), refresh it now.
@@ -5130,6 +5343,97 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
     return now_ts
 
 
+def pre_scan_queue_for_existing_matches(now_ts, last_run_ts, interval_seconds=120):
+    """Background sweep: check queued items for existing DB/library matches.
+
+    Queries ``download_queue`` for items with ``status='queued'``, runs
+    ``check_track_exists_in_db()`` and ``check_target_folder_exists()`` on each,
+    and transitions matches to ``in_collection`` or ``copy_recommended``
+    immediately.  This removes synchronous blocking from the Soulseek hot path.
+
+    The Navidrome check is intentionally skipped here (it is an external HTTP
+    round-trip and the local DB + filesystem checks catch the vast majority of
+    duplicates).
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        cursor.execute(
+            f"""
+            SELECT id, artist, title, album, album_artist, duration,
+                   recording_mbid, release_mbid, release_id, release_source,
+                   track_number, disc_number, year, isrc, composer
+            FROM download_queue
+            WHERE status = 'queued'
+              AND TRIM(LOWER(COALESCE(source, 'soulseek'))) NOT IN ('local', 'discovered')
+            ORDER BY priority ASC, retry_count ASC, next_retry_at ASC NULLS FIRST,
+                     last_attempted_at ASC NULLS FIRST, created_at ASC
+            LIMIT {placeholder}
+            """,
+            (_PRE_SCAN_BATCH_SIZE,),
+        )
+        items = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        conn = None
+    except Exception as e:
+        logger.warning(f"[PRE_SCAN] DB query failed: {e}")
+        return last_run_ts
+
+    if not items:
+        return now_ts
+
+    pre_scanned = 0
+    transitioned = 0
+
+    for item in items:
+        item_id = item['id']
+        try:
+            pre_scanned += 1
+
+            # 1. Local database check
+            db_exists, db_reason, db_path, db_album_matches = check_track_exists_in_db(item)
+            if db_exists:
+                logger.info(f"[PRE_SCAN] Queue {item_id}: found in DB — {db_reason}")
+                if not db_album_matches and db_path:
+                    update_queue_status(
+                        item_id, 'copy_recommended',
+                        failure_reason=db_reason,
+                        source_music_path=db_path,
+                    )
+                else:
+                    update_queue_status(item_id, 'in_collection', failure_reason=db_reason)
+                transitioned += 1
+                continue
+
+            # 2. Target folder check (skip Navidrome to avoid HTTP round-trips)
+            target_exists, target_reason, target_path = check_target_folder_exists(item)
+            if target_exists:
+                logger.info(f"[PRE_SCAN] Queue {item_id}: found in target folder — {target_reason}")
+                update_queue_status(
+                    item_id, 'in_collection',
+                    failure_reason=target_reason,
+                    source_music_path=target_path,
+                )
+                transitioned += 1
+                continue
+
+        except Exception as e:
+            logger.warning(f"[PRE_SCAN] Queue {item_id}: error during check: {e}")
+
+    logger.info(
+        "[PRE_SCAN] Scanned %d item(s), transitioned %d to in_collection/copy_recommended",
+        pre_scanned,
+        transitioned,
+    )
+    return now_ts
+
+
 def process_copy_recommended_items(now_ts, last_run_ts, interval_seconds=120):
     """Periodically auto-copy items marked 'copy_recommended' to the music library.
 
@@ -5624,6 +5928,7 @@ def run_processor(interval=30):
     last_mb_enrich_ts = None
     last_copy_recommended_ts = None
     last_verify_import_groups_ts = None
+    last_pre_scan_ts = None
 
     try:
         while True:
@@ -5639,6 +5944,13 @@ def run_processor(interval=30):
                 last_stale_cleanup_ts = cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
                 last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
                 last_mb_enrich_ts = maybe_enrich_queue_items_from_mb(now_ts, last_mb_enrich_ts)
+
+                # Pre-scan queued items for existing library matches so that
+                # items already in the collection never enter the Soulseek hot
+                # path at all.
+                last_pre_scan_ts = pre_scan_queue_for_existing_matches(
+                    now_ts, last_pre_scan_ts, _PRE_SCAN_INTERVAL_SECONDS
+                )
 
                 # process_queue() (which contains check_completed_downloads()) must
                 # run BEFORE check_downloads_folder() so that items in 'downloading'
