@@ -136,6 +136,56 @@ def resolve_downloads_dir():
 DOWNLOADS_DIR = resolve_downloads_dir()
 
 
+def _get_music_dir_files(music_root: str) -> list[str]:
+    """Return a cached list of all audio file paths under *music_root*.
+
+    The list is rebuilt at most once every
+    ``_MUSIC_DIR_FILES_CACHE_TTL_SECONDS`` so that batch operations (e.g.
+    the background pre-scan) do not trigger a full ``os.walk`` for every
+    unique queue item.
+    """
+    global _music_dir_files_cache, _music_dir_files_cache_ts
+    now = time.monotonic()
+    if (
+        _music_dir_files_cache is not None
+        and now - _music_dir_files_cache_ts < _MUSIC_DIR_FILES_CACHE_TTL_SECONDS
+    ):
+        return _music_dir_files_cache
+    files: list[str] = []
+    if os.path.isdir(music_root):
+        for root, _, filenames in os.walk(music_root):
+            for f in filenames:
+                if f.lower().endswith(
+                    (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".opus", ".aiff")
+                ):
+                    files.append(os.path.join(root, f))
+    _music_dir_files_cache = files
+    _music_dir_files_cache_ts = now
+    return files
+
+
+def _get_downloads_dir_files() -> list[str]:
+    """Return a cached list of all audio file paths under ``DOWNLOADS_DIR``."""
+    global _downloads_dir_files_cache, _downloads_dir_files_cache_ts
+    now = time.monotonic()
+    if (
+        _downloads_dir_files_cache is not None
+        and now - _downloads_dir_files_cache_ts < _DOWNLOADS_DIR_FILES_CACHE_TTL_SECONDS
+    ):
+        return _downloads_dir_files_cache
+    files: list[str] = []
+    if os.path.isdir(DOWNLOADS_DIR):
+        for root, _, filenames in os.walk(DOWNLOADS_DIR):
+            for f in filenames:
+                if f.lower().endswith(
+                    (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".opus", ".aiff")
+                ):
+                    files.append(os.path.join(root, f))
+    _downloads_dir_files_cache = files
+    _downloads_dir_files_cache_ts = now
+    return files
+
+
 def _is_path_under_downloads_dir(file_path):
     """Return True if the resolved *file_path* is strictly inside DOWNLOADS_DIR.
 
@@ -215,6 +265,22 @@ _QUALITY_UPGRADE_RETRY_HOURS = 24  # hours before re-searching for a better copy
 # Cached SlskdClient instance — config does not change at runtime so we build
 # the object once and reuse it for the lifetime of the process.
 _slskd_client_cache = None
+
+# Music-directory filesystem index cache (used by check_target_folder_exists)
+# so large libraries are not walked repeatedly during batch pre-scans.
+_MUSIC_DIR_FILES_CACHE_TTL_SECONDS = 60.0
+_music_dir_files_cache: list[str] | None = None
+_music_dir_files_cache_ts: float = 0.0
+
+# Downloads-directory file list cache (used by _cleanup_sibling_downloads)
+# to avoid repeated recursive walks.
+_DOWNLOADS_DIR_FILES_CACHE_TTL_SECONDS = 30.0
+_downloads_dir_files_cache: list[str] | None = None
+_downloads_dir_files_cache_ts: float = 0.0
+
+# Background pre-scan task tuning
+_PRE_SCAN_INTERVAL_SECONDS = 120
+_PRE_SCAN_BATCH_SIZE = 50
 
 # Shared constants for orphan-token detection used in both
 # _score_soulseek_candidate and _filename_matches_queue_item.
@@ -1478,41 +1544,46 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
         return
 
     keep_abs = os.path.abspath(keep_path) if keep_path else None
+    artist_lower = (queue_item.get('artist') or '').lower()
+    title_lower = (queue_item.get('title') or '').lower()
 
     try:
-        for root, _dirs, files in os.walk(DOWNLOADS_DIR):
-            for fname in files:
-                fpath = os.path.join(root, fname)
-                if keep_abs and os.path.abspath(fpath) == keep_abs:
+        for fpath in _get_downloads_dir_files():
+            if keep_abs and os.path.abspath(fpath) == keep_abs:
+                continue
+            # Fast age check before expensive filename matching
+            try:
+                age_seconds = time.time() - os.path.getmtime(fpath)
+                if age_seconds < _CLEANUP_SIBLING_MIN_AGE_SECONDS:
                     continue
-                rel_path = os.path.relpath(fpath, DOWNLOADS_DIR)
-                if _filename_matches_queue_item(rel_path, queue_item):
+            except OSError:
+                continue
+            # Fast basename pre-filter: skip files whose name clearly doesn't
+            # contain either the artist or the title.
+            basename_lower = os.path.basename(fpath).lower()
+            if artist_lower not in basename_lower and title_lower not in basename_lower:
+                continue
+            rel_path = os.path.relpath(fpath, DOWNLOADS_DIR)
+            if _filename_matches_queue_item(rel_path, queue_item):
+                try:
+                    if not _is_path_under_downloads_dir(fpath):
+                        logger.warning(
+                            f"[CLEANUP] REFUSING to remove file outside downloads "
+                            f"directory: {fpath}"
+                        )
+                        continue
+                    os.remove(fpath)
+                    logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
+                    # Remove now-empty parent directories up to DOWNLOADS_DIR
                     try:
-                        age_seconds = time.time() - os.path.getmtime(fpath)
-                        if age_seconds < _CLEANUP_SIBLING_MIN_AGE_SECONDS:
-                            logger.debug(
-                                f"[CLEANUP] Skipping recent file ({age_seconds:.0f}s old, "
-                                f"min={_CLEANUP_SIBLING_MIN_AGE_SECONDS}s): {fpath}"
-                            )
-                            continue
-                        if not _is_path_under_downloads_dir(fpath):
-                            logger.warning(
-                                f"[CLEANUP] REFUSING to remove file outside downloads "
-                                f"directory: {fpath}"
-                            )
-                            continue
-                        os.remove(fpath)
-                        logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
-                        # Remove now-empty parent directories up to DOWNLOADS_DIR
-                        try:
-                            parent = os.path.dirname(fpath)
-                            while parent != DOWNLOADS_DIR and os.path.isdir(parent) and not os.listdir(parent):
-                                os.rmdir(parent)
-                                parent = os.path.dirname(parent)
-                        except OSError:
-                            pass
-                    except OSError as e:
-                        logger.warning(f"[CLEANUP] Could not remove {fpath}: {e}")
+                        parent = os.path.dirname(fpath)
+                        while parent != DOWNLOADS_DIR and os.path.isdir(parent) and not os.listdir(parent):
+                            os.rmdir(parent)
+                            parent = os.path.dirname(parent)
+                    except OSError:
+                        pass
+                except OSError as e:
+                    logger.warning(f"[CLEANUP] Could not remove {fpath}: {e}")
     except Exception as e:
         logger.warning(f"[CLEANUP] Error during sibling cleanup: {e}")
 
@@ -2291,16 +2362,13 @@ def check_target_folder_exists(queue_item):
     try:
         artist_lower = artist.lower()
         title_lower = title.lower()
-        for root, _, files in os.walk(music_root):
-            for f in files:
-                if not f.lower().endswith((".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac")):
-                    continue
-                f_lower = f.lower()
-                # Require both artist and title tokens to appear in the filename
-                # so common title words don't produce false positives.
-                if title_lower in f_lower and artist_lower in f_lower:
-                    full_path = os.path.join(root, f)
-                    if os.path.isfile(full_path):
+        for full_path in _get_music_dir_files(music_root):
+            f = os.path.basename(full_path)
+            f_lower = f.lower()
+            # Require both artist and title tokens to appear in the filename
+            # so common title words don't produce false positives.
+            if title_lower in f_lower and artist_lower in f_lower:
+                if os.path.isfile(full_path):
                         meta_match = _metadata_matches_queue_item(full_path, queue_item)
                         if meta_match is False:
                             logger.debug(
@@ -3243,6 +3311,27 @@ def search_and_download(queue_id, queue_item, client):
     """Search Soulseek for queue item and download top result"""
     try:
         search_query = queue_item['search_query']
+
+        # Quick guard: the background pre-scan may have already handled this
+        # item between get_queued_items() and now.
+        try:
+            _guard_conn = get_db()
+            _guard_cur = _guard_conn.cursor()
+            _guard_cur.execute(
+                "SELECT status FROM download_queue WHERE id = %s",
+                (queue_id,),
+            )
+            _guard_row = _guard_cur.fetchone()
+            _guard_conn.close()
+            if _guard_row and _guard_row.get('status') != 'queued':
+                logger.info(
+                    "Queue %s: Item no longer queued (status=%s), skipping search",
+                    queue_id,
+                    _guard_row.get('status'),
+                )
+                return False
+        except Exception:
+            pass
 
         # MB freshness check: if the item has a recording_mbid and the metadata
         # was last verified more than 24 hours ago (or never), refresh it now.
@@ -5254,6 +5343,97 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
     return now_ts
 
 
+def pre_scan_queue_for_existing_matches(now_ts, last_run_ts, interval_seconds=120):
+    """Background sweep: check queued items for existing DB/library matches.
+
+    Queries ``download_queue`` for items with ``status='queued'``, runs
+    ``check_track_exists_in_db()`` and ``check_target_folder_exists()`` on each,
+    and transitions matches to ``in_collection`` or ``copy_recommended``
+    immediately.  This removes synchronous blocking from the Soulseek hot path.
+
+    The Navidrome check is intentionally skipped here (it is an external HTTP
+    round-trip and the local DB + filesystem checks catch the vast majority of
+    duplicates).
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        cursor.execute(
+            f"""
+            SELECT id, artist, title, album, album_artist, duration,
+                   recording_mbid, release_mbid, release_id, release_source,
+                   track_number, disc_number, year, isrc, composer
+            FROM download_queue
+            WHERE status = 'queued'
+              AND TRIM(LOWER(COALESCE(source, 'soulseek'))) NOT IN ('local', 'discovered')
+            ORDER BY priority ASC, retry_count ASC, next_retry_at ASC NULLS FIRST,
+                     last_attempted_at ASC NULLS FIRST, created_at ASC
+            LIMIT {placeholder}
+            """,
+            (_PRE_SCAN_BATCH_SIZE,),
+        )
+        items = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        conn = None
+    except Exception as e:
+        logger.warning(f"[PRE_SCAN] DB query failed: {e}")
+        return last_run_ts
+
+    if not items:
+        return now_ts
+
+    pre_scanned = 0
+    transitioned = 0
+
+    for item in items:
+        item_id = item['id']
+        try:
+            pre_scanned += 1
+
+            # 1. Local database check
+            db_exists, db_reason, db_path, db_album_matches = check_track_exists_in_db(item)
+            if db_exists:
+                logger.info(f"[PRE_SCAN] Queue {item_id}: found in DB — {db_reason}")
+                if not db_album_matches and db_path:
+                    update_queue_status(
+                        item_id, 'copy_recommended',
+                        failure_reason=db_reason,
+                        source_music_path=db_path,
+                    )
+                else:
+                    update_queue_status(item_id, 'in_collection', failure_reason=db_reason)
+                transitioned += 1
+                continue
+
+            # 2. Target folder check (skip Navidrome to avoid HTTP round-trips)
+            target_exists, target_reason, target_path = check_target_folder_exists(item)
+            if target_exists:
+                logger.info(f"[PRE_SCAN] Queue {item_id}: found in target folder — {target_reason}")
+                update_queue_status(
+                    item_id, 'in_collection',
+                    failure_reason=target_reason,
+                    source_music_path=target_path,
+                )
+                transitioned += 1
+                continue
+
+        except Exception as e:
+            logger.warning(f"[PRE_SCAN] Queue {item_id}: error during check: {e}")
+
+    logger.info(
+        "[PRE_SCAN] Scanned %d item(s), transitioned %d to in_collection/copy_recommended",
+        pre_scanned,
+        transitioned,
+    )
+    return now_ts
+
+
 def process_copy_recommended_items(now_ts, last_run_ts, interval_seconds=120):
     """Periodically auto-copy items marked 'copy_recommended' to the music library.
 
@@ -5748,6 +5928,7 @@ def run_processor(interval=30):
     last_mb_enrich_ts = None
     last_copy_recommended_ts = None
     last_verify_import_groups_ts = None
+    last_pre_scan_ts = None
 
     try:
         while True:
@@ -5763,6 +5944,13 @@ def run_processor(interval=30):
                 last_stale_cleanup_ts = cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
                 last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
                 last_mb_enrich_ts = maybe_enrich_queue_items_from_mb(now_ts, last_mb_enrich_ts)
+
+                # Pre-scan queued items for existing library matches so that
+                # items already in the collection never enter the Soulseek hot
+                # path at all.
+                last_pre_scan_ts = pre_scan_queue_for_existing_matches(
+                    now_ts, last_pre_scan_ts, _PRE_SCAN_INTERVAL_SECONDS
+                )
 
                 # process_queue() (which contains check_completed_downloads()) must
                 # run BEFORE check_downloads_folder() so that items in 'downloading'
