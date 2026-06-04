@@ -4221,12 +4221,36 @@ def check_completed_downloads():
 
         for item in downloading:
             try:
+                item_id = item["id"]
+
+                # Reconciliation: item already has music_file_path but status
+                # never flipped to 'imported' (e.g., crash between verify and
+                # status update). Promote it so it doesn't stay stuck.
+                existing_music = item.get("music_file_path")
+                if existing_music and os.path.isfile(existing_music):
+                    logger.info(
+                        f"Queue {item_id}: already in music library ({existing_music}) "
+                        f"but status is 'downloading' — promoting to 'imported'"
+                    )
+                    try:
+                        update_queue_item(
+                            item_id,
+                            status='imported',
+                            copied_individually=1,
+                            copied_individually_at=datetime.now().isoformat(),
+                        )
+                        newly_completed.append(item)
+                    except Exception as _recon_err:
+                        logger.warning(
+                            f"Queue {item_id}: could not promote stuck downloading item: {_recon_err}"
+                        )
+                    continue
+
                 match_found = None
                 match_meta_state = None
-    
+
                 found_fn = item.get("found_filename") or ""
-                item_id = item["id"]
-    
+
                 # 1. Exact match via slskd localFilePath (most reliable)
                 if found_fn:
                     found_norm = _normalize_transfer_key(found_fn)
