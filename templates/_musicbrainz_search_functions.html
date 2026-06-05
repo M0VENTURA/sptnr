@@ -933,7 +933,11 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
       if (typeof loadQueueStatus === 'function') {
         await loadQueueStatus();
       }
-      
+      // Refresh the folder-groups list so newly added tracks appear immediately
+      if (typeof loadFolderGroups === 'function') {
+        await loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+      }
+
       // Notify other tabs/windows to refresh
       try {
         localStorage.setItem('popularr_queue_updated', Date.now().toString());
