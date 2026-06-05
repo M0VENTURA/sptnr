@@ -1868,6 +1868,14 @@ async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, leng
       statusEl.innerHTML = `<span class="text-success">Queued: ${escapeHtml(filename)}</span>`;
     }
     alert('✅ Soulseek download queued');
+
+    // Refresh queue UI so the status change to "downloading" is visible immediately
+    if (typeof loadQueueStatus === 'function') {
+      await loadQueueStatus();
+    }
+    if (typeof loadFolderGroups === 'function') {
+      await loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+    }
   } catch (error) {
     console.error('Error queueing Soulseek manual download:', error);
     if (statusEl) {
@@ -3090,7 +3098,10 @@ async function loadFolderGroups(options = {}) {
         artist: group.artist,
         album: group.album,
         matched_folder_path: group.matched_folder_path || null,
-        queue_item_status: group.queue_item_status
+        queue_item_status: group.queue_item_status,
+        // Include per-track statuses so status changes inside multi-track groups
+        // are detected and the list re-renders automatically.
+        track_statuses: (group.tracks || []).map(t => `${t.id || 0}:${t.status || 'unknown'}`).join(',')
       }))
     });
     
