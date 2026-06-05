@@ -31261,7 +31261,7 @@ def api_queue_reset_moving():
 @app.route("/api/queue/matched-releases", methods=["GET"])
 def api_queue_matched_releases():
     """
-    Return all unique MusicBrainz-backed releases currently in the download queue.
+    Return all unique releases currently in the download queue.
     Used to populate the 'current queue' list in the Change Queue Item Match modal.
     """
     conn = None
@@ -31277,7 +31277,6 @@ def api_queue_matched_releases():
         limit = max(10, min(requested_limit, 250))
 
         release_uuid_expr = "COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, ''))"
-        release_uuid_length_expr = f"char_length({release_uuid_expr})"
         placeholder = "%s"
 
         active_statuses = (
@@ -31312,14 +31311,6 @@ def api_queue_matched_releases():
                 ) AS album_match
             FROM download_queue
             WHERE {release_uuid_expr} IS NOT NULL
-              AND (
-                    release_source = 'musicbrainz'
-                    OR (
-                        (release_source IS NULL OR release_source = '')
-                        AND {release_uuid_length_expr} = 36
-                        AND {release_uuid_expr} LIKE '________-____-____-____-____________'
-                    )
-                  )
               AND status IN ({status_placeholders})
             GROUP BY {release_uuid_expr}
             ORDER BY artist_match DESC,
