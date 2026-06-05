@@ -1783,6 +1783,7 @@ function renderSoulseekManualSearchResults(results) {
     const bitrate = row.bitrate || '-';
     const duration = row.duration || row.length || '-';
     const size = Number(row.size || 0);
+    const length = Number(row.length || 0);
 
     return `
       <tr>
@@ -1792,7 +1793,7 @@ function renderSoulseekManualSearchResults(results) {
         <td>${escapeHtml(String(bitrate))}</td>
         <td>${escapeHtml(String(duration))}</td>
         <td class="text-center">
-          <button class="btn btn-sm btn-success" onclick="downloadSoulseekManualResult('${encodeInlineArg(username)}', '${encodeInlineArg(filename)}', ${size}, this)">
+          <button class="btn btn-sm btn-success" onclick="downloadSoulseekManualResult('${encodeInlineArg(username)}', '${encodeInlineArg(filename)}', ${size}, ${length}, this)">
             Select
           </button>
         </td>
@@ -1827,7 +1828,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 });
 
-async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, buttonEl = null) {
+async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, length, buttonEl = null) {
   const username = decodeInlineArg(usernameEnc, '');
   const filename = decodeInlineArg(filenameEnc, '');
   const statusEl = document.getElementById('soulseekManualStatus');
@@ -1849,8 +1850,8 @@ async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, butt
   const queueId = window.soulseekManualSearchState?.queueId || null;
   const endpoint = queueId ? '/api/slskd/queue-download' : '/api/slskd/download';
   const body = queueId
-    ? { queue_id: queueId, username, filename, size: Number(size || 0) }
-    : { username, filename, size: Number(size || 0) };
+    ? { queue_id: queueId, username, filename, size: Number(size || 0), length: Number(length || 0) || null }
+    : { username, filename, size: Number(size || 0), length: Number(length || 0) || null };
 
   try {
     const data = await fetchJsonOrThrow(endpoint, {
@@ -3413,6 +3414,7 @@ async function loadFolderGroups(options = {}) {
                     canMoveStatuses.includes(queueStatusRow)
                     || (queueStatusRow === 'in_collection' && isDownloadsBacked)
                     || ((queueStatusRow === 'queued' || queueStatusRow === 'discovered') && hasFilePath && hasReleaseMbid)
+                    || (queueStatusRow === 'downloading' && hasFilePath)
                   ) && queueId > 0;
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
                   const canChangeMatch = queueId > 0;

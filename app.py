@@ -2538,23 +2538,43 @@ def _request_scan_stop(path: str, scan_type: str):
 
 def _resolve_downloads_monitor_dir(cfg: dict | None = None) -> str:
     """Resolve downloads scan folder based on configuration.
-    
-    Respects user's configured downloads.folder path directly.
-    Falls back to environment variable or default /downloads/Music.
+
+    Uses the same resolution logic as queue_processor.resolve_downloads_dir()
+    so the folder scanner and queue processor always operate on the same
+    directory and downloaded files are visible to both.
     """
+    # Prefer the centralised resolver so UI scan dir == backend scan dir.
+    try:
+        from queue_processor import resolve_downloads_dir
+        resolved = resolve_downloads_dir()
+        if resolved and os.path.isdir(resolved):
+            return resolved
+    except Exception:
+        pass
+
     cfg = cfg or {}
     downloads_cfg = cfg.get("downloads", {}) if isinstance(cfg, dict) else {}
-    
+
+    def _prefer_music_subfolder(path: str) -> str:
+        if not path:
+            return path
+        normalized = os.path.normpath(path)
+        if os.path.basename(normalized).lower() == "downloads":
+            music_subdir = os.path.join(normalized, "Music")
+            if os.path.isdir(music_subdir):
+                return music_subdir
+        return path
+
     # Try configured folder first
     configured = downloads_cfg.get("folder")
     if configured and configured.strip():
-        return os.path.normpath(configured.strip())
-    
+        return _prefer_music_subfolder(os.path.normpath(configured.strip()))
+
     # Fall back to environment variable
     env_dir = os.environ.get("DOWNLOADS_DIR")
     if env_dir and env_dir.strip():
-        return os.path.normpath(env_dir.strip())
-    
+        return _prefer_music_subfolder(os.path.normpath(env_dir.strip()))
+
     # Default fallback
     return "/downloads/Music"
 
@@ -21521,11 +21541,26 @@ def slskd_queue_download():
     username = (payload.get("username") or "").strip()
     filename = (payload.get("filename") or "").strip()
     size = int(payload.get("size") or 0)
+    length = payload.get("length")
 
     if queue_id is None:
         return jsonify({"error": "queue_id is required"}), 400
     if not username or not filename:
         return jsonify({"error": "username and filename are required"}), 400
+
+    # Build the selected-result payload so the queue item remembers exactly
+    # what the user chose.  This makes post-download matching unambiguous
+    # and feeds the search log.
+    selected_result = {
+        "username": username,
+        "filename": filename,
+        "size": size,
+    }
+    if length is not None:
+        try:
+            selected_result["length"] = float(length)
+        except (TypeError, ValueError):
+            pass
 
     # Quick existence check so we can return 404 synchronously.
     try:
@@ -21565,10 +21600,12 @@ def slskd_queue_download():
                     slskd_username = %s,
                     slskd_state = %s,
                     is_manual_download = 1,
+                    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
                 """,
-                ("downloading", filename, username, "Pending", queue_id),
+                ("downloading", filename, username, "Pending",
+                 json.dumps({"selected_result": selected_result}), queue_id),
             )
             conn_pre.commit()
         finally:
@@ -21624,6 +21661,23 @@ def slskd_queue_download():
                 conn2.close()
         except Exception as bg_err:
             logging.error(f"[SLSKD_QUEUE_DOWNLOAD] Background error for queue {q_id}: {bg_err}")
+
+    # Log the manual selection to slskd_search_logs so diagnostics have a
+    # complete audit trail of what the user chose.
+    try:
+        from download_queue_manager import log_slskd_search_event
+        log_slskd_search_event(
+            search_type='manual',
+            query=f"{username} / {os.path.basename(filename)}",
+            queue_id=queue_id,
+            queue_item=None,
+            results=None,
+            selected_result=selected_result,
+            duration_seconds=None,
+            notes=f"manual queue download initiated: {filename}",
+        )
+    except Exception as _log_err:
+        logging.debug(f"[SLSKD_QUEUE_DOWNLOAD] Could not log manual search event: {_log_err}")
 
     t = threading.Thread(
         target=_background,
@@ -30735,6 +30789,26 @@ def _perform_queue_move_to_music(queue_id):
             "already_imported": True,
         }, 200
 
+    # Reconciliation: a previous move wrote music_file_path but never flipped
+    # the status (e.g., a crash between verify and status update).  Auto-correct
+    # so the user doesn't see a stuck 'downloading' entry.
+    if music_file_path_value and os.path.isfile(music_file_path_value):
+        try:
+            from download_queue_manager import update_queue_item
+            update_queue_item(
+                queue_id,
+                status='imported',
+                copied_individually=1,
+                copied_individually_at=datetime.now().isoformat(),
+            )
+        except Exception as _recon_err:
+            logging.debug(f"[MOVE] Could not auto-correct stuck queue {queue_id}: {_recon_err}")
+        return {
+            "success": True,
+            "message": "Track already imported to music directory",
+            "already_imported": True,
+        }, 200
+
     # Background processor has claimed this item — block the button.
     if item_status == 'moving':
         return {
@@ -30797,7 +30871,7 @@ def _perform_queue_move_to_music(queue_id):
             "deleted": True,
         }, 200
 
-    if item_status in ('completed', 'pending_match', 'in_collection', 'queued', 'discovered', 'copy_recommended'):
+    if item_status in ('completed', 'pending_match', 'in_collection', 'queued', 'discovered', 'copy_recommended', 'downloading'):
         from download_queue_manager import _try_claim_for_move, _release_move_claim, move_single_track_to_music_dir, update_queue_item
         from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
@@ -30867,6 +30941,20 @@ def _perform_queue_move_to_music(queue_id):
                     "success": False,
                     "error": f"Could not stage file from music to downloads: {copy_err}",
                 }, 500
+
+        # For downloading items (usually manual downloads), require a valid
+        # file_path before permitting a manual move so we don't race the
+        # background processor on an incomplete transfer.
+        if item_status == 'downloading':
+            _has_download_file = any(
+                _is_under_root(path_value, downloads_root) or _is_under_root(path_value, "/downloads")
+                for path_value in [queue_item.get('file_path'), queue_item.get('found_filename')] if path_value
+            )
+            if not _has_download_file:
+                return {
+                    "success": False,
+                    "error": "Download is still in progress and the file has not arrived yet. Please wait for the download to complete.",
+                }, 400
 
         if not _try_claim_for_move(queue_id, item_status):
             return {
