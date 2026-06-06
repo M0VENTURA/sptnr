@@ -1859,6 +1859,14 @@ document.addEventListener('DOMContentLoaded', function() {
   if (searchParam) {
     openSoulseekManualSearchModal(searchParam);
   }
+
+  // Auto-poll queue status and folder groups for real-time updates
+  if (document.getElementById('folderGroupsSection')) {
+    setInterval(() => {
+      loadQueueStatus();
+      loadFolderGroups({ keepVisibleOnEmpty: true });
+    }, 5000);
+  }
 });
 
 async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, length, buttonEl = null) {
@@ -2029,6 +2037,24 @@ function getTrackSimilarity(a, b) {
   }
 
   return score;
+}
+
+function getCommonReleaseId(items) {
+  const ids = items.map(i => i.release_mbid || i.release_id).filter(Boolean);
+  if (ids.length === 0) return null;
+  const first = ids[0];
+  if (ids.every(id => id === first)) return first;
+  const counts = {};
+  let maxCount = 0;
+  let maxId = null;
+  for (const id of ids) {
+    counts[id] = (counts[id] || 0) + 1;
+    if (counts[id] > maxCount) {
+      maxCount = counts[id];
+      maxId = id;
+    }
+  }
+  return maxId;
 }
 
 function buildFolderToReleaseTrackMap(folderTracks, releaseTracks) {
@@ -2663,7 +2689,8 @@ function buildQueueTrackStatusDetail(track, group) {
   const status = String(track?.status || group?.queue_item_status || '').toLowerCase();
   const queueId = Number(track?.id || 0);
   const source = String(track?.source || '').trim();
-  const mbid = String(track?.release_mbid || group?.release_id || '').trim();
+  const groupMbid = String(group?.release_id || '').trim();
+  const trackMbid = String(track?.release_mbid || '').trim();
   const filePath = String(
     track?.file_path || track?.matched_file_path || track?.music_file_path || track?.source_file_path || ''
   ).trim();
@@ -2698,8 +2725,8 @@ function buildQueueTrackStatusDetail(track, group) {
   if (source) {
     parts.push(`Source ${source}`);
   }
-  if (mbid) {
-    parts.push(`MBID ${mbid}`);
+  if (trackMbid && trackMbid !== groupMbid) {
+    parts.push(`MBID ${trackMbid}`);
   }
   if (filePath) {
     parts.push('File path detected');
@@ -2785,9 +2812,9 @@ function getTrackMatchInfo(track, group) {
   const status = String(track?.status || group?.queue_item_status || '').toLowerCase();
   const source = String(track?.source || '').toLowerCase();
 
-  // If downloading via soulseek, show remote path
-  if (status === 'downloading' && source === 'soulseek' && track.source_file_path) {
-    return { type: 'remote', text: track.source_file_path, label: 'Remote Match', icon: 'bi-cloud-arrow-down', color: 'text-warning' };
+  // If downloading via soulseek, show remote path (fallback if path not yet set)
+  if (status === 'downloading' && source === 'soulseek') {
+    return { type: 'remote', text: track.source_file_path || 'Soulseek download in progress', label: 'Remote Match', icon: 'bi-cloud-arrow-down', color: 'text-warning' };
   }
 
   // If manual copy selected and detected in downloads
@@ -2828,11 +2855,16 @@ function getTrackFinalLocation(track, group) {
   const artist = group?.album_artist || group?.artist || '';
   const album = group?.album || '';
   const title = track?.title || '';
+  const year = track?.release_year || group?.year || '';
   if (artist && album && title) {
-    return `/music/${artist}/${album}/${title}`;
+    return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${title}`;
   }
 
   return null;
+}
+
+function isTrackInFinalLocation(track) {
+  return !!(track.music_file_path || (track.matched_file_path && String(track.matched_file_path).includes('/music/')));
 }
 
 function getFolderFinalLocation(group) {
@@ -2851,8 +2883,9 @@ function getFolderFinalLocation(group) {
   // Construct from group info
   const artist = group?.album_artist || group?.artist || '';
   const album = group?.album || '';
+  const year = getFolderYear(group);
   if (artist && album) {
-    return `/music/${artist}/${album}`;
+    return `/music/${artist}/${year ? year + ' - ' : ''}${album}`;
   }
 
   return null;
@@ -3062,7 +3095,7 @@ async function loadFolderGroups(options = {}) {
           release_mbid: item.release_mbid || item.release_id || '',
           release_year: item.release_year || item.year || ''
         })),
-        release_id: isMulti ? null : (firstItem.release_mbid || firstItem.release_id || null),
+        release_id: getCommonReleaseId(albumGroup.items),
         release_source: isMulti ? null : (firstItem.release_source || null),
         is_musicbrainz_release: false
       };
@@ -3401,8 +3434,11 @@ async function loadFolderGroups(options = {}) {
       
       // Final folder location
       const finalFolderPath = getFolderFinalLocation(group);
+      const anyTrackConfirmed = (group?.tracks || []).some(t => isTrackInFinalLocation(t));
       const finalLocationHtml = finalFolderPath
-        ? `<span class="ms-2 text-success"><i class="bi bi-folder-check"></i> <strong>Final:</strong> <code>${escapeHtml(finalFolderPath)}</code></span>`
+        ? anyTrackConfirmed
+          ? `<span class="ms-2 text-success"><i class="bi bi-folder-check"></i> <strong>Final:</strong> <code>${escapeHtml(finalFolderPath)}</code></span>`
+          : `<span class="ms-2 text-warning"><i class="bi bi-folder"></i> <strong>Final:</strong> <code>${escapeHtml(finalFolderPath)}</code></span>`
         : `<span class="ms-2 text-muted"><i class="bi bi-folder-x"></i> Final location not yet determined</span>`;
       
       // MBID match display
@@ -3715,7 +3751,11 @@ async function loadFolderGroups(options = {}) {
                       </tr>
                       <tr class="${trackClass} queue-track-final-row">
                         <td>
-                          ${finalLocation ? `<div class="text-success"><i class="bi bi-check-circle"></i> <strong>Final:</strong> ${escapeHtml(finalLocation)}</div>` : '<div class="text-muted">—</div>'}
+                          ${finalLocation
+                            ? isTrackInFinalLocation(track)
+                              ? `<div class="text-success"><i class="bi bi-check-circle"></i> <strong>Final:</strong> ${escapeHtml(finalLocation)}</div>`
+                              : `<div class="text-warning"><strong>Final:</strong> ${escapeHtml(finalLocation)}</div>`
+                            : '<div class="text-muted">—</div>'}
                         </td>
                       </tr>`;
               });
