@@ -2042,7 +2042,7 @@ def setup():
                 },
                 "downloads": {
                     "folder": "/downloads/Music",
-                    "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}",
+                    "file_name_format": "{album_artist}/{year} - {album}/{track_number} - {artist} - {title}",
                     "incomplete_folder": "/downloads/Soulseek/Incomplete",
                     "monitor_incomplete": True,
                     "quality_filter": {
@@ -4557,7 +4557,7 @@ def _baseline_config():
         },
         "downloads": {
             "folder": "/downloads/Music",
-            "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}",
+            "file_name_format": "{album_artist}/{year} - {album}/{track_number} - {artist} - {title}",
             "quality_filter": {
                 "enabled": False,
                 "reject_others": True,
@@ -6875,7 +6875,7 @@ def artist_corrections(name):
 
             fallback_rel = (
                 f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}{file_ext}"
+                f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}{file_ext}"
             )
 
             try:
@@ -29867,7 +29867,7 @@ def _read_queue_naming_format():
             return fmt.strip()
     except Exception as cfg_err:
         logging.debug(f"[ORGANIZE] Could not read naming config: {cfg_err}")
-    return '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}'
+    return '{album_artist}/{year} - {album}/{track_number} - {artist} - {title}'
 
 
 def _build_queue_target_path(music_root_value, album_artist_value, year_value, album_value, track_artist_value, title_value, track_number_value, source_file_path):
@@ -29910,7 +29910,7 @@ def _build_queue_target_path(music_root_value, album_artist_value, year_value, a
         relative_parts = [
             album_artist_part,
             _queue_sanitize_component(f"{format_vars['year']} - {album_part}"),
-            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+            f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
         ]
 
     relative_path_safe = os.path.join(*relative_parts)

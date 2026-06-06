@@ -317,7 +317,7 @@ class MusicBrainzFinalizer:
                 title = re.sub(r'^\d{1,2}\s*-\s*', '', title).strip()
                 
                 # Format: "01. Artist - Title.ext"
-                new_name = f"{int(track_number):02d}. {artist} - {title}{extension}"
+                new_name = f"{int(track_number):02d} - {artist} - {title}{extension}"
             else:
                 track_number = track['track_number']
                 artist = str(track['track_artist']).strip()
@@ -325,7 +325,7 @@ class MusicBrainzFinalizer:
                 extension = file_path.suffix
                 
                 # Format: "01. Artist - Title.ext"
-                new_name = f"{track_number:02d}. {artist} - {title}{extension}"
+                new_name = f"{track_number:02d} - {artist} - {title}{extension}"
             
             destination = final_dir / new_name
             

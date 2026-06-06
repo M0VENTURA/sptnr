@@ -4666,7 +4666,7 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         }
         fallback_rel = (
             f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+            f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
         )
         try:
             relative_path = file_name_format.format(**format_vars)
@@ -4685,7 +4685,7 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             path_parts = [
                 format_vars['album_artist'],
                 _sanitize_path_component(f"{format_vars['year']} - {format_vars['album']}") or 'Unknown Album',
-                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
+                f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}",
             ]
 
         rel_safe = os.path.join(*path_parts)
@@ -4932,7 +4932,7 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
                 
                 # Build new filename
                 ext = os.path.splitext(resolved_file_path)[1].lower()
-                filename = _sanitize_path_component(f"{track_num_fmt}. {track_artist} - {track_title}{ext}")
+                filename = _sanitize_path_component(f"{track_num_fmt} - {track_artist} - {track_title}{ext}")
                 new_path = os.path.join(dest_folder, filename)
                 
                 # Handle conflicts with counter
@@ -5018,7 +5018,7 @@ def _read_track_file_name_format():
                 return fmt.strip()
     except Exception as cfg_err:
         logger.debug(f"[RENAME] Could not read naming format from config: {cfg_err}")
-    return "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}"
+    return "{album_artist}/{year} - {album}/{track_number} - {artist} - {title}"
 
 
 def _format_track_number_for_rename(track_number, disc_number=None):
@@ -5126,7 +5126,7 @@ def rename_track_file(track_id, db_conn, music_dir=None):
         except Exception:
             relative_path = (
                 f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+                f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
             )
 
         # Sanitize each component
@@ -10026,7 +10026,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
 
             src = track['file_path']
             
-            # Build proper filename: [track_number]. [artist] - [title].[ext]
+            # Build proper filename: [track_number] - [artist] - [title].[ext]
             track_artist = track.get('artist', 'Unknown Artist')
             track_title = track.get('title', 'Unknown Title')
             track_num = track.get('track_number')
@@ -10073,7 +10073,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             # Get file extension and build the destination path using shared
             # conversion settings so auto-move matches all other import flows.
             ext = os.path.splitext(src)[1].lower()
-            source_filename = _sanitize_path_component(f"{track_num}. {track_artist} - {track_title}{ext}")
+            source_filename = _sanitize_path_component(f"{track_num} - {track_artist} - {track_title}{ext}")
             dest = os.path.join(dest_dir, source_filename)
             dest = get_import_destination_path(src, dest)
             filename = os.path.basename(dest)
