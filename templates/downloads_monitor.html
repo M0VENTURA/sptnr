@@ -2828,11 +2828,16 @@ function getTrackFinalLocation(track, group) {
   const artist = group?.album_artist || group?.artist || '';
   const album = group?.album || '';
   const title = track?.title || '';
+  const year = track?.release_year || group?.year || '';
   if (artist && album && title) {
-    return `/music/${artist}/${album}/${title}`;
+    return `/music/${artist}/${year ? year + ' ' : ''}${album}/${title}`;
   }
 
   return null;
+}
+
+function isTrackInFinalLocation(track) {
+  return !!(track.music_file_path || (track.matched_file_path && String(track.matched_file_path).includes('/music/')));
 }
 
 function getFolderFinalLocation(group) {
@@ -2851,8 +2856,9 @@ function getFolderFinalLocation(group) {
   // Construct from group info
   const artist = group?.album_artist || group?.artist || '';
   const album = group?.album || '';
+  const year = getFolderYear(group);
   if (artist && album) {
-    return `/music/${artist}/${album}`;
+    return `/music/${artist}/${year ? year + ' ' : ''}${album}`;
   }
 
   return null;
@@ -3401,8 +3407,11 @@ async function loadFolderGroups(options = {}) {
       
       // Final folder location
       const finalFolderPath = getFolderFinalLocation(group);
+      const anyTrackConfirmed = (group?.tracks || []).some(t => isTrackInFinalLocation(t));
       const finalLocationHtml = finalFolderPath
-        ? `<span class="ms-2 text-success"><i class="bi bi-folder-check"></i> <strong>Final:</strong> <code>${escapeHtml(finalFolderPath)}</code></span>`
+        ? anyTrackConfirmed
+          ? `<span class="ms-2 text-success"><i class="bi bi-folder-check"></i> <strong>Final:</strong> <code>${escapeHtml(finalFolderPath)}</code></span>`
+          : `<span class="ms-2 text-warning"><i class="bi bi-folder"></i> <strong>Final:</strong> <code>${escapeHtml(finalFolderPath)}</code></span>`
         : `<span class="ms-2 text-muted"><i class="bi bi-folder-x"></i> Final location not yet determined</span>`;
       
       // MBID match display
@@ -3715,7 +3724,11 @@ async function loadFolderGroups(options = {}) {
                       </tr>
                       <tr class="${trackClass} queue-track-final-row">
                         <td>
-                          ${finalLocation ? `<div class="text-success"><i class="bi bi-check-circle"></i> <strong>Final:</strong> ${escapeHtml(finalLocation)}</div>` : '<div class="text-muted">—</div>'}
+                          ${finalLocation
+                            ? isTrackInFinalLocation(track)
+                              ? `<div class="text-success"><i class="bi bi-check-circle"></i> <strong>Final:</strong> ${escapeHtml(finalLocation)}</div>`
+                              : `<div class="text-warning"><strong>Final:</strong> ${escapeHtml(finalLocation)}</div>`
+                            : '<div class="text-muted">—</div>'}
                         </td>
                       </tr>`;
               });
