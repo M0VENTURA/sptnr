@@ -2663,7 +2663,8 @@ function buildQueueTrackStatusDetail(track, group) {
   const status = String(track?.status || group?.queue_item_status || '').toLowerCase();
   const queueId = Number(track?.id || 0);
   const source = String(track?.source || '').trim();
-  const mbid = String(track?.release_mbid || group?.release_id || '').trim();
+  const groupMbid = String(group?.release_id || '').trim();
+  const trackMbid = String(track?.release_mbid || '').trim();
   const filePath = String(
     track?.file_path || track?.matched_file_path || track?.music_file_path || track?.source_file_path || ''
   ).trim();
@@ -2698,8 +2699,8 @@ function buildQueueTrackStatusDetail(track, group) {
   if (source) {
     parts.push(`Source ${source}`);
   }
-  if (mbid) {
-    parts.push(`MBID ${mbid}`);
+  if (trackMbid && trackMbid !== groupMbid) {
+    parts.push(`MBID ${trackMbid}`);
   }
   if (filePath) {
     parts.push('File path detected');
