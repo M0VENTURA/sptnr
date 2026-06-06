@@ -4932,7 +4932,7 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
                 
                 # Build new filename
                 ext = os.path.splitext(resolved_file_path)[1].lower()
-                filename = _sanitize_path_component(f"{track_num_fmt}. {track_artist} - {track_title}{ext}")
+                filename = _sanitize_path_component(f"{track_num_fmt} - {track_artist} - {track_title}{ext}")
                 new_path = os.path.join(dest_folder, filename)
                 
                 # Handle conflicts with counter
@@ -10026,7 +10026,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
 
             src = track['file_path']
             
-            # Build proper filename: [track_number]. [artist] - [title].[ext]
+            # Build proper filename: [track_number] - [artist] - [title].[ext]
             track_artist = track.get('artist', 'Unknown Artist')
             track_title = track.get('title', 'Unknown Title')
             track_num = track.get('track_number')

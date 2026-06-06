@@ -2856,11 +2856,37 @@ function getTrackFinalLocation(track, group) {
   const album = group?.album || '';
   const title = track?.title || '';
   const year = track?.release_year || group?.year || '';
-  if (artist && album && title) {
-    return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${title}`;
+  if (!artist || !album || !title) {
+    return null;
   }
 
-  return null;
+  // Format track number with disc prefix logic (matching backend)
+  let trackNum = track?.track_number || '0';
+  const discNum = track?.disc_number || '1';
+  try {
+    const trackNumInt = parseInt(String(trackNum).split('/')[0]) || 0;
+    const discNumInt = parseInt(String(discNum).split('/')[0]) || 1;
+    if (discNumInt > 1) {
+      trackNum = `${discNumInt}${String(trackNumInt).padStart(2, '0')}`;
+    } else {
+      trackNum = String(trackNumInt).padStart(2, '0');
+    }
+  } catch (e) {
+    trackNum = '00';
+  }
+
+  // Extract file extension from available paths
+  let ext = '';
+  const pathWithExt = track?.file_path || track?.found_filename || track?.source_file_path || '';
+  if (pathWithExt) {
+    const match = String(pathWithExt).match(/\.([a-zA-Z0-9]{2,5})$/);
+    if (match) {
+      ext = `.${match[1]}`;
+    }
+  }
+
+  const trackArtist = track?.artist || artist || 'Unknown Artist';
+  return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${trackNum}. ${trackArtist} - ${title}${ext}`;
 }
 
 function isTrackInFinalLocation(track) {
@@ -3005,6 +3031,7 @@ async function loadFolderGroups(options = {}) {
           source_file_path: item.source_file_path || '',
           source_music_path: item.source_music_path || '',
           track_number: item.track_number,
+          disc_number: item.disc_number,
           duration: item.duration || 0,
           release_mbid: item.release_mbid || item.release_id || '',
           release_year: item.release_year || item.year || ''
@@ -3091,6 +3118,7 @@ async function loadFolderGroups(options = {}) {
           source_file_path: item.source_file_path || '',
           source_music_path: item.source_music_path || '',
           track_number: item.track_number,
+          disc_number: item.disc_number,
           duration: item.duration || 0,
           release_mbid: item.release_mbid || item.release_id || '',
           release_year: item.release_year || item.year || ''

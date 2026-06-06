@@ -6875,7 +6875,7 @@ def artist_corrections(name):
 
             fallback_rel = (
                 f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}{file_ext}"
+                f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}{file_ext}"
             )
 
             try:
@@ -29910,7 +29910,7 @@ def _build_queue_target_path(music_root_value, album_artist_value, year_value, a
         relative_parts = [
             album_artist_part,
             _queue_sanitize_component(f"{format_vars['year']} - {album_part}"),
-            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+            f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
         ]
 
     relative_path_safe = os.path.join(*relative_parts)
