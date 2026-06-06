@@ -2830,7 +2830,7 @@ function getTrackFinalLocation(track, group) {
   const title = track?.title || '';
   const year = track?.release_year || group?.year || '';
   if (artist && album && title) {
-    return `/music/${artist}/${year ? year + ' ' : ''}${album}/${title}`;
+    return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${title}`;
   }
 
   return null;
@@ -2858,7 +2858,7 @@ function getFolderFinalLocation(group) {
   const album = group?.album || '';
   const year = getFolderYear(group);
   if (artist && album) {
-    return `/music/${artist}/${year ? year + ' ' : ''}${album}`;
+    return `/music/${artist}/${year ? year + ' - ' : ''}${album}`;
   }
 
   return null;
