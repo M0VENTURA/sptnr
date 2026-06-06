@@ -488,6 +488,21 @@
     </div>
   </div>
 
+  <!-- Unmatched Folders in Downloads Section -->
+  <div class="card mb-4" id="unmatchedFoldersSection" style="display: none;">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-folder"></i> Matched Folders in Downloads
+      </h5>
+      <span class="badge bg-info" id="unmatchedFoldersBadge">0 items</span>
+    </div>
+    <div class="card-body p-0">
+      <div id="unmatchedFoldersList" style="max-height: 600px; overflow-y: auto;">
+        <!-- Unmatched folder items rendered here -->
+      </div>
+    </div>
+  </div>
+
   <!-- Merge Folders Modal -->
   <div class="modal fade" id="mergeFoldersModal" tabindex="-1">
     <div class="modal-dialog">
@@ -676,6 +691,24 @@
   .active-album-header {
     background-color: rgba(25, 135, 84, 0.15) !important;
     border-left: 3px solid #198754;
+  }
+  .queue-track-row td {
+    border-bottom: none !important;
+  }
+  .queue-track-row:last-child td {
+    border-bottom: 1px solid #495057 !important;
+  }
+  .queue-track-match-row {
+    font-size: 0.85rem;
+  }
+  .queue-track-final-row {
+    font-size: 0.85rem;
+  }
+  .folder-header-meta {
+    font-size: 0.9rem;
+  }
+  .folder-header-meta .badge {
+    font-size: 0.8rem;
   }
 </style>
 
@@ -2748,6 +2781,92 @@ function buildTrackPathDetailsHtml(track) {
   return rows.join('');
 }
 
+function getTrackMatchInfo(track, group) {
+  const status = String(track?.status || group?.queue_item_status || '').toLowerCase();
+  const source = String(track?.source || '').toLowerCase();
+
+  // If downloading via soulseek, show remote path
+  if (status === 'downloading' && source === 'soulseek' && track.source_file_path) {
+    return { type: 'remote', text: track.source_file_path, label: 'Remote Match', icon: 'bi-cloud-arrow-down', color: 'text-warning' };
+  }
+
+  // If manual copy selected and detected in downloads
+  if (track.source_music_path && (status === 'copy_recommended' || status === 'pending_match')) {
+    return { type: 'copy', text: track.source_music_path, label: 'Copy Source', icon: 'bi-copy', color: 'text-info' };
+  }
+
+  // If matched locally, show local file path
+  if (track.matched_file_path) {
+    return { type: 'local', text: track.matched_file_path, label: 'Local Match', icon: 'bi-folder-check', color: 'text-success' };
+  }
+
+  // If file downloaded from soulseek
+  if (track.file_path) {
+    return { type: 'local', text: track.file_path, label: 'Downloaded', icon: 'bi-download', color: 'text-success' };
+  }
+
+  // If music file path exists (final location known before move)
+  if (track.music_file_path) {
+    return { type: 'music', text: track.music_file_path, label: 'Music Library', icon: 'bi-music-note-beamed', color: 'text-success' };
+  }
+
+  return null;
+}
+
+function getTrackFinalLocation(track, group) {
+  // If the track has a music_file_path, that's the final location
+  if (track.music_file_path) {
+    return track.music_file_path;
+  }
+
+  // If the track has a matched_file_path in the music library
+  if (track.matched_file_path && String(track.matched_file_path).includes('/music/')) {
+    return track.matched_file_path;
+  }
+
+  // Construct from group info if available
+  const artist = group?.album_artist || group?.artist || '';
+  const album = group?.album || '';
+  const title = track?.title || '';
+  if (artist && album && title) {
+    return `/music/${artist}/${album}/${title}`;
+  }
+
+  return null;
+}
+
+function getFolderFinalLocation(group) {
+  // Use the first track's final location parent directory
+  const tracks = group?.tracks || [];
+  for (const track of tracks) {
+    const loc = getTrackFinalLocation(track, group);
+    if (loc) {
+      // Get parent directory
+      const parts = String(loc).replace(/\\/g, '/').split('/');
+      parts.pop();
+      return parts.join('/');
+    }
+  }
+
+  // Construct from group info
+  const artist = group?.album_artist || group?.artist || '';
+  const album = group?.album || '';
+  if (artist && album) {
+    return `/music/${artist}/${album}`;
+  }
+
+  return null;
+}
+
+function getFolderYear(group) {
+  if (group.year) return group.year;
+  const tracks = group?.tracks || [];
+  for (const track of tracks) {
+    if (track.release_year) return track.release_year;
+  }
+  return '';
+}
+
 async function loadFolderGroups(options = {}) {
   // Load and display folder groups from downloads folder plus queue items ready to organize.
   const forceRender = options.forceRender === true;
@@ -2870,6 +2989,7 @@ async function loadFolderGroups(options = {}) {
       artist: release.artist,
       album_artist: release.artist,
       album: release.album,
+      year: release.tracks[0]?.release_year || '',
       track_count: release.tracks.length,
       is_queue_item: true,
       is_release_group: true,
@@ -2918,6 +3038,7 @@ async function loadFolderGroups(options = {}) {
         folder_name: `[Queue] ${albumGroup.artist || 'Unknown'} - ${(albumGroup.album || firstItem.title || 'Unknown')}`,
         artist: albumGroup.items[0]?.album_artist || albumGroup.artist,
         album: albumGroup.album,
+        year: firstItem.release_year || firstItem.year || '',
         track_count: albumGroup.items.length,
         is_queue_item: true,
         queue_item_id: isMulti ? null : firstItem.id,
@@ -3041,9 +3162,9 @@ async function loadFolderGroups(options = {}) {
       return fp && !matchedFolderPaths.has(fp);
     });
 
-    // Queue items first (active/in-progress work), then unmatched /downloads
-    // folders so the user can still sort files that arrived outside the queue.
-    groups = [...queueGroups, ...unmatchedFolderGroups];
+    // Keep queue items and unmatched folders separate for rendering
+    groups = [...queueGroups];
+    const unmatchedGroups = [...unmatchedFolderGroups];
 
     console.log('[loadFolderGroups] API Response:', {
       success: folderData.success,
@@ -3084,6 +3205,29 @@ async function loadFolderGroups(options = {}) {
       return keyA.localeCompare(keyB);
     });
     
+    // Sort unmatched groups with the same logic
+    const filteredUnmatched = unmatchedGroups.sort((a, b) => {
+      if (sortMode === 'artist') {
+        const artistA = String(a.artist || '').toLowerCase();
+        const artistB = String(b.artist || '').toLowerCase();
+        if (artistA !== artistB) return artistA.localeCompare(artistB);
+        const albumA = String(a.album || '').toLowerCase();
+        const albumB = String(b.album || '').toLowerCase();
+        return albumA.localeCompare(albumB);
+      }
+      if (sortMode === 'album') {
+        const albumA = String(a.album || '').toLowerCase();
+        const albumB = String(b.album || '').toLowerCase();
+        if (albumA !== albumB) return albumA.localeCompare(albumB);
+        const artistA = String(a.artist || '').toLowerCase();
+        const artistB = String(b.artist || '').toLowerCase();
+        return artistA.localeCompare(artistB);
+      }
+      const keyA = String(a.folder_path || a.folder_name || '').toLowerCase();
+      const keyB = String(b.folder_path || b.folder_name || '').toLowerCase();
+      return keyA.localeCompare(keyB);
+    });
+
     const showFolderGroups = true;
     const visibleFolderCount = filteredGroups.length;
     const totalGroups = visibleFolderCount;
@@ -3102,6 +3246,12 @@ async function loadFolderGroups(options = {}) {
         // Include per-track statuses so status changes inside multi-track groups
         // are detected and the list re-renders automatically.
         track_statuses: (group.tracks || []).map(t => `${t.id || 0}:${t.status || 'unknown'}`).join(',')
+      })),
+      unmatched: filteredUnmatched.map(group => ({
+        folder_path: group.folder_path,
+        track_count: group.track_count,
+        artist: group.artist,
+        album: group.album
       }))
     });
     
@@ -3133,11 +3283,11 @@ async function loadFolderGroups(options = {}) {
     badge.textContent = `${totalGroups} items`;
     updateQueuePageControls(totalQueueCount, queue.length);
     
-    let html = '';
+    let queueHtml = '';
+    let unmatchedHtml = '';
 
-    if (showFolderGroups) {
-      const visibleFolderStateKeys = new Set();
-      filteredGroups.forEach((group, index) => {
+    function buildGroupCardHtml(group, index, visibleFolderStateKeys) {
+      let groupHtml = '';
       const folderPathEnc = encodeInlineArg(group.folder_path || '');
       const artistEnc = encodeInlineArg(group.artist || '');
       const albumEnc = encodeInlineArg(group.album || '');
@@ -3238,6 +3388,32 @@ async function loadFolderGroups(options = {}) {
         }
       }
       
+      // Calculate track counts for queue items
+      let trackCountSummary = '';
+      if (isQueueItem && group.tracks) {
+        const total = group.tracks.length;
+        const completed = group.tracks.filter(t => ['completed', 'matched', 'in_collection', 'moving'].includes(t.status)).length;
+        const left = total - completed;
+        trackCountSummary = `<span class="badge bg-light text-dark">${total} tracks</span> <span class="badge bg-success">${completed} completed</span> <span class="badge bg-warning">${left} left</span>`;
+      } else {
+        trackCountSummary = `<span class="badge bg-light text-dark">${group.track_count} tracks</span>`;
+      }
+      
+      // Final folder location
+      const finalFolderPath = getFolderFinalLocation(group);
+      const finalLocationHtml = finalFolderPath
+        ? `<span class="ms-2 text-success"><i class="bi bi-folder-check"></i> <strong>Final:</strong> <code>${escapeHtml(finalFolderPath)}</code></span>`
+        : `<span class="ms-2 text-muted"><i class="bi bi-folder-x"></i> Final location not yet determined</span>`;
+      
+      // MBID match display
+      const mbidMatchHtml = groupMbid
+        ? `<span class="badge bg-info text-dark ms-2">MBID Match: ${escapeHtml(groupMbid)}</span>`
+        : `<span class="badge bg-secondary ms-2">No MBID Match</span>`;
+      
+      // Year display
+      const year = getFolderYear(group);
+      const yearHtml = year ? `<span class="badge bg-dark text-light ms-2">${escapeHtml(year)}</span>` : '';
+      
       // Check if this group was previously expanded
       const isExpanded = expandedFolderGroupIds.has(folderStateKey);
       const displayStyle = isExpanded ? 'block' : 'none';
@@ -3245,23 +3421,20 @@ async function loadFolderGroups(options = {}) {
       const toggleIcon = isExpanded ? 'bi-chevron-up' : 'bi-chevron-down';
       const tracklistId = `group-${folderStateKey}`;
       
-      html += `
+      groupHtml += `
         <div class="card border-bottom mb-2 ${inconsistentClass}">
           <div class="card-body p-3">
             <div class="row align-items-center">
               <div class="col-md-6">
                 <h6 class="card-title mb-1">
-                  <i class="bi bi-list-task"></i> ${escapeHtml(group.album_artist || group.artist || '')} – ${escapeHtml(group.album || '')}
+                  <i class="bi bi-list-task"></i> ${escapeHtml(group.album_artist || group.artist || '')} – ${yearHtml ? yearHtml + ' – ' : ''}${escapeHtml(group.album || '')}
                   ${queueStatusBadge}
                   ${mbidBadge}
                 </h6>
-                <div class="text-muted small">
-                  <span class="badge bg-light text-dark">${group.track_count} tracks</span>
-                  ${group.matched_folder_path ? `
-                    <span class="ms-2 text-success"><i class="bi bi-folder-check"></i> <strong>Folder:</strong> <code>${escapeHtml(group.matched_folder_path)}</code></span>
-                  ` : `
-                    <span class="ms-2 text-muted"><i class="bi bi-folder-x"></i> No matching folder found yet</span>
-                  `}
+                <div class="folder-header-meta text-muted">
+                  ${trackCountSummary}
+                  ${finalLocationHtml}
+                  ${mbidMatchHtml}
                 </div>
               </div>
               <div class="col-md-6 text-end">
@@ -3333,9 +3506,9 @@ async function loadFolderGroups(options = {}) {
                 <table class="table table-sm table-striped table-dark align-middle mb-0">
                   <thead>
                     <tr>
-                      <th>#</th>
+                      <th style="width: 40px;">#</th>
                       <th>Title</th>
-                      <th>Duration</th>
+                      <th style="width: 60px;">Duration</th>
                       ${isQueueItem ? '<th style="width: 100px; text-align: center;">Status</th>' : ''}
                       <th style="width: 100px; text-align: center;">Actions</th>
                     </tr>
@@ -3350,12 +3523,9 @@ async function loadFolderGroups(options = {}) {
                   '-';
                 const normalizedGroupAlbumArtist = String(group.album_artist || group.artist || '').trim().toLowerCase();
                 const trackArtistLabel = String(track.artist || '').trim();
-                const showTrackArtistInline = !!trackArtistLabel
+                const showTrackArtist = !!trackArtistLabel
                   && trackArtistLabel.toLowerCase() !== 'unknown artist'
                   && trackArtistLabel.toLowerCase() !== normalizedGroupAlbumArtist;
-                const inlineTrackArtistHtml = showTrackArtistInline
-                  ? `<span class="text-muted ms-2">${escapeHtml(trackArtistLabel)}</span>`
-                  : '';
                 
                 // Check if this track has been organized (from folder status)
                 let trackMatched = false;
@@ -3499,52 +3669,82 @@ async function loadFolderGroups(options = {}) {
                   }
                 }
                 
-                html += `
-                      <tr class="${trackClass}">
-                        <td><span style="font-size: 14px; font-weight: 500;">${trackIcon}${track.track_number || '-'}</span></td>
+                // Get match info and final location for the track
+                const matchInfo = getTrackMatchInfo(track, group);
+                const finalLocation = getTrackFinalLocation(track, group);
+                
+                const trackStatus = String(track.status || group.queue_item_status || 'queued').toLowerCase();
+                const statusMap = {
+                  queued: ['secondary', 'Queued'],
+                  searching: ['info', 'Searching'],
+                  downloading: ['primary', 'Downloading'],
+                  matched: ['success', 'Matched'],
+                  completed: ['success', 'Completed'],
+                  duplicate: ['warning', 'Duplicate'],
+                  unmatched: ['dark', 'Unmatched'],
+                  queried: ['info', 'Queried'],
+                  in_collection: ['secondary', 'In Collection'],
+                  discovered: ['warning', 'Discovered'],
+                  possible_duplicate: ['warning', 'Duplicate'],
+                  pending_match: ['warning', 'Pending Match'],
+                  copy_recommended: ['warning', 'Copy Recommended'],
+                  failed: ['danger', 'Failed']
+                };
+                const statusPair = statusMap[trackStatus] || ['secondary', trackStatus || 'Unknown'];
+                
+                groupHtml += `
+                      <tr class="${trackClass} queue-track-row">
+                        <td rowspan="3"><span style="font-size: 14px; font-weight: 500;">${trackIcon}${track.track_number || '-'}</span></td>
+                        <td><span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span></td>
+                        <td rowspan="3"><span style="font-size: 14px;">${duration}</span></td>
+                        ${isQueueItem ? `<td rowspan="3" style="text-align: center;"><span class="badge bg-${statusPair[0]}"><i class="bi bi-hourglass-split"></i> ${statusPair[1]}</span></td>` : ''}
+                        <td rowspan="3" style="text-align: center; min-width: 120px;">${moveButtonHtml}</td>
+                      </tr>
+                      <tr class="${trackClass} queue-track-match-row">
                         <td>
-                          <span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}${inlineTrackArtistHtml}</span>
-                          ${mappingHint}
-                          ${isQueueItem ? `<div class="small text-muted mt-1"><i class="bi bi-info-circle"></i> ${escapeHtml(statusDetail)}</div>` : ''}
-                          ${trackPathDetailsHtml || (displayPath ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(displayPath)}</div>` : '')}
+                          <div class="d-flex flex-column gap-1">
+                            <div>
+                              ${showTrackArtist ? `<span class="text-muted fw-semibold">${escapeHtml(trackArtistLabel)}</span>` : '<span class="text-muted">—</span>'}
+                            </div>
+                            ${matchInfo ? `<div class="${matchInfo.color}"><i class="bi ${matchInfo.icon}"></i> <strong>${matchInfo.label}:</strong> ${escapeHtml(matchInfo.text)}</div>` : ''}
+                            ${mappingHint}
+                            ${isQueueItem ? `<div class="small text-muted"><i class="bi bi-info-circle"></i> ${escapeHtml(statusDetail)}</div>` : ''}
+                            ${trackPathDetailsHtml || (displayPath ? `<div class="small text-muted"><i class="bi bi-file-earmark"></i> ${escapeHtml(displayPath)}</div>` : '')}
+                          </div>
                         </td>
-                        <td><span style="font-size: 14px;">${duration}</span></td>
-                        ${isQueueItem ? (() => {
-                          const trackStatus = String(track.status || group.queue_item_status || 'queued').toLowerCase();
-                          const statusMap = {
-                            queued: ['secondary', 'Queued'],
-                            searching: ['info', 'Searching'],
-                            downloading: ['primary', 'Downloading'],
-                            matched: ['success', 'Matched'],
-                            completed: ['success', 'Completed'],
-                            duplicate: ['warning', 'Duplicate'],
-                            unmatched: ['dark', 'Unmatched'],
-                            queried: ['info', 'Queried'],
-                            in_collection: ['secondary', 'In Collection'],
-                            discovered: ['warning', 'Discovered'],
-                            possible_duplicate: ['warning', 'Duplicate'],
-                            pending_match: ['warning', 'Pending Match'],
-                            copy_recommended: ['warning', 'Copy Recommended'],
-                            failed: ['danger', 'Failed']
-                          };
-                          const statusPair = statusMap[trackStatus] || ['secondary', trackStatus || 'Unknown'];
-                          return `<td style="text-align: center;"><span class="badge bg-${statusPair[0]}"><i class="bi bi-hourglass-split"></i> ${statusPair[1]}</span></td>`;
-                        })() : ''}
-                        <td style="text-align: center; min-width: 120px;">${moveButtonHtml}</td>
+                      </tr>
+                      <tr class="${trackClass} queue-track-final-row">
+                        <td>
+                          ${finalLocation ? `<div class="text-success"><i class="bi bi-check-circle"></i> <strong>Final:</strong> ${escapeHtml(finalLocation)}</div>` : '<div class="text-muted">—</div>'}
+                        </td>
                       </tr>`;
               });
               
               console.log(`[loadFolderGroups] Finished rendering ${group.tracks.length} tracks for folder: ${group.folder_path}`);
               
-              html += `
+              groupHtml += `
                   </tbody>
                 </table>
               </div>
             </div>
           </div>
         </div>`;
-      });
+      return groupHtml;
+    }
 
+    if (showFolderGroups) {
+      const visibleFolderStateKeys = new Set();
+      
+      // Build queue items HTML
+      filteredGroups.forEach((group, index) => {
+        queueHtml += buildGroupCardHtml(group, index, visibleFolderStateKeys);
+      });
+      
+      // Build unmatched folders HTML
+      filteredUnmatched.forEach((group, index) => {
+        unmatchedHtml += buildGroupCardHtml(group, index, visibleFolderStateKeys);
+      });
+      
       // Keep persisted state clean so stale groups don't accumulate forever.
       Array.from(expandedFolderGroupIds).forEach(stateKey => {
         if (!visibleFolderStateKeys.has(stateKey)) {
@@ -3555,13 +3755,30 @@ async function loadFolderGroups(options = {}) {
     }
 
     if (totalGroups === 0) {
-      html = `
+      queueHtml = `
         <div class="alert alert-info m-3 mb-0">
-          <i class="bi bi-info-circle"></i> No groups match the selected filter.
+          <i class="bi bi-info-circle"></i> No items in download queue right now.
         </div>`;
     }
     
-    list.innerHTML = html;
+    list.innerHTML = queueHtml;
+    
+    // Update unmatched folders section
+    const unmatchedSection = document.getElementById('unmatchedFoldersSection');
+    const unmatchedList = document.getElementById('unmatchedFoldersList');
+    const unmatchedBadge = document.getElementById('unmatchedFoldersBadge');
+    if (unmatchedSection && unmatchedList) {
+      if (unmatchedHtml) {
+        unmatchedSection.style.display = 'block';
+        unmatchedList.innerHTML = unmatchedHtml;
+        if (unmatchedBadge) unmatchedBadge.textContent = `${filteredUnmatched.length} items`;
+      } else {
+        unmatchedSection.style.display = 'none';
+        unmatchedList.innerHTML = '';
+        if (unmatchedBadge) unmatchedBadge.textContent = '0 items';
+      }
+    }
+    
     lastFolderGroupsRenderSignature = nextSignature;
   } catch (error) {
     console.error('Error loading folder groups:', error);
