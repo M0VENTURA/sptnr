@@ -2840,6 +2840,23 @@ function getTrackMatchInfo(track, group) {
   return null;
 }
 
+function _getTrackFileExtension(track) {
+  const extSources = [
+    track?.music_file_path,
+    track?.matched_file_path,
+    track?.file_path,
+    track?.found_filename,
+    track?.filename,
+  ];
+  for (const src of extSources) {
+    if (src) {
+      const m = String(src).match(/\.([a-zA-Z0-9]+)$/);
+      if (m) return '.' + m[1].toLowerCase();
+    }
+  }
+  return '';
+}
+
 function getTrackFinalLocation(track, group) {
   // If the track has a music_file_path, that's the final location
   if (track.music_file_path) {
@@ -2851,13 +2868,22 @@ function getTrackFinalLocation(track, group) {
     return track.matched_file_path;
   }
 
-  // Construct from group info if available
-  const artist = group?.album_artist || group?.artist || '';
-  const album = group?.album || '';
+  // Construct expected final path following:
+  // /music/album artist/year - album/track number - track artist - trackname.filetype
+  const albumArtist = group?.album_artist || track?.album_artist || group?.artist || track?.artist || '';
+  const album = group?.album || track?.album || '';
   const title = track?.title || '';
-  const year = track?.release_year || group?.year || '';
-  if (artist && album && title) {
-    return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${title}`;
+  const year = track?.release_year || track?.year || group?.year || '';
+  const trackNumber = track?.track_number || '';
+  const trackArtist = track?.artist || '';
+  const ext = _getTrackFileExtension(track);
+
+  if (albumArtist && album && title) {
+    const tn = trackNumber ? String(trackNumber).padStart(2, '0') : '';
+    const fileName = tn
+      ? `${tn} - ${trackArtist || albumArtist} - ${title}${ext}`
+      : `${trackArtist || albumArtist} - ${title}${ext}`;
+    return `/music/${albumArtist}/${year ? year + ' - ' : ''}${album}/${fileName}`;
   }
 
   return null;
