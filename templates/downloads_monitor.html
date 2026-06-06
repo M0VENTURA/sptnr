@@ -2886,7 +2886,7 @@ function getTrackFinalLocation(track, group) {
   }
 
   const trackArtist = track?.artist || artist || 'Unknown Artist';
-  return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${trackNum} - ${trackArtist} - ${title}${ext}`;
+  return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${trackNum}. ${trackArtist} - ${title}${ext}`;
 }
 
 function isTrackInFinalLocation(track) {

@@ -828,7 +828,7 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
                 track_title_clean = sanitize(track_title)
                 
                 # Create filename: "01. Artist - Track Title.ext"
-                new_filename = f"{track_num_str} - {track_artist_clean} - {track_title_clean}{ext}"
+                new_filename = f"{track_num_str}. {track_artist_clean} - {track_title_clean}{ext}"
                 dest_file = os.path.join(album_path, new_filename)
                 
                 # Move file

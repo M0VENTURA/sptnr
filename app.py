@@ -2042,7 +2042,7 @@ def setup():
                 },
                 "downloads": {
                     "folder": "/downloads/Music",
-                    "file_name_format": "{album_artist}/{year} - {album}/{track_number} - {artist} - {title}",
+                    "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}",
                     "incomplete_folder": "/downloads/Soulseek/Incomplete",
                     "monitor_incomplete": True,
                     "quality_filter": {
@@ -4557,7 +4557,7 @@ def _baseline_config():
         },
         "downloads": {
             "folder": "/downloads/Music",
-            "file_name_format": "{album_artist}/{year} - {album}/{track_number} - {artist} - {title}",
+            "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}",
             "quality_filter": {
                 "enabled": False,
                 "reject_others": True,
@@ -29867,7 +29867,7 @@ def _read_queue_naming_format():
             return fmt.strip()
     except Exception as cfg_err:
         logging.debug(f"[ORGANIZE] Could not read naming config: {cfg_err}")
-    return '{album_artist}/{year} - {album}/{track_number} - {artist} - {title}'
+    return '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}'
 
 
 def _build_queue_target_path(music_root_value, album_artist_value, year_value, album_value, track_artist_value, title_value, track_number_value, source_file_path):

@@ -17,9 +17,9 @@ When an album is downloaded via a MusicBrainz or Discogs match, the system autom
    
 2. **Renames files** - Uses a consistent naming format:
    ```
-   [track_number] - [artist] - [title].[ext]
+   [track_number]. [artist] - [title].[ext]
    ```
-   Example: `01 - The Beatles - Come Together.mp3`
+   Example: `01. The Beatles - Come Together.mp3`
 
 3. **Organizes into proper folder structure**:
    ```

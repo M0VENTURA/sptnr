@@ -367,7 +367,7 @@ def update_file_metadata(file_path, metadata):
 def prepare_filename_and_path(music_dir, metadata):
     """
     Prepare filename and directory path based on metadata.
-    Uses naming convention: [track_number] - [artist] - [title]
+    Uses naming convention: [track_number]. [artist] - [title]
     Directory structure: [album_artist]/[year] - [album]/
     
     Returns: (target_path, directory_created) or (None, False)
@@ -426,7 +426,7 @@ def prepare_filename_and_path(music_dir, metadata):
         }
         fallback_rel = (
             f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-            f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
+            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
         )
 
         try:
@@ -448,7 +448,7 @@ def prepare_filename_and_path(music_dir, metadata):
             safe_parts = [
                 format_vars['album_artist'],
                 f"{format_vars['year']} - {format_vars['album']}",
-                f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}",
+                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
             ]
 
         safe_parts[-1] = f"{safe_parts[-1]}{ext}"

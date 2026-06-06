@@ -694,7 +694,7 @@ def _read_queue_naming_format():
                 return fmt.strip()
     except Exception as cfg_err:
         logger.debug(f"[MOVE] Could not read naming config: {cfg_err}")
-    return '{album_artist}/{year} - {album}/{track_number} - {artist} - {title}'
+    return '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}'
 
 
 def _build_target_path_from_format(music_root, queue_item, source_path, album_artist, album, year):
@@ -744,7 +744,7 @@ def _build_target_path_from_format(music_root, queue_item, source_path, album_ar
 
     fallback_rel = (
         f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-        f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
+        f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
     )
 
     try:

@@ -174,7 +174,7 @@ def organize_file(file_path, metadata):
         }
         fallback_rel = (
             f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-            f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
+            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
         )
         try:
             relative_path = file_name_format.format(**format_vars)
@@ -195,7 +195,7 @@ def organize_file(file_path, metadata):
             safe_parts = [
                 format_vars['album_artist'],
                 f"{format_vars['year']} - {format_vars['album']}",
-                f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}",
+                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
             ]
 
         ext = os.path.splitext(file_path)[1].lower() or '.mp3'
@@ -362,7 +362,7 @@ def copy_organized_file(file_path, metadata):
         }
         fallback_rel = (
             f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-            f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
+            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
         )
         try:
             relative_path = file_name_format.format(**format_vars)
@@ -381,7 +381,7 @@ def copy_organized_file(file_path, metadata):
             safe_parts = [
                 format_vars['album_artist'],
                 f"{format_vars['year']} - {format_vars['album']}",
-                f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}",
+                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
             ]
 
         ext = os.path.splitext(file_path)[1].lower() or '.mp3'

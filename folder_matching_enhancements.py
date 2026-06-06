@@ -872,7 +872,7 @@ def organize_individual_track(
         track_artist_clean = sanitize(track_artist)
         track_title_clean = sanitize(track_title)
 
-        new_filename = f"{track_num_str} - {track_artist_clean} - {track_title_clean}{ext}"
+        new_filename = f"{track_num_str}. {track_artist_clean} - {track_title_clean}{ext}"
         dest_file = os.path.join(album_path, new_filename)
 
         # Move/convert file using the shared transfer helper so that

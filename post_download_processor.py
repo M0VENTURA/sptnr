@@ -4,7 +4,7 @@ Post-Download Processor
 Automatically processes completed downloads from MusicBrainz/Discogs:
 - Optionally converts FLAC files to 320kbps MP3 when enabled in downloads conversion settings
 - Updates file metadata (track number, artist, album artist, year, disc number, album art)
-- Renames file to proper format: [track_number] - [artist] - [title].[ext]
+- Renames file to proper format: [track_number]. [artist] - [title].[ext]
 - Moves file to proper folder: [album_artist]/[year] - [album]/
 - Handles duplicates by moving to Duplicates/ subfolder
 
@@ -708,7 +708,7 @@ def rename_and_move_file(file_path, metadata):
         }
         fallback_rel = (
             f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-            f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
+            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
         )
 
         try:
@@ -730,7 +730,7 @@ def rename_and_move_file(file_path, metadata):
             safe_parts = [
                 format_vars['album_artist'],
                 f"{format_vars['year']} - {format_vars['album']}",
-                f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}",
+                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
             ]
 
         safe_parts[-1] = f"{safe_parts[-1]}{ext}"
