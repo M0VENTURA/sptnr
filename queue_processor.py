@@ -248,6 +248,24 @@ _SLSKD_LONG_RETRY_DELAY_MINUTES = 1440
 # this are cancelled and re-queued so the item can be searched again.
 _SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES = 60
 
+# General fallback timeout (minutes) for any active slskd transfer that is
+# stuck in a non-terminal state without making progress.
+_SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES = 240
+
+# Per-state timeout map (minutes) for active slskd transfers.  When a transfer
+# has been in one of these states for longer than the mapped value it is
+# cancelled and the queue item is retried.
+_SLSKD_ACTIVE_STATE_TIMEOUTS = {
+    "Requested": 30,
+    "Queued, Remotely": 60,
+    "Queued, Locally": 60,
+    "Initializing": 120,
+    "InProgress": 240,
+    "Queued": 60,
+    "In Progress": 240,
+    "Downloading": 240,
+}
+
 # Seconds to sleep between queue items in process_queue().  A short pause
 # gives slskd breathing room to handle its own network duties (e.g. responding
 # to distributed search requests from other peers) so that internal
@@ -2014,6 +2032,32 @@ def _calculate_retry_delay(retry_count, requested_delay_minutes):
     return min(max(base, exponential), _SLSKD_LONG_RETRY_DELAY_MINUTES)
 
 
+def _clear_stale_slskd_transfer_for_queue_item(row_dict):
+    """Remove any stale slskd transfer associated with a queue item before retry."""
+    if not row_dict:
+        return
+    try:
+        client = get_slskd_client()
+        if not client or not getattr(client, "enabled", False):
+            return
+        found_fn = (row_dict.get("found_filename") or "").strip()
+        if not found_fn:
+            return
+        for transfer in client.get_active_downloads():
+            t_filename = transfer.get("filename", "")
+            if t_filename and _normalize_transfer_key(t_filename) == _normalize_transfer_key(found_fn):
+                t_id = str(transfer.get("id") or "")
+                t_user = str(transfer.get("username") or "")
+                if t_id and t_user:
+                    client.cancel_download(t_user, t_id, remove=True)
+                    logger.debug(
+                        f"Queue {row_dict.get('id')}: cleared stale slskd transfer {t_id} for retry"
+                    )
+                break
+    except Exception as e:
+        logger.debug(f"Queue {row_dict.get('id')}: could not clear stale slskd transfer: {e}")
+
+
 def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60, clear_file_fields=False):
     """Mark queue item as failed, optionally scheduling retry.
 
@@ -2064,6 +2108,20 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60, c
         extra_sets = ""
         if schedule_retry:
             extra_sets = ", file_path = NULL, matched_file_path = NULL, music_file_path = NULL, found_filename = NULL, source_music_path = NULL"
+
+        # Clear any stale slskd transfer before re-queueing so the retry can
+        # actually fetch a fresh copy instead of slskd skipping it.
+        try:
+            cursor.execute(
+                f"SELECT * FROM download_queue WHERE id = {placeholder}",
+                (queue_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                row_dict = dict(row) if hasattr(row, "keys") else {cursor.description[i][0]: row[i] for i in range(len(cursor.description))}
+                _clear_stale_slskd_transfer_for_queue_item(row_dict)
+        except Exception as _clear_err:
+            logger.debug(f"Queue {queue_id}: could not clear stale slskd transfer before retry: {_clear_err}")
 
         cursor.execute(f"""
             UPDATE download_queue
@@ -3932,6 +3990,12 @@ def search_and_download(queue_id, queue_item, client):
         mark_failed(queue_id, f"Search error: {str(e)}", schedule_retry=True)
         return False
 
+def _normalize_transfer_key(value):
+    if not value:
+        return ""
+    return str(value).replace('\\', '/').strip().lower()
+
+
 def check_completed_downloads():
     """Check for completed downloads and match them to queue items.
 
@@ -3956,11 +4020,6 @@ def check_completed_downloads():
         # the reconciliation pass (which runs after the try block) can safely
         # reference it even when the API call fails.
         active_list: list[dict] = []
-
-        def _normalize_transfer_key(value):
-            if not value:
-                return ""
-            return str(value).replace('\\', '/').strip().lower()
 
         def _get_transfer_entry(found_filename):
             if not found_filename:
@@ -4254,15 +4313,38 @@ def check_completed_downloads():
                 # 1. Exact match via slskd localFilePath (most reliable)
                 if found_fn:
                     found_norm = _normalize_transfer_key(found_fn)
-                    abs_path = slskd_completed.get(found_norm) or slskd_completed.get(os.path.basename(found_norm))
+                    abs_path_full = slskd_completed.get(found_norm)
+                    abs_path = abs_path_full or slskd_completed.get(os.path.basename(found_norm))
                 else:
+                    abs_path_full = None
                     abs_path = None
-    
+
                 if abs_path:
                     candidate_rel = os.path.relpath(abs_path, DOWNLOADS_DIR)
+                    if candidate_rel.startswith('..'):
+                        logger.warning(
+                            f"Queue {item_id}: slskd localFilePath is outside DOWNLOADS_DIR ({abs_path}), skipping"
+                        )
+                        abs_path = None
+                        abs_path_full = None
+
+                if abs_path and abs_path is abs_path_full and abs_path_full:
+                    # Full-path hit: the remote Soulseek path resolved directly.
+                    # Trust slskd's mapping without running _file_matches_queue_item.
                     if item.get('is_manual_download'):
-                        # The user explicitly chose this file via the manual search
-                        # modal; trust their selection without metadata validation.
+                        match_found = candidate_rel
+                        match_meta_state = 'manual'
+                        logger.debug(f"Queue {item_id}: manual download accepted via slskd localFilePath: {abs_path}")
+                    else:
+                        match_found = candidate_rel
+                        match_meta_state = 'slskd_localpath'
+                        logger.debug(f"Queue {item_id}: matched via slskd localFilePath (full-path): {abs_path}")
+                elif abs_path:
+                    # Basename-only match: slskd's localFilePath shares a basename
+                    # with the remote path but the full path differs. Run the
+                    # stronger _file_matches_queue_item verification to avoid
+                    # false positives when multiple downloads share a basename.
+                    if item.get('is_manual_download'):
                         match_found = candidate_rel
                         match_meta_state = 'manual'
                         logger.debug(f"Queue {item_id}: manual download accepted via slskd localFilePath: {abs_path}")
@@ -4271,7 +4353,7 @@ def check_completed_downloads():
                         if is_match:
                             match_found = candidate_rel
                             match_meta_state = match_source
-                            logger.debug(f"Queue {item_id}: matched via slskd localFilePath: {abs_path}")
+                            logger.debug(f"Queue {item_id}: matched via slskd localFilePath (basename): {abs_path}")
                         else:
                             logger.info(
                                 f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
@@ -4405,15 +4487,13 @@ def check_completed_downloads():
                                         f"cancelling transfer and scheduling retry"
                                     )
                                     try:
-                                        _stale_id = str(transfer.get("id") or "")
-                                        _stale_user = str(transfer.get("username") or "")
-                                        if _stale_id and _stale_user:
-                                            slskd_client.cancel_download(
-                                                _stale_user, _stale_id, remove=True
-                                            )
+                                        transfer_id = str(transfer.get("id") or "")
+                                        transfer_username = str(transfer.get("username") or "")
+                                        if transfer_id and transfer_username:
+                                            slskd_client.cancel_download(transfer_username, transfer_id, remove=True)
                                             logger.debug(
                                                 f"Queue {item_id}: cancelled stale remotely-queued transfer "
-                                                f"{_stale_id} (user={_stale_user}) from slskd"
+                                                f"{transfer_id} (user={transfer_username}) from slskd"
                                             )
                                     except Exception as _cancel_err:
                                         logger.debug(
@@ -4425,10 +4505,35 @@ def check_completed_downloads():
                                         schedule_retry=True,
                                         retry_delay_minutes=10,
                                     )
-                            # Active/unknown transfer states are left untouched —
-                            # the download may still be in progress.  Skip to the
-                            # next item and let it be re-evaluated next cycle.
-                            continue
+                            elif transfer_state in getattr(slskd_client, "ACTIVE_STATES", set()):
+                                timeout_minutes = _SLSKD_ACTIVE_STATE_TIMEOUTS.get(
+                                    transfer_state, _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES
+                                )
+                                if _is_stale_queue_item(item, stale_minutes=timeout_minutes):
+                                    logger.warning(
+                                        f"Queue {item_id}: slskd download timed out after {timeout_minutes} minutes "
+                                        f"(state={transfer_state!r}), cancelling transfer and scheduling retry"
+                                    )
+                                    try:
+                                        transfer_id = str(transfer.get("id") or "")
+                                        transfer_username = str(transfer.get("username") or "")
+                                        if transfer_id and transfer_username:
+                                            slskd_client.cancel_download(transfer_username, transfer_id, remove=True)
+                                            logger.debug(
+                                                f"Queue {item_id}: cancelled timed-out active transfer "
+                                                f"{transfer_id} (user={transfer_username}) from slskd"
+                                            )
+                                    except Exception as _cancel_err:
+                                        logger.debug(
+                                            f"Queue {item_id}: could not cancel timed-out transfer: {_cancel_err}"
+                                        )
+                                    mark_failed(
+                                        item_id,
+                                        f"slskd download timed out after {timeout_minutes} minutes ({transfer_state})",
+                                        schedule_retry=True,
+                                        retry_delay_minutes=10,
+                                    )
+                                continue
     
                         # Transfer no longer exists in slskd. If the item has been
                         # stale for a while and no file is present, queue it for retry.
@@ -4998,12 +5103,15 @@ def check_failed_slskd_downloads(now_ts, last_run_ts, interval_seconds=300):
     return now_ts
 
 
-def clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
+def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
     """
     Periodically clear all terminal-state (completed/cancelled/errored) entries
     from slskd's transfer list using DELETE /transfers/downloads/all/completed.
     Prevents the slskd UI from accumulating stale completed entries.
     Runs every 30 minutes by default.
+
+    The first run on startup is skipped so that check_completed_downloads() can
+    reconcile existing completed transfers before they are erased.
 
     Args:
         now_ts: Current timestamp
@@ -5013,6 +5121,10 @@ def clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
     Returns:
         Updated last-run timestamp
     """
+    if last_run_ts is None:
+        logger.info("[SLSKD-CLEAR] Startup run skipped — deferring first cleanup so check_completed_downloads() can reconcile existing transfers")
+        return now_ts
+
     if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
         return last_run_ts
 
@@ -5095,7 +5207,7 @@ def check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
     return now_ts
 
 
-def trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds=300):
+def maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds=300):
     """Periodic safety-net: trigger a Navidrome scan when new imports are detected.
 
     Runs every *interval_seconds* (default 5 min).  It looks for download_queue
@@ -5944,7 +6056,7 @@ def run_processor(interval=30):
     last_verify_ts = None
     last_stale_cleanup_ts = None
     last_slskd_retry_ts = None
-    last_slskd_clear_ts = None
+    last_slskd_cleanup_ts = None
     last_downloads_folder_ts = None
     last_navidrome_scan_ts = None
     last_retry_completed_ts = None
@@ -5991,7 +6103,7 @@ def run_processor(interval=30):
                 # creating a race where freshly-completed transfers were erased from
                 # slskd before check_completed_downloads() could read their
                 # localFilePath, causing items to be missed entirely.
-                last_slskd_clear_ts = clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
+                last_slskd_cleanup_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_cleanup_ts)
 
                 last_downloads_folder_ts = check_downloads_folder(now_ts, last_downloads_folder_ts)
 
@@ -6011,7 +6123,7 @@ def run_processor(interval=30):
                         logger.warning(f"[CLEANUP-IMPORTED] Error purging old imported records: {_ci_err}")
                     last_cleanup_imported_ts = now_ts
 
-                last_navidrome_scan_ts = trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
+                last_navidrome_scan_ts = maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
                 last_copy_recommended_ts = process_copy_recommended_items(now_ts, last_copy_recommended_ts)
                 last_verify_import_groups_ts = verify_completed_import_groups(now_ts, last_verify_import_groups_ts)
                 
