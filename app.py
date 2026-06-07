@@ -40118,6 +40118,42 @@ def api_upcoming_releases():
 
         conn_flags.close()
 
+        # --- Augment with live MusicBrainz WS/2 search results ---
+        try:
+            cfg = get_config() or {}
+            features = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+            if bool(features.get("live_musicbrainz_upcoming_releases_enabled", True)):
+                from musicbrainz_upcoming_releases import fetch_musicbrainz_upcoming_releases
+
+                mb_releases = fetch_musicbrainz_upcoming_releases(
+                    collection_artists=collection_artists,
+                    recommended_artists=recommended_artists,
+                    lookback_days=int(features.get("live_musicbrainz_lookback_days", 14) or 14),
+                    lookahead_days=int(features.get("live_musicbrainz_lookahead_days", 30) or 30),
+                    added_lookback_days=int(features.get("live_musicbrainz_added_lookback_days", 3) or 3),
+                    max_results_per_query=int(features.get("live_musicbrainz_max_results", 200) or 200),
+                )
+
+                existing_keys = {
+                    (
+                        (r.get("artist_name") or "").strip().lower(),
+                        (r.get("album_name") or "").strip().lower(),
+                        (r.get("release_date") or "").strip(),
+                    )
+                    for r in releases
+                }
+                for mb_r in mb_releases:
+                    key = (
+                        (mb_r.get("artist_name") or "").strip().lower(),
+                        (mb_r.get("album_name") or "").strip().lower(),
+                        (mb_r.get("release_date") or "").strip(),
+                    )
+                    if key not in existing_keys:
+                        releases.append(mb_r)
+                        existing_keys.add(key)
+        except Exception as mb_live_err:
+            logging.warning(f"Could not fetch live MusicBrainz upcoming releases: {mb_live_err}")
+
         for release in releases:
             artist_key = (release.get("artist_name") or "").strip().lower()
             in_collection = artist_key in collection_artists
