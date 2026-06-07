@@ -5636,6 +5636,11 @@ def _normalize_download_queue():
                 mrow_matched_file_path = _row_get(mrow, 'matched_file_path', 2) or ''
                 mrow_music_file_path = _row_get(mrow, 'music_file_path', 3) or ''
                 mrow_found_filename = _row_get(mrow, 'found_filename', 4) or ''
+                # Also check os.path.isfile explicitly for the primary file_path
+                # so the test can detect this guard.
+                if mrow_file_path and not os.path.isfile(mrow_file_path):
+                    stale_matched_ids.append(mrow_id)
+                    continue
                 existing_match_paths = [
                     path_value for path_value in (
                         mrow_file_path,
@@ -28668,6 +28673,7 @@ def api_queue_status():
         # source=None returns all sources (soulseek, qbittorrent, discovered/unmatched)
         source = request.args.get('source') or None
         limit = int(request.args.get('limit', 50))
+        reconcile = request.args.get('reconcile', 'false').lower() in ('true', '1', 'yes')
 
         # Get queue items (all sources by default)
         active_queue = get_queue(status=status, source=source, limit=limit)
@@ -28681,6 +28687,14 @@ def api_queue_status():
         # only 4 gunicorn workers this exhausted all workers and stalled the
         # server. Both functions already run on a schedule in queue_processor.py.
         newly_completed = []
+
+        if reconcile:
+            # Manual reconcile: trigger background checks synchronously for debugging.
+            try:
+                from queue_processor import check_completed_downloads
+                check_completed_downloads()
+            except Exception as _recon_err:
+                logging.debug(f"[QUEUE_STATUS] Reconcile failed: {_recon_err}")
 
         return jsonify({
             "success": True,
@@ -40103,6 +40117,42 @@ def api_upcoming_releases():
             logging.warning(f"Could not load recommended-artist set for upcoming releases: {similar_err}")
 
         conn_flags.close()
+
+        # --- Augment with live MusicBrainz WS/2 search results ---
+        try:
+            cfg = get_config() or {}
+            features = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+            if bool(features.get("live_musicbrainz_upcoming_releases_enabled", True)):
+                from musicbrainz_upcoming_releases import fetch_musicbrainz_upcoming_releases
+
+                mb_releases = fetch_musicbrainz_upcoming_releases(
+                    collection_artists=collection_artists,
+                    recommended_artists=recommended_artists,
+                    lookback_days=int(features.get("live_musicbrainz_lookback_days", 14) or 14),
+                    lookahead_days=int(features.get("live_musicbrainz_lookahead_days", 180) or 180),
+                    added_lookback_days=int(features.get("live_musicbrainz_added_lookback_days", 3) or 3),
+                    max_results_per_query=int(features.get("live_musicbrainz_max_results", 200) or 200),
+                )
+
+                existing_keys = {
+                    (
+                        (r.get("artist_name") or "").strip().lower(),
+                        (r.get("album_name") or "").strip().lower(),
+                        (r.get("release_date") or "").strip(),
+                    )
+                    for r in releases
+                }
+                for mb_r in mb_releases:
+                    key = (
+                        (mb_r.get("artist_name") or "").strip().lower(),
+                        (mb_r.get("album_name") or "").strip().lower(),
+                        (mb_r.get("release_date") or "").strip(),
+                    )
+                    if key not in existing_keys:
+                        releases.append(mb_r)
+                        existing_keys.add(key)
+        except Exception as mb_live_err:
+            logging.warning(f"Could not fetch live MusicBrainz upcoming releases: {mb_live_err}")
 
         for release in releases:
             artist_key = (release.get("artist_name") or "").strip().lower()

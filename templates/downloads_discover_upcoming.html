@@ -19,6 +19,9 @@
         <i class="bi bi-calendar-event"></i> Upcoming Album Releases
       </h5>
       <div class="d-flex align-items-center gap-2 flex-wrap">
+        <button class="btn btn-sm btn-success" onclick="checkForUpdates()">
+          <i class="bi bi-bell"></i> Check for Updates
+        </button>
         <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleases()">
           <i class="bi bi-download"></i> Update from Wikipedia
         </button>
@@ -53,7 +56,7 @@
 
       <div id="upcomingReleases">
         <div class="text-center py-5">
-          <p class="text-muted">Click "Update from Wikipedia" to load upcoming releases</p>
+          <p class="text-muted">Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.</p>
         </div>
       </div>
     </div>
@@ -166,4 +169,15 @@
 
 <!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const lastChecked = localStorage.getItem('upcomingReleasesLastChecked');
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    if (!lastChecked || (Date.now() - parseInt(lastChecked, 10)) > oneDayMs) {
+      setTimeout(checkForUpdates, 1000);
+    } else {
+      setTimeout(refreshUpcomingReleases, 1000);
+    }
+  });
+</script>
 {% endblock %}

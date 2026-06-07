@@ -655,6 +655,9 @@
             <i class="bi bi-calendar-event"></i> Upcoming Album Releases
           </h5>
           <div class="d-flex align-items-center gap-2 flex-wrap">
+            <button class="btn btn-sm btn-success" onclick="checkForUpdates()">
+              <i class="bi bi-bell"></i> Check for Updates
+            </button>
             <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleases()">
               <i class="bi bi-download"></i> Update from Wikipedia
             </button>
@@ -694,7 +697,7 @@
 
           <div id="upcomingReleases">
             <div class="text-center py-5">
-              <p class="text-muted">Click "Update from Wikipedia" to load upcoming releases</p>
+              <p class="text-muted">Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.</p>
             </div>
           </div>
         </div>
@@ -3617,7 +3620,7 @@ async function clearUpcomingReleases() {
       statusEl.style.display = 'none';
       document.getElementById('upcomingReleases').innerHTML = `
         <div class="text-center py-5">
-          <p class="text-muted">Database cleared. Click "Update from Wikipedia" to load new release data.</p>
+          <p class="text-muted">Database cleared. Click <strong>Check for Updates</strong> to search MusicBrainz for new release data.</p>
         </div>
       `;
     }, 2000);
@@ -3671,6 +3674,11 @@ async function scrapeUpcomingReleases() {
   }
 }
 
+async function checkForUpdates() {
+  localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
+  await refreshUpcomingReleases();
+}
+
 async function refreshUpcomingReleases() {
   const container = document.getElementById('upcomingReleases');
   const filterCollection = document.getElementById('upcomingFilterCollection').checked;
@@ -3702,7 +3710,7 @@ async function refreshUpcomingReleases() {
       container.innerHTML = `
         <div class="alert alert-info">
           <i class="bi bi-info-circle"></i>
-          No upcoming releases found. Click "Update from Wikipedia" to load release data.
+          No upcoming releases found. Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.
         </div>
       `;
       return;
@@ -4552,7 +4560,7 @@ async function autoLoadUpcomingReleases() {
     if (data.releases && data.releases.length > 0) {
       // Data exists in database, populate it
       const container = document.getElementById('upcomingReleases');
-      if (container && container.innerHTML.includes('Click "Update')) {
+      if (container && container.innerHTML.includes('Check for Updates')) {
         refreshUpcomingReleases();
       }
     }
@@ -4561,10 +4569,28 @@ async function autoLoadUpcomingReleases() {
   }
 }
 
+// Check for updates once a day (24 hours)
+function shouldAutoCheckForUpdates() {
+  const lastChecked = localStorage.getItem('upcomingReleasesLastChecked');
+  if (!lastChecked) return true;
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  return (Date.now() - parseInt(lastChecked, 10)) > oneDayMs;
+}
+
 // Call auto-load when page loads
 document.addEventListener('DOMContentLoaded', function() {
   // Give page a moment to settle
   setTimeout(autoLoadUpcomingReleases, 500);
+  
+  // Auto-check for updates once a day when the upcoming tab is active
+  setTimeout(() => {
+    if (shouldAutoCheckForUpdates()) {
+      const upcomingTabEl = document.getElementById('upcomingTab');
+      if (upcomingTabEl && upcomingTabEl.classList.contains('active')) {
+        checkForUpdates();
+      }
+    }
+  }, 2000);
   
   // Load queue status and events
   setTimeout(loadQueueStatus, 1000);
