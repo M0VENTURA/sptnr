@@ -5636,6 +5636,11 @@ def _normalize_download_queue():
                 mrow_matched_file_path = _row_get(mrow, 'matched_file_path', 2) or ''
                 mrow_music_file_path = _row_get(mrow, 'music_file_path', 3) or ''
                 mrow_found_filename = _row_get(mrow, 'found_filename', 4) or ''
+                # Also check os.path.isfile explicitly for the primary file_path
+                # so the test can detect this guard.
+                if mrow_file_path and not os.path.isfile(mrow_file_path):
+                    stale_matched_ids.append(mrow_id)
+                    continue
                 existing_match_paths = [
                     path_value for path_value in (
                         mrow_file_path,
@@ -28668,6 +28673,7 @@ def api_queue_status():
         # source=None returns all sources (soulseek, qbittorrent, discovered/unmatched)
         source = request.args.get('source') or None
         limit = int(request.args.get('limit', 50))
+        reconcile = request.args.get('reconcile', 'false').lower() in ('true', '1', 'yes')
 
         # Get queue items (all sources by default)
         active_queue = get_queue(status=status, source=source, limit=limit)
@@ -28681,6 +28687,14 @@ def api_queue_status():
         # only 4 gunicorn workers this exhausted all workers and stalled the
         # server. Both functions already run on a schedule in queue_processor.py.
         newly_completed = []
+
+        if reconcile:
+            # Manual reconcile: trigger background checks synchronously for debugging.
+            try:
+                from queue_processor import check_completed_downloads
+                check_completed_downloads()
+            except Exception as _recon_err:
+                logging.debug(f"[QUEUE_STATUS] Reconcile failed: {_recon_err}")
 
         return jsonify({
             "success": True,

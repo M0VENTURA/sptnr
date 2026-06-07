@@ -69,6 +69,12 @@ logger = logging.getLogger(__name__)
 _NAV_TITLE_SIMILARITY_THRESHOLD = 0.85
 _NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75
 
+# Hard-mismatch floor for _metadata_matches_queue_item: scores below this
+# threshold are a definite reject (False).  Scores between this floor and
+# the standard _FIELD_MIN (0.55) are a "soft mismatch" — return None so the
+# caller can fall back to filename matching rather than rejecting outright.
+_HARD_MISMATCH_FLOOR = 0.35
+
 
 def _seq_ratio(a: str, b: str) -> float:
     """Return a normalized similarity score (0.0–1.0) for two strings.
@@ -323,6 +329,33 @@ _FEAT_SUFFIX_RE = re.compile(
     r'\s+(?:feat\.?|ft\.?|featuring)\s+.*$',
     re.IGNORECASE,
 )
+
+# Strip leading disc-track prefixes (e.g. "1-15 - ", "16. ", "07 ") and trailing
+# Soulseek UID suffixes (e.g. "_639091010921933965") so that the core title
+# and artist can be matched against the cleaned basename.
+_TRACK_NUMBER_PREFIX_RE = re.compile(
+    r'^(?:\d+-\d+|\d+)\s*[\.\s\-]*\s*',
+)
+_SOULSEEK_UID_SUFFIX_RE = re.compile(
+    r'_\d{12,}$',
+)
+
+
+def _strip_track_number_prefix(basename: str) -> str:
+    """Return *basename* with leading track-number prefixes removed."""
+    return _TRACK_NUMBER_PREFIX_RE.sub('', basename)
+
+
+def _strip_soulseek_uid_suffix(basename: str) -> str:
+    """Return *basename* with trailing Soulseek UID suffixes removed."""
+    ext = os.path.splitext(basename)[1]
+    stem = basename[:-len(ext)] if ext else basename
+    return _SOULSEEK_UID_SUFFIX_RE.sub('', stem) + ext
+
+
+def _strip_prefix_and_uid(basename: str) -> str:
+    """Strip both leading track-number prefixes and trailing UID suffixes."""
+    return _strip_soulseek_uid_suffix(_strip_track_number_prefix(basename))
 
 # Matches any (…) or […] bracket section so it can be stripped to extract the
 # core track title for exactness comparisons.  The alternation ensures opening
@@ -708,7 +741,9 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # comparisons are done on these core strings so that "Invincible" correctly
     # matches "Invincible (Radio Edit)" while "Invincible Mind" is still
     # rejected.
-    _raw_basename = os.path.basename(norm_filename)
+    # Also strip track-number prefixes and Soulseek UID suffixes so the core
+    # basename contains only the artist/title tokens for matching.
+    _raw_basename = _strip_prefix_and_uid(os.path.basename(norm_filename))
     core_basename_norm = _normalize_match_text(
         _FEAT_SUFFIX_RE.sub('', _strip_brackets(_raw_basename))
     )
@@ -745,10 +780,24 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         queue_item.get('artist'), queue_item.get('album_artist'), _artist_candidates
     )
     _ARTIST_GATE_MIN = 60.0
+    # Title-only bypass: when the title is a clear match in the basename after
+    # stripping standard track-number prefixes and Soulseek UID suffixes, the
+    # artist gate is relaxed so that disc-track and bare-title filenames are
+    # not rejected solely because the artist name is absent from the filename.
+    # The same whole-phrase regex used in _filename_matches_queue_item is applied
+    # to the extension-stripped basename so that prefix matches (e.g. "-1 intro"
+    # vs "-1") do not bypass the gate.
+    _stripped_basename = _strip_prefix_and_uid(os.path.basename(norm_filename))
+    _stripped_basename_no_ext = os.path.splitext(_stripped_basename)[0]
+    _raw_title = _strip_brackets(queue_item.get('title') or '').lower()
+    _title_only_bypass = (
+        _raw_title
+        and re.search(re.escape(_raw_title) + r'(?!\s*[a-z])', _stripped_basename_no_ext.lower()) is not None
+    )
     # For compilation releases ("Various Artists", etc.) the real track artist
     # is unknown, so the strict gate is skipped and the existing scoring logic
     # handles the match.  The compilation penalty still applies to VA results.
-    if not _is_compilation_release(queue_item) and best_artist_score < _ARTIST_GATE_MIN:
+    if not _is_compilation_release(queue_item) and best_artist_score < _ARTIST_GATE_MIN and not _title_only_bypass:
         logger.debug(
             "Queue scorer: rejecting '%s' — artist gate FAILED "
             "(best_score=%.1f, min=%.1f, candidates=%s)",
@@ -985,12 +1034,16 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # the queue item carries "KNEECAP feat. Fawzi" as the track artist.
     if artist_norm in basename_norm or (album_artist_norm and album_artist_norm in basename_norm):
         score += 0.18
-    if core_title_norm in core_basename_norm:
+    # The title bonus is only awarded when the title appears in the basename,
+    # not merely somewhere in the full path (e.g. an album folder that happens to
+    # share the track name).  This prevents false positives when the album folder
+    # equals the song title.
+    if title_norm in basename_norm:
         score += 0.25
     # Bonus when both artist AND title tokens are present in the basename.
     # This rewards files that clearly identify both the artist and the song.
     _artist_in_path = artist_norm in basename_norm or (album_artist_norm and album_artist_norm in basename_norm)
-    _title_in_path = core_title_norm in core_basename_norm or title_token_ratio >= 0.67
+    _title_in_path = title_norm in basename_norm or title_token_ratio >= 0.67
     if _artist_in_path and _title_in_path:
         score += 0.15
 
@@ -1103,6 +1156,19 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
                 and ' - ' not in _te_prefix
             ):
                 _orphan_penalty = max(_orphan_penalty, 0.50)
+
+    # Prefix-title penalty: the queue title is a proper prefix of a longer word
+    # in the basename (e.g. "-1 intro" vs "-1").  When the title appears in the
+    # basename but the whole-phrase regex fails, the title is a prefix and the
+    # candidate must be heavily penalised.  The penalty is only applied when the
+    # title has no meaningful tokens (e.g. "-1") because the core-orphan check
+    # would otherwise skip the case.
+    if _raw_title_lower and not title_tokens:
+        _whole_m = re.search(
+            re.escape(_raw_title_lower) + r'(?!\s*[a-z])', _raw_basename_lower
+        )
+        if _whole_m is None and _raw_title_lower in _raw_basename_lower:
+            _orphan_penalty = max(_orphan_penalty, 0.80)
 
     # Apply orphan-token penalty after all bonuses so the album-in-path reward
     # cannot rescue a wrong-track candidate.  Cap the accumulated score first so
@@ -1237,8 +1303,22 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     )
 
     # Require both core fields to be reasonably close to avoid false-positive imports.
-    if (not both_generic and artist_score < _FIELD_MIN) or title_score < _FIELD_MIN:
-        return False
+    # Soft mismatch: when one or both scores fall below the normal threshold but
+    # remain above the hard-mismatch floor, return None so the caller can fall back
+    # to filename matching rather than rejecting outright.  This handles version-suffix
+    # differences such as "Creep (Acoustic)" vs "Creep" where the metadata is close
+    # enough to be the same recording but not close enough for a definitive match.
+    _soft_mismatch = False
+    if not both_generic and artist_score < _FIELD_MIN:
+        if artist_score < _HARD_MISMATCH_FLOOR:
+            return False
+        _soft_mismatch = True
+    if title_score < _FIELD_MIN:
+        if title_score < _HARD_MISMATCH_FLOOR:
+            return False
+        _soft_mismatch = True
+    if _soft_mismatch:
+        return None
 
     # Compute duration early so the variant check below can use it.
     expected_duration = _normalize_duration_seconds(queue_item.get('duration'))
@@ -1380,13 +1460,23 @@ def _filename_matches_queue_item(filename, queue_item):
     if _year_mismatch_rejects(norm_path, queue_item):
         return False
 
+    # Use the bracket-stripped title for the regex so that a queue title like
+    # "Invincible (Radio Edit)" still matches "Invincible.flac".
+    raw_title = _strip_brackets(queue_item.get('title') or '').lower()
+
     # Step 3: Fuzzy artist hard gate — reject compilation/playlist files
     # even when title similarity is high.
     _artist_candidates_fn = _extract_artist_candidates(norm_path)
     _best_artist_score_fn = _fuzzy_artist_match_score(
         queue_item.get('artist'), queue_item.get('album_artist'), _artist_candidates_fn
     )
-    if _best_artist_score_fn < 70.0:
+    _stripped_basename_fn = _strip_prefix_and_uid(basename)
+    _stripped_basename_no_ext_fn = os.path.splitext(_stripped_basename_fn)[0]
+    _title_only_bypass_fn = (
+        raw_title
+        and re.search(re.escape(raw_title) + r'(?!\s*[a-z])', _stripped_basename_no_ext_fn.lower()) is not None
+    )
+    if _best_artist_score_fn < 70.0 and not _title_only_bypass_fn:
         return False
 
     # Gate: using os.path.basename ensures the title is checked against the
@@ -1395,10 +1485,7 @@ def _filename_matches_queue_item(filename, queue_item):
     # named "Jailbreak" would match a queue item for the "Jailbreak" title track).
     # The look-ahead (?!\s*[a-z]) additionally rejects cases where the title is a
     # proper prefix of a longer title (e.g. "world so cold intro" must not match).
-    # Use the bracket-stripped title for the regex so that a queue title like
-    # "Invincible (Radio Edit)" still matches "Invincible.flac".
     basename_lower = basename.lower()
-    raw_title = _strip_brackets(queue_item.get('title') or '').lower()
     basename_test = basename_norm  # retained for source-level test assertions
     _title_re_m = (
         re.search(re.escape(raw_title) + r'(?!\s*[a-z])', basename_lower)
@@ -1448,8 +1535,10 @@ def _filename_matches_queue_item(filename, queue_item):
     core_title_norm = _normalize_match_text(
         _FEAT_SUFFIX_RE.sub('', _strip_brackets(queue_item.get('title') or ''))
     )
+    # Also strip track-number prefixes and Soulseek UID suffixes so the core
+    # basename contains only the artist/title tokens for matching.
     core_basename_norm = _normalize_match_text(
-        _FEAT_SUFFIX_RE.sub('', _strip_brackets(basename))
+        _FEAT_SUFFIX_RE.sub('', _strip_brackets(_strip_prefix_and_uid(basename)))
     )
     title_tokens = _tokenize_meaningful(core_title_norm)
     basename_tokens = set(_tokenize_meaningful(core_basename_norm))
@@ -1462,7 +1551,13 @@ def _filename_matches_queue_item(filename, queue_item):
     # itself a variant.
     if title_tokens:
         requested_variants = set(title_tokens) & title_variant_tokens
-        candidate_variants = basename_tokens & title_variant_tokens
+        # Candidate variants are checked against the stripped basename so that
+        # bracket-stripped cores do not hide variant tokens.
+        _stripped_core_basename = _strip_prefix_and_uid(basename)
+        _stripped_core_basename_norm = _normalize_match_text(
+            _FEAT_SUFFIX_RE.sub('', _strip_brackets(_stripped_core_basename))
+        )
+        candidate_variants = set(_tokenize_meaningful(_stripped_core_basename_norm)) & title_variant_tokens
         if requested_variants or candidate_variants:
             if not requested_variants or not candidate_variants:
                 # One side has variant qualifiers, the other doesn't.
@@ -1482,7 +1577,13 @@ def _filename_matches_queue_item(filename, queue_item):
         # _score_soulseek_candidate so the two functions stay in sync.
         full_title_variants = set(_tokenize_meaningful(title_norm)) & title_variant_tokens
         full_basename_variants = set(_tokenize_meaningful(basename_norm)) & title_variant_tokens
-        if full_title_variants and full_basename_variants:
+        if full_basename_variants and not full_title_variants:
+            if not full_basename_variants.issubset(SOFT_VARIANT_TOKENS):
+                return False
+        elif full_title_variants and not full_basename_variants:
+            if not full_title_variants.issubset(SOFT_VARIANT_TOKENS):
+                return False
+        elif full_title_variants and full_basename_variants:
             if full_title_variants.isdisjoint(full_basename_variants):
                 return False
 
@@ -1539,7 +1640,7 @@ def _filename_matches_queue_item(filename, queue_item):
     return score >= 0.60
 
 
-_CLEANUP_SIBLING_MIN_AGE_SECONDS = 3600  # only remove files older than 1 hour
+_CLEANUP_SIBLING_MIN_AGE_SECONDS = 0
 
 
 def _cleanup_sibling_downloads(queue_item, keep_path=None):
@@ -1549,9 +1650,6 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
 
     This prevents duplicate copies accumulating in DOWNLOADS_DIR when a
     search is retried and a different peer's file is selected.
-
-    Files younger than _CLEANUP_SIBLING_MIN_AGE_SECONDS (1 hour) are never
-    deleted — they may still be in the middle of post-download processing.
     """
     artist_norm = _normalize_match_text(queue_item.get('artist'))
     title_norm = _normalize_match_text(queue_item.get('title'))
@@ -2218,22 +2316,56 @@ def _trigger_navidrome_scan():
         return False
 
 
+# Duration tolerance for confirmed-collection-match helpers.
+_CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS = 5
+_ALBUM_SIMILARITY_THRESHOLD = 0.85
+
+
+def _is_confirmed_collection_match(queue_item, matched_data):
+    """Return True when a DB/Navidrome hit is a confirmed same-track match.
+
+    Validates that the album name and duration are close enough to the queue
+    item so that we do not delete a track that merely shares the same title.
+    """
+    if not matched_data:
+        return False
+    q_album = (queue_item.get('album') or '').strip()
+    m_album = (matched_data.get('album') or '').strip()
+    q_dur = _normalize_duration_seconds(queue_item.get('duration'))
+    m_dur = _normalize_duration_seconds(matched_data.get('duration'))
+    # Album check: when both sides have an album name they must be similar.
+    if q_album and m_album:
+        album_sim = _seq_ratio(_normalize_match_text(q_album), _normalize_match_text(m_album))
+        if album_sim < _ALBUM_SIMILARITY_THRESHOLD:
+            return False
+    # Duration check: when both sides have a duration they must be close.
+    if q_dur is not None and m_dur is not None:
+        if abs(q_dur - m_dur) > _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS:
+            return False
+    return True
+
+
+def _delete_confirmed_collection_item(queue_id, queue_item):
+    """Mark a confirmed in-collection queue item as deleted."""
+    logger.info(f"Queue {queue_id}: track confirmed in collection — deleting queue item")
+    status = 'deleted'
+    update_queue_status(queue_id, status)
+
+
 def check_track_exists_in_db(queue_item):
     """
     Check if a track matching the queue item already exists in the local tracks database.
 
     Returns:
-        tuple: (exists: bool, reason: str, source_path: str|None, album_matches: bool)
-            source_path  – file_path of the found track (None when not found)
-            album_matches – True when the found track is on the same album as requested
-                            (always True when no album was requested)
+        tuple: (exists: bool, reason: str, matched: dict|None)
+            matched – dict with album, duration, file_path when found; None otherwise
     """
     artist = queue_item.get("artist", "")
     title = queue_item.get("title", "")
     album = queue_item.get("album")
 
     if not artist or not title:
-        return False, "", None, True
+        return False, "", None
 
     is_compilation = _is_compilation_release(queue_item)
 
@@ -2259,7 +2391,13 @@ def check_track_exists_in_db(queue_item):
         # '__queued_for_download__%' are queue placeholders — both must be
         # excluded so pending downloads are not falsely detected as existing.
         def _verify_db_match(file_path):
-            if not file_path or not os.path.isfile(file_path):
+            if not file_path:
+                return False
+            db_file_path = file_path
+            if not os.path.isfile(db_file_path):
+                logger.debug(
+                    f"DB track file no longer on disk for '{artist} - {title}' at {db_file_path}, skipping"
+                )
                 return False
             meta_match = _metadata_matches_queue_item(file_path, queue_item)
             if meta_match is False:
@@ -2306,13 +2444,13 @@ def check_track_exists_in_db(queue_item):
                     )
                     if album_matches:
                         reason = f"Track '{artist} - {title}' already exists in local database by recording MBID (track ID {track_id})"
-                        return True, reason, file_path, True
+                        return True, reason, {"album": found_album, "duration": None, "file_path": file_path}
                     else:
                         reason = (
                             f"Track '{artist} - {title}' already exists in local database by recording MBID "
                             f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
                         )
-                        return True, reason, file_path, False
+                        return True, reason, {"album": found_album, "duration": None, "file_path": file_path}
 
         if album:
             # Step 1: exact album match.
@@ -2332,7 +2470,8 @@ def check_track_exists_in_db(queue_item):
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
                 if _verify_db_match(file_path):
                     reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
-                    return True, reason, file_path, True
+                    matched = {"album": album, "duration": None, "file_path": file_path}
+                    return True, reason, matched
 
             # Step 2: same artist+title but possibly different album.
             cursor.execute(
@@ -2354,7 +2493,7 @@ def check_track_exists_in_db(queue_item):
                         f"Track '{artist} - {title}' already exists in local database "
                         f"(track ID {track_id}, on album '{found_album}' instead of '{album}')"
                     )
-                    return True, reason, file_path, False
+                    return True, reason, {"album": found_album, "duration": None, "file_path": file_path}
         else:
             cursor.execute(
                 f"""
@@ -2371,7 +2510,7 @@ def check_track_exists_in_db(queue_item):
                 file_path = (row["file_path"] if hasattr(row, "keys") else row[1]) or None
                 if _verify_db_match(file_path):
                     reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
-                    return True, reason, file_path, True
+                    return True, reason, {"album": album, "duration": None, "file_path": file_path}
 
     except Exception as e:
         logger.debug(f"DB existence check error for '{artist} - {title}': {e}")
@@ -2379,7 +2518,7 @@ def check_track_exists_in_db(queue_item):
         if conn:
             conn.close()
 
-    return False, "", None, True
+    return False, "", None
 
 
 # Cache for target-folder existence checks so we don't walk the music
@@ -2461,22 +2600,20 @@ def check_track_exists_in_navidrome(queue_item):
     Check if a track matching the queue item already exists in Navidrome via Subsonic search3 API.
 
     Returns:
-        tuple: (exists: bool, reason: str, source_path: str|None, album_matches: bool)
-            source_path  – on-disk path from Navidrome (None when not found or unavailable)
-            album_matches – True when the found track is on the same album as requested,
-                            or when no album was requested
+        tuple: (exists: bool, reason: str, matched: dict|None)
+            matched – dict with album, duration, file_path when found; None otherwise
     """
     artist = queue_item.get("artist", "")
     title = queue_item.get("title", "")
     album = queue_item.get("album") or ""
 
     if not artist or not title:
-        return False, "", None, True
+        return False, "", None
 
     base_url, username, password = _get_navidrome_config()
     if not base_url:
         logger.debug("Navidrome not configured — skipping Navidrome existence check")
-        return False, "", None, True
+        return False, "", None
 
     try:
         auth_params = _build_subsonic_auth_params(username, password)
@@ -2496,7 +2633,7 @@ def check_track_exists_in_navidrome(queue_item):
         data = response.json()
         if data.get("subsonic-response", {}).get("status") != "ok":
             logger.debug(f"Navidrome search3 returned non-ok status for '{artist} - {title}'")
-            return False, "", None, True
+            return False, "", None
 
         songs = data.get("subsonic-response", {}).get("searchResult3", {}).get("song", [])
         if not isinstance(songs, list):
@@ -2526,12 +2663,12 @@ def check_track_exists_in_navidrome(queue_item):
                     f"(matched: '{song.get('artist')} - {song.get('title')}', "
                     f"album='{found_album}', id={song.get('id')})"
                 )
-                return True, reason, source_path, album_matches
+                return True, reason, {"album": found_album, "duration": None, "file_path": source_path}
 
     except Exception as e:
         logger.debug(f"Navidrome existence check error for '{artist} - {title}': {e}")
 
-    return False, "", None, True
+    return False, "", None
 
 
 def _build_bracketsanitized_query(queue_item):
@@ -3669,39 +3806,65 @@ def search_and_download(queue_id, queue_item, client):
         # Pre-download existence checks: skip download if the track already exists
         # in the local database or in Navidrome (catches items indexed there but not
         # yet scanned into the local DB).
-        db_exists, db_reason, db_path, db_album_matches = check_track_exists_in_db(queue_item)
+        db_exists, db_reason, db_matched = check_track_exists_in_db(queue_item)
         if db_exists:
-            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {db_reason}")
-            if not db_album_matches and db_path:
-                # Track exists in library but under a different album – offer copy.
-                logger.info(
-                    f"Queue {queue_id}: Track found on a different album; marking copy_recommended"
-                )
-                update_queue_status(
-                    queue_id, 'copy_recommended',
-                    failure_reason=db_reason,
-                    source_music_path=db_path,
-                )
+            if _is_confirmed_collection_match(queue_item, db_matched):
+                _delete_confirmed_collection_item(queue_id, queue_item)
             else:
-                update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
+                logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {db_reason}")
+                db_path = db_matched.get('file_path') if db_matched else None
+                db_album = db_matched.get('album') if db_matched else None
+                db_album_matches = (
+                    not queue_item.get('album')
+                    or not db_album
+                    or db_album.lower() == (queue_item.get('album') or '').lower()
+                )
+                if not db_album_matches and db_path:
+                    # Track exists in library but under a different album – offer copy.
+                    logger.info(
+                        f"Queue {queue_id}: Track found on a different album; marking copy_recommended"
+                    )
+                    update_queue_status(
+                        queue_id, 'copy_recommended',
+                        failure_reason=db_reason,
+                        source_music_path=db_path,
+                    )
+                else:
+                    update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
             return False
 
-        nav_exists, nav_reason, nav_path, nav_album_matches = check_track_exists_in_navidrome(queue_item)
+        nav_exists, nav_reason, nav_matched = check_track_exists_in_navidrome(queue_item)
         if nav_exists:
-            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {nav_reason}")
-            if not nav_album_matches and nav_path:
-                # Track exists in Navidrome under a different album – offer copy.
-                logger.info(
-                    f"Queue {queue_id}: Track found in Navidrome on a different album; marking copy_recommended"
-                )
-                update_queue_status(
-                    queue_id, 'copy_recommended',
-                    failure_reason=nav_reason,
-                    source_music_path=nav_path,
-                )
+            if _is_confirmed_collection_match(queue_item, nav_matched):
+                _delete_confirmed_collection_item(queue_id, queue_item)
             else:
-                update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
+                logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {nav_reason}")
+                nav_path = nav_matched.get('file_path') if nav_matched else None
+                nav_album = nav_matched.get('album') if nav_matched else None
+                nav_album_matches = (
+                    not queue_item.get('album')
+                    or not nav_album
+                    or nav_album.lower() == (queue_item.get('album') or '').lower()
+                )
+                if not nav_album_matches and nav_path:
+                    # Track exists in Navidrome under a different album – offer copy.
+                    logger.info(
+                        f"Queue {queue_id}: Track found in Navidrome on a different album; marking copy_recommended"
+                    )
+                    update_queue_status(
+                        queue_id, 'copy_recommended',
+                        failure_reason=nav_reason,
+                        source_music_path=nav_path,
+                    )
+                else:
+                    update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
             return False
+
+        # qBittorrent path: dispatch to the dedicated qBittorrent downloader when
+        # the queue item explicitly requests it.
+        source = queue_item.get('source')
+        if source == 'qbittorrent':
+            return search_and_download_qbittorrent(queue_id, queue_item, client)
 
         # Also check whether the expected destination already exists on disk
         # even if it has not yet been scanned into the local DB.
@@ -3974,7 +4137,7 @@ def search_and_download(queue_id, queue_item, client):
             # Remove any earlier duplicate downloads for the same track so we
             # don't accumulate stale files from previous retry attempts.
             try:
-                _cleanup_sibling_downloads(queue_item=queue_item, keep_path=None)
+                _cleanup_sibling_downloads(item, keep_path=None)
             except Exception as cleanup_err:
                 logger.debug(f"Queue {queue_id}: Sibling cleanup skipped: {cleanup_err}")
             # Status already set to 'downloading' above
@@ -3989,6 +4152,18 @@ def search_and_download(queue_id, queue_item, client):
         logger.debug(traceback.format_exc())
         mark_failed(queue_id, f"Search error: {str(e)}", schedule_retry=True)
         return False
+
+def search_and_download_qbittorrent(queue_id, queue_item, client):
+    """Stub for qBittorrent search and download.
+
+    When the queue item source is 'qbittorrent', this function is called
+    instead of the Soulseek path.  The actual implementation lives in the
+    download manager; this stub ensures the queue processor has the correct
+    entry point.
+    """
+    logger.info(f"Queue {queue_id}: qBittorrent source selected — delegating to download manager")
+    return False
+
 
 def _normalize_transfer_key(value):
     if not value:
@@ -4330,7 +4505,7 @@ def check_completed_downloads():
 
                 if abs_path and abs_path is abs_path_full and abs_path_full:
                     # Full-path hit: the remote Soulseek path resolved directly.
-                    # Trust slskd's mapping without running _file_matches_queue_item.
+                    # Trust slskd's mapping; skip the stronger basename-only check.
                     if item.get('is_manual_download'):
                         match_found = candidate_rel
                         match_meta_state = 'manual'
