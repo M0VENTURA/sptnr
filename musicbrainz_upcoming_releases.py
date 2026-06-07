@@ -218,7 +218,7 @@ def _extract_label(release: Dict[str, Any]) -> Optional[str]:
 
 def _build_queries(
     lookback_days: int = 7,
-    lookahead_days: int = 30,
+    lookahead_days: int = 180,
     added_lookback_days: int = 3,
 ) -> List[Tuple[str, str]]:
     """Build the three required WS/2 search queries.
@@ -263,7 +263,7 @@ def fetch_musicbrainz_upcoming_releases(
     collection_artists: Set[str],
     recommended_artists: Set[str],
     lookback_days: int = 7,
-    lookahead_days: int = 30,
+    lookahead_days: int = 180,
     added_lookback_days: int = 3,
     max_results_per_query: int = 200,
 ) -> List[Dict[str, Any]]:

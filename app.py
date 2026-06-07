@@ -40129,7 +40129,7 @@ def api_upcoming_releases():
                     collection_artists=collection_artists,
                     recommended_artists=recommended_artists,
                     lookback_days=int(features.get("live_musicbrainz_lookback_days", 14) or 14),
-                    lookahead_days=int(features.get("live_musicbrainz_lookahead_days", 30) or 30),
+                    lookahead_days=int(features.get("live_musicbrainz_lookahead_days", 180) or 180),
                     added_lookback_days=int(features.get("live_musicbrainz_added_lookback_days", 3) or 3),
                     max_results_per_query=int(features.get("live_musicbrainz_max_results", 200) or 200),
                 )
