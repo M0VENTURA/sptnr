@@ -1136,6 +1136,47 @@ def ensure_mb_ignored_fields_column():
             conn.close()
 
 
+def ensure_manual_genres_column():
+    """Ensure the ``manual_genres`` TEXT column exists on the tracks table.
+
+    This column stores genres that were manually added by a user via the UI.
+    Manual genres are preserved across all subsequent scans and are never
+    overwritten by automatic genre resolution.
+    """
+    import logging
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not _table_exists(cursor, "tracks"):
+            logging.warning("Tracks table does not exist yet, skipping manual_genres migration")
+            return False
+
+        existing = _get_table_columns(cursor, "tracks")
+        if "manual_genres" in existing:
+            logging.debug("manual_genres column already present; skipping migration")
+            return True
+
+        cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS manual_genres TEXT")
+        conn.commit()
+        logging.info("✓ Added 'manual_genres' column to tracks table")
+        return True
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping manual_genres migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping manual_genres migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring manual_genres column exists: {e}", exc_info=True)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def ensure_artists_name_unique_constraint():
     """Ensure a UNIQUE constraint exists on the artists.name column.
 

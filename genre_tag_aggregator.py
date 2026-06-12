@@ -153,6 +153,12 @@ def get_track_genres_and_tags(track_dict: dict) -> Dict[str, list]:
         if tags:
             sources["navidrome_genres"] = tags
 
+    # manual_genres stores user-applied genres and is preserved across scans.
+    if track_dict.get("manual_genres"):
+        tags = parse_delimited_tags(track_dict["manual_genres"])
+        if tags:
+            sources["manual_genres"] = tags
+
     # Mood tags are stored in a dedicated column and can be JSON arrays,
     # semicolon-separated strings, or comma-separated strings.
     if track_dict.get("mood"):

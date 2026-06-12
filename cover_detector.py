@@ -295,27 +295,34 @@ class CoverDetector:
                     )
                     new_title = self._build_cover_title(title, original_artist)
 
+                    # Add "Cover" to musicbrainz_genres so the genre resolver can
+                    # include it when computing the top 3 genres.
                     cursor.execute(
-                        f"SELECT genres FROM tracks WHERE id = {self.placeholder}",
+                        f"SELECT musicbrainz_genres FROM tracks WHERE id = {self.placeholder}",
                         (track_id,)
                     )
                     result = cursor.fetchone()
-                    current_genres = self._row_value(result, "genres", 0, "") or ""
-                    genres_list = [genre.strip() for genre in current_genres.split(",") if genre.strip()]
-                    if "Cover" not in genres_list:
-                        genres_list.append("Cover")
-                    new_genres = ", ".join(genres_list)
+                    mb_genres_raw = self._row_value(result, "musicbrainz_genres", 0, "") or ""
+                    try:
+                        mb_genres_list = json.loads(mb_genres_raw) if mb_genres_raw and mb_genres_raw != 'null' else []
+                        if not isinstance(mb_genres_list, list):
+                            mb_genres_list = []
+                    except (json.JSONDecodeError, TypeError):
+                        mb_genres_list = []
+
+                    mb_names = [str(g).strip() for g in mb_genres_list if str(g).strip()]
+                    if "Cover" not in mb_names:
+                        mb_genres_list.insert(0, "Cover")
+                        cursor.execute(
+                            f"UPDATE tracks SET musicbrainz_genres = {self.placeholder} WHERE id = {self.placeholder}",
+                            (json.dumps(mb_genres_list), track_id)
+                        )
 
                     if new_title != title:
                         cursor.execute(
                             f"UPDATE tracks SET title = {self.placeholder} WHERE id = {self.placeholder}",
                             (new_title, track_id)
                         )
-
-                    cursor.execute(
-                        f"UPDATE tracks SET genres = {self.placeholder} WHERE id = {self.placeholder}",
-                        (new_genres, track_id)
-                    )
                     cursor.execute(
                         f"UPDATE tracks SET is_cover = {self.placeholder}, is_cover_reason = {self.placeholder}, original_cover_artist = {self.placeholder} WHERE id = {self.placeholder}",
                         (is_cover_value, reason, original_artist, track_id)
