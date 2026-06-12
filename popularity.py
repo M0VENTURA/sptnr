@@ -6845,6 +6845,49 @@ def popularity_scan(
                         except Exception as tag_save_err:
                             log_debug(f'Failed to save genre tags in metadata-only mode for "{artist} - {album}": {tag_save_err}')
 
+                    # --- Genre Resolution ---
+                    # After all source columns are populated, resolve the top 3
+                    # genres for each track and update the DB + file tags.
+                    try:
+                        from genre_resolver import resolve_track_genres, format_genres_for_db
+                        from helpers.tag_manager import update_file_tags
+
+                        _genre_resolved = 0
+                        for _gt in album_tracks:
+                            _gt_id = _gt.get('id')
+                            if not _gt_id:
+                                continue
+                            cursor.execute(
+                                f"SELECT id, file_path, musicbrainz_genres, discogs_genres, lastfm_tags, essentia_genres, manual_genres FROM tracks WHERE id = {placeholder}",
+                                (_gt_id,)
+                            )
+                            _gt_row = cursor.fetchone()
+                            if not _gt_row:
+                                continue
+                            _gt_dict = dict(_gt_row) if not isinstance(_gt_row, dict) else _gt_row
+                            _resolved = resolve_track_genres(_gt_dict)
+                            _genres_str = format_genres_for_db(_resolved)
+                            cursor.execute(
+                                f"UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}",
+                                (_genres_str, _gt_id)
+                            )
+                            _genre_resolved += 1
+                            _fp = _gt_dict.get('file_path')
+                            if _fp:
+                                if not os.path.isabs(_fp):
+                                    _music_root = os.environ.get("MUSIC_FOLDER") or os.environ.get("MUSIC_ROOT") or "/music"
+                                    _fp = os.path.join(_music_root, _fp)
+                                if os.path.exists(_fp):
+                                    try:
+                                        update_file_tags(_fp, {"genres": _resolved})
+                                    except Exception as _file_err:
+                                        log_debug(f"Failed to write resolved genres to file for {_gt_id}: {_file_err}")
+                        if _genre_resolved > 0:
+                            conn.commit()
+                            log_info(f"Metadata-only: resolved genres for {_genre_resolved} track(s) in '{artist} - {album}'")
+                    except Exception as _resolver_err:
+                        log_debug(f"Genre resolution failed for '{artist} - {album}': {_resolver_err}")
+
                     log_info(f'Metadata-only scan complete for "{artist} - {album}" (popularity/singles/stars skipped)')
 
                     current_timestamp = datetime.now().isoformat()

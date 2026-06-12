@@ -15,6 +15,7 @@ from helpers.db_utils import (
     verify_album_artist_column,
     ensure_pending_mb_updates_column,
     ensure_mb_ignored_fields_column,
+    ensure_manual_genres_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
@@ -830,6 +831,9 @@ ensure_spotify_metadata_columns()
 # Ensure popularity freeze tracking columns exist
 ensure_popularity_freeze_columns()
 
+# Ensure manual_genres column exists for user-preserved genres
+ensure_manual_genres_column()
+
 # Ensure artists.name has a unique constraint (required for ON CONFLICT (name))
 ensure_artists_name_unique_constraint()
 
@@ -929,6 +933,7 @@ def _run_deferred_startup_migrations():
         ensure_popularity_freeze_columns as _ensure_popularity,
         ensure_artists_name_unique_constraint as _ensure_artists_unique,
         ensure_lastfm_tables as _ensure_lastfm_tables,
+        ensure_manual_genres_column as _ensure_manual_genres,
     )
     from download_file_verification import (
         ensure_verification_columns as _ensure_verification,
@@ -970,6 +975,7 @@ def _run_deferred_startup_migrations():
         _ensure_verification,
         _ensure_queue_mbid,
         _ensure_lastfm_tables,
+        _ensure_manual_genres,
     ):
         try:
             fn()
@@ -9334,22 +9340,28 @@ def api_artist_genre_management_save():
                     tid = tr.get("id")
                     current = _parse_genres_string(tr.get("genres") or "")
                     current_lower_map = {g.lower(): g for g in current}
+                    manual_current = _parse_genres_string(tr.get("manual_genres") or "")
+                    manual_lower_map = {g.lower(): g for g in manual_current}
 
-                    # Remove
+                    # Remove from both genres and manual_genres
                     new_set = {k: v for k, v in current_lower_map.items() if k not in remove_genres_lower}
+                    manual_new_set = {k: v for k, v in manual_lower_map.items() if k not in remove_genres_lower}
 
-                    # Add (avoid duplicates)
+                    # Add (avoid duplicates) – manual additions are stored in manual_genres
                     for g in add_genres:
                         if g.lower() not in new_set:
                             new_set[g.lower()] = g
+                        if g.lower() not in manual_new_set:
+                            manual_new_set[g.lower()] = g
 
                     new_genres = list(new_set.values())
                     new_genres_str = ", ".join(new_genres)
+                    new_manual_str = ", ".join(list(manual_new_set.values()))
 
                     try:
                         cursor.execute(
-                            f"UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}",
-                            (new_genres_str, tid),
+                            f"UPDATE tracks SET genres = {placeholder}, manual_genres = {placeholder} WHERE id = {placeholder}",
+                            (new_genres_str, new_manual_str, tid),
                         )
                         conn.commit()
 
@@ -12942,15 +12954,23 @@ def api_album_bulk_tag():
                 
                 if result:
                     current_genres = row_get(result, 'genres') or ''
+                    manual_genres_raw = row_get(result, 'manual_genres') or ''
                     # Parse existing genres (handle both comma-separated and double-backslash formats)
                     if '\\' in current_genres:
                         existing = set(g.strip() for g in current_genres.split('\\') if g.strip())
                     else:
                         existing = set(g.strip() for g in current_genres.split(',') if g.strip())
+                    # Parse manual genres
+                    if '\\' in manual_genres_raw:
+                        manual_existing = set(g.strip() for g in manual_genres_raw.split('\\') if g.strip())
+                    else:
+                        manual_existing = set(g.strip() for g in manual_genres_raw.split(',') if g.strip())
                     # Add new genres
                     existing.update(genres)
+                    manual_existing.update(genres)
                     # Join back for database (comma-separated for display)
                     new_genres = ', '.join(sorted(existing))
+                    new_manual_genres = ', '.join(sorted(manual_existing))
                     # Format for ID3 tags (double backslash separated)
                     genre_id3_final = '\\'.join(sorted(existing))
                     
@@ -12988,8 +13008,8 @@ def api_album_bulk_tag():
                     
                     # Update database (store comma-separated for display)
                     cursor.execute(f"""
-                        UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}
-                    """, (new_genres, track_id))
+                        UPDATE tracks SET genres = {placeholder}, manual_genres = {placeholder} WHERE id = {placeholder}
+                    """, (new_genres, new_manual_genres, track_id))
                     
                     updated_count += 1
                     logging.info(f"[TAG] Added genres to track {track_id}: {new_genres}")
@@ -36974,9 +36994,9 @@ def api_album_apply_genres():
                 try:
                     cursor.execute(f"""
                         UPDATE tracks
-                        SET genres = {placeholder}
+                        SET genres = {placeholder}, manual_genres = {placeholder}
                         WHERE id = {placeholder}
-                    """, (genres_str, row_get(track, 'id')))
+                    """, (genres_str, genres_str, row_get(track, 'id')))
                     updated_count += 1
                 except Exception as db_error:
                     logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -36990,9 +37010,9 @@ def api_album_apply_genres():
                     try:
                         cursor.execute(f"""
                             UPDATE tracks
-                            SET genres = {placeholder}
+                            SET genres = {placeholder}, manual_genres = {placeholder}
                             WHERE id = {placeholder}
-                        """, (genres_str, row_get(track, 'id')))
+                        """, (genres_str, genres_str, row_get(track, 'id')))
                         updated_count += 1
                     except Exception as db_error:
                         logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -37145,9 +37165,9 @@ def api_artist_apply_genres():
                 try:
                     cursor.execute(f"""
                         UPDATE tracks
-                        SET genres = {placeholder}
+                        SET genres = {placeholder}, manual_genres = {placeholder}
                         WHERE id = {placeholder}
-                    """, (genres_str, row_get(track, 'id')))
+                    """, (genres_str, genres_str, row_get(track, 'id')))
                     updated_count += 1
                 except Exception as db_error:
                     logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -37165,9 +37185,9 @@ def api_artist_apply_genres():
                     try:
                         cursor.execute(f"""
                             UPDATE tracks
-                            SET genres = {placeholder}
+                            SET genres = {placeholder}, manual_genres = {placeholder}
                             WHERE id = {placeholder}
-                        """, (genres_str, row_get(track, 'id')))
+                        """, (genres_str, genres_str, row_get(track, 'id')))
                         updated_count += 1
                     except Exception as db_error:
                         logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -37663,12 +37683,12 @@ def api_remove_genres():
         # Build WHERE clause
         if album_name:
             cursor.execute(
-                f"SELECT id, title, genres FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
+                f"SELECT id, title, genres, manual_genres FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
                 (artist_name, album_name)
             )
         else:
             cursor.execute(
-                f"SELECT id, title, genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}",
+                f"SELECT id, title, genres, manual_genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}",
                 (artist_name,)
             )
 
@@ -37680,18 +37700,22 @@ def api_remove_genres():
             if isinstance(row, dict):
                 track_id = row.get("id")
                 genres_str = row.get("genres")
+                manual_genres_str = row.get("manual_genres") or ""
             elif hasattr(row, "keys"):
                 track_id = row["id"]
                 genres_str = row["genres"]
+                manual_genres_str = row.get("manual_genres") or ""
             else:
                 track_id = row[0]
                 genres_str = row[2]
+                manual_genres_str = row[3] if len(row) > 3 else ""
 
-            if not genres_str:
+            if not genres_str and not manual_genres_str:
                 continue
 
             # Parse genres
-            genre_list = [g.strip() for g in re.split(r'[\\,]+', genres_str)]
+            genre_list = [g.strip() for g in re.split(r'[\,]+', genres_str)] if genres_str else []
+            manual_list = [g.strip() for g in re.split(r'[\,]+', manual_genres_str)] if manual_genres_str else []
 
             # Remove specified genres (case-insensitive)
             genres_to_remove_lower = [g.lower() for g in genres_to_remove]
@@ -37699,15 +37723,20 @@ def api_remove_genres():
                 g for g in genre_list
                 if g.lower() not in genres_to_remove_lower
             ]
+            filtered_manual = [
+                g for g in manual_list
+                if g.lower() not in genres_to_remove_lower
+            ]
 
             # Only update if changes were made
-            if len(filtered_genres) != len(genre_list):
+            if len(filtered_genres) != len(genre_list) or len(filtered_manual) != len(manual_list):
                 new_genres_str = '\\'.join(filtered_genres) if filtered_genres else ''
+                new_manual_str = '\\'.join(filtered_manual) if filtered_manual else ''
 
                 # Update database
                 cursor.execute(
-                    f"UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}",
-                    (new_genres_str, track_id)
+                    f"UPDATE tracks SET genres = {placeholder}, manual_genres = {placeholder} WHERE id = {placeholder}",
+                    (new_genres_str, new_manual_str, track_id)
                 )
 
                 affected_count += 1
