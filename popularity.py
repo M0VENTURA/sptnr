@@ -1186,6 +1186,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
         - track_count: Total tracks analyzed
         - top_15_percentile: Popularity threshold for top 15% of artist's tracks
         - top_20_percentile: Popularity threshold for top 20% of artist's tracks
+        - top_25_percentile: Popularity threshold for top 25% of artist's tracks
     """
     try:
         placeholder = "%s"
@@ -1234,7 +1235,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
                 'stddev_popularity': 0,
                 'track_count': 0,
                 'top_15_percentile': 0,
-                'top_20_percentile': 0
+                'top_20_percentile': 0,
+                'top_25_percentile': 0
             }
 
         # Sort scores to calculate percentiles
@@ -1244,11 +1246,14 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
         # Calculate percentile thresholds
         # Top 15%: This is approximately 85th percentile (top artists of artist's work)
         # Top 20%: This is approximately 80th percentile (broader standout tracks)
+        # Top 25%: Used for gating 5-star assignment on high-confidence singles
         top_15_index = max(0, int(track_count * 0.15) - 1)  # -1 for 0-based index
         top_20_index = max(0, int(track_count * 0.20) - 1)
+        top_25_index = max(0, int(track_count * 0.25) - 1)
 
         top_15_threshold = sorted_scores[top_15_index] if top_15_index < track_count else 0
         top_20_threshold = sorted_scores[top_20_index] if top_20_index < track_count else 0
+        top_25_threshold = sorted_scores[top_25_index] if top_25_index < track_count else 0
 
         # Calculate MAD (Median Absolute Deviation)
         # MAD is more robust to outliers than standard deviation
@@ -1265,7 +1270,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             'mad_popularity': mad_scaled,  # NEW: MAD for robust z-score calculation
             'track_count': len(scores),
             'top_15_percentile': top_15_threshold,  # Top 15% of artist's tracks
-            'top_20_percentile': top_20_threshold   # Top 20% of artist's tracks
+            'top_20_percentile': top_20_threshold,  # Top 20% of artist's tracks
+            'top_25_percentile': top_25_threshold  # Top 25% of artist's tracks
         }
     except Exception as e:
         try:
@@ -1281,7 +1287,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             'mad_popularity': 0,
             'track_count': 0,
             'top_15_percentile': 0,
-            'top_20_percentile': 0
+            'top_20_percentile': 0,
+            'top_25_percentile': 0
         }
 
 
@@ -7858,9 +7865,19 @@ def popularity_scan(
                             log_info(f"5-star assignment: {title} (user-set single)")
                             log_debug(f"User-set single - track_id: {track_id}")
                         elif is_single and single_confidence == "high":
-                            stars = 5
-                            log_info(f"5-star assignment: {title} (high-confidence single - preserved from detection)")
-                            log_debug(f"High-confidence single - track_id: {track_id}, preserving 5★ rating")
+                            # Gate 5-star assignment on top 25% of artist catalogue popularity.
+                            # A single must be in the top 25% of the artist's tracks to earn 5★;
+                            # otherwise it is demoted to 4★ to prevent lower-quality singles
+                            # from dominating the top tier.
+                            top_25_threshold = artist_stats.get('top_25_percentile', 0)
+                            if top_25_threshold > 0 and popularity_score >= top_25_threshold:
+                                stars = 5
+                                log_info(f"5-star assignment: {title} (high-confidence single + top 25% artist catalogue)")
+                                log_debug(f"High-confidence single - track_id: {track_id}, popularity {popularity_score:.1f} >= top_25_threshold {top_25_threshold:.1f}, preserving 5★ rating")
+                            else:
+                                stars = 4
+                                log_info(f"4-star assignment: {title} (high-confidence single, but outside top 25% of artist catalogue)")
+                                log_debug(f"High-confidence single demoted - track_id: {track_id}, popularity {popularity_score:.1f} < top_25_threshold {top_25_threshold:.1f}, demoted to 4★")
 
                         # Confidence-based star logic applies to all tracks, including
                         # parenthesized/alternate variants. Exclusion is used only for
