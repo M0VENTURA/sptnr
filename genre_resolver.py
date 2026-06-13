@@ -135,6 +135,14 @@ def resolve_track_genres(track_dict: Dict[str, Any]) -> List[str]:
     # Select top 3
     top_genres = [data["name"] for _, data in sorted_genres[:3]]
 
+    # Add live/acoustic genre flags (always present when set, before manual genres)
+    if track_dict.get("is_live"):
+        if "Live" not in top_genres:
+            top_genres.insert(0, "Live")
+    if track_dict.get("is_acoustic"):
+        if "Acoustic" not in top_genres:
+            top_genres.insert(0, "Acoustic")
+
     # Add manual genres (always preserved, deduplicated)
     manual_genres = _extract_genre_names(track_dict.get("manual_genres"))
     for genre in manual_genres:

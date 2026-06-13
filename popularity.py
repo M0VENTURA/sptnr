@@ -3861,7 +3861,8 @@ def popularity_scan(
             "spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup, "
             "popularity_score, album_artist, writer, spotify_genres, lastfm_tags, "
             "listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url, "
-            "is_live, is_acoustic, is_cover, musicbrainz_albumtype, discogs_release_id"
+            "is_live, is_acoustic, is_cover, musicbrainz_albumtype, discogs_release_id, "
+            "album_context_live, file_path, genres"
         )
         where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
         # Order by album_artist (falling back to track artist when absent) so that the
@@ -5263,6 +5264,9 @@ def popularity_scan(
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                         """, (mb_live_value, artist, album))
                         conn.commit()
+                        # Sync in-memory dicts so subsequent per-track processing sees the new value.
+                        for _t in album_tracks:
+                            _t['album_context_live'] = mb_live_value
                         if mb_is_live:
                             log_info(f'MusicBrainz confirmed live album: "{artist} - {album}" (type: {detected_album_type})')
                         else:
@@ -5403,10 +5407,10 @@ def popularity_scan(
                     album_live_genre = "Acoustic" if _live_type == "acoustic" else "Live"
 
                     log_info(f'Detected {_live_type} album: "{album}"')
-                    log_info(f'Track genre will be tagged as "{album_live_genre}" (no title rename)')
+                    log_info(f'Track genre will be tagged as "{album_live_genre}" and title updated with "({album_live_genre.lower()})"')
                     log_debug(f'Live album detection: album="{album}", album_type="{album_type_from_field}"')
 
-                    # Tag each track's genre with "Live" or "Acoustic" instead of renaming the title.
+                    # Tag each track's genre with "Live" or "Acoustic" and rename the title.
                     # Tracks that already carry the flag + genre combination are skipped.
                     live_tracks_updated = 0
                     for track in album_tracks:
@@ -5441,18 +5445,61 @@ def popularity_scan(
                         _is_live_val = 1 if album_live_genre == "Live" else 0
                         _is_acoustic_val = 1 if album_live_genre == "Acoustic" else 0
 
+                        # Update title to append (Live) or (Acoustic) if not already present.
+                        _current_title = track.get("title", "") or ""
+                        _new_title = _current_title
+                        _title_changed = False
+                        if _current_title and not re.search(r'\(' + re.escape(album_live_genre.lower()) + r'[^\)]*\)', _current_title, re.IGNORECASE):
+                            _new_title = _current_title + f" ({album_live_genre.lower()})"
+                            _title_changed = True
+
+                        # Update main genres column to include Live/Acoustic alongside existing genres.
+                        _genres_raw = track.get("genres") or ""
+                        _genres_list = [g.strip() for g in _genres_raw.split(",") if g.strip()]
+                        _genres_lower = [g.lower() for g in _genres_list]
+                        _genre_added = False
+                        if album_live_genre.lower() not in _genres_lower:
+                            _genres_list.insert(0, album_live_genre)
+                            _genre_added = True
+                        _new_genres = ", ".join(_genres_list)
+
                         cursor.execute(f"""
                             UPDATE tracks
                             SET is_live = {placeholder}, is_acoustic = {placeholder},
-                                musicbrainz_genres = {placeholder}
+                                musicbrainz_genres = {placeholder},
+                                title = {placeholder},
+                                genres = {placeholder},
+                                album_context_live = {placeholder}
                             WHERE id = {placeholder}
-                        """, (_is_live_val, _is_acoustic_val, _new_mb_genres, track_id))
+                        """, (_is_live_val, _is_acoustic_val, _new_mb_genres, _new_title, _new_genres, 1, track_id))
                         live_tracks_updated += 1
 
                         # Update in-memory dict so subsequent per-track processing uses the new values.
                         track['is_live'] = _is_live_val
                         track['is_acoustic'] = _is_acoustic_val
                         track['musicbrainz_genres'] = _new_mb_genres
+                        track['album_context_live'] = 1
+                        if _title_changed:
+                            track['title'] = _new_title
+                            track['genres'] = _new_genres
+
+                        # Write updated title and genres to audio file.
+                        _fp = track.get('file_path')
+                        if _fp and (_title_changed or _genre_added):
+                            if not os.path.isabs(_fp):
+                                _music_root = os.environ.get("MUSIC_FOLDER") or os.environ.get("MUSIC_ROOT") or "/music"
+                                _fp = os.path.join(_music_root, _fp)
+                            if os.path.exists(_fp):
+                                try:
+                                    from helpers.tag_manager import update_file_tags
+                                    _tags_to_write = {}
+                                    if _title_changed:
+                                        _tags_to_write["title"] = _new_title
+                                    if _genre_added:
+                                        _tags_to_write["genres"] = _genres_list
+                                    update_file_tags(_fp, _tags_to_write)
+                                except Exception as _file_err:
+                                    log_debug(f"Failed to write live tags to file for {track_id}: {_file_err}")
 
                         log_debug(f'Tagged track "{track.get("title", "")}" as {album_live_genre}')
 
@@ -6890,7 +6937,7 @@ def popularity_scan(
                             if not _gt_id:
                                 continue
                             cursor.execute(
-                                f"SELECT id, file_path, musicbrainz_genres, discogs_genres, lastfm_tags, essentia_genres, manual_genres FROM tracks WHERE id = {placeholder}",
+                                f"SELECT id, file_path, musicbrainz_genres, discogs_genres, lastfm_tags, essentia_genres, manual_genres, is_live, is_acoustic FROM tracks WHERE id = {placeholder}",
                                 (_gt_id,)
                             )
                             _gt_row = cursor.fetchone()
