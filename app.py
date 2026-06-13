@@ -84,6 +84,7 @@ from functools import wraps
 from helpers.scan_helpers import scan_artist_to_db
 from helpers.config_helpers import get_config, get_navidrome_config, clear_config_cache
 from helpers.api_response import api_ok, api_fail
+from helpers.helpers import normalize_single_mbid
 from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
@@ -10645,18 +10646,29 @@ def api_artist_missing_releases():
                 "info": "Skipped live MusicBrainz lookup during active scan; returned cached missing releases.",
             })
 
-    # Get artist MBID if available for more accurate MusicBrainz lookup
+    # Get artist MBID if available for more accurate MusicBrainz lookup.
+    # Use the most common single MBID among tracks so collaborations or bad
+    # tags do not skew the lookup to the wrong artist.
     artist_mbid = None
     try:
         cursor.execute(f"""
-            SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) AS mbid
+            SELECT COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) AS mbid
             FROM tracks
             WHERE LOWER({artist_compare_expr}) = LOWER({placeholder})
+              AND COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) IS NOT NULL
+              AND COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) != ''
         """, (artist,))
-        row = cursor.fetchone()
-        if row and row['mbid']:
-            artist_mbid = row['mbid']
-    except:
+        rows = cursor.fetchall()
+        mbids = []
+        for row in rows:
+            raw = row.get('mbid') if isinstance(row, dict) else row[0]
+            if raw:
+                normalized = normalize_single_mbid(str(raw))
+                if normalized:
+                    mbids.append(normalized)
+        if mbids:
+            artist_mbid = Counter(mbids).most_common(1)[0][0]
+    except Exception:
         pass
 
     cursor.execute(f"""
@@ -11068,14 +11080,26 @@ def api_scan_all_missing_releases():
                     try:
                         from api_clients.musicbrainz import lookup_and_save_artist_mbid
                         cursor.execute(f"""
-                            SELECT MAX(musicbrainz_artist_id)
+                            SELECT COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) AS mbid
                             FROM tracks
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                              AND COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) IS NOT NULL
+                              AND COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) != ''
                         """, (artist_name,))
-                        result = cursor.fetchone()
-                        existing_mbid = result[0] if result and result[0] else None
+                        rows = cursor.fetchall()
+                        mbids = []
+                        for row in rows:
+                            raw = row.get('mbid') if isinstance(row, dict) else row[0]
+                            if raw:
+                                normalized = normalize_single_mbid(str(raw))
+                                if normalized:
+                                    mbids.append(normalized)
+                        if mbids:
+                            existing_mbid = Counter(mbids).most_common(1)[0][0]
+                        else:
+                            existing_mbid = None
                         resolved_artist_mbid = existing_mbid
-                        
+
                         if not existing_mbid:
                             # No MBID saved yet, try to look it up from MusicBrainz
                             mbid = lookup_and_save_artist_mbid(artist_name, conn)
