@@ -3490,9 +3490,9 @@ def _run_daily_musicbrainz_collection_release_refresh():
         return
 
     try:
-        lookback_days = int(features.get("daily_musicbrainz_release_lookback_days", 42) or 42)
+        lookback_days = int(features.get("daily_musicbrainz_release_lookback_days", 90) or 90)
     except Exception:
-        lookback_days = 42
+        lookback_days = 90
     try:
         lookahead_days = int(features.get("daily_musicbrainz_release_lookahead_days", 28) or 28)
     except Exception:
@@ -4611,7 +4611,7 @@ def _baseline_config():
             "scan_worker_threads": 4,
             "spotify_prefetch_timeout": 30,
             "daily_musicbrainz_release_scan_enabled": True,
-            "daily_musicbrainz_release_lookback_days": 42,
+            "daily_musicbrainz_release_lookback_days": 90,
             "daily_musicbrainz_release_lookahead_days": 28,
             "daily_musicbrainz_release_max_artists": 500,
             "daily_musicbrainz_release_per_artist_limit": 100

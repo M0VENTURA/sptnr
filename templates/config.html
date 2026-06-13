@@ -44,6 +44,7 @@
         <a href="#watcher" class="btn btn-sm btn-outline-primary">Automation</a>
         <a href="#essentia-mood-scan" class="btn btn-sm btn-outline-primary">Essentia</a>
         <a href="#single-detection-zscore" class="btn btn-sm btn-outline-primary">Z-Score</a>
+        <a href="#upcoming-releases-sources" class="btn btn-sm btn-outline-primary">Upcoming Sources</a>
         <a href="#search-filters" class="btn btn-sm btn-outline-primary">Search Filters</a>
       </div>
     </div>
@@ -210,6 +211,14 @@
       <small class="text-muted">Configure app-wide API keys and feature toggles. Per-user usernames and tokens stay in each Music User card above.</small>
     </div>
     <div class="card-body">
+      <div class="alert alert-light border mb-3">
+        <small class="text-muted">
+          <i class="bi bi-info-circle"></i>
+          <strong>How APIs work:</strong> Each integration below can be toggled on or off independently.
+          When enabled, the app uses that service for metadata lookup, recommendations, and artwork.
+          Per-user usernames and tokens are configured in each <em>Music User</em> card above.
+        </small>
+      </div>
       <div class="row g-4">
         <div class="col-12 col-xl-6">
           <div class="border rounded p-3 h-100">
@@ -224,15 +233,17 @@
               <div class="col-12 col-md-6">
                 <label class="form-label form-label-sm">Client ID</label>
                 <input type="text" class="form-control form-control-sm" id="api_spotify_client_id" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_id', '') }}">
+                <small class="form-text text-muted">Shared Spotify app credentials.</small>
               </div>
               <div class="col-12 col-md-6">
                 <label class="form-label form-label-sm">Client Secret</label>
                 <input type="password" class="form-control form-control-sm" id="api_spotify_client_secret" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_secret', '') }}">
+                <small class="form-text text-muted">Shared Spotify app credentials.</small>
               </div>
               <div class="col-12">
                 <label class="form-label form-label-sm">Default Spotify User ID</label>
                 <input type="text" class="form-control form-control-sm" id="api_spotify_user_id" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('user_id', '') }}">
-                <small class="form-text text-muted">Optional fallback user ID for public Spotify playlist browsing when no user-specific value is provided.</small>
+                <small class="form-text text-muted">Fallback user ID for public Spotify playlist browsing when no per-user value is provided.</small>
               </div>
             </div>
           </div>
@@ -262,7 +273,7 @@
                 <label class="form-check-label" for="api_listenbrainz_enabled">Enabled</label>
               </div>
             </div>
-            <small class="form-text text-muted">ListenBrainz uses each user's personal token above; this switch controls whether ListenBrainz-powered features are active.</small>
+            <small class="form-text text-muted">ListenBrainz uses each user's personal token above; this switch controls whether ListenBrainz-powered recommendations and features are active.</small>
           </div>
         </div>
 
@@ -277,6 +288,7 @@
             </div>
             <label class="form-label form-label-sm">Personal Access Token</label>
             <input type="password" class="form-control form-control-sm" id="api_discogs_token" value="{{ config.get('api_integrations', {}).get('discogs', {}).get('token', '') }}">
+            <small class="form-text text-muted">Required for Discogs metadata, artwork, and single detection lookups.</small>
           </div>
         </div>
 
@@ -289,7 +301,7 @@
                 <label class="form-check-label" for="api_musicbrainz_enabled">Enabled</label>
               </div>
             </div>
-            <small class="form-text text-muted">MusicBrainz does not require an API key here, but this toggle controls MusicBrainz-powered lookups and matching features.</small>
+            <small class="form-text text-muted">MusicBrainz does not require an API key, but this toggle controls all MusicBrainz-powered lookups, matching, and upcoming release features.</small>
           </div>
         </div>
 
@@ -304,6 +316,7 @@
             </div>
             <label class="form-label form-label-sm">API Key</label>
             <input type="text" class="form-control form-control-sm" id="api_audiodb_api_key" value="{{ config.get('api_integrations', {}).get('audiodb', {}).get('api_key', '') }}">
+            <small class="form-text text-muted">Optional. Provides additional artist and album metadata.</small>
           </div>
         </div>
 
@@ -320,10 +333,12 @@
               <div class="col-12 col-md-6">
                 <label class="form-label form-label-sm">API Key</label>
                 <input type="text" class="form-control form-control-sm" id="api_google_api_key" value="{{ config.get('api_integrations', {}).get('google', {}).get('api_key', '') }}">
+                <small class="form-text text-muted">Google API key for image search.</small>
               </div>
               <div class="col-12 col-md-6">
                 <label class="form-label form-label-sm">CSE ID</label>
                 <input type="text" class="form-control form-control-sm" id="api_google_cse_id" value="{{ config.get('api_integrations', {}).get('google', {}).get('cse_id', '') }}">
+                <small class="form-text text-muted">Custom Search Engine ID.</small>
               </div>
             </div>
           </div>
@@ -340,6 +355,7 @@
             </div>
             <label class="form-label form-label-sm">API Key</label>
             <input type="text" class="form-control form-control-sm" id="api_youtube_api_key" value="{{ config.get('api_integrations', {}).get('youtube', {}).get('api_key', '') }}">
+            <small class="form-text text-muted">Required for YouTube music video and playlist features.</small>
           </div>
         </div>
       </div>
@@ -350,55 +366,66 @@
   <div class="card shadow-sm mb-3" id="sources">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-cloud-download"></i> Download Sources</h5>
-      <small class="text-muted">Configure torrent and P2P sources. Leave disabled if not using them.</small>
+      <small class="text-muted">Configure torrent and P2P download clients. Leave disabled if not using them.</small>
     </div>
     <div class="card-body">
       <!-- qBittorrent -->
       <h6 class="mb-3"><i class="bi bi-download"></i> qBittorrent</h6>
+      <div class="alert alert-light border mb-3 py-2">
+        <small class="text-muted">Connects to qBittorrent's Web UI to send torrents and monitor completed downloads.</small>
+      </div>
       <div class="row g-3 mb-4 pb-3 border-bottom">
         <div class="col-12">
           <div class="form-check form-switch">
             <input class="form-check-input" type="checkbox" id="qbit_enabled" {% if config.get('qbittorrent', {}).get('enabled') %}checked{% endif %}>
-            <label class="form-check-label" for="qbit_enabled">Enabled</label>
-            <small class="form-text text-muted d-block mt-1">Torrent client integration for automated downloads</small>
+            <label class="form-check-label" for="qbit_enabled"><strong>Enable qBittorrent Integration</strong></label>
+            <small class="form-text text-muted d-block mt-1">When enabled, the app can send torrents and monitor completed downloads.</small>
           </div>
         </div>
         <div class="col-12">
           <label class="form-label">Web URL</label>
           <input type="text" class="form-control" id="qbit_web_url" placeholder="http://localhost:8080" value="{{ config.get('qbittorrent', {}).get('web_url', '') }}">
+          <div class="form-text">qBittorrent Web UI address (must have Web UI enabled in qBittorrent settings).</div>
         </div>
         <div class="col-12 col-sm-6">
           <label class="form-label">Username</label>
           <input type="text" class="form-control" id="qbit_username" placeholder="admin" value="{{ config.get('qbittorrent', {}).get('username', '') }}">
+          <div class="form-text">qBittorrent Web UI username.</div>
         </div>
         <div class="col-12 col-sm-6">
           <label class="form-label">Password</label>
           <input type="password" class="form-control" id="qbit_password" placeholder="••••••••" value="{{ config.get('qbittorrent', {}).get('password', '') }}">
+          <div class="form-text">qBittorrent Web UI password.</div>
         </div>
         <div class="col-12">
           <label class="form-label">Torrent Downloads Folder</label>
           <input type="text" class="form-control" id="qbit_downloads_folder" placeholder="/downloads/torrents" value="{{ config.get('qbittorrent', {}).get('downloads_folder', '') }}">
-          <div class="form-text">Folder where qBittorrent saves completed torrent downloads. Leave blank if qBittorrent saves to the same location as the Downloads Folder below. When set, this folder is also scanned when checking for completed downloads.</div>
+          <div class="form-text">Where qBittorrent saves completed downloads. Leave blank if it saves to the same folder as the general Downloads path below. This folder is scanned for completed files.</div>
         </div>
       </div>
 
       <!-- slskd (Soulseek) -->
       <h6 class="mb-3"><i class="bi bi-music-note-list"></i> slskd (Soulseek)</h6>
+      <div class="alert alert-light border mb-3 py-2">
+        <small class="text-muted">Connects to the slskd Soulseek client to search, download, and monitor P2P music transfers.</small>
+      </div>
       <div class="row g-3">
         <div class="col-12">
           <div class="form-check form-switch">
             <input class="form-check-input" type="checkbox" id="slskd_enabled" {% if config.get('slskd', {}).get('enabled') %}checked{% endif %}>
-            <label class="form-check-label" for="slskd_enabled">Enabled</label>
-            <small class="form-text text-muted d-block mt-1">P2P peer-to-peer music sharing client</small>
+            <label class="form-check-label" for="slskd_enabled"><strong>Enable slskd Integration</strong></label>
+            <small class="form-text text-muted d-block mt-1">When enabled, the app can search Soulseek and queue downloads.</small>
           </div>
         </div>
         <div class="col-12">
           <label class="form-label">Web URL</label>
           <input type="text" class="form-control" id="slskd_web_url" placeholder="http://localhost:5030" value="{{ config.get('slskd', {}).get('web_url', '') }}">
+          <div class="form-text">slskd web interface address.</div>
         </div>
         <div class="col-12">
           <label class="form-label">API Key</label>
           <input type="password" class="form-control" id="slskd_api_key" placeholder="API Key" value="{{ config.get('slskd', {}).get('api_key', '') }}">
+          <div class="form-text">slskd API key (found in slskd settings → Options → API Key).</div>
         </div>
       </div>
     </div>
@@ -408,56 +435,63 @@
   <div class="card shadow-sm mb-3" id="downloads">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-folder-fill"></i> Downloads</h5>
-      <small class="text-muted">Configure download folder for downloaded music files (used by qBittorrent and slskd)</small>
+      <small class="text-muted">Configure where downloaded music is saved, organized, and how file quality is handled.</small>
     </div>
     <div class="card-body">
+      <div class="alert alert-light border mb-3 py-2">
+        <small class="text-muted">
+          <i class="bi bi-info-circle"></i>
+          These settings control how downloaded music is processed <strong>after</strong> it arrives from qBittorrent or slskd.
+        </small>
+      </div>
       <div class="row g-3">
         <div class="col-12">
           <label class="form-label">Downloads Folder</label>
           <input type="text" class="form-control" id="downloads_folder" placeholder="/downloads/Music" value="{{ config.get('downloads', {}).get('folder', '') }}">
-          <div class="form-text">Path to watch for downloaded music files (primarily used by slskd/Soulseek). If using qBittorrent with a separate save folder, configure that in the qBittorrent section above.</div>
+          <div class="form-text">Primary folder to watch for completed downloads (used mainly by slskd/Soulseek). If qBittorrent saves to a different folder, configure that in the qBittorrent section above.</div>
         </div>
         <div class="col-12">
           <label class="form-label">External Media Export Path</label>
           <input type="text" class="form-control" id="external_export_path" placeholder="/downloads/External" value="{{ config.get('downloads', {}).get('external_export_path', '') }}">
-          <div class="form-text">Base folder used when exporting a playlist to an external media player via the <em>Browse Playlists</em> page. Each playlist is saved as <code>&lt;this path&gt;/&lt;playlist name&gt;/</code> with FLAC files automatically converted to 320kbps MP3.</div>
+          <div class="form-text">Destination folder when exporting playlists for external media players. Each playlist becomes a subfolder with FLAC converted to 320kbps MP3.</div>
         </div>
         <div class="col-12">
           <label class="form-label">Queue File Name Format</label>
           <input type="text" class="form-control" id="downloads_file_name_format" placeholder="{album_artist}/{year} - {album}/{track_number}. {artist} - {title}" value="{{ config.get('downloads', {}).get('file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}') }}">
-          <div class="form-text">Used when organizing queue items into your music library under MUSIC_ROOT (for example /music). This format is a relative path. Available placeholders: {track_number}, {artist}, {album_artist}, {title}, {album}, {year}</div>
+          <div class="form-text">Relative path pattern used when moving imported tracks into your music library (MUSIC_ROOT). Available placeholders: <code>{track_number}</code>, <code>{artist}</code>, <code>{album_artist}</code>, <code>{title}</code>, <code>{album}</code>, <code>{year}</code></div>
         </div>
         <div class="col-12 col-md-6">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="downloads_delete_duplicate_files" {% if config.get('features', {}).get('downloads_duplicate_cleanup', {}).get('delete_duplicate_files', True) %}checked{% endif %}>
             <label class="form-check-label" for="downloads_delete_duplicate_files"><strong>Auto-delete Duplicate Files in Downloads</strong></label>
-            <small class="d-block text-muted">When enabled, duplicate/false-match files are deleted from the configured Downloads folder only, never from your music library.</small>
+            <small class="d-block text-muted">Removes duplicate or false-match files from the Downloads folder only. Never deletes from your music library.</small>
           </div>
         </div>
         <div class="col-12 col-md-6">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="downloads_prune_empty_folders" {% if config.get('features', {}).get('downloads_duplicate_cleanup', {}).get('prune_empty_folders', True) %}checked{% endif %}>
             <label class="form-check-label" for="downloads_prune_empty_folders"><strong>Prune Empty Downloads Folders During Scan</strong></label>
-            <small class="d-block text-muted">Removes empty folders left behind after duplicate cleanup in Downloads.</small>
+            <small class="d-block text-muted">Removes empty folders left behind after duplicate cleanup.</small>
           </div>
         </div>
 
         <div class="col-12"><hr class="my-2"></div>
         <div class="col-12">
           <h6 class="mb-2"><i class="bi bi-shield-check"></i> Download Quality Filter</h6>
-          <small class="text-muted d-block mb-2">Restrict accepted downloads by format and bitrate (for example, FLAC or MP3 320kbps only).</small>
+          <small class="text-muted d-block mb-2">Restrict which downloaded files are accepted based on format and bitrate.</small>
         </div>
         <div class="col-12 col-md-6">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="downloads_quality_enabled" {% if config.get('downloads', {}).get('quality_filter', {}).get('enabled', False) %}checked{% endif %}>
             <label class="form-check-label" for="downloads_quality_enabled"><strong>Enable Quality Filter</strong></label>
+            <small class="d-block text-muted">When on, only files matching the selected formats below are accepted.</small>
           </div>
         </div>
         <div class="col-12 col-md-6">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="downloads_quality_reject_others" {% if config.get('downloads', {}).get('quality_filter', {}).get('reject_others', True) %}checked{% endif %}>
             <label class="form-check-label" for="downloads_quality_reject_others"><strong>Reject Non-matching Files</strong></label>
-            <small class="d-block text-muted">When enabled, files that do not match selected priorities are skipped.</small>
+            <small class="d-block text-muted">When enabled, files that do not match the selected formats are skipped entirely.</small>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -485,18 +519,19 @@
         <div class="col-12 col-md-4">
           <label class="form-label">MP3 Bitrate Tolerance (kbps)</label>
           <input type="number" class="form-control" id="downloads_quality_bitrate_tolerance" min="0" max="32" step="1" value="{{ config.get('downloads', {}).get('quality_filter', {}).get('bitrate_tolerance', 5) }}">
-          <div class="form-text">Allowed variance around 320kbps (for example, 315-325 with tolerance 5).</div>
+          <div class="form-text">Allowed variance around 320kbps. Example: tolerance 5 accepts 315-325 kbps.</div>
         </div>
 
         <div class="col-12"><hr class="my-2"></div>
         <div class="col-12">
           <h6 class="mb-2"><i class="bi bi-arrow-repeat"></i> Download Conversion</h6>
-          <small class="text-muted d-block mb-2">Optional conversion while importing to music library. Current implementation supports FLAC → MP3.</small>
+          <small class="text-muted d-block mb-2">Automatically convert audio files when importing into your library. Currently supports FLAC to MP3.</small>
         </div>
         <div class="col-12 col-md-6">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="downloads_conversion_enabled" {% if config.get('downloads', {}).get('conversion', {}).get('enabled', False) %}checked{% endif %}>
             <label class="form-check-label" for="downloads_conversion_enabled"><strong>Enable Conversion on Import</strong></label>
+            <small class="d-block text-muted">Convert files during import to save space or ensure compatibility.</small>
           </div>
         </div>
         <div class="col-12 col-md-6">
@@ -506,10 +541,12 @@
             <option value="flac_to_mp3" {% if conversion_mode == 'flac_to_mp3' %}selected{% endif %}>FLAC to MP3</option>
             <option value="none" {% if conversion_mode == 'none' %}selected{% endif %}>Disabled (Move as-is)</option>
           </select>
+          <div class="form-text">Only FLAC → MP3 is supported currently.</div>
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">MP3 Bitrate (kbps)</label>
           <input type="number" class="form-control" id="downloads_conversion_mp3_bitrate" min="96" max="320" step="1" value="{{ config.get('downloads', {}).get('conversion', {}).get('mp3_bitrate_kbps', 320) }}">
+          <div class="form-text">Target bitrate for converted MP3 files.</div>
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">Original File Handling</label>
@@ -518,11 +555,12 @@
             <option value="move_to_original" {% if original_handling == 'move_to_original' %}selected{% endif %}>Move to Downloads/Original</option>
             <option value="delete" {% if original_handling == 'delete' %}selected{% endif %}>Delete original after convert</option>
           </select>
+          <div class="form-text">What to do with the original FLAC file after conversion.</div>
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">Original Archive Subfolder</label>
           <input type="text" class="form-control" id="downloads_conversion_original_subfolder" placeholder="Original" value="{{ config.get('downloads', {}).get('conversion', {}).get('original_subfolder', 'Original') }}">
-          <div class="form-text">This folder is ignored by queue scanners.</div>
+          <div class="form-text">Subfolder name where originals are archived. This folder is ignored by queue scanners.</div>
         </div>
       </div>
     </div>
@@ -537,109 +575,125 @@
     <div class="card-body">
       <!-- Watcher Service Settings -->
       <h6 class="mb-3"><i class="bi bi-eye-fill"></i> Watcher Service</h6>
+      <div class="alert alert-light border mb-3 py-2">
+        <small class="text-muted">
+          <i class="bi bi-info-circle"></i>
+          The watcher monitors your downloads folder and automatically imports new music, scans popularity, and syncs with Navidrome.
+        </small>
+      </div>
       <div class="row g-3 mb-4 pb-3 border-bottom">
         <div class="col-12 col-md-6">
           <label class="form-label">Scan Interval (seconds)</label>
           <input type="number" class="form-control" id="watcher_scan_interval" placeholder="30" value="{{ config.get('watcher', {}).get('scan_interval', 30) }}" min="10" max="3600">
-          <div class="form-text">How often to check for new files (10-3600 seconds)</div>
+          <div class="form-text">How often the watcher checks for new files in the downloads folder (10–3600 seconds). Default: 30.</div>
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">Navidrome Sync Wait (seconds)</label>
           <input type="number" class="form-control" id="watcher_navidrome_sync_wait" placeholder="600" value="{{ config.get('watcher', {}).get('navidrome_sync_wait', 600) }}" min="60" max="3600">
-          <div class="form-text">Time to wait for Navidrome scan to complete</div>
+          <div class="form-text">How long to wait after importing before triggering a Navidrome library scan (60–3600 seconds). Default: 600.</div>
         </div>
         <div class="col-12">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="watcher_auto_import" {% if config.get('watcher', {}).get('auto_import_enabled', True) %}checked{% endif %}>
             <label class="form-check-label" for="watcher_auto_import"><strong>Auto Import</strong></label>
-            <small class="d-block text-muted">Automatically import newly detected songs</small>
+            <small class="d-block text-muted">Automatically import newly detected songs into the library and database.</small>
           </div>
         </div>
         <div class="col-12">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="watcher_auto_popularity" {% if config.get('watcher', {}).get('auto_popularity_scan', True) %}checked{% endif %}>
             <label class="form-check-label" for="watcher_auto_popularity"><strong>Auto Popularity Scan</strong></label>
-            <small class="d-block text-muted">Automatically scan popularity on new imports</small>
+            <small class="d-block text-muted">After importing, automatically run popularity scoring on new tracks.</small>
           </div>
         </div>
         <div class="col-12">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="watcher_downloads_enabled" {% if config.get('watcher', {}).get('downloads_watcher_enabled', True) %}checked{% endif %}>
             <label class="form-check-label" for="watcher_downloads_enabled"><strong>Downloads Watcher</strong></label>
-            <small class="d-block text-muted">Monitor downloads folder for completed files</small>
+            <small class="d-block text-muted">Keep monitoring the downloads folder for completed files. Disable if you only want manual imports.</small>
           </div>
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">Mature Track Freeze Cutoff (years)</label>
           <input type="number" class="form-control" id="mature_track_min_age_years" placeholder="2" value="{{ config.get('features', {}).get('mature_track_min_age_years', 2) }}" min="1" max="50">
-          <div class="form-text">Tracks at or above this age keep their existing Last.fm-backed popularity unless listener data is missing. Default: 2 years.</div>
+          <div class="form-text">Tracks older than this keep their existing Last.fm popularity score unless listener data is missing. Default: 2 years.</div>
         </div>
 
         <div class="col-12"><hr class="my-2"></div>
         <div class="col-12">
           <h6 class="mb-2"><i class="bi bi-calendar2-week"></i> Daily MusicBrainz Release Refresh</h6>
-          <p class="text-muted small mb-2">Once per daily scheduler cycle, search MusicBrainz for newly announced/recent releases for artists in your collection and add them to Dashboard upcoming/recent cards.</p>
-          <div class="form-check form-switch mb-2">
+          <p class="text-muted small mb-2">
+            Once per day, scan MusicBrainz for releases by artists in your collection and save them to the upcoming releases database.
+            Only releases within the <strong>lookback</strong> and <strong>lookahead</strong> date windows are saved.
+          </p>
+          <div class="form-check form-switch mb-3">
             <input class="form-check-input" type="checkbox" id="daily_musicbrainz_release_scan_enabled" {% if config.get('features', {}).get('daily_musicbrainz_release_scan_enabled', True) %}checked{% endif %}>
             <label class="form-check-label" for="daily_musicbrainz_release_scan_enabled"><strong>Enable Daily MusicBrainz Artist Release Refresh</strong></label>
           </div>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label">Lookback (days)</label>
-          <input type="number" class="form-control" id="daily_musicbrainz_release_lookback_days" placeholder="42" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookback_days', 42) }}" min="1" max="365">
+          <input type="number" class="form-control" id="daily_musicbrainz_release_lookback_days" placeholder="90" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookback_days', 90) }}" min="1" max="365">
+          <div class="form-text">How far <strong>into the past</strong> to save releases (default 90 days = 3 months). Albums released before this window are ignored.</div>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label">Lookahead (days)</label>
           <input type="number" class="form-control" id="daily_musicbrainz_release_lookahead_days" placeholder="28" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookahead_days', 28) }}" min="1" max="365">
+          <div class="form-text">How far <strong>into the future</strong> to save upcoming releases (default 28 days).</div>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label">Max Artists / Run</label>
           <input type="number" class="form-control" id="daily_musicbrainz_release_max_artists" placeholder="500" value="{{ config.get('features', {}).get('daily_musicbrainz_release_max_artists', 500) }}" min="1" max="5000">
+          <div class="form-text">Maximum collection artists to scan each day.</div>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label">Releases / Artist</label>
           <input type="number" class="form-control" id="daily_musicbrainz_release_per_artist_limit" placeholder="100" value="{{ config.get('features', {}).get('daily_musicbrainz_release_per_artist_limit', 100) }}" min="10" max="250">
+          <div class="form-text">Maximum releases to fetch per artist.</div>
         </div>
       </div>
 
       <div class="col-12"><hr class="my-2"></div>
       <div class="col-12">
         <h6 class="mb-2"><i class="bi bi-cloud-search"></i> Live MusicBrainz Upcoming Releases</h6>
-        <p class="text-muted small mb-2">Real-time MusicBrainz WS/2 searches for new, upcoming and recently-added releases by artists in your collection or recommended list. Results appear on the Dashboard and Downloads pages.</p>
-        <div class="form-check form-switch mb-2">
+        <p class="text-muted small mb-2">
+          Real-time MusicBrainz searches that run when you open the Dashboard or Downloads pages.
+          These find new, upcoming, and recently-added releases by artists in your collection or recommended list.
+        </p>
+        <div class="form-check form-switch mb-3">
           <input class="form-check-input" type="checkbox" id="live_musicbrainz_upcoming_releases_enabled" {% if config.get('features', {}).get('live_musicbrainz_upcoming_releases_enabled', True) %}checked{% endif %}>
           <label class="form-check-label" for="live_musicbrainz_upcoming_releases_enabled"><strong>Enable Live MusicBrainz Upcoming Releases</strong></label>
         </div>
       </div>
       <div class="col-12 col-md-3">
-        <label class="form-label">Lookback (days)</label>
+        <label class="form-label">Past Lookback (days)</label>
         <input type="number" class="form-control" id="live_musicbrainz_lookback_days" placeholder="14" value="{{ config.get('features', {}).get('live_musicbrainz_lookback_days', 14) }}" min="1" max="365">
-        <div class="form-text">How far back to search for newly released albums.</div>
+        <div class="form-text">How far <strong>back</strong> to search for newly released albums (default 14 days).</div>
       </div>
       <div class="col-12 col-md-3">
-        <label class="form-label">Lookahead (days)</label>
+        <label class="form-label">Future Lookahead (days)</label>
         <input type="number" class="form-control" id="live_musicbrainz_lookahead_days" placeholder="180" value="{{ config.get('features', {}).get('live_musicbrainz_lookahead_days', 180) }}" min="1" max="730">
-        <div class="form-text">How far ahead to search for upcoming releases (default 180 days = 6 months).</div>
+        <div class="form-text">How far <strong>ahead</strong> to search for upcoming releases (default 180 days = 6 months).</div>
       </div>
       <div class="col-12 col-md-3">
         <label class="form-label">Added Lookback (days)</label>
         <input type="number" class="form-control" id="live_musicbrainz_added_lookback_days" placeholder="7" value="{{ config.get('features', {}).get('live_musicbrainz_added_lookback_days', 7) }}" min="1" max="30">
-        <div class="form-text">How far back to search for recently added MusicBrainz entries.</div>
+        <div class="form-text">How far back to search for entries recently added to MusicBrainz (default 7 days).</div>
       </div>
       <div class="col-12 col-md-3">
         <label class="form-label">Max Results / Query</label>
         <input type="number" class="form-control" id="live_musicbrainz_max_results" placeholder="200" value="{{ config.get('features', {}).get('live_musicbrainz_max_results', 200) }}" min="50" max="500">
-        <div class="form-text">Maximum releases to fetch per search query.</div>
+        <div class="form-text">Maximum releases to fetch per live search query.</div>
       </div>
 
       <!-- Retry Scheduler Settings -->
       <h6 class="mb-3"><i class="bi bi-arrow-repeat"></i> Download Retry Scheduler</h6>
-      <p class="text-muted small">Automatically retry failed downloads at regular intervals.  When enabled, the system checks for failed downloads and  attempts to re-queue them.</p>
+      <p class="text-muted small">Automatically re-attempt failed downloads at regular intervals. Useful when Soulseek peers come back online or when temporary network issues resolve.</p>
       <div class="row g-3">
         <div class="col-12 col-md-6">
           <label class="form-label">Retry Interval (seconds)</label>
           <input type="number" class="form-control" id="retry_scheduler_interval" placeholder="60" value="{{ config.get('features', {}).get('retry_scheduler', {}).get('interval_seconds', 60) }}" min="10" max="7200">
-          <div class="form-text">Check and retry failed downloads every 10-7200 seconds (default: 60)</div>
+          <div class="form-text">How often to check for failed downloads and re-queue them (10–7200 seconds). Default: 60.</div>
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">Scheduler Status</label>
@@ -672,18 +726,18 @@
 
       <hr class="my-4">
       <h6 class="mb-3"><i class="bi bi-broom"></i> Queue Cleanup Scheduler</h6>
-      <p class="text-muted small">Automatically removes duplicate queue rows older than 24 hours and clears album groups once all tracks are Completed or In Collection.</p>
+      <p class="text-muted small">Automatically removes stale duplicate queue rows and clears completed album groups to keep the database tidy.</p>
       <div class="row g-3">
         <div class="col-12 col-md-6">
           <label class="form-label">Cleanup Interval (minutes)</label>
           <input type="number" class="form-control" id="queue_cleanup_scheduler_interval_minutes" placeholder="60" value="{{ config.get('features', {}).get('download_queue_cleanup_scheduler', {}).get('interval_minutes', 60) }}" min="5" max="10080">
-          <div class="form-text">How often automatic cleanup runs (5 to 10080 minutes)</div>
+          <div class="form-text">How often the cleanup runs (5–10080 minutes). Default: 60.</div>
         </div>
         <div class="col-12 col-md-6 d-flex align-items-end">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="queue_cleanup_scheduler_enabled" {% if config.get('features', {}).get('download_queue_cleanup_scheduler', {}).get('enabled', True) %}checked{% endif %}>
             <label class="form-check-label" for="queue_cleanup_scheduler_enabled"><strong>Enable Auto Queue Cleanup</strong></label>
-            <small class="d-block text-muted">Starts automatically with the app and follows the configured interval</small>
+            <small class="d-block text-muted">Runs automatically on startup and follows the interval above.</small>
           </div>
         </div>
       </div>
@@ -872,7 +926,7 @@
       <div class="row g-3 mb-3">
         <div class="col-12">
           <label class="form-label"><strong>Strip Keywords</strong></label>
-          <div class="border rounded p-3" style="background-color: var(--bs-body-bg);"">
+          <div class="border rounded p-3" style="background-color: var(--bs-body-bg);">
             <div id="stripKeywordsList" class="d-flex flex-wrap gap-2 mb-3">
               <!-- Keywords will be populated by JavaScript -->
             </div>
@@ -1278,7 +1332,7 @@ function buildConfigObject() {
         },
         mature_track_min_age_years: parseInt(getValue('mature_track_min_age_years', '2')) || 2,
         daily_musicbrainz_release_scan_enabled: getChecked('daily_musicbrainz_release_scan_enabled', true),
-        daily_musicbrainz_release_lookback_days: parseInt(getValue('daily_musicbrainz_release_lookback_days', '42')) || 42,
+        daily_musicbrainz_release_lookback_days: parseInt(getValue('daily_musicbrainz_release_lookback_days', '90')) || 90,
         daily_musicbrainz_release_lookahead_days: parseInt(getValue('daily_musicbrainz_release_lookahead_days', '28')) || 28,
         daily_musicbrainz_release_max_artists: parseInt(getValue('daily_musicbrainz_release_max_artists', '500')) || 500,
         daily_musicbrainz_release_per_artist_limit: parseInt(getValue('daily_musicbrainz_release_per_artist_limit', '100')) || 100,
