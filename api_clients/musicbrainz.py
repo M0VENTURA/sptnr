@@ -38,6 +38,11 @@ _VERSION = _get_version()
 # Format: AppName/Version ( contact-info )
 _USER_AGENT = f"sptnr/{_VERSION} ( https://github.com/M0VENTURA/sptnr )"
 
+# MusicBrainz UUID pattern (8-4-4-4-12 hex digits) – used for validating MBIDs
+_MUSICBRAINZ_UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE
+)
+
 # Import rate limiter
 try:
     from helpers.api_rate_limiter import get_rate_limiter
@@ -1390,10 +1395,7 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
         
         # If we have a release group MBID, do a direct lookup (more accurate than text search)
         # Validate the MBID format (UUID: 8-4-4-4-12 hex digits) before using it in a URL.
-        _UUID_RE = re.compile(
-            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE
-        )
-        if release_group_mbid and _UUID_RE.match(str(release_group_mbid)):
+        if release_group_mbid and _MUSICBRAINZ_UUID_RE.match(str(release_group_mbid)):
             try:
                 rg_res = client.session.get(
                     f"{client.base_url}release-group/{release_group_mbid}",
@@ -1659,14 +1661,36 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         
         placeholder = "%s"
         
+        # Update tracks where musicbrainz_artist_id is NULL or contains
+        # multiple MBIDs (separated by ;, ,, space, or /). We first fetch
+        # all candidate rows and filter in Python so this works on both
+        # PostgreSQL and SQLite.
         cursor.execute(f"""
-            UPDATE tracks 
-            SET musicbrainz_artist_id = {placeholder}
-            WHERE artist = {placeholder} AND musicbrainz_artist_id IS NULL
-        """, (mbid, artist))
-        db_connection.commit()
-        
-        # Count how many tracks were updated
+            SELECT id, musicbrainz_artist_id FROM tracks
+            WHERE artist = {placeholder}
+        """, (artist,))
+        _to_fix = []
+        for _row in cursor.fetchall():
+            _existing = (_row[1] if _row[1] is not None else '')
+            if not _existing or not _MUSICBRAINZ_UUID_RE.match(str(_existing).strip()):
+                _to_fix.append(_row[0])
+        if _to_fix:
+            # Batch update in chunks of 500 to avoid huge parameter lists
+            _chunk_size = 500
+            for _chunk_start in range(0, len(_to_fix), _chunk_size):
+                _chunk = _to_fix[_chunk_start:_chunk_start + _chunk_size]
+                _ph_list = ','.join([placeholder] * len(_chunk))
+                cursor.execute(f"""
+                    UPDATE tracks
+                    SET musicbrainz_artist_id = {placeholder}
+                    WHERE id IN ({_ph_list})
+                """, (mbid, *_chunk))
+            db_connection.commit()
+            logger.info(f"Corrected {len(_to_fix)} track(s) for artist '{artist}' to single MBID: {mbid}")
+        else:
+            db_connection.commit()
+
+        # Count how many tracks now have the corrected single MBID
         cursor.execute(f"SELECT COUNT(*) FROM tracks WHERE artist = {placeholder} AND musicbrainz_artist_id = {placeholder}", (artist, mbid))
         result = cursor.fetchone()
         updated_count = result[0] if result else 0

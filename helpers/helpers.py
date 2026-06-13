@@ -6,6 +6,37 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
 
+# MusicBrainz UUID pattern (8-4-4-4-12 hex digits)
+_MUSICBRAINZ_UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE
+)
+
+
+def normalize_single_mbid(value: str) -> str:
+    """
+    Extract a single MusicBrainz UUID from a string that may contain multiple
+    MBIDs or be concatenated with separators.
+
+    Some taggers write multiple artist MBIDs for collaboration tracks (e.g.
+    "mbid1;mbid2" or "mbid1,mbid2"). This function finds the first valid UUID
+    and returns it, ignoring the rest.
+
+    Args:
+        value: Raw MBID string, possibly containing multiple values.
+
+    Returns:
+        A single valid MusicBrainz UUID, or an empty string if none found.
+    """
+    if not value or not isinstance(value, str):
+        return ""
+    # Split on common separators used by taggers (semicolon, comma, space, slash)
+    for part in re.split(r'[;|,\s/]+', value.strip()):
+        part = part.strip()
+        if _MUSICBRAINZ_UUID_RE.match(part):
+            return part
+    return ""
+
+
 # Default patterns inside parentheses that are stripped during popularity/single
 # detection lookups. Only includes terms for "same song, different cut" - not alternate versions.
 # Users can extend or override this list via the ``strip_parentheses_filters`` key in config.yaml.

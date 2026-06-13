@@ -1067,6 +1067,21 @@ def run_essentia_mood_scan(
         # ------------------------------------------------------------------
         mood = _read_essentia_mood_from_file(file_path) if tag_moods else None
         essentia_genre = _read_essentia_genre_from_file(file_path) if tag_genres else None
+
+        # If the same label appears in both the MOOD and GENRE tags, keep it
+        # in mood only. A buggy Essentia-to-Metadata build may write mood
+        # values into the GENRE tag, causing them to pollute the top-genres
+        # resolution later.
+        if mood and essentia_genre:
+            _mood_labels = {m.strip().lower() for m in mood.split(";") if m.strip()}
+            _genre_parts = [g.strip() for g in essentia_genre.split(";") if g.strip()]
+            _filtered_genres = [g for g in _genre_parts if g.lower() not in _mood_labels]
+            if _filtered_genres:
+                essentia_genre = "; ".join(_filtered_genres)
+            else:
+                essentia_genre = None
+                has_genre_update = False
+
         file_bpm = _read_numeric_tag_from_file(file_path, "bpm", "tempo", "TBPM")
         file_danceability = _read_numeric_tag_from_file(
             file_path,

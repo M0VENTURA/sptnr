@@ -4032,6 +4032,7 @@ def popularity_scan(
                     SELECT musicbrainz_artist_id
                     FROM tracks
                     WHERE artist = {placeholder} AND musicbrainz_artist_id IS NOT NULL
+                    ORDER BY LENGTH(musicbrainz_artist_id) ASC
                     LIMIT 1
                 """, (artist,))
                 row = cursor.fetchone()
@@ -4673,8 +4674,19 @@ def popularity_scan(
                             normalized = " ".join(normalized.split())
                             existing_norm.add(normalized)
 
-                    # Get artist MBID for more accurate lookup
-                    cursor.execute(f"SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = {placeholder}", (artist,))
+                    # Get artist MBID for more accurate lookup.
+                    # Use MAX() as a tie-breaker, but first filter out any
+                    # concatenated/multi-value entries by preferring rows whose
+                    # musicbrainz_artist_id looks like a single UUID.
+                    cursor.execute(f"""
+                        SELECT musicbrainz_artist_id
+                        FROM tracks
+                        WHERE artist = {placeholder}
+                          AND musicbrainz_artist_id IS NOT NULL
+                          AND TRIM(musicbrainz_artist_id) != ''
+                        ORDER BY LENGTH(musicbrainz_artist_id) ASC
+                        LIMIT 1
+                    """, (artist,))
                     result = cursor.fetchone()
                     artist_mbid = result[0] if result and result[0] else None
 
@@ -5052,9 +5064,15 @@ def popularity_scan(
                                     if _rg_mbid:
                                         release_group_mbid = _rg_mbid
                                         log_debug(f'Using stored release-group MBID {release_group_mbid} for direct MusicBrainz lookup')
-                                    elif _rel_mbid:
-                                        release_group_mbid = _rel_mbid
-                                        log_debug(f'Using stored release MBID {release_group_mbid} for direct MusicBrainz lookup')
+                                    # Do NOT fall back to musicbrainz_album_mbid here.
+                                    # musicbrainz_album_mbid is a release MBID (specific pressing),
+                                    # not a release-group MBID. Passing it as release_group_mbid
+                                    # causes the MusicBrainz direct lookup to fail (404) because
+                                    # it queries /release-group/{release_mbid}. The text-search
+                                    # fallback then finds the correct release group, but the old
+                                    # code skipped propagating it because release_group_mbid was
+                                    # already set. Only use musicbrainz_releasegroupid for the
+                                    # release-group lookup.
                             except Exception:
                                 pass  # Column may not exist in older schemas
                             detected_album_type, type_detection_source, discovered_release_group_mbid = get_album_type_with_fallback(
@@ -5068,7 +5086,7 @@ def popularity_scan(
                             # release-group MBID, but musicbrainz_album_mbid stores a
                             # release MBID (specific pressing). Resolve a representative
                             # release before writing so Navidrome groups tracks correctly.
-                            if discovered_release_group_mbid and not release_group_mbid:
+                            if discovered_release_group_mbid:
                                 _mbid_was_newly_discovered = True
                                 _representative_release_mbid = None
                                 _mb_meta = None
