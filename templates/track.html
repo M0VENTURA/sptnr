@@ -756,9 +756,10 @@
                         </h5>
                     </div>
                     <div class="card-body">
-                        <!-- Editable genres -->
+                        <!-- Editable top genres -->
                         <div class="mb-4">
-                            <h6 class="mb-2">Your Genres</h6>
+                            <h6 class="mb-2">Top Genres</h6>
+                            <p class="text-muted small mb-2">The top genres saved to this track's metadata (up to 3). These are applied during scans and can be manually edited.</p>
                             <div id="genresContainer" class="mb-3">
                                 {% if track.genres %}
                                     {% for genre in track.genres|split_genres %}
@@ -810,9 +811,10 @@
 
                         <hr class="my-3">
 
-                        <!-- Genre Source Display from All Sources -->
+                        <!-- Detected Genres from All Sources -->
                         {% if genre_sources %}
-                            <h6 class="mb-2">Source Tags</h6>
+                            <h6 class="mb-2">Detected Genres</h6>
+                            <p class="text-muted small mb-2">All genres detected from external sources for this track. These are kept in the database for reference.</p>
                             {% set sources = [
                                                             ('discogs_genres', 'Discogs', '6c757d', 'white', 'bi-vinyl-fill'),
                                                             ('mood', 'Essentia Moods', 'F59C00', 'black', 'bi-emoji-smile-fill'),
@@ -1099,14 +1101,15 @@
                     </div>
                 </div>
 
-                <!-- Consolidated Genre & Tag Sources -->
+                <!-- Consolidated Detected Genres -->
                 <div class="card mb-4" id="track-genres-sources-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-collection-fill"></i> Genre & Tag Sources
+                            <i class="bi bi-collection-fill"></i> Detected Genres
                         </h5>
                     </div>
                     <div class="card-body">
+                        <p class="text-muted small mb-2">All genres detected from external sources for this track. These are kept in the database for reference.</p>
                         <div id="genreSourcesContainer" class="spinner-border" role="status">
                             <span class="visually-hidden">Loading genres...</span>
                         </div>

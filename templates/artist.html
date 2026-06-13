@@ -311,9 +311,10 @@
         </button>
       </div>
       <div class="card-body">
-        <!-- Genre Sources from Database (pre-rendered from scan data) -->
+        <!-- Detected Genres from Database (pre-rendered from scan data) -->
         <div class="mb-4">
-          <h6 class="mb-3"><i class="bi bi-database-fill"></i> Genre & Tag Sources</h6>
+          <h6 class="mb-3"><i class="bi bi-database-fill"></i> Detected Genres</h6>
+          <p class="text-muted small mb-2">All genres detected from external sources (Last.fm, Discogs, MusicBrainz, Essentia, etc.) across all tracks. These are kept in the database for reference.</p>
           <div id="artistGenreSourcesContainer" class="text-muted small">
             {% set sources = [
               ('mood', 'Mood Scan', 'F59C00', 'light'),
@@ -382,10 +383,10 @@
         
         <hr style="margin: 1.5rem 0; border-color: var(--border-color);">
         
-        <!-- Current Genres from All Tracks -->
+        <!-- Top Genres from All Tracks -->
         <div class="mb-3">
-          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Genres Across All Tracks</h6>
-          <p class="text-muted small mb-2">These are aggregated from all track metadata in your library for this artist. Click the × to remove incorrect genres.</p>
+          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Top Genres</h6>
+          <p class="text-muted small mb-2">These are the top genres saved to track metadata across all tracks by this artist (up to 3 per track). Click the × to remove incorrect genres.</p>
           <div id="artistGenresContainer">
             {% if genres %}
             <div class="d-flex flex-wrap gap-2 mb-3" id="currentArtistGenres">
