@@ -10647,16 +10647,16 @@ def api_artist_missing_releases():
             })
 
     # Get artist MBID if available for more accurate MusicBrainz lookup.
-    # Use the most common single MBID among tracks so collaborations or bad
-    # tags do not skew the lookup to the wrong artist.
+    # Use the album artist MBID only, so collaborations or featured tracks
+    # do not skew the lookup to the wrong artist.
     artist_mbid = None
     try:
         cursor.execute(f"""
-            SELECT COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) AS mbid
+            SELECT musicbrainz_albumartistid AS mbid
             FROM tracks
-            WHERE LOWER({artist_compare_expr}) = LOWER({placeholder})
-              AND COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) IS NOT NULL
-              AND COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) != ''
+            WHERE LOWER(album_artist) = LOWER({placeholder})
+              AND musicbrainz_albumartistid IS NOT NULL
+              AND musicbrainz_albumartistid != ''
         """, (artist,))
         rows = cursor.fetchall()
         mbids = []
@@ -11080,11 +11080,11 @@ def api_scan_all_missing_releases():
                     try:
                         from api_clients.musicbrainz import lookup_and_save_artist_mbid
                         cursor.execute(f"""
-                            SELECT COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) AS mbid
+                            SELECT musicbrainz_albumartistid AS mbid
                             FROM tracks
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                              AND COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) IS NOT NULL
-                              AND COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')) != ''
+                            WHERE album_artist = {placeholder}
+                              AND musicbrainz_albumartistid IS NOT NULL
+                              AND musicbrainz_albumartistid != ''
                         """, (artist_name,))
                         rows = cursor.fetchall()
                         mbids = []
