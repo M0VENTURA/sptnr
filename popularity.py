@@ -1275,7 +1275,6 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             'top_15_percentile': top_15_threshold,  # Top 15% of artist's tracks
             'top_20_percentile': top_20_threshold,   # Top 20% of artist's tracks
             'top_25_percentile': top_25_threshold,   # Top 25% of artist's tracks (single gate)
-
         }
     except Exception as e:
         try:
@@ -1293,7 +1292,6 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             'top_15_percentile': 0,
             'top_20_percentile': 0,
             'top_25_percentile': 0,
-
         }
 
 
