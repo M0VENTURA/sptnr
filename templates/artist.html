@@ -54,7 +54,6 @@
     </ol>
   </nav>
 
-  {% if qbit_config.enabled %}
   <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-3">
     <div class="flex-grow-1">
       <h1 class="h2 mb-2" data-artist-name="{{ artist_name|e }}">
@@ -94,7 +93,6 @@
       </form>
     </div>
   </div>
-  {% endif %}
 
   <!-- Needs Correcting badge — always shown when corrections exist -->
   <div id="artist-corrections-banner" style="display:none;" class="mb-3">
