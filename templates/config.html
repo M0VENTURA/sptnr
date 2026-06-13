@@ -623,7 +623,7 @@
       </div>
       <div class="col-12 col-md-3">
         <label class="form-label">Added Lookback (days)</label>
-        <input type="number" class="form-control" id="live_musicbrainz_added_lookback_days" placeholder="3" value="{{ config.get('features', {}).get('live_musicbrainz_added_lookback_days', 3) }}" min="1" max="30">
+        <input type="number" class="form-control" id="live_musicbrainz_added_lookback_days" placeholder="7" value="{{ config.get('features', {}).get('live_musicbrainz_added_lookback_days', 7) }}" min="1" max="30">
         <div class="form-text">How far back to search for recently added MusicBrainz entries.</div>
       </div>
       <div class="col-12 col-md-3">
@@ -1285,7 +1285,7 @@ function buildConfigObject() {
         live_musicbrainz_upcoming_releases_enabled: getChecked('live_musicbrainz_upcoming_releases_enabled', true),
         live_musicbrainz_lookback_days: parseInt(getValue('live_musicbrainz_lookback_days', '14')) || 14,
         live_musicbrainz_lookahead_days: parseInt(getValue('live_musicbrainz_lookahead_days', '180')) || 180,
-        live_musicbrainz_added_lookback_days: parseInt(getValue('live_musicbrainz_added_lookback_days', '3')) || 3,
+        live_musicbrainz_added_lookback_days: parseInt(getValue('live_musicbrainz_added_lookback_days', '7')) || 7,
         live_musicbrainz_max_results: parseInt(getValue('live_musicbrainz_max_results', '200')) || 200
       }
     ),

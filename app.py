@@ -40159,27 +40159,36 @@ def api_upcoming_releases():
                     recommended_artists=recommended_artists,
                     lookback_days=int(features.get("live_musicbrainz_lookback_days", 14) or 14),
                     lookahead_days=int(features.get("live_musicbrainz_lookahead_days", 180) or 180),
-                    added_lookback_days=int(features.get("live_musicbrainz_added_lookback_days", 3) or 3),
+                    added_lookback_days=int(features.get("live_musicbrainz_added_lookback_days", 7) or 7),
                     max_results_per_query=int(features.get("live_musicbrainz_max_results", 200) or 200),
                 )
 
-                existing_keys = {
-                    (
-                        (r.get("artist_name") or "").strip().lower(),
-                        (r.get("album_name") or "").strip().lower(),
-                        (r.get("release_date") or "").strip(),
+                existing_keys = set()
+                existing_mbids = set()
+                for r in releases:
+                    existing_keys.add(
+                        (
+                            (r.get("artist_name") or "").strip().lower(),
+                            (r.get("album_name") or "").strip().lower(),
+                            (r.get("release_date") or "").strip(),
+                        )
                     )
-                    for r in releases
-                }
+                    rg_mbid = (r.get("release_group_mbid") or "").strip()
+                    if rg_mbid:
+                        existing_mbids.add(rg_mbid)
                 for mb_r in mb_releases:
                     key = (
                         (mb_r.get("artist_name") or "").strip().lower(),
                         (mb_r.get("album_name") or "").strip().lower(),
                         (mb_r.get("release_date") or "").strip(),
                     )
-                    if key not in existing_keys:
-                        releases.append(mb_r)
-                        existing_keys.add(key)
+                    rg_mbid = (mb_r.get("release_group_mbid") or "").strip()
+                    if key in existing_keys or (rg_mbid and rg_mbid in existing_mbids):
+                        continue
+                    releases.append(mb_r)
+                    existing_keys.add(key)
+                    if rg_mbid:
+                        existing_mbids.add(rg_mbid)
         except Exception as mb_live_err:
             logging.warning(f"Could not fetch live MusicBrainz upcoming releases: {mb_live_err}")
 

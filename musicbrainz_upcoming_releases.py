@@ -219,7 +219,7 @@ def _extract_label(release: Dict[str, Any]) -> Optional[str]:
 def _build_queries(
     lookback_days: int = 7,
     lookahead_days: int = 180,
-    added_lookback_days: int = 3,
+    added_lookback_days: int = 7,
 ) -> List[Tuple[str, str]]:
     """Build the three required WS/2 search queries.
 
@@ -242,7 +242,7 @@ def _build_queries(
     end_upcoming = (datetime.now().date() + timedelta(days=lookahead_days)).isoformat()
     queries.append(
         (
-            f"date:[{today} TO {end_upcoming}] AND status:official",
+            f"date:[{today} TO {end_upcoming}] AND status:official AND type:album",
             "MusicBrainz Upcoming",
         )
     )
@@ -251,7 +251,7 @@ def _build_queries(
     start_added = (datetime.now().date() - timedelta(days=added_lookback_days)).isoformat()
     queries.append(
         (
-            f"added:[{start_added} TO {today}]",
+            f"added:[{start_added} TO {today}] AND status:official AND type:album",
             "MusicBrainz Recently Added",
         )
     )
@@ -264,7 +264,7 @@ def fetch_musicbrainz_upcoming_releases(
     recommended_artists: Set[str],
     lookback_days: int = 7,
     lookahead_days: int = 180,
-    added_lookback_days: int = 3,
+    added_lookback_days: int = 7,
     max_results_per_query: int = 200,
 ) -> List[Dict[str, Any]]:
     """Run the three MusicBrainz scans and filter to catalogue / recommended artists.
