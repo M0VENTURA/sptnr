@@ -444,8 +444,9 @@
 
                         <hr class="my-3">
 
-                        <!-- Genre Source Display -->
-                        <h6 class="text-muted mb-2">Source Tags</h6>
+                        <!-- Detected Genre Source Display -->
+                        <h6 class="text-muted mb-2">Detected Genres</h6>
+                        <p class="text-muted small mb-2">All genres detected from external sources (Last.fm, Discogs, MusicBrainz, Essentia, etc.) across all tracks on this album.</p>
                         <div id="albumGenreSourcesContainer">
                           {% set sources = [
                             ('mood', 'Essentia Moods', 'F59C00', 'black', 'bi-emoji-smile-fill'),
@@ -617,7 +618,7 @@
                         <th class="text-center" style="width: 5rem;" title="Track Duration">Duration</th>
                         <th class="text-center" style="width: 4rem;" title="Star Rating">Rating</th>
                         <th class="text-center d-none d-lg-table-cell" title="Is this a single?">Single</th>
-                        <th class="d-none d-lg-table-cell" title="Album genres matching this track">Genres</th>
+                        <th class="d-none d-lg-table-cell" title="Top genres saved to this track (up to 3)">Top Genres</th>
                         <th class="text-center" style="width: 3rem;">Actions</th>
                     </tr>
                 </thead>
