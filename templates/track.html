@@ -756,6 +756,13 @@
                             </label>
                         </div>
 
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="is_remix" name="is_remix" {% if track.is_remix == 1 %}checked{% endif %}>
+                            <label class="form-check-label" for="is_remix">
+                                <i class="bi bi-sliders"></i> Is Remix
+                            </label>
+                        </div>
+
                         <hr class="my-4">
 
                         <h6 class="text-muted mb-3">Technical Details</h6>

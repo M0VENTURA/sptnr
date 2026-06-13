@@ -41,7 +41,15 @@ class GenreDetector:
     ACOUSTIC_KEYWORDS = {
         "(acoustic)", "acoustic version", "- acoustic", " acoustic "
     }
-    
+
+    REMIX_KEYWORDS_TITLE = {
+        "(remix)", " remix", "- remix", "remix version", "remixed", "remix edit"
+    }
+
+    REMIX_KEYWORDS_ALBUM = {
+        "remix", "remixes", "remixed", "remix album", "(remix)", "+remix"
+    }
+
     ORCHESTRAL_KEYWORDS = {
         "orchestral", "symphonic", "symphony", "philharmonic",
         "orchestra", "orchestrated"
@@ -58,6 +66,7 @@ class GenreDetector:
         artist_genres: list[str] = None,
         audio_features: dict = None,
         isrc: str = None,
+        album_type: str = None,
         **kwargs
     ) -> Set[str]:
         """
@@ -89,14 +98,18 @@ class GenreDetector:
         if self._detect_cover(track_lower, album_lower):
             tags.add("Cover")
         
-        # Detect Live
-        if self._detect_live(track_lower, album_lower, audio_features):
+        # Detect Live (album_type used when available)
+        if self._detect_live(track_lower, album_lower, audio_features, album_type):
             tags.add("Live")
-        
+
         # Detect Acoustic
         if self._detect_acoustic(track_lower, audio_features):
             tags.add("Acoustic")
-        
+
+        # Detect Remix (album_type used when available)
+        if self._detect_remix(track_lower, album_lower, album_type):
+            tags.add("Remix")
+
         # Detect Orchestral/Instrumental
         orchestral, instrumental = self._detect_orchestral_instrumental(
             track_lower, audio_features
@@ -159,27 +172,35 @@ class GenreDetector:
         return False
     
     def _detect_live(
-        self, 
-        track_lower: str, 
-        album_lower: str, 
-        audio_features: Optional[dict]
+        self,
+        track_lower: str,
+        album_lower: str,
+        audio_features: Optional[dict],
+        album_type: Optional[str] = None
     ) -> bool:
         """
         Detect if track is a live recording.
-        
+
         Rules:
         - Track/album name contains live indicators (specific format indicators)
+        - Album type contains '+live' or '(live)'
         - Liveness audio feature > 0.8
-        
+
         Note: Only matches "live" when it's clearly a format indicator, not in titles like "(how to live)"
         """
         import re
-        
+
+        # Check album type first (authoritative source)
+        if album_type:
+            type_lower = album_type.lower()
+            if '+live' in type_lower or '(live)' in type_lower:
+                return True
+
         # Check track name
         for keyword in self.LIVE_KEYWORDS_TITLE:
             if keyword in track_lower:
                 return True
-        
+
         # Check album name with regex patterns for more specific "live" detection
         live_patterns = [
             r'\blive\s+at\b',          # "live at venue"
@@ -195,22 +216,22 @@ class GenreDetector:
             r'\bconcert\b',            # "concert"
             r'\bin\s+concert\b',       # "in concert"
         ]
-        
+
         for pattern in live_patterns:
             if re.search(pattern, album_lower):
                 return True
-        
+
         # Also check remaining keywords (that aren't "live" by itself)
         for keyword in self.LIVE_KEYWORDS_ALBUM:
             if keyword != "live" and keyword in album_lower:
                 return True
-        
+
         # Check liveness audio feature
         if audio_features:
             liveness = audio_features.get("liveness", 0)
             if liveness > 0.8:
                 return True
-        
+
         return False
     
     def _detect_acoustic(
@@ -238,6 +259,37 @@ class GenreDetector:
         
         return False
     
+    def _detect_remix(
+        self,
+        track_lower: str,
+        album_lower: str,
+        album_type: Optional[str] = None
+    ) -> bool:
+        """
+        Detect if track is a remix recording.
+
+        Rules:
+        - Track/album name contains remix indicators
+        - Album type contains '+remix' or '(remix)'
+        """
+        # Check album type first (authoritative source)
+        if album_type:
+            type_lower = album_type.lower()
+            if '+remix' in type_lower or '(remix)' in type_lower:
+                return True
+
+        # Check track name
+        for keyword in self.REMIX_KEYWORDS_TITLE:
+            if keyword in track_lower:
+                return True
+
+        # Check album name
+        for keyword in self.REMIX_KEYWORDS_ALBUM:
+            if keyword in album_lower:
+                return True
+
+        return False
+
     def _detect_orchestral_instrumental(
         self, 
         track_lower: str, 

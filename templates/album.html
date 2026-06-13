@@ -1459,6 +1459,10 @@
                             <input class="form-check-input" type="checkbox" id="editTrackIsAcousticField" name="is_acoustic">
                             <label class="form-check-label" for="editTrackIsAcousticField">Is Acoustic</label>
                         </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="editTrackIsRemixField" name="is_remix">
+                            <label class="form-check-label" for="editTrackIsRemixField">Is Remix</label>
+                        </div>
                     </div>
                     
                     <!-- Comment -->
@@ -4277,6 +4281,7 @@
         document.getElementById('editTrackIsCompilationField').checked = trackData.is_compilation == 1;
         document.getElementById('editTrackIsLiveField').checked = trackData.is_live == 1;
         document.getElementById('editTrackIsAcousticField').checked = trackData.is_acoustic == 1;
+        document.getElementById('editTrackIsRemixField').checked = trackData.is_remix == 1;
         document.getElementById('editTrackCommentField').value = trackData.comment || '';
         renderAlbumAdvancedTrackFields(trackData || {});
         
@@ -4445,6 +4450,7 @@
             is_compilation: document.getElementById('editTrackIsCompilationField').checked ? 1 : 0,
             is_live: document.getElementById('editTrackIsLiveField').checked ? 1 : 0,
             is_acoustic: document.getElementById('editTrackIsAcousticField').checked ? 1 : 0,
+            is_remix: document.getElementById('editTrackIsRemixField').checked ? 1 : 0,
             comment: document.getElementById('editTrackCommentField').value.trim() || null,
             sync_to_file: true
         };
