@@ -2700,11 +2700,18 @@ def detect_single_enhanced(
     result['is_single'] = final_status == 'high'
     
     # ===== SPECIAL CASE: High Z-Score without sources = "Popular" =====
-    # If z-score > 2 but no confidence sources were found, mark as "Popular" (not as single)
-    # These tracks get 5★ rating to indicate exceptional performance without single status
+    # If z-score exceeds the configured threshold but no confidence sources were found,
+    # mark as "Popular" (not as single). These tracks get 5★ rating to indicate
+    # exceptional performance without single status.
+    # Use the same threshold as popularity.py for consistency.
+    try:
+        from popularity import STANDOUT_CONFIG
+        _popularity_z_threshold = STANDOUT_CONFIG.get('popularity_5star_z_threshold', 2.0)
+    except Exception:
+        _popularity_z_threshold = 2.0
     max_z = max(album_z, artist_z)
-    if max_z > 2.0 and final_status == 'none' and not result['is_single']:
-        log_debug(f"[POPULAR] ✯ Track has exceptional z-score (max_z={max_z:.2f} > 2.0) without metadata sources - marking as 'Popular'")
+    if max_z > _popularity_z_threshold and final_status == 'none' and not result['is_single']:
+        log_debug(f"[POPULAR] ✯ Track has exceptional z-score (max_z={max_z:.2f} > {_popularity_z_threshold}) without metadata sources - marking as 'Popular'")
         log_info(f"   ✯ {title} marked as 'Popular' (z-score {max_z:.2f}, no single sources)")
         result['single_status'] = 'popular'  # Special status for high z-score without sources
         result['single_confidence'] = 'popular'

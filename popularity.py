@@ -160,6 +160,8 @@ STANDOUT_CONFIG = {
     'artist_min_tracks': 10,              # Min tracks for artist-level filter
     'star_5': {'album_z': 1.0, 'artist_z': 1.2, 'artist_pct': 0.10},  # Requires z >= 1.0 for 5★
     'star_4': {'album_z': 0.8, 'artist_z': 1.0, 'artist_pct': 0.20},  # Uses lower 0.8 threshold
+    'star_5_single': {'artist_pct': 0.25},  # Single detection must also be in top 25% of artist catalog for 5★
+    'popularity_5star_z_threshold': 2.0,     # Configurable z threshold for popularity-only 5★
     'star_3': {'album_z': 0.0},
     'star_2': {'album_mean': True},
     'star_1': {'default': True},
@@ -1244,11 +1246,14 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
         # Calculate percentile thresholds
         # Top 15%: This is approximately 85th percentile (top artists of artist's work)
         # Top 20%: This is approximately 80th percentile (broader standout tracks)
+        # Top 25%: Used for single-detection star rating gate (issue #770)
         top_15_index = max(0, int(track_count * 0.15) - 1)  # -1 for 0-based index
         top_20_index = max(0, int(track_count * 0.20) - 1)
+        top_25_index = max(0, int(track_count * 0.25) - 1)
 
         top_15_threshold = sorted_scores[top_15_index] if top_15_index < track_count else 0
         top_20_threshold = sorted_scores[top_20_index] if top_20_index < track_count else 0
+        top_25_threshold = sorted_scores[top_25_index] if top_25_index < track_count else 0
 
         # Calculate MAD (Median Absolute Deviation)
         # MAD is more robust to outliers than standard deviation
@@ -1265,7 +1270,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             'mad_popularity': mad_scaled,  # NEW: MAD for robust z-score calculation
             'track_count': len(scores),
             'top_15_percentile': top_15_threshold,  # Top 15% of artist's tracks
-            'top_20_percentile': top_20_threshold   # Top 20% of artist's tracks
+            'top_20_percentile': top_20_threshold,   # Top 20% of artist's tracks
+            'top_25_percentile': top_25_threshold,   # Top 25% of artist's tracks (single gate)
         }
     except Exception as e:
         try:
@@ -1281,7 +1287,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             'mad_popularity': 0,
             'track_count': 0,
             'top_15_percentile': 0,
-            'top_20_percentile': 0
+            'top_20_percentile': 0,
+            'top_25_percentile': 0,
         }
 
 
@@ -6602,8 +6609,12 @@ def popularity_scan(
                                 artist_spread = max(artist_mad_scaled, MIN_SPREAD)  # Apply floor
 
                                 sorted_artist_scores = sorted(artist_scores, reverse=True)
+                                sorted_artist_scores_asc = sorted(artist_scores)
+                                import bisect
                                 def artist_percentile(score):
-                                    return (sorted_artist_scores.index(score) + 1) / len(sorted_artist_scores)
+                                    # Count number of tracks with score >= this track (best rank for ties)
+                                    rank = len(sorted_artist_scores_asc) - bisect.bisect_left(sorted_artist_scores_asc, score)
+                                    return rank / len(sorted_artist_scores_asc)
 
                                 # Pre-compute standout clusters for each album to handle multiple singles with similar popularity
                                 album_standout_clusters = {}
@@ -7235,7 +7246,7 @@ def popularity_scan(
                             detection_result = {
                                 "sources": ["spotify_album_type"],
                                 "confidence": "medium",
-                                "is_single": False
+                                "is_single": True
                             }
                             single_sources = detection_result["sources"]
                             single_confidence = detection_result["confidence"]
@@ -7741,7 +7752,7 @@ def popularity_scan(
                     stale_high_conf_track_ids = []
                     # Popularity-only 5★ promotions require a strong outlier signal.
                     # Keep this stricter than album standout tagging to avoid over-promotion.
-                    popularity_5star_z_threshold = 2.0
+                    popularity_5star_z_threshold = STANDOUT_CONFIG.get('popularity_5star_z_threshold', 2.0)
 
 
                     for i, track_row in enumerate(album_tracks_with_scores):
@@ -8004,6 +8015,27 @@ def popularity_scan(
                         # Ensure at least 1 star
                         stars = max(stars, 1)
 
+                        # Issue #770: Single detection must be in top 25% of artist's catalogue for 5★
+                        # Otherwise demote to 4★ to prevent over-promoting singles that are not
+                        # actually standout tracks within the artist's broader discography.
+                        if stars == 5 and single_confidence != "user":
+                            has_single_evidence = bool(is_single) or any(
+                                s in medium_conf_eligible_sources for s in single_sources
+                            )
+                            if has_single_evidence:
+                                artist_top_25_threshold = artist_stats.get('top_25_percentile', 0)
+                                if artist_top_25_threshold > 0 and popularity_score < artist_top_25_threshold:
+                                    stars = 4
+                                    log_info(
+                                        f"Demoting {title} from 5★ to 4★: single detected but "
+                                        f"not in top 25% of artist's catalogue "
+                                        f"(pop={popularity_score:.1f}, threshold={artist_top_25_threshold:.1f})"
+                                    )
+                                    log_debug(
+                                        f"Single 5★ demotion (top 25% gate) - track_id: {track_id}, "
+                                        f"popularity={popularity_score:.1f}, threshold={artist_top_25_threshold:.1f}"
+                                    )
+
                         # Collect update for batch processing
                         updates.append((stars, track_zscore, track_id))
 
@@ -8212,8 +8244,8 @@ def popularity_scan(
                             if has_single_sources and track_stars == 5:
                                 # Detected single
                                 detected_singles.append((track_artist, track_title, stars_str, reason_str))
-                            elif track_stars == 5 and not has_single_sources and track_zscore > 2.0:
-                                # Popular song (5★ with z-score > 2.0, no single detection)
+                            elif track_stars == 5 and not has_single_sources and track_zscore >= popularity_5star_z_threshold:
+                                # Popular song (5★ with z-score >= threshold, no single detection)
                                 popular_songs.append((track_artist, track_title, stars_str, reason_str))
                             else:
                                 # Rest of album
