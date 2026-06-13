@@ -9975,6 +9975,11 @@ def artist_detail(name):
                     if _normalize_release_title(a.get('album', '')) not in compilation_album_names
                 ]
 
+        # Combine EPs and singles into one category for display
+        albums_by_category["ep_single"] = albums_by_category.get("ep", []) + albums_by_category.get("single", [])
+        albums_by_category["ep"] = []
+        albums_by_category["single"] = []
+
         # Process compilation albums
         for album in compilation_albums:
             album_dict = dict(album)
@@ -9993,11 +9998,10 @@ def artist_detail(name):
             "album": [],
             "live_album": [],
             "remix_album": [],
-            "ep": [],
-            "single": [],
+            "ep_single": [],
             "compilation": []
         }
-        
+
         for release in missing_releases_dicts:
             release_dict = release.copy()
             release_dict['is_missing'] = True  # Mark as missing
@@ -10017,16 +10021,18 @@ def artist_detail(name):
             if release_bucket == "album" and is_compilation_by_title:
                 release_bucket = "compilation"
 
-            if release_bucket in ("album", "live_album", "remix_album", "ep", "single", "compilation"):
+            if release_bucket in ("ep", "single"):
+                missing_by_category["ep_single"].append(release_dict)
+            elif release_bucket in ("album", "live_album", "remix_album", "compilation"):
                 missing_by_category[release_bucket].append(release_dict)
-        
+
         # SAFETY: Remove live albums from missing releases in wrong categories
         missing_live_names = {
             _normalize_release_title(a.get('title', ''))
             for a in missing_by_category.get("live_album", [])
             if a.get('title')
         }
-        for cat in ["album", "ep", "single"]:
+        for cat in ["album", "ep_single"]:
             if missing_live_names:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
@@ -10039,7 +10045,7 @@ def artist_detail(name):
             for a in missing_by_category.get("remix_album", [])
             if a.get('title')
         }
-        for cat in ["album", "ep", "single"]:
+        for cat in ["album", "ep_single"]:
             if missing_remix_names:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
@@ -10052,7 +10058,7 @@ def artist_detail(name):
             for a in missing_by_category.get("compilation", [])
             if a.get('title')
         }
-        for cat in ["album", "ep", "single"]:
+        for cat in ["album", "live_album", "remix_album", "ep_single"]:
             if missing_compilation_names:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
@@ -10068,7 +10074,7 @@ def artist_detail(name):
             if a.get('album')
         }
         if discovered_release_names:
-            for cat in ["album", "compilation", "live_album", "remix_album", "ep", "single"]:
+            for cat in ["album", "compilation", "live_album", "remix_album", "ep_single"]:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
                     if _normalize_release_title(a.get('title', '')) not in discovered_release_names
@@ -10076,7 +10082,7 @@ def artist_detail(name):
 
         # Merge discovered and missing albums by category, then sort by release date
         merged_albums_by_category = {}
-        for category in ["album", "compilation", "live_album", "remix_album", "ep", "single", "unknown"]:
+        for category in ["album", "compilation", "live_album", "remix_album", "ep_single", "unknown"]:
             merged_list = albums_by_category.get(category, []) + missing_by_category.get(category, [])
             
             # Sort by release date (newest first)
@@ -10712,10 +10718,7 @@ def api_artist_missing_releases():
         else:
             category = "Album"
 
-        # Filter: exclude Live and Remix albums entirely.
         # Only include singles released in the current calendar year.
-        if category in ("Live Album", "Remix"):
-            continue
         if category == "Single":
             release_year_str = (rg.get("first_release_date") or "").split("-")[0]
             try:
@@ -14705,23 +14708,23 @@ def api_add_artist():
             if norm_title and norm_title in existing_norm:
                 continue
             
-            # Skip compilations
             secondary = [s.lower() for s in rg.get("secondary_types") or []]
-            if "compilation" in secondary:
-                continue
             
-            # Determine category
+            # Determine category including secondary types
             primary_type = (rg.get("primary_type") or "").lower()
             category = "Album"
-            if primary_type == "ep":
+            if "compilation" in secondary:
+                category = "Compilation"
+            elif "live" in secondary:
+                category = "Live Album"
+            elif "remix" in secondary:
+                category = "Remix"
+            elif primary_type == "ep":
                 category = "EP"
             elif primary_type == "single" or "single" in secondary:
                 category = "Single"
 
-            # Filter: exclude Live and Remix albums entirely.
             # Only include singles released in the current calendar year.
-            if category in ("Live Album", "Remix"):
-                continue
             if category == "Single":
                 release_year_str = (rg.get("first_release_date") or "").split("-")[0]
                 try:
@@ -35882,6 +35885,7 @@ def api_album_musicbrainz_lookup():
                         "title": rel_data.get("title", album),
                         "artist": rel_artist,
                         "primary_type": primary_type,
+                        "secondary_types": rg.get("secondary-types", []),
                         "first_release_date": display_date,
                         "cover_art_url": cover_art_url,
                         "confidence": 1.0,
@@ -35909,6 +35913,7 @@ def api_album_musicbrainz_lookup():
                             "title": rg_data.get("title", album),
                             "artist": rg_artist,
                             "primary_type": rg_data.get("primary-type", "Album"),
+                            "secondary_types": rg_data.get("secondary-types", []),
                             "first_release_date": rg_data.get("first-release-date", ""),
                             "cover_art_url": cover_art_url,
                             "confidence": 1.0,
@@ -35970,6 +35975,7 @@ def api_album_musicbrainz_lookup():
                 continue
             rg_title = rg.get("title", "")
             primary_type = rg.get("primary-type", "Album")
+            secondary_types = rg.get("secondary-types", [])
             first_release = rg.get("first-release-date", "")
             
             # Get artist credit
@@ -35989,6 +35995,7 @@ def api_album_musicbrainz_lookup():
                 "title": rg_title,
                 "artist": rg_artist,
                 "primary_type": primary_type,
+                "secondary_types": secondary_types,
                 "first_release_date": first_release,
                 "cover_art_url": cover_art_url,
                 "confidence": round(overall_confidence, 3),

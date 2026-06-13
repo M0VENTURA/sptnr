@@ -4753,10 +4753,7 @@ def popularity_scan(
                         elif primary_type == "single" or "single" in secondary:
                             category = "Single"
 
-                        # Filter: exclude Live and Remix albums entirely.
                         # Only include singles released in the current calendar year.
-                        if category in ("Live Album", "Remix"):
-                            continue
                         if category == "Single":
                             release_year_str = (rg.get("first-release-date") or "").split("-")[0]
                             try:
