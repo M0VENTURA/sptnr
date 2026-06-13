@@ -827,14 +827,34 @@
           <small class="form-text text-muted">Z-score boundary between the high-confidence zone (below) and medium-confidence zone (above). Default: <strong>1.0</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Medium↔Low Confidence Boundary</label>
+          <input type="number" step="0.1" min="0.1" max="3.0" class="form-control form-control-sm" id="zscore_medium_threshold" placeholder="0.6" value="{{ config.get('single_detection', {}).get('zscore_medium_threshold', 0.6) }}">
+          <small class="form-text text-muted">Z-score boundary between the medium-confidence zone (below) and low-confidence zone (above). Default: <strong>0.6</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Popularity-Only 5★ Threshold</label>
-          <p class="form-control-plaintext form-control-sm text-muted">2.0 <small>(hard-coded)</small></p>
-          <small class="form-text text-muted">Z-score above which a track gets 5★ purely from popularity, with no source evidence. Hard-coded at <strong>2.0</strong>.</small>
+          <input type="number" step="0.1" min="0.5" max="5.0" class="form-control form-control-sm" id="popularity_5star_z_threshold" placeholder="2.0" value="{{ config.get('single_detection', {}).get('popularity_5star_z_threshold', 2.0) }}">
+          <small class="form-text text-muted">Z-score above which a track gets 5★ purely from popularity, with no source evidence. Default: <strong>2.0</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Top Standout Gap Z-Score (5★ Gate)</label>
           <input type="number" step="0.1" class="form-control form-control-sm" id="standout_gap_z" placeholder="0.75" value="{{ config.get('single_detection', {}).get('standout_gap_z', 0.75) }}">
           <small class="form-text text-muted">Minimum z-normalised gap to the next track required for standout-driven 5★. Default: <strong>0.75</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Single 4★ Minimum</label>
+          <input type="number" step="1" min="1" max="5" class="form-control form-control-sm" id="single_4star_minimum" placeholder="3" value="{{ config.get('single_detection', {}).get('single_4star_minimum', 3) }}">
+          <small class="form-text text-muted">Minimum star rating for any track with single detection evidence. Prevents singles from being rated below this value. Default: <strong>3</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Small Catalog Track Threshold</label>
+          <input type="number" step="1" min="5" max="100" class="form-control form-control-sm" id="small_catalog_track_threshold" placeholder="20" value="{{ config.get('single_detection', {}).get('small_catalog_track_threshold', 20) }}">
+          <small class="form-text text-muted">Track count below which the small-catalog percentile rule applies. Default: <strong>20</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Small Catalog Percentile</label>
+          <input type="number" step="0.05" min="0.1" max="1.0" class="form-control form-control-sm" id="small_catalog_percentile" placeholder="0.40" value="{{ config.get('single_detection', {}).get('small_catalog_percentile', 0.40) }}">
+          <small class="form-text text-muted">Relaxed percentile threshold for small catalogs (e.g., 0.40 = top 40%). Default: <strong>0.40</strong></small>
         </div>
       </div>
     </div>
@@ -1291,7 +1311,12 @@ function buildConfigObject() {
     ),
     single_detection: {
       zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
-      standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75
+      zscore_medium_threshold: parseFloat(getValue('zscore_medium_threshold', '0.6')) || 0.6,
+      popularity_5star_z_threshold: parseFloat(getValue('popularity_5star_z_threshold', '2.0')) || 2.0,
+      standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75,
+      single_4star_minimum: parseInt(getValue('single_4star_minimum', '3')) || 3,
+      small_catalog_track_threshold: parseInt(getValue('small_catalog_track_threshold', '20')) || 20,
+      small_catalog_percentile: parseFloat(getValue('small_catalog_percentile', '0.40')) || 0.40
     },
     api_integrations: {
       spotify: {
@@ -1702,15 +1727,13 @@ function renderFeaturesWeights(features, weights) {
       heading: 'Single Detection Sources',
       description: 'Configure the confidence level for each single detection source. When a source is set to HIGH, detection will stop searching once that source confirms a track is a single.',
       keys: [
-        'source_discogs_confidence', 'source_spotify_confidence', 'source_musicbrainz_confidence',
-        'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence',
+        'source_discogs_confidence', 'source_musicbrainz_confidence',
+        'source_discogs_video_confidence',
         'source_lastfm_confidence', 'source_radio_edit_confidence'
       ],
       explanations: {
         source_discogs_confidence: 'Confidence level for Discogs single detection. Default: high (stops search when confirmed). Set to "low" or "medium" to continue checking other sources.',
-        source_spotify_confidence: 'Confidence level for Spotify single detection. Default: medium. Set to "high" to skip remaining sources when Spotify confirms.',
         source_musicbrainz_confidence: 'Confidence level for MusicBrainz single detection. Default: medium. Set to "high" to skip remaining sources when MusicBrainz confirms.',
-        source_musicbrainz_compilation_confidence: 'Confidence level for MusicBrainz compilation detection (track appears on Various Artists/compilation albums). Default: medium. Set to "low" to prevent compilation appearances from counting toward the 2-medium=high rule.',
         source_discogs_video_confidence: 'Confidence level for Discogs music video detection. Default: medium. Set to "high" to skip Last.fm/z-score when video confirms.',
         source_lastfm_confidence: 'Confidence level for Last.fm single detection. Default: medium. Set to "high" to skip z-score inference when Last.fm confirms.',
         source_radio_edit_confidence: 'Confidence level for Single/Radio Edit detection from title and Spotify metadata. Default: high. Set to "medium" if you want this source to require additional confirmation.'

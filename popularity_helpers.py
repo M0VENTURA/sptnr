@@ -4,6 +4,7 @@ Shared popularity helpers for Spotify/Last.fm/ListenBrainz lookups and weights.
 Functions are used by both the main scanner (start.py) and popularity.py.
 """
 
+import bisect
 import os
 import yaml
 import math
@@ -186,6 +187,76 @@ def zscore_to_popularity(z_score: float) -> float:
     return min(100.0, max(0.0, score))
 
 
+# ============================================================================
+# Centralized single-detection configuration helpers
+# ============================================================================
+
+def get_single_detection_config() -> Dict[str, Any]:
+    """
+    Load single detection settings from config.yaml with sensible defaults.
+
+    Returns:
+        Dict with keys:
+        - popularity_5star_z_threshold: z-score threshold for popularity-only 5★
+        - single_4star_minimum: minimum star rating for any confirmed single
+        - small_catalog_track_threshold: track count below which small-catalog rules apply
+        - small_catalog_percentile: relaxed percentile threshold for small catalogs
+        - zscore_medium_threshold: medium-confidence z boundary
+        - zscore_high_threshold: high-confidence z boundary
+        - standout_gap_z: minimum gap for standout-driven 5★
+    """
+    config = _load_config()
+    single_detection = config.get("single_detection", {}) if isinstance(config, dict) else {}
+    return {
+        "popularity_5star_z_threshold": float(single_detection.get("popularity_5star_z_threshold", 2.0)),
+        "single_4star_minimum": int(single_detection.get("single_4star_minimum", 3)),
+        "small_catalog_track_threshold": int(single_detection.get("small_catalog_track_threshold", 20)),
+        "small_catalog_percentile": float(single_detection.get("small_catalog_percentile", 0.40)),
+        "zscore_medium_threshold": float(single_detection.get("zscore_medium_threshold", 0.6)),
+        "zscore_high_threshold": float(single_detection.get("zscore_high_threshold", 1.0)),
+        "standout_gap_z": float(single_detection.get("standout_gap_z", 0.75)),
+    }
+
+
+def get_top_percentile_threshold(scores: List[float], percentile: float) -> float:
+    """
+    Calculate the popularity threshold for a given percentile of an artist's catalog.
+
+    Args:
+        scores: List of popularity scores (ascending or unsorted)
+        percentile: Percentile as a fraction (e.g., 0.25 for top 25%)
+
+    Returns:
+        Popularity score threshold. Tracks with score >= this value are in the top N%.
+    """
+    if not scores:
+        return 0.0
+    sorted_scores = sorted(scores, reverse=True)
+    idx = max(0, int(len(sorted_scores) * percentile) - 1)
+    return sorted_scores[idx] if idx < len(sorted_scores) else 0.0
+
+
+def artist_percentile(score: float, sorted_asc_scores: List[float]) -> float:
+    """
+    Calculate the percentile rank of a score within an artist's catalog.
+
+    Uses bisect_left for O(log n) lookup and correctly handles ties by giving
+    all tied scores the same (best) rank.
+
+    Args:
+        score: The track's popularity score
+        sorted_asc_scores: Artist's scores sorted in ascending order
+
+    Returns:
+        Fractional percentile (0.0–1.0). 0.10 means the track is in the top 10%.
+    """
+    if not sorted_asc_scores:
+        return 1.0
+    rank = len(sorted_asc_scores) - bisect.bisect_left(sorted_asc_scores, score)
+    return rank / len(sorted_asc_scores)
+
+
+# ============================================================================
 # Context manager for safe database connection handling (replaces boilerplate try/finally)
 @contextmanager
 def get_db_connection_context(conn=None):

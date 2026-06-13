@@ -178,7 +178,11 @@ features:
 single_detection:
   zscore_medium_threshold: 0.6
   zscore_high_threshold: 1.0
+  popularity_5star_z_threshold: 2.0  # Z-score above which a track gets 5★ purely from popularity
   standout_gap_z: 0.75  # Minimum z-normalized gap to next track for standout-driven 5★
+  single_4star_minimum: 3  # Minimum star rating for any track with single detection evidence
+  small_catalog_track_threshold: 20  # Track count below which small-catalog percentile rule applies
+  small_catalog_percentile: 0.40  # Relaxed percentile threshold for small catalogs (e.g., top 40%)
 
 # Essentia local ML mood/genre tagging — https://github.com/WB2024/Essentia-to-Metadata
 # The official Docker image bundles Essentia-to-Metadata at /opt/Essentia-to-Metadata/tag_music.py

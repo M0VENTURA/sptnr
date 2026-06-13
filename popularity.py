@@ -152,6 +152,10 @@ GENRE_WEIGHTS = {
 
 
 # --- Standout & Star Rating Config ---
+# Load single detection config from config.yaml for all configurable thresholds
+from popularity_helpers import get_single_detection_config as _get_single_detection_config
+_SINGLE_DETECTION_CONFIG = _get_single_detection_config()
+
 STANDOUT_CONFIG = {
     'album_zscore_threshold': 0.8,         # Album standout: z >= 0.8 (medium confidence, lowered from 1.0)
     'album_top_n': 2,                     # (DEPRECATED - using gap-based clustering instead)
@@ -161,7 +165,10 @@ STANDOUT_CONFIG = {
     'star_5': {'album_z': 1.0, 'artist_z': 1.2, 'artist_pct': 0.10},  # Requires z >= 1.0 for 5★
     'star_4': {'album_z': 0.8, 'artist_z': 1.0, 'artist_pct': 0.20},  # Uses lower 0.8 threshold
     'star_5_single': {'artist_pct': 0.25},  # Single detection must also be in top 25% of artist catalog for 5★
-    'popularity_5star_z_threshold': 2.0,     # Configurable z threshold for popularity-only 5★
+    'popularity_5star_z_threshold': _SINGLE_DETECTION_CONFIG.get('popularity_5star_z_threshold', 2.0),
+    'single_4star_minimum': _SINGLE_DETECTION_CONFIG.get('single_4star_minimum', 3),
+    'small_catalog_track_threshold': _SINGLE_DETECTION_CONFIG.get('small_catalog_track_threshold', 20),
+    'small_catalog_percentile': _SINGLE_DETECTION_CONFIG.get('small_catalog_percentile', 0.40),
     'star_3': {'album_z': 0.0},
     'star_2': {'album_mean': True},
     'star_1': {'default': True},
@@ -175,12 +182,11 @@ UNDERPERFORMING_THRESHOLD = 0.7
 def get_zscore_thresholds():
     """Load z-score thresholds from config, or use defaults"""
     try:
-        from helpers.config_loader import get_zscore_thresholds
-        thresholds = get_zscore_thresholds()
+        cfg = _get_single_detection_config()
         return {
-            'medium': thresholds.get('medium', 0.6),
-            'high': thresholds.get('high', 1.0),
-            'standout_gap_z': thresholds.get('standout_gap_z', 0.75),
+            'medium': cfg.get('zscore_medium_threshold', 0.6),
+            'high': cfg.get('zscore_high_threshold', 1.0),
+            'standout_gap_z': cfg.get('standout_gap_z', 0.75),
         }
     except Exception:
         return {'medium': 0.6, 'high': 1.0, 'standout_gap_z': 0.75}
@@ -189,10 +195,14 @@ def get_zscore_thresholds():
 def apply_standout_config_overrides() -> None:
     """Apply standout/star-rating threshold overrides from config.yaml when available."""
     try:
-        thresholds = get_zscore_thresholds()
-        STANDOUT_CONFIG['star_5']['standout_gap_z'] = float(thresholds.get('standout_gap_z', 0.75))
+        cfg = _get_single_detection_config()
+        STANDOUT_CONFIG['star_5']['standout_gap_z'] = float(cfg.get('standout_gap_z', 0.75))
+        STANDOUT_CONFIG['popularity_5star_z_threshold'] = float(cfg.get('popularity_5star_z_threshold', 2.0))
+        STANDOUT_CONFIG['single_4star_minimum'] = int(cfg.get('single_4star_minimum', 3))
+        STANDOUT_CONFIG['small_catalog_track_threshold'] = int(cfg.get('small_catalog_track_threshold', 20))
+        STANDOUT_CONFIG['small_catalog_percentile'] = float(cfg.get('small_catalog_percentile', 0.40))
     except Exception:
-        STANDOUT_CONFIG['star_5']['standout_gap_z'] = 0.75
+        pass
 
 
 apply_standout_config_overrides()
@@ -1255,6 +1265,11 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
         top_20_threshold = sorted_scores[top_20_index] if top_20_index < track_count else 0
         top_25_threshold = sorted_scores[top_25_index] if top_25_index < track_count else 0
 
+        # Dynamic threshold for small catalogs (configurable percentile)
+        small_catalog_percentile = STANDOUT_CONFIG.get('small_catalog_percentile', 0.40)
+        small_catalog_index = max(0, int(track_count * small_catalog_percentile) - 1)
+        small_catalog_threshold = sorted_scores[small_catalog_index] if small_catalog_index < track_count else 0
+
         # Calculate MAD (Median Absolute Deviation)
         # MAD is more robust to outliers than standard deviation
         median_val = median(scores)
@@ -1272,6 +1287,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             'top_15_percentile': top_15_threshold,  # Top 15% of artist's tracks
             'top_20_percentile': top_20_threshold,   # Top 20% of artist's tracks
             'top_25_percentile': top_25_threshold,   # Top 25% of artist's tracks (single gate)
+            'small_catalog_threshold': small_catalog_threshold,  # Relaxed threshold for small catalogs
         }
     except Exception as e:
         try:
@@ -1289,6 +1305,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             'top_15_percentile': 0,
             'top_20_percentile': 0,
             'top_25_percentile': 0,
+            'small_catalog_threshold': 0,
         }
 
 
@@ -6610,11 +6627,7 @@ def popularity_scan(
 
                                 sorted_artist_scores = sorted(artist_scores, reverse=True)
                                 sorted_artist_scores_asc = sorted(artist_scores)
-                                import bisect
-                                def artist_percentile(score):
-                                    # Count number of tracks with score >= this track (best rank for ties)
-                                    rank = len(sorted_artist_scores_asc) - bisect.bisect_left(sorted_artist_scores_asc, score)
-                                    return rank / len(sorted_artist_scores_asc)
+                                from popularity_helpers import artist_percentile
 
                                 # Pre-compute standout clusters for each album to handle multiple singles with similar popularity
                                 album_standout_clusters = {}
@@ -6659,12 +6672,12 @@ def popularity_scan(
                                     is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] and is_in_standout_cluster)
                                     # Artist-level stats using median + MAD
                                     artist_z = (score - artist_median) / artist_spread if artist_spread > 0 else 0
-                                    is_artist_standout = (artist_z >= STANDOUT_CONFIG['artist_zscore_threshold'] and artist_percentile(score) <= STANDOUT_CONFIG['artist_top_percentile'])
+                                    is_artist_standout = (artist_z >= STANDOUT_CONFIG['artist_zscore_threshold'] and artist_percentile(score, sorted_artist_scores_asc) <= STANDOUT_CONFIG['artist_top_percentile'])
                                     # Star rating assignment
                                     # 5★ requires album z >= 1.0 (high confidence) + artist standout
                                     if is_album_standout and is_artist_standout and album_z >= STANDOUT_CONFIG['star_5']['album_z']:
                                         star = 5
-                                    elif is_album_standout and (artist_z >= STANDOUT_CONFIG['star_4']['artist_z'] or artist_percentile(score) <= STANDOUT_CONFIG['star_4']['artist_pct']):
+                                    elif is_album_standout and (artist_z >= STANDOUT_CONFIG['star_4']['artist_z'] or artist_percentile(score, sorted_artist_scores_asc) <= STANDOUT_CONFIG['star_4']['artist_pct']):
                                         star = 4
                                     elif is_album_standout:
                                         star = 3
@@ -8015,25 +8028,45 @@ def popularity_scan(
                         # Ensure at least 1 star
                         stars = max(stars, 1)
 
-                        # Issue #770: Single detection must be in top 25% of artist's catalogue for 5★
-                        # Otherwise demote to 4★ to prevent over-promoting singles that are not
-                        # actually standout tracks within the artist's broader discography.
-                        if stars == 5 and single_confidence != "user":
-                            has_single_evidence = bool(is_single) or any(
-                                s in medium_conf_eligible_sources for s in single_sources
+                        # single_4star_minimum gate: any track with single evidence gets at least 4★
+                        # so that confirmed singles are never rated below 4 stars.
+                        has_single_evidence = bool(is_single) or any(
+                            s in medium_conf_eligible_sources for s in single_sources
+                        )
+                        if has_single_evidence and stars < 4:
+                            stars = 4
+                            log_info(
+                                f"Upgrading {title} to 4★: single evidence detected but baseline was {stars}"
                             )
+                            log_debug(
+                                f"single_4star_minimum gate applied - track_id: {track_id}, "
+                                f"sources: {single_sources}, previous_stars: {stars}"
+                            )
+
+                        # Issue #770: Single detection must be in top N% of artist's catalogue for 5★.
+                        # For small catalogs (fewer than small_catalog_track_threshold tracks), use a
+                        # relaxed percentile threshold (small_catalog_percentile) instead of the fixed 25%.
+                        if stars == 5 and single_confidence != "user":
                             if has_single_evidence:
-                                artist_top_25_threshold = artist_stats.get('top_25_percentile', 0)
-                                if artist_top_25_threshold > 0 and popularity_score < artist_top_25_threshold:
+                                artist_track_count = artist_stats.get('track_count', 0)
+                                small_catalog_threshold = artist_stats.get('small_catalog_threshold', 0)
+                                small_catalog_track_threshold = STANDOUT_CONFIG.get('small_catalog_track_threshold', 20)
+                                if artist_track_count > 0 and artist_track_count < small_catalog_track_threshold and small_catalog_threshold > 0:
+                                    artist_top_threshold = small_catalog_threshold
+                                    threshold_label = f"top {int(STANDOUT_CONFIG.get('small_catalog_percentile', 0.40) * 100)}%"
+                                else:
+                                    artist_top_threshold = artist_stats.get('top_25_percentile', 0)
+                                    threshold_label = "top 25%"
+                                if artist_top_threshold > 0 and popularity_score < artist_top_threshold:
                                     stars = 4
                                     log_info(
                                         f"Demoting {title} from 5★ to 4★: single detected but "
-                                        f"not in top 25% of artist's catalogue "
-                                        f"(pop={popularity_score:.1f}, threshold={artist_top_25_threshold:.1f})"
+                                        f"not in {threshold_label} of artist's catalogue "
+                                        f"(pop={popularity_score:.1f}, threshold={artist_top_threshold:.1f})"
                                     )
                                     log_debug(
-                                        f"Single 5★ demotion (top 25% gate) - track_id: {track_id}, "
-                                        f"popularity={popularity_score:.1f}, threshold={artist_top_25_threshold:.1f}"
+                                        f"Single 5★ demotion ({threshold_label} gate) - track_id: {track_id}, "
+                                        f"popularity={popularity_score:.1f}, threshold={artist_top_threshold:.1f}"
                                     )
 
                         # Collect update for batch processing
