@@ -90,6 +90,22 @@ def resolve_track_genres(track_dict: Dict[str, Any]) -> List[str]:
         "essentia": _extract_genre_names(track_dict.get("essentia_genres")),
     }
 
+    # Exclude any Essentia genre labels that are already stored in the mood
+    # field. Essentia-to-Metadata writes mood tags to the MOOD tag and genre
+    # tags to the GENRE tag, but a misconfigured or buggy version may write
+    # mood values into GENRE. This filter prevents moods from polluting the
+    # resolved top-genres list.
+    if sources["essentia"] and track_dict.get("mood"):
+        _mood_labels = {
+            _normalize_genre(m)
+            for m in str(track_dict.get("mood")).split(";")
+            if m.strip()
+        }
+        sources["essentia"] = [
+            g for g in sources["essentia"]
+            if _normalize_genre(g) not in _mood_labels
+        ]
+
     # Count frequency across sources (case-insensitive)
     genre_data: Dict[str, Dict[str, Any]] = {}
     for source_name, genres in sources.items():
