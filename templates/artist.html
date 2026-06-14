@@ -2132,8 +2132,8 @@ function checkMissingReleases(artistName, silent = false, background = false) {
     if (categoryRaw.includes('compilation')) return 'compilation';
     if (categoryRaw.includes('live')) return 'live_album';
     if (categoryRaw.includes('remix')) return 'remix_album';
-    if (categoryRaw.includes('ep')) return 'ep';
     if (categoryRaw.includes('single')) return 'single';
+    if (categoryRaw.includes('ep')) return 'ep';
     // Fallback: inspect the title for live/unplugged/remix keywords even when
     // the stored category is the generic "album" value (e.g. secondary type
     // missing from MusicBrainz at scan time).
@@ -3776,7 +3776,7 @@ function toggleMissing(category) {
 
 // Initialize toggle states on page load
 function initializeMissingToggle() {
-  const categories = ['albums', 'compilations', 'live-albums', 'eps', 'singles'];
+  const categories = ['albums', 'compilations', 'live-albums', 'remix-albums', 'eps', 'singles'];
   categories.forEach(category => {
     const section = document.getElementById(category + '-section');
     if (!section) return;

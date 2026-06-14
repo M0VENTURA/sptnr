@@ -534,46 +534,60 @@ class LastFmClient:
             logger.debug("Last.fm API key missing. Skipping album lookup.")
             return 0
         
-        params = {
-            "method": "album.getInfo",
-            "artist": artist,
-            "album": album,
-            "api_key": self.api_key,
-            "format": "json"
-        }
+        # Try primary artist first (strip featured artists) to avoid 404s on
+        # collaboration strings like "dArtagnan feat. Melissa Bonny".
+        primary_artist = self._strip_featured_artist(artist)
+        lookup_order = [primary_artist] if primary_artist else [artist]
+        if artist and artist.lower() != primary_artist.lower():
+            lookup_order.append(artist)
         
-        try:
-            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
-            res.raise_for_status()
-            data = res.json().get("album", {})
+        for lookup_artist in lookup_order:
+            params = {
+                "method": "album.getInfo",
+                "artist": lookup_artist,
+                "album": album,
+                "api_key": self.api_key,
+                "format": "json"
+            }
             
-            # Last.fm returns tracks as a list or dict depending on context
-            tracks = data.get("tracks", {})
-            if isinstance(tracks, dict):
-                # If it's a dict, it might have 'track' key with list or single item
-                track_list = tracks.get("track", [])
-                if isinstance(track_list, dict):
-                    # Single track
-                    return 1
-                elif isinstance(track_list, list):
-                    return len(track_list)
-            elif isinstance(tracks, list):
-                return len(tracks)
-            
-            return 0
-        except (ConnectionError, ConnectionResetError) as e:
-            logger.debug(f"Connection error fetching album '{album}' by '{artist}': {e}")
-            return 0
-        except Timeout as e:
-            logger.debug(f"Timeout fetching album '{album}' by '{artist}': {e}")
-            return 0
-        except HTTPError as e:
-            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
-            logger.debug(f"HTTP error {status_code} fetching album '{album}' by '{artist}': {e}")
-            return 0
-        except Exception as e:
-            logger.debug(f"Failed to fetch Last.fm album info for '{album}' by '{artist}': {e}")
-            return 0
+            try:
+                res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+                res.raise_for_status()
+                data = res.json().get("album", {})
+                
+                # Last.fm returns tracks as a list or dict depending on context
+                tracks = data.get("tracks", {})
+                if isinstance(tracks, dict):
+                    # If it's a dict, it might have 'track' key with list or single item
+                    track_list = tracks.get("track", [])
+                    if isinstance(track_list, dict):
+                        # Single track
+                        return 1
+                    elif isinstance(track_list, list):
+                        return len(track_list)
+                elif isinstance(tracks, list):
+                    return len(tracks)
+                
+                # If we got a valid response but no tracks, continue to next lookup
+                continue
+            except HTTPError as e:
+                status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
+                if status_code == 404:
+                    logger.debug(f"Album '{album}' not found for '{lookup_artist}' (404)")
+                    continue
+                logger.debug(f"HTTP error {status_code} fetching album '{album}' by '{lookup_artist}': {e}")
+                continue
+            except (ConnectionError, ConnectionResetError) as e:
+                logger.debug(f"Connection error fetching album '{album}' by '{lookup_artist}': {e}")
+                continue
+            except Timeout as e:
+                logger.debug(f"Timeout fetching album '{album}' by '{lookup_artist}': {e}")
+                continue
+            except Exception as e:
+                logger.debug(f"Failed to fetch Last.fm album info for '{album}' by '{lookup_artist}': {e}")
+                continue
+        
+        return 0
     
     def has_title_track(self, artist: str, album: str) -> bool:
         """
@@ -592,63 +606,77 @@ class LastFmClient:
             logger.debug("Last.fm API key missing. Skipping album lookup.")
             return False
         
-        params = {
-            "method": "album.getInfo",
-            "artist": artist,
-            "album": album,
-            "api_key": self.api_key,
-            "format": "json"
-        }
+        # Try primary artist first (strip featured artists) to avoid 404s on
+        # collaboration strings like "dArtagnan feat. Melissa Bonny".
+        primary_artist = self._strip_featured_artist(artist)
+        lookup_order = [primary_artist] if primary_artist else [artist]
+        if artist and artist.lower() != primary_artist.lower():
+            lookup_order.append(artist)
         
-        try:
-            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
-            res.raise_for_status()
-            data = res.json().get("album", {})
+        for lookup_artist in lookup_order:
+            params = {
+                "method": "album.getInfo",
+                "artist": lookup_artist,
+                "album": album,
+                "api_key": self.api_key,
+                "format": "json"
+            }
             
-            # Get album name from response (might be normalized)
-            album_name = data.get("name", album)
-            
-            # Normalize album name for comparison (case-insensitive, strip whitespace)
-            normalized_album = album_name.lower().strip()
-            
-            # Last.fm returns tracks as a list or dict depending on context
-            tracks = data.get("tracks", {})
-            track_list = []
-            
-            if isinstance(tracks, dict):
-                # If it's a dict, it might have 'track' key with list or single item
-                track_data = tracks.get("track", [])
-                if isinstance(track_data, dict):
-                    # Single track
-                    track_list = [track_data]
-                elif isinstance(track_data, list):
-                    track_list = track_data
-            elif isinstance(tracks, list):
-                track_list = tracks
-            
-            # Check if any track name matches the album name
-            for track in track_list:
-                if isinstance(track, dict):
-                    track_name = track.get("name", "")
-                    normalized_track = track_name.lower().strip()
-                    if normalized_track == normalized_album:
-                        logger.debug(f"Found title track '{track_name}' matching album '{album_name}'")
-                        return True
-            
-            return False
-        except (ConnectionError, ConnectionResetError) as e:
-            logger.debug(f"Connection error checking title track for '{album}' by '{artist}': {e}")
-            return False
-        except Timeout as e:
-            logger.debug(f"Timeout checking title track for '{album}' by '{artist}': {e}")
-            return False
-        except HTTPError as e:
-            status_code = e.response.status_code if e.response else 'unknown'
-            logger.debug(f"HTTP error {status_code} checking title track for '{album}' by '{artist}': {e}")
-            return False
-        except Exception as e:
-            logger.debug(f"Failed to check title track for '{album}' by '{artist}': {e}")
-            return False
+            try:
+                res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+                res.raise_for_status()
+                data = res.json().get("album", {})
+                
+                # Get album name from response (might be normalized)
+                album_name = data.get("name", album)
+                
+                # Normalize album name for comparison (case-insensitive, strip whitespace)
+                normalized_album = album_name.lower().strip()
+                
+                # Last.fm returns tracks as a list or dict depending on context
+                tracks = data.get("tracks", {})
+                track_list = []
+                
+                if isinstance(tracks, dict):
+                    # If it's a dict, it might have 'track' key with list or single item
+                    track_data = tracks.get("track", [])
+                    if isinstance(track_data, dict):
+                        # Single track
+                        track_list = [track_data]
+                    elif isinstance(track_data, list):
+                        track_list = track_data
+                elif isinstance(tracks, list):
+                    track_list = tracks
+                
+                # Check if any track name matches the album name
+                for track in track_list:
+                    if isinstance(track, dict):
+                        track_name = track.get("name", "")
+                        normalized_track = track_name.lower().strip()
+                        if normalized_track == normalized_album:
+                            logger.debug(f"Found title track '{track_name}' matching album '{album_name}'")
+                            return True
+                
+                # If we got a valid response but no title track, continue to next lookup
+                continue
+            except HTTPError as e:
+                status_code = e.response.status_code if e.response else 'unknown'
+                if status_code == 404:
+                    logger.debug(f"Album '{album}' not found for '{lookup_artist}' (404)")
+                    continue
+                logger.debug(f"HTTP error {status_code} checking title track for '{album}' by '{lookup_artist}': {e}")
+                continue
+            except (ConnectionError, ConnectionResetError) as e:
+                logger.debug(f"Connection error checking title track for '{album}' by '{lookup_artist}': {e}")
+                continue
+            except Timeout as e:
+                logger.debug(f"Timeout checking title track for '{album}' by '{lookup_artist}': {e}")
+                continue
+            except Exception as e:
+                logger.debug(f"Failed to check title track for '{album}' by '{lookup_artist}': {e}")
+                continue
+        
+        return False
     
     def check_track_as_single(self, artist: str, track_title: str) -> bool:
         """
@@ -672,71 +700,83 @@ class LastFmClient:
             logger.debug("Last.fm API key missing. Skipping single lookup.")
             return False
         
-        # Search for an album with the same name as the track
-        params = {
-            "method": "album.getInfo",
-            "artist": artist,
-            "album": track_title,  # Use track title as album name
-            "api_key": self.api_key,
-            "format": "json"
-        }
+        # Try primary artist first (strip featured artists) to avoid 404s on
+        # collaboration strings like "dArtagnan feat. Melissa Bonny".
+        primary_artist = self._strip_featured_artist(artist)
+        lookup_order = [primary_artist] if primary_artist else [artist]
+        if artist and artist.lower() != primary_artist.lower():
+            lookup_order.append(artist)
         
-        try:
-            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
-            res.raise_for_status()
-            data = res.json()
+        for lookup_artist in lookup_order:
+            # Search for an album with the same name as the track
+            params = {
+                "method": "album.getInfo",
+                "artist": lookup_artist,
+                "album": track_title,  # Use track title as album name
+                "api_key": self.api_key,
+                "format": "json"
+            }
             
-            # If we get an album response (not an error), the track exists as a single/album
-            if "album" in data:
-                album_data = data["album"]
-                album_name = album_data.get("name", "")
+            try:
+                res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+                res.raise_for_status()
+                data = res.json()
                 
-                # Normalize for comparison
-                normalized_album = album_name.lower().strip()
-                normalized_track = track_title.lower().strip()
+                # If we get an album response (not an error), the track exists as a single/album
+                if "album" in data:
+                    album_data = data["album"]
+                    album_name = album_data.get("name", "")
+                    
+                    # Normalize for comparison
+                    normalized_album = album_name.lower().strip()
+                    normalized_track = track_title.lower().strip()
+                    
+                    # Check if the album name matches the track title
+                    if normalized_album == normalized_track:
+                        # Get track count to verify it's actually a single (< 6 tracks)
+                        tracks_data = album_data.get("tracks", {})
+                        track_count = 0
+                        
+                        if isinstance(tracks_data, dict):
+                            track_list = tracks_data.get("track", [])
+                            if isinstance(track_list, dict):
+                                # Single track
+                                track_count = 1
+                            elif isinstance(track_list, list):
+                                track_count = len(track_list)
+                        elif isinstance(tracks_data, list):
+                            track_count = len(tracks_data)
+                        
+                        # Only return True if track count is less than 6
+                        if track_count > 0 and track_count < 6:
+                            logger.debug(f"Found single/album '{album_name}' matching track '{track_title}' with {track_count} tracks")
+                            return True
+                        else:
+                            logger.debug(f"Found album '{album_name}' matching track '{track_title}' but has {track_count} tracks (>= 6), not a single")
+                            return False
                 
-                # Check if the album name matches the track title
-                if normalized_album == normalized_track:
-                    # Get track count to verify it's actually a single (< 6 tracks)
-                    tracks_data = album_data.get("tracks", {})
-                    track_count = 0
-                    
-                    if isinstance(tracks_data, dict):
-                        track_list = tracks_data.get("track", [])
-                        if isinstance(track_list, dict):
-                            # Single track
-                            track_count = 1
-                        elif isinstance(track_list, list):
-                            track_count = len(track_list)
-                    elif isinstance(tracks_data, list):
-                        track_count = len(tracks_data)
-                    
-                    # Only return True if track count is less than 6
-                    if track_count > 0 and track_count < 6:
-                        logger.debug(f"Found single/album '{album_name}' matching track '{track_title}' with {track_count} tracks")
-                        return True
-                    else:
-                        logger.debug(f"Found album '{album_name}' matching track '{track_title}' but has {track_count} tracks (>= 6), not a single")
-                        return False
-            
-            return False
-        except HTTPError as e:
-            # 404 or other HTTP errors mean the single doesn't exist
-            status_code = e.response.status_code if e.response else 'unknown'
-            if status_code == 404:
-                logger.debug(f"No single found for '{track_title}' by '{artist}' (404)")
-            else:
-                logger.debug(f"HTTP error {status_code} checking single for '{track_title}' by '{artist}': {e}")
-            return False
-        except (ConnectionError, ConnectionResetError) as e:
-            logger.debug(f"Connection error checking single for '{track_title}' by '{artist}': {e}")
-            return False
-        except Timeout as e:
-            logger.debug(f"Timeout checking single for '{track_title}' by '{artist}': {e}")
-            return False
-        except Exception as e:
-            logger.debug(f"Failed to check single for '{track_title}' by '{artist}': {e}")
-            return False
+                # If we got a valid response but no matching album, continue to next lookup
+                continue
+            except HTTPError as e:
+                # 404 or other HTTP errors mean the single doesn't exist for this artist
+                status_code = e.response.status_code if e.response else 'unknown'
+                if status_code == 404:
+                    logger.debug(f"No single found for '{track_title}' by '{lookup_artist}' (404)")
+                    continue
+                else:
+                    logger.debug(f"HTTP error {status_code} checking single for '{track_title}' by '{lookup_artist}': {e}")
+                    continue
+            except (ConnectionError, ConnectionResetError) as e:
+                logger.debug(f"Connection error checking single for '{track_title}' by '{lookup_artist}': {e}")
+                continue
+            except Timeout as e:
+                logger.debug(f"Timeout checking single for '{track_title}' by '{lookup_artist}': {e}")
+                continue
+            except Exception as e:
+                logger.debug(f"Failed to check single for '{track_title}' by '{lookup_artist}': {e}")
+                continue
+        
+        return False
     
     def get_track_temporal_data(self, artist: str, title: str) -> dict:
         """

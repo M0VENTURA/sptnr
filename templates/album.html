@@ -1459,6 +1459,10 @@
                             <input class="form-check-input" type="checkbox" id="editTrackIsAcousticField" name="is_acoustic">
                             <label class="form-check-label" for="editTrackIsAcousticField">Is Acoustic</label>
                         </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="editTrackIsRemixField" name="is_remix">
+                            <label class="form-check-label" for="editTrackIsRemixField">Is Remix</label>
+                        </div>
                     </div>
                     
                     <!-- Comment -->
@@ -1691,6 +1695,19 @@
         });
     }
 
+    function _buildAlbumType(primaryType, secondaryTypes) {
+        const primary = (primaryType || 'album').toLowerCase().trim();
+        const secondary = (secondaryTypes || []).map(s => s.toLowerCase().trim());
+        const displayable = secondary.find(s => ['compilation', 'live', 'remix', 'soundtrack', 'spokenword', 'demo', 'dj-mix', 'mixtape/street'].includes(s));
+        if (displayable && primary === 'album') {
+            let norm = displayable;
+            if (norm === 'spokenword') norm = 'spoken word';
+            if (norm === 'dj-mix') norm = 'dj mix';
+            return `${primary}+${norm}`;
+        }
+        return primary;
+    }
+
     function displayAlbumResults(results, source) {
         const resultsDiv = document.getElementById('albumLookupResults');
         
@@ -1723,6 +1740,10 @@
                 const isStoredMbid = result.is_stored_mbid === true;
                 const storedBadge = isStoredMbid ? '<span class="badge bg-dark me-2"><i class="bi bi-bookmark-fill me-1"></i>Currently stored</span>' : '';
                 const itemStyle = isStoredMbid ? 'border-left: 3px solid #6c757d; background: rgba(108,117,125,0.05);' : '';
+                const combinedType = _buildAlbumType(result.primary_type, result.secondary_types);
+                const typeLabel = result.secondary_types && result.secondary_types.length > 0
+                    ? `${result.primary_type || 'Album'} (${result.secondary_types.join(', ')})`
+                    : (result.primary_type || 'Album');
                 
                 html += `
                     <div class="list-group-item list-group-item-action" style="cursor: pointer; padding: 1rem; ${itemStyle}">
@@ -1742,7 +1763,7 @@
                                     <span class="badge bg-${confidenceClass}">${confidencePercent}% match</span>
                                 </div>
                                 <div class="small text-muted mb-2">
-                                    <span class="badge bg-info me-1">${result.primary_type || 'Album'}</span>
+                                    <span class="badge bg-info me-1">${typeLabel}</span>
                                     ${year ? `<span class="badge bg-secondary">${year}</span>` : ''}
                                     ${isStoredMbid ? `<span class="badge bg-light text-dark border me-1">${result.mbid_type === 'release' ? 'Release ID' : 'Release Group ID'}</span>` : ''}
                                 </div>
@@ -1751,13 +1772,13 @@
                                 </div>
                                  <div class="d-flex gap-2 flex-wrap">
                                     ${result.mbid_type === 'release'
-                                        ? `<button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.mbid}', '', '${result.cover_art_url || ''}', '')">
+                                        ? `<button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${combinedType}', '${result.mbid}', '', '${result.cover_art_url || ''}', '')">
                                             <i class="bi bi-check-circle"></i> Use This Album
                                         </button>`
-                                        : `<button class="btn btn-sm btn-primary" onclick="autoPickRelease('${result.mbid}', '${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.cover_art_url || ''}')">
+                                        : `<button class="btn btn-sm btn-primary" onclick="autoPickRelease('${result.mbid}', '${escapeJsString(result.title)}', '${year}', '${combinedType}', '${result.cover_art_url || ''}')">
                                             <i class="bi bi-check-circle"></i> Use This Album
                                         </button>`}
-                                    <button class="btn btn-sm btn-outline-secondary" onclick="openReleasePickerModal('${result.mbid}', '${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}')" title="Show all specific releases in this release group">
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="openReleasePickerModal('${result.mbid}', '${escapeJsString(result.title)}', '${year}', '${combinedType}')" title="Show all specific releases in this release group">
                                         <i class="bi bi-list-ul"></i> Pick Release
                                     </button>
                                 </div>
@@ -1805,7 +1826,7 @@
                                     }
                                     // Check if it's a Compilation
                                     else if (formats.some(f => f.includes('compilation'))) {
-                                        inferredType = 'compilation';
+                                        inferredType = 'album+compilation';
                                     }
                                     // Default to album if ambiguous
                                     else {
@@ -2645,9 +2666,20 @@
         }
         if (albumType) {
             // Normalize album type - convert standalone "compilation" to "album+compilation"
-            let normalizedType = albumType.toLowerCase();
+            // and "album (live)" format to "album+live"
+            let normalizedType = albumType.toLowerCase().trim();
             if (normalizedType === 'compilation') {
                 normalizedType = 'album+compilation';
+            } else if (normalizedType.startsWith('album ') || normalizedType.startsWith('ep ') || normalizedType.startsWith('single ')) {
+                // Handle formats like "album (live)" or "album (compilation)"
+                const match = normalizedType.match(/^(\w+)\s*\(([^)]+)\)$/);
+                if (match) {
+                    const primary = match[1];
+                    let secondary = match[2].trim();
+                    if (secondary === 'spokenword') secondary = 'spoken word';
+                    if (secondary === 'dj-mix') secondary = 'dj mix';
+                    normalizedType = `${primary}+${secondary}`;
+                }
             }
             const albumTypeSelect = document.getElementById('album_type');
             if (albumTypeSelect) {
@@ -4277,6 +4309,7 @@
         document.getElementById('editTrackIsCompilationField').checked = trackData.is_compilation == 1;
         document.getElementById('editTrackIsLiveField').checked = trackData.is_live == 1;
         document.getElementById('editTrackIsAcousticField').checked = trackData.is_acoustic == 1;
+        document.getElementById('editTrackIsRemixField').checked = trackData.is_remix == 1;
         document.getElementById('editTrackCommentField').value = trackData.comment || '';
         renderAlbumAdvancedTrackFields(trackData || {});
         
@@ -4445,6 +4478,7 @@
             is_compilation: document.getElementById('editTrackIsCompilationField').checked ? 1 : 0,
             is_live: document.getElementById('editTrackIsLiveField').checked ? 1 : 0,
             is_acoustic: document.getElementById('editTrackIsAcousticField').checked ? 1 : 0,
+            is_remix: document.getElementById('editTrackIsRemixField').checked ? 1 : 0,
             comment: document.getElementById('editTrackCommentField').value.trim() || null,
             sync_to_file: true
         };

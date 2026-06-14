@@ -280,12 +280,12 @@ def normalize_primary_release_type(album_type: str) -> str:
     return 'album'
 
 
-def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
+def should_exclude_track_from_stats(title: str, album: str = "", is_live: int = 0, album_context_live: int = 0) -> bool:
     """
     Determine if a track should be excluded from album/artist statistics calculations.
 
     Excludes tracks that are:
-    - Live versions
+    - Live versions (detected from title, album name, or is_live / album_context_live flags)
     - Remixes
     - Acoustic/orchestral versions
     - Demos
@@ -301,10 +301,16 @@ def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     Args:
         title: Track title to check
         album: Album name to check (optional, for live album detection)
+        is_live: Whether the track is explicitly flagged as live (1 = live)
+        album_context_live: Whether the album context is flagged as live (1 = live album)
 
     Returns:
         True if track should be excluded from statistics, False otherwise
     """
+    # If the track or album is explicitly flagged as live, exclude it immediately
+    if is_live or album_context_live:
+        return True
+
     # Strip cover attributions and single-release suffixes first so
     # "Song (Radio Edit)" doesn't match "edit" and get excluded from statistics
     base_title = strip_single_release_suffix(strip_cover_attribution(title))
@@ -1225,9 +1231,11 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             popularity_score = row_get(row, 'popularity_score', 0)
             title = row_get(row, 'title', '')
             album = row_get(row, 'album', '') if has_album_column else ""
+            _is_live_flag = row_get(row, 'is_live', 0) or 0
+            _album_context_live_flag = row_get(row, 'album_context_live', 0) or 0
 
             # Exclude live/remix/alternate versions from artist statistics
-            if not should_exclude_track_from_stats(title, album):
+            if not should_exclude_track_from_stats(title, album, _is_live_flag, _album_context_live_flag):
                 scores.append(popularity_score)
 
         if not scores:
@@ -3861,7 +3869,7 @@ def popularity_scan(
             "spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup, "
             "popularity_score, album_artist, writer, spotify_genres, lastfm_tags, "
             "listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url, "
-            "is_live, is_acoustic, is_cover, musicbrainz_albumtype, discogs_release_id, "
+            "is_live, is_acoustic, is_remix, is_cover, musicbrainz_albumtype, discogs_release_id, "
             "album_context_live, file_path, genres"
         )
         where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
@@ -4743,21 +4751,19 @@ def popularity_scan(
                         secondary = [s.lower() for s in rg.get("secondary-types") or []]
                         primary_type = (rg.get("primary-type") or "").lower()
                         category = "Album"
-                        if "compilation" in secondary:
+                        # EPs and singles should remain in their own buckets regardless of secondary types
+                        if primary_type == "ep":
+                            category = "EP"
+                        elif primary_type == "single" or "single" in secondary:
+                            category = "Single"
+                        elif "compilation" in secondary:
                             category = "Compilation"
                         elif "live" in secondary:
                             category = "Live Album"
                         elif "remix" in secondary:
                             category = "Remix"
-                        elif primary_type == "ep":
-                            category = "EP"
-                        elif primary_type == "single" or "single" in secondary:
-                            category = "Single"
 
-                        # Filter: exclude Live and Remix albums entirely.
                         # Only include singles released in the current calendar year.
-                        if category in ("Live Album", "Remix"):
-                            continue
                         if category == "Single":
                             release_year_str = (rg.get("first-release-date") or "").split("-")[0]
                             try:
@@ -4909,7 +4915,7 @@ def popularity_scan(
                             pop_value = row_get(t, 'popularity_score', 0) or 0
                             if float(pop_value) <= 0:
                                 has_popularity_for_all_tracks = False
-                            if float(pop_value) > 0 and not should_exclude_track_from_stats(row_get(t, 'title', ''), row_get(t, 'album', '')):
+                            if float(pop_value) > 0 and not should_exclude_track_from_stats(row_get(t, 'title', ''), row_get(t, 'album', ''), row_get(t, 'is_live', 0) or 0, row_get(t, 'album_context_live', 0) or 0):
                                 zscore_ready_track_count += 1
 
                         has_pop_data = has_popularity_for_all_tracks
@@ -5163,7 +5169,7 @@ def popularity_scan(
                 # Only propagate when we discovered a NEW MBID this scan — do not
                 # propagate existing DB values that might be release-group MBIDs stored
                 # in the wrong column.
-                if release_group_mbid and _mbid_was_newly_discovered:
+                if _mbid_was_newly_discovered and (release_group_mbid or discovered_release_group_mbid):
                     try:
                         # Fetch file paths for tracks that are about to receive the album MBID,
                         # so we can write the tag to the actual audio files after the DB update.
@@ -5173,8 +5179,12 @@ def popularity_scan(
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                               AND album = {placeholder}
                               AND file_path IS NOT NULL AND file_path <> ''
-                              AND (musicbrainz_album_mbid IS NULL
-                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = '')
+                              AND (
+                                   musicbrainz_album_mbid IS NULL
+                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = ''
+                                   OR musicbrainz_releasegroupid IS NULL
+                                   OR TRIM(CAST(musicbrainz_releasegroupid AS TEXT)) = ''
+                              )
                             """,
                             (artist, album),
                         )
@@ -5183,12 +5193,16 @@ def popularity_scan(
                             for r in cursor.fetchall()
                         ]
 
-                        _set_parts = [
-                            f"musicbrainz_album_mbid = {placeholder}",
-                            f"musicbrainz_albumid    = {placeholder}",
-                        ]
-                        _set_params = [release_group_mbid, release_group_mbid]
-                        # Also store the original release-group MBID in the dedicated column.
+                        _set_parts = []
+                        _set_params = []
+                        # Only write release-level MBIDs when we successfully resolved a
+                        # representative release; never store a release-group ID in the
+                        # release-level column.
+                        if release_group_mbid:
+                            _set_parts.append(f"musicbrainz_album_mbid = {placeholder}")
+                            _set_parts.append(f"musicbrainz_albumid    = {placeholder}")
+                            _set_params.extend([release_group_mbid, release_group_mbid])
+                        # Always store the release-group MBID in its dedicated column.
                         if discovered_release_group_mbid:
                             try:
                                 cursor.execute("""
@@ -5200,19 +5214,27 @@ def popularity_scan(
                                     _set_params.append(discovered_release_group_mbid)
                             except Exception:
                                 pass
+                        if not _set_parts:
+                            log_debug(f'No MBID fields to propagate for "{artist} - {album}"')
+                            raise Exception("No MBID fields to propagate")
                         _set_params.extend([artist, album])
                         cursor.execute(f"""
                             UPDATE tracks
                             SET {', '.join(_set_parts)}
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                               AND album = {placeholder}
-                              AND (musicbrainz_album_mbid IS NULL
-                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = '')
+                              AND (
+                                   musicbrainz_album_mbid IS NULL
+                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = ''
+                                   OR musicbrainz_releasegroupid IS NULL
+                                   OR TRIM(CAST(musicbrainz_releasegroupid AS TEXT)) = ''
+                              )
                         """, tuple(_set_params))
                         _mbid_rows = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else 0
                         if _mbid_rows > 0:
                             conn.commit()
-                            log_info(f'Propagated album MBID {release_group_mbid} to {_mbid_rows} track(s) in "{artist} - {album}"')
+                            _prop_mbid_str = release_group_mbid or discovered_release_group_mbid
+                            log_info(f'Propagated album MBID {_prop_mbid_str} to {_mbid_rows} track(s) in "{artist} - {album}"')
 
                             # Also write the MBID into the physical audio files so that
                             # media servers (Navidrome, etc.) group all tracks under the
@@ -5223,10 +5245,13 @@ def popularity_scan(
                                 for _fp in _fps_to_tag:
                                     if _fp and os.path.exists(str(_fp)):
                                         try:
-                                            _tags = {"musicbrainz_album_mbid": release_group_mbid, "musicbrainz_albumid": release_group_mbid}
+                                            _tags = {}
+                                            if release_group_mbid:
+                                                _tags["musicbrainz_album_mbid"] = release_group_mbid
+                                                _tags["musicbrainz_albumid"] = release_group_mbid
                                             if discovered_release_group_mbid:
                                                 _tags["musicbrainz_releasegroupid"] = discovered_release_group_mbid
-                                            if _write_album_mbid_tag(str(_fp), _tags):
+                                            if _tags and _write_album_mbid_tag(str(_fp), _tags):
                                                 _files_written += 1
                                         except Exception as _fp_tag_err:
                                             log_debug(
@@ -5234,7 +5259,7 @@ def popularity_scan(
                                             )
                                 if _files_written:
                                     log_info(
-                                        f'Wrote album MBID {release_group_mbid} to {_files_written} '
+                                        f'Wrote album MBID {_prop_mbid_str} to {_files_written} '
                                         f'audio file(s) in "{artist} - {album}"'
                                     )
                             except Exception as _tag_err:
@@ -5407,7 +5432,7 @@ def popularity_scan(
                     album_live_genre = "Acoustic" if _live_type == "acoustic" else "Live"
 
                     log_info(f'Detected {_live_type} album: "{album}"')
-                    log_info(f'Track genre will be tagged as "{album_live_genre}" and title updated with "({album_live_genre.lower()})"')
+                    log_info(f'Track genre will be tagged as "{album_live_genre}" and title renamed with ({album_live_genre})')
                     log_debug(f'Live album detection: album="{album}", album_type="{album_type_from_field}"')
 
                     # Tag each track's genre with "Live" or "Acoustic" and rename the title.
@@ -5415,6 +5440,7 @@ def popularity_scan(
                     live_tracks_updated = 0
                     for track in album_tracks:
                         track_id = track["id"]
+                        _track_title = track.get("title", "") or ""
 
                         # Skip tracks already confirmed: flag set AND genre already present.
                         _is_live_flag = int(track.get('is_live') or 0)
@@ -5432,7 +5458,7 @@ def popularity_scan(
                             (album_live_genre == "Acoustic" and _is_acoustic_flag and "acoustic" in _current_mb_genres_lower)
                         )
                         if _already_tagged:
-                            log_debug(f'Skipping live/acoustic tag for track "{track.get("title", "")}": already confirmed')
+                            log_debug(f'Skipping live/acoustic tag for track "{_track_title}": already confirmed')
                             continue
 
                         # Add genre tag (only when the canonical capitalised form is not present).
@@ -5445,13 +5471,18 @@ def popularity_scan(
                         _is_live_val = 1 if album_live_genre == "Live" else 0
                         _is_acoustic_val = 1 if album_live_genre == "Acoustic" else 0
 
-                        # Update title to append (Live) or (Acoustic) if not already present.
-                        _current_title = track.get("title", "") or ""
-                        _new_title = _current_title
-                        _title_changed = False
-                        if _current_title and not re.search(r'\(' + re.escape(album_live_genre.lower()) + r'[^\)]*\)', _current_title, re.IGNORECASE):
-                            _new_title = _current_title + f" ({album_live_genre.lower()})"
-                            _title_changed = True
+                        # Determine title suffix based on live type
+                        _title_suffix = "Acoustic" if album_live_genre == "Acoustic" else "Live"
+
+                        # Append suffix to title if the title does not already indicate a live/acoustic version
+                        # and does not already end with the suffix we are about to add.
+                        _title_renamed = False
+                        _already_has_suffix = bool(re.search(rf'\({_title_suffix}[^)]*\)\s*$', _track_title, re.IGNORECASE))
+                        if _track_title and not is_live_or_unplugged_track_title(_track_title) and not _already_has_suffix:
+                            _new_title = f"{_track_title} ({_title_suffix})"
+                            _title_renamed = True
+                        else:
+                            _new_title = _track_title
 
                         # Update main genres column to include Live/Acoustic alongside existing genres.
                         _genres_raw = track.get("genres") or ""
@@ -5479,13 +5510,12 @@ def popularity_scan(
                         track['is_acoustic'] = _is_acoustic_val
                         track['musicbrainz_genres'] = _new_mb_genres
                         track['album_context_live'] = 1
-                        if _title_changed:
-                            track['title'] = _new_title
-                            track['genres'] = _new_genres
+                        track['title'] = _new_title
+                        track['genres'] = _new_genres
 
                         # Write updated title and genres to audio file.
                         _fp = track.get('file_path')
-                        if _fp and (_title_changed or _genre_added):
+                        if _fp and (_title_renamed or _genre_added):
                             if not os.path.isabs(_fp):
                                 _music_root = os.environ.get("MUSIC_FOLDER") or os.environ.get("MUSIC_ROOT") or "/music"
                                 _fp = os.path.join(_music_root, _fp)
@@ -5493,7 +5523,7 @@ def popularity_scan(
                                 try:
                                     from helpers.tag_manager import update_file_tags
                                     _tags_to_write = {}
-                                    if _title_changed:
+                                    if _title_renamed:
                                         _tags_to_write["title"] = _new_title
                                     if _genre_added:
                                         _tags_to_write["genres"] = _genres_list
@@ -5501,11 +5531,66 @@ def popularity_scan(
                                 except Exception as _file_err:
                                     log_debug(f"Failed to write live tags to file for {track_id}: {_file_err}")
 
-                        log_debug(f'Tagged track "{track.get("title", "")}" as {album_live_genre}')
+                        if _title_renamed:
+                            log_debug(f'Tagged and renamed track "{_track_title}" -> "{_new_title}" as {album_live_genre}')
+                        else:
+                            log_debug(f'Tagged track "{_track_title}" as {album_live_genre}')
 
                     if live_tracks_updated > 0:
                         conn.commit()
                         log_info(f'Tagged {live_tracks_updated} track(s) as "{album_live_genre}" in album "{album}"')
+
+                # Detect if this is a remix album based on album type
+                # When MusicBrainz is the detection source, trust its secondary type exclusively.
+                if type_detection_source == "musicbrainz":
+                    album_type_lower = (album_type_from_field or '').lower()
+                    is_remix_album = '+remix' in album_type_lower or '(remix)' in album_type_lower
+                else:
+                    is_remix_album = '+remix' in album_type_from_field
+
+                if is_remix_album:
+                    log_info(f'Detected remix album: "{album}"')
+                    log_info(f'Track genre will be tagged as "Remix" (no title rename)')
+                    log_debug(f'Remix album detection: album="{album}", album_type="{album_type_from_field}"')
+
+                    remix_tracks_updated = 0
+                    for track in album_tracks:
+                        track_id = track["id"]
+
+                        # Skip tracks already confirmed: flag set AND genre already present.
+                        _is_remix_flag = int(track.get('is_remix') or 0)
+                        _mb_genres_raw = track.get('musicbrainz_genres') or ''
+                        try:
+                            _current_mb_genres = json.loads(_mb_genres_raw) if _mb_genres_raw and _mb_genres_raw != 'null' else []
+                        except (json.JSONDecodeError, TypeError):
+                            _current_mb_genres = []
+
+                        _current_mb_genres_lower = [str(g).lower() for g in _current_mb_genres]
+                        _already_tagged = _is_remix_flag and "remix" in _current_mb_genres_lower
+                        if _already_tagged:
+                            log_debug(f'Skipping remix tag for track "{track.get("title", "")}": already confirmed')
+                            continue
+
+                        if "remix" not in _current_mb_genres_lower:
+                            _current_mb_genres.insert(0, "Remix")
+                        _new_mb_genres = json.dumps(_current_mb_genres)
+
+                        cursor.execute(f"""
+                            UPDATE tracks
+                            SET is_remix = {placeholder},
+                                musicbrainz_genres = {placeholder}
+                            WHERE id = {placeholder}
+                        """, (1, _new_mb_genres, track_id))
+                        remix_tracks_updated += 1
+
+                        track['is_remix'] = 1
+                        track['musicbrainz_genres'] = _new_mb_genres
+
+                        log_debug(f'Tagged track "{track.get("title", "")}" as Remix')
+
+                    if remix_tracks_updated > 0:
+                        conn.commit()
+                        log_info(f'Tagged {remix_tracks_updated} track(s) as "Remix" in album "{album}"')
 
                 # Detect alternate takes for this album (tracks with parentheses matching base tracks)
                 album_tracks_list = list(album_tracks)
@@ -7058,9 +7143,11 @@ def popularity_scan(
                         popularity_score = row_get(track, 'popularity_score', 0)
                         title = row_get(track, 'title', '')
                         album_name = row_get(track, 'album', '')
+                        _is_live_flag = row_get(track, 'is_live', 0) or 0
+                        _album_context_live_flag = row_get(track, 'album_context_live', 0) or 0
 
                         # Exclude live/remix/alternate versions from album median calculation
-                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name):
+                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name, _is_live_flag, _album_context_live_flag):
                             album_pops.append(popularity_score)
 
                     if album_pops and artist_median > 0:
@@ -7125,9 +7212,11 @@ def popularity_scan(
                         popularity_score = row_get(track, 'popularity_score', 0)
                         title = row_get(track, 'title', '')
                         album_name = row_get(track, 'album', '')
+                        _is_live_flag = row_get(track, 'is_live', 0) or 0
+                        _album_context_live_flag = row_get(track, 'album_context_live', 0) or 0
 
                         # Exclude live/remix/alternate from z-score calculation
-                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name):
+                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name, _is_live_flag, _album_context_live_flag):
                             album_pops_for_zscore.append(popularity_score)
                             track_ids_for_zscore.append(track_id)
 

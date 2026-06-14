@@ -84,6 +84,7 @@ from functools import wraps
 from helpers.scan_helpers import scan_artist_to_db
 from helpers.config_helpers import get_config, get_navidrome_config, clear_config_cache
 from helpers.api_response import api_ok, api_fail
+from helpers.helpers import normalize_single_mbid
 from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
@@ -9997,7 +9998,7 @@ def artist_detail(name):
             "single": [],
             "compilation": []
         }
-        
+
         for release in missing_releases_dicts:
             release_dict = release.copy()
             release_dict['is_missing'] = True  # Mark as missing
@@ -10017,9 +10018,9 @@ def artist_detail(name):
             if release_bucket == "album" and is_compilation_by_title:
                 release_bucket = "compilation"
 
-            if release_bucket in ("album", "live_album", "remix_album", "ep", "single", "compilation"):
+            if release_bucket in ("ep", "single", "album", "live_album", "remix_album", "compilation"):
                 missing_by_category[release_bucket].append(release_dict)
-        
+
         # SAFETY: Remove live albums from missing releases in wrong categories
         missing_live_names = {
             _normalize_release_title(a.get('title', ''))
@@ -10052,7 +10053,7 @@ def artist_detail(name):
             for a in missing_by_category.get("compilation", [])
             if a.get('title')
         }
-        for cat in ["album", "ep", "single"]:
+        for cat in ["album", "live_album", "remix_album", "ep", "single"]:
             if missing_compilation_names:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
@@ -10645,18 +10646,29 @@ def api_artist_missing_releases():
                 "info": "Skipped live MusicBrainz lookup during active scan; returned cached missing releases.",
             })
 
-    # Get artist MBID if available for more accurate MusicBrainz lookup
+    # Get artist MBID if available for more accurate MusicBrainz lookup.
+    # Use the album artist MBID only, so collaborations or featured tracks
+    # do not skew the lookup to the wrong artist.
     artist_mbid = None
     try:
         cursor.execute(f"""
-            SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) AS mbid
+            SELECT musicbrainz_albumartistid AS mbid
             FROM tracks
-            WHERE LOWER({artist_compare_expr}) = LOWER({placeholder})
+            WHERE LOWER(album_artist) = LOWER({placeholder})
+              AND musicbrainz_albumartistid IS NOT NULL
+              AND musicbrainz_albumartistid != ''
         """, (artist,))
-        row = cursor.fetchone()
-        if row and row['mbid']:
-            artist_mbid = row['mbid']
-    except:
+        rows = cursor.fetchall()
+        mbids = []
+        for row in rows:
+            raw = row.get('mbid') if isinstance(row, dict) else row[0]
+            if raw:
+                normalized = normalize_single_mbid(str(raw))
+                if normalized:
+                    mbids.append(normalized)
+        if mbids:
+            artist_mbid = Counter(mbids).most_common(1)[0][0]
+    except Exception:
         pass
 
     cursor.execute(f"""
@@ -10699,23 +10711,21 @@ def api_artist_missing_releases():
             continue
 
         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-        if "compilation" in secondary:
+        # EPs and singles should remain in their own buckets regardless of secondary types
+        if primary_type == "ep":
+            category = "EP"
+        elif primary_type == "single":
+            category = "Single"
+        elif "compilation" in secondary:
             category = "Compilation"
         elif "live" in secondary:
             category = "Live Album"
         elif "remix" in secondary:
             category = "Remix"
-        elif primary_type == "ep":
-            category = "EP"
-        elif primary_type == "single":
-            category = "Single"
         else:
             category = "Album"
 
-        # Filter: exclude Live and Remix albums entirely.
         # Only include singles released in the current calendar year.
-        if category in ("Live Album", "Remix"):
-            continue
         if category == "Single":
             release_year_str = (rg.get("first_release_date") or "").split("-")[0]
             try:
@@ -11068,14 +11078,26 @@ def api_scan_all_missing_releases():
                     try:
                         from api_clients.musicbrainz import lookup_and_save_artist_mbid
                         cursor.execute(f"""
-                            SELECT MAX(musicbrainz_artist_id)
+                            SELECT musicbrainz_albumartistid AS mbid
                             FROM tracks
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                            WHERE album_artist = {placeholder}
+                              AND musicbrainz_albumartistid IS NOT NULL
+                              AND musicbrainz_albumartistid != ''
                         """, (artist_name,))
-                        result = cursor.fetchone()
-                        existing_mbid = result[0] if result and result[0] else None
+                        rows = cursor.fetchall()
+                        mbids = []
+                        for row in rows:
+                            raw = row.get('mbid') if isinstance(row, dict) else row[0]
+                            if raw:
+                                normalized = normalize_single_mbid(str(raw))
+                                if normalized:
+                                    mbids.append(normalized)
+                        if mbids:
+                            existing_mbid = Counter(mbids).most_common(1)[0][0]
+                        else:
+                            existing_mbid = None
                         resolved_artist_mbid = existing_mbid
-                        
+
                         if not existing_mbid:
                             # No MBID saved yet, try to look it up from MusicBrainz
                             mbid = lookup_and_save_artist_mbid(artist_name, conn)
@@ -11140,16 +11162,17 @@ def api_scan_all_missing_releases():
                             continue
 
                         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-                        if "compilation" in secondary:
+                        # EPs and singles should remain in their own buckets regardless of secondary types
+                        if primary_type == "ep":
+                            category = "EP"
+                        elif primary_type == "single":
+                            category = "Single"
+                        elif "compilation" in secondary:
                             category = "Compilation"
                         elif "live" in secondary:
                             category = "Live Album"
                         elif "remix" in secondary:
                             category = "Remix"
-                        elif primary_type == "ep":
-                            category = "EP"
-                        elif primary_type == "single":
-                            category = "Single"
                         else:
                             category = "Album"
 
@@ -14705,23 +14728,24 @@ def api_add_artist():
             if norm_title and norm_title in existing_norm:
                 continue
             
-            # Skip compilations
             secondary = [s.lower() for s in rg.get("secondary_types") or []]
-            if "compilation" in secondary:
-                continue
-            
-            # Determine category
+
+            # Determine category including secondary types.
+            # EPs and singles should remain in their own buckets regardless of secondary types.
             primary_type = (rg.get("primary_type") or "").lower()
             category = "Album"
             if primary_type == "ep":
                 category = "EP"
             elif primary_type == "single" or "single" in secondary:
                 category = "Single"
+            elif "compilation" in secondary:
+                category = "Compilation"
+            elif "live" in secondary:
+                category = "Live Album"
+            elif "remix" in secondary:
+                category = "Remix"
 
-            # Filter: exclude Live and Remix albums entirely.
             # Only include singles released in the current calendar year.
-            if category in ("Live Album", "Remix"):
-                continue
             if category == "Single":
                 release_year_str = (rg.get("first_release_date") or "").split("-")[0]
                 try:
@@ -16935,6 +16959,7 @@ def track_edit(track_id):
     is_compilation = request.form.get("is_compilation") == "on"
     is_live = request.form.get("is_live") == "on"
     is_acoustic = request.form.get("is_acoustic") == "on"
+    is_remix = request.form.get("is_remix") == "on"
 
     # Persist feature flags according to DB schema (BOOLEAN vs INTEGER/BIGINT).
     normalized_flags = _normalize_track_flag_payload(conn, {
@@ -16945,6 +16970,7 @@ def track_edit(track_id):
         'is_compilation': is_compilation,
         'is_live': is_live,
         'is_acoustic': is_acoustic,
+        'is_remix': is_remix,
         'single_manual_override': True,
     })
     is_single_db = normalized_flags.get('is_single')
@@ -16954,6 +16980,7 @@ def track_edit(track_id):
     is_compilation_db = normalized_flags.get('is_compilation')
     is_live_db = normalized_flags.get('is_live')
     is_acoustic_db = normalized_flags.get('is_acoustic')
+    is_remix_db = normalized_flags.get('is_remix')
     single_manual_override_db = normalized_flags.get('single_manual_override')
     
     # First, get the file path from database
@@ -16975,7 +17002,7 @@ def track_edit(track_id):
                 bpm = {placeholder}, bitrate = {placeholder}, sample_rate = {placeholder},
                 is_cover = {placeholder}, cover_manual_override = {placeholder},
                 alternate_take = {placeholder}, is_compilation = {placeholder},
-                is_live = {placeholder}, is_acoustic = {placeholder},
+                is_live = {placeholder}, is_acoustic = {placeholder}, is_remix = {placeholder},
                 single_manual_override = {placeholder},
                 titlesort = {placeholder}, albumsort = {placeholder}, artistsort = {placeholder},
                 composersort = {placeholder}, albumartistsort = {placeholder}, lyricistsort = {placeholder},
@@ -17011,7 +17038,7 @@ def track_edit(track_id):
               bpm, bitrate, sample_rate,
               is_cover_db, cover_manual_override_db,
               alternate_take_db, is_compilation_db,
-              is_live_db, is_acoustic_db,
+              is_live_db, is_acoustic_db, is_remix_db,
               single_manual_override_db,
               titlesort, albumsort, artistsort,
               composersort, albumartistsort, lyricistsort,
@@ -35882,6 +35909,7 @@ def api_album_musicbrainz_lookup():
                         "title": rel_data.get("title", album),
                         "artist": rel_artist,
                         "primary_type": primary_type,
+                        "secondary_types": rg.get("secondary-types", []),
                         "first_release_date": display_date,
                         "cover_art_url": cover_art_url,
                         "confidence": 1.0,
@@ -35909,6 +35937,7 @@ def api_album_musicbrainz_lookup():
                             "title": rg_data.get("title", album),
                             "artist": rg_artist,
                             "primary_type": rg_data.get("primary-type", "Album"),
+                            "secondary_types": rg_data.get("secondary-types", []),
                             "first_release_date": rg_data.get("first-release-date", ""),
                             "cover_art_url": cover_art_url,
                             "confidence": 1.0,
@@ -35970,6 +35999,7 @@ def api_album_musicbrainz_lookup():
                 continue
             rg_title = rg.get("title", "")
             primary_type = rg.get("primary-type", "Album")
+            secondary_types = rg.get("secondary-types", [])
             first_release = rg.get("first-release-date", "")
             
             # Get artist credit
@@ -35989,6 +36019,7 @@ def api_album_musicbrainz_lookup():
                 "title": rg_title,
                 "artist": rg_artist,
                 "primary_type": primary_type,
+                "secondary_types": secondary_types,
                 "first_release_date": first_release,
                 "cover_art_url": cover_art_url,
                 "confidence": round(overall_confidence, 3),
@@ -37829,7 +37860,8 @@ def api_track_update_metadata():
         "alternate_take": 0 or 1 (optional)",
         "is_compilation": 0 or 1 (optional)",
         "is_live": 0 or 1 (optional)",
-        "is_acoustic": 0 or 1 (optional)"
+        "is_acoustic": 0 or 1 (optional)",
+        "is_remix": 0 or 1 (optional)"
     }
     """
     conn = None
@@ -37874,7 +37906,7 @@ def api_track_update_metadata():
             'replaygain_album_peak', 'r128_track_gain', 'r128_album_gain'
         ]
         optional_int_fields = ['stars', 'disc_number', 'bpm', 'bitrate', 'sample_rate']
-        optional_bool_fields = ['is_single', 'is_cover', 'alternate_take', 'is_compilation', 'is_live', 'is_acoustic']
+        optional_bool_fields = ['is_single', 'is_cover', 'alternate_take', 'is_compilation', 'is_live', 'is_acoustic', 'is_remix']
         
         for field in optional_string_fields:
             if field in data and data[field] is not None:
