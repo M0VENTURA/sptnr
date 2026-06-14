@@ -11127,7 +11127,17 @@ def api_scan_all_missing_releases():
                     # Fetch MusicBrainz releases, preferring MBID lookups for accuracy.
                     mb_releases = _fetch_musicbrainz_releases(artist_name, artist_mbid=resolved_artist_mbid)
                     missing_for_artist = []
-                    
+
+                    # Clear stale missing releases for this artist so entries fetched
+                    # with a previously-wrong MBID are removed before re-insert.
+                    try:
+                        cursor.execute(
+                            f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder})",
+                            (artist_name,)
+                        )
+                    except Exception as e:
+                        logging.warning(f"[MISSING_RELEASES] Could not clear stale missing releases for {artist_name}: {e}")
+
                     # Check for missing releases AND update cover art for existing albums
                     for rg in mb_releases:
                         norm_title = _normalize_release_title(rg.get("title") or "")
