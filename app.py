@@ -9975,11 +9975,6 @@ def artist_detail(name):
                     if _normalize_release_title(a.get('album', '')) not in compilation_album_names
                 ]
 
-        # Combine EPs and singles into one category for display
-        albums_by_category["ep_single"] = albums_by_category.get("ep", []) + albums_by_category.get("single", [])
-        albums_by_category["ep"] = []
-        albums_by_category["single"] = []
-
         # Process compilation albums
         for album in compilation_albums:
             album_dict = dict(album)
@@ -9998,7 +9993,8 @@ def artist_detail(name):
             "album": [],
             "live_album": [],
             "remix_album": [],
-            "ep_single": [],
+            "ep": [],
+            "single": [],
             "compilation": []
         }
 
@@ -10021,9 +10017,7 @@ def artist_detail(name):
             if release_bucket == "album" and is_compilation_by_title:
                 release_bucket = "compilation"
 
-            if release_bucket in ("ep", "single"):
-                missing_by_category["ep_single"].append(release_dict)
-            elif release_bucket in ("album", "live_album", "remix_album", "compilation"):
+            if release_bucket in ("ep", "single", "album", "live_album", "remix_album", "compilation"):
                 missing_by_category[release_bucket].append(release_dict)
 
         # SAFETY: Remove live albums from missing releases in wrong categories
@@ -10032,7 +10026,7 @@ def artist_detail(name):
             for a in missing_by_category.get("live_album", [])
             if a.get('title')
         }
-        for cat in ["album", "ep_single"]:
+        for cat in ["album", "ep", "single"]:
             if missing_live_names:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
@@ -10045,7 +10039,7 @@ def artist_detail(name):
             for a in missing_by_category.get("remix_album", [])
             if a.get('title')
         }
-        for cat in ["album", "ep_single"]:
+        for cat in ["album", "ep", "single"]:
             if missing_remix_names:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
@@ -10058,7 +10052,7 @@ def artist_detail(name):
             for a in missing_by_category.get("compilation", [])
             if a.get('title')
         }
-        for cat in ["album", "live_album", "remix_album", "ep_single"]:
+        for cat in ["album", "live_album", "remix_album", "ep", "single"]:
             if missing_compilation_names:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
@@ -10074,7 +10068,7 @@ def artist_detail(name):
             if a.get('album')
         }
         if discovered_release_names:
-            for cat in ["album", "compilation", "live_album", "remix_album", "ep_single"]:
+            for cat in ["album", "compilation", "live_album", "remix_album", "ep", "single"]:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
                     if _normalize_release_title(a.get('title', '')) not in discovered_release_names
@@ -10082,7 +10076,7 @@ def artist_detail(name):
 
         # Merge discovered and missing albums by category, then sort by release date
         merged_albums_by_category = {}
-        for category in ["album", "compilation", "live_album", "remix_album", "ep_single", "unknown"]:
+        for category in ["album", "compilation", "live_album", "remix_album", "ep", "single", "unknown"]:
             merged_list = albums_by_category.get(category, []) + missing_by_category.get(category, [])
             
             # Sort by release date (newest first)
@@ -10705,16 +10699,17 @@ def api_artist_missing_releases():
             continue
 
         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-        if "compilation" in secondary:
+        # EPs and singles should remain in their own buckets regardless of secondary types
+        if primary_type == "ep":
+            category = "EP"
+        elif primary_type == "single":
+            category = "Single"
+        elif "compilation" in secondary:
             category = "Compilation"
         elif "live" in secondary:
             category = "Live Album"
         elif "remix" in secondary:
             category = "Remix"
-        elif primary_type == "ep":
-            category = "EP"
-        elif primary_type == "single":
-            category = "Single"
         else:
             category = "Album"
 
@@ -11143,16 +11138,17 @@ def api_scan_all_missing_releases():
                             continue
 
                         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-                        if "compilation" in secondary:
+                        # EPs and singles should remain in their own buckets regardless of secondary types
+                        if primary_type == "ep":
+                            category = "EP"
+                        elif primary_type == "single":
+                            category = "Single"
+                        elif "compilation" in secondary:
                             category = "Compilation"
                         elif "live" in secondary:
                             category = "Live Album"
                         elif "remix" in secondary:
                             category = "Remix"
-                        elif primary_type == "ep":
-                            category = "EP"
-                        elif primary_type == "single":
-                            category = "Single"
                         else:
                             category = "Album"
 
@@ -14709,20 +14705,21 @@ def api_add_artist():
                 continue
             
             secondary = [s.lower() for s in rg.get("secondary_types") or []]
-            
-            # Determine category including secondary types
+
+            # Determine category including secondary types.
+            # EPs and singles should remain in their own buckets regardless of secondary types.
             primary_type = (rg.get("primary_type") or "").lower()
             category = "Album"
-            if "compilation" in secondary:
+            if primary_type == "ep":
+                category = "EP"
+            elif primary_type == "single" or "single" in secondary:
+                category = "Single"
+            elif "compilation" in secondary:
                 category = "Compilation"
             elif "live" in secondary:
                 category = "Live Album"
             elif "remix" in secondary:
                 category = "Remix"
-            elif primary_type == "ep":
-                category = "EP"
-            elif primary_type == "single" or "single" in secondary:
-                category = "Single"
 
             # Only include singles released in the current calendar year.
             if category == "Single":

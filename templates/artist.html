@@ -544,8 +544,10 @@
   <!-- Albums Section -->
   {% set total_discovered_albums = albums_by_category.album|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_albums = albums_by_category.album|selectattr('is_missing', 'equalto', True)|list|length %}
-  {% set total_discovered_eps_singles = albums_by_category.ep_single|selectattr('is_missing', 'equalto', False)|list|length %}
-  {% set total_missing_eps_singles = albums_by_category.ep_single|selectattr('is_missing', 'equalto', True)|list|length %}
+  {% set total_discovered_eps = albums_by_category.ep|selectattr('is_missing', 'equalto', False)|list|length %}
+  {% set total_missing_eps = albums_by_category.ep|selectattr('is_missing', 'equalto', True)|list|length %}
+  {% set total_discovered_singles = albums_by_category.single|selectattr('is_missing', 'equalto', False)|list|length %}
+  {% set total_missing_singles = albums_by_category.single|selectattr('is_missing', 'equalto', True)|list|length %}
   {% set total_discovered_compilations = albums_by_category.compilation|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_compilations = albums_by_category.compilation|selectattr('is_missing', 'equalto', True)|list|length %}
   {% set total_discovered_live_albums = albums_by_category.live_album|selectattr('is_missing', 'equalto', False)|list|length %}
@@ -763,19 +765,19 @@
     </div>
   </div>
 
-  <!-- EPs and Singles Section -->
-  <div class="card mb-4" id="eps-singles-section">
+  <!-- EPs Section -->
+  <div class="card mb-4" id="eps-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
-        <i class="bi bi-disc"></i> EPs & Singles
-        <span class="badge bg-primary">{{ total_discovered_eps_singles }}</span>
-        {% if total_missing_eps_singles > 0 %}
-          <span class="badge bg-warning text-dark">{{ total_missing_eps_singles }} missing</span>
+        <i class="bi bi-disc"></i> EPs
+        <span class="badge bg-primary">{{ total_discovered_eps }}</span>
+        {% if total_missing_eps > 0 %}
+          <span class="badge bg-warning text-dark">{{ total_missing_eps }} missing</span>
         {% endif %}
       </h5>
       <div class="d-flex gap-2">
-        {% if total_missing_eps_singles > 0 %}
-          <button class="btn btn-sm btn-outline-secondary toggle-missing-btn" onclick="toggleMissing('eps-singles')" title="Show/hide missing EPs and singles" data-show="false">
+        {% if total_missing_eps > 0 %}
+          <button class="btn btn-sm btn-outline-secondary toggle-missing-btn" onclick="toggleMissing('eps')" title="Show/hide missing EPs" data-show="false">
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
@@ -800,15 +802,69 @@
             <th class="text-center" style="width: 150px;">Actions</th>
           </tr>
         </thead>
-        <tbody class="eps-singles-tbody">
-          {% if albums_by_category.ep_single|length > 0 %}
-            {% for album in albums_by_category.ep_single %}
+        <tbody class="eps-tbody">
+          {% if albums_by_category.ep|length > 0 %}
+            {% for album in albums_by_category.ep %}
               {{ render_album_row(album, artist_name, album.is_missing) }}
             {% endfor %}
           {% else %}
             <tr>
               <td colspan="7" class="text-center text-muted py-4">
-                <i class="bi bi-info-circle"></i> No EPs or singles found
+                <i class="bi bi-info-circle"></i> No EPs found
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Singles Section -->
+  <div class="card mb-4" id="singles-section">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-music-note-beamed"></i> Singles
+        <span class="badge bg-primary">{{ total_discovered_singles }}</span>
+        {% if total_missing_singles > 0 %}
+          <span class="badge bg-warning text-dark">{{ total_missing_singles }} missing</span>
+        {% endif %}
+      </h5>
+      <div class="d-flex gap-2">
+        {% if total_missing_singles > 0 %}
+          <button class="btn btn-sm btn-outline-secondary toggle-missing-btn" onclick="toggleMissing('singles')" title="Show/hide missing singles" data-show="false">
+            <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
+          </button>
+        {% endif %}
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+          <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
+        </button>
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+          <i class="bi bi-flag"></i> Check for Missing
+        </button>
+      </div>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="d-none d-md-table-header-group">
+          <tr>
+            <th style="width: 100px;">Art</th>
+            <th>Title</th>
+            <th class="text-center" style="width: 80px;">Year</th>
+            <th class="text-center" style="width: 100px;">Status</th>
+            <th class="text-center" style="width: 80px;">Tracks</th>
+            <th class="text-center" style="width: 100px;">Avg ★</th>
+            <th class="text-center" style="width: 150px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="singles-tbody">
+          {% if albums_by_category.single|length > 0 %}
+            {% for album in albums_by_category.single %}
+              {{ render_album_row(album, artist_name, album.is_missing) }}
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="7" class="text-center text-muted py-4">
+                <i class="bi bi-info-circle"></i> No singles found
               </td>
             </tr>
           {% endif %}
@@ -2066,9 +2122,8 @@ function checkMissingReleases(artistName, silent = false, background = false) {
     album: 'albums',
     live_album: 'live-albums',
     remix_album: 'remix-albums',
-    ep: 'eps-singles',
-    single: 'eps-singles',
-    ep_single: 'eps-singles',
+    ep: 'eps',
+    single: 'singles',
     compilation: 'compilations'
   };
 
@@ -2077,7 +2132,8 @@ function checkMissingReleases(artistName, silent = false, background = false) {
     if (categoryRaw.includes('compilation')) return 'compilation';
     if (categoryRaw.includes('live')) return 'live_album';
     if (categoryRaw.includes('remix')) return 'remix_album';
-    if (categoryRaw.includes('ep') || categoryRaw.includes('single')) return 'ep_single';
+    if (categoryRaw.includes('single')) return 'single';
+    if (categoryRaw.includes('ep')) return 'ep';
     // Fallback: inspect the title for live/unplugged/remix keywords even when
     // the stored category is the generic "album" value (e.g. secondary type
     // missing from MusicBrainz at scan time).
@@ -2211,7 +2267,7 @@ function checkMissingReleases(artistName, silent = false, background = false) {
         addedCount += 1;
       });
 
-      ['albums', 'live-albums', 'remix-albums', 'eps-singles', 'compilations'].forEach(sectionKey => {
+      ['albums', 'live-albums', 'remix-albums', 'eps', 'singles', 'compilations'].forEach(sectionKey => {
         const tbody = document.querySelector(`#${sectionKey}-section .${sectionKey}-tbody`);
         if (tbody) sortTbodyByYear(tbody);
       });
@@ -3720,7 +3776,7 @@ function toggleMissing(category) {
 
 // Initialize toggle states on page load
 function initializeMissingToggle() {
-  const categories = ['albums', 'compilations', 'live-albums', 'remix-albums', 'eps-singles'];
+  const categories = ['albums', 'compilations', 'live-albums', 'remix-albums', 'eps', 'singles'];
   categories.forEach(category => {
     const section = document.getElementById(category + '-section');
     if (!section) return;
