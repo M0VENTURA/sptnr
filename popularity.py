@@ -3869,7 +3869,7 @@ def popularity_scan(
             "spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup, "
             "popularity_score, album_artist, writer, spotify_genres, lastfm_tags, "
             "listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url, "
-            "is_live, is_acoustic, is_cover, musicbrainz_albumtype, discogs_release_id"
+            "is_live, is_acoustic, is_remix, is_cover, musicbrainz_albumtype, discogs_release_id"
         )
         where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
         # Order by album_artist (falling back to track artist when absent) so that the
@@ -5502,6 +5502,58 @@ def popularity_scan(
                     if live_tracks_updated > 0:
                         conn.commit()
                         log_info(f'Tagged {live_tracks_updated} track(s) as "{album_live_genre}" in album "{album}"')
+
+                # Detect if this is a remix album based on album type
+                # When MusicBrainz is the detection source, trust its secondary type exclusively.
+                if type_detection_source == "musicbrainz":
+                    album_type_lower = (album_type_from_field or '').lower()
+                    is_remix_album = '+remix' in album_type_lower or '(remix)' in album_type_lower
+                else:
+                    is_remix_album = '+remix' in album_type_from_field
+
+                if is_remix_album:
+                    log_info(f'Detected remix album: "{album}"')
+                    log_info(f'Track genre will be tagged as "Remix" (no title rename)')
+                    log_debug(f'Remix album detection: album="{album}", album_type="{album_type_from_field}"')
+
+                    remix_tracks_updated = 0
+                    for track in album_tracks:
+                        track_id = track["id"]
+
+                        # Skip tracks already confirmed: flag set AND genre already present.
+                        _is_remix_flag = int(track.get('is_remix') or 0)
+                        _mb_genres_raw = track.get('musicbrainz_genres') or ''
+                        try:
+                            _current_mb_genres = json.loads(_mb_genres_raw) if _mb_genres_raw and _mb_genres_raw != 'null' else []
+                        except (json.JSONDecodeError, TypeError):
+                            _current_mb_genres = []
+
+                        _current_mb_genres_lower = [str(g).lower() for g in _current_mb_genres]
+                        _already_tagged = _is_remix_flag and "remix" in _current_mb_genres_lower
+                        if _already_tagged:
+                            log_debug(f'Skipping remix tag for track "{track.get("title", "")}": already confirmed')
+                            continue
+
+                        if "remix" not in _current_mb_genres_lower:
+                            _current_mb_genres.insert(0, "Remix")
+                        _new_mb_genres = json.dumps(_current_mb_genres)
+
+                        cursor.execute(f"""
+                            UPDATE tracks
+                            SET is_remix = {placeholder},
+                                musicbrainz_genres = {placeholder}
+                            WHERE id = {placeholder}
+                        """, (1, _new_mb_genres, track_id))
+                        remix_tracks_updated += 1
+
+                        track['is_remix'] = 1
+                        track['musicbrainz_genres'] = _new_mb_genres
+
+                        log_debug(f'Tagged track "{track.get("title", "")}" as Remix')
+
+                    if remix_tracks_updated > 0:
+                        conn.commit()
+                        log_info(f'Tagged {remix_tracks_updated} track(s) as "Remix" in album "{album}"')
 
                 # Detect alternate takes for this album (tracks with parentheses matching base tracks)
                 album_tracks_list = list(album_tracks)

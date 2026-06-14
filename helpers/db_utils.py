@@ -546,6 +546,7 @@ def ensure_cover_columns():
         ("cover_manual_override", "BOOLEAN DEFAULT FALSE"),
         ("is_live", "BIGINT DEFAULT 0"),
         ("is_acoustic", "BIGINT DEFAULT 0"),
+        ("is_remix", "BIGINT DEFAULT 0"),
     ]
 
     conn = None
