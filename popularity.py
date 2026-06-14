@@ -5160,7 +5160,7 @@ def popularity_scan(
                 # Only propagate when we discovered a NEW MBID this scan — do not
                 # propagate existing DB values that might be release-group MBIDs stored
                 # in the wrong column.
-                if release_group_mbid and _mbid_was_newly_discovered:
+                if _mbid_was_newly_discovered and (release_group_mbid or discovered_release_group_mbid):
                     try:
                         # Fetch file paths for tracks that are about to receive the album MBID,
                         # so we can write the tag to the actual audio files after the DB update.
@@ -5170,8 +5170,12 @@ def popularity_scan(
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                               AND album = {placeholder}
                               AND file_path IS NOT NULL AND file_path <> ''
-                              AND (musicbrainz_album_mbid IS NULL
-                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = '')
+                              AND (
+                                   musicbrainz_album_mbid IS NULL
+                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = ''
+                                   OR musicbrainz_releasegroupid IS NULL
+                                   OR TRIM(CAST(musicbrainz_releasegroupid AS TEXT)) = ''
+                              )
                             """,
                             (artist, album),
                         )
@@ -5180,12 +5184,16 @@ def popularity_scan(
                             for r in cursor.fetchall()
                         ]
 
-                        _set_parts = [
-                            f"musicbrainz_album_mbid = {placeholder}",
-                            f"musicbrainz_albumid    = {placeholder}",
-                        ]
-                        _set_params = [release_group_mbid, release_group_mbid]
-                        # Also store the original release-group MBID in the dedicated column.
+                        _set_parts = []
+                        _set_params = []
+                        # Only write release-level MBIDs when we successfully resolved a
+                        # representative release; never store a release-group ID in the
+                        # release-level column.
+                        if release_group_mbid:
+                            _set_parts.append(f"musicbrainz_album_mbid = {placeholder}")
+                            _set_parts.append(f"musicbrainz_albumid    = {placeholder}")
+                            _set_params.extend([release_group_mbid, release_group_mbid])
+                        # Always store the release-group MBID in its dedicated column.
                         if discovered_release_group_mbid:
                             try:
                                 cursor.execute("""
@@ -5197,19 +5205,27 @@ def popularity_scan(
                                     _set_params.append(discovered_release_group_mbid)
                             except Exception:
                                 pass
+                        if not _set_parts:
+                            log_debug(f'No MBID fields to propagate for "{artist} - {album}"')
+                            raise Exception("No MBID fields to propagate")
                         _set_params.extend([artist, album])
                         cursor.execute(f"""
                             UPDATE tracks
                             SET {', '.join(_set_parts)}
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                               AND album = {placeholder}
-                              AND (musicbrainz_album_mbid IS NULL
-                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = '')
+                              AND (
+                                   musicbrainz_album_mbid IS NULL
+                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = ''
+                                   OR musicbrainz_releasegroupid IS NULL
+                                   OR TRIM(CAST(musicbrainz_releasegroupid AS TEXT)) = ''
+                              )
                         """, tuple(_set_params))
                         _mbid_rows = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else 0
                         if _mbid_rows > 0:
                             conn.commit()
-                            log_info(f'Propagated album MBID {release_group_mbid} to {_mbid_rows} track(s) in "{artist} - {album}"')
+                            _prop_mbid_str = release_group_mbid or discovered_release_group_mbid
+                            log_info(f'Propagated album MBID {_prop_mbid_str} to {_mbid_rows} track(s) in "{artist} - {album}"')
 
                             # Also write the MBID into the physical audio files so that
                             # media servers (Navidrome, etc.) group all tracks under the
@@ -5220,10 +5236,13 @@ def popularity_scan(
                                 for _fp in _fps_to_tag:
                                     if _fp and os.path.exists(str(_fp)):
                                         try:
-                                            _tags = {"musicbrainz_album_mbid": release_group_mbid, "musicbrainz_albumid": release_group_mbid}
+                                            _tags = {}
+                                            if release_group_mbid:
+                                                _tags["musicbrainz_album_mbid"] = release_group_mbid
+                                                _tags["musicbrainz_albumid"] = release_group_mbid
                                             if discovered_release_group_mbid:
                                                 _tags["musicbrainz_releasegroupid"] = discovered_release_group_mbid
-                                            if _write_album_mbid_tag(str(_fp), _tags):
+                                            if _tags and _write_album_mbid_tag(str(_fp), _tags):
                                                 _files_written += 1
                                         except Exception as _fp_tag_err:
                                             log_debug(
@@ -5231,7 +5250,7 @@ def popularity_scan(
                                             )
                                 if _files_written:
                                     log_info(
-                                        f'Wrote album MBID {release_group_mbid} to {_files_written} '
+                                        f'Wrote album MBID {_prop_mbid_str} to {_files_written} '
                                         f'audio file(s) in "{artist} - {album}"'
                                     )
                             except Exception as _tag_err:
