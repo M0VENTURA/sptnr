@@ -5464,7 +5464,8 @@ def popularity_scan(
                     album_type_lower = (album_type_from_field or '').lower()
                     is_live_album = '+live' in album_type_lower or '(live)' in album_type_lower
                 else:
-                    is_live_album = '+live' in album_type_from_field or is_live_or_alternate_album(album)
+                    album_type_lower = (album_type_from_field or '').lower()
+                    is_live_album = '+live' in album_type_lower or '(live)' in album_type_lower or is_live_or_alternate_album(album)
 
                 # Determine the specific live sub-type (live vs acoustic) for genre tagging.
                 album_live_genre = None  # Will be "Live" or "Acoustic" when set
@@ -5588,7 +5589,8 @@ def popularity_scan(
                     album_type_lower = (album_type_from_field or '').lower()
                     is_remix_album = '+remix' in album_type_lower or '(remix)' in album_type_lower
                 else:
-                    is_remix_album = '+remix' in album_type_from_field
+                    album_type_lower = (album_type_from_field or '').lower()
+                    is_remix_album = '+remix' in album_type_lower or '(remix)' in album_type_lower
 
                 if is_remix_album:
                     log_info(f'Detected remix album: "{album}"')
@@ -7430,6 +7432,7 @@ def popularity_scan(
                         album_live_context = (
                             is_live_or_alternate_album(album)
                             or "+live" in ((album_type or "").strip().lower())
+                            or "(live)" in ((album_type or "").strip().lower())
                         )
                         track_is_live_variant = is_live_or_unplugged_track_title(title)
 
