@@ -280,12 +280,12 @@ def normalize_primary_release_type(album_type: str) -> str:
     return 'album'
 
 
-def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
+def should_exclude_track_from_stats(title: str, album: str = "", is_live: int = 0, album_context_live: int = 0) -> bool:
     """
     Determine if a track should be excluded from album/artist statistics calculations.
 
     Excludes tracks that are:
-    - Live versions
+    - Live versions (detected from title, album name, or is_live / album_context_live flags)
     - Remixes
     - Acoustic/orchestral versions
     - Demos
@@ -301,10 +301,16 @@ def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     Args:
         title: Track title to check
         album: Album name to check (optional, for live album detection)
+        is_live: Whether the track is explicitly flagged as live (1 = live)
+        album_context_live: Whether the album context is flagged as live (1 = live album)
 
     Returns:
         True if track should be excluded from statistics, False otherwise
     """
+    # If the track or album is explicitly flagged as live, exclude it immediately
+    if is_live or album_context_live:
+        return True
+
     # Strip cover attributions and single-release suffixes first so
     # "Song (Radio Edit)" doesn't match "edit" and get excluded from statistics
     base_title = strip_single_release_suffix(strip_cover_attribution(title))
@@ -1225,9 +1231,11 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             popularity_score = row_get(row, 'popularity_score', 0)
             title = row_get(row, 'title', '')
             album = row_get(row, 'album', '') if has_album_column else ""
+            _is_live_flag = row_get(row, 'is_live', 0) or 0
+            _album_context_live_flag = row_get(row, 'album_context_live', 0) or 0
 
             # Exclude live/remix/alternate versions from artist statistics
-            if not should_exclude_track_from_stats(title, album):
+            if not should_exclude_track_from_stats(title, album, _is_live_flag, _album_context_live_flag):
                 scores.append(popularity_score)
 
         if not scores:
@@ -4906,7 +4914,7 @@ def popularity_scan(
                             pop_value = row_get(t, 'popularity_score', 0) or 0
                             if float(pop_value) <= 0:
                                 has_popularity_for_all_tracks = False
-                            if float(pop_value) > 0 and not should_exclude_track_from_stats(row_get(t, 'title', ''), row_get(t, 'album', '')):
+                            if float(pop_value) > 0 and not should_exclude_track_from_stats(row_get(t, 'title', ''), row_get(t, 'album', ''), row_get(t, 'is_live', 0) or 0, row_get(t, 'album_context_live', 0) or 0):
                                 zscore_ready_track_count += 1
 
                         has_pop_data = has_popularity_for_all_tracks
@@ -5401,14 +5409,15 @@ def popularity_scan(
                     album_live_genre = "Acoustic" if _live_type == "acoustic" else "Live"
 
                     log_info(f'Detected {_live_type} album: "{album}"')
-                    log_info(f'Track genre will be tagged as "{album_live_genre}" (no title rename)')
+                    log_info(f'Track genre will be tagged as "{album_live_genre}" and title renamed with (Live)')
                     log_debug(f'Live album detection: album="{album}", album_type="{album_type_from_field}"')
 
-                    # Tag each track's genre with "Live" or "Acoustic" instead of renaming the title.
+                    # Tag each track's genre with "Live" or "Acoustic" and rename the title.
                     # Tracks that already carry the flag + genre combination are skipped.
                     live_tracks_updated = 0
                     for track in album_tracks:
                         track_id = track["id"]
+                        _track_title = track.get("title", "") or ""
 
                         # Skip tracks already confirmed: flag set AND genre already present.
                         _is_live_flag = int(track.get('is_live') or 0)
@@ -5426,7 +5435,7 @@ def popularity_scan(
                             (album_live_genre == "Acoustic" and _is_acoustic_flag and "acoustic" in _current_mb_genres_lower)
                         )
                         if _already_tagged:
-                            log_debug(f'Skipping live/acoustic tag for track "{track.get("title", "")}": already confirmed')
+                            log_debug(f'Skipping live/acoustic tag for track "{_track_title}": already confirmed')
                             continue
 
                         # Add genre tag (only when the canonical capitalised form is not present).
@@ -5439,20 +5448,37 @@ def popularity_scan(
                         _is_live_val = 1 if album_live_genre == "Live" else 0
                         _is_acoustic_val = 1 if album_live_genre == "Acoustic" else 0
 
+                        # Determine title suffix based on live type
+                        _title_suffix = "Acoustic" if album_live_genre == "Acoustic" else "Live"
+
+                        # Append suffix to title if the title does not already indicate a live/acoustic version
+                        # and does not already end with the suffix we are about to add.
+                        _title_renamed = False
+                        _already_has_suffix = bool(re.search(rf'\({_title_suffix}[^)]*\)\s*$', _track_title, re.IGNORECASE))
+                        if _track_title and not is_live_or_unplugged_track_title(_track_title) and not _already_has_suffix:
+                            _new_title = f"{_track_title} ({_title_suffix})"
+                            _title_renamed = True
+                        else:
+                            _new_title = _track_title
+
                         cursor.execute(f"""
                             UPDATE tracks
                             SET is_live = {placeholder}, is_acoustic = {placeholder},
-                                musicbrainz_genres = {placeholder}
+                                musicbrainz_genres = {placeholder}, title = {placeholder}
                             WHERE id = {placeholder}
-                        """, (_is_live_val, _is_acoustic_val, _new_mb_genres, track_id))
+                        """, (_is_live_val, _is_acoustic_val, _new_mb_genres, _new_title, track_id))
                         live_tracks_updated += 1
 
                         # Update in-memory dict so subsequent per-track processing uses the new values.
                         track['is_live'] = _is_live_val
                         track['is_acoustic'] = _is_acoustic_val
                         track['musicbrainz_genres'] = _new_mb_genres
+                        track['title'] = _new_title
 
-                        log_debug(f'Tagged track "{track.get("title", "")}" as {album_live_genre}')
+                        if _title_renamed:
+                            log_debug(f'Tagged and renamed track "{_track_title}" -> "{_new_title}" as {album_live_genre}')
+                        else:
+                            log_debug(f'Tagged track "{_track_title}" as {album_live_genre}')
 
                     if live_tracks_updated > 0:
                         conn.commit()
@@ -7009,9 +7035,11 @@ def popularity_scan(
                         popularity_score = row_get(track, 'popularity_score', 0)
                         title = row_get(track, 'title', '')
                         album_name = row_get(track, 'album', '')
+                        _is_live_flag = row_get(track, 'is_live', 0) or 0
+                        _album_context_live_flag = row_get(track, 'album_context_live', 0) or 0
 
                         # Exclude live/remix/alternate versions from album median calculation
-                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name):
+                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name, _is_live_flag, _album_context_live_flag):
                             album_pops.append(popularity_score)
 
                     if album_pops and artist_median > 0:
@@ -7076,9 +7104,11 @@ def popularity_scan(
                         popularity_score = row_get(track, 'popularity_score', 0)
                         title = row_get(track, 'title', '')
                         album_name = row_get(track, 'album', '')
+                        _is_live_flag = row_get(track, 'is_live', 0) or 0
+                        _album_context_live_flag = row_get(track, 'album_context_live', 0) or 0
 
                         # Exclude live/remix/alternate from z-score calculation
-                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name):
+                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name, _is_live_flag, _album_context_live_flag):
                             album_pops_for_zscore.append(popularity_score)
                             track_ids_for_zscore.append(track_id)
 
