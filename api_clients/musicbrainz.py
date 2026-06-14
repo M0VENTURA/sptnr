@@ -1621,6 +1621,23 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
                     elif primary == "single" and track_count > 3:
                         score -= 30  # Penalize single for >3 tracks
                 
+                # Penalize live albums when the album name doesn't contain live indicators.
+                # This prevents a studio album with the same name from being misclassified
+                # as live when MusicBrainz has a separate live release group.
+                _rg_secondary = [s.lower() for s in (rg.get("secondary-types") or [])]
+                if "live" in _rg_secondary:
+                    _album_lower = album.lower()
+                    _has_live_indicator = any(
+                        re.search(p, _album_lower)
+                        for p in [
+                            r'\blive\b', r'\bunplugged\b', r'\bconcert\b',
+                            r'\bin\s+concert\b', r'\blive\s+at\b',
+                            r'\blive\s+in\b', r'\blive\s+from\b',
+                        ]
+                    )
+                    if not _has_live_indicator:
+                        score -= 40  # Strong penalty for live albums without live indicators in name
+                
                 if score > best_score:
                     best_score = score
                     best_match = rg

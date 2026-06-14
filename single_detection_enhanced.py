@@ -485,7 +485,7 @@ def detect_live_or_acoustic_recording(
                 tags.append('Acoustic')
             # Check if album is marked as live
             album_data = result.get('album', {})
-            if album_data and 'live' in album_data.get('name', '').lower() and 'Live' not in tags:
+            if album_data and re.search(r'\blive\b', album_data.get('name', '').lower()) and 'Live' not in tags:
                 tags.append('Live')
     
     return tags
@@ -1460,20 +1460,43 @@ def determine_final_status(
 # Main Enhanced Detection Function
 # ============================================================================
 
-def is_live_version_strict(title: str, album: str) -> bool:
+def is_live_version_strict(title: str, album: str, album_type: Optional[str] = None) -> bool:
     """
     Check if track or album indicates a live/unplugged version per Stage 5.
+    
+    Also checks album_type for live indicators (e.g. 'album (live)', 'album+live').
     
     Args:
         title: Track title
         album: Album name
+        album_type: Album type string (e.g. 'album (live)', 'album+live')
         
     Returns:
-        True if title or album matches live patterns
+        True if title, album, or album_type matches live patterns
     """
     combined = f"{title} {album}".lower()
-    live_patterns = [r'\blive\b', r'\bunplugged\b']
-    return any(re.search(p, combined) for p in live_patterns)
+    live_patterns = [
+        r'\blive\b',
+        r'\bunplugged\b',
+        r'\blive\s+at\b',
+        r'\blive\s+in\b',
+        r'\blive\s+from\b',
+        r'\blive\s+session\b',
+        r'\blive\s+recording\b',
+        r'\blive\s+tour\b',
+        r'\bin\s+concert\b',
+        r'\bconcert\b',
+    ]
+    if any(re.search(p, combined) for p in live_patterns):
+        return True
+    
+    # Check album_type for live indicators
+    if album_type:
+        type_lower = album_type.lower()
+        if '+live' in type_lower or '(live)' in type_lower:
+            return True
+    
+    return False
 
 
 def check_has_explicit_metadata(
@@ -2859,9 +2882,17 @@ def detect_single_enhanced(
         # Note: Star rating will be assigned separately in popularity.py based on this status
     
     # ===== EXCLUSION: Check for live/acoustic recordings =====
-    # If the track has live/acoustic genre tags, exclude it from single detection
-    # UNLESS the album itself is marked as a live release
-    if result['is_single'] and not is_live_version_strict(title, album):
+    # If the track is on a live album or has live/acoustic genre tags, exclude it
+    # from single detection.  Live versions are NOT singles even if the studio
+    # version was released as one.
+    _is_live_album = is_live_version_strict(title, album, album_type)
+    if result['is_single'] and _is_live_album:
+        log_debug(f"[EXCLUDE] Track is on a live album - excluding from single detection: {title}")
+        result['is_single'] = False
+        result['single_status'] = 'none'
+        result['single_confidence'] = 'none'
+        result['single_confidence_score'] = 0.0
+    elif result['is_single']:
         current_genres = result.get('genres', '')
         if should_exclude_from_single_detection(current_genres, is_live_release=False):
             log_debug(f"[EXCLUDE] Track has live/acoustic tag(s) - excluding from single detection: {title}")
