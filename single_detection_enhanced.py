@@ -1433,21 +1433,21 @@ def determine_final_status(
             log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z 0-1: has {medium_confidence_count} medium sources)")
             return 'medium'
 
-    # z <= 0: normally reject, BUT remastered-only variants get a chance via the
-    # same "0-1" threshold (1 high OR 2 medium sources) because their low popularity
-    # is caused by listeners preferring the original release, not by the track not being
-    # a single.
+    # z <= 0: normally reject, BUT remastered-only variants and tracks with explicit
+    # metadata evidence get a chance via the same "0-1" threshold (1 high OR 2 medium
+    # sources). Their low popularity may reflect sparse Last.fm data, niche appeal, or
+    # collaboration/streaming-split issues — not the absence of single status.
     elif max_z <= 0.0:
-        if is_remastered_only:
+        if is_remastered_only or high_confidence_count >= 1 or medium_confidence_count >= 2:
             if high_confidence_count >= 1:
-                log_debug(f"[CONFIDENCE] → RETURNING 'high' (remastered-only z<=0 bypass: has {high_confidence_count} high source)")
+                log_debug(f"[CONFIDENCE] → RETURNING 'high' (z<=0 bypass with metadata: has {high_confidence_count} high source)")
                 return 'high'
             elif medium_confidence_count >= 2:
-                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (remastered-only z<=0 bypass: has {medium_confidence_count} medium sources)")
+                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z<=0 bypass with metadata: has {medium_confidence_count} medium sources)")
                 return 'medium'
         log_debug(
             f"[CONFIDENCE] → RETURNING 'none' (z<=0 gate: max_z={max_z:.2f}, "
-            f"requires z>0 before confidence sources can qualify)"
+            f"requires z>0 or explicit metadata (1 high / 2 medium) before confidence sources can qualify)"
         )
         return 'none'
     
@@ -1823,10 +1823,11 @@ def detect_single_enhanced(
     result['album_z_score'] = album_z
     result['artist_z_score'] = artist_z
     
-    # Z-Score Gate: Skip single detection if artist_z < 0
+    # Z-Score Gate: Skip single detection if artist_z is very low
     # LOGIC:
-    # - z < 0: Skip detection (always), EXCEPT for compilations (every track must be checked)
-    #          ALSO EXCEPT for remastered-only variants (see note below)
+    # - z < -1.0: Skip detection (always), EXCEPT for compilations (every track must be checked)
+    #             ALSO EXCEPT for remastered-only variants (see note below)
+    # - z -1.0 to 0: Allow detection — metadata sources may still confirm single status
     # - z 0-1: Require 2 medium OR 1 high confidence sources
     # - z >= 1: Same requirement as z 0-1 — 2 medium OR 1 high confidence sources
     #           (z-score does NOT lower the evidence bar)
@@ -1837,14 +1838,17 @@ def detect_single_enhanced(
     # does NOT indicate they are not singles — it just reflects the streaming preference for
     # the original release.  We bypass the z-score gate for remastered-only variants so that
     # e.g. "Higher (remastered 2024)" can still be detected as a single via API sources.
+    #
+    # NOTE: Relaxed from < 0.0 to < -1.0 to avoid missing known singles that are below average
+    #       but still have metadata evidence (e.g., title tracks, collaboration singles).
     is_remastered_only = is_remastered_only_variant(title)
-    if artist_z < 0.0 and not is_compilation and not is_remastered_only:
-        log_debug(f"[ZSCORE] ✗ Artist z-score below 0 (artist_z={artist_z:.2f}, album_z={album_z:.2f})")
-        log_info(f"   ⓘ Skipping single detection for {title}: artist z-score below 0")
+    if artist_z < -1.0 and not is_compilation and not is_remastered_only:
+        log_debug(f"[ZSCORE] ✗ Artist z-score below -1.0 (artist_z={artist_z:.2f}, album_z={album_z:.2f})")
+        log_info(f"   ⓘ Skipping single detection for {title}: artist z-score below -1.0")
         if verbose:
-            log_debug(f"Z-score filter: Skipping {title} (artist_z < 0)")
+            log_debug(f"Z-score filter: Skipping {title} (artist_z < -1.0)")
         return result
-    if artist_z < 0.0 and is_remastered_only:
+    if artist_z < -1.0 and is_remastered_only:
         log_debug(f"[ZSCORE] Bypassing z-score gate for remastered-only variant '{title}' (artist_z={artist_z:.2f})")
 
     

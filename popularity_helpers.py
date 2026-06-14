@@ -612,8 +612,14 @@ def calculate_lastfm_zscore_popularity(
     Returns:
         Popularity score (0-100) normalized to album context
     """
-    if listeners <= 0 or playcount <= 0:
+    if listeners <= 0:
         return 0.0
+    
+    # If playcount is missing or zero, fall back to listener-only scoring
+    # so tracks with listeners but no playcount (e.g., sparse Last.fm data)
+    # still get a non-zero score instead of being treated as zero-popularity.
+    if playcount <= 0:
+        return calculate_lastfm_popularity_score(listeners)
     
     # If we have fewer than 2 tracks, fall back to simple logarithmic scoring
     # This handles the case where z-score calculation is attempted before all album tracks are fetched
