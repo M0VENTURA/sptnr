@@ -209,6 +209,14 @@ def _escape_lucene_special_chars(text: str) -> str:
     return escaped
 
 
+def _strip_featured_artist(artist: str) -> str:
+    """Return canonical primary artist by removing feat./ft./featuring suffixes."""
+    if not artist:
+        return artist
+    primary = re.split(r"\s+(?:feat\.?|featuring|ft\.?)\s+", artist, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    return primary or artist.strip()
+
+
 class MusicBrainzClient:
     """MusicBrainz API wrapper for single detection and metadata."""
     
@@ -350,8 +358,12 @@ class MusicBrainzClient:
                 
                 # Quote title and artist to handle multi-word values properly (Lucene syntax)
                 # Escape special characters to prevent query syntax errors
+                # Strip featured artists from the artist name so that queries like
+                # "dArtagnan feat. Melissa Bonny" become "dArtagnan" - MusicBrainz
+                # does not index featuring credits in the artist field.
                 escaped_title = _escape_lucene_special_chars(search_title)
-                escaped_artist = _escape_lucene_special_chars(artist)
+                search_artist = _strip_featured_artist(artist)
+                escaped_artist = _escape_lucene_special_chars(search_artist)
                 query = f'releasegroup:"{escaped_title}" AND artist:"{escaped_artist}" AND primarytype:Single'
                 params = {
                     "query": query,
@@ -1558,6 +1570,10 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
     if not artist:
         return ""
     
+    # Strip featured artists for the MusicBrainz lookup so that
+    # "dArtagnan feat. Melissa Bonny" resolves to "dArtagnan".
+    lookup_artist = _strip_featured_artist(artist)
+    
     try:
         client = _get_musicbrainz_client(enabled=True)
         
@@ -1568,7 +1584,7 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
             time.sleep(1.0)
         
         # Escape special characters for Lucene query
-        escaped_artist = _escape_lucene_special_chars(artist)
+        escaped_artist = _escape_lucene_special_chars(lookup_artist)
         
         params = {
             "query": f'artist:"{escaped_artist}"',
@@ -1604,11 +1620,11 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
             mbid = candidate.get("id", "")
             
             # Exact name match: +100 points
-            if candidate_name.lower() == artist.lower():
+            if candidate_name.lower() == lookup_artist.lower():
                 score += 100
                 logger.debug(f"  Candidate: {candidate_name} (MBID: {mbid}) - EXACT MATCH")
             # Partial/close match: +50 points
-            elif artist.lower() in candidate_name.lower():
+            elif lookup_artist.lower() in candidate_name.lower():
                 score += 50
                 logger.debug(f"  Candidate: {candidate_name} (MBID: {mbid}) - PARTIAL MATCH")
             else:
@@ -1674,6 +1690,23 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
             _existing = (_row[1] if _row[1] is not None else '')
             if not _existing or not _MUSICBRAINZ_UUID_RE.match(str(_existing).strip()):
                 _to_fix.append(_row[0])
+        # Also update tracks where the artist field contains the primary artist
+        # as a featured artist (e.g., "dArtagnan feat. Melissa Bonny" should
+        # inherit the MBID for "dArtagnan" so that single detection works).
+        # We look for any artist starting with the given artist name followed by
+        # a space, and verify it actually contains a featuring pattern.
+        cursor.execute(f"""
+            SELECT id, artist, musicbrainz_artist_id FROM tracks
+            WHERE artist LIKE {placeholder}
+        """, (f"{artist} %",))
+        _FEAT_RE = re.compile(r"\s+(?:feat\.?|featuring|ft\.?)\s+", re.IGNORECASE)
+        for _row in cursor.fetchall():
+            if _FEAT_RE.search(_row[1]):
+                _existing = (_row[2] if _row[2] is not None else '')
+                if not _existing or not _MUSICBRAINZ_UUID_RE.match(str(_existing).strip()):
+                    _to_fix.append(_row[0])
+        # De-duplicate IDs in case an exact-match row was also picked up
+        _to_fix = list(dict.fromkeys(_to_fix))
         if _to_fix:
             # Batch update in chunks of 500 to avoid huge parameter lists
             _chunk_size = 500

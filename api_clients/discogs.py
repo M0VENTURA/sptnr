@@ -65,6 +65,14 @@ def _get_retry_after_seconds(response, default: float = 60.0) -> float:
     return max(1.0, retry_after)
 
 
+def _strip_featured_artist(artist: str) -> str:
+    """Return canonical primary artist by removing feat./ft./featuring suffixes."""
+    if not artist:
+        return artist
+    primary = re.split(r"\s+(?:feat\.?|featuring|ft\.?)\s+", artist, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    return primary or artist.strip()
+
+
 def _set_discogs_rate_limit_window(wait_seconds: float) -> None:
     """Record a shared cooldown window so later requests do not hammer Discogs."""
     global _DISCOGS_RATE_LIMIT_UNTIL
@@ -917,8 +925,12 @@ class DiscogsClient:
             
             # Use the search API with format filter
             # This searches Discogs' database for releases matching artist + title + format
+            # Strip featured artists from the artist name so that queries like
+            # "dArtagnan feat. Melissa Bonny" become "dArtagnan" - Discogs does
+            # not index featuring credits in the artist field.
+            search_artist = _strip_featured_artist(artist)
             params = {
-                "artist": artist,
+                "artist": search_artist,
                 "track": title,
                 "format": format_type,
                 "type": "release",

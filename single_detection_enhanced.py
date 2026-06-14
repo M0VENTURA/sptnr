@@ -1918,6 +1918,19 @@ def detect_single_enhanced(
                         if row:
                             artist_mbid = row['artist_mbid']
                             log_debug(f"[MUSICBRAINZ] Found artist MBID for '{artist}': {artist_mbid}")
+                        else:
+                            # Fallback: strip featured artists and query again
+                            # e.g., "dArtagnan feat. Melissa Bonny" -> "dArtagnan"
+                            _primary_artist = re.split(r"\s+(?:feat\.?|featuring|ft\.?)\s+", artist, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+                            if _primary_artist and _primary_artist != artist:
+                                cursor.execute(
+                                    f"SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE artist = {placeholder} AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1",
+                                    (_primary_artist,)
+                                )
+                                row = cursor.fetchone()
+                                if row:
+                                    artist_mbid = row['artist_mbid']
+                                    log_debug(f"[MUSICBRAINZ] Found artist MBID for primary artist '{_primary_artist}': {artist_mbid}")
                     except Exception as e:
                         log_debug(f"[MUSICBRAINZ] Could not fetch artist MBID: {e}")
                     
