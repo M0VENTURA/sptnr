@@ -4742,21 +4742,19 @@ def popularity_scan(
                         secondary = [s.lower() for s in rg.get("secondary-types") or []]
                         primary_type = (rg.get("primary-type") or "").lower()
                         category = "Album"
-                        if "compilation" in secondary:
+                        # EPs and singles should remain in their own buckets regardless of secondary types
+                        if primary_type == "ep":
+                            category = "EP"
+                        elif primary_type == "single" or "single" in secondary:
+                            category = "Single"
+                        elif "compilation" in secondary:
                             category = "Compilation"
                         elif "live" in secondary:
                             category = "Live Album"
                         elif "remix" in secondary:
                             category = "Remix"
-                        elif primary_type == "ep":
-                            category = "EP"
-                        elif primary_type == "single" or "single" in secondary:
-                            category = "Single"
 
-                        # Filter: exclude Live and Remix albums entirely.
                         # Only include singles released in the current calendar year.
-                        if category in ("Live Album", "Remix"):
-                            continue
                         if category == "Single":
                             release_year_str = (rg.get("first-release-date") or "").split("-")[0]
                             try:
