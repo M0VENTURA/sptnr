@@ -278,6 +278,59 @@ def get_source_confidence_settings(config_data: Optional[Dict] = None) -> Dict[s
     return settings
 
 
+def _get_track_release_year(conn, track_id: str) -> Optional[int]:
+    """Return the album release_year stored for a track."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT release_year FROM tracks WHERE id = %s", (track_id,))
+        row = cursor.fetchone()
+        if row:
+            year_val = row.get('release_year')
+            if year_val:
+                return int(year_val)
+    except Exception as e:
+        log_debug(f"[RELEASE_DATE] Could not fetch release_year for track {track_id}: {e}")
+    return None
+
+
+def _parse_single_year(single_date: Optional[str]) -> Optional[int]:
+    """Parse a MusicBrainz/Discogs date string into a 4-digit year."""
+    if not single_date:
+        return None
+    date_str = str(single_date).strip()
+    if len(date_str) >= 4 and date_str[:4].isdigit():
+        return int(date_str[:4])
+    return None
+
+
+def is_single_release_date_close_to_album(
+    single_date: Optional[str],
+    album_release_year: Optional[int],
+    max_year_diff: int = 2
+) -> bool:
+    """
+    Check if a single's release date is close to the album's original release year.
+
+    Returns True when the single was released within ``max_year_diff`` years of
+    the album's original release, which is a medium-confidence signal that the
+    single belongs to the album era.
+
+    Args:
+        single_date: Single release date string (e.g., "2023-06-14", "2023", or an int year)
+        album_release_year: Album original release year (from tracks.release_year)
+        max_year_diff: Maximum allowed year difference (default 2)
+
+    Returns:
+        True if the dates are close enough
+    """
+    if not single_date or not album_release_year:
+        return False
+    single_year = _parse_single_year(single_date)
+    if not single_year:
+        return False
+    return abs(single_year - album_release_year) <= max_year_diff
+
+
 def check_high_confidence_dynamic(
     discogs_confirmed: bool,
     musicbrainz_confirmed: bool,
@@ -285,7 +338,8 @@ def check_high_confidence_dynamic(
     lastfm_confirmed: bool,
     radio_edit_found: bool,
     source_confidence_settings: Dict[str, str],
-    musicbrainz_compilation_confirmed: bool = False
+    musicbrainz_compilation_confirmed: bool = False,
+    single_release_date_match: bool = False,
 ) -> bool:
     """
     Check if HIGH confidence has been achieved based on current confirmed sources.
@@ -299,6 +353,7 @@ def check_high_confidence_dynamic(
         radio_edit_found: Whether Radio Edit found
         source_confidence_settings: Dict of source names to confidence levels
         musicbrainz_compilation_confirmed: Whether MusicBrainz VA compilation confirmed
+        single_release_date_match: Whether single release date is close to album release date
         
     Returns:
         True if HIGH confidence achieved, False otherwise
@@ -332,7 +387,8 @@ def check_high_confidence_dynamic(
             (musicbrainz_compilation_confirmed, 'medium'),
             (discogs_video_confirmed, source_confidence_settings.get('discogs_video')),
             (lastfm_confirmed, source_confidence_settings.get('lastfm')),
-            (radio_edit_found, source_confidence_settings.get('radio_edit'))
+            (radio_edit_found, source_confidence_settings.get('radio_edit')),
+            (single_release_date_match, 'medium'),
         ]
         if confirmed and setting in ('medium', 'high')
     ])
@@ -1240,7 +1296,8 @@ def determine_final_status(
     album_mean: float = 0.0,
     has_metadata: bool = False,
     radio_edit_found: bool = False,
-    is_remastered_only: bool = False
+    is_remastered_only: bool = False,
+    single_release_date_match: bool = False,
 ) -> str:
     """
     Final single status based on source detection and z-score analysis.
@@ -1269,6 +1326,7 @@ def determine_final_status(
     - Discogs music video confirms
     - Last.fm single confirmation (album has 1-3 tracks)
     - Radio Edit found in Spotify search results
+    - Single release date close to album original release date (non-compilation only)
     
     Args:
         discogs_confirmed: Whether Discogs confirms this is a single
@@ -1287,6 +1345,7 @@ def determine_final_status(
         has_metadata: Whether track has any metadata sources
         radio_edit_found: Whether a Radio Edit version was found in Spotify search results
         is_remastered_only: Whether the track is a remastered-only variant (bypasses z<=0 gate)
+        single_release_date_match: Whether the single release date is close to the album's original release date
         
     Returns:
         Confidence level: 'high', 'medium', 'low', or 'none'
@@ -1341,9 +1400,15 @@ def determine_final_status(
         medium_confidence_count += 1
         log_debug(f"[CONFIDENCE] +1 medium: Radio Edit found")
     
+    # Single release date proximity to album original release date
+    if single_release_date_match:
+        medium_confidence_count += 1
+        log_debug(f"[CONFIDENCE] +1 medium: Single release date matches album original release date")
+    
     log_debug(f"[CONFIDENCE] Source counts: high={high_confidence_count}, medium={medium_confidence_count}, max_z={max_z:.2f}")
     log_debug(f"[CONFIDENCE] Metadata flags: discogs={discogs_confirmed}, mb={musicbrainz_confirmed}, video={discogs_video_confirmed}, lastfm={lastfm_single_confirmed}, radio_edit={radio_edit_found}")
     log_debug(f"[CONFIDENCE] MB extended flags: mb_video={musicbrainz_video_confirmed}, mb_compilation={musicbrainz_compilation_confirmed}")
+    log_debug(f"[CONFIDENCE] Release date match: single_release_date_match={single_release_date_match}")
     
     # DETERMINE FINAL STATUS BASED ON Z-SCORE:
     
@@ -1852,6 +1917,7 @@ def detect_single_enhanced(
     radio_edit_found = False
     discogs_video_confirmed = False
     lastfm_single_confirmed = False
+    single_release_date_match = False
     artist_mbid = None  # Initialize for use in video/compilation checks
 
     # Track canonical single/radio edit markers from title and Spotify result names.
@@ -2055,6 +2121,55 @@ def detect_single_enhanced(
                 log_debug(f"[MUSICBRAINZ] ERROR during compilation check: {type(e).__name__}: {str(e)}")
                 log_info(f"   ⚠ MusicBrainz compilation check failed for {title}: {e}")
     
+    # STAGE 3.5: Single Release Date Proximity Check (MEDIUM CONFIDENCE)
+    # For non-compilation albums, verify the single was released close to the
+    # album's original release date.  This strengthens the case that the single
+    # belongs to the album era rather than being a false positive from a later
+    # release or a different album by the same artist.
+    #
+    # Fallback logic: If the album is a special edition/re-release and the single
+    # date does not match the original album date, we simply skip the bonus rather
+    # than penalising the track.
+    if not is_compilation and (discogs_confirmed or musicbrainz_confirmed):
+        album_release_year = _get_track_release_year(conn, track_id)
+        if album_release_year:
+            log_debug(f"[RELEASE_DATE] Album original release year: {album_release_year} (track: {title})")
+            # Try MusicBrainz first (most reliable for original dates)
+            single_date = None
+            if musicbrainz_confirmed and musicbrainz_client and hasattr(musicbrainz_client, 'get_single_release_date'):
+                try:
+                    single_date = musicbrainz_client.get_single_release_date(lookup_title, artist, artist_mbid=artist_mbid)
+                    log_debug(f"[RELEASE_DATE] MusicBrainz single date: {single_date}")
+                except Exception as e:
+                    log_debug(f"[RELEASE_DATE] MusicBrainz date lookup failed: {e}")
+            # Fall back to Discogs if MusicBrainz didn't return a date
+            if not single_date and discogs_confirmed and discogs_client and hasattr(discogs_client, 'get_single_release_year'):
+                try:
+                    discogs_year = discogs_client.get_single_release_year(lookup_title, artist)
+                    if discogs_year:
+                        single_date = str(discogs_year)
+                        log_debug(f"[RELEASE_DATE] Discogs single year: {discogs_year}")
+                except Exception as e:
+                    log_debug(f"[RELEASE_DATE] Discogs year lookup failed: {e}")
+            if single_date:
+                if is_single_release_date_close_to_album(single_date, album_release_year):
+                    single_release_date_match = True
+                    result['single_sources'].append('single_release_date_match')
+                    result['single_sources_used'].append('single_release_date_match')
+                    log_debug(f"[RELEASE_DATE] ✓ Single release date ({single_date}) is close to album original year ({album_release_year})")
+                    log_info(f"   ✓ Single release date matches album era: {title}")
+                else:
+                    log_debug(f"[RELEASE_DATE] Single release date ({single_date}) is NOT close to album original year ({album_release_year})")
+                    # Fallback: if album is a special edition/re-release, do not penalise
+                    if is_special_edition:
+                        log_debug(f"[RELEASE_DATE] Album is special edition/re-release — allowing fallback (no penalty)")
+            else:
+                log_debug(f"[RELEASE_DATE] No single release date found for '{title}'")
+        else:
+            log_debug(f"[RELEASE_DATE] No album release year available for track {track_id}")
+    else:
+        log_debug(f"[RELEASE_DATE] Skipping release date check (compilation={is_compilation}, discogs={discogs_confirmed}, mb={musicbrainz_confirmed})")
+
     # STAGE 4: Last.fm Single Check (MEDIUM CONFIDENCE)
     # Check if the track exists as a single/album on Last.fm (by track title)
     # Also check album track count for traditional single detection
@@ -2064,7 +2179,8 @@ def detect_single_enhanced(
         discogs_confirmed, musicbrainz_confirmed, 
         False, False, False,
         source_confidence_settings,
-        musicbrainz_compilation_confirmed
+        musicbrainz_compilation_confirmed,
+        single_release_date_match=single_release_date_match,
     ):
         if lastfm_client:
             try:
@@ -2083,7 +2199,8 @@ def detect_single_enhanced(
                         discogs_confirmed, musicbrainz_confirmed, 
                         False, lastfm_single_confirmed, False,
                         source_confidence_settings,
-                        musicbrainz_compilation_confirmed
+                        musicbrainz_compilation_confirmed,
+                        single_release_date_match=single_release_date_match,
                     ):
                         # HIGH confidence achieved
                         log_debug(f"[DETECT] HIGH confidence achieved from Last.fm confirmation")
@@ -2132,7 +2249,8 @@ def detect_single_enhanced(
                         discogs_confirmed, musicbrainz_confirmed, 
                         False, lastfm_single_confirmed, False,
                         source_confidence_settings,
-                        musicbrainz_compilation_confirmed
+                        musicbrainz_compilation_confirmed,
+                        single_release_date_match=single_release_date_match,
                     ):
                         # HIGH confidence achieved
                         log_debug(f"[DETECT] HIGH confidence achieved from Last.fm album track count confirmation")
@@ -2163,7 +2281,8 @@ def detect_single_enhanced(
         discogs_confirmed, musicbrainz_confirmed, 
         False, lastfm_single_confirmed, False,
         source_confidence_settings,
-        musicbrainz_compilation_confirmed
+        musicbrainz_compilation_confirmed,
+        single_release_date_match=single_release_date_match,
     )
     
     if not current_confidence_high:
@@ -2189,7 +2308,8 @@ def detect_single_enhanced(
                             discogs_confirmed, musicbrainz_confirmed, 
                             discogs_video_confirmed, lastfm_single_confirmed, False,
                             source_confidence_settings,
-                            musicbrainz_compilation_confirmed
+                            musicbrainz_compilation_confirmed,
+                            single_release_date_match=single_release_date_match,
                         ):
                             # HIGH confidence achieved - can skip Spotify
                             log_debug(f"[DETECT] Stopping early with HIGH confidence after Discogs Video confirmation")
@@ -2297,7 +2417,8 @@ def detect_single_enhanced(
                         if check_high_confidence_dynamic(
                             discogs_confirmed, musicbrainz_confirmed, 
                             False, False, radio_edit_found,
-                            source_confidence_settings
+                            source_confidence_settings,
+                            single_release_date_match=single_release_date_match,
                         ):
                             # HIGH confidence achieved - can skip remaining sources
                             log_debug(f"[DETECT] Stopping early with HIGH confidence after MusicBrainz confirmation")
@@ -2376,7 +2497,8 @@ def detect_single_enhanced(
     current_confidence_high = check_high_confidence_dynamic(
         discogs_confirmed, musicbrainz_confirmed, 
         False, False, radio_edit_found,
-        source_confidence_settings
+        source_confidence_settings,
+        single_release_date_match=single_release_date_match,
     )
     
     if not current_confidence_high:
@@ -2401,7 +2523,8 @@ def detect_single_enhanced(
                         if check_high_confidence_dynamic(
                             discogs_confirmed, musicbrainz_confirmed, 
                             discogs_video_confirmed, False, radio_edit_found,
-                            source_confidence_settings
+                            source_confidence_settings,
+                            single_release_date_match=single_release_date_match,
                         ):
                             # HIGH confidence achieved - can skip Last.fm
                             log_debug(f"[DETECT] Stopping early with HIGH confidence after Discogs Video confirmation")
@@ -2450,7 +2573,8 @@ def detect_single_enhanced(
     if not check_high_confidence_dynamic(
         discogs_confirmed, musicbrainz_confirmed, 
         discogs_video_confirmed, False, radio_edit_found,
-        source_confidence_settings
+        source_confidence_settings,
+        single_release_date_match=single_release_date_match,
     ):
         if lastfm_client:
             try:
@@ -2468,7 +2592,8 @@ def detect_single_enhanced(
                     if check_high_confidence_dynamic(
                         discogs_confirmed, musicbrainz_confirmed, 
                         discogs_video_confirmed, lastfm_single_confirmed, radio_edit_found,
-                        source_confidence_settings
+                        source_confidence_settings,
+                        single_release_date_match=single_release_date_match,
                     ):
                         # HIGH confidence achieved
                         log_debug(f"[DETECT] HIGH confidence achieved from Last.fm confirmation")
@@ -2516,7 +2641,8 @@ def detect_single_enhanced(
                     if lastfm_single_confirmed and check_high_confidence_dynamic(
                         discogs_confirmed, musicbrainz_confirmed, 
                         discogs_video_confirmed, lastfm_single_confirmed, radio_edit_found,
-                        source_confidence_settings
+                        source_confidence_settings,
+                        single_release_date_match=single_release_date_match,
                     ):
                         # HIGH confidence achieved
                         log_debug(f"[DETECT] HIGH confidence achieved from Last.fm album track count confirmation")
@@ -2700,7 +2826,8 @@ def detect_single_enhanced(
         album_mean,
         has_metadata,
         radio_edit_found,
-        is_remastered_only
+        is_remastered_only,
+        single_release_date_match=single_release_date_match,
     )
     
     log_debug(f"[FINAL_DECISION] Final status determined: {final_status}")
