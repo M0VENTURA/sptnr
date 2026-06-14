@@ -9918,7 +9918,12 @@ def artist_detail(name):
             elif album_type and 'remix' in album_type and 'live' not in album_type and 'compilation' not in album_type:
                 albums_by_category["remix_album"].append(album_dict)
                 categorized_albums.add(album_name)
-            elif album_name and ('live' in album_name_lower or 'unplugged' in album_name_lower):
+            elif album_name and (
+                re.search(r'\blive\b', album_name_lower)
+                or 'unplugged' in album_name_lower
+                or re.search(r'\bin\s+concert\b', album_name_lower)
+                or re.search(r'\bconcert\b', album_name_lower)
+            ):
                 albums_by_category["live_album"].append(album_dict)
                 categorized_albums.add(album_name)
             elif album_name and ('remix' in album_name_lower):
@@ -15581,14 +15586,15 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
                 "platinum", "gold edition", "ultimate collection",
             ]
             live_keywords = [
-                "live at", "live in", "live from", "live session",
-                "live recording", "live tour", "in concert", "unplugged",
-                "(live)", "[live]", "- live",
+                r'\blive\s+at\b', r'\blive\s+in\b', r'\blive\s+from\b',
+                r'\blive\s+session\b', r'\blive\s+recording\b', r'\blive\s+tour\b',
+                r'\bin\s+concert\b', r'\bunplugged\b',
+                r'\(live\)', r'\[live\]', r'-\s*live\b',
             ]
             if any(kw in album_lower for kw in compilation_keywords):
                 new_type = 'album+compilation'
                 classification_reason = "Album name indicates compilation"
-            elif any(kw in album_lower for kw in live_keywords):
+            elif any(re.search(kw, album_lower) for kw in live_keywords):
                 new_type = 'album+live'
                 classification_reason = "Album name indicates live recording"
 

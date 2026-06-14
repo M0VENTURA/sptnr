@@ -1514,7 +1514,7 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
             genre_scores[norm] += weight
 
     # Apply contextual boosts
-    if "live" in title.lower() or "live" in album.lower():
+    if re.search(r'\blive\b', title.lower()) or re.search(r'\blive\b', album.lower()):
         genre_scores["live"] += 0.5
     # Christmas detection: strong boost so the genre reliably surfaces at the top
     _christmas_keywords = ["christmas", "xmas", "yuletide", "holiday season", "jingle bells",
@@ -5135,6 +5135,48 @@ def popularity_scan(
                             detected_album_type = current_album_type or 'album'
                             type_detection_source = 'fallback (Spotify or default)'
 
+                # Guard: do not let MusicBrainz change a non-live album to live when
+                # the album name gives no live indicators.  This prevents a studio album
+                # with the same name as a live release from being misclassified.
+                # Exception: if the track listing is a close match to the MusicBrainz live
+                # release, accept the live classification even without live indicators.
+                _detected_lower = (detected_album_type or '').lower()
+                if ('+live' in _detected_lower or '(live)' in _detected_lower) and not is_live_or_alternate_album(album):
+                    _track_listing_match = False
+                    if discovered_release_group_mbid:
+                        try:
+                            from folder_matching_enhancements import get_musicbrainz_release_tracks
+                            mb_tracks = get_musicbrainz_release_tracks(discovered_release_group_mbid, source='musicbrainz')
+                            if mb_tracks:
+                                _local_titles = set()
+                                for _t in album_tracks:
+                                    _t_title = (_t.get('title') or '').lower().strip()
+                                    if _t_title:
+                                        _normalized = unicodedata.normalize("NFKD", _t_title)
+                                        _normalized = "".join(c for c in _normalized if not unicodedata.combining(c))
+                                        _normalized = re.sub(r'[^a-z0-9]+', ' ', _normalized.lower()).strip()
+                                        _local_titles.add(_normalized)
+                                _matched = 0
+                                for _mb_track in mb_tracks:
+                                    _mb_title = (_mb_track.get('title') or '').lower().strip()
+                                    if _mb_title:
+                                        _normalized = unicodedata.normalize("NFKD", _mb_title)
+                                        _normalized = "".join(c for c in _normalized if not unicodedata.combining(c))
+                                        _normalized = re.sub(r'[^a-z0-9]+', ' ', _normalized.lower()).strip()
+                                        if _normalized in _local_titles:
+                                            _matched += 1
+                                _match_ratio = _matched / len(mb_tracks) if mb_tracks else 0
+                                if _match_ratio >= 0.7:
+                                    _track_listing_match = True
+                                    log_info(f'Accepting MusicBrainz live classification for "{artist} - {album}" — track listing matches ({_match_ratio:.0%})')
+                        except Exception as _e:
+                            log_debug(f'Could not verify track listing for live classification: {_e}')
+
+                    if not _track_listing_match:
+                        log_info(f'Rejecting MusicBrainz live classification for "{artist} - {album}" — album name does not contain live indicators')
+                        detected_album_type = current_album_type or 'album'
+                        type_detection_source = 'fallback (live rejected by name heuristic)'
+
                 # Update ALL tracks in this album with the detected type.
                 # Skip if detection fell back to "unknown" (API failure) to avoid
                 # clobbering a correctly-identified type from a previous scan.
@@ -7393,7 +7435,13 @@ def popularity_scan(
 
                         # Guard the shortcut path so live B-sides on otherwise normal singles
                         # are not incorrectly promoted to 5-star detected singles.
-                        if track_is_live_variant and not album_live_context:
+                        # Also skip if the album itself is a live album — live tracks are never singles.
+                        if album_live_context:
+                            log_debug(
+                                f"Skipping album-type single shortcut for live album track: "
+                                f"{title} (album='{album}')"
+                            )
+                        elif track_is_live_variant:
                             log_debug(
                                 f"Skipping album-type single shortcut for live/unplugged track: "
                                 f"{title} (album='{album}')"
