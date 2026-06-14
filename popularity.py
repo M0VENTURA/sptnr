@@ -7392,21 +7392,23 @@ def popularity_scan(
                         # Check if this is a live album (special rules apply)
                         album_is_live = row_get(track, "album_context_live", 0)
 
-                        # For regular albums, skip single detection if z-score is negative (below album average)
-                        # Rationale: Below-average tracks are unlikely to be real singles
+                        # For regular albums, skip single detection if z-score is very negative (below album average)
+                        # Rationale: Very low z-score tracks are unlikely to be real singles
                         # Exception: For compilations/greatest hits, run detection on all tracks (different popularity patterns)
                         # Exception: Remastered-only variants — their lower popularity reflects listeners preferring
                         #            the original release, not that the song is not a single.
                         # Exception: Live albums require tracks above median AND HIGH confidence to be considered singles
-                        if track_zscore < 0.0:
+                        # NOTE: Relaxed from < 0.0 to < -1.0 to avoid missing known singles that are below average
+                        #       but still have metadata evidence (e.g., title tracks, collaboration singles).
+                        if track_zscore < -1.0:
                             if is_remastered_only_variant(title):
                                 log_debug(f"Not skipping '{title}' despite negative z-score ({track_zscore:.2f}): remastered-only variant, treating as original release")
                             else:
                                 skip_single_detection = True
                                 if album_is_live:
-                                    log_debug(f"Skipping single detection for '{title}' on LIVE album (z-score: {track_zscore:.2f} < 0.0 - below median)")
+                                    log_debug(f"Skipping single detection for '{title}' on LIVE album (z-score: {track_zscore:.2f} < -1.0 - well below median)")
                                 else:
-                                    log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 0.0 - below album average)")
+                                    log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < -1.0 - well below album average)")
                         elif album_is_live:
                             # Live album with z > 0: scan but will require HIGH confidence later
                             log_debug(f"Scanning '{title}' on LIVE album (z-score: {track_zscore:.2f} >= 0.0, will require HIGH confidence)")
@@ -8194,6 +8196,28 @@ def popularity_scan(
                                         )
                                     log_debug(
                                         f"Evidence gate passed (greatest-hits/compilation, negative z) - track_id: {track_id}, "
+                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
+                                    )
+                                elif medium_conf_count >= 2 or high_conf_source_count >= 1:
+                                    # Regular album with negative z-score but metadata evidence
+                                    # Promote to 4 stars to reflect single detection, but not 5
+                                    # since 5 is reserved for top z-score tracks or high-confidence singles
+                                    stars = 4
+                                    if not is_single:
+                                        single_upgrades.append(track_id)
+                                        log_info(
+                                            f"4-star assignment: {title} "
+                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, "
+                                            f"z-score={track_zscore:.2f}, regular album) - upgraded to single"
+                                        )
+                                    else:
+                                        log_info(
+                                            f"4-star assignment: {title} "
+                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, "
+                                            f"z-score={track_zscore:.2f}, regular album)"
+                                        )
+                                    log_debug(
+                                        f"Evidence gate passed (regular album, negative z) - track_id: {track_id}, "
                                         f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
                                     )
                                 else:
