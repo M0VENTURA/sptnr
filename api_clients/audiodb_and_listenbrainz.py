@@ -24,7 +24,7 @@ class ListenBrainzUserClient:
         """
         self.token = user_token
         self.session = http_session or session
-        self.base_url = "https://api.listenbrainz.org/1"
+        self.base_url = "https://api.listenbrainz.org/0"
         self.headers = {"Authorization": f"Token {user_token}"}
     
     def love_track(self, mbid: str) -> bool:

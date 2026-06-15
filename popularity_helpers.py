@@ -653,6 +653,41 @@ def calculate_lastfm_zscore_popularity(
 score_by_age = _score_by_age
 
 
+def calculate_listenbrainz_popularity_score(listen_count: int) -> float:
+    """
+    Calculate a normalized ListenBrainz popularity score (0-100) from global listen count.
+    
+    ListenBrainz tracks total listens across all listeners in the Listenbrainz community.
+    This is typically 10-100x larger than Last.fm listener counts (because Listenbrainz
+    aggregates from multiple scrobbling services).
+    
+    Uses logarithmic normalization similar to Last.fm but scaled for larger listen counts:
+    - log10(1000) = 3.0 → 37.5 points
+    - log10(10000) = 4.0 → 50 points
+    - log10(100000) = 5.0 → 62.5 points
+    - log10(1000000) = 6.0 → 75 points
+    - log10(10000000) = 7.0 → 87.5 points
+    
+    Args:
+        listen_count: ListenBrainz total listen count for the track
+        
+    Returns:
+        Popularity score (0-100)
+    """
+    if listen_count is None or listen_count <= 0:
+        return 0.0
+    
+    try:
+        # Global logarithmic scaling (same formula as Last.fm for consistency)
+        # Formula: score = 12.5 * log10(listen_count)
+        score = 12.5 * math.log10(listen_count)
+        
+        # Cap at 100
+        return min(100.0, max(0.0, score))
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def apply_mean_popularity_adjustment(
     track_popularity: float,
     artist_name: str,

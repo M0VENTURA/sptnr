@@ -350,6 +350,62 @@ class LastFmClient:
             return artist
         primary = re.split(r"\s+(?:feat\.?|featuring|ft\.?)\s+", artist, maxsplit=1, flags=re.IGNORECASE)[0].strip()
         return primary or artist.strip()
+    
+    @staticmethod
+    def _extract_featured_artists(artist: str) -> list[str]:
+        """Extract featured artist names from a collaboration string.
+        
+        Examples:
+            "Artist feat. Guest" -> ["Guest"]
+            "Artist ft. Guest1 & Guest2" -> ["Guest1", "Guest2"]
+            "Artist featuring Guest" -> ["Guest"]
+        """
+        if not artist:
+            return []
+        
+        # Split on feat./ft./featuring
+        parts = re.split(r"\s+(?:feat\.?|featuring|ft\.?)\s+", artist, maxsplit=1, flags=re.IGNORECASE)
+        if len(parts) < 2:
+            return []
+        
+        featured_str = parts[1].strip()
+        # Split by "&", ",", "and"
+        featured_artists = re.split(r'\s*(?:&|,|and)\s*', featured_str, flags=re.IGNORECASE)
+        return [f.strip() for f in featured_artists if f.strip()]
+
+    @staticmethod
+    def _extract_collaboration_artists(artist: str) -> list[str]:
+        """
+        Extract the individual main artists from a multi-artist collaboration string.
+
+        Examples:
+            "Artist A & Artist B" -> ["Artist A", "Artist B"]
+            "Artist A x Artist B" -> ["Artist A", "Artist B"]
+            "Artist A, Artist B" -> ["Artist A", "Artist B"]
+            "Artist A / Artist B" -> ["Artist A", "Artist B"]
+        """
+        if not artist:
+            return []
+
+        main_part = re.split(r"\s+(?:feat\.?|featuring|ft\.?)\s+", artist, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        if not main_part:
+            return []
+
+        parts = re.split(r'\s*(?:\+|&|,|/|\bx\b|\bvs\b)\s*', main_part, flags=re.IGNORECASE)
+        artists = [p.strip() for p in parts if p.strip()]
+        return artists if len(artists) > 1 else []
+
+    @staticmethod
+    def _normalize_collaboration_string(artist: str) -> str:
+        """Normalize a multi-artist collaboration string into a consistent form."""
+        if not artist:
+            return artist
+
+        # Normalize common collaboration separators to a canonical '&' delimiter.
+        normalized = re.sub(r"\s*(?:\+|&|/|×|\\bx\\b|\\bvs\\b|\\bwith\\b)\s*", " & ", artist, flags=re.IGNORECASE)
+        normalized = re.sub(r"\s+(?:feat\.?|featuring|ft\.?)\s+", " & ", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized
 
     def _get_track_info_once(self, artist: str, title: str) -> dict:
         """Perform a single Last.fm track.getInfo call for a specific artist/title pair."""
@@ -409,8 +465,12 @@ class LastFmClient:
         """
         Fetch track listeners, playcount, and metadata from Last.fm.
         
+        Enhanced featured artist handling: tries primary artist, featured artists, and full artist string.
+        This handles cases like "dArtagnan feat. Melissa Bonny" where the track might be indexed under
+        different artist names in Last.fm, or where featured artists also have their own popularity.
+        
         Args:
-            artist: Artist name
+            artist: Artist name (may include feat./ft./featuring)
             title: Track title
             
         Returns:
@@ -420,20 +480,57 @@ class LastFmClient:
             logger.warning("Last.fm API key missing. Skipping lookup.")
             return {"track_play": 0, "listeners": 0}
         
-        # For collaboration strings like "Artist feat. Guest", prefer canonical
-        # artist lookup first to avoid low-count alternate Last.fm entries.
+        # Build lookup order with multiple artist variations
+        lookup_order = []
         primary_artist = self._strip_featured_artist(artist)
-        lookup_order = [primary_artist] if primary_artist else [artist]
-        if artist and artist.lower() != primary_artist.lower():
+        
+        # 1. Try the full artist string first (exact match on collaborations)
+        if artist:
             lookup_order.append(artist)
 
+        # 2. Try a normalized collaboration string like "Artist A & Artist B"
+        normalized_collab = self._normalize_collaboration_string(artist)
+        if normalized_collab and normalized_collab.lower() not in [a.lower() for a in lookup_order]:
+            lookup_order.append(normalized_collab)
+
+        # 3. Try explicit collaboration components if present
+        collaboration_artists = self._extract_collaboration_artists(artist)
+        for collab_artist in collaboration_artists:
+            if collab_artist.lower() not in [a.lower() for a in lookup_order]:
+                lookup_order.append(collab_artist)
+
+        # 4. Try the primary artist after stripping featured artist metadata
+        if primary_artist and primary_artist.lower() not in [a.lower() for a in lookup_order]:
+            lookup_order.append(primary_artist)
+        
+        # 5. Try featured artists individually (in case featured artist's version is more popular)
+        featured_artists = self._extract_featured_artists(artist)
+        for featured in featured_artists:
+            if featured.lower() not in [a.lower() for a in lookup_order]:
+                lookup_order.append(featured)
+        
+        # Ensure we always have at least one lookup attempt
+        if not lookup_order:
+            lookup_order = [artist]
+        
         best_result = {"track_play": 0, "listeners": 0, "toptags": {}, "lookup_artist": artist}
+        
+        # Try each artist variant in order, keeping the highest-listeners result
         for lookup_artist in lookup_order:
             candidate = self._get_track_info_once(lookup_artist, title)
-            if candidate.get("listeners", 0) > best_result.get("listeners", 0):
+            candidate_listeners = candidate.get("listeners", 0)
+            candidate_playcount = candidate.get("track_play", 0)
+            best_listeners = best_result.get("listeners", 0)
+            best_playcount = best_result.get("track_play", 0)
+
+            if (
+                candidate_listeners > best_listeners or
+                (candidate_listeners == best_listeners and candidate_playcount > best_playcount)
+            ):
                 best_result = candidate
-            if candidate.get("listeners", 0) > 0 and candidate.get("track_play", 0) > 0:
-                break
+                logger.debug(f"Better result found for '{title}': '{lookup_artist}' with {candidate_listeners} listeners and {candidate_playcount} playcount")
+
+            # Do not break early; continue to find the best available match across variants.
 
         # Keep backwards compatibility for callers expecting this exact shape.
         return {
@@ -487,7 +584,11 @@ class LastFmClient:
             # Filter results to same artist (case-insensitive)
             artist_lower = artist.lower()
             artist_primary_lower = self._strip_featured_artist(artist).lower()
+            normalized_artist_collab_lower = self._normalize_collaboration_string(artist).lower()
+            collaboration_artists = self._extract_collaboration_artists(artist)
+            collaboration_lower = {a.lower() for a in collaboration_artists}
             filtered_tracks = []
+
             for track in tracks:
                 track_artist = track.get("artist", "")
                 if isinstance(track_artist, dict):
@@ -495,12 +596,20 @@ class LastFmClient:
 
                 track_artist_lower = track_artist.lower()
                 track_artist_primary_lower = self._strip_featured_artist(track_artist).lower()
-                if track_artist_lower == artist_lower or track_artist_primary_lower == artist_primary_lower:
+                track_artist_normalized_collab_lower = self._normalize_collaboration_string(track_artist).lower()
+
+                if (
+                    track_artist_lower == artist_lower or
+                    track_artist_primary_lower == artist_primary_lower or
+                    track_artist_lower in collaboration_lower or
+                    track_artist_primary_lower in collaboration_lower or
+                    track_artist_normalized_collab_lower == normalized_artist_collab_lower
+                ):
                     filtered_tracks.append({
                         "name": track.get("name", ""),
                         "artist": track_artist
                     })
-            
+
             return filtered_tracks
             
         except (ConnectionError, ConnectionResetError) as e:

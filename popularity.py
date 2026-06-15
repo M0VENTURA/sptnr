@@ -6460,6 +6460,29 @@ def popularity_scan(
                                 log_debug(f"Last.fm error details: {type(e).__name__}: {str(e)}")
 
                         # Try to get ListenBrainz score if mbid is available
+                        listenbrainz_score = 0
+                        track_mbid = row_get(track, 'mbid', '')
+                        
+                        if track_mbid:
+                            try:
+                                from api_clients.audiodb_and_listenbrainz import get_recording_popularity_batch
+                                from popularity_helpers import calculate_listenbrainz_popularity_score
+                                
+                                # Fetch ListenBrainz popularity for this recording
+                                lb_popularity = get_recording_popularity_batch([track_mbid])
+                                
+                                if track_mbid in lb_popularity:
+                                    lb_data = lb_popularity[track_mbid]
+                                    listen_count = lb_data.get("total_listen_count")
+                                    
+                                    if listen_count and listen_count > 0:
+                                        listenbrainz_score = calculate_listenbrainz_popularity_score(listen_count)
+                                        log_debug(f'ListenBrainz popularity for "{title}": {listen_count} listens, score: {listenbrainz_score:.1f}')
+                                    else:
+                                        log_debug(f'No ListenBrainz data for MBID {track_mbid}')
+                            except Exception as e:
+                                log_debug(f'ListenBrainz lookup failed for {title} (MBID {track_mbid}): {e}')
+                        
                         # Calculate age score if release date is available
                         age_score = 0
                         if not spotify_release_date:
@@ -6549,7 +6572,7 @@ def popularity_scan(
                                     log_debug(f'Failed to extract MusicBrainz genres: {e}')
 
                         # Calculate weighted popularity score
-                        # Include 2 active sources: Last.fm + Age
+                        # Include 2-3 active sources: Last.fm + ListenBrainz (optional) + Age
                         # Only include sources that have data (score > 0)
                         scores = []
                         weights = []
@@ -6568,12 +6591,35 @@ def popularity_scan(
                             if dynamic_lastfm_weight != LASTFM_WEIGHT:
                                 log_info(f"Dynamic weight adjustment for artist context: Last.fm {LASTFM_WEIGHT:.2f}→{dynamic_lastfm_weight:.2f}")
 
+                        # LIVE ALBUM PENALTY: If track is on a live album, reduce Last.fm weight
+                        # because Last.fm data might include plays from the studio version
+                        album_context_live = int(row_get(track, 'album_context_live') or 0)
+                        is_live_track = int(row_get(track, 'is_live') or 0)
+                        
+                        if (album_context_live or is_live_track) and lastfm_score > 0:
+                            # For live album tracks, reduce Last.fm weight by 50% (70% -> 35%)
+                            # This prevents live tracks from getting 5-star just from album/studio track data
+                            live_album_weight_reduction = 0.50
+                            dynamic_lastfm_weight = dynamic_lastfm_weight * (1.0 - live_album_weight_reduction)
+                            log_info(f'Live album penalty applied: Last.fm weight reduced by {live_album_weight_reduction*100:.0f}% (new weight: {dynamic_lastfm_weight:.2f})')
+                            log_debug(f'Track on live album (is_live={is_live_track}, album_context_live={album_context_live}), applying popularity penalty')
+
                         if lastfm_score > 0:
                             scores.append(lastfm_score)
                             weights.append(dynamic_lastfm_weight)
                             log_debug(f'Including Last.fm score: {lastfm_score} (weight: {dynamic_lastfm_weight:.2f})')
 
-                        listenbrainz_score = 0
+                        # Add ListenBrainz score if available (secondary source, 40% weight if Last.fm present, 70% if Last.fm absent)
+                        if listenbrainz_score > 0:
+                            if lastfm_score > 0:
+                                # If we have Last.fm, use ListenBrainz as supplementary (40% weight)
+                                lb_weight = 0.40
+                            else:
+                                # If Last.fm is missing, use ListenBrainz as primary (70% weight similar to Last.fm)
+                                lb_weight = dynamic_lastfm_weight
+                            scores.append(listenbrainz_score)
+                            weights.append(lb_weight)
+                            log_debug(f'Including ListenBrainz score: {listenbrainz_score} (weight: {lb_weight:.2f})')
 
                         if age_score > 0:
                             scores.append(age_score)
