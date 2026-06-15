@@ -25868,13 +25868,14 @@ def api_album_tracklist():
                 tracklist = []
                 media = release_data.get("media", [])
                 if media:
-                    for track_obj in media[0].get("tracks", []):
-                        recording = track_obj.get("recording", {})
-                        tracklist.append({
-                            "position": track_obj.get("position", ""),
-                            "title": recording.get("title", "Unknown"),
-                            "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
-                        })
+                    for medium in media:
+                        for track_obj in medium.get("tracks", []):
+                            recording = track_obj.get("recording", {})
+                            tracklist.append({
+                                "position": track_obj.get("position", ""),
+                                "title": recording.get("title", "Unknown"),
+                                "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
+                            })
                 
                 if tracklist:
                     log_info(f"Found {len(tracklist)} tracks for {artist} - {album} (Release ID: {mbid})")
@@ -25965,15 +25966,17 @@ def api_album_tracklist():
                 full_resp.raise_for_status()
                 full_data = full_resp.json()
                 media = full_data.get("media", [])
-                if media and media[0].get("tracks"):
+                has_tracks = any(medium.get("tracks") for medium in media)
+                if has_tracks:
                     release_id = candidate_id
-                    for track_obj in media[0].get("tracks", []):
-                        recording = track_obj.get("recording", {})
-                        tracklist.append({
-                            "position": track_obj.get("position", ""),
-                            "title": recording.get("title", "Unknown"),
-                            "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
-                        })
+                    for medium in media:
+                        for track_obj in medium.get("tracks", []):
+                            recording = track_obj.get("recording", {})
+                            tracklist.append({
+                                "position": track_obj.get("position", ""),
+                                "title": recording.get("title", "Unknown"),
+                                "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
+                            })
                     break
             except Exception as e:
                 log_debug(f"Error fetching release {candidate_id}: {e}")
@@ -26110,18 +26113,19 @@ def api_album_tracklist_match():
         if releases:
             media = releases[0].get("media", [])
             if media:
-                for track_obj in media[0].get("tracks", []):
-                    recording = track_obj.get("recording", {})
-                    track_title = recording.get("title", "").lower().strip()
-                    
-                    if track_title in library_tracks:
-                        matched_tracks.append({
-                            "title": recording.get("title", "")
-                        })
-                    else:
-                        unmatched_tracks.append({
-                            "title": recording.get("title", "")
-                        })
+                for medium in media:
+                    for track_obj in medium.get("tracks", []):
+                        recording = track_obj.get("recording", {})
+                        track_title = recording.get("title", "").lower().strip()
+
+                        if track_title in library_tracks:
+                            matched_tracks.append({
+                                "title": recording.get("title", "")
+                            })
+                        else:
+                            unmatched_tracks.append({
+                                "title": recording.get("title", "")
+                            })
         
         log_info(f"Matched {len(matched_tracks)} tracks for {artist} - {album}")
         return jsonify({
