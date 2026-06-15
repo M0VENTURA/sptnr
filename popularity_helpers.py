@@ -598,6 +598,23 @@ def get_listenbrainz_score_for_track(track: dict) -> int:
     return _lb_get_listenbrainz_score(mbid)
 
 
+def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int = 0) -> float:
+    """
+    Calculate a normalized Last.fm popularity score (0-100) from listener count.
+    """
+    if listeners is None or listeners <= 0:
+        return 0.0
+
+    if artist_max_listeners > 0:
+        return min(100.0, (listeners / artist_max_listeners) * 100.0)
+
+    try:
+        score = 12.5 * math.log10(listeners)
+        return min(100.0, max(0.0, score))
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def calculate_listenbrainz_popularity_score(listen_count: int) -> float:
     """
     Calculate a normalized ListenBrainz popularity score (0-100) from global listen count.
