@@ -498,11 +498,13 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
 def _extract_recording_mbid(track: dict) -> Optional[str]:
     """
     Return only a recording MBID suitable for ListenBrainz popularity calls.
-    Avoid generic 'mbid' unless your schema guarantees it is always a recording MBID.
+    Falls back to generic 'mbid' when the track dict comes from the main
+    tracks table (where mbid is the recording MBID).
     """
     return (
         track.get("recording_mbid")
         or track.get("musicbrainz_recording_mbid")
+        or track.get("mbid")
     )
 
 
