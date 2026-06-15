@@ -168,13 +168,23 @@ class ListenBrainzClient:
                 timeout=(5, 20),
             )
 
-            # The documented response is a list preserving request order
+            # The documented response is a list preserving request order.
+            # We match by recording_mbid when available for robustness.
             if isinstance(data, list):
-                for i, mbid in enumerate(mbids):
-                    if i < len(data) and isinstance(data[i], dict):
+                for item in data:
+                    if isinstance(item, dict):
+                        resp_mbid = item.get("recording_mbid")
+                        if resp_mbid in result:
+                            result[resp_mbid] = {
+                                "total_listen_count": item.get("total_listen_count"),
+                                "total_user_count": item.get("total_user_count"),
+                            }
+            elif isinstance(data, dict):
+                for mbid in mbids:
+                    if mbid in data and isinstance(data[mbid], dict):
                         result[mbid] = {
-                            "total_listen_count": data[i].get("total_listen_count"),
-                            "total_user_count": data[i].get("total_user_count"),
+                            "total_listen_count": data[mbid].get("total_listen_count"),
+                            "total_user_count": data[mbid].get("total_user_count"),
                         }
             else:
                 logger.warning("Unexpected popularity response type: %s", type(data).__name__)

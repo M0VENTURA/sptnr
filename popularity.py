@@ -6446,7 +6446,15 @@ def popularity_scan(
                             listenbrainz_score = calculate_listenbrainz_popularity_score(lb_listens)
                             log_debug(f'ListenBrainz popularity for "{title}": {lb_listens} listens, score: {listenbrainz_score:.1f}')
                         else:
-                            log_debug(f'No ListenBrainz data for "{title}"')
+                            recording_mbid = (
+                                row_get(track, "recording_mbid")
+                                or row_get(track, "musicbrainz_recording_mbid")
+                                or row_get(track, "mbid")
+                            )
+                            if recording_mbid:
+                                log_debug(f'ListenBrainz returned 0 listens for "{title}" (MBID: {recording_mbid})')
+                            else:
+                                log_debug(f'No ListenBrainz MBID available for "{title}"')
 
                         # ------------------------------------------------------------
                         # Age score

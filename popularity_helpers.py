@@ -611,7 +611,7 @@ def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int 
         return min(100.0, (listeners / artist_max_listeners) * 100.0)
 
     try:
-        score = 12.5 * math.log10(listeners)
+        score = 12.5 * math.log10(max(1, listeners) + 1)
         return min(100.0, max(0.0, score))
     except (ValueError, TypeError):
         return 0.0
@@ -663,7 +663,7 @@ def calculate_listenbrainz_popularity_score(listen_count: int) -> float:
         return 0.0
 
     try:
-        score = 12.5 * math.log10(listen_count)
+        score = 12.5 * math.log10(listen_count + 1)
         return min(100.0, max(0.0, score))
     except (ValueError, TypeError):
         return 0.0
