@@ -565,10 +565,11 @@ def get_listenbrainz_popularity_for_track(track: dict) -> Dict[str, Optional[int
 
     mbid = _extract_recording_mbid(track)
     if not mbid:
-        logging.debug("[LB] Track '%s' has no recording MBID", track.get("title","))
+        logging.debug("[LB] Track '%s' has no recording MBID", track.get("title", ""))
         return {"total_listen_count": None, "total_user_count": None}
 
     result = _lb_get_listenbrainz_popularity(mbid)
+
     logging.debug(
         "[LB] %s (%s) -> listens=%s users=%s",
         track.get("title", "<unknown>"),
@@ -576,6 +577,7 @@ def get_listenbrainz_popularity_for_track(track: dict) -> Dict[str, Optional[int
         result.get("total_listen_count"),
         result.get("total_user_count"),
     )
+
     return result
 
 
