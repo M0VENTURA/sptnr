@@ -615,6 +615,44 @@ def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int 
         return 0.0
 
 
+def calculate_lastfm_zscore_popularity(
+    listeners: int,
+    playcount: int,
+    album_listeners_list: List[int],
+    album_playcounts_list: List[int],
+) -> float:
+    """
+    Calculate a Last.fm popularity score using album-level z-score normalization.
+    Compares the track's listeners (and playcount) against the album's distribution.
+    """
+    if not album_listeners_list:
+        return calculate_lastfm_popularity_score(listeners)
+
+    try:
+        album_mean = mean(album_listeners_list)
+        album_stddev = stdev(album_listeners_list) if len(album_listeners_list) > 1 else 0.0
+    except (ValueError, ZeroDivisionError):
+        return calculate_lastfm_popularity_score(listeners)
+
+    if album_stddev == 0:
+        return calculate_lastfm_popularity_score(listeners)
+
+    z_score = calculate_track_zscore(listeners, album_mean, album_stddev)
+
+    # Blend in playcount z-score as a secondary signal if available
+    if album_playcounts_list and len(album_playcounts_list) > 1:
+        try:
+            pc_mean = mean(album_playcounts_list)
+            pc_stddev = stdev(album_playcounts_list) if len(album_playcounts_list) > 1 else 0.0
+            if pc_stddev > 0:
+                pc_z_score = calculate_track_zscore(playcount, pc_mean, pc_stddev)
+                z_score = (z_score * 0.7) + (pc_z_score * 0.3)
+        except (ValueError, ZeroDivisionError):
+            pass
+
+    return zscore_to_popularity(z_score)
+
+
 def calculate_listenbrainz_popularity_score(listen_count: int) -> float:
     """
     Calculate a normalized ListenBrainz popularity score (0-100) from global listen count.
