@@ -22,7 +22,7 @@ from statistics import mean, stdev, median
 from api_clients.spotify import SpotifyClient
 from api_clients.lastfm import LastFmClient
 from api_clients.audiodb_and_listenbrainz import (
-    score_by_age as _score_by_age,
+    score_by_age,
     get_recording_popularity_batch as _lb_get_recording_popularity_batch,
     get_listenbrainz_popularity as _lb_get_listenbrainz_popularity,
     get_listenbrainz_score as _lb_get_listenbrainz_score,
@@ -653,7 +653,7 @@ def calculate_combined_popularity_score(
 
     age_score = 0.0
     if release_date:
-        age_score, _ = _score_by_age(age_source_value, release_date)
+        age_score, _ = score_by_age(age_source_value, release_date)
 
     total_weight = LASTFM_WEIGHT + LISTENBRAINZ_WEIGHT + AGE_WEIGHT
     if total_weight > 0:
