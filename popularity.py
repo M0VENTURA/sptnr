@@ -6724,44 +6724,44 @@ def popularity_scan(
                                 sorted(updated_track_updates, key=lambda row: str(row[-1])),
                                 f"popularity batch update for album {album}",
                             )
-                    conn.commit()
+                            conn.commit()
 
-                    # Sync popularity values back into in-memory track dicts so that the
-                    # singles detection phase immediately sees the updated scores.
-                    updated_popularity_by_id = {
-                        row[10]: {
-                            "popularity_score": row[0],
-                            "spotify_score":    row[1],
-                            "lastfm_ratio":     row[2],
-                            "lastfm_track_playcount": row[3],
-                        }
-                        for row in updated_track_updates
-                    }
-                    for track in album_tracks:
-                        if track.get("id") in updated_popularity_by_id:
-                            track.update(updated_popularity_by_id[track["id"]])
+                                # Sync popularity values back into in-memory track dicts so that the
+                                # singles detection phase immediately sees the updated scores.
+                            updated_popularity_by_id = {
+                                row[10]: {
+                                    "popularity_score": row[0],
+                                    "spotify_score":    row[1],
+                                    "lastfm_ratio":     row[2],
+                                    "lastfm_track_playcount": row[3],
+                                }
+                                for row in updated_track_updates
+                            }
+                            for track in album_tracks:
+                                if track.get("id") in updated_popularity_by_id:
+                                    track.update(updated_popularity_by_id[track["id"]])
 
-                    log_debug(
-                        f"Batch committed {len(updated_track_updates)} popularity updates "
-                        f"for album '{album}' with merged tag data"
-                    )
+                            log_debug(
+                                f"Batch committed {len(updated_track_updates)} popularity updates "
+                                f"for album '{album}' with merged tag data"
+                            )
 
-                    except Exception as e:
-                        log_debug(f"Error batch updating popularity scores: {e}")
-                        try:
-                            conn.rollback()
-                            log_debug("Rolled back failed transaction")
-                        except Exception:
-                            pass
-                        raise
+                        except Exception as e:
+                            log_debug(f"Error batch updating popularity scores: {e}")
+                            try:
+                                conn.rollback()
+                                log_debug("Rolled back failed transaction")
+                            except Exception:
+                                pass
+                            raise
 
-                    else:
-                        log_debug(f"Skipped batch update for album '{album}': no popularity-related fields changed")
+                        else:
+                            log_debug(f"Skipped batch update for album '{album}': no popularity-related fields changed")
 
-                    if album_art_url:
-                        log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
-                    else:
-                        log_debug("[ALBUM_ART] Album art will be fetched on-demand from Navidrome or Apple Music sources")
+                        if album_art_url:
+                            log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
+                        else:
+                            log_debug("[ALBUM_ART] Album art will be fetched on-demand from Navidrome or Apple Music sources")
                             # Update artist progress tracking after completing all albums for this artist
                             # Note: Progress is saved once per artist (not per track) to balance granularity
                             # with I/O efficiency. Original code saved after every track which could result
@@ -6783,8 +6783,8 @@ def popularity_scan(
                             )
                             log_debug(f"Progress saved - {processed_artists}/{total_artists} artists processed (current: {artist})")
 
-                        log_debug("Committing final changes to database")
-                        conn.commit()
+                            log_debug("Committing final changes to database")
+                            conn.commit()
 
         # PostgreSQL commit above is sufficient; no manual checkpoint required.
 
