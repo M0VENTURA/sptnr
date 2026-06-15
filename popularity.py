@@ -1846,6 +1846,8 @@ PG_DATABASE = os.environ.get("PG_DATABASE", "")
 from popularity_helpers import (
     get_lastfm_track_info,
     calculate_lastfm_popularity_score,
+    calculate_lastfm_zscore_popularity,
+    calculate_listenbrainz_popularity_score,
     calculate_combined_popularity_score,
     get_listenbrainz_batch_for_tracks,
     score_by_age,
@@ -6419,7 +6421,6 @@ def popularity_scan(
                             album_playcounts_list = [d["playcount"] for d in album_lastfm_data.values() if d["playcount"] > 0]
 
                             if album_listeners_list and album_playcounts_list:
-                                from popularity_helpers import calculate_lastfm_zscore_popularity
                                 lastfm_score = calculate_lastfm_zscore_popularity(
                                     lastfm_listeners,
                                     lastfm_playcount,
@@ -6442,7 +6443,6 @@ def popularity_scan(
                         lb_listens = album_listenbrainz_data.get(track_id, {}).get("listeners", 0) or 0
                         listenbrainz_score = 0
                         if lb_listens > 0:
-                            from popularity_helpers import calculate_listenbrainz_popularity_score
                             listenbrainz_score = calculate_listenbrainz_popularity_score(lb_listens)
                             log_debug(f'ListenBrainz popularity for "{title}": {lb_listens} listens, score: {listenbrainz_score:.1f}')
                         else:

@@ -15410,21 +15410,21 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
                 log_unified(f"Warning: Artist metadata fetch not available: {e}")
             except Exception as e:
                 log_unified(f"Warning: Failed to fetch artist metadata: {e}")
-            log_unified(f"Step 2/3: Running popularity scan for track artist '{artist_name}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
-            log_unified(f"Step 2b/3: Running metadata enrichment scan for track artist '{artist_name}'")
+            log_unified(f"Step 2/3: Running metadata enrichment scan for track artist '{artist_name}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, metadata_only=True)
+            log_unified(f"Step 2b/3: Running popularity scan for track artist '{artist_name}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
         else:
             # Normal flow: artist_id found, run both steps
             # Step 1: Import metadata from Navidrome for this artist
             log_unified(f"Step 1/3: Navidrome import for artist '{artist_name}' (force={force})")
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=force)
 
-            # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
-            log_unified(f"Step 2/3: Running popularity scan for artist '{artist_name}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
-            log_unified(f"Step 2b/3: Running metadata enrichment scan for artist '{artist_name}'")
+            # Step 2: Run metadata enrichment scan first so MBIDs are populated for ListenBrainz
+            log_unified(f"Step 2/3: Running metadata enrichment scan for artist '{artist_name}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, metadata_only=True)
+            log_unified(f"Step 2b/3: Running popularity scan for artist '{artist_name}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
 
         # Step 3: Run Essentia mood/genre scan for this artist
         log_unified(f"Step 3/3: Running Essentia scan for artist '{artist_name}' (force={force})")
@@ -15721,13 +15721,13 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
                 log_unified(f"❌ Scan aborted: no tracks found for '{album_display}' - album does not exist in library")
                 return
             
-            # Artist/album exists as track artist only - skip Navidrome import, go straight to popularity scan
+            # Artist/album exists as track artist only - skip Navidrome import, go straight to enrichment/popularity
             log_unified(f"Album '{album_display}' uses track artist (e.g., from Various Artists compilation)")
             log_unified(f"Skipping Navidrome import (Step 1/2) - album metadata already imported via album artist")
-            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
-            log_unified(f"Step 2b/2: Running metadata enrichment scan for album '{album_display}'")
+            log_unified(f"Step 2/2: Running metadata enrichment scan for album '{album_display}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name, metadata_only=True)
+            log_unified(f"Step 2b/2: Running popularity scan for album '{album_display}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
             
             # Step 3: Auto-detect and set album type
             log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
@@ -15738,11 +15738,11 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
             log_unified(f"Step 1/2: Navidrome import for album '{album_display}' (force={force})")
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=force, album_filter=album_name)
 
-            # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
-            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
-            log_unified(f"Step 2b/2: Running metadata enrichment scan for album '{album_display}'")
+            # Step 2: Run metadata enrichment first so MBIDs are populated for ListenBrainz
+            log_unified(f"Step 2/2: Running metadata enrichment scan for album '{album_display}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name, metadata_only=True)
+            log_unified(f"Step 2b/2: Running popularity scan for album '{album_display}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
         
         # Step 3: Auto-detect and set album type based on singles detection
         log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
