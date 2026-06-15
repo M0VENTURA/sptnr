@@ -6002,6 +6002,7 @@ def popularity_scan(
                         recording_mbid = (
                             row_get(track, "recording_mbid")
                             or row_get(track, "musicbrainz_recording_mbid")
+                            or row_get(track, "mbid")
                         )
 
                         lb_listens = 0
@@ -6109,6 +6110,7 @@ def popularity_scan(
                             track_recording_mbid = (
                                 row_get(track, "recording_mbid")
                                 or row_get(track, "musicbrainz_recording_mbid")
+                                or row_get(track, "mbid")
                             )
                             discogs_release_id = row_get(track, "discogs_release_id")
 
