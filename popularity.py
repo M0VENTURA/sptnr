@@ -6796,6 +6796,177 @@ def popularity_scan(
                             log_debug("Committing final changes to database")
                             conn.commit()
 
+                # ---------------------------------------------------------------------
+                # STEP 7: Singles detection & star rating
+                # ---------------------------------------------------------------------
+                if not metadata_only and not popularity_only:
+                    try:
+                        album_median, album_stddev, _, album_count = calculate_album_stats(conn, artist, album)
+                        artist_mean, artist_stddev, artist_count = calculate_artist_stats(conn, artist)
+                    except Exception as e:
+                        log_debug(f"Could not compute album/artist stats for star rating: {e}")
+                        album_median = album_stddev = artist_mean = artist_stddev = 0.0
+                        album_count = artist_count = 0
+
+                    album_is_underperforming = False
+                    if album_median > 0 and artist_mean > 0:
+                        album_is_underperforming = album_median < (artist_mean * UNDERPERFORMING_THRESHOLD)
+
+                    # Check which tracks still need single detection
+                    track_ids_in_album = [t["id"] for t in album_tracks]
+                    id_placeholders = ", ".join([placeholder] * len(track_ids_in_album))
+                    assessed_map = {}
+                    try:
+                        cursor.execute(
+                            f"SELECT id, single_detection_last_updated FROM tracks WHERE id IN ({id_placeholders})",
+                            track_ids_in_album,
+                        )
+                        for row in cursor.fetchall():
+                            assessed_map[row_get(row, "id")] = row_get(row, "single_detection_last_updated")
+                    except Exception as e:
+                        log_debug(f"Could not fetch single detection status: {e}")
+
+                    any_detection_run = False
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        title = track["title"]
+                        track_artist = track["artist"]
+
+                        needs_detection = force or singles_only or singles_with_missing_popularity
+                        if not needs_detection:
+                            if not assessed_map.get(track_id):
+                                needs_detection = True
+
+                        if not needs_detection:
+                            continue
+
+                        any_detection_run = True
+                        try:
+                            detection_result = detect_single_for_track(
+                                title=title,
+                                artist=track_artist,
+                                album_track_count=len(album_tracks),
+                                verbose=verbose,
+                                discogs_token=discogs_token,
+                                track_id=track_id,
+                                album=album,
+                                isrc=row_get(track, "isrc"),
+                                duration=row_get(track, "duration"),
+                                popularity=row_get(track, "popularity_score", 0) or 0,
+                                album_type=album_type_from_field,
+                                use_advanced_detection=True,
+                                album_is_underperforming=album_is_underperforming,
+                                artist_median_popularity=artist_mean,
+                                existing_conn=conn,
+                                persist_result=True,
+                                mb_cached_singles=mb_artist_singles_normalized,
+                            )
+                            track["is_single"] = 1 if detection_result.get("is_single") else 0
+                            track["single_confidence"] = detection_result.get("confidence", "low")
+                            track["single_sources"] = json.dumps(detection_result.get("sources", []))
+                        except Exception as e:
+                            log_debug(f"Single detection failed for '{title}': {e}")
+                            track["is_single"] = 0
+                            track["single_confidence"] = "low"
+                            track["single_sources"] = "[]"
+
+                    if any_detection_run:
+                        log_info(f"🔍 Singles detection completed for '{artist} - {album}'")
+
+                    # Compute star ratings for every track (recomputed each scan)
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        title = track["title"]
+                        popularity_score = row_get(track, "popularity_score", 0) or 0
+
+                        album_z = 0.0
+                        artist_z = 0.0
+                        if album_stddev > 0:
+                            album_z = (popularity_score - album_median) / album_stddev
+                        if artist_stddev > 0 and artist_count >= 5:
+                            artist_z = (popularity_score - artist_mean) / artist_stddev
+
+                        stars = 0
+                        is_single = row_get(track, "is_single", 0)
+                        single_confidence = row_get(track, "single_confidence", "low") or "low"
+
+                        if single_confidence == "user":
+                            stars = 5
+                        elif is_single and single_confidence == "high":
+                            top_pct_threshold = STANDOUT_CONFIG.get("star_5_single", {}).get("artist_pct", 0.25)
+                            is_top_catalog = False
+                            if artist_count > 0 and popularity_score > 0:
+                                try:
+                                    cursor.execute(
+                                        f"SELECT COUNT(*) as total, SUM(CASE WHEN popularity_score >= {placeholder} THEN 1 ELSE 0 END) as above FROM tracks WHERE artist = {placeholder} AND popularity_score > 0",
+                                        (popularity_score, artist),
+                                    )
+                                    row_stats = cursor.fetchone()
+                                    total_cat = row_get(row_stats, "total", 0) or 0
+                                    above_cat = row_get(row_stats, "above", 0) or 0
+                                    if total_cat > 0:
+                                        is_top_catalog = (above_cat / total_cat) <= top_pct_threshold
+                                except Exception as e:
+                                    log_debug(f"Could not compute artist percentile for '{title}': {e}")
+                            stars = 5 if is_top_catalog else 4
+                        elif (album_z >= STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
+                              and not row_get(track, "is_live", 0)
+                              and not row_get(track, "album_context_live", 0)):
+                            stars = 5
+                        else:
+                            if album_z >= STANDOUT_CONFIG["star_5"]["album_z"] and artist_z >= STANDOUT_CONFIG["star_5"]["artist_z"]:
+                                stars = 5
+                            elif album_z >= STANDOUT_CONFIG["star_4"]["album_z"] and artist_z >= STANDOUT_CONFIG["star_4"]["artist_z"]:
+                                stars = 4
+                            elif album_z >= STANDOUT_CONFIG["star_3"]["album_z"]:
+                                stars = 3
+                            elif STANDOUT_CONFIG["star_2"].get("album_mean") and popularity_score >= album_median:
+                                stars = 2
+                            else:
+                                stars = 1
+
+                        track["stars"] = stars
+
+                        try:
+                            cursor.execute(
+                                f"UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}",
+                                (stars, track_id),
+                            )
+                        except Exception as e:
+                            log_debug(f"Failed to persist stars for '{title}': {e}")
+
+                    try:
+                        conn.commit()
+                    except Exception as e:
+                        log_debug(f"Failed to commit singles/stars for '{album}': {e}")
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+
+                    # Sync ratings to Navidrome when enabled
+                    if _is_sync_ratings_to_all_users_enabled():
+                        for track in album_tracks:
+                            try:
+                                sync_track_rating_to_navidrome(track["id"], track.get("stars", 0))
+                            except Exception as e:
+                                log_debug(f"Failed to sync rating for {track['id']}: {e}")
+
+                    # Summary logging
+                    star_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+                    for t in album_tracks:
+                        s = t.get("stars", 0) or 0
+                        if 1 <= s <= 5:
+                            star_counts[s] += 1
+                    log_info(
+                        f"Star Ratings - Album '{album}' by {artist}: "
+                        f"5★: {star_counts[5]}, 4★: {star_counts[4]}, 3★: {star_counts[3]}, "
+                        f"2★: {star_counts[2]}, 1★: {star_counts[1]}"
+                    )
+                    singles_detected = [t for t in album_tracks if t.get("is_single")]
+                    if singles_detected:
+                        log_info(f"Singles Detection - Detected {len(singles_detected)} single(s) in '{album}'")
+
         # PostgreSQL commit above is sufficient; no manual checkpoint required.
 
         log_unified(f"Popularity Scan - Complete: {scanned_count} tracks updated, {skipped_count} albums skipped")
