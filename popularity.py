@@ -1108,7 +1108,6 @@ def popularity_values_changed(track: object, new_values: dict) -> bool:
         'spotify_score',
         'lastfm_ratio',
         'lastfm_track_playcount',
-        'listenbrainz_score',
     )
 
     for field_name in numeric_fields:
@@ -1847,10 +1846,13 @@ PG_DATABASE = os.environ.get("PG_DATABASE", "")
 from popularity_helpers import (
     get_lastfm_track_info,
     calculate_lastfm_popularity_score,
+    calculate_combined_popularity_score,
+    get_listenbrainz_batch_for_tracks,
     score_by_age,
     update_artist_id_for_artist,
     get_lastfm_client,
     LASTFM_WEIGHT,
+    LISTENBRAINZ_WEIGHT,
     AGE_WEIGHT,
 )
 from helpers.api_rate_limiter import get_rate_limiter
@@ -3234,9 +3236,6 @@ def get_artist_listenbrainz_context(artist_mbid: str) -> dict:
             if not listen_counts:
                 return {'top_10_percentile_threshold': 0, 'total_recordings': len(recordings), 'source': 'error', 'listen_counts': []}
 
-            # Ensure descending order for threshold calculation
-            listen_counts = sorted(listen_counts, reverse=True)
-
             total_recordings = len(recordings)
             top_10_count = max(1, total_recordings // 10)
             top_10_threshold = listen_counts[min(top_10_count - 1, len(listen_counts) - 1)]
@@ -3497,9 +3496,6 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
             log_debug(f"Threshold blend for {artist_name}: {blend_source}")
 
         if not listeners_list or len(listeners_list) < 2:
-            # If ListenBrainz provided the threshold but Last.fm has no track data,
-            # return 'listenbrainz_fallback' so callers know the context came from LB.
-            _source = 'listenbrainz_fallback' if threshold_source == 'listenbrainz' else 'error'
             return {
                 'mean': 0,
                 'stdev': 0,
@@ -3509,7 +3505,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                 'total_tracks': total_tracks,
                 'top_10_percentile_threshold': top_10_percentile_threshold,
                 'track_zscores': {},
-                'source': _source,
+                'source': 'error',
                 'threshold_source': threshold_source
             }
 
@@ -3534,11 +3530,6 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                     in_top_10 = "✓ in top 10%" if listeners >= top_10_percentile_threshold else "✗ not in top 10%"
                     log_debug(f"Artist outlier detected: {title} (z={z:.2f}, listeners={listeners:.0f}, artist_mean={artist_mean:.0f}, {in_top_10})")
 
-        # Determine source label: if ListenBrainz provided the threshold but Last.fm
-        # track data is missing, label it as 'listenbrainz_fallback'.
-        _source_label = 'database_plus_api' if listeners_list else (
-            'listenbrainz_fallback' if threshold_source == 'listenbrainz' else 'error'
-        )
         context_result = {
             'mean': artist_mean,
             'stdev': artist_stdev,
@@ -3548,7 +3539,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
             'total_tracks': total_tracks,
             'top_10_percentile_threshold': top_10_percentile_threshold,
             'track_zscores': track_zscores,
-            'source': _source_label,
+            'source': 'database_plus_api' if listeners_list else 'error',
             'threshold_source': threshold_source
         }
 
@@ -6300,7 +6291,6 @@ def popularity_scan(
                                         None,
                                         None,
                                         None,
-                                        None,
                                         album_art_url,
                                         track_id,
                                     ))
@@ -6337,7 +6327,7 @@ def popularity_scan(
                                     cached_lastfm_listeners = row_get(track, 'lastfm_track_playcount', 0)
 
                                     # Add to batch update with cached scores (genres remain unchanged when using cache)
-                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, cached_lastfm_listeners, None, None, None, None, None, None, album_art_url, track_id))
+                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, cached_lastfm_listeners, None, None, None, None, None, album_art_url, track_id))
                                     scanned_count += 1
                                     album_scanned += 1
                                     tracks_processed += 1
@@ -6645,11 +6635,11 @@ def popularity_scan(
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
 
                             # Use weighted popularity score directly (restored to original working method)
-                            track_updates.append((popularity_score, spotify_score, lastfm_score, lastfm_listeners, listenbrainz_score, spotify_genres_json, lastfm_tags_json, listenbrainz_genres_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
+                            track_updates.append((popularity_score, spotify_score, lastfm_score, lastfm_listeners, spotify_genres_json, lastfm_tags_json, listenbrainz_genres_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
                             scanned_count += 1
                             album_scanned += 1
                             log_info(f'Track scanned successfully: "{title}" (weighted: {popularity_score:.1f})')
-                            log_debug(f'Weighted popularity calculation - lastfm: {lastfm_score:.1f}, listenbrainz: {listenbrainz_score:.1f}, age: {age_score:.1f}, weighted: {popularity_score:.1f}')
+                            log_debug(f'Weighted popularity calculation - lastfm: {lastfm_score:.1f}, age: {age_score:.1f}, weighted: {popularity_score:.1f}')
                         else:
                             log_info(f"No popularity score found for {artist} - {title}")
                             log_debug(f'No data sources available for scoring')
@@ -6677,8 +6667,8 @@ def popularity_scan(
                     updated_track_updates = []
                     track_rows_by_id = {track.get('id'): track for track in album_tracks}
                     for update_tuple in track_updates:
-                        # Unpack: (popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, listenbrainz_score, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id)
-                        popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, listenbrainz_score, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id = update_tuple
+                        # Unpack: (popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id)
+                        popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id = update_tuple
 
                         # Check if we have tags for this track in album_tags_data
                         if track_id in album_tags_data:
@@ -6750,7 +6740,6 @@ def popularity_scan(
                             'spotify_score': spotify_score,
                             'lastfm_ratio': lastfm_ratio,
                             'lastfm_track_playcount': lastfm_track_playcount,
-                            'listenbrainz_score': listenbrainz_score,
                             'spotify_genres': spotify_genres,
                             'lastfm_tags': lastfm_tags,
                             'listenbrainz_genres': listenbrainz_genres,
@@ -6764,14 +6753,14 @@ def popularity_scan(
                             continue
 
                         # Append merged tuple
-                        updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, listenbrainz_score, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id))
+                        updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id))
 
                     if updated_track_updates:
                         try:
                             _execute_tracks_batch_with_retry(
                                 conn,
                                 cursor,
-                                f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, lastfm_track_playcount = {placeholder}, listenbrainz_score = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, listenbrainz_genres = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
+                                f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, lastfm_track_playcount = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, listenbrainz_genres = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
                                 sorted(updated_track_updates, key=lambda row: str(row[-1])),
                                 f"popularity batch update for album {album}",
                             )
@@ -6783,9 +6772,8 @@ def popularity_scan(
                                     'spotify_score': updated_spotify_score,
                                     'lastfm_ratio': updated_lastfm_ratio,
                                     'lastfm_track_playcount': updated_lastfm_track_playcount,
-                                    'listenbrainz_score': updated_listenbrainz_score,
                                 }
-                                for popularity_score, updated_spotify_score, updated_lastfm_ratio, updated_lastfm_track_playcount, updated_listenbrainz_score, _spotify_genres, _lastfm_tags, _listenbrainz_genres, _discogs_genres, _musicbrainz_genres, _cover_art_url, track_id in updated_track_updates
+                                for popularity_score, updated_spotify_score, updated_lastfm_ratio, updated_lastfm_track_playcount, _spotify_genres, _lastfm_tags, _listenbrainz_genres, _discogs_genres, _musicbrainz_genres, _cover_art_url, track_id in updated_track_updates
                             }
                             for track in album_tracks:
                                 if track.get("id") in updated_popularity_by_id:
@@ -6794,7 +6782,6 @@ def popularity_scan(
                                     track["spotify_score"] = updated_values['spotify_score']
                                     track["lastfm_ratio"] = updated_values['lastfm_ratio']
                                     track["lastfm_track_playcount"] = updated_values['lastfm_track_playcount']
-                                    track["listenbrainz_score"] = updated_values['listenbrainz_score']
 
                             # PostgreSQL commits are sufficient for durability here.
                         except Exception as e:
