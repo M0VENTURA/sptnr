@@ -4834,13 +4834,6 @@ def popularity_scan(
 
             album_num = 0
             total_albums = len(albums)
-            single_detection_albums_processed = 0
-
-            # Calculate milestones for single detection progress tracking
-            single_detection_milestone_25 = int(total_albums * 0.25) if total_albums > 0 else 0
-            single_detection_milestone_50 = int(total_albums * 0.50) if total_albums > 0 else 0
-            single_detection_milestone_75 = int(total_albums * 0.75) if total_albums > 0 else 0
-            single_detection_milestones_logged = set()
 
             for album, album_tracks in albums.items():
                 if _stop_requested():
@@ -6827,6 +6820,13 @@ def popularity_scan(
                         log_debug(f"Could not fetch single detection status: {e}")
 
                     any_detection_run = False
+                    total_album_tracks = len(album_tracks)
+                    detection_processed = 0
+                    detection_milestone_25 = int(total_album_tracks * 0.25) if total_album_tracks > 0 else 0
+                    detection_milestone_50 = int(total_album_tracks * 0.50) if total_album_tracks > 0 else 0
+                    detection_milestone_75 = int(total_album_tracks * 0.75) if total_album_tracks > 0 else 0
+                    detection_milestones_logged = set()
+
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]
@@ -6841,6 +6841,18 @@ def popularity_scan(
                             continue
 
                         any_detection_run = True
+                        detection_processed += 1
+
+                        if detection_processed == detection_milestone_25 and 25 not in detection_milestones_logged:
+                            log_info(f"Single Detection - 25% completed - {detection_processed}/{total_album_tracks} tracks")
+                            detection_milestones_logged.add(25)
+                        elif detection_processed == detection_milestone_50 and 50 not in detection_milestones_logged:
+                            log_info(f"Single Detection - 50% completed - {detection_processed}/{total_album_tracks} tracks")
+                            detection_milestones_logged.add(50)
+                        elif detection_processed == detection_milestone_75 and 75 not in detection_milestones_logged:
+                            log_info(f"Single Detection - 75% completed - {detection_processed}/{total_album_tracks} tracks")
+                            detection_milestones_logged.add(75)
+
                         try:
                             detection_result = detect_single_for_track(
                                 title=title,
@@ -6926,6 +6938,8 @@ def popularity_scan(
                                 stars = 1
 
                         track["stars"] = stars
+                        track["album_z"] = album_z
+                        track["artist_z"] = artist_z
 
                         try:
                             cursor.execute(
@@ -6966,6 +6980,62 @@ def popularity_scan(
                     singles_detected = [t for t in album_tracks if t.get("is_single")]
                     if singles_detected:
                         log_info(f"Singles Detection - Detected {len(singles_detected)} single(s) in '{album}'")
+
+                    # Detailed per-track single detection scan logging
+                    if album_tracks:
+                        detected_singles = []
+                        popular_songs = []
+                        rest_of_album = []
+                        for t in album_tracks:
+                            stars = t.get("stars", 0) or 0
+                            is_single = t.get("is_single", 0)
+                            single_confidence = t.get("single_confidence", "low") or "low"
+                            title = t.get("title", "")
+                            track_artist = t.get("artist", "")
+                            album_z = t.get("album_z", 0.0)
+                            artist_z = t.get("artist_z", 0.0)
+                            sources_str = t.get("single_sources", "")
+                            try:
+                                sources = json.loads(sources_str) if sources_str else []
+                            except Exception:
+                                sources = []
+                            reasons = []
+                            if is_single and single_confidence == "high":
+                                if sources:
+                                    reasons.append(", ".join(sources))
+                                if album_z:
+                                    reasons.append(f"album-z-score: {album_z:.2f}")
+                                reason_str = " (" + "; ".join(reasons) + ")" if reasons else ""
+                                detected_singles.append((title, stars, track_artist, reason_str))
+                            elif stars == 5:
+                                if album_z:
+                                    reasons.append(f"album-z-score: {album_z:.2f}")
+                                reason_str = " (" + "; ".join(reasons) + ")" if reasons else ""
+                                popular_songs.append((title, stars, track_artist, reason_str))
+                            else:
+                                if album_z:
+                                    reasons.append(f"album-z-score: {album_z:.2f}")
+                                reason_str = " (" + "; ".join(reasons) + ")" if reasons else ""
+                                rest_of_album.append((title, stars, track_artist, reason_str))
+
+                        if detected_singles:
+                            log_unified(f"Single Detection Scan - ===== {album} - Detected Singles =====")
+                            for title, stars, track_artist, reason in detected_singles:
+                                star_str = "★" * stars + "☆" * (5 - stars)
+                                log_unified(f"Single Detection Scan - {star_str:<5} {track_artist} - {title}{reason}")
+                        if popular_songs:
+                            log_unified(f"Single Detection Scan - ===== {album} - Popular Songs (Not Detected as Single) =====")
+                            for title, stars, track_artist, reason in popular_songs:
+                                star_str = "★" * stars + "☆" * (5 - stars)
+                                log_unified(f"Single Detection Scan - {star_str:<5} {track_artist} - {title}{reason}")
+                        if rest_of_album:
+                            if detected_singles or popular_songs:
+                                log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
+                            else:
+                                log_unified(f"Single Detection Scan - ===== {album} - All Tracks =====")
+                            for title, stars, track_artist, reason in rest_of_album:
+                                star_str = "★" * stars + "☆" * (5 - stars)
+                                log_unified(f"Single Detection Scan - {star_str:<5} {track_artist} - {title}{reason}")
 
         # PostgreSQL commit above is sufficient; no manual checkpoint required.
 
