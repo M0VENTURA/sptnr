@@ -209,7 +209,7 @@ networks:
 
 - Check application logs:
   ```bash
-  docker logs webui2
+  docker logs webui
   ```
 
 ---
