@@ -674,11 +674,16 @@ def calculate_combined_popularity_score(
     lastfm_listeners: int = 0,
     lastfm_artist_max_listeners: int = 0,
     listenbrainz_listens: int = 0,
+    album_lb_listens: Optional[List[int]] = None,
     age_source_value: float = 0.0,
     release_date: Optional[str] = None,
 ) -> Dict[str, float]:
     """
-    Blend Last.fm + ListenBrainz + age into one weighted score.
+    Blend Last.fm + age into one weighted score.
+
+    ListenBrainz is converted to an album-relative percentile and returned
+    for classification use, but is not blended directly into the weighted
+    popularity score so it acts as a contextual album-level signal only.
 
     Returns a dict so callers can inspect the components in debug logs.
     """
@@ -689,17 +694,18 @@ def calculate_combined_popularity_score(
         artist_max_listeners=lastfm_artist_max_listeners,
     )
 
-    lb_score = calculate_listenbrainz_popularity_score(listenbrainz_listens)
+    lb_percentile = 0.0
+    if album_lb_listens:
+        lb_percentile = calculate_listenbrainz_percentile(listenbrainz_listens, album_lb_listens)
 
     age_score = 0.0
     if release_date:
         age_score, _ = score_by_age(age_source_value, release_date)
 
-    total_weight = LASTFM_WEIGHT + LISTENBRAINZ_WEIGHT + AGE_WEIGHT
+    total_weight = LASTFM_WEIGHT + AGE_WEIGHT
     if total_weight > 0:
         weighted = (
             (lastfm_score * LASTFM_WEIGHT)
-            + (lb_score * LISTENBRAINZ_WEIGHT)
             + (age_score * AGE_WEIGHT)
         ) / total_weight
     else:
@@ -707,7 +713,8 @@ def calculate_combined_popularity_score(
 
     return {
         "lastfm_score": lastfm_score,
-        "listenbrainz_score": lb_score,
+        "listenbrainz_score": 0.0,
+        "lb_percentile": lb_percentile,
         "age_score": age_score,
         "weighted_score": weighted,
     }
@@ -726,6 +733,32 @@ def is_source_mismatch(lastfm_listeners, lb_listens):
     )
 
 
+def is_lastfm_unreliable(lastfm_listeners, lb_listens):
+    """Flag Last.fm as unreliable when listeners are very low but LB is strong."""
+    if lastfm_listeners is None:
+        lastfm_listeners = 0
+    if lb_listens is None:
+        lb_listens = 0
+    return lastfm_listeners <= 20 and lb_listens >= 75
+
+
+def calculate_listenbrainz_percentile(lb_listens, album_lb_listens):
+    """
+    Calculate a track's percentile within its album's ListenBrainz listen distribution.
+    Returns a value in [0.0, 1.0].
+    """
+    if lb_listens is None or lb_listens <= 0:
+        return 0.0
+    if not album_lb_listens:
+        return 0.0
+    valid = [x for x in album_lb_listens if x is not None and x > 0]
+    if not valid:
+        return 0.0
+    below = sum(1 for x in valid if x < lb_listens)
+    equal = sum(1 for x in valid if x == lb_listens)
+    return (below + equal / 2.0) / len(valid)
+
+
 def adjust_weights(
     lastfm_listeners,
     lb_listens,
@@ -733,7 +766,7 @@ def adjust_weights(
     metadata_confirmed=False
 ):
     """Adjust Last.fm / ListenBrainz weights when sources are mismatched."""
-    if lastfm_listeners < 20:
+    if lastfm_listeners <= 20 and lb_listens >= 75:
         lf_weight = 0.0
     elif lb_listens > lastfm_listeners * 3:
         lf_weight = 0.25
@@ -1831,6 +1864,8 @@ __all__ = [
     "calculate_listenbrainz_popularity_score",
     "calculate_combined_popularity_score",
     "is_source_mismatch",
+    "is_lastfm_unreliable",
+    "calculate_listenbrainz_percentile",
     "adjust_weights",
     "score_by_age",
     "apply_mean_popularity_adjustment",
