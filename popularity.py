@@ -1895,7 +1895,7 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple:
     cursor.execute(f"""
         SELECT popularity_score
         FROM tracks
-        WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
     """, (artist, album))
 
     popularities = [row_get(row, 'popularity_score', 0) for row in cursor.fetchall()]
@@ -1921,7 +1921,7 @@ def calculate_artist_stats(conn, artist: str) -> tuple:
     cursor.execute(f"""
         SELECT popularity_score
         FROM tracks
-        WHERE artist = {placeholder} AND popularity_score > 0
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
     """, (artist,))
 
     popularities = [row_get(row, 'popularity_score', 0) for row in cursor.fetchall()]
@@ -3922,7 +3922,7 @@ def popularity_scan(
             "popularity_score, album_artist, writer, spotify_genres, lastfm_tags, "
             "listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url, "
             "is_live, is_acoustic, is_remix, is_cover, musicbrainz_albumtype, discogs_release_id, "
-            "album_context_live, file_path, genres"
+            "album_context_live, file_path, genres, is_single, single_confidence"
         )
         where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
         # Order by album_artist (falling back to track artist when absent) so that the
@@ -6869,12 +6869,12 @@ def popularity_scan(
                     try:
                         album_median, album_stddev, _, album_count = calculate_album_stats(
                             conn,
-                            canonical_artist,
+                            artist,
                             album,
                         )
                         artist_mean, artist_stddev, artist_count = calculate_artist_stats(
                             conn,
-                            canonical_artist,
+                            artist,
                         )
                     except Exception as e:
                         log_debug(f"Could not compute album/artist stats for star rating: {e}")
@@ -6902,7 +6902,7 @@ def popularity_scan(
                                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                                 AND popularity_score > 0
                                 """,
-                                (popularity_score, canonical_artist),
+                                (popularity_score, artist),
                             )
 
                             row_stats = cursor.fetchone()
@@ -6913,7 +6913,7 @@ def popularity_scan(
                                 return (above_cat / total_cat) <= threshold
 
                         except Exception as e:
-                            log_debug(f"Artist percentile check failed for canonical artist '{canonical_artist}': {e}")
+                            log_debug(f"Artist percentile check failed for artist '{artist}': {e}")
 
                         return False
 
