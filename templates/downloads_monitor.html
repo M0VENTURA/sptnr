@@ -698,14 +698,24 @@
   .queue-track-row td {
     border-bottom: none !important;
   }
-  .queue-track-row:last-child td {
+  .queue-track-details-row td {
     border-bottom: 1px solid #495057 !important;
-  }
-  .queue-track-match-row {
     font-size: 0.85rem;
+    padding-top: 0.25rem !important;
+    padding-bottom: 0.5rem !important;
   }
-  .queue-track-final-row {
-    font-size: 0.85rem;
+  .queue-track-details-row .final-location {
+    font-size: 0.8rem;
+  }
+  .queue-track-num {
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .queue-track-title {
+    font-size: 14px;
+  }
+  .queue-track-duration {
+    font-size: 14px;
   }
   .folder-header-meta {
     font-size: 0.9rem;
@@ -2894,33 +2904,7 @@ function getTrackFinalLocation(track, group) {
     return `/music/${albumArtist}/${year ? year + ' - ' : ''}${album}/${fileName}`;
   }
 
-  // Format track number with disc prefix logic (matching backend)
-  let trackNum = track?.track_number || '0';
-  const discNum = track?.disc_number || '1';
-  try {
-    const trackNumInt = parseInt(String(trackNum).split('/')[0]) || 0;
-    const discNumInt = parseInt(String(discNum).split('/')[0]) || 1;
-    if (discNumInt > 1) {
-      trackNum = `${discNumInt}${String(trackNumInt).padStart(2, '0')}`;
-    } else {
-      trackNum = String(trackNumInt).padStart(2, '0');
-    }
-  } catch (e) {
-    trackNum = '00';
-  }
-
-  // Extract file extension from available paths
-  let ext = '';
-  const pathWithExt = track?.file_path || track?.found_filename || track?.source_file_path || '';
-  if (pathWithExt) {
-    const match = String(pathWithExt).match(/\.([a-zA-Z0-9]{2,5})$/);
-    if (match) {
-      ext = `.${match[1]}`;
-    }
-  }
-
-  const trackArtist = track?.artist || artist || 'Unknown Artist';
-  return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${trackNum}. ${trackArtist} - ${title}${ext}`;
+  return null;
 }
 
 function isTrackInFinalLocation(track) {
@@ -3792,13 +3776,13 @@ async function loadFolderGroups(options = {}) {
                 
                 groupHtml += `
                       <tr class="${trackClass} queue-track-row">
-                        <td rowspan="3"><span style="font-size: 14px; font-weight: 500;">${trackIcon}${track.track_number || '-'}</span></td>
-                        <td><span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span></td>
-                        <td rowspan="3"><span style="font-size: 14px;">${duration}</span></td>
-                        ${isQueueItem ? `<td rowspan="3" style="text-align: center;"><span class="badge bg-${statusPair[0]}"><i class="bi bi-hourglass-split"></i> ${statusPair[1]}</span></td>` : ''}
-                        <td rowspan="3" style="text-align: center; min-width: 120px;">${moveButtonHtml}</td>
+                        <td rowspan="2"><span class="queue-track-num">${trackIcon}${track.track_number || '-'}</span></td>
+                        <td><span class="queue-track-title">${escapeHtml(track.title || 'Unknown')}</span></td>
+                        <td rowspan="2"><span class="queue-track-duration">${duration}</span></td>
+                        ${isQueueItem ? `<td rowspan="2" class="text-center"><span class="badge bg-${statusPair[0]}"><i class="bi bi-hourglass-split"></i> ${statusPair[1]}</span></td>` : ''}
+                        <td rowspan="2" class="text-center" style="min-width: 120px;">${moveButtonHtml}</td>
                       </tr>
-                      <tr class="${trackClass} queue-track-match-row">
+                      <tr class="${trackClass} queue-track-details-row">
                         <td>
                           <div class="d-flex flex-column gap-1">
                             <div>
@@ -3808,16 +3792,12 @@ async function loadFolderGroups(options = {}) {
                             ${mappingHint}
                             ${isQueueItem ? `<div class="small text-muted"><i class="bi bi-info-circle"></i> ${escapeHtml(statusDetail)}</div>` : ''}
                             ${trackPathDetailsHtml || (displayPath ? `<div class="small text-muted"><i class="bi bi-file-earmark"></i> ${escapeHtml(displayPath)}</div>` : '')}
+                            ${finalLocation
+                              ? isTrackInFinalLocation(track)
+                                ? `<div class="final-location text-success"><i class="bi bi-check-circle"></i> <strong>Final:</strong> ${escapeHtml(finalLocation)}</div>`
+                                : `<div class="final-location text-warning"><strong>Final:</strong> ${escapeHtml(finalLocation)}</div>`
+                              : ''}
                           </div>
-                        </td>
-                      </tr>
-                      <tr class="${trackClass} queue-track-final-row">
-                        <td>
-                          ${finalLocation
-                            ? isTrackInFinalLocation(track)
-                              ? `<div class="text-success"><i class="bi bi-check-circle"></i> <strong>Final:</strong> ${escapeHtml(finalLocation)}</div>`
-                              : `<div class="text-warning"><strong>Final:</strong> ${escapeHtml(finalLocation)}</div>`
-                            : '<div class="text-muted">—</div>'}
                         </td>
                       </tr>`;
               });
