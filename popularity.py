@@ -2177,26 +2177,42 @@ def get_resume_artist_from_db():
 def is_top_artist_catalog_score(cursor, canonical_artist, popularity_score, placeholder, row_get, threshold=0.25):
     if not canonical_artist or popularity_score <= 0:
         return False
-
     try:
         cursor.execute(
             f"""
             SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN popularity_score > {placeholder} THEN 1 ELSE 0 END) as above
+                COUNT(
+                    CASE 
+                        WHEN NOT (is_live = 1 OR album_context_live = 1)
+                    THEN 1
+                END
+                ) as total,
+                SUM(
+                    CASE 
+                        WHEN popularity_score > {placeholder}
+                        AND NOT (is_live = 1 OR album_context_live = 1)
+                    THEN 1 ELSE 0 
+                END
+            ) as above
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-              AND popularity_score > 0
+            AND popularity_score > 0
             """,
             (popularity_score, canonical_artist),
         )
-
         row_stats = cursor.fetchone()
         total_cat = row_get(row_stats, "total", 0) or 0
         above_cat = row_get(row_stats, "above", 0) or 0
 
         if total_cat > 0:
-            return (above_cat / total_cat) <= threshold
+            percentile = above_cat / total_cat
+
+            elite_cutoff = max(3, int(total_cat * 0.05))
+
+            if above_cat <= elite_cutoff:
+                return True
+            
+            return percentile <= threshold
 
     except Exception as e:
         log_debug(f"Artist percentile check failed for '{canonical_artist}': {e}")
