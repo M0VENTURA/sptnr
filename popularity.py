@@ -6462,18 +6462,19 @@ def popularity_scan(
 
                         # ------------------------------------------------------------
                         # Use pre-fetched ListenBrainz data (NO per-track API call)
-                        # Convert LB to an album-relative percentile signal instead of
-                        # a flat global score so it acts as contextual album-level data.
+                        # Convert LB to an absolute 0-100 score using the same log
+                        # scale as Last.fm. Album-relative percentile is also kept
+                        # for classification use.
                         # ------------------------------------------------------------
                         lb_listens = album_listenbrainz_data.get(track_id, {}).get("listeners", 0) or 0
                         lb_percentile = 0.0
                         lb_album_score = 0.0
                         if lb_listens > 0:
                             lb_percentile = calculate_listenbrainz_percentile(lb_listens, album_lb_listens)
-                            lb_album_score = lb_percentile * 100.0
+                            lb_album_score = calculate_listenbrainz_popularity_score(lb_listens)
                             log_debug(
-                                f'ListenBrainz album-relative for "{title}": {lb_listens} listens, '
-                                f'percentile={lb_percentile:.2f}, album_score={lb_album_score:.1f}'
+                                f'ListenBrainz popularity for "{title}": {lb_listens} listens, '
+                                f'score={lb_album_score:.1f}, percentile={lb_percentile:.2f}'
                             )
                         else:
                             recording_mbid = (
@@ -6482,7 +6483,7 @@ def popularity_scan(
                                 or row_get(track, "mbid")
                             )
                             if recording_mbid:
-                                log_debug(f'ListenBrainz returned 0 listens for "{title}" (MBID: {recording_mbid})')
+                                log_debug(f'No ListenBrainz data for "{title}" (MBID: {recording_mbid})')
                             else:
                                 log_debug(f'No ListenBrainz MBID available for "{title}"')
 
