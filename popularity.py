@@ -30,7 +30,13 @@ from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 from api_clients import session, timeout_safe_session
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
-from helpers.helpers import find_matching_spotify_single, strip_cover_attribution, strip_parentheses as _strip_parentheses_unified
+from helpers.helpers import (
+    find_matching_spotify_single,
+    strip_cover_attribution,
+    strip_parentheses as _strip_parentheses_unified,
+    normalize_artist_for_matching,
+)
+
 from helpers.matching_utils import normalize_album, strip_search_parentheses
 from database_abstraction import DatabaseQuery
 
