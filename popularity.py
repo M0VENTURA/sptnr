@@ -162,6 +162,7 @@ STANDOUT_CONFIG = {
     'star_4': {'album_z': 0.8, 'artist_z': 1.0, 'artist_pct': 0.20},  # Uses lower 0.8 threshold
     'star_5_single': {'artist_pct': 0.25},  # Single detection must also be in top 25% of artist catalog for 5★
     'popularity_5star_z_threshold': 2.0,     # Configurable z threshold for popularity-only 5★
+    'lb_unreliable_5star_threshold': 0.50,   # LB percentile threshold for 5-star override when Last.fm is unreliable
     'star_3': {'album_z': 0.0},
     'star_2': {'album_mean': True},
     'star_1': {'default': True},
@@ -1848,12 +1849,14 @@ from popularity_helpers import (
     calculate_lastfm_popularity_score,
     calculate_lastfm_zscore_popularity,
     calculate_listenbrainz_popularity_score,
+    calculate_listenbrainz_percentile,
     calculate_combined_popularity_score,
     get_listenbrainz_batch_for_tracks,
     score_by_age,
     update_artist_id_for_artist,
     get_lastfm_client,
     adjust_weights,
+    is_lastfm_unreliable,
     LASTFM_WEIGHT,
     LISTENBRAINZ_WEIGHT,
     AGE_WEIGHT,
@@ -5894,6 +5897,7 @@ def popularity_scan(
                 # ---------------------------------------------------------------------
                 album_lastfm_data = {}          # track_id -> {"listeners": int, "playcount": int}
                 album_listenbrainz_data = {}    # track_id -> {"listeners": int}
+                album_lb_listens = []            # list of LB listens for percentile calculations
                 album_tags_data = {}            # track_id -> {"lastfm_tags": [...], "listenbrainz_genres": [...], "discogs_genres": [...], "musicbrainz_genres": [...]}
 
                 if not singles_only:
@@ -6005,6 +6009,11 @@ def popularity_scan(
                             f'max={max(fetched_lastfm_listeners)}, '
                             f'avg={sum(fetched_lastfm_listeners) / len(fetched_lastfm_listeners):.0f}'
                         )
+
+                    # Build album-wide LB listen list for percentile calculations (used in both scoring and star rating)
+                    album_lb_listens = [
+                        d["listeners"] for d in album_listenbrainz_data.values()
+                    ]
 
                     if fetched_lb_listeners:
                         log_debug(
@@ -6403,12 +6412,19 @@ def popularity_scan(
 
                         # ------------------------------------------------------------
                         # Use pre-fetched ListenBrainz data (NO per-track API call)
+                        # Convert LB to an album-relative percentile signal instead of
+                        # a flat global score so it acts as contextual album-level data.
                         # ------------------------------------------------------------
                         lb_listens = album_listenbrainz_data.get(track_id, {}).get("listeners", 0) or 0
-                        listenbrainz_score = 0
+                        lb_percentile = 0.0
+                        lb_album_score = 0.0
                         if lb_listens > 0:
-                            listenbrainz_score = calculate_listenbrainz_popularity_score(lb_listens)
-                            log_debug(f'ListenBrainz popularity for "{title}": {lb_listens} listens, score: {listenbrainz_score:.1f}')
+                            lb_percentile = calculate_listenbrainz_percentile(lb_listens, album_lb_listens)
+                            lb_album_score = lb_percentile * 100.0
+                            log_debug(
+                                f'ListenBrainz album-relative for "{title}": {lb_listens} listens, '
+                                f'percentile={lb_percentile:.2f}, album_score={lb_album_score:.1f}'
+                            )
                         else:
                             recording_mbid = (
                                 row_get(track, "recording_mbid")
@@ -6524,10 +6540,10 @@ def popularity_scan(
                             weights.append(dynamic_lastfm_weight)
                             log_debug(f'Including Last.fm score: {lastfm_score:.1f} (weight: {dynamic_lastfm_weight:.2f})')
 
-                        if listenbrainz_score > 0:
-                            scores.append(listenbrainz_score)
+                        if lb_album_score > 0:
+                            scores.append(lb_album_score)
                             weights.append(lb_weight)
-                            log_debug(f'Including ListenBrainz score: {listenbrainz_score:.1f} (weight: {lb_weight:.2f})')
+                            log_debug(f'Including LB album score: {lb_album_score:.1f} (weight: {lb_weight:.2f})')
 
                         if age_score > 0:
                             scores.append(age_score)
@@ -6556,14 +6572,16 @@ def popularity_scan(
                             album_scanned += 1
 
                             log_info(f'Track scanned successfully: "{title}" (weighted: {popularity_score:.1f})')
+                            track["lb_percentile"] = lb_percentile
                             log_debug(
                                 f'Weighted popularity calculation - '
                                 f'lastfm: {lastfm_score:.1f}, '
-                                f'listenbrainz: {listenbrainz_score:.1f}, '
+                                f'lb_album: {lb_album_score:.1f}, '
                                 f'age: {age_score:.1f}, '
                                 f'weighted: {popularity_score:.1f}'
                             )
                         else:
+                            track["lb_percentile"] = lb_percentile
                             log_info(f'No popularity score found for {artist} - {title}')
                             log_debug('No data sources available for scoring')
 
@@ -6879,6 +6897,13 @@ def popularity_scan(
                     if any_detection_run:
                         log_info(f"🔍 Singles detection completed for '{artist} - {album}'")
 
+                    # Ensure every track has a LB percentile for the rating loop
+                    for track in album_tracks:
+                        tid = track["id"]
+                        if "lb_percentile" not in track:
+                            lb_l = album_listenbrainz_data.get(tid, {}).get("listeners", 0) or 0
+                            track["lb_percentile"] = calculate_listenbrainz_percentile(lb_l, album_lb_listens)
+
                     # Compute star ratings for every track (recomputed each scan)
                     for track in album_tracks:
                         track_id = track["id"]
@@ -6919,6 +6944,12 @@ def popularity_scan(
                               and not row_get(track, "is_live", 0)
                               and not row_get(track, "album_context_live", 0)):
                             stars = 5
+                        elif is_lastfm_unreliable(
+                            album_lastfm_data.get(track_id, {}).get("listeners", 0),
+                            album_listenbrainz_data.get(track_id, {}).get("listeners", 0),
+                        ) and track.get("lb_percentile", 0) >= STANDOUT_CONFIG.get("lb_unreliable_5star_threshold", 0.50):
+                            stars = 5
+                            log_debug(f"LB override 5-star for '{title}' (lb_percentile={track.get('lb_percentile', 0):.2f})")
                         else:
                             if album_z >= STANDOUT_CONFIG["star_5"]["album_z"] and artist_z >= STANDOUT_CONFIG["star_5"]["artist_z"]:
                                 stars = 5
