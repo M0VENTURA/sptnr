@@ -733,27 +733,15 @@ def adjust_weights(
     metadata_confirmed=False
 ):
     """Adjust Last.fm / ListenBrainz weights when sources are mismatched."""
-    lf = LASTFM_WEIGHT
-    lb = LISTENBRAINZ_WEIGHT
+    if lastfm_listeners < 20:
+        lf_weight = 0.0
+    elif lb_listens > lastfm_listeners * 3:
+        lf_weight = 0.25
+    else:
+        lf_weight = 0.6
 
-    if is_source_mismatch(lastfm_listeners, lb_listens):
-
-        # Case: ListenBrainz stronger
-        if lb_listens > lastfm_listeners:
-            lf = 0.2
-            lb = 0.8
-
-        # Case: Last.fm stronger
-        else:
-            lf = 0.8
-            lb = 0.2
-
-        # Extra bias for featured + metadata-confirmed singles
-        if is_featured_track and metadata_confirmed:
-            lf *= 0.7
-            lb *= 1.3
-
-    return lf, lb
+    lb_weight = 1.0 - lf_weight
+    return lf_weight, lb_weight
 
 
 # -----------------------------------------------------------------------------
