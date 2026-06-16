@@ -155,13 +155,6 @@ services:
     ports:
       - "5000:5000"
 
-    networks:
-      docker_VLAN:
-        ipv4_address: 192.168.1.204
-
-    dns:
-      - 192.168.1.250
-
   postgres-sptnr:
     image: postgres:16
     container_name: sptnr-postgres
@@ -175,13 +168,6 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
-    networks:
-      docker_VLAN:
-        ipv4_address: 192.168.1.225
-
-    dns:
-      - 192.168.1.250
-
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h localhost -p 5432 -U sptnr"]
       interval: 5s
@@ -193,9 +179,6 @@ volumes:
   smbmusic:
   downloads:
 
-networks:
-  docker_VLAN:
-    external: true
 ```
 
 ---
