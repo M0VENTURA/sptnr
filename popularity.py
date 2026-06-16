@@ -6605,6 +6605,19 @@ def popularity_scan(
                             total_weight = sum(weights)
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
 
+                            # Apply minimum popularity floor for tracks with metadata (MBID)
+                            # to prevent known tracks from getting abnormally low scores
+                            # when external APIs have no data
+                            if popularity_score < 5.0:
+                                track_mbid = (
+                                    row_get(track, "recording_mbid")
+                                    or row_get(track, "musicbrainz_recording_mbid")
+                                    or row_get(track, "mbid")
+                                )
+                                if track_mbid:
+                                    popularity_score = 5.0
+                                    log_debug(f'Applying minimum popularity floor (5.0) for track with MBID: {title}')
+
                             track_updates.append((
                                 popularity_score,
                                 spotify_score,
@@ -6820,9 +6833,8 @@ def popularity_scan(
                             except Exception:
                                 pass
                             raise
-
-                        else:
-                            log_debug(f"Skipped batch update for album '{album}': no popularity-related fields changed")
+                    else:
+                        log_debug(f"Skipped batch update for album '{album}': no popularity-related fields changed")
 
                         if album_art_url:
                             log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
