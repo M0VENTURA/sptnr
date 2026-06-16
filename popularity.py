@@ -1853,6 +1853,7 @@ from popularity_helpers import (
     score_by_age,
     update_artist_id_for_artist,
     get_lastfm_client,
+    adjust_weights,
     LASTFM_WEIGHT,
     LISTENBRAINZ_WEIGHT,
     AGE_WEIGHT,
@@ -6518,6 +6519,31 @@ def popularity_scan(
                             )
 
                         # ------------------------------------------------------------
+                        # Source mismatch adjustment
+                        # ------------------------------------------------------------
+                        lb_weight = LISTENBRAINZ_WEIGHT
+                        if lastfm_listeners > 0 and lb_listens > 0:
+                            is_featured = "feat" in track_artist.lower() or "feat" in title.lower()
+                            metadata_confirmed = bool(
+                                row_get(track, "mbid")
+                                or row_get(track, "recording_mbid")
+                                or row_get(track, "musicbrainz_recording_mbid")
+                            )
+                            lf_adj, lb_adj = adjust_weights(
+                                lastfm_listeners,
+                                lb_listens,
+                                is_featured_track=is_featured,
+                                metadata_confirmed=metadata_confirmed,
+                            )
+                            if lf_adj != LASTFM_WEIGHT or lb_adj != LISTENBRAINZ_WEIGHT:
+                                dynamic_lastfm_weight = lf_adj
+                                lb_weight = lb_adj
+                                log_info(
+                                    f"Source mismatch adjustment for '{title}': "
+                                    f"Last.fm weight={dynamic_lastfm_weight:.2f}, ListenBrainz weight={lb_weight:.2f}"
+                                )
+
+                        # ------------------------------------------------------------
                         # Final weighted popularity calculation
                         # ------------------------------------------------------------
                         scores = []
@@ -6529,8 +6555,6 @@ def popularity_scan(
                             log_debug(f'Including Last.fm score: {lastfm_score:.1f} (weight: {dynamic_lastfm_weight:.2f})')
 
                         if listenbrainz_score > 0:
-                            # supplementary if Last.fm exists, primary if Last.fm absent
-                            lb_weight = 0.40 if lastfm_score > 0 else dynamic_lastfm_weight
                             scores.append(listenbrainz_score)
                             weights.append(lb_weight)
                             log_debug(f'Including ListenBrainz score: {listenbrainz_score:.1f} (weight: {lb_weight:.2f})')

@@ -713,6 +713,49 @@ def calculate_combined_popularity_score(
     }
 
 
+def is_source_mismatch(lastfm_listeners, lb_listens):
+    """Detect a large mismatch between Last.fm and ListenBrainz popularity."""
+    if lastfm_listeners == 0:
+        return False
+
+    ratio = lb_listens / max(lastfm_listeners, 1)
+
+    return (
+        ratio >= 3.0 or        # LB strongly higher
+        ratio <= 0.3           # LF strongly higher
+    )
+
+
+def adjust_weights(
+    lastfm_listeners,
+    lb_listens,
+    is_featured_track=False,
+    metadata_confirmed=False
+):
+    """Adjust Last.fm / ListenBrainz weights when sources are mismatched."""
+    lf = LASTFM_WEIGHT
+    lb = LISTENBRAINZ_WEIGHT
+
+    if is_source_mismatch(lastfm_listeners, lb_listens):
+
+        # Case: ListenBrainz stronger
+        if lb_listens > lastfm_listeners:
+            lf = 0.2
+            lb = 0.8
+
+        # Case: Last.fm stronger
+        else:
+            lf = 0.8
+            lb = 0.2
+
+        # Extra bias for featured + metadata-confirmed singles
+        if is_featured_track and metadata_confirmed:
+            lf *= 0.7
+            lb *= 1.3
+
+    return lf, lb
+
+
 # -----------------------------------------------------------------------------
 # Popularity adjustment helpers
 # -----------------------------------------------------------------------------
@@ -1799,6 +1842,8 @@ __all__ = [
     "calculate_lastfm_zscore_popularity",
     "calculate_listenbrainz_popularity_score",
     "calculate_combined_popularity_score",
+    "is_source_mismatch",
+    "adjust_weights",
     "score_by_age",
     "apply_mean_popularity_adjustment",
     "apply_album_deviation_adjustment",
