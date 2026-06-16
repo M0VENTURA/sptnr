@@ -600,6 +600,94 @@ def get_listenbrainz_score_for_track(track: dict) -> int:
     return _lb_get_listenbrainz_score(mbid)
 
 
+def get_aggregated_listenbrainz_popularity(
+    title: str,
+    artist: str,
+    artist_mbid: Optional[str] = None,
+) -> dict[str, Any]:
+    """Search all recordings of a track and aggregate ListenBrainz popularity.
+
+    When a track exists on multiple releases (e.g. album version + single version),
+    each release may have a different recording MBID.  This helper queries
+    MusicBrainz for every recording with the same base title by the same artist,
+    fetches ListenBrainz popularity for every MBID in batch, and returns the
+    combined statistics.
+
+    Args:
+        title: Track title.
+        artist: Artist name.
+        artist_mbid: Optional MusicBrainz artist MBID for more accurate queries.
+
+    Returns:
+        Dict with keys:
+            - total_listens: Sum of listens across all matched recordings.
+            - max_listens: Highest listen count of any single recording.
+            - recording_count: Number of recordings found.
+            - recording_mbids: List of recording MBIDs that were queried.
+    """
+    _ensure_clients_from_config()
+
+    result = {
+        "total_listens": 0,
+        "max_listens": 0,
+        "recording_count": 0,
+        "recording_mbids": [],
+    }
+
+    if not _listenbrainz_enabled or not title or not artist:
+        return result
+
+    try:
+        from api_clients.musicbrainz import MusicBrainzClient
+        mb_client = MusicBrainzClient()
+        recordings = mb_client.search_recordings_by_artist(
+            title=title,
+            artist=artist,
+            artist_mbid=artist_mbid,
+            limit=25,
+        )
+    except Exception as e:
+        logging.debug("Failed to search MusicBrainz recordings for '%s' by '%s': %s", title, artist, e)
+        return result
+
+    if not recordings:
+        return result
+
+    mbids = [r["id"] for r in recordings if r.get("id")]
+    if not mbids:
+        return result
+
+    try:
+        batch = _lb_get_recording_popularity_batch(mbids)
+    except Exception as e:
+        logging.debug("Failed to fetch aggregated LB popularity for '%s' by '%s': %s", title, artist, e)
+        return result
+
+    total = 0
+    max_val = 0
+    for mbid in mbids:
+        entry = batch.get(mbid, {})
+        count = entry.get("total_listen_count") or 0
+        total += count
+        if count > max_val:
+            max_val = count
+
+    result["total_listens"] = total
+    result["max_listens"] = max_val
+    result["recording_count"] = len(mbids)
+    result["recording_mbids"] = mbids
+
+    logging.debug(
+        "Aggregated LB popularity for '%s' by '%s': %s recordings, total=%s, max=%s",
+        title,
+        artist,
+        len(mbids),
+        total,
+        max_val,
+    )
+    return result
+
+
 def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int = 0) -> float:
     """
     Calculate a normalized Last.fm popularity score (0-100) from listener count.
