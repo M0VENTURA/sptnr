@@ -679,11 +679,11 @@ def calculate_combined_popularity_score(
     release_date: Optional[str] = None,
 ) -> Dict[str, float]:
     """
-    Blend Last.fm + age into one weighted score.
+    Blend Last.fm + ListenBrainz + age into one weighted score.
 
-    ListenBrainz is converted to an album-relative percentile and returned
-    for classification use, but is not blended directly into the weighted
-    popularity score so it acts as a contextual album-level signal only.
+    ListenBrainz is converted to an absolute 0-100 score and blended
+    alongside Last.fm. The album-relative percentile is also returned
+    for classification use.
 
     Returns a dict so callers can inspect the components in debug logs.
     """
@@ -694,26 +694,41 @@ def calculate_combined_popularity_score(
         artist_max_listeners=lastfm_artist_max_listeners,
     )
 
+    lb_score = 0.0
     lb_percentile = 0.0
-    if album_lb_listens:
-        lb_percentile = calculate_listenbrainz_percentile(listenbrainz_listens, album_lb_listens)
+    if listenbrainz_listens > 0:
+        lb_score = calculate_listenbrainz_popularity_score(listenbrainz_listens)
+        if album_lb_listens:
+            lb_percentile = calculate_listenbrainz_percentile(listenbrainz_listens, album_lb_listens)
 
     age_score = 0.0
     if release_date:
         age_score, _ = score_by_age(age_source_value, release_date)
 
-    total_weight = LASTFM_WEIGHT + AGE_WEIGHT
-    if total_weight > 0:
-        weighted = (
-            (lastfm_score * LASTFM_WEIGHT)
-            + (age_score * AGE_WEIGHT)
-        ) / total_weight
+    scores = []
+    weights = []
+
+    if lastfm_score > 0:
+        scores.append(lastfm_score)
+        weights.append(LASTFM_WEIGHT)
+
+    if lb_score > 0:
+        scores.append(lb_score)
+        weights.append(LISTENBRAINZ_WEIGHT)
+
+    if age_score > 0:
+        scores.append(age_score)
+        weights.append(AGE_WEIGHT)
+
+    if scores and weights:
+        total_weight = sum(weights)
+        weighted = sum(s * w for s, w in zip(scores, weights)) / total_weight
     else:
         weighted = 0.0
 
     return {
         "lastfm_score": lastfm_score,
-        "listenbrainz_score": 0.0,
+        "listenbrainz_score": lb_score,
         "lb_percentile": lb_percentile,
         "age_score": age_score,
         "weighted_score": weighted,
