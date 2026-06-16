@@ -3223,37 +3223,30 @@ def get_artist_listenbrainz_context(artist_mbid: str) -> dict:
         - listen_counts: List of listen counts for debugging
     """
     try:
-        import requests
+        from api_clients.audiodb_and_listenbrainz import ListenBrainzClient
+        lb_client = ListenBrainzClient()
+        recordings = lb_client.get_top_recordings_for_artist(artist_mbid)
 
-        url = f"https://api.listenbrainz.org/1/popularity/top-recordings-for-artist/{artist_mbid}"
-
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            recordings = response.json()
-
-            if not recordings:
-                return {'top_10_percentile_threshold': 0, 'total_recordings': 0, 'source': 'error', 'listen_counts': []}
-
-            listen_counts = [r.get('total_listen_count', 0) for r in recordings if r.get('total_listen_count')]
-
-            if not listen_counts:
-                return {'top_10_percentile_threshold': 0, 'total_recordings': len(recordings), 'source': 'error', 'listen_counts': []}
-
-            total_recordings = len(recordings)
-            top_10_count = max(1, total_recordings // 10)
-            top_10_threshold = listen_counts[min(top_10_count - 1, len(listen_counts) - 1)]
-
-            log_debug(f"ListenBrainz: {total_recordings} total recordings, top 10% = {top_10_count} recordings, threshold: {top_10_threshold} listens")
-
-            return {
-                'top_10_percentile_threshold': top_10_threshold,
-                'total_recordings': total_recordings,
-                'source': 'listenbrainz',
-                'listen_counts': listen_counts
-            }
-        else:
-            log_debug(f"ListenBrainz API error: {response.status_code} for artist {artist_mbid}")
+        if not recordings:
             return {'top_10_percentile_threshold': 0, 'total_recordings': 0, 'source': 'error', 'listen_counts': []}
+
+        listen_counts = [r.get('total_listen_count', 0) for r in recordings if r.get('total_listen_count')]
+
+        if not listen_counts:
+            return {'top_10_percentile_threshold': 0, 'total_recordings': len(recordings), 'source': 'error', 'listen_counts': []}
+
+        total_recordings = len(recordings)
+        top_10_count = max(1, total_recordings // 10)
+        top_10_threshold = listen_counts[min(top_10_count - 1, len(listen_counts) - 1)]
+
+        log_debug(f"ListenBrainz: {total_recordings} total recordings, top 10% = {top_10_count} recordings, threshold: {top_10_threshold} listens")
+
+        return {
+            'top_10_percentile_threshold': top_10_threshold,
+            'total_recordings': total_recordings,
+            'source': 'listenbrainz',
+            'listen_counts': listen_counts
+        }
     except Exception as e:
         log_debug(f"Failed to fetch ListenBrainz context for artist {artist_mbid}: {e}")
         return {'top_10_percentile_threshold': 0, 'total_recordings': 0, 'source': 'error', 'listen_counts': []}
@@ -4550,38 +4543,15 @@ def popularity_scan(
                                     log_debug(f"Found MusicBrainz MBID for artist '{artist}': {artist_mbid}")
 
                                     # Now fetch similar artists from ListenBrainz using the public API
-                                    # ListenBrainz similar-artists endpoint: https://labs.api.listenbrainz.org/similar-artists/json
                                     try:
-                                        import urllib.parse
-                                        lb_url = "https://labs.api.listenbrainz.org/similar-artists/json"
-                                        params = {
-                                            "artist_mbids": artist_mbid  # Can be comma-separated for multiple MBIDs
-                                        }
-                                        # Use default session to make the request
-                                        res = session.get(lb_url, params=params, timeout=(5, 10))
-                                        res.raise_for_status()
-
-                                        lb_results = res.json()
-
-                                        # Extract similar artists from the response
-                                        # ListenBrainz returns: {"payload": {"artists": [{"artist_name": "...", "artist_mbid": "..."}, ...]}}
-                                        if lb_results and "payload" in lb_results:
-                                            similar_records = lb_results.get("payload", {}).get("artists", [])
-
-                                            if similar_records:
-                                                similar_artists_listenbrainz = [
-                                                    {
-                                                        "name": record.get("artist_name", ""),
-                                                        "mbid": record.get("artist_mbid", "")
-                                                    }
-                                                    for record in similar_records[:10]  # Limit to top 10
-                                                ]
-                                                log_info(f"Found {len(similar_artists_listenbrainz)} similar artists for '{artist}' from ListenBrainz")
-                                                log_debug(f"ListenBrainz similar artists: {[a.get('name') for a in similar_artists_listenbrainz]}")
-                                            else:
-                                                log_debug(f"No similar artists found for MBID {artist_mbid} from ListenBrainz")
+                                        from api_clients.audiodb_and_listenbrainz import ListenBrainzClient
+                                        lb_client = ListenBrainzClient()
+                                        similar_artists_listenbrainz = lb_client.get_similar_artists(artist_mbid)
+                                        if similar_artists_listenbrainz:
+                                            log_info(f"Found {len(similar_artists_listenbrainz)} similar artists for '{artist}' from ListenBrainz")
+                                            log_debug(f"ListenBrainz similar artists: {[a.get('name') for a in similar_artists_listenbrainz]}")
                                         else:
-                                            log_debug(f"ListenBrainz returned unexpected response format for {artist}")
+                                            log_debug(f"No similar artists found for MBID {artist_mbid} from ListenBrainz")
                                     except Exception as e:
                                         log_debug(f"ListenBrainz API call failed for artist {artist}: {e}")
                                 else:

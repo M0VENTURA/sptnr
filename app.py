@@ -13608,25 +13608,14 @@ def api_get_similar_artists(artist):
                 logging.debug(f"[SIMILAR ARTISTS] Found MBID {artist_mbid} for {artist}")
                 
                 # Fetch from ListenBrainz
-                lb_url = "https://labs.api.listenbrainz.org/similar-artists/json"
-                params = {"artist_mbids": artist_mbid}
-                
-                lb_response = requests.get(lb_url, params=params, timeout=(5, 10))
-                lb_response.raise_for_status()
-                lb_results = lb_response.json()
-                
-                if lb_results and "payload" in lb_results:
-                    similar_records = lb_results.get("payload", {}).get("artists", [])
-                    
-                    if similar_records:
-                        similar_listenbrainz = [
-                            {
-                                "name": record.get("artist_name", ""),
-                                "mbid": record.get("artist_mbid", "")
-                            }
-                            for record in similar_records[:10]
-                        ]
+                try:
+                    from api_clients.audiodb_and_listenbrainz import ListenBrainzClient
+                    lb_client = ListenBrainzClient()
+                    similar_listenbrainz = lb_client.get_similar_artists(artist_mbid)
+                    if similar_listenbrainz:
                         logging.info(f"[SIMILAR ARTISTS] Found {len(similar_listenbrainz)} from ListenBrainz")
+                except Exception as e:
+                    logging.debug(f"[SIMILAR ARTISTS] ListenBrainz fetch failed: {e}")
         except Exception as e:
             logging.debug(f"[SIMILAR ARTISTS] ListenBrainz fetch failed: {e}")
         

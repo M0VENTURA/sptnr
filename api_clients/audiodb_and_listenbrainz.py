@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -33,6 +34,20 @@ except Exception:
     _rate_limiter = None
 
 
+def _get_version() -> str:
+    """Read version from VERSION file."""
+    try:
+        version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")
+        with open(version_file, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return "2.0.0-alpha"
+
+
+# MusicBrainz-standard User-Agent (complies with https://musicbrainz.org/doc/MusicBrainz_API)
+_DEFAULT_USER_AGENT = f"sptnr/{_get_version()} ( https://github.com/M0VENTURA/sptnr )"
+
+
 class ListenBrainzError(Exception):
     """Raised for ListenBrainz-specific client errors."""
 
@@ -48,13 +63,13 @@ class ListenBrainzClient:
         enabled: bool = True,
         user_token: str = "",
         base_url: str = DEFAULT_BASE_URL,
-        user_agent: str = "sptnr/2.0",
+        user_agent: str = "",
     ):
         self.session = http_session or session
         self.enabled = enabled
         self.user_token = user_token or ""
         self.base_url = base_url.rstrip("/")
-        self.user_agent = user_agent
+        self.user_agent = user_agent or _DEFAULT_USER_AGENT
 
     # -------------------------------------------------------------------------
     # Internal helpers
@@ -224,6 +239,49 @@ class ListenBrainzClient:
             return int(count) if count is not None else 0
         except Exception:
             return 0
+
+    def get_top_recordings_for_artist(self, artist_mbid: str) -> list[dict[str, Any]]:
+        """Fetch top recordings for an artist via the ListenBrainz popularity API."""
+        if not self.enabled or not artist_mbid:
+            return []
+
+        try:
+            data = self._get(
+                f"/popularity/top-recordings-for-artist/{artist_mbid}",
+                authenticated=False,
+                timeout=(5, 10),
+            )
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            logger.debug("Failed to fetch top recordings for artist %s: %s", artist_mbid, e)
+            return []
+
+    def get_similar_artists(self, artist_mbid: str) -> list[dict[str, str]]:
+        """Fetch similar artists from the ListenBrainz labs API."""
+        if not self.enabled or not artist_mbid:
+            return []
+
+        try:
+            self._throttle()
+            url = "https://labs.api.listenbrainz.org/similar-artists/json"
+            res = self.session.get(
+                url,
+                params={"artist_mbids": artist_mbid},
+                headers=self._headers(authenticated=False),
+                timeout=(5, 10),
+            )
+            res.raise_for_status()
+            data = res.json()
+            if data and "payload" in data:
+                similar_records = data.get("payload", {}).get("artists", [])
+                return [
+                    {"name": record.get("artist_name", ""), "mbid": record.get("artist_mbid", "")}
+                    for record in similar_records[:10]
+                ]
+            return []
+        except Exception as e:
+            logger.debug("Failed to fetch similar artists for %s: %s", artist_mbid, e)
+            return []
 
     # -------------------------------------------------------------------------
     # Metadata
@@ -424,7 +482,7 @@ class ListenBrainzClient:
 class ListenBrainzUserClient(ListenBrainzClient):
     """Authenticated ListenBrainz operations."""
 
-    def __init__(self, user_token: str, http_session=None, enabled: bool = True, user_agent: str = "sptnr/2.0"):
+    def __init__(self, user_token: str, http_session=None, enabled: bool = True, user_agent: str = ""):
         super().__init__(
             http_session=http_session,
             enabled=enabled,
@@ -594,7 +652,7 @@ def get_recording_popularity_batch(
     user_agent: str = "",
 ) -> dict[str, dict[str, Optional[int]]]:
     """Backward-compatible wrapper for batch recording popularity."""
-    client = ListenBrainzClient(enabled=True, user_agent=user_agent or "sptnr/2.0")
+    client = ListenBrainzClient(enabled=True, user_agent=user_agent or _DEFAULT_USER_AGENT)
     return client.get_recording_popularity_batch(recording_mbids)
 
 
