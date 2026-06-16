@@ -7037,6 +7037,14 @@ def popularity_scan(
                                 star_str = "★" * stars + "☆" * (5 - stars)
                                 log_unified(f"Single Detection Scan - {star_str:<5} {track_artist} - {title}{reason}")
 
+                # Log album scan to history for recent scans display
+                if metadata_only:
+                    log_album_scan(artist, album, "metadata", len(album_tracks), "completed")
+                elif singles_only or singles_with_missing_popularity:
+                    log_album_scan(artist, album, "singles", len(album_tracks), "completed")
+                else:
+                    log_album_scan(artist, album, "popularity", len(album_tracks), "completed")
+
         # PostgreSQL commit above is sufficient; no manual checkpoint required.
 
         log_unified(f"Popularity Scan - Complete: {scanned_count} tracks updated, {skipped_count} albums skipped")
