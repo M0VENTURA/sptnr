@@ -1768,7 +1768,6 @@ def detect_single_enhanced(
     album_type_is_single = False
     if album_type and album_type.lower() == 'single':
         # Only treat as high-confidence source if track title matches the album name
-        from single_detector import normalize_title_strict
         if normalize_title_strict(title) == normalize_title_strict(album):
             album_type_is_single = True
             log_debug(f"[ALBUM_TYPE] Album marked as single type with matching title — will be treated as high-confidence source")
