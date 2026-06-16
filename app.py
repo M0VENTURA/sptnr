@@ -245,7 +245,7 @@ def log_genre_update(artist_name=None, album_name=None, track_id=None, genres_be
         except Exception:
             pass
 
-from helpers.check_db import update_schema
+from helpers.check_db import update_schema, verify_all_tables_exist
 from popularity_helpers import save_to_db
 
 import sys
@@ -903,6 +903,10 @@ try:
         _startup_schema_deferred = True
     else:
         logging.debug("Database schema initialization complete (all tables created/verified)")
+        # Verify all expected tables are present and log any gaps
+        _table_check = verify_all_tables_exist()
+        if not _table_check.get("critical_ok"):
+            logging.warning("Startup table verification found missing critical tables: %s", _table_check.get("missing_critical"))
 except Exception as e:
     if _is_pg_startup_unavailable_error(e):
         logging.info(f"Database schema initialization deferred while PostgreSQL starts: {e}")
@@ -986,6 +990,11 @@ def _run_deferred_startup_migrations():
     try:
         _update_schema(DB_PATH)
         logging.info("[DEFERRED] Deferred schema initialization complete")
+        # Run table verification after deferred schema init
+        from helpers.check_db import verify_all_tables_exist as _verify_tables
+        _deferred_table_check = _verify_tables()
+        if not _deferred_table_check.get("critical_ok"):
+            logging.warning("[DEFERRED] Startup table verification found missing critical tables: %s", _deferred_table_check.get("missing_critical"))
     except Exception as _schema_err:
         logging.error("[DEFERRED] Deferred schema initialization failed: %s", _schema_err)
 
