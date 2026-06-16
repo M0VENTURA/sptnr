@@ -65,6 +65,14 @@ def _get_retry_after_seconds(response, default: float = 60.0) -> float:
     return max(1.0, retry_after)
 
 
+def _strip_featured_artist(artist: str) -> str:
+    """Return canonical primary artist by removing feat./ft./featuring suffixes."""
+    if not artist:
+        return artist
+    primary = re.split(r"\s+(?:feat\.?|featuring|ft\.?)\s+", artist, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    return primary or artist.strip()
+
+
 def _set_discogs_rate_limit_window(wait_seconds: float) -> None:
     """Record a shared cooldown window so later requests do not hammer Discogs."""
     global _DISCOGS_RATE_LIMIT_UNTIL
@@ -742,6 +750,109 @@ class DiscogsClient:
             logger.debug(f"   Traceback: {traceback.format_exc()}")
             return result
     
+    def get_single_release_year(self, title: str, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> Optional[int]:
+        """
+        Search Discogs for a single release and return its release year.
+
+        This is used to compare the single's release date against the album's
+        original release date to verify the single belongs to the album era.
+
+        Args:
+            title: Track title
+            artist: Artist name
+            timeout: Request timeout
+
+        Returns:
+            Release year as int, or None if not found
+        """
+        if not self.enabled or not self.token:
+            return None
+
+        try:
+            log_debug(f"[DISCOGS_DATE] Searching single release year for: '{title}' by '{artist}'")
+            normalized_title = normalize_track_title(title)
+            base_title = strip_search_parentheses(title)
+            normalized_base_title = normalize_track_title(base_title) if base_title else ""
+            search_title = normalized_base_title if normalized_base_title and normalized_base_title != normalized_title else normalized_title
+
+            search_artist = _strip_featured_artist(artist)
+
+            # Search for single format
+            _throttle_discogs()
+            search_url = f"{self.base_url}/database/search"
+            params = {
+                "artist": search_artist,
+                "track": search_title,
+                "format": "Single",
+                "type": "release",
+                "per_page": 5,
+            }
+
+            max_retries = 2
+            retry_delay = 1.0
+            for attempt in range(max_retries + 1):
+                try:
+                    res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                    if res.status_code == 429:
+                        retry_after = _get_retry_after_seconds(res)
+                        _handle_discogs_rate_limit_response(res, f"Discogs rate limited - waiting {int(retry_after)}s")
+                        _throttle_discogs()
+                        res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                    if res.status_code in [502, 503]:
+                        _record_discogs_error(str(res.status_code))
+                        if attempt < max_retries:
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                            continue
+                        return None
+                    _clear_discogs_errors()
+                    res.raise_for_status()
+                    results = res.json().get("results", [])
+                    for result in results:
+                        result_title = result.get("title", "")
+                        if " - " in result_title:
+                            _, track_name = result_title.split(" - ", 1)
+                        else:
+                            track_name = result_title
+                        normalized_result = normalize_track_title(track_name)
+                        if normalized_result == search_title:
+                            year = result.get("year")
+                            if year:
+                                log_debug(f"[DISCOGS_DATE] Found single year: {year} for '{title}'")
+                                return int(year)
+                    # Try EP fallback
+                    params["format"] = "EP"
+                    _throttle_discogs()
+                    res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                    if res.status_code == 429:
+                        _handle_discogs_rate_limit_response(res)
+                        _throttle_discogs()
+                        res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                    res.raise_for_status()
+                    results = res.json().get("results", [])
+                    for result in results:
+                        result_title = result.get("title", "")
+                        if " - " in result_title:
+                            _, track_name = result_title.split(" - ", 1)
+                        else:
+                            track_name = result_title
+                        normalized_result = normalize_track_title(track_name)
+                        if normalized_result == search_title:
+                            year = result.get("year")
+                            if year:
+                                log_debug(f"[DISCOGS_DATE] Found EP year: {year} for '{title}'")
+                                return int(year)
+                    return None
+                except (TimeoutError, ConnectionError) as e:
+                    if attempt < max_retries:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                    return None
+        except Exception as e:
+            log_debug(f"[DISCOGS_DATE] ERROR: {type(e).__name__}: {str(e)}")
+            return None
+
     def is_single(self, title: str, artist: str, album_context: dict | None = None, timeout: tuple[int, int] | int = (5, 10)) -> bool:
         """
         Fast Discogs single detection using Search API with format filtering.
@@ -917,8 +1028,12 @@ class DiscogsClient:
             
             # Use the search API with format filter
             # This searches Discogs' database for releases matching artist + title + format
+            # Strip featured artists from the artist name so that queries like
+            # "dArtagnan feat. Melissa Bonny" become "dArtagnan" - Discogs does
+            # not index featuring credits in the artist field.
+            search_artist = _strip_featured_artist(artist)
             params = {
-                "artist": artist,
+                "artist": search_artist,
                 "track": title,
                 "format": format_type,
                 "type": "release",

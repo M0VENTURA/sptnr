@@ -181,6 +181,103 @@ def test_track_exists_with_exactly_5_tracks():
         print("✓ Test 7 passed: Track with exactly 5 tracks correctly accepted")
 
 
+def test_featured_artist_stripped():
+    """Test that featured artists are stripped before Last.fm lookup"""
+    client = LastFmClient(api_key="test_key")
+    
+    from requests.exceptions import HTTPError
+    
+    # First call: 404 for "dArtagnan feat. Melissa Bonny"
+    mock_404 = Mock()
+    mock_404.status_code = 404
+    mock_404.raise_for_status.side_effect = HTTPError(response=mock_404)
+    
+    # Second call: 200 for "dArtagnan" (primary artist)
+    mock_200 = Mock()
+    mock_200.status_code = 200
+    mock_200.json.return_value = {
+        "album": {
+            "name": "Herzblut",
+            "artist": "dArtagnan",
+            "tracks": {
+                "track": [
+                    {"name": "Herzblut"},
+                    {"name": "Herzblut (Acoustic)"}
+                ]
+            }
+        }
+    }
+    
+    call_count = 0
+    def mock_get(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        params = kwargs.get('params', {})
+        lookup_artist = params.get('artist', '')
+        
+        # First call should be with the primary artist
+        if call_count == 1:
+            assert lookup_artist == "dArtagnan", f"Expected 'dArtagnan' but got '{lookup_artist}'"
+            return mock_200
+        else:
+            # Fallback call with full artist string
+            assert lookup_artist == "dArtagnan feat. Melissa Bonny", f"Expected 'dArtagnan feat. Melissa Bonny' but got '{lookup_artist}'"
+            return mock_404
+    
+    with patch.object(client.session, 'get', side_effect=mock_get):
+        result = client.check_track_as_single("dArtagnan feat. Melissa Bonny", "Herzblut")
+        assert result is True, "Should find single after stripping featured artist"
+        assert call_count == 1, f"Should only need 1 call (primary artist found), but made {call_count}"
+        print("✓ Test 8 passed: Featured artist stripped, single found on first try")
+
+
+def test_featured_artist_fallback():
+    """Test fallback to full artist when primary artist doesn't match"""
+    client = LastFmClient(api_key="test_key")
+    
+    from requests.exceptions import HTTPError
+    
+    # First call: 404 for "dArtagnan"
+    mock_404 = Mock()
+    mock_404.status_code = 404
+    mock_404.raise_for_status.side_effect = HTTPError(response=mock_404)
+    
+    # Second call: 200 for "dArtagnan feat. Melissa Bonny"
+    mock_200 = Mock()
+    mock_200.status_code = 200
+    mock_200.json.return_value = {
+        "album": {
+            "name": "Herzblut",
+            "artist": "dArtagnan feat. Melissa Bonny",
+            "tracks": {
+                "track": [
+                    {"name": "Herzblut"}
+                ]
+            }
+        }
+    }
+    
+    call_count = 0
+    def mock_get(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        params = kwargs.get('params', {})
+        lookup_artist = params.get('artist', '')
+        
+        if call_count == 1:
+            assert lookup_artist == "dArtagnan", f"Expected 'dArtagnan' but got '{lookup_artist}'"
+            return mock_404
+        else:
+            assert lookup_artist == "dArtagnan feat. Melissa Bonny", f"Expected 'dArtagnan feat. Melissa Bonny' but got '{lookup_artist}'"
+            return mock_200
+    
+    with patch.object(client.session, 'get', side_effect=mock_get):
+        result = client.check_track_as_single("dArtagnan feat. Melissa Bonny", "Herzblut")
+        assert result is True, "Should find single after falling back to full artist"
+        assert call_count == 2, f"Should need 2 calls (fallback), but made {call_count}"
+        print("✓ Test 9 passed: Featured artist stripped, fallback to full artist works")
+
+
 if __name__ == "__main__":
     print("Running Last.fm track single detection tests...\n")
     
@@ -191,5 +288,7 @@ if __name__ == "__main__":
     test_no_api_key()
     test_track_exists_but_too_many_tracks()
     test_track_exists_with_exactly_5_tracks()
+    test_featured_artist_stripped()
+    test_featured_artist_fallback()
     
-    print("\n✅ All 7 tests passed!")
+    print("\n✅ All 9 tests passed!")

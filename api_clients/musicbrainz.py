@@ -6,6 +6,7 @@ import json
 import os
 import re
 import requests
+from typing import Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from . import session
@@ -37,6 +38,11 @@ _VERSION = _get_version()
 # MusicBrainz API User-Agent (complies with https://musicbrainz.org/doc/MusicBrainz_API)
 # Format: AppName/Version ( contact-info )
 _USER_AGENT = f"sptnr/{_VERSION} ( https://github.com/M0VENTURA/sptnr )"
+
+# MusicBrainz UUID pattern (8-4-4-4-12 hex digits) – used for validating MBIDs
+_MUSICBRAINZ_UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE
+)
 
 # Import rate limiter
 try:
@@ -204,6 +210,14 @@ def _escape_lucene_special_chars(text: str) -> str:
     return escaped
 
 
+def _strip_featured_artist(artist: str) -> str:
+    """Return canonical primary artist by removing feat./ft./featuring suffixes."""
+    if not artist:
+        return artist
+    primary = re.split(r"\s+(?:feat\.?|featuring|ft\.?)\s+", artist, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    return primary or artist.strip()
+
+
 class MusicBrainzClient:
     """MusicBrainz API wrapper for single detection and metadata."""
     
@@ -345,8 +359,12 @@ class MusicBrainzClient:
                 
                 # Quote title and artist to handle multi-word values properly (Lucene syntax)
                 # Escape special characters to prevent query syntax errors
+                # Strip featured artists from the artist name so that queries like
+                # "dArtagnan feat. Melissa Bonny" become "dArtagnan" - MusicBrainz
+                # does not index featuring credits in the artist field.
                 escaped_title = _escape_lucene_special_chars(search_title)
-                escaped_artist = _escape_lucene_special_chars(artist)
+                search_artist = _strip_featured_artist(artist)
+                escaped_artist = _escape_lucene_special_chars(search_artist)
                 query = f'releasegroup:"{escaped_title}" AND artist:"{escaped_artist}" AND primarytype:Single'
                 params = {
                     "query": query,
@@ -526,6 +544,135 @@ class MusicBrainzClient:
 
         logger.debug(f"MusicBrainz: No matching single found for '{title}' in cached list (artist MBID: {artist_mbid})")
         return False
+
+    def get_single_release_date(self, title: str, artist: str, artist_mbid: Optional[str] = None) -> Optional[str]:
+        """
+        Query MusicBrainz for the first-release-date of a single matching the track.
+
+        Returns the earliest release date (YYYY-MM-DD, YYYY-MM, or YYYY) from the
+        matching single release-group so callers can compare it against the album's
+        original release date.
+
+        Args:
+            title: Track title
+            artist: Artist name (used as fallback if MBID not available)
+            artist_mbid: Optional MusicBrainz artist ID (preferred for accuracy)
+
+        Returns:
+            First-release-date string (e.g., "2023-06-14", "2023-06", "2023") or None
+        """
+        if not self.enabled:
+            return None
+
+        # Extract version information from the track title (same logic as is_single)
+        base_title, track_versions = _extract_version_info(title)
+
+        # Stage 1: Try MBID-based lookup if available
+        if artist_mbid:
+            try:
+                if _rate_limiter:
+                    _rate_limiter.throttle_musicbrainz()
+                else:
+                    time.sleep(1.0)
+
+                params = {
+                    "artist": artist_mbid,
+                    "primarytype": "Single",
+                    "fmt": "json",
+                    "limit": 50,
+                }
+                res = self.session.get(
+                    f"{self.base_url}release-group/",
+                    params=params,
+                    headers=self.headers,
+                    timeout=(5, 10),
+                )
+                res.raise_for_status()
+                rgs = res.json().get("release-groups", [])
+                for rg in rgs:
+                    if (rg.get("primary-type") or "").lower() != "single":
+                        continue
+                    rg_title = rg.get("title", "")
+                    rg_base_title, rg_versions = _extract_version_info(rg_title)
+                    if base_title.lower() == rg_base_title.lower() and track_versions == rg_versions:
+                        first_date = (rg.get("first-release-date") or "").strip()
+                        if first_date:
+                            logger.debug(
+                                f"MusicBrainz single date (MBID): '{title}' -> {first_date} "
+                                f"(matched '{rg_title}')"
+                            )
+                            return first_date
+                logger.debug(f"MusicBrainz single date (MBID): no date for '{title}'")
+            except Exception as e:
+                logger.debug(f"MusicBrainz get_single_release_date MBID lookup failed: {e}")
+
+        # Stage 2: Fall back to name-based search
+        max_retries = 3
+        retry_delay = 1.0
+        for attempt in range(max_retries):
+            try:
+                if _rate_limiter:
+                    _rate_limiter.throttle_musicbrainz()
+                else:
+                    time.sleep(1.0)
+
+                search_title = base_title
+                search_title = re.sub(ROMAN_NUMERAL_PATTERN, '', search_title, flags=re.IGNORECASE).strip()
+                search_title = re.sub(PUNCTUATION_SUFFIX_PATTERN, '', search_title).strip()
+
+                escaped_title = _escape_lucene_special_chars(search_title)
+                search_artist = _strip_featured_artist(artist)
+                escaped_artist = _escape_lucene_special_chars(search_artist)
+                query = f'releasegroup:"{escaped_title}" AND artist:"{escaped_artist}" AND primarytype:Single'
+                params = {
+                    "query": query,
+                    "fmt": "json",
+                    "limit": 10,
+                }
+                res = self.session.get(
+                    f"{self.base_url}release-group/",
+                    params=params,
+                    headers=self.headers,
+                    timeout=(5, 10),
+                )
+                res.raise_for_status()
+                rgs = res.json().get("release-groups", [])
+                for rg in rgs:
+                    if (rg.get("primary-type") or "").lower() != "single":
+                        continue
+                    rg_title = rg.get("title", "")
+                    rg_base_title, rg_versions = _extract_version_info(rg_title)
+                    if base_title.lower() == rg_base_title.lower() and track_versions == rg_versions:
+                        first_date = (rg.get("first-release-date") or "").strip()
+                        if first_date:
+                            logger.debug(
+                                f"MusicBrainz single date (name): '{title}' -> {first_date} "
+                                f"(matched '{rg_title}')"
+                            )
+                            return first_date
+                logger.debug(f"MusicBrainz single date (name): no date for '{title}'")
+                return None
+
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if getattr(e, "response", None) is not None else None
+                if status_code in (429, 503, 504) and attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                logger.debug(f"MusicBrainz get_single_release_date HTTP error: {e}")
+                return None
+            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.debug(f"MusicBrainz get_single_release_date network error: {e}")
+                    return None
+            except Exception as e:
+                logger.debug(f"MusicBrainz get_single_release_date error: {e}")
+                return None
+
+        return None
 
     def get_genres(self, title: str, artist: str) -> list[str]:
         """
@@ -1219,8 +1366,105 @@ class MusicBrainzClient:
             except Exception as e:
                 logger.debug(f"MusicBrainz composer lookup error for '{title}' by '{artist}': {e}")
                 return [], "", 0.0
-        
-        return [], "", 0.0
+
+    def search_recordings_by_artist(
+        self,
+        title: str,
+        artist: str,
+        artist_mbid: Optional[str] = None,
+        limit: int = 25,
+    ) -> list[dict]:
+        """Search MusicBrainz for all recordings of a track by an artist.
+
+        Returns a list of recording dicts with ``id`` and ``title`` keys,
+        filtered to only those whose base title matches the query title
+        (ignoring version suffixes like Live/Acoustic/Remix).
+
+        Args:
+            title: Track title to search for.
+            artist: Artist name (used for query and fallback matching).
+            artist_mbid: Optional artist MBID for more accurate queries.
+            limit: Maximum recordings to return.
+
+        Returns:
+            List of recording dicts, each with at least ``id`` and ``title``.
+        """
+        if not self.enabled or not title or not artist:
+            return []
+
+        base_title, track_versions = _extract_version_info(title)
+        search_artist = _strip_featured_artist(artist)
+
+        # Build query: prefer artist MBID when available for accuracy
+        if artist_mbid:
+            query = f'recording:"{_escape_lucene_special_chars(base_title)}" AND arid:{artist_mbid}'
+        else:
+            escaped_title = _escape_lucene_special_chars(base_title)
+            escaped_artist = _escape_lucene_special_chars(search_artist)
+            query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
+
+        max_retries = 3
+        retry_delay = 1.0
+        for attempt in range(max_retries):
+            try:
+                if _rate_limiter:
+                    _rate_limiter.throttle_musicbrainz()
+                else:
+                    time.sleep(1.0)
+
+                params = {
+                    "query": query,
+                    "fmt": "json",
+                    "limit": limit,
+                }
+                logger.debug(f"MusicBrainz recording search: {params}")
+                res = self.session.get(
+                    f"{self.base_url}recording/",
+                    params=params,
+                    headers=self.headers,
+                    timeout=(5, 10),
+                )
+                res.raise_for_status()
+                recordings = res.json().get("recordings", []) or []
+
+                matched = []
+                for rec in recordings:
+                    rec_title = rec.get("title", "")
+                    rec_base, rec_versions = _extract_version_info(rec_title)
+                    # Require exact base-title match and identical version modifiers
+                    if base_title.lower() == rec_base.lower() and track_versions == rec_versions:
+                        matched.append({
+                            "id": rec.get("id"),
+                            "title": rec_title,
+                            "artist": search_artist,
+                        })
+
+                logger.debug(
+                    f"MusicBrainz recording search for '{title}' by '{artist}': "
+                    f"{len(recordings)} raw, {len(matched)} matched"
+                )
+                return matched
+
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if getattr(e, "response", None) is not None else None
+                if status_code in (429, 503, 504) and attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                logger.debug(f"MusicBrainz recording search HTTP error: {e}")
+                return []
+            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.debug(f"MusicBrainz recording search network error: {e}")
+                    return []
+            except Exception as e:
+                logger.debug(f"MusicBrainz recording search error: {e}")
+                return []
+
+        return []
 
 
 # Backward-compatible module functions
@@ -1390,10 +1634,7 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
         
         # If we have a release group MBID, do a direct lookup (more accurate than text search)
         # Validate the MBID format (UUID: 8-4-4-4-12 hex digits) before using it in a URL.
-        _UUID_RE = re.compile(
-            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE
-        )
-        if release_group_mbid and _UUID_RE.match(str(release_group_mbid)):
+        if release_group_mbid and _MUSICBRAINZ_UUID_RE.match(str(release_group_mbid)):
             try:
                 rg_res = client.session.get(
                     f"{client.base_url}release-group/{release_group_mbid}",
@@ -1477,6 +1718,23 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
                     elif primary == "single" and track_count > 3:
                         score -= 30  # Penalize single for >3 tracks
                 
+                # Penalize live albums when the album name doesn't contain live indicators.
+                # This prevents a studio album with the same name from being misclassified
+                # as live when MusicBrainz has a separate live release group.
+                _rg_secondary = [s.lower() for s in (rg.get("secondary-types") or [])]
+                if "live" in _rg_secondary:
+                    _album_lower = album.lower()
+                    _has_live_indicator = any(
+                        re.search(p, _album_lower)
+                        for p in [
+                            r'\blive\b', r'\bunplugged\b', r'\bconcert\b',
+                            r'\bin\s+concert\b', r'\blive\s+at\b',
+                            r'\blive\s+in\b', r'\blive\s+from\b',
+                        ]
+                    )
+                    if not _has_live_indicator:
+                        score -= 40  # Strong penalty for live albums without live indicators in name
+                
                 if score > best_score:
                     best_score = score
                     best_match = rg
@@ -1556,6 +1814,10 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
     if not artist:
         return ""
     
+    # Strip featured artists for the MusicBrainz lookup so that
+    # "dArtagnan feat. Melissa Bonny" resolves to "dArtagnan".
+    lookup_artist = _strip_featured_artist(artist)
+    
     try:
         client = _get_musicbrainz_client(enabled=True)
         
@@ -1566,7 +1828,7 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
             time.sleep(1.0)
         
         # Escape special characters for Lucene query
-        escaped_artist = _escape_lucene_special_chars(artist)
+        escaped_artist = _escape_lucene_special_chars(lookup_artist)
         
         params = {
             "query": f'artist:"{escaped_artist}"',
@@ -1602,11 +1864,11 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
             mbid = candidate.get("id", "")
             
             # Exact name match: +100 points
-            if candidate_name.lower() == artist.lower():
+            if candidate_name.lower() == lookup_artist.lower():
                 score += 100
                 logger.debug(f"  Candidate: {candidate_name} (MBID: {mbid}) - EXACT MATCH")
             # Partial/close match: +50 points
-            elif artist.lower() in candidate_name.lower():
+            elif lookup_artist.lower() in candidate_name.lower():
                 score += 50
                 logger.debug(f"  Candidate: {candidate_name} (MBID: {mbid}) - PARTIAL MATCH")
             else:
@@ -1659,14 +1921,53 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         
         placeholder = "%s"
         
+        # Update tracks where musicbrainz_artist_id is NULL or contains
+        # multiple MBIDs (separated by ;, ,, space, or /). We first fetch
+        # all candidate rows and filter in Python so this works on both
+        # PostgreSQL and SQLite.
         cursor.execute(f"""
-            UPDATE tracks 
-            SET musicbrainz_artist_id = {placeholder}
-            WHERE artist = {placeholder} AND musicbrainz_artist_id IS NULL
-        """, (mbid, artist))
-        db_connection.commit()
-        
-        # Count how many tracks were updated
+            SELECT id, musicbrainz_artist_id FROM tracks
+            WHERE artist = {placeholder}
+        """, (artist,))
+        _to_fix = []
+        for _row in cursor.fetchall():
+            _existing = (_row[1] if _row[1] is not None else '')
+            if not _existing or not _MUSICBRAINZ_UUID_RE.match(str(_existing).strip()):
+                _to_fix.append(_row[0])
+        # Also update tracks where the artist field contains the primary artist
+        # as a featured artist (e.g., "dArtagnan feat. Melissa Bonny" should
+        # inherit the MBID for "dArtagnan" so that single detection works).
+        # We look for any artist starting with the given artist name followed by
+        # a space, and verify it actually contains a featuring pattern.
+        cursor.execute(f"""
+            SELECT id, artist, musicbrainz_artist_id FROM tracks
+            WHERE artist LIKE {placeholder}
+        """, (f"{artist} %",))
+        _FEAT_RE = re.compile(r"\s+(?:feat\.?|featuring|ft\.?)\s+", re.IGNORECASE)
+        for _row in cursor.fetchall():
+            if _FEAT_RE.search(_row[1]):
+                _existing = (_row[2] if _row[2] is not None else '')
+                if not _existing or not _MUSICBRAINZ_UUID_RE.match(str(_existing).strip()):
+                    _to_fix.append(_row[0])
+        # De-duplicate IDs in case an exact-match row was also picked up
+        _to_fix = list(dict.fromkeys(_to_fix))
+        if _to_fix:
+            # Batch update in chunks of 500 to avoid huge parameter lists
+            _chunk_size = 500
+            for _chunk_start in range(0, len(_to_fix), _chunk_size):
+                _chunk = _to_fix[_chunk_start:_chunk_start + _chunk_size]
+                _ph_list = ','.join([placeholder] * len(_chunk))
+                cursor.execute(f"""
+                    UPDATE tracks
+                    SET musicbrainz_artist_id = {placeholder}
+                    WHERE id IN ({_ph_list})
+                """, (mbid, *_chunk))
+            db_connection.commit()
+            logger.info(f"Corrected {len(_to_fix)} track(s) for artist '{artist}' to single MBID: {mbid}")
+        else:
+            db_connection.commit()
+
+        # Count how many tracks now have the corrected single MBID
         cursor.execute(f"SELECT COUNT(*) FROM tracks WHERE artist = {placeholder} AND musicbrainz_artist_id = {placeholder}", (artist, mbid))
         result = cursor.fetchone()
         updated_count = result[0] if result else 0

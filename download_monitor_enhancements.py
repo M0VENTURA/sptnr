@@ -766,7 +766,7 @@ def _build_target_path_from_format(music_root, queue_item, source_path, album_ar
         safe_parts = [
             format_vars['album_artist'],
             _sanitize_path_component(f"{format_vars['year']} - {format_vars['album']}") or 'Unknown Album',
-            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
+            f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}",
         ]
 
     rel_safe = os.path.join(*safe_parts)

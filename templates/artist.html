@@ -54,7 +54,6 @@
     </ol>
   </nav>
 
-  {% if qbit_config.enabled %}
   <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-3">
     <div class="flex-grow-1">
       <h1 class="h2 mb-2" data-artist-name="{{ artist_name|e }}">
@@ -94,7 +93,6 @@
       </form>
     </div>
   </div>
-  {% endif %}
 
   <!-- Needs Correcting badge — always shown when corrections exist -->
   <div id="artist-corrections-banner" style="display:none;" class="mb-3">
@@ -311,9 +309,10 @@
         </button>
       </div>
       <div class="card-body">
-        <!-- Genre Sources from Database (pre-rendered from scan data) -->
+        <!-- Detected Genres from Database (pre-rendered from scan data) -->
         <div class="mb-4">
-          <h6 class="mb-3"><i class="bi bi-database-fill"></i> Genre & Tag Sources</h6>
+          <h6 class="mb-3"><i class="bi bi-database-fill"></i> Detected Genres</h6>
+          <p class="text-muted small mb-2">All genres detected from external sources (Last.fm, Discogs, MusicBrainz, Essentia, etc.) across all tracks. These are kept in the database for reference.</p>
           <div id="artistGenreSourcesContainer" class="text-muted small">
             {% set sources = [
               ('mood', 'Mood Scan', 'F59C00', 'light'),
@@ -382,10 +381,10 @@
         
         <hr style="margin: 1.5rem 0; border-color: var(--border-color);">
         
-        <!-- Current Genres from All Tracks -->
+        <!-- Top Genres from All Tracks -->
         <div class="mb-3">
-          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Genres Across All Tracks</h6>
-          <p class="text-muted small mb-2">These are aggregated from all track metadata in your library for this artist. Click the × to remove incorrect genres.</p>
+          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Top Genres</h6>
+          <p class="text-muted small mb-2">These are the top genres saved to track metadata across all tracks by this artist (up to 3 per track). Click the × to remove incorrect genres.</p>
           <div id="artistGenresContainer">
             {% if genres %}
             <div class="d-flex flex-wrap gap-2 mb-3" id="currentArtistGenres">
@@ -2133,8 +2132,8 @@ function checkMissingReleases(artistName, silent = false, background = false) {
     if (categoryRaw.includes('compilation')) return 'compilation';
     if (categoryRaw.includes('live')) return 'live_album';
     if (categoryRaw.includes('remix')) return 'remix_album';
-    if (categoryRaw.includes('ep')) return 'ep';
     if (categoryRaw.includes('single')) return 'single';
+    if (categoryRaw.includes('ep')) return 'ep';
     // Fallback: inspect the title for live/unplugged/remix keywords even when
     // the stored category is the generic "album" value (e.g. secondary type
     // missing from MusicBrainz at scan time).
@@ -3777,7 +3776,7 @@ function toggleMissing(category) {
 
 // Initialize toggle states on page load
 function initializeMissingToggle() {
-  const categories = ['albums', 'compilations', 'live-albums', 'eps', 'singles'];
+  const categories = ['albums', 'compilations', 'live-albums', 'remix-albums', 'eps', 'singles'];
   categories.forEach(category => {
     const section = document.getElementById(category + '-section');
     if (!section) return;

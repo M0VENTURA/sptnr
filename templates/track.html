@@ -80,82 +80,483 @@
         </div>
     </div>
 
-    {% set has_extended = (track.musicbrainz_albumid or track.musicbrainz_album_mbid) or track.musicbrainz_trackid or track.musicbrainz_releasegroupid or track.musicbrainz_releasetrackid or track.musicbrainz_albumstatus or track.musicbrainz_albumtype or track.releasecountry or track.isrc or track.bpm or track.danceability %}
+    {% set has_extended = (
+        track.musicbrainz_albumid or track.musicbrainz_album_mbid or
+        track.musicbrainz_trackid or track.musicbrainz_releasegroupid or
+        track.musicbrainz_releasetrackid or track.musicbrainz_artistid or
+        track.musicbrainz_albumartistid or track.musicbrainz_workid or
+        track.musicbrainz_albumstatus or track.musicbrainz_albumtype or
+        track.releasecountry or track.releasetype or track.releasestatus or
+        track.media or track.barcode or track.catalognumber or track.asin or
+        track.script or track.originalyear or track.originaldate or
+        track.tracktotal or track.disctotal or track.discsubtitle or
+        track.language or track.explicitstatus or track.encodedby or
+        track.encodersettings or track.license or track.website or
+        track.recordlabel or track.copyright or track.releasedate or
+        track.albumversion or track.subtitle or track.grouping or track.key or
+        track.movement or track.movementname or track.movementtotal or
+        track.composer or track.writer or track.lyricist or track.arranger or
+        track.mixer or track.producer or track.work or track.conductor or
+        track.performer or track.remixer or track.director or track.djmixer or
+        track.engineer or track.artists or track.albumartists or
+        track.titlesort or track.albumsort or track.artistsort or
+        track.albumartistsort or track.composersort or track.lyricistsort or
+        track.artistssort or track.albumartistssort or track.lyrics or
+        track.comment or track.isrc or track.bpm or track.bitrate or
+        track.sample_rate or track.danceability or
+        track.replaygain_track_gain or track.replaygain_track_peak or
+        track.replaygain_album_gain or track.replaygain_album_peak or
+        track.r128_track_gain or track.r128_album_gain
+    ) %}
     {% if has_extended %}
     <div class="card mb-4" id="track-extended-tags-section">
-        <div class="card-header">
+        <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0"><i class="bi bi-diagram-3"></i> Extended Metadata</h5>
+            <small class="text-muted">All tags present on this track</small>
         </div>
         <div class="card-body">
-            <div class="row g-2">
+            <!-- MusicBrainz IDs -->
+            {% set has_mb_ids = track.musicbrainz_albumid or track.musicbrainz_album_mbid or track.musicbrainz_trackid or track.musicbrainz_releasegroupid or track.musicbrainz_releasetrackid or track.musicbrainz_artistid or track.musicbrainz_albumartistid or track.musicbrainz_workid %}
+            {% if has_mb_ids %}
+            <h6 class="text-muted mb-2"><i class="bi bi-music-note-list"></i> MusicBrainz IDs</h6>
+            <div class="row g-2 mb-3">
                 {% if track.musicbrainz_albumid or track.musicbrainz_album_mbid %}
                 <div class="col-12 col-md-6">
-                    <small class="text-muted d-block">MusicBrainz Album ID</small>
+                    <small class="text-muted d-block">Album ID</small>
                     <div class="d-flex align-items-center gap-2 flex-wrap">
                         <code>{{ track.musicbrainz_albumid or track.musicbrainz_album_mbid }}</code>
-                        {% if track.musicbrainz_trackid or track.beets_mbid %}
                         <button type="button" class="btn btn-sm btn-outline-primary" onclick="openMbReleaseModal('{{ track.id }}')" title="Match to a different MusicBrainz release">
-                            <i class="bi bi-arrow-repeat"></i> Match Release
+                            <i class="bi bi-arrow-repeat"></i>
                         </button>
-                        {% endif %}
                     </div>
                 </div>
                 {% endif %}
                 {% if track.musicbrainz_trackid %}
                 <div class="col-12 col-md-6">
-                    <small class="text-muted d-block">MusicBrainz Recording ID</small>
+                    <small class="text-muted d-block">Recording ID</small>
                     <code>{{ track.musicbrainz_trackid }}</code>
                 </div>
                 {% endif %}
                 {% if track.musicbrainz_releasegroupid %}
                 <div class="col-12 col-md-6">
-                    <small class="text-muted d-block">MusicBrainz Release Group ID</small>
+                    <small class="text-muted d-block">Release Group ID</small>
                     <code>{{ track.musicbrainz_releasegroupid }}</code>
                 </div>
                 {% endif %}
                 {% if track.musicbrainz_releasetrackid %}
                 <div class="col-12 col-md-6">
-                    <small class="text-muted d-block">MusicBrainz Release Track ID</small>
+                    <small class="text-muted d-block">Release Track ID</small>
                     <code>{{ track.musicbrainz_releasetrackid }}</code>
                 </div>
                 {% endif %}
-                {% if track.musicbrainz_albumstatus %}
+                {% if track.musicbrainz_artistid %}
                 <div class="col-12 col-md-6">
-                    <small class="text-muted d-block">MusicBrainz Album Status</small>
+                    <small class="text-muted d-block">Artist ID</small>
+                    <code>{{ track.musicbrainz_artistid }}</code>
+                </div>
+                {% endif %}
+                {% if track.musicbrainz_albumartistid %}
+                <div class="col-12 col-md-6">
+                    <small class="text-muted d-block">Album Artist ID</small>
+                    <code>{{ track.musicbrainz_albumartistid }}</code>
+                </div>
+                {% endif %}
+                {% if track.musicbrainz_workid %}
+                <div class="col-12 col-md-6">
+                    <small class="text-muted d-block">Work ID</small>
+                    <code>{{ track.musicbrainz_workid }}</code>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <!-- Release Information -->
+            {% set has_release_info = track.musicbrainz_albumstatus or track.musicbrainz_albumtype or track.releasecountry or track.releasetype or track.releasestatus or track.media or track.barcode or track.catalognumber or track.asin or track.script or track.originalyear or track.originaldate or track.tracktotal or track.disctotal or track.discsubtitle or track.language or track.explicitstatus or track.recordlabel or track.copyright or track.releasedate or track.albumversion %}
+            {% if has_release_info %}
+            <h6 class="text-muted mb-2"><i class="bi bi-disc-fill"></i> Release Information</h6>
+            <div class="row g-2 mb-3">
+                {% if track.musicbrainz_albumstatus %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Album Status</small>
                     <strong>{{ track.musicbrainz_albumstatus }}</strong>
                 </div>
                 {% endif %}
                 {% if track.musicbrainz_albumtype %}
-                <div class="col-12 col-md-6">
-                    <small class="text-muted d-block">MusicBrainz Album Type</small>
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Album Type</small>
                     <strong>{{ track.musicbrainz_albumtype }}</strong>
                 </div>
                 {% endif %}
+                {% if track.releasetype %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Release Type</small>
+                    <strong>{{ track.releasetype }}</strong>
+                </div>
+                {% endif %}
+                {% if track.releasestatus %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Release Status</small>
+                    <strong>{{ track.releasestatus }}</strong>
+                </div>
+                {% endif %}
                 {% if track.releasecountry %}
-                <div class="col-12 col-md-6">
-                    <small class="text-muted d-block">MusicBrainz Release Country</small>
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Release Country</small>
                     <strong>{{ track.releasecountry }}</strong>
                 </div>
                 {% endif %}
+                {% if track.language %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Language</small>
+                    <strong>{{ track.language }}</strong>
+                </div>
+                {% endif %}
+                {% if track.media %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Media Format</small>
+                    <strong>{{ track.media }}</strong>
+                </div>
+                {% endif %}
+                {% if track.recordlabel %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Record Label</small>
+                    <strong>{{ track.recordlabel }}</strong>
+                </div>
+                {% endif %}
+                {% if track.catalognumber %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Catalog #</small>
+                    <strong>{{ track.catalognumber }}</strong>
+                </div>
+                {% endif %}
+                {% if track.barcode %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Barcode</small>
+                    <strong>{{ track.barcode }}</strong>
+                </div>
+                {% endif %}
+                {% if track.asin %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">ASIN</small>
+                    <strong>{{ track.asin }}</strong>
+                </div>
+                {% endif %}
+                {% if track.script %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Script</small>
+                    <strong>{{ track.script }}</strong>
+                </div>
+                {% endif %}
+                {% if track.releasedate %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Release Date</small>
+                    <strong>{{ track.releasedate }}</strong>
+                </div>
+                {% endif %}
+                {% if track.originalyear %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Original Year</small>
+                    <strong>{{ track.originalyear }}</strong>
+                </div>
+                {% endif %}
+                {% if track.originaldate %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Original Date</small>
+                    <strong>{{ track.originaldate }}</strong>
+                </div>
+                {% endif %}
+                {% if track.tracktotal %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Track Total</small>
+                    <strong>{{ track.tracktotal }}</strong>
+                </div>
+                {% endif %}
+                {% if track.disctotal %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Disc Total</small>
+                    <strong>{{ track.disctotal }}</strong>
+                </div>
+                {% endif %}
+                {% if track.discsubtitle %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Disc Subtitle</small>
+                    <strong>{{ track.discsubtitle }}</strong>
+                </div>
+                {% endif %}
+                {% if track.albumversion %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Album Version</small>
+                    <strong>{{ track.albumversion }}</strong>
+                </div>
+                {% endif %}
+                {% if track.copyright %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Copyright</small>
+                    <strong>{{ track.copyright }}</strong>
+                </div>
+                {% endif %}
+                {% if track.explicitstatus %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Explicit Status</small>
+                    <strong>{{ track.explicitstatus }}</strong>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <!-- Credits -->
+            {% set has_credits = track.composer or track.writer or track.lyricist or track.arranger or track.mixer or track.producer or track.work or track.conductor or track.performer or track.remixer or track.director or track.djmixer or track.engineer or track.artists or track.albumartists %}
+            {% if has_credits %}
+            <h6 class="text-muted mb-2"><i class="bi bi-people-fill"></i> Credits</h6>
+            <div class="row g-2 mb-3">
+                {% if track.composer %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Composer</small>
+                    <strong>{{ track.composer }}</strong>
+                </div>
+                {% endif %}
+                {% if track.writer or track.lyricist %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Writer/Lyricist</small>
+                    <strong>{{ track.writer or track.lyricist }}</strong>
+                </div>
+                {% endif %}
+                {% if track.arranger %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Arranger</small>
+                    <strong>{{ track.arranger }}</strong>
+                </div>
+                {% endif %}
+                {% if track.mixer %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Mixer</small>
+                    <strong>{{ track.mixer }}</strong>
+                </div>
+                {% endif %}
+                {% if track.producer %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Producer</small>
+                    <strong>{{ track.producer }}</strong>
+                </div>
+                {% endif %}
+                {% if track.work %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Work</small>
+                    <strong>{{ track.work }}</strong>
+                </div>
+                {% endif %}
+                {% if track.conductor %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Conductor</small>
+                    <strong>{{ track.conductor }}</strong>
+                </div>
+                {% endif %}
+                {% if track.performer %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Performer</small>
+                    <strong>{{ track.performer }}</strong>
+                </div>
+                {% endif %}
+                {% if track.remixer %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Remixer</small>
+                    <strong>{{ track.remixer }}</strong>
+                </div>
+                {% endif %}
+                {% if track.director %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Director</small>
+                    <strong>{{ track.director }}</strong>
+                </div>
+                {% endif %}
+                {% if track.djmixer %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">DJ Mixer</small>
+                    <strong>{{ track.djmixer }}</strong>
+                </div>
+                {% endif %}
+                {% if track.engineer %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Engineer</small>
+                    <strong>{{ track.engineer }}</strong>
+                </div>
+                {% endif %}
+                {% if track.artists %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Artists (multi)</small>
+                    <strong>{{ track.artists }}</strong>
+                </div>
+                {% endif %}
+                {% if track.albumartists %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Album Artists (multi)</small>
+                    <strong>{{ track.albumartists }}</strong>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <!-- Content / Classical -->
+            {% set has_content = track.lyrics or track.comment or track.subtitle or track.grouping or track.key or track.movement or track.movementname or track.movementtotal %}
+            {% if has_content %}
+            <h6 class="text-muted mb-2"><i class="bi bi-chat-quote-fill"></i> Content & Classical</h6>
+            <div class="row g-2 mb-3">
+                {% if track.subtitle %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Subtitle</small>
+                    <strong>{{ track.subtitle }}</strong>
+                </div>
+                {% endif %}
+                {% if track.grouping %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Grouping</small>
+                    <strong>{{ track.grouping }}</strong>
+                </div>
+                {% endif %}
+                {% if track.key %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Initial Key</small>
+                    <strong>{{ track.key }}</strong>
+                </div>
+                {% endif %}
+                {% if track.movement %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Movement #</small>
+                    <strong>{{ track.movement }}</strong>
+                </div>
+                {% endif %}
+                {% if track.movementname %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Movement Name</small>
+                    <strong>{{ track.movementname }}</strong>
+                </div>
+                {% endif %}
+                {% if track.movementtotal %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Movement Total</small>
+                    <strong>{{ track.movementtotal }}</strong>
+                </div>
+                {% endif %}
+                {% if track.comment %}
+                <div class="col-12">
+                    <small class="text-muted d-block">Comment</small>
+                    <p class="mb-0">{{ track.comment }}</p>
+                </div>
+                {% endif %}
+                {% if track.lyrics %}
+                <div class="col-12">
+                    <small class="text-muted d-block">Lyrics</small>
+                    <pre class="mb-0" style="white-space: pre-wrap; font-size: 0.85rem;">{{ track.lyrics[:200] }}{% if track.lyrics|length > 200 %}...{% endif %}</pre>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <!-- Technical / Legal -->
+            {% set has_technical = track.isrc or track.bpm or track.bitrate or track.sample_rate or track.danceability or track.encodedby or track.encodersettings or track.license or track.website %}
+            {% if has_technical %}
+            <h6 class="text-muted mb-2"><i class="bi bi-gear-fill"></i> Technical & Legal</h6>
+            <div class="row g-2 mb-3">
                 {% if track.isrc %}
-                <div class="col-12 col-md-6">
+                <div class="col-6 col-md-4 col-lg-3">
                     <small class="text-muted d-block">ISRC</small>
                     <code>{{ track.isrc }}</code>
                 </div>
                 {% endif %}
                 {% if track.bpm %}
-                <div class="col-12 col-md-3">
+                <div class="col-6 col-md-4 col-lg-3">
                     <small class="text-muted d-block">BPM</small>
                     <strong>{{ track.bpm }}</strong>
                 </div>
                 {% endif %}
+                {% if track.bitrate %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Bitrate</small>
+                    <strong>{{ (track.bitrate / 1000)|round(0)|int }} kbps</strong>
+                </div>
+                {% endif %}
+                {% if track.sample_rate %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Sample Rate</small>
+                    <strong>{{ (track.sample_rate / 1000)|round(1) }} kHz</strong>
+                </div>
+                {% endif %}
                 {% if track.danceability is not none and track.danceability != '' %}
-                <div class="col-12 col-md-3">
+                <div class="col-6 col-md-4 col-lg-3">
                     <small class="text-muted d-block">Danceability</small>
                     <strong>{{ '%.3f'|format(track.danceability|float) }}</strong>
                 </div>
                 {% endif %}
+                {% if track.encodedby %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Encoded By</small>
+                    <strong>{{ track.encodedby }}</strong>
+                </div>
+                {% endif %}
+                {% if track.encodersettings %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Encoder Settings</small>
+                    <strong>{{ track.encodersettings }}</strong>
+                </div>
+                {% endif %}
+                {% if track.license %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">License</small>
+                    <strong>{{ track.license }}</strong>
+                </div>
+                {% endif %}
+                {% if track.website %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Website</small>
+                    <a href="{{ track.website }}" target="_blank">{{ track.website }}</a>
+                </div>
+                {% endif %}
             </div>
+            {% endif %}
+
+            <!-- ReplayGain / R128 -->
+            {% set has_replaygain = track.replaygain_track_gain or track.replaygain_track_peak or track.replaygain_album_gain or track.replaygain_album_peak or track.r128_track_gain or track.r128_album_gain %}
+            {% if has_replaygain %}
+            <h6 class="text-muted mb-2"><i class="bi bi-soundwave"></i> ReplayGain / R128</h6>
+            <div class="row g-2">
+                {% if track.replaygain_track_gain %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Track Gain</small>
+                    <strong>{{ track.replaygain_track_gain }}</strong>
+                </div>
+                {% endif %}
+                {% if track.replaygain_track_peak %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Track Peak</small>
+                    <strong>{{ track.replaygain_track_peak }}</strong>
+                </div>
+                {% endif %}
+                {% if track.replaygain_album_gain %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Album Gain</small>
+                    <strong>{{ track.replaygain_album_gain }}</strong>
+                </div>
+                {% endif %}
+                {% if track.replaygain_album_peak %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">Album Peak</small>
+                    <strong>{{ track.replaygain_album_peak }}</strong>
+                </div>
+                {% endif %}
+                {% if track.r128_track_gain %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">R128 Track Gain</small>
+                    <strong>{{ track.r128_track_gain }}</strong>
+                </div>
+                {% endif %}
+                {% if track.r128_album_gain %}
+                <div class="col-6 col-md-4 col-lg-3">
+                    <small class="text-muted d-block">R128 Album Gain</small>
+                    <strong>{{ track.r128_album_gain }}</strong>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
         </div>
     </div>
     {% endif %}
@@ -208,6 +609,25 @@
                     title="Rename/move the file using the format configured in Settings (downloads.file_name_format)">
                 <i class="bi bi-pencil-square"></i> <span class="d-none d-sm-inline">Rename File</span>
             </button>
+        </div>
+    </div>
+
+    <!-- Sticky Section Navigation -->
+    <div class="card mb-4 sticky-top" style="top: 4rem; z-index: 1000;">
+        <div class="card-body py-2 px-3">
+            <ul class="nav nav-pills gap-2 small">
+                <li class="nav-item"><a class="nav-link" href="#track-edit-section">Track Info</a></li>
+                <li class="nav-item"><a class="nav-link" href="#track-sort-keys-section">Sort Keys</a></li>
+                <li class="nav-item"><a class="nav-link" href="#track-credits-section">Credits</a></li>
+                <li class="nav-item"><a class="nav-link" href="#track-release-info-section">Release</a></li>
+                <li class="nav-item"><a class="nav-link" href="#track-movement-section">Classical</a></li>
+                <li class="nav-item"><a class="nav-link" href="#track-technical-legal-section">Technical</a></li>
+                <li class="nav-item"><a class="nav-link" href="#track-external-ids-section">IDs</a></li>
+                <li class="nav-item"><a class="nav-link" href="#track-replaygain-section">ReplayGain</a></li>
+                <li class="nav-item"><a class="nav-link" href="#track-lyrics-section">Lyrics</a></li>
+                <li class="nav-item"><a class="nav-link" href="#track-genres-edit-section">Genres</a></li>
+                <li class="nav-item"><a class="nav-link" href="#track-scoring-section">Scoring</a></li>
+            </ul>
         </div>
     </div>
 
@@ -333,6 +753,13 @@
                             <input type="checkbox" class="form-check-input" id="is_acoustic" name="is_acoustic" {% if track.is_acoustic == 1 %}checked{% endif %}>
                             <label class="form-check-label" for="is_acoustic">
                                 <i class="bi bi-music-note"></i> Is Acoustic
+                            </label>
+                        </div>
+
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="is_remix" name="is_remix" {% if track.is_remix == 1 %}checked{% endif %}>
+                            <label class="form-check-label" for="is_remix">
+                                <i class="bi bi-sliders"></i> Is Remix
                             </label>
                         </div>
 
@@ -756,9 +1183,10 @@
                         </h5>
                     </div>
                     <div class="card-body">
-                        <!-- Editable genres -->
+                        <!-- Editable top genres -->
                         <div class="mb-4">
-                            <h6 class="mb-2">Your Genres</h6>
+                            <h6 class="mb-2">Top Genres</h6>
+                            <p class="text-muted small mb-2">The top genres saved to this track's metadata (up to 3). These are applied during scans and can be manually edited.</p>
                             <div id="genresContainer" class="mb-3">
                                 {% if track.genres %}
                                     {% for genre in track.genres|split_genres %}
@@ -810,9 +1238,10 @@
 
                         <hr class="my-3">
 
-                        <!-- Genre Source Display from All Sources -->
+                        <!-- Detected Genres from All Sources -->
                         {% if genre_sources %}
-                            <h6 class="mb-2">Source Tags</h6>
+                            <h6 class="mb-2">Detected Genres</h6>
+                            <p class="text-muted small mb-2">All genres detected from external sources for this track. These are kept in the database for reference.</p>
                             {% set sources = [
                                                             ('discogs_genres', 'Discogs', '6c757d', 'white', 'bi-vinyl-fill'),
                                                             ('mood', 'Essentia Moods', 'F59C00', 'black', 'bi-emoji-smile-fill'),
@@ -1099,14 +1528,15 @@
                     </div>
                 </div>
 
-                <!-- Consolidated Genre & Tag Sources -->
+                <!-- Consolidated Detected Genres -->
                 <div class="card mb-4" id="track-genres-sources-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-collection-fill"></i> Genre & Tag Sources
+                            <i class="bi bi-collection-fill"></i> Detected Genres
                         </h5>
                     </div>
                     <div class="card-body">
+                        <p class="text-muted small mb-2">All genres detected from external sources for this track. These are kept in the database for reference.</p>
                         <div id="genreSourcesContainer" class="spinner-border" role="status">
                             <span class="visually-hidden">Loading genres...</span>
                         </div>

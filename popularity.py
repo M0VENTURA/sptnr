@@ -30,7 +30,13 @@ from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 from api_clients import session, timeout_safe_session
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
-from helpers.helpers import find_matching_spotify_single, strip_cover_attribution, strip_parentheses as _strip_parentheses_unified
+from helpers.helpers import (
+    find_matching_spotify_single,
+    strip_cover_attribution,
+    strip_parentheses as _strip_parentheses_unified,
+    normalize_artist_for_matching,
+)
+
 from helpers.matching_utils import normalize_album, strip_search_parentheses
 from database_abstraction import DatabaseQuery
 
@@ -160,6 +166,9 @@ STANDOUT_CONFIG = {
     'artist_min_tracks': 10,              # Min tracks for artist-level filter
     'star_5': {'album_z': 1.0, 'artist_z': 1.2, 'artist_pct': 0.10},  # Requires z >= 1.0 for 5★
     'star_4': {'album_z': 0.8, 'artist_z': 1.0, 'artist_pct': 0.20},  # Uses lower 0.8 threshold
+    'star_5_single': {'artist_pct': 0.25},  # Single detection must also be in top 25% of artist catalog for 5★
+    'popularity_5star_z_threshold': 2.0,     # Configurable z threshold for popularity-only 5★
+    'lb_unreliable_5star_threshold': 0.50,   # LB percentile threshold for 5-star override when Last.fm is unreliable
     'star_3': {'album_z': 0.0},
     'star_2': {'album_mean': True},
     'star_1': {'default': True},
@@ -278,12 +287,12 @@ def normalize_primary_release_type(album_type: str) -> str:
     return 'album'
 
 
-def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
+def should_exclude_track_from_stats(title: str, album: str = "", is_live: int = 0, album_context_live: int = 0) -> bool:
     """
     Determine if a track should be excluded from album/artist statistics calculations.
 
     Excludes tracks that are:
-    - Live versions
+    - Live versions (detected from title, album name, or is_live / album_context_live flags)
     - Remixes
     - Acoustic/orchestral versions
     - Demos
@@ -299,10 +308,16 @@ def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     Args:
         title: Track title to check
         album: Album name to check (optional, for live album detection)
+        is_live: Whether the track is explicitly flagged as live (1 = live)
+        album_context_live: Whether the album context is flagged as live (1 = live album)
 
     Returns:
         True if track should be excluded from statistics, False otherwise
     """
+    # If the track or album is explicitly flagged as live, exclude it immediately
+    if is_live or album_context_live:
+        return True
+
     # Strip cover attributions and single-release suffixes first so
     # "Song (Radio Edit)" doesn't match "edit" and get excluded from statistics
     base_title = strip_single_release_suffix(strip_cover_attribution(title))
@@ -1186,6 +1201,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
         - track_count: Total tracks analyzed
         - top_15_percentile: Popularity threshold for top 15% of artist's tracks
         - top_20_percentile: Popularity threshold for top 20% of artist's tracks
+        - top_25_percentile: Popularity threshold for top 25% of artist's tracks
     """
     try:
         placeholder = "%s"
@@ -1222,9 +1238,11 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             popularity_score = row_get(row, 'popularity_score', 0)
             title = row_get(row, 'title', '')
             album = row_get(row, 'album', '') if has_album_column else ""
+            _is_live_flag = row_get(row, 'is_live', 0) or 0
+            _album_context_live_flag = row_get(row, 'album_context_live', 0) or 0
 
             # Exclude live/remix/alternate versions from artist statistics
-            if not should_exclude_track_from_stats(title, album):
+            if not should_exclude_track_from_stats(title, album, _is_live_flag, _album_context_live_flag):
                 scores.append(popularity_score)
 
         if not scores:
@@ -1234,7 +1252,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
                 'stddev_popularity': 0,
                 'track_count': 0,
                 'top_15_percentile': 0,
-                'top_20_percentile': 0
+                'top_20_percentile': 0,
+                'top_25_percentile': 0
             }
 
         # Sort scores to calculate percentiles
@@ -1244,11 +1263,15 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
         # Calculate percentile thresholds
         # Top 15%: This is approximately 85th percentile (top artists of artist's work)
         # Top 20%: This is approximately 80th percentile (broader standout tracks)
+        # Top 25%: Used for single-detection star rating gate (issue #770)
+
         top_15_index = max(0, int(track_count * 0.15) - 1)  # -1 for 0-based index
         top_20_index = max(0, int(track_count * 0.20) - 1)
+        top_25_index = max(0, int(track_count * 0.25) - 1)
 
         top_15_threshold = sorted_scores[top_15_index] if top_15_index < track_count else 0
         top_20_threshold = sorted_scores[top_20_index] if top_20_index < track_count else 0
+        top_25_threshold = sorted_scores[top_25_index] if top_25_index < track_count else 0
 
         # Calculate MAD (Median Absolute Deviation)
         # MAD is more robust to outliers than standard deviation
@@ -1265,7 +1288,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             'mad_popularity': mad_scaled,  # NEW: MAD for robust z-score calculation
             'track_count': len(scores),
             'top_15_percentile': top_15_threshold,  # Top 15% of artist's tracks
-            'top_20_percentile': top_20_threshold   # Top 20% of artist's tracks
+            'top_20_percentile': top_20_threshold,   # Top 20% of artist's tracks
+            'top_25_percentile': top_25_threshold,   # Top 25% of artist's tracks (single gate)
         }
     except Exception as e:
         try:
@@ -1281,7 +1305,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             'mad_popularity': 0,
             'track_count': 0,
             'top_15_percentile': 0,
-            'top_20_percentile': 0
+            'top_20_percentile': 0,
+            'top_25_percentile': 0,
         }
 
 
@@ -1496,7 +1521,7 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
             genre_scores[norm] += weight
 
     # Apply contextual boosts
-    if "live" in title.lower() or "live" in album.lower():
+    if re.search(r'\blive\b', title.lower()) or re.search(r'\blive\b', album.lower()):
         genre_scores["live"] += 0.5
     # Christmas detection: strong boost so the genre reliably surfaces at the top
     _christmas_keywords = ["christmas", "xmas", "yuletide", "holiday season", "jingle bells",
@@ -1828,10 +1853,19 @@ PG_DATABASE = os.environ.get("PG_DATABASE", "")
 from popularity_helpers import (
     get_lastfm_track_info,
     calculate_lastfm_popularity_score,
+    calculate_lastfm_zscore_popularity,
+    calculate_listenbrainz_popularity_score,
+    calculate_listenbrainz_percentile,
+    calculate_combined_popularity_score,
+    get_listenbrainz_batch_for_tracks,
+    get_aggregated_listenbrainz_popularity,
     score_by_age,
     update_artist_id_for_artist,
     get_lastfm_client,
+    adjust_weights,
+    is_lastfm_unreliable,
     LASTFM_WEIGHT,
+    LISTENBRAINZ_WEIGHT,
     AGE_WEIGHT,
 )
 from helpers.api_rate_limiter import get_rate_limiter
@@ -1862,7 +1896,7 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple:
     cursor.execute(f"""
         SELECT popularity_score
         FROM tracks
-        WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
     """, (artist, album))
 
     popularities = [row_get(row, 'popularity_score', 0) for row in cursor.fetchall()]
@@ -1888,7 +1922,7 @@ def calculate_artist_stats(conn, artist: str) -> tuple:
     cursor.execute(f"""
         SELECT popularity_score
         FROM tracks
-        WHERE artist = {placeholder} AND popularity_score > 0
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
     """, (artist,))
 
     popularities = [row_get(row, 'popularity_score', 0) for row in cursor.fetchall()]
@@ -2140,7 +2174,51 @@ def get_resume_artist_from_db():
     except Exception as e:
         log_basic(f"Error getting resume artist from database: {e}")
         return None
+    
+def is_top_artist_catalog_score(cursor, canonical_artist, popularity_score, placeholder, row_get, threshold=0.25):
+    if not canonical_artist or popularity_score <= 0:
+        return False
+    try:
+        cursor.execute(
+            f"""
+            SELECT
+                COUNT(
+                    CASE 
+                        WHEN NOT (is_live = 1 OR album_context_live = 1)
+                    THEN 1
+                END
+                ) as total,
+                SUM(
+                    CASE 
+                        WHEN popularity_score > {placeholder}
+                        AND NOT (is_live = 1 OR album_context_live = 1)
+                    THEN 1 ELSE 0 
+                END
+            ) as above
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+            AND popularity_score > 0
+            """,
+            (popularity_score, canonical_artist),
+        )
+        row_stats = cursor.fetchone()
+        total_cat = row_get(row_stats, "total", 0) or 0
+        above_cat = row_get(row_stats, "above", 0) or 0
 
+        if total_cat > 0:
+            percentile = above_cat / total_cat
+
+            elite_cutoff = max(3, int(total_cat * 0.05))
+
+            if above_cat <= elite_cutoff:
+                return True
+            
+            return percentile <= threshold
+
+    except Exception as e:
+        log_debug(f"Artist percentile check failed for '{canonical_artist}': {e}")
+
+    return False
 
 def fetch_album_art_from_audiodb(artist: str, album: str) -> str | None:
     """
@@ -3199,37 +3277,30 @@ def get_artist_listenbrainz_context(artist_mbid: str) -> dict:
         - listen_counts: List of listen counts for debugging
     """
     try:
-        import requests
+        from api_clients.audiodb_and_listenbrainz import ListenBrainzClient
+        lb_client = ListenBrainzClient()
+        recordings = lb_client.get_top_recordings_for_artist(artist_mbid)
 
-        url = f"https://api.listenbrainz.org/1/popularity/top-recordings-for-artist/{artist_mbid}"
-
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            recordings = response.json()
-
-            if not recordings:
-                return {'top_10_percentile_threshold': 0, 'total_recordings': 0, 'source': 'error', 'listen_counts': []}
-
-            listen_counts = [r.get('total_listen_count', 0) for r in recordings if r.get('total_listen_count')]
-
-            if not listen_counts:
-                return {'top_10_percentile_threshold': 0, 'total_recordings': len(recordings), 'source': 'error', 'listen_counts': []}
-
-            total_recordings = len(recordings)
-            top_10_count = max(1, total_recordings // 10)
-            top_10_threshold = listen_counts[min(top_10_count - 1, len(listen_counts) - 1)]
-
-            log_debug(f"ListenBrainz: {total_recordings} total recordings, top 10% = {top_10_count} recordings, threshold: {top_10_threshold} listens")
-
-            return {
-                'top_10_percentile_threshold': top_10_threshold,
-                'total_recordings': total_recordings,
-                'source': 'listenbrainz',
-                'listen_counts': listen_counts
-            }
-        else:
-            log_debug(f"ListenBrainz API error: {response.status_code} for artist {artist_mbid}")
+        if not recordings:
             return {'top_10_percentile_threshold': 0, 'total_recordings': 0, 'source': 'error', 'listen_counts': []}
+
+        listen_counts = [r.get('total_listen_count', 0) for r in recordings if r.get('total_listen_count')]
+
+        if not listen_counts:
+            return {'top_10_percentile_threshold': 0, 'total_recordings': len(recordings), 'source': 'error', 'listen_counts': []}
+
+        total_recordings = len(recordings)
+        top_10_count = max(1, total_recordings // 10)
+        top_10_threshold = listen_counts[min(top_10_count - 1, len(listen_counts) - 1)]
+
+        log_debug(f"ListenBrainz: {total_recordings} total recordings, top 10% = {top_10_count} recordings, threshold: {top_10_threshold} listens")
+
+        return {
+            'top_10_percentile_threshold': top_10_threshold,
+            'total_recordings': total_recordings,
+            'source': 'listenbrainz',
+            'listen_counts': listen_counts
+        }
     except Exception as e:
         log_debug(f"Failed to fetch ListenBrainz context for artist {artist_mbid}: {e}")
         return {'top_10_percentile_threshold': 0, 'total_recordings': 0, 'source': 'error', 'listen_counts': []}
@@ -3851,7 +3922,8 @@ def popularity_scan(
             "spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup, "
             "popularity_score, album_artist, writer, spotify_genres, lastfm_tags, "
             "listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url, "
-            "is_live, is_acoustic, is_cover, musicbrainz_albumtype, discogs_release_id"
+            "is_live, is_acoustic, is_remix, is_cover, musicbrainz_albumtype, discogs_release_id, "
+            "album_context_live, file_path, genres, is_single, single_confidence"
         )
         where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
         # Order by album_artist (falling back to track artist when absent) so that the
@@ -4022,6 +4094,7 @@ def popularity_scan(
                     SELECT musicbrainz_artist_id
                     FROM tracks
                     WHERE artist = {placeholder} AND musicbrainz_artist_id IS NOT NULL
+                    ORDER BY LENGTH(musicbrainz_artist_id) ASC
                     LIMIT 1
                 """, (artist,))
                 row = cursor.fetchone()
@@ -4524,38 +4597,15 @@ def popularity_scan(
                                     log_debug(f"Found MusicBrainz MBID for artist '{artist}': {artist_mbid}")
 
                                     # Now fetch similar artists from ListenBrainz using the public API
-                                    # ListenBrainz similar-artists endpoint: https://labs.api.listenbrainz.org/similar-artists/json
                                     try:
-                                        import urllib.parse
-                                        lb_url = "https://labs.api.listenbrainz.org/similar-artists/json"
-                                        params = {
-                                            "artist_mbids": artist_mbid  # Can be comma-separated for multiple MBIDs
-                                        }
-                                        # Use default session to make the request
-                                        res = session.get(lb_url, params=params, timeout=(5, 10))
-                                        res.raise_for_status()
-
-                                        lb_results = res.json()
-
-                                        # Extract similar artists from the response
-                                        # ListenBrainz returns: {"payload": {"artists": [{"artist_name": "...", "artist_mbid": "..."}, ...]}}
-                                        if lb_results and "payload" in lb_results:
-                                            similar_records = lb_results.get("payload", {}).get("artists", [])
-
-                                            if similar_records:
-                                                similar_artists_listenbrainz = [
-                                                    {
-                                                        "name": record.get("artist_name", ""),
-                                                        "mbid": record.get("artist_mbid", "")
-                                                    }
-                                                    for record in similar_records[:10]  # Limit to top 10
-                                                ]
-                                                log_info(f"Found {len(similar_artists_listenbrainz)} similar artists for '{artist}' from ListenBrainz")
-                                                log_debug(f"ListenBrainz similar artists: {[a.get('name') for a in similar_artists_listenbrainz]}")
-                                            else:
-                                                log_debug(f"No similar artists found for MBID {artist_mbid} from ListenBrainz")
+                                        from api_clients.audiodb_and_listenbrainz import ListenBrainzClient
+                                        lb_client = ListenBrainzClient()
+                                        similar_artists_listenbrainz = lb_client.get_similar_artists(artist_mbid)
+                                        if similar_artists_listenbrainz:
+                                            log_info(f"Found {len(similar_artists_listenbrainz)} similar artists for '{artist}' from ListenBrainz")
+                                            log_debug(f"ListenBrainz similar artists: {[a.get('name') for a in similar_artists_listenbrainz]}")
                                         else:
-                                            log_debug(f"ListenBrainz returned unexpected response format for {artist}")
+                                            log_debug(f"No similar artists found for MBID {artist_mbid} from ListenBrainz")
                                     except Exception as e:
                                         log_debug(f"ListenBrainz API call failed for artist {artist}: {e}")
                                 else:
@@ -4663,8 +4713,19 @@ def popularity_scan(
                             normalized = " ".join(normalized.split())
                             existing_norm.add(normalized)
 
-                    # Get artist MBID for more accurate lookup
-                    cursor.execute(f"SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = {placeholder}", (artist,))
+                    # Get artist MBID for more accurate lookup.
+                    # Use MAX() as a tie-breaker, but first filter out any
+                    # concatenated/multi-value entries by preferring rows whose
+                    # musicbrainz_artist_id looks like a single UUID.
+                    cursor.execute(f"""
+                        SELECT musicbrainz_artist_id
+                        FROM tracks
+                        WHERE artist = {placeholder}
+                          AND musicbrainz_artist_id IS NOT NULL
+                          AND TRIM(musicbrainz_artist_id) != ''
+                        ORDER BY LENGTH(musicbrainz_artist_id) ASC
+                        LIMIT 1
+                    """, (artist,))
                     result = cursor.fetchone()
                     artist_mbid = result[0] if result and result[0] else None
 
@@ -4720,21 +4781,19 @@ def popularity_scan(
                         secondary = [s.lower() for s in rg.get("secondary-types") or []]
                         primary_type = (rg.get("primary-type") or "").lower()
                         category = "Album"
-                        if "compilation" in secondary:
+                        # EPs and singles should remain in their own buckets regardless of secondary types
+                        if primary_type == "ep":
+                            category = "EP"
+                        elif primary_type == "single" or "single" in secondary:
+                            category = "Single"
+                        elif "compilation" in secondary:
                             category = "Compilation"
                         elif "live" in secondary:
                             category = "Live Album"
                         elif "remix" in secondary:
                             category = "Remix"
-                        elif primary_type == "ep":
-                            category = "EP"
-                        elif primary_type == "single" or "single" in secondary:
-                            category = "Single"
 
-                        # Filter: exclude Live and Remix albums entirely.
                         # Only include singles released in the current calendar year.
-                        if category in ("Live Album", "Remix"):
-                            continue
                         if category == "Single":
                             release_year_str = (rg.get("first-release-date") or "").split("-")[0]
                             try:
@@ -4800,13 +4859,6 @@ def popularity_scan(
 
             album_num = 0
             total_albums = len(albums)
-            single_detection_albums_processed = 0
-
-            # Calculate milestones for single detection progress tracking
-            single_detection_milestone_25 = int(total_albums * 0.25) if total_albums > 0 else 0
-            single_detection_milestone_50 = int(total_albums * 0.50) if total_albums > 0 else 0
-            single_detection_milestone_75 = int(total_albums * 0.75) if total_albums > 0 else 0
-            single_detection_milestones_logged = set()
 
             for album, album_tracks in albums.items():
                 if _stop_requested():
@@ -4886,7 +4938,7 @@ def popularity_scan(
                             pop_value = row_get(t, 'popularity_score', 0) or 0
                             if float(pop_value) <= 0:
                                 has_popularity_for_all_tracks = False
-                            if float(pop_value) > 0 and not should_exclude_track_from_stats(row_get(t, 'title', ''), row_get(t, 'album', '')):
+                            if float(pop_value) > 0 and not should_exclude_track_from_stats(row_get(t, 'title', ''), row_get(t, 'album', ''), row_get(t, 'is_live', 0) or 0, row_get(t, 'album_context_live', 0) or 0):
                                 zscore_ready_track_count += 1
 
                         has_pop_data = has_popularity_for_all_tracks
@@ -4927,7 +4979,7 @@ def popularity_scan(
                                         f"""
                                         SELECT
                                             COUNT(*) AS total,
-                                            SUM(CASE WHEN popularity_score > 0 THEN 1 ELSE 0 END) AS scored,
+                                            SUM(CASE WHEN popularity_score >= 0 THEN 1 ELSE 0 END) AS scored,
                                             SUM(CASE WHEN single_detection_last_updated IS NOT NULL THEN 1 ELSE 0 END) AS singles_assessed,
                                             SUM({is_single_high_expr}) AS high_conf_singles
                                         FROM tracks
@@ -5042,9 +5094,15 @@ def popularity_scan(
                                     if _rg_mbid:
                                         release_group_mbid = _rg_mbid
                                         log_debug(f'Using stored release-group MBID {release_group_mbid} for direct MusicBrainz lookup')
-                                    elif _rel_mbid:
-                                        release_group_mbid = _rel_mbid
-                                        log_debug(f'Using stored release MBID {release_group_mbid} for direct MusicBrainz lookup')
+                                    # Do NOT fall back to musicbrainz_album_mbid here.
+                                    # musicbrainz_album_mbid is a release MBID (specific pressing),
+                                    # not a release-group MBID. Passing it as release_group_mbid
+                                    # causes the MusicBrainz direct lookup to fail (404) because
+                                    # it queries /release-group/{release_mbid}. The text-search
+                                    # fallback then finds the correct release group, but the old
+                                    # code skipped propagating it because release_group_mbid was
+                                    # already set. Only use musicbrainz_releasegroupid for the
+                                    # release-group lookup.
                             except Exception:
                                 pass  # Column may not exist in older schemas
                             detected_album_type, type_detection_source, discovered_release_group_mbid = get_album_type_with_fallback(
@@ -5058,7 +5116,7 @@ def popularity_scan(
                             # release-group MBID, but musicbrainz_album_mbid stores a
                             # release MBID (specific pressing). Resolve a representative
                             # release before writing so Navidrome groups tracks correctly.
-                            if discovered_release_group_mbid and not release_group_mbid:
+                            if discovered_release_group_mbid:
                                 _mbid_was_newly_discovered = True
                                 _representative_release_mbid = None
                                 _mb_meta = None
@@ -5100,6 +5158,48 @@ def popularity_scan(
                             detected_album_type = current_album_type or 'album'
                             type_detection_source = 'fallback (Spotify or default)'
 
+                # Guard: do not let MusicBrainz change a non-live album to live when
+                # the album name gives no live indicators.  This prevents a studio album
+                # with the same name as a live release from being misclassified.
+                # Exception: if the track listing is a close match to the MusicBrainz live
+                # release, accept the live classification even without live indicators.
+                _detected_lower = (detected_album_type or '').lower()
+                if ('+live' in _detected_lower or '(live)' in _detected_lower) and not is_live_or_alternate_album(album):
+                    _track_listing_match = False
+                    if discovered_release_group_mbid:
+                        try:
+                            from folder_matching_enhancements import get_musicbrainz_release_tracks
+                            mb_tracks = get_musicbrainz_release_tracks(discovered_release_group_mbid, source='musicbrainz')
+                            if mb_tracks:
+                                _local_titles = set()
+                                for _t in album_tracks:
+                                    _t_title = (_t.get('title') or '').lower().strip()
+                                    if _t_title:
+                                        _normalized = unicodedata.normalize("NFKD", _t_title)
+                                        _normalized = "".join(c for c in _normalized if not unicodedata.combining(c))
+                                        _normalized = re.sub(r'[^a-z0-9]+', ' ', _normalized.lower()).strip()
+                                        _local_titles.add(_normalized)
+                                _matched = 0
+                                for _mb_track in mb_tracks:
+                                    _mb_title = (_mb_track.get('title') or '').lower().strip()
+                                    if _mb_title:
+                                        _normalized = unicodedata.normalize("NFKD", _mb_title)
+                                        _normalized = "".join(c for c in _normalized if not unicodedata.combining(c))
+                                        _normalized = re.sub(r'[^a-z0-9]+', ' ', _normalized.lower()).strip()
+                                        if _normalized in _local_titles:
+                                            _matched += 1
+                                _match_ratio = _matched / len(mb_tracks) if mb_tracks else 0
+                                if _match_ratio >= 0.7:
+                                    _track_listing_match = True
+                                    log_info(f'Accepting MusicBrainz live classification for "{artist} - {album}" — track listing matches ({_match_ratio:.0%})')
+                        except Exception as _e:
+                            log_debug(f'Could not verify track listing for live classification: {_e}')
+
+                    if not _track_listing_match:
+                        log_info(f'Rejecting MusicBrainz live classification for "{artist} - {album}" — album name does not contain live indicators')
+                        detected_album_type = current_album_type or 'album'
+                        type_detection_source = 'fallback (live rejected by name heuristic)'
+
                 # Update ALL tracks in this album with the detected type.
                 # Skip if detection fell back to "unknown" (API failure) to avoid
                 # clobbering a correctly-identified type from a previous scan.
@@ -5134,7 +5234,7 @@ def popularity_scan(
                 # Only propagate when we discovered a NEW MBID this scan — do not
                 # propagate existing DB values that might be release-group MBIDs stored
                 # in the wrong column.
-                if release_group_mbid and _mbid_was_newly_discovered:
+                if _mbid_was_newly_discovered and (release_group_mbid or discovered_release_group_mbid):
                     try:
                         # Fetch file paths for tracks that are about to receive the album MBID,
                         # so we can write the tag to the actual audio files after the DB update.
@@ -5144,8 +5244,12 @@ def popularity_scan(
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                               AND album = {placeholder}
                               AND file_path IS NOT NULL AND file_path <> ''
-                              AND (musicbrainz_album_mbid IS NULL
-                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = '')
+                              AND (
+                                   musicbrainz_album_mbid IS NULL
+                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = ''
+                                   OR musicbrainz_releasegroupid IS NULL
+                                   OR TRIM(CAST(musicbrainz_releasegroupid AS TEXT)) = ''
+                              )
                             """,
                             (artist, album),
                         )
@@ -5154,12 +5258,16 @@ def popularity_scan(
                             for r in cursor.fetchall()
                         ]
 
-                        _set_parts = [
-                            f"musicbrainz_album_mbid = {placeholder}",
-                            f"musicbrainz_albumid    = {placeholder}",
-                        ]
-                        _set_params = [release_group_mbid, release_group_mbid]
-                        # Also store the original release-group MBID in the dedicated column.
+                        _set_parts = []
+                        _set_params = []
+                        # Only write release-level MBIDs when we successfully resolved a
+                        # representative release; never store a release-group ID in the
+                        # release-level column.
+                        if release_group_mbid:
+                            _set_parts.append(f"musicbrainz_album_mbid = {placeholder}")
+                            _set_parts.append(f"musicbrainz_albumid    = {placeholder}")
+                            _set_params.extend([release_group_mbid, release_group_mbid])
+                        # Always store the release-group MBID in its dedicated column.
                         if discovered_release_group_mbid:
                             try:
                                 cursor.execute("""
@@ -5171,19 +5279,27 @@ def popularity_scan(
                                     _set_params.append(discovered_release_group_mbid)
                             except Exception:
                                 pass
+                        if not _set_parts:
+                            log_debug(f'No MBID fields to propagate for "{artist} - {album}"')
+                            raise Exception("No MBID fields to propagate")
                         _set_params.extend([artist, album])
                         cursor.execute(f"""
                             UPDATE tracks
                             SET {', '.join(_set_parts)}
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                               AND album = {placeholder}
-                              AND (musicbrainz_album_mbid IS NULL
-                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = '')
+                              AND (
+                                   musicbrainz_album_mbid IS NULL
+                                   OR TRIM(CAST(musicbrainz_album_mbid AS TEXT)) = ''
+                                   OR musicbrainz_releasegroupid IS NULL
+                                   OR TRIM(CAST(musicbrainz_releasegroupid AS TEXT)) = ''
+                              )
                         """, tuple(_set_params))
                         _mbid_rows = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else 0
                         if _mbid_rows > 0:
                             conn.commit()
-                            log_info(f'Propagated album MBID {release_group_mbid} to {_mbid_rows} track(s) in "{artist} - {album}"')
+                            _prop_mbid_str = release_group_mbid or discovered_release_group_mbid
+                            log_info(f'Propagated album MBID {_prop_mbid_str} to {_mbid_rows} track(s) in "{artist} - {album}"')
 
                             # Also write the MBID into the physical audio files so that
                             # media servers (Navidrome, etc.) group all tracks under the
@@ -5194,10 +5310,13 @@ def popularity_scan(
                                 for _fp in _fps_to_tag:
                                     if _fp and os.path.exists(str(_fp)):
                                         try:
-                                            _tags = {"musicbrainz_album_mbid": release_group_mbid, "musicbrainz_albumid": release_group_mbid}
+                                            _tags = {}
+                                            if release_group_mbid:
+                                                _tags["musicbrainz_album_mbid"] = release_group_mbid
+                                                _tags["musicbrainz_albumid"] = release_group_mbid
                                             if discovered_release_group_mbid:
                                                 _tags["musicbrainz_releasegroupid"] = discovered_release_group_mbid
-                                            if _write_album_mbid_tag(str(_fp), _tags):
+                                            if _tags and _write_album_mbid_tag(str(_fp), _tags):
                                                 _files_written += 1
                                         except Exception as _fp_tag_err:
                                             log_debug(
@@ -5205,7 +5324,7 @@ def popularity_scan(
                                             )
                                 if _files_written:
                                     log_info(
-                                        f'Wrote album MBID {release_group_mbid} to {_files_written} '
+                                        f'Wrote album MBID {_prop_mbid_str} to {_files_written} '
                                         f'audio file(s) in "{artist} - {album}"'
                                     )
                             except Exception as _tag_err:
@@ -5235,6 +5354,9 @@ def popularity_scan(
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                         """, (mb_live_value, artist, album))
                         conn.commit()
+                        # Sync in-memory dicts so subsequent per-track processing sees the new value.
+                        for _t in album_tracks:
+                            _t['album_context_live'] = mb_live_value
                         if mb_is_live:
                             log_info(f'MusicBrainz confirmed live album: "{artist} - {album}" (type: {detected_album_type})')
                         else:
@@ -5365,7 +5487,8 @@ def popularity_scan(
                     album_type_lower = (album_type_from_field or '').lower()
                     is_live_album = '+live' in album_type_lower or '(live)' in album_type_lower
                 else:
-                    is_live_album = '+live' in album_type_from_field or is_live_or_alternate_album(album)
+                    album_type_lower = (album_type_from_field or '').lower()
+                    is_live_album = '+live' in album_type_lower or '(live)' in album_type_lower or is_live_or_alternate_album(album)
 
                 # Determine the specific live sub-type (live vs acoustic) for genre tagging.
                 album_live_genre = None  # Will be "Live" or "Acoustic" when set
@@ -5375,14 +5498,15 @@ def popularity_scan(
                     album_live_genre = "Acoustic" if _live_type == "acoustic" else "Live"
 
                     log_info(f'Detected {_live_type} album: "{album}"')
-                    log_info(f'Track genre will be tagged as "{album_live_genre}" (no title rename)')
+                    log_info(f'Track genre will be tagged as "{album_live_genre}" and title renamed with ({album_live_genre})')
                     log_debug(f'Live album detection: album="{album}", album_type="{album_type_from_field}"')
 
-                    # Tag each track's genre with "Live" or "Acoustic" instead of renaming the title.
+                    # Tag each track's genre with "Live" or "Acoustic" and rename the title.
                     # Tracks that already carry the flag + genre combination are skipped.
                     live_tracks_updated = 0
                     for track in album_tracks:
                         track_id = track["id"]
+                        _track_title = track.get("title", "") or ""
 
                         # Skip tracks already confirmed: flag set AND genre already present.
                         _is_live_flag = int(track.get('is_live') or 0)
@@ -5400,7 +5524,7 @@ def popularity_scan(
                             (album_live_genre == "Acoustic" and _is_acoustic_flag and "acoustic" in _current_mb_genres_lower)
                         )
                         if _already_tagged:
-                            log_debug(f'Skipping live/acoustic tag for track "{track.get("title", "")}": already confirmed')
+                            log_debug(f'Skipping live/acoustic tag for track "{_track_title}": already confirmed')
                             continue
 
                         # Add genre tag (only when the canonical capitalised form is not present).
@@ -5413,24 +5537,127 @@ def popularity_scan(
                         _is_live_val = 1 if album_live_genre == "Live" else 0
                         _is_acoustic_val = 1 if album_live_genre == "Acoustic" else 0
 
+                        # Determine title suffix based on live type
+                        _title_suffix = "Acoustic" if album_live_genre == "Acoustic" else "Live"
+
+                        # Append suffix to title if the title does not already indicate a live/acoustic version
+                        # and does not already end with the suffix we are about to add.
+                        _title_renamed = False
+                        _already_has_suffix = bool(re.search(rf'\({_title_suffix}[^)]*\)\s*$', _track_title, re.IGNORECASE))
+                        if _track_title and not is_live_or_unplugged_track_title(_track_title) and not _already_has_suffix:
+                            _new_title = f"{_track_title} ({_title_suffix})"
+                            _title_renamed = True
+                        else:
+                            _new_title = _track_title
+
+                        # Update main genres column to include Live/Acoustic alongside existing genres.
+                        _genres_raw = track.get("genres") or ""
+                        _genres_list = [g.strip() for g in _genres_raw.split(",") if g.strip()]
+                        _genres_lower = [g.lower() for g in _genres_list]
+                        _genre_added = False
+                        if album_live_genre.lower() not in _genres_lower:
+                            _genres_list.insert(0, album_live_genre)
+                            _genre_added = True
+                        _new_genres = ", ".join(_genres_list)
+
                         cursor.execute(f"""
                             UPDATE tracks
                             SET is_live = {placeholder}, is_acoustic = {placeholder},
-                                musicbrainz_genres = {placeholder}
+                                musicbrainz_genres = {placeholder},
+                                title = {placeholder},
+                                genres = {placeholder},
+                                album_context_live = {placeholder}
                             WHERE id = {placeholder}
-                        """, (_is_live_val, _is_acoustic_val, _new_mb_genres, track_id))
+                        """, (_is_live_val, _is_acoustic_val, _new_mb_genres, _new_title, _new_genres, 1, track_id))
                         live_tracks_updated += 1
 
                         # Update in-memory dict so subsequent per-track processing uses the new values.
                         track['is_live'] = _is_live_val
                         track['is_acoustic'] = _is_acoustic_val
                         track['musicbrainz_genres'] = _new_mb_genres
+                        track['album_context_live'] = 1
+                        track['title'] = _new_title
+                        track['genres'] = _new_genres
 
-                        log_debug(f'Tagged track "{track.get("title", "")}" as {album_live_genre}')
+                        # Write updated title and genres to audio file.
+                        _fp = track.get('file_path')
+                        if _fp and (_title_renamed or _genre_added):
+                            if not os.path.isabs(_fp):
+                                _music_root = os.environ.get("MUSIC_FOLDER") or os.environ.get("MUSIC_ROOT") or "/music"
+                                _fp = os.path.join(_music_root, _fp)
+                            if os.path.exists(_fp):
+                                try:
+                                    from helpers.tag_manager import update_file_tags
+                                    _tags_to_write = {}
+                                    if _title_renamed:
+                                        _tags_to_write["title"] = _new_title
+                                    if _genre_added:
+                                        _tags_to_write["genres"] = _genres_list
+                                    update_file_tags(_fp, _tags_to_write)
+                                except Exception as _file_err:
+                                    log_debug(f"Failed to write live tags to file for {track_id}: {_file_err}")
+
+                        if _title_renamed:
+                            log_debug(f'Tagged and renamed track "{_track_title}" -> "{_new_title}" as {album_live_genre}')
+                        else:
+                            log_debug(f'Tagged track "{_track_title}" as {album_live_genre}')
 
                     if live_tracks_updated > 0:
                         conn.commit()
                         log_info(f'Tagged {live_tracks_updated} track(s) as "{album_live_genre}" in album "{album}"')
+
+                # Detect if this is a remix album based on album type
+                # When MusicBrainz is the detection source, trust its secondary type exclusively.
+                if type_detection_source == "musicbrainz":
+                    album_type_lower = (album_type_from_field or '').lower()
+                    is_remix_album = '+remix' in album_type_lower or '(remix)' in album_type_lower
+                else:
+                    album_type_lower = (album_type_from_field or '').lower()
+                    is_remix_album = '+remix' in album_type_lower or '(remix)' in album_type_lower
+
+                if is_remix_album:
+                    log_info(f'Detected remix album: "{album}"')
+                    log_info(f'Track genre will be tagged as "Remix" (no title rename)')
+                    log_debug(f'Remix album detection: album="{album}", album_type="{album_type_from_field}"')
+
+                    remix_tracks_updated = 0
+                    for track in album_tracks:
+                        track_id = track["id"]
+
+                        # Skip tracks already confirmed: flag set AND genre already present.
+                        _is_remix_flag = int(track.get('is_remix') or 0)
+                        _mb_genres_raw = track.get('musicbrainz_genres') or ''
+                        try:
+                            _current_mb_genres = json.loads(_mb_genres_raw) if _mb_genres_raw and _mb_genres_raw != 'null' else []
+                        except (json.JSONDecodeError, TypeError):
+                            _current_mb_genres = []
+
+                        _current_mb_genres_lower = [str(g).lower() for g in _current_mb_genres]
+                        _already_tagged = _is_remix_flag and "remix" in _current_mb_genres_lower
+                        if _already_tagged:
+                            log_debug(f'Skipping remix tag for track "{track.get("title", "")}": already confirmed')
+                            continue
+
+                        if "remix" not in _current_mb_genres_lower:
+                            _current_mb_genres.insert(0, "Remix")
+                        _new_mb_genres = json.dumps(_current_mb_genres)
+
+                        cursor.execute(f"""
+                            UPDATE tracks
+                            SET is_remix = {placeholder},
+                                musicbrainz_genres = {placeholder}
+                            WHERE id = {placeholder}
+                        """, (1, _new_mb_genres, track_id))
+                        remix_tracks_updated += 1
+
+                        track['is_remix'] = 1
+                        track['musicbrainz_genres'] = _new_mb_genres
+
+                        log_debug(f'Tagged track "{track.get("title", "")}" as Remix')
+
+                    if remix_tracks_updated > 0:
+                        conn.commit()
+                        log_info(f'Tagged {remix_tracks_updated} track(s) as "Remix" in album "{album}"')
 
                 # Detect alternate takes for this album (tracks with parentheses matching base tracks)
                 album_tracks_list = list(album_tracks)
@@ -5716,141 +5943,225 @@ def popularity_scan(
                         except Exception:
                             pass
 
-                # Collect Last.fm data for all album tracks for z-score normalization
-                # This enables us to calculate z-scores relative to the album
-                album_lastfm_data = {}  # Map of track_id -> {"listeners": int, "playcount": int}
+                # ---------------------------------------------------------------------
+                # Collect Last.fm + ListenBrainz data for all album tracks for z-score normalization
+                # ---------------------------------------------------------------------
+                album_lastfm_data = {}          # track_id -> {"listeners": int, "playcount": int}
+                album_listenbrainz_data = {}    # track_id -> {"listeners": int}
+                album_lb_listens = []            # list of LB listens for percentile calculations
+                album_tags_data = {}            # track_id -> {"lastfm_tags": [...], "listenbrainz_genres": [...], "discogs_genres": [...], "musicbrainz_genres": [...]}
+
                 if not singles_only:
-                    log_info(f'Pre-fetching Last.fm data for all tracks in album "{album}" for z-score normalization')
+                    log_info(f'Pre-fetching Last.fm + ListenBrainz data for album "{album}"')
+
+                    # ------------------------------------------------------------
+                    # STEP 1: ListenBrainz batch fetch ONCE per album
+                    # ------------------------------------------------------------
+                    try:
+                        lb_batch = get_listenbrainz_batch_for_tracks(album_tracks)
+                        log_debug(f"[LB] Batch fetched {len(lb_batch)} entries for album '{album}'")
+                    except Exception as e:
+                        log_debug(f"[LB] Batch fetch failed for album '{album}': {e}")
+                        lb_batch = {}
+
+                    # ------------------------------------------------------------
+                    # STEP 2: Prefetch Last.fm + map ListenBrainz per track
+                    # ------------------------------------------------------------
                     for track in album_tracks:
                         track_id = track["id"]
-                        title = track["title"]
-                        track_artist = track["artist"]
+                        title = track.get("title", "")
+                        track_artist = track.get("artist", "")
 
-                        # Skip if already have cached data
-                        cached_lastfm = row_get(track, 'lastfm_track_playcount', 0)
+                        # Resolve MBID early so Last.fm can use it for unambiguous
+                        # track.getInfo lookups (especially important when the track
+                        # title matches the album title, e.g. title tracks / singles).
+                        recording_mbid = (
+                            row_get(track, "recording_mbid")
+                            or row_get(track, "musicbrainz_recording_mbid")
+                            or row_get(track, "mbid")
+                        )
+
+                        # -------------------------
+                        # LAST.FM PREFETCH
+                        # -------------------------
+                        listeners = 0
+                        playcount = 0
+
+                        cached_lastfm = row_get(track, "lastfm_track_playcount", 0)
                         if cached_lastfm > 0:
-                            album_lastfm_data[track_id] = {
-                                "listeners": cached_lastfm,  # Note: now stores listeners not playcount
-                                "playcount": 0  # Will be fetched if needed
-                            }
-                            log_debug(f'Using cached Last.fm listeners for {title}: {cached_lastfm}')
-                            continue
+                            listeners = cached_lastfm
+                            playcount = 0
+                            log_debug(f'Using cached Last.fm listeners for "{title}": {cached_lastfm}')
+                        else:
+                            try:
+                                rate_limiter = get_rate_limiter()
+                                can_proceed, reason = rate_limiter.check_lastfm_limit()
 
-                        # Fetch from Last.fm API if not cached
-                        try:
-                            rate_limiter = get_rate_limiter()
-                            can_proceed, reason = rate_limiter.check_lastfm_limit()
-                            if not can_proceed:
-                                # Rate limit hit - wait before proceeding
-                                log_debug(f'Rate limit hit for {title}: {reason}, waiting...')
-                                if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
-                                    can_proceed = True
-                                else:
-                                    # Still at limit after waiting, skip this one
-                                    log_debug(f'Rate limit still active for {title} after wait, skipping Last.fm prefetch')
+                                if not can_proceed:
+                                    log_debug(f'Rate limit hit for "{title}": {reason}, waiting...')
+                                    if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
+                                        can_proceed = True
+                                    else:
+                                        log_debug(f'Rate limit still active for "{title}" after wait, skipping Last.fm prefetch')
 
-                            if can_proceed:
-                                lastfm_info = _run_with_timeout(
-                                    get_lastfm_track_info,
-                                    API_CALL_TIMEOUT,
-                                    f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                    track_artist, normalize_title_for_lookup(title)
-                                )
-                                rate_limiter.record_lastfm_request()
+                                if can_proceed:
+                                    lastfm_info = _run_with_timeout(
+                                        get_lastfm_track_info,
+                                        API_CALL_TIMEOUT,
+                                        f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
+                                        track_artist,
+                                        normalize_title_for_lookup(title),
+                                        recording_mbid,
+                                    )
+                                    rate_limiter.record_lastfm_request()
 
-                                if lastfm_info:
-                                    listeners = lastfm_info.get("listeners", 0)
-                                    playcount = lastfm_info.get("track_play", 0)
-                                    album_lastfm_data[track_id] = {
-                                        "listeners": listeners,
-                                        "playcount": playcount
-                                    }
-                                    log_debug(f'Fetched Last.fm data for {title}: listeners={listeners}, playcount={playcount}')
-                                else:
-                                    album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
-                            else:
-                                # Still rate limited after wait - add placeholder entry
-                                # This ensures z-score has complete track count even with partial data
-                                album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
-                        except Exception as e:
-                            log_debug(f'Failed to fetch Last.fm data for {title}: {e}')
-                            album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
+                                    if lastfm_info:
+                                        listeners = lastfm_info.get("listeners", 0) or 0
+                                        playcount = lastfm_info.get("track_play", 0) or 0
+                                        log_debug(f'Fetched Last.fm data for "{title}": listeners={listeners}, playcount={playcount}')
+                            except Exception as e:
+                                log_debug(f'Failed to fetch Last.fm data for "{title}": {e}')
 
-                    # Log pre-fetch results
-                    fetched_listeners = [data["listeners"] for data in album_lastfm_data.values() if data["listeners"] > 0]
-                    fetched_tracks = len([data for data in album_lastfm_data.values() if data["listeners"] > 0])
-                    zero_tracks = len([data for data in album_lastfm_data.values() if data["listeners"] == 0])
-                    log_info(f'Pre-fetch complete for album "{album}": {fetched_tracks} tracks with listener data, {zero_tracks} with zero/unavailable data')
-                    if fetched_listeners:
-                        log_debug(f'Album listener stats: min={min(fetched_listeners)}, max={max(fetched_listeners)}, avg={sum(fetched_listeners)/len(fetched_listeners):.0f}')
+                        album_lastfm_data[track_id] = {
+                            "listeners": listeners,
+                            "playcount": playcount,
+                        }
 
-                    # Fetch Last.fm tags, ListenBrainz genres, and Discogs genres for all tracks
-                    # This is done batch-style per album to be efficient
-                    album_tags_data = {}  # Map of track_id -> {"lastfm_tags": [...], "listenbrainz_genres": [...], "discogs_genres": [...]}
+                        # -------------------------
+                        # LISTENBRAINZ PREFETCH MAP
+                        # -------------------------
+                        lb_listens = 0
+                        if recording_mbid:
+                            lb_entry = lb_batch.get(recording_mbid, {})
+                            lb_listens = lb_entry.get("total_listen_count") or 0
 
-                    # Initialize clients outside the try block to prevent silent failures
+                        album_listenbrainz_data[track_id] = {
+                            "listeners": lb_listens,
+                        }
+
+                        log_debug(f'[LB] "{title}" ({recording_mbid}): listens={lb_listens}')
+
+                    # ------------------------------------------------------------
+                    # STEP 3: Prefetch summary
+                    # ------------------------------------------------------------
+                    fetched_lastfm_listeners = [d["listeners"] for d in album_lastfm_data.values() if d["listeners"] > 0]
+                    fetched_lastfm_tracks = len(fetched_lastfm_listeners)
+                    zero_lastfm_tracks = len([d for d in album_lastfm_data.values() if d["listeners"] == 0])
+
+                    fetched_lb_listeners = [d["listeners"] for d in album_listenbrainz_data.values() if d["listeners"] > 0]
+                    fetched_lb_tracks = len(fetched_lb_listeners)
+                    zero_lb_tracks = len([d for d in album_listenbrainz_data.values() if d["listeners"] == 0])
+
+                    log_info(
+                        f'Pre-fetch complete for album "{album}": '
+                        f'{fetched_lastfm_tracks} tracks with Last.fm listener data, {zero_lastfm_tracks} with zero/unavailable; '
+                        f'{fetched_lb_tracks} tracks with ListenBrainz listens, {zero_lb_tracks} with zero/unavailable'
+                    )
+
+                    if fetched_lastfm_listeners:
+                        log_debug(
+                            f'Album Last.fm listener stats: min={min(fetched_lastfm_listeners)}, '
+                            f'max={max(fetched_lastfm_listeners)}, '
+                            f'avg={sum(fetched_lastfm_listeners) / len(fetched_lastfm_listeners):.0f}'
+                        )
+
+                    # Build album-wide LB listen list for percentile calculations (used in both scoring and star rating)
+                    album_lb_listens = [
+                        d["listeners"] for d in album_listenbrainz_data.values()
+                    ]
+
+                    if fetched_lb_listeners:
+                        log_debug(
+                            f'Album ListenBrainz listen stats: min={min(fetched_lb_listeners)}, '
+                            f'max={max(fetched_lb_listeners)}, '
+                            f'avg={sum(fetched_lb_listeners) / len(fetched_lb_listeners):.0f}'
+                        )
+
+                    # ---------------------------------------------------------------------
+                    # STEP 4: Batch tag/genre client initialisation
+                    # ---------------------------------------------------------------------
                     lastfm_client = None
                     discogs_client = None
+                    lb_tag_client = None
 
                     try:
-                        # Get Last.fm client for tag lookups
+                        # Last.fm client for tag lookups
                         lastfm_config = get_lastfm_config(config)
                         if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                             api_key = lastfm_config.get("api_key")
-                            # Check if API key is still a placeholder
                             if api_key in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
-                                log_info(f"⚠️ Last.fm API key not configured (placeholder value detected)")
-                                log_info(f"   Set a real API key in config.yaml under api_integrations.lastfm.api_key")
+                                log_info("⚠️ Last.fm API key not configured (placeholder value detected)")
+                                log_info("   Set a real API key in config.yaml under api_integrations.lastfm.api_key")
                             else:
                                 from api_clients.lastfm import LastFmClient
                                 lastfm_client = LastFmClient(api_key)
-                                log_info(f"✓ Last.fm client initialized for tag fetching (API key configured)")
+                                log_info("✓ Last.fm client initialized for tag fetching (API key configured)")
                         else:
                             if not lastfm_config.get("enabled"):
-                                log_info(f"⚠️ Last.fm is disabled in config.yaml")
+                                log_info("⚠️ Last.fm is disabled in config.yaml")
                             else:
-                                log_info(f"⚠️ Last.fm API key missing from config.yaml")
+                                log_info("⚠️ Last.fm API key missing from config.yaml")
 
-                        # Get Discogs client for genre lookups
+                        # Discogs client for genre lookups
                         discogs_config = config.get("api_integrations", {}).get("discogs", {})
                         if discogs_config.get("enabled") and discogs_config.get("token"):
                             from api_clients.discogs import DiscogsClient
                             discogs_client = DiscogsClient(discogs_config.get("token"))
-                            log_debug(f"Discogs client initialized for batch genre fetching")
+                            log_debug("Discogs client initialized for batch genre fetching")
                         else:
-                            log_debug(f"Discogs client not configured or disabled")
+                            log_debug("Discogs client not configured or disabled")
+
+                        # ListenBrainz client for recording tags
+                        try:
+                            from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+                            lb_tag_client = ListenBrainzUserClient("")
+                            log_debug("ListenBrainz tag client initialized for batch genre fetching")
+                        except Exception as e:
+                            log_debug(f"ListenBrainz tag client unavailable: {e}")
+                            lb_tag_client = None
 
                     except Exception as e:
                         log_debug(f"Error initializing API clients for batch fetch: {e}")
                         log_info(f"Continuing with partial API capabilities for album '{album}'")
 
-                    # Always attempt the batch fetch loop, even if clients failed to initialize
+                    # ---------------------------------------------------------------------
+                    # STEP 5: Batch tag / genre fetch
+                    # ---------------------------------------------------------------------
                     try:
-                        if lastfm_client or discogs_client:
+                        if lastfm_client or discogs_client or lb_tag_client:
                             log_info(f'Fetching tags/genres for {len(album_tracks)} track(s) in album "{album}"')
                         else:
-                            log_debug(f'No API clients available for batch tag fetch, will use per-track fallback if needed')
+                            log_debug("No API clients available for batch tag fetch, will use existing values if needed")
 
                         for track in (album_tracks if metadata_enrichment_enabled else []):
                             track_id = track["id"]
                             title = track["title"]
                             track_artist = track["artist"]
-                            track_mbid = row_get(track, 'mbid')
-                            discogs_release_id = row_get(track, 'discogs_release_id')
+                            track_recording_mbid = (
+                                row_get(track, "recording_mbid")
+                                or row_get(track, "musicbrainz_recording_mbid")
+                                or row_get(track, "mbid")
+                            )
+                            discogs_release_id = row_get(track, "discogs_release_id")
 
-                            # Detect cover songs and normalize title for API lookups
                             is_cover_song_tags, normalized_title_tags = detect_cover_and_normalize_title(title)
                             api_lookup_title_tags = normalized_title_tags
 
-                            track_tags = {"lastfm_tags": [], "listenbrainz_genres": [], "discogs_genres": []}
+                            track_tags = {
+                                "lastfm_tags": [],
+                                "listenbrainz_genres": [],
+                                "discogs_genres": [],
+                                "musicbrainz_genres": [],
+                            }
 
-                            # Fetch Last.fm tags
+                            # -------------------------
+                            # Last.fm tags
+                            # -------------------------
                             if lastfm_client:
                                 try:
                                     rate_limiter = get_rate_limiter()
                                     can_proceed, reason = rate_limiter.check_lastfm_limit()
                                     if not can_proceed:
-                                        # Rate limit hit - wait before proceeding
                                         log_debug(f'Rate limit hit for Last.fm tags ({title}): {reason}, waiting...')
                                         if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
                                             can_proceed = True
@@ -5861,8 +6172,10 @@ def popularity_scan(
                                         lastfm_tags = _run_with_timeout(
                                             lastfm_client.get_track_tags,
                                             5,
-                                            f"Last.fm tags lookup timed out",
-                                            track_artist, api_lookup_title_tags, limit=10
+                                            "Last.fm tags lookup timed out",
+                                            track_artist,
+                                            api_lookup_title_tags,
+                                            limit=10,
                                         )
                                         if lastfm_tags:
                                             track_tags["lastfm_tags"] = lastfm_tags
@@ -5875,69 +6188,64 @@ def popularity_scan(
                             else:
                                 log_debug(f'[TAGS] Last.fm client not available for "{title}"')
 
-                            # Fetch ListenBrainz genres (if MBID available and not already populated)
-                            # The bulk ListenBrainz lookup later in this scan (lines below) also
-                            # populates musicbrainz_genres.  Skip per-track fetch when the track
-                            # already has listenbrainz_genres to avoid a duplicate API call.
-                            _existing_lb_genres = row_get(track, 'listenbrainz_genres')
-                            if track_mbid and not _existing_lb_genres:
+                            # -------------------------
+                            # ListenBrainz genres/tags
+                            # -------------------------
+                            existing_lb_genres = row_get(track, "listenbrainz_genres")
+                            if track_recording_mbid and not existing_lb_genres and lb_tag_client:
                                 try:
-                                    from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
-                                    lb_client = ListenBrainzUserClient("")
                                     lb_genres = _run_with_timeout(
-                                        lb_client.get_recording_tags,
+                                        lb_tag_client.get_recording_tags,
                                         5,
-                                        f"ListenBrainz genres lookup timed out",
-                                        track_mbid
+                                        "ListenBrainz genres lookup timed out",
+                                        track_recording_mbid,
                                     )
                                     if lb_genres:
-                                        # Format ListenBrainz tags to match expected structure
-                                        track_tags["listenbrainz_genres"] = [{"name": t.get("tag", t.get("name", "")), "count": t.get("count", 0)} for t in lb_genres if t.get("tag") or t.get("name")]
+                                        track_tags["listenbrainz_genres"] = [
+                                            {"name": t.get("tag", t.get("name", "")), "count": t.get("count", 0)}
+                                            for t in lb_genres
+                                            if t.get("tag") or t.get("name")
+                                        ]
                                         log_debug(f'Fetched {len(track_tags["listenbrainz_genres"])} ListenBrainz genres for "{title}"')
                                 except Exception as e:
                                     log_debug(f'Failed to fetch ListenBrainz genres for "{title}": {e}')
 
-                            # Fetch Discogs genres
-                            # Use album-level data if available (homogeneous albums), otherwise fetch per-track.
-                            # Skip entirely when the track already has discogs_genres: Discogs release
-                            # genre data is stable and never needs re-fetching once populated.
-                            _existing_discogs_genres = row_get(track, 'discogs_genres')
-                            _discogs_genres_populated = False
-                            if _existing_discogs_genres:
+                            # -------------------------
+                            # Discogs genres
+                            # -------------------------
+                            existing_discogs_genres = row_get(track, "discogs_genres")
+                            discogs_genres_populated = False
+                            if existing_discogs_genres:
                                 try:
-                                    _dg_parsed = json.loads(_existing_discogs_genres) if isinstance(_existing_discogs_genres, str) else _existing_discogs_genres
-                                    _discogs_genres_populated = bool(_dg_parsed)
+                                    dg_parsed = json.loads(existing_discogs_genres) if isinstance(existing_discogs_genres, str) else existing_discogs_genres
+                                    discogs_genres_populated = bool(dg_parsed)
                                 except (ValueError, TypeError):
-                                    _discogs_genres_populated = bool(_existing_discogs_genres)
+                                    discogs_genres_populated = bool(existing_discogs_genres)
+
                             if album_discogs_genres:
-                                # Use pre-fetched album-level genres for homogeneous albums
                                 track_tags["discogs_genres"] = album_discogs_genres
                                 log_debug(f'Using album-level Discogs genres for "{title}" ({len(album_discogs_genres)} genres)')
-                            elif _discogs_genres_populated:
-                                # Already have Discogs genres — skip API call
+                            elif discogs_genres_populated:
                                 log_debug(f'Skipping Discogs genre fetch for "{title}": discogs_genres already populated')
                             elif discogs_client:
-                                # Fetch per-track for heterogeneous albums (compilation, soundtrack, live, etc.)
                                 try:
                                     discogs_genres = None
                                     if discogs_release_id:
-                                        # Use release ID if available
                                         discogs_genres = _run_with_timeout(
                                             discogs_client.get_release_genres_by_id,
                                             5,
-                                            f"Discogs genres by ID lookup timed out",
-                                            discogs_release_id
+                                            "Discogs genres by ID lookup timed out",
+                                            discogs_release_id,
                                         )
                                     else:
-                                        # Fall back to search by title/artist
-                                        discogs_genres =_run_with_timeout(
+                                        discogs_genres = _run_with_timeout(
                                             discogs_client.get_genres,
                                             5,
-                                            f"Discogs genres search lookup timed out",
-                                            title, track_artist
+                                            "Discogs genres search lookup timed out",
+                                            title,
+                                            track_artist,
                                         )
                                         if isinstance(discogs_genres, list) and discogs_genres and isinstance(discogs_genres[0], str):
-                                            # Convert string list to dict format
                                             discogs_genres = [{"name": g} for g in discogs_genres]
 
                                     if discogs_genres:
@@ -5946,44 +6254,41 @@ def popularity_scan(
                                 except Exception as e:
                                     log_debug(f'Failed to fetch Discogs genres for "{title}": {e}')
 
-                            # Store all tags for this track (including empty lists if nothing was fetched)
-                            # Discogs final fallback: if the track still has no discogs_genres and
-                            # album-level data is available (artist release, not VA/soundtrack),
-                            # apply the album genres to this track.
                             if not track_tags.get("discogs_genres") and album_discogs_genres and is_homogeneous_album:
                                 track_tags["discogs_genres"] = album_discogs_genres
                                 log_debug(f'Applied album-level Discogs genres to "{title}" (no track-level result)')
 
-                            # Fetch MusicBrainz genres via title+artist text search.
-                            # This runs in both popularity and metadata_only modes.
-                            # Skip if musicbrainz_genres is already populated to avoid redundant calls.
-                            _existing_mb_genres = row_get(track, 'musicbrainz_genres')
-                            _mb_genres_populated = False
-                            if _existing_mb_genres:
+                            # -------------------------
+                            # MusicBrainz genres
+                            # -------------------------
+                            existing_mb_genres = row_get(track, "musicbrainz_genres")
+                            mb_genres_populated = False
+                            if existing_mb_genres:
                                 try:
-                                    _mb_parsed = json.loads(_existing_mb_genres) if isinstance(_existing_mb_genres, str) else _existing_mb_genres
-                                    _mb_genres_populated = bool(_mb_parsed)
+                                    mb_parsed = json.loads(existing_mb_genres) if isinstance(existing_mb_genres, str) else existing_mb_genres
+                                    mb_genres_populated = bool(mb_parsed)
                                 except (ValueError, TypeError):
-                                    _mb_genres_populated = bool(_existing_mb_genres)
-                            if not _mb_genres_populated and HAVE_MUSICBRAINZ:
+                                    mb_genres_populated = bool(existing_mb_genres)
+
+                            if not mb_genres_populated and HAVE_MUSICBRAINZ:
                                 try:
                                     from api_clients.musicbrainz import MusicBrainzClient as _MBC
-                                    _mb_genre_client = _MBC()
-                                    _mb_genre_list = _run_with_timeout(
-                                        _mb_genre_client.get_genres,
+                                    mb_genre_client = _MBC()
+                                    mb_genre_list = _run_with_timeout(
+                                        mb_genre_client.get_genres,
                                         API_CALL_TIMEOUT,
                                         "MusicBrainz genre lookup timed out",
-                                        track_artist, api_lookup_title_tags
+                                        track_artist,
+                                        api_lookup_title_tags,
                                     )
-                                    if _mb_genre_list:
-                                        # Normalise to {"name": ..., "count": 0} so display renders correctly
+                                    if mb_genre_list:
                                         track_tags["musicbrainz_genres"] = [
                                             {"name": g, "count": 0} if isinstance(g, str) else g
-                                            for g in _mb_genre_list
+                                            for g in mb_genre_list
                                         ]
-                                        log_debug(f'Fetched {len(_mb_genre_list)} MusicBrainz genres for "{title}"')
-                                except Exception as _mb_g_err:
-                                    log_debug(f'MusicBrainz genre fetch failed for "{title}": {_mb_g_err}')
+                                        log_debug(f'Fetched {len(mb_genre_list)} MusicBrainz genres for "{title}"')
+                                except Exception as mb_g_err:
+                                    log_debug(f'MusicBrainz genre fetch failed for "{title}": {mb_g_err}')
 
                             album_tags_data[track_id] = track_tags
 
@@ -5992,88 +6297,72 @@ def popularity_scan(
 
                     except Exception as e:
                         log_debug(f'Error during tag/genre batch fetch for album "{album}": {e}')
-                        log_info(f'Continuing with per-track fallback for tag/genre data for this album')
+                        log_info(f'Continuing with existing tag/genre data for this album')
 
-                # In singles_only mode, skip all popularity scoring
+                # ---------------------------------------------------------------------
+                # STEP 6: Popularity scoring loop
+                # ---------------------------------------------------------------------
                 if not singles_only and not skip_popularity_for_album and not metadata_only:
-                    # Batch updates for this album (commit once at end instead of per-track)
                     track_updates = []
 
-                    # Track progress within album
                     total_tracks = len(album_tracks)
                     tracks_processed = 0
-                    # Pre-calculate milestone track counts for efficient checking
                     milestone_25 = int(total_tracks * 0.25)
                     milestone_50 = int(total_tracks * 0.50)
                     milestone_75 = int(total_tracks * 0.75)
                     milestones_logged = set()
 
-                else:
-                    # Single-only mode: skip popularity processing, will do singles detection only
-                    if skip_popularity_for_album:
-                        log_info(f"Popularity already scanned for album '{album}'; running singles detection only")
-                    else:
-                        log_info(f"Singles-only mode for album '{album}': all popularity processing skipped")
-                    track_updates = []
-
-                if not singles_only and not skip_popularity_for_album and not metadata_only:
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]
                         track_artist = track["artist"]
 
-                        # Skip popularity scoring for tracks already detected as singles
-                        # Singles have their own prominence rating, no need for popularity scoring
-                        if row_get(track, 'is_single', 0):
+                        # Skip singles - they have separate prominence logic
+                        if row_get(track, "is_single", 0):
                             log_debug(f'Skipping popularity scoring for single: "{title}" (already marked as is_single=1)')
                             continue
 
-                        # Detect cover songs and normalize title for API lookups
                         is_cover_song, normalized_title = detect_cover_and_normalize_title(title)
                         if is_cover_song:
                             log_debug(f'Cover song detected: "{title}" -> normalized to "{normalized_title}" for API lookups')
 
-                        # Use normalized title for API searches to improve match accuracy
-                        api_lookup_title = normalized_title
-                        # Strip parentheses (featured artist, remix info, etc.) for better search accuracy
-                        api_lookup_title = strip_search_parentheses(api_lookup_title)
+                        api_lookup_title = strip_search_parentheses(normalized_title)
 
                         log_info(f'🎵 Processing track: "{title}" (Track ID: {track_id})')
                         log_debug(f'Track details - id: {track_id}, title: {title}, album: {album}, artist: {track_artist}')
-                        log_debug(f'Starting popularity scoring for: {title}')
 
-                    # Check if we can use the complete cached popularity_score
-                    # This avoids all API calls if the final score is still valid
+                        # ------------------------------------------------------------
+                        # Full cache / mature-track freeze handling
+                        # ------------------------------------------------------------
                         use_full_cache = False
                         if not (FORCE_RESCAN or force):
                             if should_freeze_mature_track_popularity(track, min_age_years=mature_track_freeze_cutoff_years):
-                                cached_popularity = row_get(track, 'popularity_score', 0)
+                                cached_popularity = row_get(track, "popularity_score", 0)
                                 if cached_popularity > 0:
                                     use_full_cache = True
-                                    cached_spotify_score = row_get(track, 'spotify_score', row_get(track, 'spotify_popularity', 0))
-                                    cached_lastfm_ratio = row_get(track, 'lastfm_ratio', 0)
-                                    cached_lastfm_listeners = row_get(track, 'lastfm_track_playcount', 0)
+                                    cached_spotify_score = row_get(track, "spotify_score", row_get(track, "spotify_popularity", 0))
+                                    cached_lastfm_ratio = row_get(track, "lastfm_ratio", 0)
+                                    cached_lastfm_listeners = row_get(track, "lastfm_track_playcount", 0)
+
                                     log_info(
                                         f'Keeping existing popularity for older track with completed Last.fm data: {title} '
                                         f'(year: {row_get(track, "year")}, Last.fm listeners: {cached_lastfm_listeners})'
                                     )
-                                    # Persist freeze state so callers can distinguish frozen scores
-                                    # from live ones without recalculating eligibility.  Only write
-                                    # when the track isn't already marked frozen to avoid redundant
-                                    # disk I/O on every scan cycle.
-                                    if not row_get(track, 'popularity_frozen', False):
+
+                                    if not row_get(track, "popularity_frozen", False):
                                         try:
                                             cursor.execute(
                                                 f"UPDATE tracks SET popularity_frozen = TRUE, popularity_frozen_at = CURRENT_TIMESTAMP WHERE id = {placeholder}",
                                                 (track_id,),
                                             )
                                             conn.commit()
-                                        except Exception as _freeze_err:
-                                            log_debug(f"Could not persist freeze state for track {track_id}: {_freeze_err}")
+                                        except Exception as freeze_err:
+                                            log_debug(f"Could not persist freeze state for track {track_id}: {freeze_err}")
                                             try:
                                                 conn.rollback()
                                             except Exception:
                                                 pass
+
                                     track_updates.append((
                                         cached_popularity,
                                         cached_spotify_score,
@@ -6093,2253 +6382,1025 @@ def popularity_scan(
 
                                     if tracks_processed == milestone_25 and 25 not in milestones_logged:
                                         log_unified(f"Popularity Scan - 25% completed - {tracks_processed}/{total_tracks} songs")
-                                        log_debug(f"Progress milestone - 25% completed for album {album}")
                                         milestones_logged.add(25)
                                     elif tracks_processed == milestone_50 and 50 not in milestones_logged:
                                         log_unified(f"Popularity Scan - 50% completed - {tracks_processed}/{total_tracks} songs")
-                                        log_debug(f"Progress milestone - 50% completed for album {album}")
                                         milestones_logged.add(50)
                                     elif tracks_processed == milestone_75 and 75 not in milestones_logged:
                                         log_unified(f"Popularity Scan - 75% completed - {tracks_processed}/{total_tracks} songs")
-                                        log_debug(f"Progress milestone - 75% completed for album {album}")
                                         milestones_logged.add(75)
 
                                     continue
 
-                            if should_use_cached_score(track, 'popularity_score', 'last_spotify_lookup'):
-                                cached_popularity = row_get(track, 'popularity_score', 0)
+                            if should_use_cached_score(track, "popularity_score", "last_spotify_lookup"):
+                                cached_popularity = row_get(track, "popularity_score", 0)
                                 if cached_popularity > 0:
-                                    # Use fully cached score - skip all API lookups
                                     use_full_cache = True
+                                    cached_spotify_score = row_get(track, "spotify_score", row_get(track, "spotify_popularity", 0))
+                                    cached_lastfm_ratio = row_get(track, "lastfm_ratio", 0)
+                                    cached_lastfm_listeners = row_get(track, "lastfm_track_playcount", 0)
+
                                     log_info(f'Using complete cached popularity score for: {title} (score: {cached_popularity:.1f})')
-                                    log_debug(f'Full score cache hit - skipping all API calls for track {track_id}')
 
-                                    # Get cached component scores
-                                    cached_spotify_score = row_get(track, 'spotify_score', row_get(track, 'spotify_popularity', 0))
-                                    cached_lastfm_ratio = row_get(track, 'lastfm_ratio', 0)
-                                    cached_lastfm_listeners = row_get(track, 'lastfm_track_playcount', 0)
-
-                                    # Add to batch update with cached scores (genres remain unchanged when using cache)
-                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, cached_lastfm_listeners, None, None, None, None, None, album_art_url, track_id))
+                                    track_updates.append((
+                                        cached_popularity,
+                                        cached_spotify_score,
+                                        cached_lastfm_ratio,
+                                        cached_lastfm_listeners,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        album_art_url,
+                                        track_id,
+                                    ))
                                     scanned_count += 1
                                     album_scanned += 1
                                     tracks_processed += 1
 
-                                    # Check milestones
                                     if tracks_processed == milestone_25 and 25 not in milestones_logged:
                                         log_unified(f"Popularity Scan - 25% completed - {tracks_processed}/{total_tracks} songs")
-                                        log_debug(f"Progress milestone - 25% completed for album {album}")
                                         milestones_logged.add(25)
                                     elif tracks_processed == milestone_50 and 50 not in milestones_logged:
                                         log_unified(f"Popularity Scan - 50% completed - {tracks_processed}/{total_tracks} songs")
-                                        log_debug(f"Progress milestone - 50% completed for album {album}")
                                         milestones_logged.add(50)
                                     elif tracks_processed == milestone_75 and 75 not in milestones_logged:
                                         log_unified(f"Popularity Scan - 75% completed - {tracks_processed}/{total_tracks} songs")
-                                        log_debug(f"Progress milestone - 75% completed for album {album}")
                                         milestones_logged.add(75)
 
-                                    continue  # Skip to next track
+                                    continue
 
-                        # If not using full cache, proceed with individual API lookups
-
+                        # ------------------------------------------------------------
+                        # Pull pre-fetched Last.fm data
+                        # ------------------------------------------------------------
                         spotify_score = 0
                         spotify_release_date = None
-                        lastfm_info = {}  # Initialize for genre extraction later
+                        lastfm_info = {}
 
-                        # Try to get popularity from Last.fm (using cached data or API)
                         lastfm_score = 0
-                        lastfm_listeners = row_get(track, 'lastfm_track_playcount', 0) or 0
-                        skip_lastfm_lookup = False
+                        lastfm_listeners = album_lastfm_data.get(track_id, {}).get("listeners", 0) or 0
+                        lastfm_playcount = album_lastfm_data.get(track_id, {}).get("playcount", 0) or 0
 
-                        # Check if we can use cached Last.fm listeners
-                        if not skip_lastfm_lookup and not (FORCE_RESCAN or force):
-                            if should_use_cached_score(track, 'lastfm_track_playcount', 'last_spotify_lookup'):
-                                cached_listeners = row_get(track, 'lastfm_track_playcount', 0)
-                                if cached_listeners > 0:
-                                    lastfm_listeners = cached_listeners
-                                    # Log raw cached Last.fm listener count before calculation
-                                    log_debug(f'Last.fm raw cached data for "{title}": listeners={cached_listeners}')
+                        if lastfm_listeners > 0:
+                            log_debug(f'Last.fm raw data for "{title}": listeners={lastfm_listeners}, playcount={lastfm_playcount}')
 
-                                    # Use z-score calculation for cached data too
-                                    album_listeners_list = [data["listeners"] for data in album_lastfm_data.values() if data["listeners"] > 0]
-                                    album_playcounts_list = [data["playcount"] for data in album_lastfm_data.values() if data["playcount"] > 0]
+                            album_listeners_list = [d["listeners"] for d in album_lastfm_data.values() if d["listeners"] > 0]
+                            album_playcounts_list = [d["playcount"] for d in album_lastfm_data.values() if d["playcount"] > 0]
 
-                                    if album_listeners_list and album_playcounts_list:
-                                        from popularity_helpers import calculate_lastfm_zscore_popularity
-                                        lastfm_score = calculate_lastfm_zscore_popularity(
-                                            cached_listeners, 0,  # We don't have cached playcount for old data
-                                            album_listeners_list,
-                                            album_playcounts_list
-                                        )
-                                        log_info(f'Using cached Last.fm listeners with z-score for: {title} (listeners: {cached_listeners}, score: {lastfm_score:.1f})')
-                                    else:
-                                        # Fallback to simple logarithmic scoring if not enough album data
-                                        lastfm_score = calculate_lastfm_popularity_score(cached_listeners)
-                                        log_info(f'Using cached Last.fm listeners for: {title} (count: {cached_listeners}, score: {lastfm_score:.1f}, fallback mode)')
+                            if album_listeners_list and album_playcounts_list:
+                                lastfm_score = calculate_lastfm_zscore_popularity(
+                                    lastfm_listeners,
+                                    lastfm_playcount,
+                                    album_listeners_list,
+                                    album_playcounts_list,
+                                )
+                                log_info(
+                                    f'Last.fm z-score popularity: {lastfm_score:.1f} '
+                                    f'(listeners={lastfm_listeners}, playcount={lastfm_playcount}, album_tracks={len(album_listeners_list)})'
+                                )
+                            else:
+                                lastfm_score = calculate_lastfm_popularity_score(lastfm_listeners)
+                                log_info(f'Last.fm listeners (fallback): {lastfm_listeners} (score: {lastfm_score:.1f})')
+                        else:
+                            log_info(f'No Last.fm listeners data found for: {title}')
 
-                                    skip_lastfm_lookup = True
-                                    log_debug(f'Cached Last.fm data reused for track {track_id}')
+                        # ------------------------------------------------------------
+                        # Use pre-fetched ListenBrainz data (NO per-track API call)
+                        # Convert LB to an absolute 0-100 score using the same log
+                        # scale as Last.fm. Album-relative percentile is also kept
+                        # for classification use.
+                        # ------------------------------------------------------------
+                        lb_listens = album_listenbrainz_data.get(track_id, {}).get("listeners", 0) or 0
+                        lb_percentile = 0.0
+                        lb_album_score = 0.0
+                        if lb_listens > 0:
+                            lb_percentile = calculate_listenbrainz_percentile(lb_listens, album_lb_listens)
+                            lb_album_score = calculate_listenbrainz_popularity_score(lb_listens)
+                            log_debug(
+                                f'ListenBrainz popularity for "{title}": {lb_listens} listens, '
+                                f'score={lb_album_score:.1f}, percentile={lb_percentile:.2f}'
+                            )
+                        else:
+                            recording_mbid = (
+                                row_get(track, "recording_mbid")
+                                or row_get(track, "musicbrainz_recording_mbid")
+                                or row_get(track, "mbid")
+                            )
+                            if recording_mbid:
+                                log_debug(f'No ListenBrainz data for "{title}" (MBID: {recording_mbid})')
+                            else:
+                                log_debug(f'No ListenBrainz MBID available for "{title}"')
 
-                        if not skip_lastfm_lookup:  # Fetch from API if not cached
+                        # ------------------------------------------------------------
+                        # Cross-release ListenBrainz lookup
+                        # When Last.fm is unreliable/low, search for all recordings of
+                        # this track by the same artist (e.g. single vs album version)
+                        # and aggregate their ListenBrainz popularity.
+                        # ------------------------------------------------------------
+                        if lastfm_listeners < 20 and title and track_artist:
                             try:
-                                # Check rate limit before making API call
-                                rate_limiter = get_rate_limiter()
-                                can_proceed, reason = rate_limiter.check_lastfm_limit()
-                                if not can_proceed:
-                                    log_debug(f'Last.fm rate limit check failed: {reason}')
-                                    # Try to wait if reasonable
-                                    if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
-                                        log_debug(f"Waited for Last.fm rate limit, retrying {title}")
-                                        can_proceed = True  # Successfully waited, can proceed now
-                                    else:
-                                        log_info(f'Last.fm rate limit hit for {title}: {reason}, skipping lookup')
-
-                                # Perform lookup if we can proceed (either initially or after waiting)
-                                if can_proceed:
-                                    log_info(f'Getting Last.fm info for: {title} by {track_artist}')
-                                    log_debug(f'Last.fm lookup params - artist: {track_artist}, title: {normalize_title_for_lookup(title)}')
-                                    lastfm_info = _run_with_timeout(
-                                        get_lastfm_track_info,
-                                        API_CALL_TIMEOUT,
-                                        f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                        track_artist, normalize_title_for_lookup(title)
+                                # Attempt to fetch the artist MBID from the database
+                                # or from the track row to make the MB search more accurate
+                                artist_mbid = None
+                                try:
+                                    _ph = "%s"
+                                    cursor.execute(
+                                        f"SELECT musicbrainz_artist_id FROM tracks WHERE id = {_ph}",
+                                        (track_id,),
                                     )
-                                    # Record API request for rate limiting
-                                    rate_limiter.record_lastfm_request()
-                                    log_debug(f'Last.fm API request recorded for rate limiting')
+                                    mb_row = cursor.fetchone()
+                                    if mb_row and mb_row.get("musicbrainz_artist_id"):
+                                        artist_mbid = mb_row["musicbrainz_artist_id"]
+                                except Exception:
+                                    pass
 
-                                    log_debug(f'Last.fm API response - listeners: {lastfm_info.get("listeners")}, playcount: {lastfm_info.get("track_play", 0)}')
-                                    if lastfm_info and lastfm_info.get("listeners"):
-                                        listeners = lastfm_info.get("listeners")
-                                        playcount = lastfm_info.get("track_play", 0)
-                                        lastfm_listeners = listeners
+                                aggregated = get_aggregated_listenbrainz_popularity(
+                                    title=title,
+                                    artist=track_artist,
+                                    artist_mbid=artist_mbid,
+                                )
+                                agg_total = aggregated.get("total_listens", 0)
+                                agg_count = aggregated.get("recording_count", 0)
 
-                                        # Log raw Last.fm listener count before calculation
-                                        log_debug(f'Last.fm raw data for "{title}": listeners={listeners}, playcount={playcount}')
-
-                                        # Store in album_lastfm_data for z-score calculation
-                                        album_lastfm_data[track_id] = {
-                                            "listeners": listeners,
-                                            "playcount": playcount
-                                        }
-
-                                        # Collect all album listener and playcount data for z-score
-                                        album_listeners_list = [data["listeners"] for data in album_lastfm_data.values() if data["listeners"] > 0]
-                                        album_playcounts_list = [data["playcount"] for data in album_lastfm_data.values() if data["playcount"] > 0]
-
-                                        # Calculate z-score based popularity
-                                        if album_listeners_list and album_playcounts_list:
-                                            from popularity_helpers import calculate_lastfm_zscore_popularity
-                                            lastfm_score = calculate_lastfm_zscore_popularity(
-                                                listeners, playcount,
-                                                album_listeners_list,
-                                                album_playcounts_list
-                                            )
-                                            log_info(f'Last.fm z-score popularity: {lastfm_score:.1f} (listeners={listeners}, playcount={playcount}, album_tracks={len(album_listeners_list)})')
-                                            log_debug(f'Last.fm z-score data - listeners: {listeners}, playcount: {playcount}, album_median_listeners: {median(album_listeners_list) if album_listeners_list else 0:.0f}')
-                                        else:
-                                            # Fallback to simple logarithmic scoring if not enough album data
-                                            lastfm_score = calculate_lastfm_popularity_score(listeners)
-                                            log_info(f'Last.fm listeners (fallback): {listeners} (score: {lastfm_score:.1f})')
-                                            log_debug(f'Not enough album data for z-score, using fallback logarithmic scoring')
-                                    else:
-                                        log_info(f'No Last.fm listeners data found for: {title}')
-                            except TimeoutError as e:
-                                log_info(f"Last.fm lookup timed out for {artist} - {title}")
-                                log_debug(f"Timeout error: {e}")
-                            except KeyboardInterrupt:
-                                # Allow user to interrupt the scan
-                                raise
+                                if agg_total > lb_listens and agg_count > 1:
+                                    log_info(
+                                        f'Cross-release LB boost for "{title}": '
+                                        f'{lb_listens} -> {agg_total} listens '
+                                        f'({agg_count} recordings found)'
+                                    )
+                                    lb_listens = agg_total
+                                    lb_percentile = calculate_listenbrainz_percentile(lb_listens, album_lb_listens)
+                                    lb_album_score = calculate_listenbrainz_popularity_score(lb_listens)
+                                elif agg_count > 1:
+                                    log_debug(
+                                        f'Cross-release LB search for "{title}": '
+                                        f'{agg_count} recordings, no boost (best={aggregated.get("max_listens", 0)})'
+                                    )
                             except Exception as e:
-                                log_info(f"Last.fm lookup failed for {artist} - {title}: {e}")
-                                log_debug(f"Last.fm error details: {type(e).__name__}: {str(e)}")
+                                log_debug(f'Cross-release LB lookup failed for "{title}": {e}')
 
-                        # Try to get ListenBrainz score if mbid is available
-                        # Calculate age score if release date is available
+                        # ------------------------------------------------------------
+                        # Age score
+                        # ------------------------------------------------------------
                         age_score = 0
-                        if not spotify_release_date:
-                            # Fall back to local year metadata when Spotify release-date lookups are disabled.
-                            local_year = row_get(track, 'year', None)
-                            if local_year:
-                                spotify_release_date = str(local_year)
+                        local_year = row_get(track, "year", None)
+                        if local_year and not spotify_release_date:
+                            spotify_release_date = str(local_year)
 
                         if spotify_release_date:
                             try:
-                                log_debug(f'Calculating age score for release date: {spotify_release_date}')
-                                # Apply age decay to Spotify score if available, otherwise use a base score of 1
                                 base_score = spotify_score if spotify_score > 0 else 1
                                 age_score, days_since = score_by_age(base_score, spotify_release_date)
-                                log_debug(f'Age score calculated: {age_score:.1f} (release date: {spotify_release_date}, days since: {days_since})')
+                                log_debug(
+                                    f'Age score calculated: {age_score:.1f} '
+                                    f'(release date: {spotify_release_date}, days since: {days_since})'
+                                )
                             except Exception as e:
-                                log_debug(f"Age score calculation failed: {e}")
-                        else:
-                            log_debug(f'No release date available for age scoring: {title}')
+                                log_debug(f"Age score calculation failed for '{title}': {e}")
 
-                        # Collect genre sources from available APIs
-                        spotify_genres_json = row_get(track, 'spotify_genres')
-                        lastfm_tags_json = row_get(track, 'lastfm_tags')
-                        listenbrainz_genres_json = row_get(track, 'listenbrainz_genres')
-                        discogs_genres_json = row_get(track, 'discogs_genres')
-                        musicbrainz_genres_json = row_get(track, 'musicbrainz_genres')
+                        # ------------------------------------------------------------
+                        # Genre / tag values from batch fetch
+                        # ------------------------------------------------------------
+                        spotify_genres_json = row_get(track, "spotify_artist_genres") or row_get(track, "spotify_genres")
+                        lastfm_tags_json = row_get(track, "lastfm_tags")
+                        listenbrainz_genres_json = row_get(track, "listenbrainz_genres")
+                        discogs_genres_json = row_get(track, "discogs_genres")
+                        musicbrainz_genres_json = row_get(track, "musicbrainz_genres")
 
-                        if metadata_enrichment_enabled:
-                            # Extract Spotify genres from artist metadata (saved by fetch_comprehensive_metadata)
-                            try:
-                                spotify_artist_genres = row_get(track, 'spotify_artist_genres')
-                                if spotify_artist_genres:
-                                    spotify_genres_json = spotify_artist_genres
-                                    log_debug(f'Spotify genres available for: {title}')
-                            except Exception as e:
-                                log_debug(f'Failed to extract Spotify genres: {e}')
+                        if metadata_enrichment_enabled and track_id in album_tags_data:
+                            tags_dict = album_tags_data[track_id]
+                            if tags_dict.get("lastfm_tags"):
+                                lastfm_tags_json = json.dumps(tags_dict["lastfm_tags"])
+                            if tags_dict.get("listenbrainz_genres"):
+                                listenbrainz_genres_json = json.dumps(tags_dict["listenbrainz_genres"])
+                            if tags_dict.get("discogs_genres"):
+                                discogs_genres_json = json.dumps(tags_dict["discogs_genres"])
+                            if tags_dict.get("musicbrainz_genres"):
+                                musicbrainz_genres_json = json.dumps(tags_dict["musicbrainz_genres"])
 
-                            # Use batch-fetched tag data if available (more efficient than per-track fetches)
-                            if track_id in album_tags_data:
-                                tags_dict = album_tags_data[track_id]
-                                if tags_dict.get("lastfm_tags"):
-                                    lastfm_tags_json = json.dumps(tags_dict["lastfm_tags"])
-                                    log_debug(f'Using batch-fetched Last.fm tags for: {title}')
-                                if tags_dict.get("discogs_genres"):
-                                    discogs_genres_json = json.dumps(tags_dict["discogs_genres"])
-                                    log_debug(f'Using batch-fetched Discogs genres for: {title}')
-
-                            # If batch fetch didn't provide Last.fm tags, try extracting from lastfm_info
-                            if not lastfm_tags_json:
-                                try:
-                                    if lastfm_info and lastfm_info.get("toptags"):
-                                        tags_list = lastfm_info.get("toptags", {}).get("tag", [])
-                                        if tags_list and isinstance(tags_list, list):
-                                            tag_names = [tag.get("name") for tag in tags_list if isinstance(tag, dict) and tag.get("name")]
-                                            if tag_names:
-                                                lastfm_tags_json = json.dumps(tag_names)
-                                                log_debug(f'Last.fm tags extracted from API for: {title} - {len(tag_names)} tags')
-                                except Exception as e:
-                                    log_debug(f'Failed to extract Last.fm tags from API: {e}')
-
-                            # Extract Discogs genres (if not already fetched in batch)
-                            if not discogs_genres_json and HAVE_DISCOGS and discogs_token:
-                                try:
-                                    discogs_release_id = row_get(track, 'discogs_release_id')
-                                    if discogs_release_id:
-                                        log_debug(f'Fetching Discogs genres for release ID: {discogs_release_id}')
-                                        discogs_client = DiscogsClient(token=discogs_token)
-                                        discogs_genres = discogs_client.get_genres(title, artist)
-                                        if discogs_genres:
-                                            discogs_genres_json = json.dumps(discogs_genres)
-                                            log_debug(f'Discogs genres extracted for: {title} - {len(discogs_genres)} genres')
-                                except Exception as e:
-                                    log_debug(f'Failed to extract Discogs genres: {e}')
-
-                            # Extract MusicBrainz genres (from recording metadata)
-                            if HAVE_MUSICBRAINZ:
-                                try:
-                                    track_mbid = row_get(track, 'mbid')
-                                    if track_mbid:
-                                        log_debug(f'Fetching MusicBrainz genres for MBID: {track_mbid}')
-                                        mb_client = MusicBrainzClient()
-                                        mb_genres = mb_client.get_genres(title, artist)
-                                        if mb_genres:
-                                            musicbrainz_genres_json = json.dumps(mb_genres)
-                                            log_debug(f'MusicBrainz genres extracted for: {title} - {len(mb_genres)} genres')
-                                except Exception as e:
-                                    log_debug(f'Failed to extract MusicBrainz genres: {e}')
-
-                        # Calculate weighted popularity score
-                        # Include 2 active sources: Last.fm + Age
-                        # Only include sources that have data (score > 0)
-                        scores = []
-                        weights = []
-
-                        # Calculate dynamic weights based on artist catalogue context
-                        # This boosts Last.fm weight for tracks that are outliers in the artist's catalogue
+                        # ------------------------------------------------------------
+                        # Dynamic weighting logic
+                        # ------------------------------------------------------------
                         dynamic_lastfm_weight = LASTFM_WEIGHT
-                        listeners = int(lastfm_listeners or 0)
+                        listeners_for_weighting = int(lastfm_listeners or 0)
 
-                        if artist_lastfm_context and artist_lastfm_context.get('track_count', 0) > 0 and listeners > 0:
+                        if artist_lastfm_context and artist_lastfm_context.get("track_count", 0) > 0 and listeners_for_weighting > 0:
                             dynamic_lastfm_weight = get_dynamic_lastfm_weight(
                                 artist_lastfm_context,
-                                listeners,
+                                listeners_for_weighting,
                                 LASTFM_WEIGHT,
                             )
                             if dynamic_lastfm_weight != LASTFM_WEIGHT:
-                                log_info(f"Dynamic weight adjustment for artist context: Last.fm {LASTFM_WEIGHT:.2f}→{dynamic_lastfm_weight:.2f}")
+                                log_info(
+                                    f"Dynamic weight adjustment for artist context: "
+                                    f"Last.fm {LASTFM_WEIGHT:.2f}→{dynamic_lastfm_weight:.2f}"
+                                )
+
+                        album_context_live = int(row_get(track, "album_context_live") or 0)
+                        is_live_track = int(row_get(track, "is_live") or 0)
+
+                        if (album_context_live or is_live_track) and lastfm_score > 0:
+                            live_album_weight_reduction = 0.50
+                            dynamic_lastfm_weight = dynamic_lastfm_weight * (1.0 - live_album_weight_reduction)
+                            log_info(
+                                f'Live album penalty applied: Last.fm weight reduced by {live_album_weight_reduction * 100:.0f}% '
+                                f'(new weight: {dynamic_lastfm_weight:.2f})'
+                            )
+
+                        # ------------------------------------------------------------
+                        # Source mismatch adjustment
+                        # ------------------------------------------------------------
+                        lb_weight = LISTENBRAINZ_WEIGHT
+                        if lastfm_listeners > 0 and lb_listens > 0:
+                            is_featured = "feat" in track_artist.lower() or "feat" in title.lower()
+                            metadata_confirmed = bool(
+                                row_get(track, "mbid")
+                                or row_get(track, "recording_mbid")
+                                or row_get(track, "musicbrainz_recording_mbid")
+                            )
+                            lf_adj, lb_adj = adjust_weights(
+                                lastfm_listeners,
+                                lb_listens,
+                                is_featured_track=is_featured,
+                                metadata_confirmed=metadata_confirmed,
+                            )
+                            if lf_adj != LASTFM_WEIGHT or lb_adj != LISTENBRAINZ_WEIGHT:
+                                dynamic_lastfm_weight = lf_adj
+                                lb_weight = lb_adj
+                                log_info(
+                                    f"Source mismatch adjustment for '{title}': "
+                                    f"Last.fm weight={dynamic_lastfm_weight:.2f}, ListenBrainz weight={lb_weight:.2f}"
+                                )
+
+                        # ------------------------------------------------------------
+                        # Final weighted popularity calculation
+                        # ------------------------------------------------------------
+                        scores = []
+                        weights = []
 
                         if lastfm_score > 0:
                             scores.append(lastfm_score)
                             weights.append(dynamic_lastfm_weight)
-                            log_debug(f'Including Last.fm score: {lastfm_score} (weight: {dynamic_lastfm_weight:.2f})')
+                            log_debug(f'Including Last.fm score: {lastfm_score:.1f} (weight: {dynamic_lastfm_weight:.2f})')
 
-                        listenbrainz_score = 0
+                        if lb_album_score > 0:
+                            scores.append(lb_album_score)
+                            weights.append(lb_weight)
+                            log_debug(f'Including LB album score: {lb_album_score:.1f} (weight: {lb_weight:.2f})')
 
                         if age_score > 0:
                             scores.append(age_score)
                             weights.append(AGE_WEIGHT)
-                            log_debug(f'Including age score: {age_score} (weight: {AGE_WEIGHT})')
+                            log_debug(f'Including age score: {age_score:.1f} (weight: {AGE_WEIGHT:.2f})')
 
-                        # Calculate weighted average
                         if scores and weights:
                             total_weight = sum(weights)
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
 
-                            # Use weighted popularity score directly (restored to original working method)
-                            track_updates.append((popularity_score, spotify_score, lastfm_score, lastfm_listeners, spotify_genres_json, lastfm_tags_json, listenbrainz_genres_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
+                            # Apply minimum popularity floor for tracks with metadata (MBID)
+                            # to prevent known tracks from getting abnormally low scores
+                            # when external APIs have no data
+                            if popularity_score < 5.0:
+                                track_mbid = (
+                                    row_get(track, "recording_mbid")
+                                    or row_get(track, "musicbrainz_recording_mbid")
+                                    or row_get(track, "mbid")
+                                )
+                                if track_mbid:
+                                    popularity_score = 5.0
+                                    log_debug(f'Applying minimum popularity floor (5.0) for track with MBID: {title}')
+
+                            track_updates.append((
+                                popularity_score,
+                                spotify_score,
+                                lastfm_score,
+                                lastfm_listeners,
+                                spotify_genres_json,
+                                lastfm_tags_json,
+                                listenbrainz_genres_json,
+                                discogs_genres_json,
+                                musicbrainz_genres_json,
+                                album_art_url,
+                                track_id,
+                            ))
+
                             scanned_count += 1
                             album_scanned += 1
-                            log_info(f'Track scanned successfully: "{title}" (weighted: {popularity_score:.1f})')
-                            log_debug(f'Weighted popularity calculation - lastfm: {lastfm_score:.1f}, age: {age_score:.1f}, weighted: {popularity_score:.1f}')
-                        else:
-                            log_info(f"No popularity score found for {artist} - {title}")
-                            log_debug(f'No data sources available for scoring')
 
-                        # Track progress and show percentage milestones
+                            log_info(f'Track scanned successfully: "{title}" (weighted: {popularity_score:.1f})')
+                            track["lb_percentile"] = lb_percentile
+                            log_debug(
+                                f'Weighted popularity calculation - '
+                                f'lastfm: {lastfm_score:.1f}, '
+                                f'lb_album: {lb_album_score:.1f}, '
+                                f'age: {age_score:.1f}, '
+                                f'weighted: {popularity_score:.1f}'
+                            )
+                        else:
+                            track["lb_percentile"] = lb_percentile
+                            log_info(f'No popularity score found for {artist} - {title}')
+                            log_debug('No data sources available for scoring')
+
+                        # ------------------------------------------------------------
+                        # Milestone progress logging
+                        # ------------------------------------------------------------
                         tracks_processed += 1
-                        # Efficient milestone checking using pre-calculated values
                         if tracks_processed == milestone_25 and 25 not in milestones_logged:
                             log_unified(f"Popularity Scan - 25% completed - {tracks_processed}/{total_tracks} songs")
-                            log_debug(f"Progress milestone - 25% completed for album {album}")
                             milestones_logged.add(25)
                         elif tracks_processed == milestone_50 and 50 not in milestones_logged:
                             log_unified(f"Popularity Scan - 50% completed - {tracks_processed}/{total_tracks} songs")
-                            log_debug(f"Progress milestone - 50% completed for album {album}")
                             milestones_logged.add(50)
                         elif tracks_processed == milestone_75 and 75 not in milestones_logged:
                             log_unified(f"Popularity Scan - 75% completed - {tracks_processed}/{total_tracks} songs")
-                            log_debug(f"Progress milestone - 75% completed for album {album}")
                             milestones_logged.add(75)
 
-# Batch update all popularity scores and genre sources for this album in one commit (skipped in singles_only mode)
-                if track_updates and not singles_only and not metadata_only:
-                    # Merge tags from album_tags_data into track_updates BEFORE committing
-                    # This ensures Last.fm tags and other genre data are saved
-                    updated_track_updates = []
-                    track_rows_by_id = {track.get('id'): track for track in album_tracks}
-                    for update_tuple in track_updates:
-                        # Unpack: (popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id)
-                        popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id = update_tuple
+                else:
+                    if skip_popularity_for_album:
+                        log_info(f"Popularity already scanned for album '{album}'; running singles detection / metadata only")
+                    else:
+                        log_info(f"Singles-only or metadata-only mode for album '{album}': popularity scoring skipped")
+                    track_updates = []  
 
-                        # Check if we have tags for this track in album_tags_data
+                # Batch update all popularity scores and genre sources for this album in one commit (skipped in singles_only mode)
+                if track_updates and not singles_only and not metadata_only:
+                    track_rows_by_id = {track.get('id'): track for track in album_tracks}
+                    updated_track_updates = []
+
+                    for update_tuple in track_updates:
+                        (
+                            popularity_score,
+                            spotify_score,
+                            lastfm_ratio,
+                            lastfm_track_playcount,
+                            spotify_genres,
+                            lastfm_tags,
+                            listenbrainz_genres,
+                            discogs_genres,
+                            musicbrainz_genres,
+                            album_art_url,
+                            track_id,
+                        ) = update_tuple
+
+                        current_track_row = track_rows_by_id.get(track_id, {})
+                        current_title = current_track_row.get("title", "")
+
+                        # ── Step 1: Merge fetched tags ────────────────────────────────────────
                         if track_id in album_tags_data:
                             tags_data = album_tags_data[track_id]
-                            # Merge tags - prefer freshly fetched data over existing
                             if tags_data.get("lastfm_tags"):
                                 lastfm_tags = json.dumps(tags_data["lastfm_tags"])
-                                log_debug(f"Using Last.fm tags for track {track_id}: {len(tags_data['lastfm_tags'])} tags")
                             if tags_data.get("listenbrainz_genres"):
                                 listenbrainz_genres = json.dumps(tags_data["listenbrainz_genres"])
-                                log_debug(f"Using ListenBrainz genres for track {track_id}: {len(tags_data['listenbrainz_genres'])} genres")
                             if tags_data.get("discogs_genres"):
                                 discogs_genres = json.dumps(tags_data["discogs_genres"])
-                                log_debug(f"Using Discogs genres for track {track_id}: {len(tags_data['discogs_genres'])} genres")
                             if tags_data.get("musicbrainz_genres"):
                                 musicbrainz_genres = json.dumps(tags_data["musicbrainz_genres"])
-                                log_debug(f"Using MusicBrainz genres for track {track_id}: {len(tags_data['musicbrainz_genres'])} genres")
 
-                        # Add "Cover" genre if this is a cover song
-                        if is_cover_song:
-                            # Add Cover to musicbrainz_genres (most appropriate field for special tags)
+                        # ── Step 2: Genre injections (all happen before change-detection) ─────
+
+                        # Cover genre
+                        current_is_cover_song, _ = detect_cover_and_normalize_title(current_title)
+                        if current_is_cover_song:
                             try:
-                                mb_genres_list = json.loads(musicbrainz_genres) if musicbrainz_genres and musicbrainz_genres != 'null' else []
+                                mb_genres_list = json.loads(musicbrainz_genres) if musicbrainz_genres and musicbrainz_genres != "null" else []
                                 if "Cover" not in mb_genres_list:
-                                    mb_genres_list.insert(0, "Cover")  # Add at beginning for visibility
+                                    mb_genres_list.insert(0, "Cover")
                                     musicbrainz_genres = json.dumps(mb_genres_list)
-                                    log_debug(f'Added "Cover" genre to track: {title}')
+                                    log_debug(f'Added "Cover" genre to track: {current_title}')
                             except (json.JSONDecodeError, TypeError):
                                 musicbrainz_genres = json.dumps(["Cover"])
-                                log_debug(f'Initialized genres with "Cover" for track: {title}')
+                                log_debug(f'Initialized genres with "Cover" for track: {current_title}')
 
-                        # Ensure "Live" or "Acoustic" genre is preserved in the batch update.
-                        # The in-memory track dict was already updated in the live-detection block
-                        # above, so album_live_genre will already be present in musicbrainz_genres
-                        # for newly-tagged tracks; this guard handles any edge case where the
-                        # genre may not yet have been written into the update tuple.
+                        # Live / Acoustic genre
                         if album_live_genre:
                             try:
-                                mb_genres_list = json.loads(musicbrainz_genres) if musicbrainz_genres and musicbrainz_genres != 'null' else []
+                                mb_genres_list = json.loads(musicbrainz_genres) if musicbrainz_genres and musicbrainz_genres != "null" else []
                                 if album_live_genre not in mb_genres_list:
                                     mb_genres_list.insert(0, album_live_genre)
                                     musicbrainz_genres = json.dumps(mb_genres_list)
-                                    log_debug(f'Ensured "{album_live_genre}" genre in batch update for track: {title}')
+                                    log_debug(f'Ensured "{album_live_genre}" genre in batch update for track: {current_title}')
                             except (json.JSONDecodeError, TypeError):
                                 musicbrainz_genres = json.dumps([album_live_genre])
 
-                        # Inject "Christmas" genre when the title or album clearly signals a
-                        # Christmas track, mirroring how "Live" / "Acoustic" are handled.
-                        _xmas_keywords = ["christmas", "xmas", "yuletide", "holiday season",
-                                          "jingle bells", "silent night", "deck the halls",
-                                          "winter wonderland", "feliz navidad", "rudolph",
-                                          "santa claus", "sleigh bells"]
-                        _title_lower = str(title or "").lower()
+                        # Christmas genre
+                        _xmas_keywords = [
+                            "christmas", "xmas", "yuletide", "holiday season", "jingle bells",
+                            "silent night", "deck the halls", "winter wonderland", "feliz navidad",
+                            "rudolph", "santa claus", "sleigh bells",
+                        ]
+                        _title_lower = str(current_title or "").lower()
                         _album_lower = str(album or "").lower()
-                        _is_christmas = any(w in _title_lower or w in _album_lower for w in _xmas_keywords)
-                        if _is_christmas:
+                        if any(w in _title_lower or w in _album_lower for w in _xmas_keywords):
                             try:
-                                mb_genres_list = json.loads(musicbrainz_genres) if musicbrainz_genres and musicbrainz_genres != 'null' else []
+                                mb_genres_list = json.loads(musicbrainz_genres) if musicbrainz_genres and musicbrainz_genres != "null" else []
                                 if "Christmas" not in mb_genres_list:
                                     mb_genres_list.insert(0, "Christmas")
                                     musicbrainz_genres = json.dumps(mb_genres_list)
-                                    log_debug(f'Added "Christmas" genre to track: {title}')
+                                    log_debug(f'Added "Christmas" genre to track: {current_title}')
                             except (json.JSONDecodeError, TypeError):
                                 musicbrainz_genres = json.dumps(["Christmas"])
 
-                        current_track = track_rows_by_id.get(track_id, {})
+                        # ── Step 3: Skip if nothing changed ──────────────────────────────────
                         proposed_values = {
-                            'popularity_score': popularity_score,
-                            'spotify_score': spotify_score,
-                            'lastfm_ratio': lastfm_ratio,
-                            'lastfm_track_playcount': lastfm_track_playcount,
-                            'spotify_genres': spotify_genres,
-                            'lastfm_tags': lastfm_tags,
-                            'listenbrainz_genres': listenbrainz_genres,
-                            'discogs_genres': discogs_genres,
-                            'musicbrainz_genres': musicbrainz_genres,
-                            'cover_art_url': album_art_url,
+                            "popularity_score": popularity_score,
+                            "spotify_score": spotify_score,
+                            "lastfm_ratio": lastfm_ratio,
+                            "lastfm_track_playcount": lastfm_track_playcount,
+                            "spotify_genres": spotify_genres,
+                            "lastfm_tags": lastfm_tags,
+                            "listenbrainz_genres": listenbrainz_genres,
+                            "discogs_genres": discogs_genres,
+                            "musicbrainz_genres": musicbrainz_genres,
+                            "cover_art_url": album_art_url,
                         }
 
-                        if not popularity_values_changed(current_track, proposed_values):
-                            log_debug(f"Skipping no-op popularity update for track {track_id}: no popularity-related field changes detected")
+                        if not popularity_values_changed(current_track_row, proposed_values):
+                            log_debug(f"Skipping no-op popularity update for track {track_id}: no changes detected")
                             continue
 
-                        # Append merged tuple
-                        updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id))
+                        # ── Step 4: Single append ─────────────────────────────────────────────
+                        updated_track_updates.append((
+                            popularity_score,
+                            spotify_score,
+                            lastfm_ratio,
+                            lastfm_track_playcount,
+                            spotify_genres,
+                            lastfm_tags,
+                            listenbrainz_genres,
+                            discogs_genres,
+                            musicbrainz_genres,
+                            album_art_url,
+                            track_id,
+                        ))
 
+                    # ── Commit ────────────────────────────────────────────────────────────────
                     if updated_track_updates:
                         try:
                             _execute_tracks_batch_with_retry(
                                 conn,
                                 cursor,
-                                f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, lastfm_track_playcount = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, listenbrainz_genres = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
+                                f"UPDATE tracks SET "
+                                f"popularity_score = {placeholder}, "
+                                f"spotify_score = {placeholder}, "
+                                f"lastfm_ratio = {placeholder}, "
+                                f"lastfm_track_playcount = {placeholder}, "
+                                f"spotify_genres = {placeholder}, "
+                                f"lastfm_tags = {placeholder}, "
+                                f"listenbrainz_genres = {placeholder}, "
+                                f"discogs_genres = {placeholder}, "
+                                f"musicbrainz_genres = {placeholder}, "
+                                f"cover_art_url = {placeholder} "
+                                f"WHERE id = {placeholder}",
                                 sorted(updated_track_updates, key=lambda row: str(row[-1])),
                                 f"popularity batch update for album {album}",
                             )
                             conn.commit()
 
+                                # Sync popularity values back into in-memory track dicts so that the
+                                # singles detection phase immediately sees the updated scores.
                             updated_popularity_by_id = {
-                                track_id: {
-                                    'popularity_score': popularity_score,
-                                    'spotify_score': updated_spotify_score,
-                                    'lastfm_ratio': updated_lastfm_ratio,
-                                    'lastfm_track_playcount': updated_lastfm_track_playcount,
+                                row[10]: {
+                                    "popularity_score": row[0],
+                                    "spotify_score":    row[1],
+                                    "lastfm_ratio":     row[2],
+                                    "lastfm_track_playcount": row[3],
                                 }
-                                for popularity_score, updated_spotify_score, updated_lastfm_ratio, updated_lastfm_track_playcount, _spotify_genres, _lastfm_tags, _listenbrainz_genres, _discogs_genres, _musicbrainz_genres, _cover_art_url, track_id in updated_track_updates
+                                for row in updated_track_updates
                             }
                             for track in album_tracks:
                                 if track.get("id") in updated_popularity_by_id:
-                                    updated_values = updated_popularity_by_id[track.get("id")]
-                                    track["popularity_score"] = updated_values['popularity_score']
-                                    track["spotify_score"] = updated_values['spotify_score']
-                                    track["lastfm_ratio"] = updated_values['lastfm_ratio']
-                                    track["lastfm_track_playcount"] = updated_values['lastfm_track_playcount']
+                                    track.update(updated_popularity_by_id[track["id"]])
 
-                            # PostgreSQL commits are sufficient for durability here.
+                            log_debug(
+                                f"Batch committed {len(updated_track_updates)} popularity updates "
+                                f"for album '{album}' with merged tag data"
+                            )
+
                         except Exception as e:
-                            # PostgreSQL may abort transaction if previous updates failed
                             log_debug(f"Error batch updating popularity scores: {e}")
                             try:
                                 conn.rollback()
-                                log_debug(f"Rolled back failed transaction")
-                            except:
+                                log_debug("Rolled back failed transaction")
+                            except Exception:
                                 pass
-                            # Try to get fresh connection and continue
-                            try:
-                                from app import get_db
-                                conn = get_db()
-                                cursor = conn.cursor()
-                                log_debug(f"Got fresh database connection after transaction failure")
-                            except Exception as conn_error:
-                                log_debug(f"Failed to get fresh connection: {conn_error}")
-                                raise  # Re-raise if we can't recover
-                        log_debug(f"Batch committed {len(updated_track_updates)} popularity scores and genre sources for album '{album}' with merged tag data")
+                            raise
                     else:
-                        log_debug(f"Skipped batch update for album '{album}' because no popularity-related fields changed")
-                    if album_art_url:
-                        log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
-                    else:
-                        log_debug(f"[ALBUM_ART] Album art will be fetched on-demand from Navidrome or Apple Music sources")
+                        log_debug(f"Skipped batch update for album '{album}': no popularity-related fields changed")
 
-                if not singles_only and not metadata_only:
-                    log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
-                    log_info(f'Album "{artist} - {album}" scanned. Popularity applied to {album_scanned} tracks')
-
-                    # --- Standout & Star Rating Assignment ---
-                    #
-                    # This section applies album- and artist-normalized standout detection and star rating assignment.
-                    #
-                    # Album standout: z >= config or top N in album (using median+MAD)
-                    # Artist standout: z >= config and in top X% of artist catalog (using median+MAD)
-                    # 5★: Both album and artist standout, top 10% of artist
-                    # 4★: Album standout and artist z >= 1.0 or top 20%
-                    # 3★: Album standout only or above album median
-                    # 2★: Not standout, but above album median
-                    # 1★: Below album median or excluded from stats
-                    try:
-                        from statistics import median as stat_median_standout
-                        from popularity_helpers import get_top_standout_tracks_with_gap
-                        MIN_SPREAD = 10.0  # Prevent flat-album noise amplification
-                        log_info(f'Analyzing standout/star ratings for artist: {artist}')
-                        is_single_false_expr = "is_single = FALSE"
-                        cursor.execute(f"""
-                            SELECT id, title, album, popularity_score, lastfm_track_playcount FROM tracks
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND {is_single_false_expr} AND album NOT IN (
-                                SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album_context_live = 1
-                            ) AND album NOT IN (
-                                SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND discogs_format_descriptions LIKE {placeholder}
+                        if album_art_url:
+                            log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
+                        else:
+                            log_debug("[ALBUM_ART] Album art will be fetched on-demand from Navidrome or Apple Music sources")
+                            # Update artist progress tracking after completing all albums for this artist
+                            # Note: Progress is saved once per artist (not per track) to balance granularity
+                            # with I/O efficiency. Original code saved after every track which could result
+                            # in thousands of writes for large libraries. Per-artist updates provide adequate
+                            # progress visibility while reducing file I/O by orders of magnitude.
+                            # If scan is interrupted, it can resume from the last completed artist.
+                            processed_artists += 1
+                            save_popularity_progress(
+                                processed_artists,
+                                total_artists,
+                                current_artist=artist,
+                                progress_file=progress_file_path,
+                                scan_type=caller_scan_type or progress_scan_type,
+                                # Record this artist as the last *completed* checkpoint so that
+                                # if the process is killed before the next artist's in-progress
+                                # marker is written, resume will start from here rather than
+                                # looping back to the same stuck artist.
+                                last_completed_artist=artist,
                             )
-                        """, (artist, artist, artist, '%live%'))
-                        artist_tracks = cursor.fetchall()
-                        if not artist_tracks:
-                            log_debug(f'No non-single tracks found for {artist}, skipping standout analysis')
-                        else:
-                            # Gather all popularity scores for artist
-                            artist_scores = [row_get(t, 'popularity_score', 0) for t in artist_tracks if row_get(t, 'popularity_score', 0) > 0]
-                            if len(artist_scores) < 2:
-                                log_debug(f'Insufficient tracks with scores for {artist} ({len(artist_scores)} found), skipping standout analysis')
-                            else:
-                                # Use median + MAD for artist-level statistics
-                                artist_median = stat_median_standout(artist_scores)
-                                artist_absolute_devs = [abs(s - artist_median) for s in artist_scores]
-                                artist_mad = stat_median_standout(artist_absolute_devs)
-                                artist_mad_scaled = artist_mad * 1.4826  # Scale to be comparable to stddev
-                                artist_spread = max(artist_mad_scaled, MIN_SPREAD)  # Apply floor
+                            log_debug(f"Progress saved - {processed_artists}/{total_artists} artists processed (current: {artist})")
 
-                                sorted_artist_scores = sorted(artist_scores, reverse=True)
-                                def artist_percentile(score):
-                                    return (sorted_artist_scores.index(score) + 1) / len(sorted_artist_scores)
+                            log_debug("Committing final changes to database")
+                            conn.commit()
 
-                                # Pre-compute standout clusters for each album to handle multiple singles with similar popularity
-                                album_standout_clusters = {}
-                                unique_albums = set(row_get(t, 'album', '') for t in artist_tracks)
-                                for album_name in unique_albums:
-                                    if album_name:
-                                        cluster = get_top_standout_tracks_with_gap(artist, album_name, conn, gap_threshold=0.5, verbose=False)
-                                        if cluster:
-                                            album_standout_clusters[album_name] = cluster
-                                            log_debug(f"Album '{album_name}' has {len(cluster)} tracks in standout cluster")
+                # ---------------------------------------------------------------------
+                # STEP 7: Singles detection & star rating
+                # ---------------------------------------------------------------------
+                if not metadata_only and not popularity_only:
 
-                                for track in artist_tracks:
-                                    track_id = row_get(track, 'id')
-                                    track_title = row_get(track, 'title')
-                                    track_album = row_get(track, 'album', '')
-                                    score = row_get(track, 'popularity_score', 0)
-                                    if score <= 0 or artist_spread == 0:
-                                        cursor.execute(f"""
-                                            UPDATE tracks SET is_standout_track = 0
-                                            WHERE id = {placeholder}
-                                        """, (track_id,))
-                                        continue
-                                    # Album-level stats using median + MAD
-                                    cursor.execute(f"""
-                                        SELECT popularity_score FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
-                                    """, (artist, track_album))
-                                    track_album_scores = [row_get(row, 'popularity_score', 0) for row in cursor.fetchall()]
-                                    track_album_median = stat_median_standout(track_album_scores) if track_album_scores else 0
-                                    track_album_abs_devs = [abs(s - track_album_median) for s in track_album_scores]
-                                    track_album_mad = stat_median_standout(track_album_abs_devs) if len(track_album_scores) > 1 else 0
-                                    track_album_mad_scaled = track_album_mad * 1.4826
-                                    track_album_spread = max(track_album_mad_scaled, MIN_SPREAD)
-                                    album_z = (score - track_album_median) / track_album_spread if track_album_spread > 0 else 0
+                    # -----------------------------------------------------------------
+                    # Canonical artist context for stats/catalogue comparisons
+                    # -----------------------------------------------------------------
+                    album_artist = row_get(album_tracks[0], "album_artist") if album_tracks else None
 
-                                    # Check if track is in the standout cluster for this album
-                                    # Uses gap-based clustering to handle multiple singles with similar high popularity
-                                    is_in_standout_cluster = track_id in album_standout_clusters.get(track_album, set())
-
-                                    # Require BOTH medium z-score (>= 0.8) AND being in standout cluster
-                                    # This ensures tracks are statistically significant AND part of top-performing group
-                                    # Handles both single standouts and clusters of multiple singles
-                                    is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] and is_in_standout_cluster)
-                                    # Artist-level stats using median + MAD
-                                    artist_z = (score - artist_median) / artist_spread if artist_spread > 0 else 0
-                                    is_artist_standout = (artist_z >= STANDOUT_CONFIG['artist_zscore_threshold'] and artist_percentile(score) <= STANDOUT_CONFIG['artist_top_percentile'])
-                                    # Star rating assignment
-                                    # 5★ requires album z >= 1.0 (high confidence) + artist standout
-                                    if is_album_standout and is_artist_standout and album_z >= STANDOUT_CONFIG['star_5']['album_z']:
-                                        star = 5
-                                    elif is_album_standout and (artist_z >= STANDOUT_CONFIG['star_4']['artist_z'] or artist_percentile(score) <= STANDOUT_CONFIG['star_4']['artist_pct']):
-                                        star = 4
-                                    elif is_album_standout:
-                                        star = 3
-                                    elif track_album_median and score > track_album_median:
-                                        star = 2
-                                    else:
-                                        star = 1
-                                    cursor.execute(f"""
-                                        UPDATE tracks SET is_standout_track = {placeholder}
-                                        WHERE id = {placeholder}
-                                    """, (1 if is_album_standout or is_artist_standout else 0, track_id))
-                                    log_debug(f"Track: {track_title} | Score: {score:.1f} | Album_z: {album_z:.2f} | Artist_z: {artist_z:.2f} | Album_standout: {is_album_standout} | Artist_standout: {is_artist_standout} | Star: {star}")
-                                conn.commit()
-                    except Exception as e:
-                        log_debug(f'Standout/star rating analysis failed for {artist}: {e}')
-                    # --- End standout/star rating section ---
-
-                # BULK TAG LOOKUP: Fetch tags from ListenBrainz bulk-tag-lookup API
-                # This enriches tracks with community-aggregated MusicBrainz tags/genres
-                # Run BEFORE single detection to ensure all metadata is available
-                try:
-                    if metadata_enrichment_enabled and HAVE_MUSICBRAINZ:  # Only metadata scans run bulk tag enrichment
-                        # Collect recording MBIDs from all tracks that have them
-                        mbid_list = []
-                        track_mbid_map = {}  # Map MBID -> track_id for updating results
-
-                        for track in album_tracks:
-                            track_mbid = track.get('mbid')
-                            if track_mbid and track_mbid.strip():  # Only include non-empty MBIDs
-                                mbid_list.append(track_mbid)
-                                track_mbid_map[track_mbid] = track.get('id')
-
-                        if mbid_list:
-                            log_debug(f"Bulk tag lookup: Collected {len(mbid_list)} MBIDs from {album} tracks")
-
-                            # Batch MBIDs in groups of 50 (conservative limit for URL length)
-                            BATCH_SIZE = 50
-                            all_results = {}
-
-                            for batch_start in range(0, len(mbid_list), BATCH_SIZE):
-                                batch_mbids = mbid_list[batch_start:batch_start + BATCH_SIZE]
-                                mbid_query = ",".join(batch_mbids)  # Comma-separated for API
-
-                                try:
-                                    # Call ListenBrainz bulk-tag-lookup API
-                                    lb_url = "https://labs.api.listenbrainz.org/bulk-tag-lookup/json"
-                                    params = {"recording_mbid": mbid_query}
-
-                                    res = session.get(lb_url, params=params, timeout=(5, 15))
-                                    res.raise_for_status()
-                                    batch_results = res.json()
-
-                                    # Merge batch results
-                                    if batch_results:
-                                        all_results.update(batch_results)
-
-                                    log_debug(f"Bulk tag lookup batch {batch_start}-{batch_start + len(batch_mbids)}: Fetched tags for {len(batch_results)} recording(s)")
-                                except Exception as batch_error:
-                                    log_debug(f"Bulk tag lookup API call failed for batch {batch_start}-{batch_start + len(batch_mbids)}: {batch_error}")
-                                    # Continue with next batch on error
-                                    continue
-
-                            # Process and store results
-                            if all_results:
-                                tags_updated = 0
-                                for mbid, tag_data in all_results.items():
-                                    track_id = track_mbid_map.get(mbid)
-                                    if not track_id:
-                                        continue
-
-                                    # Extract tags from result (format depends on API response structure)
-                                    # ListenBrainz returns tag data that includes popularity/count info
-                                    tags = []
-                                    if isinstance(tag_data, dict):
-                                        # If it's a dict, try to get tags from various possible keys
-                                        if "tags" in tag_data:
-                                            tags = tag_data.get("tags", [])
-                                            if isinstance(tags, dict):
-                                                tags = list(tags.keys()) if tags else []
-                                        elif "tag" in tag_data:
-                                            tags = tag_data.get("tag", [])
-                                    elif isinstance(tag_data, list):
-                                        # If it's already a list, use it directly
-                                        tags = tag_data
-
-                                    if tags:
-                                        # Convert tags to JSON format matching existing genre columns
-                                        tags_json = json.dumps(tags)
-
-                                        # Merge with existing musicbrainz_genres if present
-                                        cursor.execute(
-                                            f"SELECT musicbrainz_genres FROM tracks WHERE id = {placeholder}",
-                                            (track_id,)
-                                        )
-                                        existing = cursor.fetchone()
-                                        existing_tags = []
-
-                                        if existing and existing[0]:
-                                            try:
-                                                existing_tags = json.loads(existing[0])
-                                                if not isinstance(existing_tags, list):
-                                                    existing_tags = [existing_tags]
-                                            except (json.JSONDecodeError, TypeError):
-                                                existing_tags = []
-
-                                        # Merge and deduplicate tags
-                                        merged_tags = list(dict.fromkeys(existing_tags + tags))  # Preserves order, removes duplicates
-                                        merged_json = json.dumps(merged_tags)
-
-                                        # Update track with merged tags
-                                        cursor.execute(
-                                            f"UPDATE tracks SET musicbrainz_genres = {placeholder} WHERE id = {placeholder}",
-                                            (merged_json, track_id)
-                                        )
-                                        tags_updated += 1
-
-                                if tags_updated > 0:
-                                    conn.commit()
-                                    log_info(f"Bulk tag lookup: Updated {tags_updated} tracks with ListenBrainz tags for \"{artist} - {album}\"")
-                                    log_debug(f"Bulk tag lookup: Merged tags with existing musicbrainz_genres for {tags_updated} track(s)")
-                        else:
-                            log_debug(f"Bulk tag lookup: No MBIDs found for album tracks, skipping")
-                    else:
-                        log_debug(f"Bulk tag lookup: MusicBrainz not available, skipping ListenBrainz tags")
-                except Exception as e:
-                    log_debug(f"Bulk tag lookup failed for \"{artist} - {album}\": {e}")
-                    # Continue with single detection even if bulk tag lookup fails
-                # --- End bulk tag lookup section ---
-
-                if metadata_only:
-                    if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'metadata', album_skip_days):
-                        log_unified(f'Metadata Scan - Skipping album "{album}" (scanned within last {album_skip_days} days)')
-                        log_info(f'⏱️ Album "{artist} - {album}" was already scanned within {album_skip_days} days - METADATA SKIP')
-                        skipped_count += 1
-                        continue
-
-                    covers_found_count = 0
-                    if HAVE_COVER_DETECTOR:
-                        try:
-                            log_info(f'Starting cover detection for album "{artist} - {album}" (metadata-only mode)')
-                            cursor.execute(f"""
-                                SELECT id, title, artist, writer, mbid, file_path, musicbrainz_album_mbid,
-                                       is_cover, genres, musicbrainz_genres, original_cover_artist
-                                FROM tracks
-                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
-                                ORDER BY COALESCE(track_number, 0), title
-                            """, (artist, album))
-                            album_tracks_for_cover = [dict(row) for row in cursor.fetchall()]
-                            if album_tracks_for_cover:
-                                cover_detector = CoverDetector(db_connection=conn, musicbrainz_client=_get_timeout_safe_musicbrainz_client())
-                                covers_detected = cover_detector.detect_covers_for_album(album, artist, album_tracks_for_cover)
-                                covers_found_count = len(covers_detected or [])
-                                log_info(f'Cover detection complete for "{artist} - {album}": {covers_found_count} cover(s) detected')
-                                log_unified(f'Cover Detection - "{artist} - {album}": {covers_found_count} cover(s) detected')
-                                log_album_scan(artist, album, 'covers', covers_found_count, 'completed')
-                        except Exception as cover_error:
-                            log_debug(f'Cover detection failed in metadata-only mode for "{artist} - {album}": {cover_error}')
-
-                    # Write fetched genre tags (Last.fm, ListenBrainz, Discogs) to DB.
-                    # In metadata_only mode the batch popularity update is skipped, so
-                    # album_tags_data would otherwise be discarded without being saved.
-                    if album_tags_data:
-                        try:
-                            tags_saved_count = 0
-                            for tag_track in album_tracks:
-                                tag_track_id = tag_track.get('id')
-                                if tag_track_id not in album_tags_data:
-                                    continue
-                                tags_data = album_tags_data[tag_track_id]
-                                set_clauses = []
-                                update_params = []
-                                if tags_data.get("lastfm_tags"):
-                                    set_clauses.append(f"lastfm_tags = {placeholder}")
-                                    update_params.append(json.dumps(tags_data["lastfm_tags"]))
-                                if tags_data.get("listenbrainz_genres"):
-                                    set_clauses.append(f"listenbrainz_genres = {placeholder}")
-                                    update_params.append(json.dumps(tags_data["listenbrainz_genres"]))
-                                if tags_data.get("discogs_genres"):
-                                    set_clauses.append(f"discogs_genres = {placeholder}")
-                                    update_params.append(json.dumps(tags_data["discogs_genres"]))
-                                if set_clauses:
-                                    update_params.append(tag_track_id)
-                                    cursor.execute(
-                                        f"UPDATE tracks SET {', '.join(set_clauses)} WHERE id = {placeholder}",
-                                        tuple(update_params)
-                                    )
-                                    tags_saved_count += 1
-                            log_info(f'Metadata-only: saved genre tags for {tags_saved_count} track(s) in "{artist} - {album}"')
-                        except Exception as tag_save_err:
-                            log_debug(f'Failed to save genre tags in metadata-only mode for "{artist} - {album}": {tag_save_err}')
-
-                    log_info(f'Metadata-only scan complete for "{artist} - {album}" (popularity/singles/stars skipped)')
-
-                    current_timestamp = datetime.now().isoformat()
-                    cursor.execute(
-                        f"""UPDATE tracks
-                        SET last_scanned = {placeholder}
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}""",
-                        (current_timestamp, artist, album)
+                    canonical_artist = normalize_artist_for_matching(
+                        artist,
+                        album_artist,
                     )
-                    conn.commit()
 
-                    log_album_scan(artist, album, 'metadata', len(album_tracks), 'completed')
-                    continue
-
-                if popularity_only:
-                    log_info(f'Popularity-only scan complete for "{artist} - {album}" (singles/stars skipped)')
-
-                    current_timestamp = datetime.now().isoformat()
-                    cursor.execute(
-                        f"""UPDATE tracks
-                        SET last_scanned = {placeholder}
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}""",
-                        (current_timestamp, artist, album)
-                    )
-                    conn.commit()
-
-                    log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
-                    continue
-
-                # Perform singles detection for album tracks
-                log_info(f'Starting singles detection for "{artist} - {album}"')
-                try:
-                    from single_detection_enhanced import clear_artist_stats_cache
-                    clear_artist_stats_cache()
-                except Exception as cache_clear_error:
-                    log_debug(f"Could not clear single detection stats cache before album scan: {cache_clear_error}")
-
-                # Use album type already detected at the start of scan (no need to re-fetch from Music Brainz)
-                # The album_type_from_field was set at scan start with MusicBrainz lookup + auto-detection
-                spotify_album_type = row_get(album_tracks[0] if album_tracks else {}, 'spotify_album_type', '')
-
-                # Use the type that was detected and stored at the start of the scan
-                album_type = album_type_from_field or spotify_album_type or 'album'
-                type_source = "populated-at-scan-start"
-
-                is_compilation = is_compilation_type(album_type)
-                log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={is_compilation}, album_type={album_type} (source: {type_source})')
-                singles_detected = 0
-
-                # Log which sources are available for single detection
-                discogs_client_available = bool(discogs_token and _get_timeout_safe_discogs_client(discogs_token))
-                sources_available = []
-                if HAVE_MUSICBRAINZ:
-                    sources_available.append("MusicBrainz")
-                if discogs_client_available:
-                    sources_available.append("Discogs")
-                if discogs_client_available:
-                    sources_available.append("Discogs Video")
-                log_info(f'Available sources for single detection: {[", ".join(sources_available)]}')
-                log_debug(f'Source details: MB={HAVE_MUSICBRAINZ}, Discogs={discogs_client_available}, Video={discogs_client_available}')
-
-                # Calculate artist-level popularity statistics BEFORE single detection
-                # Reason: We need to determine if this album is underperforming vs the artist's catalog
-                # so that z-score single detection can be conditionally disabled for underperforming albums
-                # while still using metadata-based detection (Discogs, MusicBrainz, Last.fm).
-                artist_stats = calculate_artist_popularity_stats(artist, conn)
-
-                # Log artist statistics for reference in single detection decisions
-                log_debug(f'Artist stats - track_count: {artist_stats["track_count"]}, mean: {artist_stats["avg_popularity"]:.1f}, median: {artist_stats["median_popularity"]:.1f}, stddev: {artist_stats["stddev_popularity"]:.1f}')
-
-                # Add top 10% threshold from Last.fm context (from earlier pre-fetch)
-                # This allows star rating to use dual criteria: global top 10% + album outlier
-                artist_stats['top_10_percentile_threshold'] = artist_lastfm_context.get('top_10_percentile_threshold', 0)
-                artist_stats['total_artist_tracks'] = artist_lastfm_context.get('total_tracks', 0)
-
-                artist_median = artist_stats['median_popularity'] if artist_stats['track_count'] > 0 else 0.0
-
-                # Calculate album median to check for underperformance
-                # This enables conditional z-score detection: disabled for underperforming albums,
-                # except when a track is a standout across the entire artist catalogue.
-                # NOTE: Filters out live/remix/alternate versions to ensure album median reflects
-                # the core album and is not skewed by bonus tracks.
-                album_is_underperforming = False
-                if artist_stats['track_count'] > MIN_TRACKS_FOR_ARTIST_COMPARISON:
-                    # Use tracks already loaded in album_tracks instead of querying by artist
-                    # This works for both regular artists and compilation albums
-                    album_pops = []
-                    for track in album_tracks:
-                        popularity_score = row_get(track, 'popularity_score', 0)
-                        title = row_get(track, 'title', '')
-                        album_name = row_get(track, 'album', '')
-
-                        # Exclude live/remix/alternate versions from album median calculation
-                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name):
-                            album_pops.append(popularity_score)
-
-                    if album_pops and artist_median > 0:
-                        album_median = median(album_pops)
-                        # Consider album underperforming if median is < UNDERPERFORMING_THRESHOLD of artist median
-                        if album_median < (artist_median * UNDERPERFORMING_THRESHOLD):
-                            album_is_underperforming = True
-                            log_info(f"Album is underperforming: median={album_median:.1f} vs artist median={artist_median:.1f}")
-                            log_info(f"Z-score single detection will be disabled except for artist-level standouts")
-                            log_debug(f"Underperforming album detected - album_median: {album_median}, artist_median: {artist_median}, threshold: {UNDERPERFORMING_THRESHOLD}")
-
-                if artist_stats['track_count'] > 0:
-                    log_info(f"Artist-level stats: avg={artist_stats['avg_popularity']:.1f}, median={artist_median:.1f}")
-                    log_debug(f"Artist statistics - track_count: {artist_stats['track_count']}, avg: {artist_stats['avg_popularity']}, median: {artist_median}, stddev: {artist_stats.get('stddev_popularity', 0)}")
-
-                single_detection_lastfm_client = None
-                try:
-                    single_detection_lastfm_client = lastfm_client if 'lastfm_client' in locals() and lastfm_client else get_lastfm_client()
-                except Exception as lastfm_client_error:
-                    log_debug(f"Could not prepare shared Last.fm client for single detection: {lastfm_client_error}")
-
-                # Capture user-set singles before running automated detection
-                # User-marked singles (is_single=1 with no/empty sources) should be preserved
-                user_set_singles = set()
-                for track in album_tracks:
-                    track_id = track["id"]
-                    is_single = row_get(track, "is_single", 0)
-                    single_sources_json = row_get(track, "single_sources", "[]")
-
-                    # Track is user-set if is_single is truthy but has no automated sources
                     try:
-                        sources = json.loads(single_sources_json) if single_sources_json else []
-                        if is_single and (not sources or len(sources) == 0):
-                            user_set_singles.add(track_id)
-                            log_info(f"Preserving user-set single: {row_get(track, 'title', 'Unknown')}")
-                            log_debug(f"User-set single detected - track_id: {track_id}, title: {row_get(track, 'title', 'Unknown')}")
-                    except (json.JSONDecodeError, TypeError):
-                        if is_single:
-                            user_set_singles.add(track_id)
-                            log_info(f"Preserving user-set single (malformed sources): {row_get(track, 'title', 'Unknown')}")
+                        album_median, album_stddev, _, album_count = calculate_album_stats(
+                            conn,
+                            artist,
+                            album,
+                        )
+                        artist_mean, artist_stddev, artist_count = calculate_artist_stats(
+                            conn,
+                            artist,
+                        )
+                    except Exception as e:
+                        log_debug(f"Could not compute album/artist stats for star rating: {e}")
+                        album_median = album_stddev = artist_mean = artist_stddev = 0.0
+                        album_count = artist_count = 0
 
-                # Batch updates for singles detection
-                singles_updates = []
-                single_detection_timestamp_updates = []
+                    album_is_underperforming = False
+                    if album_median > 0 and artist_mean > 0:
+                        album_is_underperforming = album_median < (artist_mean * UNDERPERFORMING_THRESHOLD)
 
-                # Get album track count for context-based confidence adjustment
-                album_track_count = len(album_tracks)
+                    # -----------------------------------------------------------------
+                    # Helper: artist-catalogue percentile check
+                    # -----------------------------------------------------------------
+                    def is_top_artist_catalog(popularity_score, threshold=0.25):
+                        if artist_count <= 0 or popularity_score <= 0:
+                            return False
 
-                # Calculate z-scores for all tracks to filter single detection
-                # This enables performance optimization by only scanning tracks likely to be singles
-                track_zscores = {}  # Map of track_id -> z-score
-                top_cluster_tracks = set()  # Track IDs in top z-score cluster (instant 5★)
-                album_median_popularity = 0.0  # Track album median for single detection filtering
+                        try:
+                            cursor.execute(
+                                f"""
+                                SELECT
+                                    COUNT(*) as total,
+                                    SUM(CASE WHEN popularity_score >= {placeholder} THEN 1 ELSE 0 END) as above
+                                FROM tracks
+                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                AND popularity_score > 0
+                                """,
+                                (popularity_score, artist),
+                            )
 
-                if album_type == "regular" and album_track_count > 1:
-                    # Calculate z-scores for regular albums to filter single detection
-                    album_pops_for_zscore = []
-                    track_ids_for_zscore = []
+                            row_stats = cursor.fetchone()
+                            total_cat = row_get(row_stats, "total", 0) or 0
+                            above_cat = row_get(row_stats, "above", 0) or 0
+
+                            if total_cat > 0:
+                                return (above_cat / total_cat) <= threshold
+
+                        except Exception as e:
+                            log_debug(f"Artist percentile check failed for artist '{artist}': {e}")
+
+                        return False
+
+                    # -----------------------------------------------------------------
+                    # Check which tracks still need single detection
+                    # -----------------------------------------------------------------
+                    track_ids_in_album = [t["id"] for t in album_tracks]
+                    id_placeholders = ", ".join([placeholder] * len(track_ids_in_album))
+                    assessed_map = {}
+
+                    try:
+                        cursor.execute(
+                            f"SELECT id, single_detection_last_updated FROM tracks WHERE id IN ({id_placeholders})",
+                            track_ids_in_album,
+                        )
+                        for row in cursor.fetchall():
+                            assessed_map[row_get(row, "id")] = row_get(row, "single_detection_last_updated")
+                    except Exception as e:
+                        log_debug(f"Could not fetch single detection status: {e}")
+
+                    any_detection_run = False
+                    total_album_tracks = len(album_tracks)
+                    detection_processed = 0
+                    detection_milestone_25 = int(total_album_tracks * 0.25) if total_album_tracks > 0 else 0
+                    detection_milestone_50 = int(total_album_tracks * 0.50) if total_album_tracks > 0 else 0
+                    detection_milestone_75 = int(total_album_tracks * 0.75) if total_album_tracks > 0 else 0
+                    detection_milestones_logged = set()
 
                     for track in album_tracks:
                         track_id = track["id"]
-                        popularity_score = row_get(track, 'popularity_score', 0)
-                        title = row_get(track, 'title', '')
-                        album_name = row_get(track, 'album', '')
+                        title = track["title"]
+                        track_artist = track["artist"]
 
-                        # Exclude live/remix/alternate from z-score calculation
-                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name):
-                            album_pops_for_zscore.append(popularity_score)
-                            track_ids_for_zscore.append(track_id)
+                        needs_detection = force or singles_only or singles_with_missing_popularity
+                        if not needs_detection:
+                            if not assessed_map.get(track_id):
+                                needs_detection = True
 
-                    if len(album_pops_for_zscore) > 1:
-                        from statistics import mean as stat_mean, stdev as stat_stdev, median as stat_median
-                        pop_mean = stat_mean(album_pops_for_zscore)
-                        pop_stddev = stat_stdev(album_pops_for_zscore) if len(album_pops_for_zscore) > 1 else 0
-                        album_median_popularity = stat_median(album_pops_for_zscore)
-
-                        if pop_stddev > 0:
-                            # Calculate z-scores
-                            for i, track_id in enumerate(track_ids_for_zscore):
-                                z_score = (album_pops_for_zscore[i] - pop_mean) / pop_stddev
-                                track_zscores[track_id] = z_score
-
-                            # Identify top cluster using simple z-score based approach
-                            # Top cluster = tracks with z-score > 1.0 in the album
-                            try:
-                                if len(album_pops_for_zscore) > 1:
-                                    # Use the already-calculated z-scores from earlier
-                                    for track_id, z_score in track_zscores.items():
-                                        if z_score > 1.0:
-                                            top_cluster_tracks.add(track_id)
-
-                                    log_debug(f"Top cluster detection (z > 1.0): {len(top_cluster_tracks)} track(s)")
-                                    if top_cluster_tracks:
-                                        log_info(f"Top z-score cluster identified: {len(top_cluster_tracks)} track(s) get instant 5★")
-                                        log_debug(f"Top cluster track IDs: {top_cluster_tracks}")
-                                    else:
-                                        log_info(f"No tracks identified in top z-score cluster (z > 1.0) for album '{album}'")
-                            except Exception as e:
-                                log_info(f"Top cluster detection failed: {e}")
-                                import traceback
-                                log_debug(f"Traceback: {traceback.format_exc()}")
-
-                log_debug(f"Album type: {album_type}, will filter single detection accordingly")
-
-                # Track progress within singles detection phase
-                singles_processed = 0
-                # Pre-calculate milestone track counts for efficient checking
-                singles_milestone_25 = int(album_track_count * 0.25)
-                singles_milestone_50 = int(album_track_count * 0.50)
-                singles_milestone_75 = int(album_track_count * 0.75)
-                singles_milestones_logged = set()
-
-                # Adaptive greatest-hits mode during single scan:
-                # If all processed tracks are being detected as singles, switch to full detection
-                # for the rest of the album (including tracks with negative z-scores).
-                album_type_lower = (album_type or "").strip().lower()
-                force_full_single_detection = (
-                    album_type_lower in ("greatest_hits", "various_artists") or
-                    is_compilation_type(album_type)
-                )
-                gh_tracks_processed = 0
-                gh_tracks_detected_single = 0
-
-                # Also honor prior state: if every track is already marked single, keep full detection enabled.
-                pre_marked_singles = sum(1 for t in album_tracks if row_get(t, "is_single", 0))
-                if album_track_count >= 5 and pre_marked_singles == album_track_count:
-                    force_full_single_detection = True
-                    if (album_type or "").strip().lower() == "regular":
-                        album_type = "greatest_hits"
-                    log_info(f'Greatest hits adaptive mode enabled from existing state: "{artist} - {album}" ({pre_marked_singles}/{album_track_count} tracks already marked single)')
-
-                for track in album_tracks:
-                    track_id = track["id"]
-                    title = track["title"]
-
-                    log_debug(f"Processing single detection for track: {title} (ID: {track_id})")
-
-                    # Check single detection cache before running detection
-                    single_manual_override = row_get(track, "single_manual_override", 0)
-                    single_detection_last_updated = row_get(track, "single_detection_last_updated", None)
-
-                    # Skip re-detection if manually set by user
-                    if single_manual_override:
-                        log_debug(f"Single detection skipped (user override): {title}")
-                        singles_processed += 1
-                        continue
-
-                    # Check cache age unless force scanning
-                    if not (FORCE_RESCAN or force) and single_detection_last_updated:
-                        try:
-                            last_run = datetime.fromisoformat(single_detection_last_updated)
-                            age_hours = (datetime.now() - last_run).total_seconds() / 3600
-
-                            # Use confidence-based cache TTL
-                            current_confidence = row_get(track, "single_confidence", "low")
-                            if current_confidence == "high":
-                                cache_ttl = 168  # 7 days
-                            elif current_confidence == "medium":
-                                cache_ttl = 72   # 3 days
-                            else:
-                                cache_ttl = 24   # 1 day for low confidence
-
-                            if age_hours < cache_ttl:
-                                log_debug(f"Single detection cached: {title} (age: {age_hours:.1f}h, TTL: {cache_ttl}h, confidence: {current_confidence})")
-                                singles_processed += 1
-                                continue
-                        except Exception as e:
-                            log_debug(f"Failed to parse single detection timestamp: {e}")
-
-                    # Filter single detection based on album type and z-scores
-                    # This dramatically speeds up scanning by skipping tracks unlikely to be singles
-                    skip_single_detection = False
-
-                    album_type_norm = (album_type or "").strip().lower()
-                    is_regular_album = album_type_norm in ("regular", "album", "lp", "studio")
-
-                    # Check if this is a greatest hits or compilation album
-                    album_lower = album.lower()
-                    greatest_hits_patterns = [
-                        'greatest hits', 'best of', 'the best', 'collection', 'anthology',
-                        'essentials', ' hits', 'singles', 'the very best', 'gold', 'platinum',
-                        'ultimate collection', 'complete', 'definitive', 'various artists'
-                    ]
-                    is_greatest_hits_or_compilation = (
-                        force_full_single_detection or
-                        is_compilation or
-                        any(pattern in album_lower for pattern in greatest_hits_patterns)
-                    )
-
-                    # Filter single detection by z-score for regular albums
-                    # Skip detection for tracks below album average (negative z-score) unless it's a special collection
-                    if not is_greatest_hits_or_compilation:
-                        # Get pre-calculated z-score (already computed above at line 4595)
-                        track_zscore = track_zscores.get(track_id, 0.0)
-
-                        # Check if this is a live album (special rules apply)
-                        album_is_live = row_get(track, "album_context_live", 0)
-
-                        # For regular albums, skip single detection if z-score is negative (below album average)
-                        # Rationale: Below-average tracks are unlikely to be real singles
-                        # Exception: For compilations/greatest hits, run detection on all tracks (different popularity patterns)
-                        # Exception: Remastered-only variants — their lower popularity reflects listeners preferring
-                        #            the original release, not that the song is not a single.
-                        # Exception: Live albums require tracks above median AND HIGH confidence to be considered singles
-                        if track_zscore < 0.0:
-                            if is_remastered_only_variant(title):
-                                log_debug(f"Not skipping '{title}' despite negative z-score ({track_zscore:.2f}): remastered-only variant, treating as original release")
-                            else:
-                                skip_single_detection = True
-                                if album_is_live:
-                                    log_debug(f"Skipping single detection for '{title}' on LIVE album (z-score: {track_zscore:.2f} < 0.0 - below median)")
-                                else:
-                                    log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 0.0 - below album average)")
-                        elif album_is_live:
-                            # Live album with z > 0: scan but will require HIGH confidence later
-                            log_debug(f"Scanning '{title}' on LIVE album (z-score: {track_zscore:.2f} >= 0.0, will require HIGH confidence)")
-                    else:
-                        # Greatest hits/compilation/various artists: Run detection on all tracks
-                        # These collections have different popularity patterns, so average tracks can still be genuine singles
-                        log_debug(f"Greatest hits/compilation/various artists detected - running single detection on all tracks")
-
-                    # Skip single detection if filtered out
-                    if skip_single_detection:
-                        singles_processed += 1
-                        continue
-
-                    # Get additional fields for advanced detection
-                    track_isrc = row_get(track, "isrc", None)
-                    track_duration = row_get(track, "duration", None)
-                    track_album_type = row_get(track, "spotify_album_type", None)
-
-                    # Short-circuit: if the track's own Spotify album type is 'single',
-                    # treat it as a medium-confidence metadata signal. Star assignment should
-                    # still be decided by z-score + source-count gates later in the pipeline.
-                    if track_album_type and track_album_type.lower() == 'single':
-                        album_live_context = (
-                            is_live_or_alternate_album(album)
-                            or "+live" in ((album_type or "").strip().lower())
-                        )
-                        track_is_live_variant = is_live_or_unplugged_track_title(title)
-
-                        # Guard the shortcut path so live B-sides on otherwise normal singles
-                        # are not incorrectly promoted to 5-star detected singles.
-                        if track_is_live_variant and not album_live_context:
-                            log_debug(
-                                f"Skipping album-type single shortcut for live/unplugged track: "
-                                f"{title} (album='{album}')"
-                            )
-                        else:
-                            log_info(f"Single detected via album type: {title} (spotify_album_type='single')")
-                            detection_result = {
-                                "sources": ["spotify_album_type"],
-                                "confidence": "medium",
-                                "is_single": False
-                            }
-                            single_sources = detection_result["sources"]
-                            single_confidence = detection_result["confidence"]
-                            is_single = detection_result["is_single"]
-                            log_debug(f"Single detection result (album type shortcut) - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
-                            # Queue for batch update and continue to next track
-                            singles_updates.append((
-                                bool(is_single),
-                                single_confidence,
-                                json.dumps(single_sources),
-                                None,  # defer stars to z-score + confidence gates
-                                track_id
-                            ))
-                            singles_detected += 1
-                            singles_processed += 1
+                        if not needs_detection:
                             continue
 
-                    # Use the in-memory track score for single detection.
-                    # The album popularity phase updates these values before singles detection begins.
-                    track_popularity = row_get(track, "popularity_score", 0.0) or 0.0
+                        any_detection_run = True
+                        detection_processed += 1
 
-                    log_info(f"🔍 Running single detection for: {title}")
-                    log_debug(f"Single detection params - track: {title}, isrc: {track_isrc}, duration: {track_duration}, popularity: {track_popularity}, album_type: {track_album_type}")
-                    log_debug(f"Single detection - is_greatest_hits_or_compilation: {is_greatest_hits_or_compilation}, force_full: {force_full_single_detection}")
+                        if detection_processed == detection_milestone_25 and 25 not in detection_milestones_logged:
+                            log_info(f"Single Detection - 25% completed - {detection_processed}/{total_album_tracks} tracks")
+                            detection_milestones_logged.add(25)
+                        elif detection_processed == detection_milestone_50 and 50 not in detection_milestones_logged:
+                            log_info(f"Single Detection - 50% completed - {detection_processed}/{total_album_tracks} tracks")
+                            detection_milestones_logged.add(50)
+                        elif detection_processed == detection_milestone_75 and 75 not in detection_milestones_logged:
+                            log_info(f"Single Detection - 75% completed - {detection_processed}/{total_album_tracks} tracks")
+                            detection_milestones_logged.add(75)
 
-                    # Skip single detection for zero-popularity tracks (unless in compilation/greatest hits)
-                    # Rationale: Tracks with 0 popularity are unlikely to be real singles, wastes API calls
-                    # Exception: Always check compilations since featured tracks have different patterns
-                    if track_popularity == 0 and not is_greatest_hits_or_compilation:
-                        log_info(f"⏭️ Skipping single detection for '{title}' (popularity: 0 - not a compilation/greatest hits)")
-                        singles_processed += 1
-                        continue
-
-                    # For Various Artists / compilation albums, use the individual track artist for
-                    # single detection. Using the album artist ("Various Artists") would cause detection
-                    # to always fail since no singles are released under that name.
-                    # For regular albums, use the canonical album grouping artist to prevent featured
-                    # tracks from being treated as isolated 1-track artist catalogs.
-                    if is_compilation_group:
-                        individual_artist = row_get(track, 'artist', None)
-                        track_artist = individual_artist if individual_artist and individual_artist.strip() else artist
-                    else:
-                        track_artist = artist
-                    log_debug(f"Calling detect_single_for_track with artist='{track_artist}', album='{album}', track_count={album_track_count}")
-                    try:
-                        detection_result = detect_single_for_track(
-                            title=title,
-                            artist=track_artist,
-                            album_track_count=album_track_count,
-                            verbose=verbose,  # Pass function parameter, not module constant
-                            discogs_token=discogs_token,  # Pass already-loaded token
-                            # Advanced detection parameters
-                            track_id=track_id,
-                            album=album,
-                            isrc=track_isrc,
-                            duration=track_duration,
-                            popularity=track_popularity,
-                            album_type=album_type,
-                            use_advanced_detection=True,
-                            zscore_threshold=0.20,
-                            # Conditional z-score detection parameters
-                            album_is_underperforming=album_is_underperforming,
-                            artist_median_popularity=artist_median,
-                            lastfm_client=single_detection_lastfm_client,
-                            existing_conn=conn,
-                            persist_result=False,
-                            mb_cached_singles=mb_artist_singles_normalized or None,
-                        )
-
-                        single_sources = detection_result["sources"]
-                        single_confidence = detection_result["confidence"]
-                        is_single = detection_result["is_single"]
-
-                        if is_single:
-                            log_info(f"✅ SINGLE DETECTED: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
-                        else:
-                            log_info(f"❌ Not a single: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
-                        log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
-
-                        single_detection_timestamp_updates.append((datetime.now().isoformat(), track_id))
-
-                        # Preserve user-set singles: if track was user-marked and detection found nothing, keep it marked
-                        if track_id in user_set_singles and not is_single:
-                            is_single = True
-                            single_confidence = "user"  # Mark as user-set
-                            # Keep sources empty to indicate user-set
-                            log_info(f"Preserving user-set single flag for: {title}")
-                            log_debug(f"User-set single preserved - track_id: {track_id}, auto_detection: False")
-
-                        # Adaptive greatest-hits promotion during this same single scan:
-                        # once every processed track is being detected as single, continue scanning all remaining tracks.
-                        gh_tracks_processed += 1
-                        if is_single:
-                            gh_tracks_detected_single += 1
-                        if (
-                            not force_full_single_detection
-                            and gh_tracks_processed >= 3
-                            and gh_tracks_detected_single == gh_tracks_processed
-                        ):
-                            force_full_single_detection = True
-                            if (album_type or "").strip().lower() == "regular":
-                                album_type = "greatest_hits"
-                            log_info(
-                                f'Greatest hits adaptive mode enabled during single scan: "{artist} - {album}" '
-                                f'({gh_tracks_detected_single}/{gh_tracks_processed} processed tracks detected as single)'
-                            )
-                            log_debug("Adaptive greatest hits mode now bypasses negative z-score skip for remaining tracks")
-
-                        # Queue single detection results for batch update
-                        if is_single or single_sources:
-                            # Deduplicate single_sources to prevent duplicate entries in JSON
-                            # Preserves order while removing duplicates
-                            unique_sources = []
-                            seen = set()
-                            for source in single_sources:
-                                if source not in seen:
-                                    unique_sources.append(source)
-                                    seen.add(source)
-
-                            # Automatically set stars to 5 for detected singles
-                            stars_for_single = 5 if is_single else None
-                            singles_updates.append((
-                                bool(is_single),
-                                single_confidence,
-                                json.dumps(unique_sources),  # Use deduplicated sources
-                                stars_for_single,
-                                track_id
-                            ))
-                            if is_single:
-                                singles_detected += 1
-                                if unique_sources:
-                                    source_str = ", ".join(unique_sources)
-                                    log_info(f"Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
-                                else:
-                                    log_info(f"Single detected: {title} (user-set)")
-                                log_debug(f"Single detection confirmed - track_id: {track_id}, confidence: {single_confidence}, sources: {unique_sources}")
-
-                    except Exception as _single_detect_exc:
-                        log_unified(
-                            f"Single Detection - Error processing '{title}' — skipping track "
-                            f"({type(_single_detect_exc).__name__}: {_single_detect_exc})",
-                            level=logging.WARNING,
-                        )
-                        log_debug(
-                            f"Single detection exception for track_id={track_id} title='{title}': {_single_detect_exc}",
-                            exc_info=True,
-                        )
-
-                    finally:
-                        # Track progress in singles detection – always fires, even on error.
-                        singles_processed += 1
-                        # Efficient milestone checking using pre-calculated values
-                        if singles_processed == singles_milestone_25 and 25 not in singles_milestones_logged:
-                            log_unified(f"Single Detection - 25% completed - {singles_processed}/{album_track_count} tracks")
-                            log_debug(f"Progress milestone - 25% completed for singles detection in album {album}")
-                            singles_milestones_logged.add(25)
-                        elif singles_processed == singles_milestone_50 and 50 not in singles_milestones_logged:
-                            log_unified(f"Single Detection - 50% completed - {singles_processed}/{album_track_count} tracks")
-                            log_debug(f"Progress milestone - 50% completed for singles detection in album {album}")
-                            singles_milestones_logged.add(50)
-                        elif singles_processed == singles_milestone_75 and 75 not in singles_milestones_logged:
-                            log_unified(f"Single Detection - 75% completed - {singles_processed}/{album_track_count} tracks")
-                            log_debug(f"Progress milestone - 75% completed for singles detection in album {album}")
-                            singles_milestones_logged.add(75)
-
-                # Batch update all singles detection results for this album in one commit
-                if singles_updates:
-                    # Update with conditional stars setting - only set stars if value is provided (detected singles)
-                    for is_single, single_confidence, single_sources, stars_value, track_id in singles_updates:
-                        if stars_value is not None:
-                            # Set both single status and stars for detected singles
-                            cursor.execute(
-                                f"""UPDATE tracks
-                                SET is_single = {placeholder}, single_confidence = {placeholder}, single_sources = {placeholder}, stars = {placeholder}
-                                WHERE id = {placeholder}""",
-                                (is_single, single_confidence, single_sources, stars_value, track_id)
-                            )
-                        else:
-                            # Only set single status if no stars update needed
-                            cursor.execute(
-                                f"""UPDATE tracks
-                                SET is_single = {placeholder}, single_confidence = {placeholder}, single_sources = {placeholder}
-                                WHERE id = {placeholder}""",
-                                (is_single, single_confidence, single_sources, track_id)
-                            )
-                    if single_detection_timestamp_updates:
-                        _execute_tracks_batch_with_retry(
-                            conn,
-                            cursor,
-                            f"UPDATE tracks SET single_detection_last_updated = {placeholder} WHERE id = {placeholder}",
-                            sorted(single_detection_timestamp_updates, key=lambda row: str(row[1])),
-                            f"single timestamp batch update for album {album}",
-                        )
-                    conn.commit()
-                    log_debug(f"Batch committed {len(singles_updates)} singles detection results for album '{album}'")
-                elif single_detection_timestamp_updates:
-                    _execute_tracks_batch_with_retry(
-                        conn,
-                        cursor,
-                        f"UPDATE tracks SET single_detection_last_updated = {placeholder} WHERE id = {placeholder}",
-                        sorted(single_detection_timestamp_updates, key=lambda row: str(row[1])),
-                        f"single timestamp-only batch update for album {album}",
-                    )
-                    conn.commit()
-                    log_debug(f"Batch committed {len(single_detection_timestamp_updates)} single detection timestamp update(s) for album '{album}'")
-
-                # COVER DETECTION: Detect and mark cover songs (MB relation first, writer fallback)
-                if metadata_enrichment_enabled and HAVE_COVER_DETECTOR:
-                    try:
-                        log_info(f'Starting cover detection for album "{artist} - {album}"')
-
-                        # Get all tracks for this album with metadata
-                        # Note: Use COALESCE to handle album_artist grouping like singles detection does
-                        cursor.execute(f"""
-                            SELECT id, title, artist, writer, mbid, file_path, musicbrainz_album_mbid,
-                                   is_cover, genres, musicbrainz_genres, original_cover_artist
-                            FROM tracks
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
-                            ORDER BY COALESCE(track_number, 0), title
-                        """, (artist, album))
-                        album_tracks_for_cover = [dict(row) for row in cursor.fetchall()]
-
-                        if album_tracks_for_cover:
-                            # Instantiate cover detector with database connection and clients
-                            cover_detector = CoverDetector(db_connection=conn, musicbrainz_client=_get_timeout_safe_musicbrainz_client())
-
-                            # Run cover detection for this album
-                            covers_detected = cover_detector.detect_covers_for_album(album, artist, album_tracks_for_cover)
-
-                            if covers_detected:
-                                log_info(f'Cover detection complete: {len(covers_detected)} cover(s) detected for "{artist} - {album}"')
-                                log_debug(f'Cover detection results: {covers_detected}')
-                                # Already committed by CoverDetector, no need to commit again
-                                covers_found_count = len(covers_detected)
-                            else:
-                                log_debug(f'No covers detected for album "{artist} - {album}"')
-                                covers_found_count = 0
-                        else:
-                            log_debug(f'No tracks found for cover detection in album "{artist} - {album}"')
-                            covers_found_count = 0
-
-                        log_unified(f'Cover Detection - "{artist} - {album}": {covers_found_count} cover(s) detected')
-                        log_album_scan(artist, album, 'covers', covers_found_count, 'completed')
-
-                    except Exception as e:
-                        log_debug(f'Cover detection failed for album "{artist} - {album}": {e}')
-                        import traceback
-                        log_debug(f'Cover detection error traceback: {traceback.format_exc()}')
-                        covers_found_count = 0
-                else:
-                    covers_found_count = 0
-                    if not HAVE_COVER_DETECTOR:
-                        log_debug(f'Skipping cover detection (CoverDetector module unavailable)')
-
-                # Log summary of singles detection
-                high_conf_count = sum(1 for update in singles_updates if update[0] == 1)
-                log_info(f'Singles detection complete: {singles_detected} high-confidence single(s) detected for "{artist} - {album}" ({singles_processed} tracks processed)')
-                log_debug(f'Singles detection summary - high_conf: {high_conf_count}, total_processed: {singles_processed}, total_updated: {len(singles_updates)}')
-
-                # Auto-detect Greatest Hits: if every track on the album is now marked as a single,
-                # treat the album as a greatest hits collection for scan behavior.
-                try:
-                    query = f"""
-                    SELECT COUNT(*) AS total_tracks,
-                           SUM(CASE WHEN is_single THEN 1 ELSE 0 END) AS single_tracks
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                      AND album = {placeholder}
-                    """
-                    cursor.execute(query, (artist, album))
-                    gh_row = cursor.fetchone()
-                    total_tracks = row_get(gh_row, "total_tracks", 0) if gh_row else 0
-                    single_tracks = row_get(gh_row, "single_tracks", 0) if gh_row else 0
-
-                    if total_tracks >= 5 and single_tracks == total_tracks and album_type not in ("various_artists", "compilation"):
-                        album_type = "greatest_hits"
-                        log_info(f'Auto-detected Greatest Hits by singles ratio: "{artist} - {album}" ({single_tracks}/{total_tracks} tracks marked single)')
-                        log_debug(f'Greatest hits auto-detect applied after singles detection - album_type set to {album_type}')
-                except Exception as e:
-                    log_debug(f'Could not evaluate singles-ratio greatest hits auto-detect for "{artist} - {album}": {e}')
-
-                # POST-PROCESSING: Detect album-level z-score outliers as medium confidence singles
-                # These are tracks that are strong album standouts: zscore >= 2.0 AND popularity >> album mean
-                # This works alongside existing single detection to identify standout album tracks
-                try:
-                    cursor.execute(f"""
-                        SELECT id, title, popularity_score, single_confidence, single_sources, is_single
-                        FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
-                        ORDER BY COALESCE(popularity_score, 0) DESC
-                    """, (artist, album))
-
-                    zscore_update_tracks = cursor.fetchall()
-
-                    if zscore_update_tracks:
-                        # Calculate album statistics for z-score
-                        from statistics import median as stat_median_post
-                        album_pops = [t["popularity_score"] for t in zscore_update_tracks if t["popularity_score"]]
-
-                        if album_pops and len(album_pops) > 1:
-                            # Use median + MAD for robust z-score calculation
-                            MIN_SPREAD = 10.0  # Prevent flat albums from over-amplifying small differences
-                            album_pop_median = stat_median_post(album_pops)
-
-                            # Calculate MAD (Median Absolute Deviation)
-                            absolute_deviations = [abs(pop - album_pop_median) for pop in album_pops]
-                            album_pop_mad = stat_median_post(absolute_deviations)
-                            # Scale MAD to be comparable to standard deviation (1.4826 for normal distribution)
-                            album_pop_mad_scaled = album_pop_mad * 1.4826
-                            # Apply MIN_SPREAD floor to prevent flat-album over-amplification
-                            album_pop_spread = max(album_pop_mad_scaled, MIN_SPREAD)
-
-                            zscore_outliers = []
-                            for track in zscore_update_tracks:
-                                track_id = track["id"]
-                                track_title = track["title"]
-                                track_pop = track["popularity_score"] or 0
-                                track_single_confidence = track["single_confidence"] or ""
-                                track_is_single = track["is_single"] or 0
-                                track_sources_json = track["single_sources"] or "[]"
-
-                                # Skip high confidence - those are already confirmed
-                                if track_single_confidence == "high":
-                                    continue
-
-                                # Calculate album z-score using median + MAD
-                                if album_pop_spread > 0:
-                                    album_zscore =(track_pop - album_pop_median) / album_pop_spread
-                                else:
-                                    album_zscore = 0
-
-                                # Check if this is a strong album outlier
-                                if album_zscore >= 2.0 and track_pop > (album_pop_median * 1.5):
-                                    # This is a strong standout - mark as medium confidence unless already marked
-                                    if not track_single_confidence or track_single_confidence == "low":
-                                        try:
-                                            track_sources = json.loads(track_sources_json) if track_sources_json else []
-                                        except json.JSONDecodeError:
-                                            track_sources = []
-
-                                        # Add zscore as detection source if not already present
-                                        if "album_zscore" not in track_sources:
-                                            track_sources.append("album_zscore")
-
-                                        # Update to medium confidence
-                                        zscore_outliers.append((
-                                            "medium",
-                                            json.dumps(track_sources),
-                                            track_id
-                                        ))
-
-                                        log_debug(f"Album z-score detection: {track_title} (zscore={album_zscore:.2f}, pop={track_pop:.1f} vs median={album_pop_median:.1f})")
-
-                            # Batch update z-score outliers
-                            if zscore_outliers:
-                                for single_confidence, sources, track_id in zscore_outliers:
-                                    cursor.execute(f"""
-                                        UPDATE tracks
-                                        SET single_confidence = {placeholder}, single_sources = {placeholder}
-                                        WHERE id = {placeholder}
-                                    """, (single_confidence, sources, track_id))
-
-                                conn.commit()
-                                log_info(f"Album z-score detection: {len(zscore_outliers)} medium-confidence track(s) identified for '{artist} - {album}'")
-                                log_debug(f"Z-score outliers updated: {len(zscore_outliers)} tracks")
-
-                except Exception as e:
-                    log_debug(f"Album z-score detection failed for '{album}': {e}")
-                    import traceback
-                    log_debug(f"Z-score detection error: {traceback.format_exc()}")
-
-                # Calculate star ratings for album tracks
-                log_info(f'Calculating star ratings for "{artist} - {album}"')
-                log_debug(f'Star rating calculation starting for album: {album}')
-
-                # Note: artist_stats was already calculated before single detection to support
-                # conditional z-score detection. We only need to update the database here.
-                # Just update the artist_stats table with popularity statistics
-                if artist_stats['track_count'] > 0:
-                    # Update artist_stats table with popularity statistics
-                    # Columns: mean_popularity, median_popularity, popularity_stddev, popularity_mad
-                    cursor.execute(f"""
-                        UPDATE artist_stats
-                        SET mean_popularity = {placeholder}, median_popularity = {placeholder}, popularity_stddev = {placeholder}, popularity_mad = {placeholder}
-                        WHERE artist_name = {placeholder}
-                    """, (artist_stats['avg_popularity'], artist_stats['median_popularity'],
-                          artist_stats['stddev_popularity'], artist_stats['mad_popularity'], artist))
-                    conn.commit()
-                    log_debug(f"Updated artist_stats table for {artist} - mean: {artist_stats['avg_popularity']:.1f}, median: {artist_stats['median_popularity']:.1f}, stddev: {artist_stats['stddev_popularity']:.1f}, MAD: {artist_stats['mad_popularity']:.1f}")
-
-                # Get all tracks for this album with their popularity scores and single detection
-                # Try matching on artist field first, then fall back to album_artist field
-                # Use COALESCE so NULL popularity scores sort last (same as 0), not first
-                cursor.execute(
-                    f"SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount, is_standout_track FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} ORDER BY COALESCE(popularity_score, 0) DESC",
-                    (artist, album)
-                )
-                album_tracks_with_scores = [dict(row) for row in cursor.fetchall()]
-
-                log_debug(f"Retrieved {len(album_tracks_with_scores)} tracks for star rating calculation")
-
-                if album_tracks_with_scores and len(album_tracks_with_scores) > 0:
-                    log_debug(f"Processing {len(album_tracks_with_scores)} tracks for star ratings and single detection logging")
-                    # Calculate star ratings using the same logic as sptnr.py
-                    total_tracks = len(album_tracks_with_scores)
-                    band_size = math.ceil(total_tracks / 4)
-
-                    # Identify tracks to exclude from statistics (e.g., bonus tracks with parentheses at end)
-                    # Pass alternate_takes_map to exclude those tracks as well
-                    excluded_indices = should_exclude_from_stats(album_tracks_with_scores, alternate_takes_map)
-
-                    # Calculate statistics for popularity-based confidence system
-                    scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in album_tracks_with_scores]
-                    # Filter out excluded tracks when calculating statistics
-                    # Complexity is O(n) for iteration; set membership testing is O(1)
-                    valid_scores = [s for i, s in enumerate(scores) if s > 0 and i not in excluded_indices]
-
-                    # Log exclusions if any
-                    if excluded_indices:
-                        excluded_titles = [album_tracks_with_scores[i]["title"] for i in excluded_indices]
-                        log_info(f"Excluding {len(excluded_indices)} tracks from statistics: {', '.join(excluded_titles)}")
-                        log_debug(f"Excluded track indices: {excluded_indices}")
-
-                    # Note: album_is_underperforming was already calculated before single detection
-                    # to support conditional z-score detection. It's not needed for star rating calculation.
-                    # The underperformance flag was already used during single detection to determine
-                    # whether to apply z-score based single detection for each track.
-
-                    # Import with aliases to avoid shadowing issues from local imports elsewhere
-                    from statistics import median as stat_median
-
-                    # MIN_SPREAD floor to prevent flat albums from over-amplifying small differences
-                    MIN_SPREAD = 10.0
-
-                    if valid_scores:
-                        # Use median + MAD for robust z-score calculation
-                        popularity_median = stat_median(valid_scores)
-
-                        # Calculate MAD (Median Absolute Deviation)
-                        absolute_deviations = [abs(score - popularity_median) for score in valid_scores]
-                        popularity_mad = stat_median(absolute_deviations)
-                        # Scale MAD to be comparable to standard deviation (1.4826 for normal distribution)
-                        popularity_mad_scaled = popularity_mad * 1.4826
-                        # Apply MIN_SPREAD floor
-                        popularity_spread = max(popularity_mad_scaled, MIN_SPREAD)
-
-                        log_debug(f"Star rating statistics - median: {popularity_median}, MAD: {popularity_mad_scaled:.1f}, spread (with floor): {popularity_spread:.1f}, valid_scores_count: {len(valid_scores)}")
-
-                        # Calculate z-scores for all tracks using median+MAD
-                        zscores = []
-                        for score in valid_scores:
-                            if popularity_spread > 0:
-                                zscore = (score - popularity_median) / popularity_spread
-                            else:
-                                zscore = 0
-                            zscores.append(zscore)
-
-                        # Get mean of top 50% z-scores for medium confidence threshold
-                        # Use heapq.nlargest for efficiency with large albums
-                        if zscores:
-                            top_50_count = max(1, len(zscores) // 2)
-                            top_50_zscores = heapq.nlargest(top_50_count, zscores)
-                            from statistics import mean as stat_mean
-                            mean_top50_zscore = stat_mean(top_50_zscores)
-                        else:
-                            mean_top50_zscore = 0
-
-                        # Load z-score thresholds from config
-                        zscore_thresholds = get_zscore_thresholds()
-                        high_conf_threshold = popularity_median + zscore_thresholds['high']
-                        medium_conf_zscore_threshold = mean_top50_zscore + zscore_thresholds['medium']
-
-                        log_info(f"Album stats: median={popularity_median:.1f}, MAD={popularity_mad_scaled:.1f}, spread={popularity_spread:.1f}")
-                        log_debug(f"Confidence thresholds - high: {high_conf_threshold:.1f}, medium_zscore: {medium_conf_zscore_threshold:.2f}")
-                    else:
-                        popularity_median = DEFAULT_POPULARITY_MEAN
-                        popularity_spread = 0
-                        zscore_thresholds = get_zscore_thresholds()
-                        high_conf_threshold = DEFAULT_POPULARITY_MEAN + zscore_thresholds['high']
-                        medium_conf_zscore_threshold = zscore_thresholds['medium']
-                        log_debug(f"Using default thresholds - no valid scores found")
-
-                    # Calculate median score for band-based threshold (legacy)
-                    median_score = median(scores) if scores else DEFAULT_POPULARITY_MEAN
-                    if median_score == 0:
-                        median_score = DEFAULT_POPULARITY_MEAN
-                    jump_threshold = median_score * 1.7
-                    log_debug(f"Band-based thresholds - median: {median_score}, jump_threshold: {jump_threshold}")
-
-                    star_distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-                    # Keep the exact z-score used during this star pass for unified logging.
-                    # This avoids mixing artist-level z-scores with album-level z-scores in output.
-                    star_calc_zscores = {}
-
-                    # Batch updates for better performance
-                    updates = []
-                    # Track which medium-confidence tracks should be upgraded to is_single=1
-                    single_upgrades = []
-                    # Track medium-confidence tracks that must be downgraded to low and untagged as single
-                    single_downgrades = []
-                    # Track IDs whose stored "high" confidence was stale — clear their
-                    # single_detection_last_updated so a fresh rescan runs on the next cycle.
-                    stale_high_conf_track_ids = []
-                    # Popularity-only 5★ promotions require a strong outlier signal.
-                    # Keep this stricter than album standout tagging to avoid over-promotion.
-                    popularity_5star_z_threshold = 2.0
-
-
-                    for i, track_row in enumerate(album_tracks_with_scores):
-                        track_id = track_row["id"]
-                        title = track_row["title"]
-                        popularity_score = track_row["popularity_score"] if track_row["popularity_score"] else 0
-                        is_single = track_row["is_single"] if track_row["is_single"] else 0
-                        single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else "low"
-                        single_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
-                        is_standout_track = track_row["is_standout_track"] if track_row["is_standout_track"] is not None else 0
-
-                        # Parse single sources (defensive check for valid string)
                         try:
-                            if single_sources_json and isinstance(single_sources_json, str):
-                                single_sources = json.loads(single_sources_json)
-                            else:
-                                single_sources = []
-                        except json.JSONDecodeError:
-                            single_sources = []
-                            log_debug(f"Failed to parse single_sources JSON for track {track_id}")
-                        has_iterative_zscore = "iterative_zscore" in single_sources
-
-                        # Check if this track was excluded from statistics
-                        # Excluded tracks should not participate in confidence-based star rating upgrades
-                        is_excluded_track = i in excluded_indices
-
-                        # Calculate z-score for this track using median + MAD
-                        if popularity_spread > 0 and popularity_score > 0:
-                            track_zscore = (popularity_score - popularity_median) / popularity_spread
-                        else:
-                            track_zscore = 0
-                        star_calc_zscores[track_id] = track_zscore
-
-                        log_debug(f"Track star rating calc - {title}: popularity={popularity_score}, zscore={track_zscore}, excluded={is_excluded_track}")
-
-                        # Calculate band-based star rating (baseline)
-                        band_index = i // band_size
-                        baseline_stars = max(1, 4 - band_index)
-                        stars = baseline_stars
-
-                        # Track whether 5★ assignment came from popularity logic vs single detection
-                        # Used to determine if downgrade logic should apply
-                        is_popularity_based_5star = False
-
-                        # SIMPLIFIED 5-STAR LOGIC BASED ON Z-SCORE AND CONFIDENCE
-                        # Rules:
-                        # 1. z-score 0-1: requires 2 medium confidence sources OR 1 high confidence source
-                        # 2. z-score > 1: requires only 1 medium confidence source OR 1 high confidence source
-                        # 3. z-score > 2: may qualify as popularity-only 5★ based on CURRENT run z-score (not persisted status)
-
-                        # Count evidence sources for star gating upfront so that both the
-                        # high-confidence re-validation below and the z-score gate can use them.
-                        # Do not count internal markers (e.g. iterative_zscore/version_count).
-                        medium_conf_eligible_sources = {
-                            "spotify",
-                            "spotify_album_type",
-                            "radio_edit",
-                            "musicbrainz",
-                            "musicbrainz_video",
-                            "musicbrainz_compilation",
-                            "discogs",
-                            "discogs_video",
-                            "lastfm",
-                        }
-                        medium_conf_count = len([s for s in single_sources if s in medium_conf_eligible_sources]) if single_sources else 0
-
-                        # True high-confidence metadata sources that can override the
-                        # 2-medium requirement for 0<=z<1.
-                        # Discogs is intentionally the only high-confidence source.
-                        high_conf_eligible_sources = {
-                            "discogs",
-                            "radio_edit",
-                        }
-                        high_conf_source_count = len([s for s in single_sources if s in high_conf_eligible_sources]) if single_sources else 0
-
-                        # Re-validate stored "high" confidence against current source evidence.
-                        # Prevents stale DB entries from granting an undeserved 5★ when
-                        # source-confidence rules have changed between scans.  The typical case
-                        # is musicbrainz_compilation: it was previously treated as HIGH confidence
-                        # on its own, but now requires 2 medium sources for promotion.  If the
-                        # cached/stored single_confidence="high" is no longer justified by the
-                        # persisted sources (needs either 1 true-high source or 2+ medium sources),
-                        # demote the track and apply the z-score gate so it must earn 5★ the
-                        # same way any other medium-confidence track would.
-                        if is_single and single_confidence == "high":
-                            if not (high_conf_source_count >= 1 or medium_conf_count >= 2):
-                                log_info(
-                                    f"Re-evaluating {title}: stored high confidence not supported by "
-                                    f"current source evidence ({single_sources}) — applying z-score gate"
-                                )
-                                log_debug(
-                                    f"Stale high confidence downgrade — track_id: {track_id}, "
-                                    f"medium_sources: {medium_conf_count}, high_sources: {high_conf_source_count}"
-                                )
-                                single_confidence = "medium"
-                                # Clear is_single so the elif below does not fire and the
-                                # track falls through to the z-score gate in the else branch.
-                                is_single = False
-                                # Queue a DB correction for both positive and negative z-score
-                                # cases.  The positive-z else branch also appends to this list,
-                                # but set() deduplication in the batch update handles that.
-                                single_downgrades.append(track_id)
-                                # Also queue a cache invalidation so the track gets a full
-                                # rescan on the next cycle rather than being served from a
-                                # stale single_detection_last_updated entry.
-                                stale_high_conf_track_ids.append(track_id)
-
-                        has_high_confidence = (single_confidence == "user" or high_conf_source_count >= 1)
-
-                        # Always preserve explicit single confidence for 5★ assignment, even when
-                        # a track is excluded from z-score stats (e.g., alternate takes/remasters).
-                        if single_confidence == "user":
-                            stars = 5
-                            log_info(f"5-star assignment: {title} (user-set single)")
-                            log_debug(f"User-set single - track_id: {track_id}")
-                        elif is_single and single_confidence == "high":
-                            stars = 5
-                            log_info(f"5-star assignment: {title} (high-confidence single - preserved from detection)")
-                            log_debug(f"High-confidence single - track_id: {track_id}, preserving 5★ rating")
-
-                        # Confidence-based star logic applies to all tracks, including
-                        # parenthesized/alternate variants. Exclusion is used only for
-                        # statistics baselining, not for confidence gating.
-                        else:
-                            # Never trust persisted "popular" confidence for star assignment.
-                            # It is historical and can become stale when popularity shifts between scans.
-                            if single_confidence == "popular":
-                                log_debug(
-                                    f"Ignoring persisted popular confidence for star assignment: {title} "
-                                    f"(track_id: {track_id})"
-                                )
-                                single_confidence = "low"
-
-                            # Apply unified z-score + confidence rules.
-                            # z > 1: 1 medium source OR 1 high-confidence source is sufficient.
-                            # z 0-1: still requires 2 medium sources OR 1 high-confidence source.
-                            if track_zscore > 1.0:
-                                # z-score > 1: only 1 medium confidence source is required.
-                                if medium_conf_count >= 1 or high_conf_source_count >= 1:
-                                    stars = 5
-                                    if not is_single:
-                                        single_upgrades.append(track_id)
-                                        log_info(
-                                            f"5-star assignment: {title} "
-                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, z-score={track_zscore:.2f} > 1.0) - upgraded to single"
-                                        )
-                                    else:
-                                        log_info(
-                                            f"5-star assignment: {title} "
-                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, z-score={track_zscore:.2f} > 1.0)"
-                                        )
-                                    log_debug(
-                                        f"Evidence gate passed (z>1, 1 source sufficient) - track_id: {track_id}, "
-                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
-                                    )
-                                else:
-                                    stars = baseline_stars
-                                    log_info(
-                                        f"{stars}-star assignment: {title} "
-                                        f"({medium_conf_count} source(s), zscore={track_zscore:.2f} > 1.0, baseline spread preserved)"
-                                    )
-                                    log_debug(
-                                        f"Evidence gate failed (z>1, insufficient sources: {medium_conf_count}) - track_id: {track_id}, "
-                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
-                                    )
-                                    single_downgrades.append(track_id)
-                            elif track_zscore >= 0.0:
-                                # z-score 0-1: requires 2 medium sources OR 1 true high-confidence metadata source.
-                                if medium_conf_count >= 2 or high_conf_source_count >= 1:
-                                    stars = 5
-                                    if not is_single:
-                                        single_upgrades.append(track_id)
-                                        log_info(
-                                            f"5-star assignment: {title} "
-                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, z-score={track_zscore:.2f}) - upgraded to single"
-                                        )
-                                    else:
-                                        log_info(
-                                            f"5-star assignment: {title} "
-                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, z-score={track_zscore:.2f})"
-                                        )
-                                    log_debug(
-                                        f"Evidence gate passed (0<=z<1) - track_id: {track_id}, "
-                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
-                                    )
-                                else:
-                                    stars = baseline_stars
-                                    log_info(
-                                        f"{stars}-star assignment: {title} "
-                                        f"({medium_conf_count} source(s), zscore={track_zscore:.2f} < 1.0, baseline spread preserved)"
-                                    )
-                                    log_debug(
-                                        f"Evidence gate failed (0<=z<1) - track_id: {track_id}, "
-                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
-                                    )
-                                    single_downgrades.append(track_id)
-                            else:
-                                # Negative z-score
-                                # For greatest hits/compilation albums, bypass the z-score
-                                # requirement when there is sufficient detection evidence
-                                # (same gates as the z >= 0 branch).
-                                is_greatest_hits_or_compilation_album = (
-                                    album_type in ("greatest_hits", "various_artists", "compilation") or
-                                    is_compilation or
-                                    is_compilation_type(album_type)
-                                )
-                                if is_greatest_hits_or_compilation_album and (medium_conf_count >= 2 or high_conf_source_count >= 1):
-                                    stars = 5
-                                    if not is_single:
-                                        single_upgrades.append(track_id)
-                                        log_info(
-                                            f"5-star assignment: {title} "
-                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, "
-                                            f"z-score={track_zscore:.2f}, greatest-hits/compilation) - upgraded to single"
-                                        )
-                                    else:
-                                        log_info(
-                                            f"5-star assignment: {title} "
-                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, "
-                                            f"z-score={track_zscore:.2f}, greatest-hits/compilation)"
-                                        )
-                                    log_debug(
-                                        f"Evidence gate passed (greatest-hits/compilation, negative z) - track_id: {track_id}, "
-                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
-                                    )
-                                else:
-                                    stars = baseline_stars
-                                    log_info(
-                                        f"{stars}-star assignment: {title} "
-                                        f"(negative zscore={track_zscore:.2f}, baseline spread preserved)"
-                                    )
-
-                            # Popularity-only 5★ must be recomputed every scan from current z-score,
-                            # never from persisted confidence flags.
-                            # EXCEPTION: Live albums do NOT get popularity-based 5★
-                            album_is_live = row_get(track, "album_context_live", 0)
-                            has_metadata_single_source = any(
-                                s in ["musicbrainz", "discogs", "discogs_video", "spotify", "lastfm"]
-                                for s in single_sources
+                            detection_result = detect_single_for_track(
+                                title=title,
+                                artist=track_artist,  # keep original track artist for metadata lookup
+                                album_track_count=len(album_tracks),
+                                verbose=verbose,
+                                discogs_token=discogs_token,
+                                track_id=track_id,
+                                album=album,
+                                isrc=row_get(track, "isrc"),
+                                duration=row_get(track, "duration"),
+                                popularity=row_get(track, "popularity_score", 0) or 0,
+                                album_type=album_type_from_field,
+                                use_advanced_detection=True,
+                                album_is_underperforming=album_is_underperforming,
+                                artist_median_popularity=artist_mean,
+                                existing_conn=conn,
+                                persist_result=True,
+                                mb_cached_singles=mb_artist_singles_normalized,
                             )
-                            if (
-                                stars < 5
-                                and not has_high_confidence
-                                and not has_metadata_single_source
-                                and track_zscore >= popularity_5star_z_threshold
-                                and not album_is_live  # Block popularity 5★ for live albums
-                            ):
-                                stars = 5
-                                is_popularity_based_5star = True
-                                log_info(
-                                    f"5-star assignment: {title} "
-                                    f"(current popularity outlier, z-score={track_zscore:.2f})"
-                                )
-                                log_debug(
-                                    f"Popularity-only 5★ (recomputed) - track_id: {track_id}, "
-                                    f"zscore: {track_zscore:.2f}, single_confidence: {single_confidence}"
-                                )
-                        # Note: excluded tracks are still evaluated via confidence gates.
 
-                        # Ensure at least 1 star
-                        stars = max(stars, 1)
+                            track["is_single"] = 1 if detection_result.get("is_single") else 0
+                            track["single_confidence"] = detection_result.get("confidence", "low")
+                            track["single_sources"] = json.dumps(detection_result.get("sources", []))
 
-                        # Collect update for batch processing
-                        updates.append((stars, track_zscore, track_id))
-
-                        star_distribution[stars] += 1
-
-                        log_debug(f"Final star rating for {title}: {stars} stars")
-
-                    # Batch update all tracks at once for better performance
-                    _execute_tracks_batch_with_retry(
-                        conn,
-                        cursor,
-                        f"""UPDATE tracks SET stars = {placeholder}, artist_z_score = {placeholder} WHERE id = {placeholder}""",
-                        sorted(updates, key=lambda row: str(row[2])),
-                        f"stars batch update for album {album}",
-                    )
-
-                    # Tag 5-star songs as singles only for high/user confidence.
-                    # Medium-confidence promotion is handled exclusively by the explicit gate above
-                    # (2 sources for 0<=z<1, 1 source for z>1).
-                    five_star_singles_to_tag = []
-                    for stars, _zscore, track_id in updates:
-                        if stars == 5:  # Only for 5-star tracks
-                            # Fetch the single_confidence for this track
-                            cursor.execute(
-                                f"SELECT single_confidence, is_single FROM tracks WHERE id = {placeholder}",
-                                (track_id,)
-                            )
-                            single_row = cursor.fetchone()
-                            if single_row:
-                                single_confidence = single_row["single_confidence"] if single_row["single_confidence"] else "low"
-                                is_single = single_row["is_single"] if single_row["is_single"] else 0
-                                # Tag as single if high/user confidence and not already tagged
-                                if single_confidence in ["high", "user"] and not is_single:
-                                    five_star_singles_to_tag.append(track_id)
-
-                    # Tag 5-star high/user-confidence singles
-                    if five_star_singles_to_tag:
-                        single_true_value = True
-                        _execute_tracks_batch_with_retry(
-                            conn,
-                            cursor,
-                            f"""UPDATE tracks SET is_single = {placeholder} WHERE id = {placeholder}""",
-                            [(single_true_value, track_id) for track_id in sorted(five_star_singles_to_tag, key=lambda v: str(v))],
-                            f"5-star single tag batch update for album {album}",
-                        )
-                        log_info(f"Tagged {len(five_star_singles_to_tag)} 5-star track(s) as singles (high/user confidence)")
-                        log_debug(f"5-star singles tagged: {five_star_singles_to_tag}")
-
-                    # Upgrade is_single flag for medium confidence tracks with 2+ sources
-                    if single_upgrades:
-                        single_true_value = True
-                        _execute_tracks_batch_with_retry(
-                            conn,
-                            cursor,
-                            f"""UPDATE tracks SET is_single = {placeholder} WHERE id = {placeholder}""",
-                            [(single_true_value, track_id) for track_id in sorted(single_upgrades, key=lambda v: str(v))],
-                            f"single upgrade batch update for album {album}",
-                        )
-                        log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources) without overriding star rating")
-                        log_debug(f"Upgraded tracks: {single_upgrades}")
-
-                    # Enforce downgrade rule for medium confidence tracks that fail the z-score/source gate.
-                    if single_downgrades:
-                        single_false_value = False
-                        _execute_tracks_batch_with_retry(
-                            conn,
-                            cursor,
-                            f"""UPDATE tracks
-                            SET is_single = {placeholder}, single_confidence = {placeholder}
-                            WHERE id = {placeholder}""",
-                            [(single_false_value, "low", track_id) for track_id in sorted(set(single_downgrades), key=lambda v: str(v))],
-                            f"single downgrade batch update for album {album}",
-                        )
-                        log_info(f"Downgraded {len(set(single_downgrades))} track(s) to low confidence (medium source gate failed)")
-                        log_debug(f"Downgraded tracks: {list(set(single_downgrades))}")
-
-                    # Tracks whose stored "high" confidence was stale need a fresh rescan on
-                    # the next cycle.  Clear single_detection_last_updated so the TTL cache
-                    # does not skip them — they will be scanned again rather than returning
-                    # the now-invalidated cached result.
-                    if stale_high_conf_track_ids:
-                        unique_stale_ids = list(set(stale_high_conf_track_ids))
-                        _execute_tracks_batch_with_retry(
-                            conn,
-                            cursor,
-                            f"""UPDATE tracks
-                            SET single_detection_last_updated = NULL
-                            WHERE id = {placeholder}""",
-                            [(track_id,) for track_id in sorted(unique_stale_ids, key=lambda v: str(v))],
-                            f"stale-high-confidence rescan queue update for album {album}",
-                        )
-                        log_info(
-                            f"Queued {len(unique_stale_ids)} track(s) for single detection rescan "
-                            f"(confidence downgraded from high — stale evidence)"
-                        )
-                        log_debug(f"Rescan queued (stale high conf): {unique_stale_ids}")
-
-                    conn.commit()
-                    log_debug(f"Batch committed {len(updates)} star ratings for album '{album}'")
-
-                    # Sync to Navidrome after batch update
-                    for stars, _zscore, track_id in updates:
-                        if sync_track_rating_to_navidrome(track_id, stars):
-                            log_debug(f"Synced track {track_id} to Navidrome with {stars} stars")
-                        else:
-                            log_debug(f"Skipped Navidrome sync for track {track_id}")
-
-                    # Log star distribution
-                    dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
-                    log_info(f'Star distribution for "{album}": {dist_str}')
-                    log_debug(f'Star distribution details: {star_distribution}')
-                    log_debug(f"About to call log_unified for star distribution: {dist_str}")
-                    log_unified(f"Star Ratings - Album '{album}' by {artist}: {dist_str}")
-                    log_debug(f"Successfully logged star distribution to unified log")
-
-                    # Generate unified log summary for singles and star ratings
-                    # Re-fetch tracks with their final star ratings, single detection, and standout info
-                    log_debug(f"Logging categorized tracks for album {album}: singles_count may be 0 if all tracks are non-singles")
-                    try:
-                        cursor.execute(
-                            f"""SELECT id, title, artist, stars, is_single, single_confidence, single_sources,
-                                      is_standout_track, artist_z_score, popularity_score
-                            FROM tracks
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
-                            ORDER BY stars DESC, popularity_score DESC""",
-                            (artist, album)
-                        )
-                        final_tracks = cursor.fetchall()
-
-                        # Categorize tracks
-                        detected_singles = []        # Detected as singles (has sources) with 5 stars
-                        popular_songs = []           # Top cluster 5★ without single detection
-                        rest_of_album = []           # All other tracks
-
-                        SOURCE_DISPLAY_NAMES = {
-                            "musicbrainz": "MusicBrainz",
-                            "discogs": "Discogs",
-                            "discogs_video": "Discogs Video",
-                            "spotify": "Spotify",
-                            "lastfm": "Lastfm",
-                            "iterative_zscore": "Popularity_artist_standout"
-                        }
-
-                        for track_row in final_tracks:
-                            track_id = track_row["id"]
-                            track_title = track_row["title"]
-                            track_artist = track_row["artist"] if track_row["artist"] else artist  # Fallback to album artist if track artist is None/empty
-                            track_stars = track_row["stars"] if track_row["stars"] else 0
-                            track_is_single = track_row["is_single"] if track_row["is_single"] else 0
-                            track_is_standout = track_row["is_standout_track"] if track_row["is_standout_track"] else 0
-                            track_single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else ""
-                            track_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
-                            # Use the same album-level z-score computed in the star rating pass.
-                            # Keep an explicit flag so 0.00 is still logged as a computed score.
-                            has_album_zscore = track_id in star_calc_zscores
-                            if has_album_zscore:
-                                track_zscore = star_calc_zscores.get(track_id, 0.0)
-                            else:
-                                # Fallback: recompute with current album stats when map misses.
-                                track_popularity = track_row["popularity_score"] if track_row["popularity_score"] else 0
-                                if popularity_spread > 0 and track_popularity > 0:
-                                    track_zscore = (track_popularity - popularity_median) / popularity_spread
-                                    has_album_zscore = True
-                                else:
-                                    track_zscore = track_row["artist_z_score"] if track_row["artist_z_score"] else 0
-
-                            # Parse single sources
-                            try:
-                                if track_sources_json and isinstance(track_sources_json, str):
-                                    track_sources = json.loads(track_sources_json)
-                                else:
-                                    track_sources = []
-                            except json.JSONDecodeError:
-                                track_sources = []
-
-                            # Check if this track is in the top cluster
-                            is_top_cluster = track_id in top_cluster_tracks
-
-                            # Format sources for display (metadata sources only)
-                            formatted_sources = [SOURCE_DISPLAY_NAMES.get(s, s.capitalize()) for s in track_sources]
-
-                            # NOTE: Do NOT add popularity-based indicators to source display
-                            # Z-scores and top cluster status are shown separately as reason/notes
-
-                            sources_str = "; ".join(formatted_sources) if formatted_sources else ""
-
-                            # Create star rating string (max 5 stars)
-                            stars_str = "★" * min(track_stars, 5)
-
-                            # Build reason string (sources + z-score)
-                            reason_parts = []
-                            if sources_str:
-                                reason_parts.append(sources_str)
-                            if has_album_zscore:
-                                reason_parts.append(f"album-z-score: {track_zscore:.2f}")
-
-                            reason_str = " (" + "; ".join(reason_parts) + ")" if reason_parts else ""
-
-                            # Categorize track for display:
-                            # - Detected Singles: Has single detection sources (regardless of is_single flag)
-                            # - Popular Songs: 5 stars but NO single detection sources (top cluster popular tracks)
-                            # - Rest of Album: Everything else
-
-                            has_single_sources = len(track_sources) > 0 and any(s in ["musicbrainz", "discogs", "discogs_video", "spotify", "lastfm"] for s in track_sources)
-
-                            if has_single_sources and track_stars == 5:
-                                # Detected single
-                                detected_singles.append((track_artist, track_title, stars_str, reason_str))
-                            elif track_stars == 5 and not has_single_sources and track_zscore > 2.0:
-                                # Popular song (5★ with z-score > 2.0, no single detection)
-                                popular_songs.append((track_artist, track_title, stars_str, reason_str))
-                            else:
-                                # Rest of album
-                                rest_of_album.append((track_artist, track_title, stars_str, reason_str))
-
-                        # Log categorized results for this album (output immediately after album scan)
-                        total_logged = len(detected_singles) + len(popular_songs) + len(rest_of_album)
-                        log_debug(f"Track categorization for {album}: detected_singles={len(detected_singles)}, popular_songs={len(popular_songs)}, rest={len(rest_of_album)}, total={total_logged}")
-
-                        # Output album results immediately after scanning (not after all albums)
-                        try:
-                            if detected_singles:
-                                log_unified(f"Single Detection Scan - ===== {album} - Detected Singles =====")
-                                for track_artist, title, stars, reason in detected_singles:
-                                    log_unified(f"Single Detection Scan - {stars} {track_artist} - {title}{reason}")
-
-                            if popular_songs:
-                                log_unified(f"Single Detection Scan - ===== {album} - Popular Songs (Not Detected as Single) =====")
-                                for track_artist, title, stars, reason in popular_songs:
-                                    log_unified(f"Single Detection Scan - {stars} {track_artist} - {title}{reason}")
-
-                            if rest_of_album:
-                                log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
-                                for track_artist, title, stars, reason in rest_of_album:
-                                    log_unified(f"Single Detection Scan - {stars} {track_artist} - {title}{reason}")
-
-                            # Track single detection progress (after logging results for this album)
-                            single_detection_albums_processed += 1
-
-                            # Check milestones for single detection progress
-                            if single_detection_albums_processed == single_detection_milestone_25 and 25 not in single_detection_milestones_logged:
-                                log_unified(f"Single Detection Scan - 25% completed - {single_detection_albums_processed}/{total_albums} albums")
-                                log_debug(f"Single detection progress milestone - 25% completed for artist '{artist}'")
-                                single_detection_milestones_logged.add(25)
-                            elif single_detection_albums_processed == single_detection_milestone_50 and 50 not in single_detection_milestones_logged:
-                                log_unified(f"Single Detection Scan - 50% completed - {single_detection_albums_processed}/{total_albums} albums")
-                                log_debug(f"Single detection progress milestone - 50% completed for artist '{artist}'")
-                                single_detection_milestones_logged.add(50)
-                            elif single_detection_albums_processed == single_detection_milestone_75 and 75 not in single_detection_milestones_logged:
-                                log_unified(f"Single Detection Scan - 75% completed - {single_detection_albums_processed}/{total_albums} albums")
-                                log_debug(f"Single detection progress milestone - 75% completed for artist '{artist}'")
-                                single_detection_milestones_logged.add(75)
                         except Exception as e:
-                            log_debug(f"Exception logging album results for {album}: {type(e).__name__}: {str(e)}")
+                            log_debug(f"Single detection failed for '{title}': {e}")
+                            track["is_single"] = 0
+                            track["single_confidence"] = "low"
+                            track["single_sources"] = "[]"
 
-                    except Exception as e:
-                        log_info(f"Error logging categorized tracks for album {album}: {e}")
-                        log_debug(f"Exception in track categorization: {type(e).__name__}: {str(e)}")
-                        import traceback
-                        log_debug(f"Traceback: {traceback.format_exc()}")
+                    if any_detection_run:
+                        log_info(f"🔍 Singles detection completed for '{artist} - {album}'")
 
-                # Update last_scanned timestamp for all tracks in this album
-                current_timestamp = datetime.now().isoformat()
-                cursor.execute(
-                    f"""UPDATE tracks
-                    SET last_scanned = {placeholder}
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}""",
-                    (current_timestamp, artist, album)
-                )
-
-                # Ensure changes are committed before logging to scan_history to avoid database lock conflicts
-                conn.commit()
-                log_debug(f"Committed all changes for album: {album}")
-
-                # Log album scan types for Recent Scans badges.
-                # In normal popularity mode we also run singles detection, so log both.
-                if singles_only:
-                    log_album_scan(artist, album, 'singles', singles_processed, 'completed')
-                    log_debug(
-                        f"Logged album scan to scan_history - album: {album}, "
-                        f"scan_type: singles, tracks_scanned: {singles_processed}"
-                    )
-                else:
-                    log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
-                    log_debug(
-                        f"Logged album scan to scan_history - album: {album}, "
-                        f"scan_type: popularity, tracks_scanned: {album_scanned}"
-                    )
-
-                    singles_tracks_scanned = singles_processed if singles_processed > 0 else album_scanned
-                    log_album_scan(artist, album, 'singles', singles_tracks_scanned, 'completed')
-                    log_debug(
-                        f"Logged album scan to scan_history - album: {album}, "
-                        f"scan_type: singles, tracks_scanned: {singles_tracks_scanned}"
-                    )
-
-            # After all albums processed for this artist, show artist scan completion summary
-            # (Individual album details were logged immediately after each album scan)
-            try:
-                log_unified(f"✅ Scan complete for artist '{artist}'")
-                log_debug(f"Artist '{artist}' scan completed. All album details logged above during individual album scans.")
-
-            except Exception as e:
-                log_info(f"Error completing artist scan summary for {artist}: {e}")
-                log_debug(f"Exception in artist scan summary: {type(e).__name__}: {str(e)}")
-
-            # After artist scans, evaluate essential playlist for artist (Case A: 10+ five-star OR Case B: 100+ tracks)
-            # Get ALL tracks for this artist (not just 5-star) to properly apply Case A/B logic.
-            # Also fetch navidrome_rating so user-set 5★ ratings in Navidrome count toward the threshold.
-            try:
-                # Fetch only the two columns needed for Case A / Case B threshold checks.
-                # The ORDER BY is intentionally omitted — create_or_update_playlist_for_artist
-                # only needs counts (len + filter), so sorting every row is wasted work and
-                # can trigger OOM / connection-loss errors on prolific artists.
-                # LIMIT 10000 is a safety cap; real-world playlists never need more rows.
-                cursor.execute(
-                    f"""SELECT stars, navidrome_rating
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                    LIMIT 10000""",
-                    (artist,)
-                )
-                all_artist_tracks = cursor.fetchall()
-                log_debug(f"Retrieved {len(all_artist_tracks)} tracks for playlist evaluation for artist: {artist}")
-
-                if all_artist_tracks:
-                    # Convert to minimal dicts — create_or_update_playlist_for_artist only
-                    # uses len(tracks) and a count of five-star entries; no other fields needed.
-                    tracks_list = [
-                        {
-                            "stars": int(t["stars"]) if t["stars"] else 0,
-                            "navidrome_rating": int(t["navidrome_rating"]) if t["navidrome_rating"] else 0,
-                        }
-                        for t in all_artist_tracks
+                    # -----------------------------------------------------------------
+                    # Ensure every track has a ListenBrainz percentile
+                    # -----------------------------------------------------------------
+                    album_lb_listens = [
+                        d.get("listeners", 0)
+                        for d in album_listenbrainz_data.values()
+                        if d.get("listeners", 0) > 0
                     ]
 
-                    # Call the actual playlist creation function (applies Case A/B logic)
-                    # Logging happens inside the function based on whether playlist was actually created
-                    log_debug(f"Calling playlist creation for artist: {artist} with {len(tracks_list)} tracks")
-                    create_or_update_playlist_for_artist(artist, tracks_list)
-            except Exception as playlist_err:
-                log_info(f"Essential playlist evaluation failed for '{artist}': {playlist_err}")
-                log_debug(f"Playlist evaluation error detail: {type(playlist_err).__name__}: {playlist_err}")
+                    for track in album_tracks:
+                        tid = track["id"]
 
-            # Legacy composer-based artist-level cover detection is a fallback only.
-            # When CoverDetector is available, album-level MBID/work-relation detection
-            # already ran and should not be overwritten by this older heuristic pass.
-            if not HAVE_COVER_DETECTOR:
-                log_debug(f"Starting fallback cover detection for artist: {artist}")
-                covers_found = detect_covers_for_artist(artist, conn)
-                if covers_found > 0:
-                    conn.commit()  # Commit fallback cover detection results
-                    log_debug(f"Fallback cover detection results committed - {covers_found} covers detected for {artist}")
-            else:
-                log_debug(f"Skipping legacy artist-level cover detection for {artist} (CoverDetector active)")
+                        if "lb_percentile" not in track:
+                            lb_l = album_listenbrainz_data.get(tid, {}).get("listeners", 0) or 0
+                            track["lb_percentile"] = calculate_listenbrainz_percentile(
+                                lb_l,
+                                album_lb_listens,
+                            )
 
-            # Update artist progress tracking after completing all albums for this artist
-            # Note: Progress is saved once per artist (not per track) to balance granularity
-            # with I/O efficiency. Original code saved after every track which could result
-            # in thousands of writes for large libraries. Per-artist updates provide adequate
-            # progress visibility while reducing file I/O by orders of magnitude.
-            # If scan is interrupted, it can resume from the last completed artist.
-            processed_artists += 1
-            save_popularity_progress(
-                processed_artists,
-                total_artists,
-                current_artist=artist,
-                progress_file=progress_file_path,
-                scan_type=caller_scan_type or progress_scan_type,
-                # Record this artist as the last *completed* checkpoint so that
-                # if the process is killed before the next artist's in-progress
-                # marker is written, resume will start from here rather than
-                # looping back to the same stuck artist.
-                last_completed_artist=artist,
-            )
-            log_debug(f"Progress saved - {processed_artists}/{total_artists} artists processed (current: {artist})")
+                    # -----------------------------------------------------------------
+                    # Compute star ratings for every track
+                    # -----------------------------------------------------------------
+                    top_pct_threshold = STANDOUT_CONFIG.get("star_5_single", {}).get("artist_pct", 0.25)
+                    lb_override_threshold = STANDOUT_CONFIG.get("lb_unreliable_5star_threshold", 0.50)
 
-        log_debug("Committing final changes to database")
-        conn.commit()
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        title = track["title"]
+                        popularity_score = row_get(track, "popularity_score", 0) or 0
+
+                        album_z = 0.0
+                        artist_z = 0.0
+
+                        if album_stddev > 0:
+                            album_z = (popularity_score - album_median) / album_stddev
+
+                        if artist_stddev > 0 and artist_count >= 5:
+                            artist_z = (popularity_score - artist_mean) / artist_stddev
+
+                        # Live context disables popularity-only promotion.
+                        # Confirmed live singles can still reach 5★, but only if they are top/elite catalogue.
+                        is_live_context = bool(
+                            row_get(track, "is_live", 0)
+                            or row_get(track, "album_context_live", 0)
+                        )
+
+                        stars = 0
+                        is_single = row_get(track, "is_single", 0)
+                        single_confidence = row_get(track, "single_confidence", "low") or "low"
+
+                        lastfm_listeners = album_lastfm_data.get(track_id, {}).get("listeners", 0) or 0
+                        lb_listens = album_listenbrainz_data.get(track_id, {}).get("listeners", 0) or 0
+                        lb_percentile = track.get("lb_percentile", 0) or 0
+
+                        # Top catalogue = broader 5★ eligibility, usually top 25%
+                        is_top_catalog = is_top_artist_catalog(
+                            popularity_score,
+                            top_pct_threshold,
+                        )
+
+                        # Elite catalogue = true artist-wide standout, usually top 10%
+                        # This gives major catalogue tracks a direct 5★ path.
+                        is_elite_catalog = is_top_artist_catalog(
+                            popularity_score,
+                            STANDOUT_CONFIG.get("artist_top_percentile", 0.10),
+                        )
+
+                        # -------------------------------------------------------------
+                        # 1. User override
+                        # -------------------------------------------------------------
+                        if single_confidence == "user":
+                            stars = 5
+
+                        # -------------------------------------------------------------
+                        # 2. Elite artist-catalogue standout
+                        # -------------------------------------------------------------
+                        # This is the missing global 5★ path.
+                        # It allows tracks like The Distance, Never There, or Short Skirt/Long Jacket
+                        # to reach 5★ if they are genuinely near the top of the artist catalogue.
+                        elif is_elite_catalog and not is_live_context:
+                            stars = 5
+
+                        # -------------------------------------------------------------
+                        # 3. High-confidence single path
+                        # -------------------------------------------------------------
+                        elif is_single and single_confidence == "high":
+
+                            if is_live_context:
+                                # Live singles can be 5★ only if they are elite/top catalogue.
+                                # Do not allow album_z alone to promote live recordings.
+                                stars = 5 if is_elite_catalog else 4
+                            else:
+                                # Studio/non-live singles can become 5★ if:
+                                # - they are top catalogue, OR
+                                # - they are clearly strong within the album.
+                                if is_top_catalog or album_z >= 0.8:
+                                    stars = 5
+                                else:
+                                    stars = 4
+
+                        # -------------------------------------------------------------
+                        # 4. Medium-confidence single path (e.g. title tracks with metadata)
+                        # -------------------------------------------------------------
+                        elif is_single and single_confidence == "medium":
+                            if is_live_context:
+                                stars = 4 if is_top_catalog else 3
+                            else:
+                                stars = 5 if is_top_catalog else 4
+
+                        # -------------------------------------------------------------
+                        # 5. Non-single popularity-only 5★ path
+                        #    Disabled for live albums/live tracks.
+                        # -------------------------------------------------------------
+                        elif (
+                            album_z >= STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
+                            and not is_live_context
+                        ):
+                            # Non-singles still need to be top catalogue for 5★.
+                            stars = 5 if is_top_catalog else 4
+
+                        # -------------------------------------------------------------
+                        # 5. ListenBrainz rescue path
+                        #    Disabled for live context because it is still popularity-based.
+                        # -------------------------------------------------------------
+                        elif (
+                            not is_live_context
+                            and is_lastfm_unreliable(lastfm_listeners, lb_listens)
+                            and lb_percentile >= lb_override_threshold
+                        ):
+                            # LB rescue can promote only if the track is also strong in artist catalogue.
+                            stars = 5 if is_top_catalog else 4
+
+                            log_debug(
+                                f"LB override considered for '{title}' "
+                                f"(lb_percentile={lb_percentile:.2f}, "
+                                f"lastfm_listeners={lastfm_listeners}, "
+                                f"lb_listens={lb_listens}, "
+                                f"is_top_catalog={is_top_catalog}, "
+                                f"is_elite_catalog={is_elite_catalog})"
+                            )
+
+                        # -------------------------------------------------------------
+                        # 6. Normal rating tiers
+                        # -------------------------------------------------------------
+                        else:
+                            # Important:
+                            # This no longer auto-grants 5★.
+                            # 5★ should come from elite catalogue, strong single, non-single standout,
+                            # or LB rescue paths above.
+                            if (
+                                album_z >= STANDOUT_CONFIG["star_5"]["album_z"]
+                                and artist_z >= STANDOUT_CONFIG["star_5"]["artist_z"]
+                                and not is_live_context
+                            ):
+                                stars = 4
+
+                            elif (
+                                album_z >= STANDOUT_CONFIG["star_4"]["album_z"]
+                                and artist_z >= STANDOUT_CONFIG["star_4"]["artist_z"]
+                            ):
+                                stars = 4
+
+                            elif album_z >= STANDOUT_CONFIG["star_3"]["album_z"]:
+                                stars = 3
+
+                            elif STANDOUT_CONFIG["star_2"].get("album_mean") and popularity_score >= album_median:
+                                stars = 2
+
+                            else:
+                                stars = 1
+
+                        # -------------------------------------------------------------
+                        # Defensive live-context cap
+                        # -------------------------------------------------------------
+                        # Live tracks should not become 5★ from popularity-only routes.
+                        # User overrides and elite confirmed live singles are allowed.
+                        if is_live_context and stars == 5:
+                            if not (
+                                single_confidence == "user"
+                                or (is_single and single_confidence == "high" and is_elite_catalog)
+                            ):
+                                stars = 4
+
+                        track["stars"] = stars
+                        track["album_z"] = album_z
+                        track["artist_z"] = artist_z
+
+                        try:
+                            cursor.execute(
+                                f"UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}",
+                                (stars, track_id),
+                            )
+                        except Exception as e:
+                            log_debug(f"Failed to persist stars for '{title}': {e}")
+                            # -------------------------------------------------------------
+                            # Defensive live-context cap
+                            # -------------------------------------------------------------
+                            # Live tracks should not become 5★ from popularity-only routes.
+                            # User overrides and top-catalogue confirmed live singles are allowed.
+                            if is_live_context and stars == 5:
+                                if not (
+                                    single_confidence == "user"
+                                    or (is_single and single_confidence == "high" and is_top_catalog)
+                                ):
+                                    stars = 4
+
+                            track["stars"] = stars
+                            track["album_z"] = album_z
+                            track["artist_z"] = artist_z
+
+                            try:
+                                cursor.execute(
+                                    f"UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}",
+                                    (stars, track_id),
+                                )
+                            except Exception as e:
+                                log_debug(f"Failed to persist stars for '{title}': {e}")
+                            # Defensive cap:
+                            # Live context should not get 5★ from popularity logic.
+                            # Manual/user overrides and top-catalogue live singles are already handled above.
+                            if is_live_context and stars == 5:
+                                if not (single_confidence == "user" or (is_single and single_confidence == "high" and is_top_catalog)):
+                                    stars = 4
+
+                            track["stars"] = stars
+                            track["album_z"] = album_z
+                            track["artist_z"] = artist_z
+
+                            try:
+                                cursor.execute(
+                                    f"UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}",
+                                    (stars, track_id),
+                                )
+                            except Exception as e:
+                                log_debug(f"Failed to persist stars for '{title}': {e}")
+
+                    try:
+                        conn.commit()
+                    except Exception as e:
+                        log_debug(f"Failed to commit singles/stars for '{album}': {e}")
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+
+                    # -----------------------------------------------------------------
+                    # Sync ratings to Navidrome when enabled
+                    # -----------------------------------------------------------------
+                    if _is_sync_ratings_to_all_users_enabled():
+                        for track in album_tracks:
+                            try:
+                                sync_track_rating_to_navidrome(track["id"], track.get("stars", 0))
+                            except Exception as e:
+                                log_debug(f"Failed to sync rating for {track['id']}: {e}")
+
+                    # Summary logging
+                    star_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+                    for t in album_tracks:
+                        s = t.get("stars", 0) or 0
+                        if 1 <= s <= 5:
+                            star_counts[s] += 1
+                    log_info(
+                        f"Star Ratings - Album '{album}' by {artist}: "
+                        f"5★: {star_counts[5]}, 4★: {star_counts[4]}, 3★: {star_counts[3]}, "
+                        f"2★: {star_counts[2]}, 1★: {star_counts[1]}"
+                    )
+                    singles_detected = [t for t in album_tracks if t.get("is_single")]
+                    if singles_detected:
+                        log_info(f"Singles Detection - Detected {len(singles_detected)} single(s) in '{album}'")
+
+                    # Detailed per-track single detection scan logging
+                    if album_tracks:
+                        detected_singles = []
+                        popular_songs = []
+                        rest_of_album = []
+                        for t in album_tracks:
+                            stars = t.get("stars", 0) or 0
+                            is_single = t.get("is_single", 0)
+                            single_confidence = t.get("single_confidence", "low") or "low"
+                            title = t.get("title", "")
+                            track_artist = t.get("artist", "")
+                            album_z = t.get("album_z", 0.0)
+                            artist_z = t.get("artist_z", 0.0)
+                            sources_str = t.get("single_sources", "")
+                            try:
+                                sources = json.loads(sources_str) if sources_str else []
+                            except Exception:
+                                sources = []
+                            reasons = []
+                            if is_single and single_confidence == "high":
+                                if sources:
+                                    reasons.append(", ".join(sources))
+                                if album_z:
+                                    reasons.append(f"album-z-score: {album_z:.2f}")
+                                reason_str = " (" + "; ".join(reasons) + ")" if reasons else ""
+                                detected_singles.append((title, stars, track_artist, reason_str))
+                            elif stars == 5:
+                                if album_z:
+                                    reasons.append(f"album-z-score: {album_z:.2f}")
+                                reason_str = " (" + "; ".join(reasons) + ")" if reasons else ""
+                                popular_songs.append((title, stars, track_artist, reason_str))
+                            else:
+                                if album_z:
+                                    reasons.append(f"album-z-score: {album_z:.2f}")
+                                reason_str = " (" + "; ".join(reasons) + ")" if reasons else ""
+                                rest_of_album.append((title, stars, track_artist, reason_str))
+
+                        if detected_singles:
+                            log_unified(f"Single Detection Scan - ===== {album} - Detected Singles =====")
+                            for title, stars, track_artist, reason in detected_singles:
+                                star_str = "★" * stars + "☆" * (5 - stars)
+                                log_unified(f"Single Detection Scan - {star_str:<5} {track_artist} - {title}{reason}")
+                        if popular_songs:
+                            log_unified(f"Single Detection Scan - ===== {album} - Popular Songs (Not Detected as Single) =====")
+                            for title, stars, track_artist, reason in popular_songs:
+                                star_str = "★" * stars + "☆" * (5 - stars)
+                                log_unified(f"Single Detection Scan - {star_str:<5} {track_artist} - {title}{reason}")
+                        if rest_of_album:
+                            if detected_singles or popular_songs:
+                                log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
+                            else:
+                                log_unified(f"Single Detection Scan - ===== {album} - All Tracks =====")
+                            for title, stars, track_artist, reason in rest_of_album:
+                                star_str = "★" * stars + "☆" * (5 - stars)
+                                log_unified(f"Single Detection Scan - {star_str:<5} {track_artist} - {title}{reason}")
+
+                # Log album scan to history for recent scans display
+                if metadata_only:
+                    log_album_scan(artist, album, "metadata", len(album_tracks), "completed")
+                elif singles_only or singles_with_missing_popularity:
+                    log_album_scan(artist, album, "singles", len(album_tracks), "completed")
+                else:
+                    log_album_scan(artist, album, "popularity", len(album_tracks), "completed")
 
         # PostgreSQL commit above is sufficient; no manual checkpoint required.
 

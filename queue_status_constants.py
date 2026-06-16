@@ -167,3 +167,18 @@ def _is_live_track_from_genre(genre_value):
         if part.strip().lower() == "live":
             return True
     return False
+
+
+def _is_remix_track_from_genre(genre_value):
+    """Return True when *genre_value* indicates a remix recording.
+
+    Checks the raw genre string (which may be backslash-separated in ID3)
+    for the word ``remix`` as a standalone token.
+    """
+    if not genre_value:
+        return False
+    parts = str(genre_value).replace("/", "\\").split("\\")
+    for part in parts:
+        if part.strip().lower() == "remix":
+            return True
+    return False

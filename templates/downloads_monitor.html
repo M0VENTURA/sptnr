@@ -355,6 +355,9 @@
         <button class="btn btn-sm btn-outline-success" id="autoMatchAllMonitorBtn" onclick="autoMatchAllUpcomingReleasesMonitor(this)" title="Auto-match MusicBrainz MBID for all unmatched releases">
           <i class="bi bi-magic"></i> Auto Match All
         </button>
+        <button class="btn btn-sm btn-success" onclick="checkForUpdatesMonitor()">
+          <i class="bi bi-bell"></i> Check for Updates
+        </button>
         <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleasesMonitor()">
           <i class="bi bi-download"></i> Update from Wikipedia
         </button>
@@ -965,7 +968,7 @@ async function clearUpcomingReleasesMonitor() {
       statusEl.style.display = 'none';
       container.innerHTML = `
         <div class="text-center py-4">
-          <p class="text-muted mb-0">Database cleared. Click "Update from Wikipedia" to load new release data.</p>
+          <p class="text-muted mb-0">Database cleared. Click <strong>Check for Updates</strong> to search MusicBrainz for new release data.</p>
         </div>
       `;
     }, 1500);
@@ -1015,6 +1018,11 @@ async function scrapeUpcomingReleasesMonitor() {
   }
 }
 
+async function checkForUpdatesMonitor() {
+  localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
+  await refreshUpcomingReleasesMonitor();
+}
+
 async function refreshUpcomingReleasesMonitor() {
   const container = document.getElementById('upcomingReleasesMonitor');
   if (!container) {
@@ -1052,7 +1060,7 @@ async function refreshUpcomingReleasesMonitor() {
     if (!Array.isArray(data.releases) || data.releases.length === 0) {
       container.innerHTML = `
         <div class="text-center py-4">
-          <p class="text-muted mb-0">No upcoming releases found. Click "Update from Wikipedia" to load release data.</p>
+          <p class="text-muted mb-0">No upcoming releases found. Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.</p>
         </div>
       `;
       return;
@@ -1073,7 +1081,7 @@ async function refreshUpcomingReleasesMonitor() {
     if (releases.length === 0) {
       container.innerHTML = `
         <div class="text-center py-4">
-          <p class="text-muted mb-0">No upcoming releases found. Click "Update from Wikipedia" to load release data.</p>
+          <p class="text-muted mb-0">No upcoming releases found. Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.</p>
         </div>
       `;
       return;
@@ -2886,7 +2894,33 @@ function getTrackFinalLocation(track, group) {
     return `/music/${albumArtist}/${year ? year + ' - ' : ''}${album}/${fileName}`;
   }
 
-  return null;
+  // Format track number with disc prefix logic (matching backend)
+  let trackNum = track?.track_number || '0';
+  const discNum = track?.disc_number || '1';
+  try {
+    const trackNumInt = parseInt(String(trackNum).split('/')[0]) || 0;
+    const discNumInt = parseInt(String(discNum).split('/')[0]) || 1;
+    if (discNumInt > 1) {
+      trackNum = `${discNumInt}${String(trackNumInt).padStart(2, '0')}`;
+    } else {
+      trackNum = String(trackNumInt).padStart(2, '0');
+    }
+  } catch (e) {
+    trackNum = '00';
+  }
+
+  // Extract file extension from available paths
+  let ext = '';
+  const pathWithExt = track?.file_path || track?.found_filename || track?.source_file_path || '';
+  if (pathWithExt) {
+    const match = String(pathWithExt).match(/\.([a-zA-Z0-9]{2,5})$/);
+    if (match) {
+      ext = `.${match[1]}`;
+    }
+  }
+
+  const trackArtist = track?.artist || artist || 'Unknown Artist';
+  return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${trackNum}. ${trackArtist} - ${title}${ext}`;
 }
 
 function isTrackInFinalLocation(track) {
@@ -3031,6 +3065,7 @@ async function loadFolderGroups(options = {}) {
           source_file_path: item.source_file_path || '',
           source_music_path: item.source_music_path || '',
           track_number: item.track_number,
+          disc_number: item.disc_number,
           duration: item.duration || 0,
           release_mbid: item.release_mbid || item.release_id || '',
           release_year: item.release_year || item.year || ''
@@ -3117,6 +3152,7 @@ async function loadFolderGroups(options = {}) {
           source_file_path: item.source_file_path || '',
           source_music_path: item.source_music_path || '',
           track_number: item.track_number,
+          disc_number: item.disc_number,
           duration: item.duration || 0,
           release_mbid: item.release_mbid || item.release_id || '',
           release_year: item.release_year || item.year || ''
@@ -7418,7 +7454,16 @@ document.addEventListener('DOMContentLoaded', function() {
   setTimeout(() => loadBothAsync({ forceRender: true }), 500);
   // Delay upcoming releases so the critical queue / folder data renders first.
   // It reads from the local database; there is no Wikipedia fetch on load.
-  setTimeout(refreshUpcomingReleasesMonitor, 2000);
+  // Auto-check for updates once a day.
+  setTimeout(() => {
+    const lastChecked = localStorage.getItem('upcomingReleasesLastChecked');
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    if (!lastChecked || (Date.now() - parseInt(lastChecked, 10)) > oneDayMs) {
+      checkForUpdatesMonitor();
+    } else {
+      refreshUpcomingReleasesMonitor();
+    }
+  }, 2000);
   loadQueueLog();
   loadSearchLog();
   // Refresh both together every 5 seconds to keep them synchronized

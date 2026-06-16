@@ -184,21 +184,28 @@ def _ensure_postgres_columns(conn):
 
 def _ensure_postgres_track_columns(conn):
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_name = 'tracks' AND column_name = 'release_year'
+    added = []
+    for col_name, col_def in (
+        ("release_year", "INTEGER"),
+        ("listenbrainz_score", "DOUBLE PRECISION"),
+    ):
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'tracks' AND column_name = %s
+            )
+            """,
+            (col_name,),
         )
-        """
-    )
-    exists_row = cur.fetchone()
-    exists = bool(exists_row and exists_row[0])
-    if not exists:
-        cur.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS release_year INTEGER")
-        conn.commit()
-        return ["release_year"]
+        exists_row = cur.fetchone()
+        if not (exists_row and exists_row[0]):
+            cur.execute(f"ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
+            conn.commit()
+            added.append(col_name)
+    if added:
+        return added
 
     # Ensure functional index on (LOWER(artist), LOWER(title)) so the
     # library-reconcile lookup in check_downloads_folder() uses index scans

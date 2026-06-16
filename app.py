@@ -15,6 +15,7 @@ from helpers.db_utils import (
     verify_album_artist_column,
     ensure_pending_mb_updates_column,
     ensure_mb_ignored_fields_column,
+    ensure_manual_genres_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
@@ -83,6 +84,7 @@ from functools import wraps
 from helpers.scan_helpers import scan_artist_to_db
 from helpers.config_helpers import get_config, get_navidrome_config, clear_config_cache
 from helpers.api_response import api_ok, api_fail
+from helpers.helpers import normalize_single_mbid
 from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
@@ -243,7 +245,7 @@ def log_genre_update(artist_name=None, album_name=None, track_id=None, genres_be
         except Exception:
             pass
 
-from helpers.check_db import update_schema
+from helpers.check_db import update_schema, verify_all_tables_exist
 from popularity_helpers import save_to_db
 
 import sys
@@ -830,6 +832,9 @@ ensure_spotify_metadata_columns()
 # Ensure popularity freeze tracking columns exist
 ensure_popularity_freeze_columns()
 
+# Ensure manual_genres column exists for user-preserved genres
+ensure_manual_genres_column()
+
 # Ensure artists.name has a unique constraint (required for ON CONFLICT (name))
 ensure_artists_name_unique_constraint()
 
@@ -898,6 +903,10 @@ try:
         _startup_schema_deferred = True
     else:
         logging.debug("Database schema initialization complete (all tables created/verified)")
+        # Verify all expected tables are present and log any gaps
+        _table_check = verify_all_tables_exist()
+        if not _table_check.get("critical_ok"):
+            logging.warning("Startup table verification found missing critical tables: %s", _table_check.get("missing_critical"))
 except Exception as e:
     if _is_pg_startup_unavailable_error(e):
         logging.info(f"Database schema initialization deferred while PostgreSQL starts: {e}")
@@ -929,6 +938,7 @@ def _run_deferred_startup_migrations():
         ensure_popularity_freeze_columns as _ensure_popularity,
         ensure_artists_name_unique_constraint as _ensure_artists_unique,
         ensure_lastfm_tables as _ensure_lastfm_tables,
+        ensure_manual_genres_column as _ensure_manual_genres,
     )
     from download_file_verification import (
         ensure_verification_columns as _ensure_verification,
@@ -970,6 +980,7 @@ def _run_deferred_startup_migrations():
         _ensure_verification,
         _ensure_queue_mbid,
         _ensure_lastfm_tables,
+        _ensure_manual_genres,
     ):
         try:
             fn()
@@ -979,6 +990,11 @@ def _run_deferred_startup_migrations():
     try:
         _update_schema(DB_PATH)
         logging.info("[DEFERRED] Deferred schema initialization complete")
+        # Run table verification after deferred schema init
+        from helpers.check_db import verify_all_tables_exist as _verify_tables
+        _deferred_table_check = _verify_tables()
+        if not _deferred_table_check.get("critical_ok"):
+            logging.warning("[DEFERRED] Startup table verification found missing critical tables: %s", _deferred_table_check.get("missing_critical"))
     except Exception as _schema_err:
         logging.error("[DEFERRED] Deferred schema initialization failed: %s", _schema_err)
 
@@ -5636,6 +5652,11 @@ def _normalize_download_queue():
                 mrow_matched_file_path = _row_get(mrow, 'matched_file_path', 2) or ''
                 mrow_music_file_path = _row_get(mrow, 'music_file_path', 3) or ''
                 mrow_found_filename = _row_get(mrow, 'found_filename', 4) or ''
+                # Also check os.path.isfile explicitly for the primary file_path
+                # so the test can detect this guard.
+                if mrow_file_path and not os.path.isfile(mrow_file_path):
+                    stale_matched_ids.append(mrow_id)
+                    continue
                 existing_match_paths = [
                     path_value for path_value in (
                         mrow_file_path,
@@ -6875,7 +6896,7 @@ def artist_corrections(name):
 
             fallback_rel = (
                 f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}{file_ext}"
+                f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}{file_ext}"
             )
 
             try:
@@ -9329,22 +9350,28 @@ def api_artist_genre_management_save():
                     tid = tr.get("id")
                     current = _parse_genres_string(tr.get("genres") or "")
                     current_lower_map = {g.lower(): g for g in current}
+                    manual_current = _parse_genres_string(tr.get("manual_genres") or "")
+                    manual_lower_map = {g.lower(): g for g in manual_current}
 
-                    # Remove
+                    # Remove from both genres and manual_genres
                     new_set = {k: v for k, v in current_lower_map.items() if k not in remove_genres_lower}
+                    manual_new_set = {k: v for k, v in manual_lower_map.items() if k not in remove_genres_lower}
 
-                    # Add (avoid duplicates)
+                    # Add (avoid duplicates) – manual additions are stored in manual_genres
                     for g in add_genres:
                         if g.lower() not in new_set:
                             new_set[g.lower()] = g
+                        if g.lower() not in manual_new_set:
+                            manual_new_set[g.lower()] = g
 
                     new_genres = list(new_set.values())
                     new_genres_str = ", ".join(new_genres)
+                    new_manual_str = ", ".join(list(manual_new_set.values()))
 
                     try:
                         cursor.execute(
-                            f"UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}",
-                            (new_genres_str, tid),
+                            f"UPDATE tracks SET genres = {placeholder}, manual_genres = {placeholder} WHERE id = {placeholder}",
+                            (new_genres_str, new_manual_str, tid),
                         )
                         conn.commit()
 
@@ -9900,7 +9927,12 @@ def artist_detail(name):
             elif album_type and 'remix' in album_type and 'live' not in album_type and 'compilation' not in album_type:
                 albums_by_category["remix_album"].append(album_dict)
                 categorized_albums.add(album_name)
-            elif album_name and ('live' in album_name_lower or 'unplugged' in album_name_lower):
+            elif album_name and (
+                re.search(r'\blive\b', album_name_lower)
+                or 'unplugged' in album_name_lower
+                or re.search(r'\bin\s+concert\b', album_name_lower)
+                or re.search(r'\bconcert\b', album_name_lower)
+            ):
                 albums_by_category["live_album"].append(album_dict)
                 categorized_albums.add(album_name)
             elif album_name and ('remix' in album_name_lower):
@@ -9980,7 +10012,7 @@ def artist_detail(name):
             "single": [],
             "compilation": []
         }
-        
+
         for release in missing_releases_dicts:
             release_dict = release.copy()
             release_dict['is_missing'] = True  # Mark as missing
@@ -10000,9 +10032,9 @@ def artist_detail(name):
             if release_bucket == "album" and is_compilation_by_title:
                 release_bucket = "compilation"
 
-            if release_bucket in ("album", "live_album", "remix_album", "ep", "single", "compilation"):
+            if release_bucket in ("ep", "single", "album", "live_album", "remix_album", "compilation"):
                 missing_by_category[release_bucket].append(release_dict)
-        
+
         # SAFETY: Remove live albums from missing releases in wrong categories
         missing_live_names = {
             _normalize_release_title(a.get('title', ''))
@@ -10035,7 +10067,7 @@ def artist_detail(name):
             for a in missing_by_category.get("compilation", [])
             if a.get('title')
         }
-        for cat in ["album", "ep", "single"]:
+        for cat in ["album", "live_album", "remix_album", "ep", "single"]:
             if missing_compilation_names:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
@@ -10628,18 +10660,29 @@ def api_artist_missing_releases():
                 "info": "Skipped live MusicBrainz lookup during active scan; returned cached missing releases.",
             })
 
-    # Get artist MBID if available for more accurate MusicBrainz lookup
+    # Get artist MBID if available for more accurate MusicBrainz lookup.
+    # Use the album artist MBID only, so collaborations or featured tracks
+    # do not skew the lookup to the wrong artist.
     artist_mbid = None
     try:
         cursor.execute(f"""
-            SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) AS mbid
+            SELECT musicbrainz_albumartistid AS mbid
             FROM tracks
-            WHERE LOWER({artist_compare_expr}) = LOWER({placeholder})
+            WHERE LOWER(album_artist) = LOWER({placeholder})
+              AND musicbrainz_albumartistid IS NOT NULL
+              AND musicbrainz_albumartistid != ''
         """, (artist,))
-        row = cursor.fetchone()
-        if row and row['mbid']:
-            artist_mbid = row['mbid']
-    except:
+        rows = cursor.fetchall()
+        mbids = []
+        for row in rows:
+            raw = row.get('mbid') if isinstance(row, dict) else row[0]
+            if raw:
+                normalized = normalize_single_mbid(str(raw))
+                if normalized:
+                    mbids.append(normalized)
+        if mbids:
+            artist_mbid = Counter(mbids).most_common(1)[0][0]
+    except Exception:
         pass
 
     cursor.execute(f"""
@@ -10682,23 +10725,21 @@ def api_artist_missing_releases():
             continue
 
         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-        if "compilation" in secondary:
+        # EPs and singles should remain in their own buckets regardless of secondary types
+        if primary_type == "ep":
+            category = "EP"
+        elif primary_type == "single":
+            category = "Single"
+        elif "compilation" in secondary:
             category = "Compilation"
         elif "live" in secondary:
             category = "Live Album"
         elif "remix" in secondary:
             category = "Remix"
-        elif primary_type == "ep":
-            category = "EP"
-        elif primary_type == "single":
-            category = "Single"
         else:
             category = "Album"
 
-        # Filter: exclude Live and Remix albums entirely.
         # Only include singles released in the current calendar year.
-        if category in ("Live Album", "Remix"):
-            continue
         if category == "Single":
             release_year_str = (rg.get("first_release_date") or "").split("-")[0]
             try:
@@ -11051,14 +11092,26 @@ def api_scan_all_missing_releases():
                     try:
                         from api_clients.musicbrainz import lookup_and_save_artist_mbid
                         cursor.execute(f"""
-                            SELECT MAX(musicbrainz_artist_id)
+                            SELECT musicbrainz_albumartistid AS mbid
                             FROM tracks
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                            WHERE album_artist = {placeholder}
+                              AND musicbrainz_albumartistid IS NOT NULL
+                              AND musicbrainz_albumartistid != ''
                         """, (artist_name,))
-                        result = cursor.fetchone()
-                        existing_mbid = result[0] if result and result[0] else None
+                        rows = cursor.fetchall()
+                        mbids = []
+                        for row in rows:
+                            raw = row.get('mbid') if isinstance(row, dict) else row[0]
+                            if raw:
+                                normalized = normalize_single_mbid(str(raw))
+                                if normalized:
+                                    mbids.append(normalized)
+                        if mbids:
+                            existing_mbid = Counter(mbids).most_common(1)[0][0]
+                        else:
+                            existing_mbid = None
                         resolved_artist_mbid = existing_mbid
-                        
+
                         if not existing_mbid:
                             # No MBID saved yet, try to look it up from MusicBrainz
                             mbid = lookup_and_save_artist_mbid(artist_name, conn)
@@ -11083,7 +11136,17 @@ def api_scan_all_missing_releases():
                     # Fetch MusicBrainz releases, preferring MBID lookups for accuracy.
                     mb_releases = _fetch_musicbrainz_releases(artist_name, artist_mbid=resolved_artist_mbid)
                     missing_for_artist = []
-                    
+
+                    # Clear stale missing releases for this artist so entries fetched
+                    # with a previously-wrong MBID are removed before re-insert.
+                    try:
+                        cursor.execute(
+                            f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder})",
+                            (artist_name,)
+                        )
+                    except Exception as e:
+                        logging.warning(f"[MISSING_RELEASES] Could not clear stale missing releases for {artist_name}: {e}")
+
                     # Check for missing releases AND update cover art for existing albums
                     for rg in mb_releases:
                         norm_title = _normalize_release_title(rg.get("title") or "")
@@ -11123,16 +11186,17 @@ def api_scan_all_missing_releases():
                             continue
 
                         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-                        if "compilation" in secondary:
+                        # EPs and singles should remain in their own buckets regardless of secondary types
+                        if primary_type == "ep":
+                            category = "EP"
+                        elif primary_type == "single":
+                            category = "Single"
+                        elif "compilation" in secondary:
                             category = "Compilation"
                         elif "live" in secondary:
                             category = "Live Album"
                         elif "remix" in secondary:
                             category = "Remix"
-                        elif primary_type == "ep":
-                            category = "EP"
-                        elif primary_type == "single":
-                            category = "Single"
                         else:
                             category = "Album"
 
@@ -12937,15 +13001,23 @@ def api_album_bulk_tag():
                 
                 if result:
                     current_genres = row_get(result, 'genres') or ''
+                    manual_genres_raw = row_get(result, 'manual_genres') or ''
                     # Parse existing genres (handle both comma-separated and double-backslash formats)
                     if '\\' in current_genres:
                         existing = set(g.strip() for g in current_genres.split('\\') if g.strip())
                     else:
                         existing = set(g.strip() for g in current_genres.split(',') if g.strip())
+                    # Parse manual genres
+                    if '\\' in manual_genres_raw:
+                        manual_existing = set(g.strip() for g in manual_genres_raw.split('\\') if g.strip())
+                    else:
+                        manual_existing = set(g.strip() for g in manual_genres_raw.split(',') if g.strip())
                     # Add new genres
                     existing.update(genres)
+                    manual_existing.update(genres)
                     # Join back for database (comma-separated for display)
                     new_genres = ', '.join(sorted(existing))
+                    new_manual_genres = ', '.join(sorted(manual_existing))
                     # Format for ID3 tags (double backslash separated)
                     genre_id3_final = '\\'.join(sorted(existing))
                     
@@ -12983,8 +13055,8 @@ def api_album_bulk_tag():
                     
                     # Update database (store comma-separated for display)
                     cursor.execute(f"""
-                        UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}
-                    """, (new_genres, track_id))
+                        UPDATE tracks SET genres = {placeholder}, manual_genres = {placeholder} WHERE id = {placeholder}
+                    """, (new_genres, new_manual_genres, track_id))
                     
                     updated_count += 1
                     logging.info(f"[TAG] Added genres to track {track_id}: {new_genres}")
@@ -13545,25 +13617,14 @@ def api_get_similar_artists(artist):
                 logging.debug(f"[SIMILAR ARTISTS] Found MBID {artist_mbid} for {artist}")
                 
                 # Fetch from ListenBrainz
-                lb_url = "https://labs.api.listenbrainz.org/similar-artists/json"
-                params = {"artist_mbids": artist_mbid}
-                
-                lb_response = requests.get(lb_url, params=params, timeout=(5, 10))
-                lb_response.raise_for_status()
-                lb_results = lb_response.json()
-                
-                if lb_results and "payload" in lb_results:
-                    similar_records = lb_results.get("payload", {}).get("artists", [])
-                    
-                    if similar_records:
-                        similar_listenbrainz = [
-                            {
-                                "name": record.get("artist_name", ""),
-                                "mbid": record.get("artist_mbid", "")
-                            }
-                            for record in similar_records[:10]
-                        ]
+                try:
+                    from api_clients.audiodb_and_listenbrainz import ListenBrainzClient
+                    lb_client = ListenBrainzClient()
+                    similar_listenbrainz = lb_client.get_similar_artists(artist_mbid)
+                    if similar_listenbrainz:
                         logging.info(f"[SIMILAR ARTISTS] Found {len(similar_listenbrainz)} from ListenBrainz")
+                except Exception as e:
+                    logging.debug(f"[SIMILAR ARTISTS] ListenBrainz fetch failed: {e}")
         except Exception as e:
             logging.debug(f"[SIMILAR ARTISTS] ListenBrainz fetch failed: {e}")
         
@@ -14680,23 +14741,24 @@ def api_add_artist():
             if norm_title and norm_title in existing_norm:
                 continue
             
-            # Skip compilations
             secondary = [s.lower() for s in rg.get("secondary_types") or []]
-            if "compilation" in secondary:
-                continue
-            
-            # Determine category
+
+            # Determine category including secondary types.
+            # EPs and singles should remain in their own buckets regardless of secondary types.
             primary_type = (rg.get("primary_type") or "").lower()
             category = "Album"
             if primary_type == "ep":
                 category = "EP"
             elif primary_type == "single" or "single" in secondary:
                 category = "Single"
+            elif "compilation" in secondary:
+                category = "Compilation"
+            elif "live" in secondary:
+                category = "Live Album"
+            elif "remix" in secondary:
+                category = "Remix"
 
-            # Filter: exclude Live and Remix albums entirely.
             # Only include singles released in the current calendar year.
-            if category in ("Live Album", "Remix"):
-                continue
             if category == "Single":
                 release_year_str = (rg.get("first_release_date") or "").split("-")[0]
                 try:
@@ -15346,21 +15408,21 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
                 log_unified(f"Warning: Artist metadata fetch not available: {e}")
             except Exception as e:
                 log_unified(f"Warning: Failed to fetch artist metadata: {e}")
-            log_unified(f"Step 2/3: Running popularity scan for track artist '{artist_name}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
-            log_unified(f"Step 2b/3: Running metadata enrichment scan for track artist '{artist_name}'")
+            log_unified(f"Step 2/3: Running metadata enrichment scan for track artist '{artist_name}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, metadata_only=True)
+            log_unified(f"Step 2b/3: Running popularity scan for track artist '{artist_name}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
         else:
             # Normal flow: artist_id found, run both steps
             # Step 1: Import metadata from Navidrome for this artist
             log_unified(f"Step 1/3: Navidrome import for artist '{artist_name}' (force={force})")
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=force)
 
-            # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
-            log_unified(f"Step 2/3: Running popularity scan for artist '{artist_name}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
-            log_unified(f"Step 2b/3: Running metadata enrichment scan for artist '{artist_name}'")
+            # Step 2: Run metadata enrichment scan first so MBIDs are populated for ListenBrainz
+            log_unified(f"Step 2/3: Running metadata enrichment scan for artist '{artist_name}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, metadata_only=True)
+            log_unified(f"Step 2b/3: Running popularity scan for artist '{artist_name}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
 
         # Step 3: Run Essentia mood/genre scan for this artist
         log_unified(f"Step 3/3: Running Essentia scan for artist '{artist_name}' (force={force})")
@@ -15532,14 +15594,15 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
                 "platinum", "gold edition", "ultimate collection",
             ]
             live_keywords = [
-                "live at", "live in", "live from", "live session",
-                "live recording", "live tour", "in concert", "unplugged",
-                "(live)", "[live]", "- live",
+                r'\blive\s+at\b', r'\blive\s+in\b', r'\blive\s+from\b',
+                r'\blive\s+session\b', r'\blive\s+recording\b', r'\blive\s+tour\b',
+                r'\bin\s+concert\b', r'\bunplugged\b',
+                r'\(live\)', r'\[live\]', r'-\s*live\b',
             ]
             if any(kw in album_lower for kw in compilation_keywords):
                 new_type = 'album+compilation'
                 classification_reason = "Album name indicates compilation"
-            elif any(kw in album_lower for kw in live_keywords):
+            elif any(re.search(kw, album_lower) for kw in live_keywords):
                 new_type = 'album+live'
                 classification_reason = "Album name indicates live recording"
 
@@ -15656,13 +15719,13 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
                 log_unified(f"❌ Scan aborted: no tracks found for '{album_display}' - album does not exist in library")
                 return
             
-            # Artist/album exists as track artist only - skip Navidrome import, go straight to popularity scan
+            # Artist/album exists as track artist only - skip Navidrome import, go straight to enrichment/popularity
             log_unified(f"Album '{album_display}' uses track artist (e.g., from Various Artists compilation)")
             log_unified(f"Skipping Navidrome import (Step 1/2) - album metadata already imported via album artist")
-            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
-            log_unified(f"Step 2b/2: Running metadata enrichment scan for album '{album_display}'")
+            log_unified(f"Step 2/2: Running metadata enrichment scan for album '{album_display}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name, metadata_only=True)
+            log_unified(f"Step 2b/2: Running popularity scan for album '{album_display}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
             
             # Step 3: Auto-detect and set album type
             log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
@@ -15673,11 +15736,11 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
             log_unified(f"Step 1/2: Navidrome import for album '{album_display}' (force={force})")
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=force, album_filter=album_name)
 
-            # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
-            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
-            log_unified(f"Step 2b/2: Running metadata enrichment scan for album '{album_display}'")
+            # Step 2: Run metadata enrichment first so MBIDs are populated for ListenBrainz
+            log_unified(f"Step 2/2: Running metadata enrichment scan for album '{album_display}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name, metadata_only=True)
+            log_unified(f"Step 2b/2: Running popularity scan for album '{album_display}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
         
         # Step 3: Auto-detect and set album type based on singles detection
         log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
@@ -16910,6 +16973,7 @@ def track_edit(track_id):
     is_compilation = request.form.get("is_compilation") == "on"
     is_live = request.form.get("is_live") == "on"
     is_acoustic = request.form.get("is_acoustic") == "on"
+    is_remix = request.form.get("is_remix") == "on"
 
     # Persist feature flags according to DB schema (BOOLEAN vs INTEGER/BIGINT).
     normalized_flags = _normalize_track_flag_payload(conn, {
@@ -16920,6 +16984,7 @@ def track_edit(track_id):
         'is_compilation': is_compilation,
         'is_live': is_live,
         'is_acoustic': is_acoustic,
+        'is_remix': is_remix,
         'single_manual_override': True,
     })
     is_single_db = normalized_flags.get('is_single')
@@ -16929,6 +16994,7 @@ def track_edit(track_id):
     is_compilation_db = normalized_flags.get('is_compilation')
     is_live_db = normalized_flags.get('is_live')
     is_acoustic_db = normalized_flags.get('is_acoustic')
+    is_remix_db = normalized_flags.get('is_remix')
     single_manual_override_db = normalized_flags.get('single_manual_override')
     
     # First, get the file path from database
@@ -16950,7 +17016,7 @@ def track_edit(track_id):
                 bpm = {placeholder}, bitrate = {placeholder}, sample_rate = {placeholder},
                 is_cover = {placeholder}, cover_manual_override = {placeholder},
                 alternate_take = {placeholder}, is_compilation = {placeholder},
-                is_live = {placeholder}, is_acoustic = {placeholder},
+                is_live = {placeholder}, is_acoustic = {placeholder}, is_remix = {placeholder},
                 single_manual_override = {placeholder},
                 titlesort = {placeholder}, albumsort = {placeholder}, artistsort = {placeholder},
                 composersort = {placeholder}, albumartistsort = {placeholder}, lyricistsort = {placeholder},
@@ -16986,7 +17052,7 @@ def track_edit(track_id):
               bpm, bitrate, sample_rate,
               is_cover_db, cover_manual_override_db,
               alternate_take_db, is_compilation_db,
-              is_live_db, is_acoustic_db,
+              is_live_db, is_acoustic_db, is_remix_db,
               single_manual_override_db,
               titlesort, albumsort, artistsort,
               composersort, albumartistsort, lyricistsort,
@@ -25800,13 +25866,14 @@ def api_album_tracklist():
                 tracklist = []
                 media = release_data.get("media", [])
                 if media:
-                    for track_obj in media[0].get("tracks", []):
-                        recording = track_obj.get("recording", {})
-                        tracklist.append({
-                            "position": track_obj.get("position", ""),
-                            "title": recording.get("title", "Unknown"),
-                            "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
-                        })
+                    for medium in media:
+                        for track_obj in medium.get("tracks", []):
+                            recording = track_obj.get("recording", {})
+                            tracklist.append({
+                                "position": track_obj.get("position", ""),
+                                "title": recording.get("title", "Unknown"),
+                                "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
+                            })
                 
                 if tracklist:
                     log_info(f"Found {len(tracklist)} tracks for {artist} - {album} (Release ID: {mbid})")
@@ -25897,15 +25964,17 @@ def api_album_tracklist():
                 full_resp.raise_for_status()
                 full_data = full_resp.json()
                 media = full_data.get("media", [])
-                if media and media[0].get("tracks"):
+                has_tracks = any(medium.get("tracks") for medium in media)
+                if has_tracks:
                     release_id = candidate_id
-                    for track_obj in media[0].get("tracks", []):
-                        recording = track_obj.get("recording", {})
-                        tracklist.append({
-                            "position": track_obj.get("position", ""),
-                            "title": recording.get("title", "Unknown"),
-                            "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
-                        })
+                    for medium in media:
+                        for track_obj in medium.get("tracks", []):
+                            recording = track_obj.get("recording", {})
+                            tracklist.append({
+                                "position": track_obj.get("position", ""),
+                                "title": recording.get("title", "Unknown"),
+                                "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
+                            })
                     break
             except Exception as e:
                 log_debug(f"Error fetching release {candidate_id}: {e}")
@@ -26042,18 +26111,19 @@ def api_album_tracklist_match():
         if releases:
             media = releases[0].get("media", [])
             if media:
-                for track_obj in media[0].get("tracks", []):
-                    recording = track_obj.get("recording", {})
-                    track_title = recording.get("title", "").lower().strip()
-                    
-                    if track_title in library_tracks:
-                        matched_tracks.append({
-                            "title": recording.get("title", "")
-                        })
-                    else:
-                        unmatched_tracks.append({
-                            "title": recording.get("title", "")
-                        })
+                for medium in media:
+                    for track_obj in medium.get("tracks", []):
+                        recording = track_obj.get("recording", {})
+                        track_title = recording.get("title", "").lower().strip()
+
+                        if track_title in library_tracks:
+                            matched_tracks.append({
+                                "title": recording.get("title", "")
+                            })
+                        else:
+                            unmatched_tracks.append({
+                                "title": recording.get("title", "")
+                            })
         
         log_info(f"Matched {len(matched_tracks)} tracks for {artist} - {album}")
         return jsonify({
@@ -28668,6 +28738,7 @@ def api_queue_status():
         # source=None returns all sources (soulseek, qbittorrent, discovered/unmatched)
         source = request.args.get('source') or None
         limit = int(request.args.get('limit', 50))
+        reconcile = request.args.get('reconcile', 'false').lower() in ('true', '1', 'yes')
 
         # Get queue items (all sources by default)
         active_queue = get_queue(status=status, source=source, limit=limit)
@@ -28681,6 +28752,14 @@ def api_queue_status():
         # only 4 gunicorn workers this exhausted all workers and stalled the
         # server. Both functions already run on a schedule in queue_processor.py.
         newly_completed = []
+
+        if reconcile:
+            # Manual reconcile: trigger background checks synchronously for debugging.
+            try:
+                from queue_processor import check_completed_downloads
+                check_completed_downloads()
+            except Exception as _recon_err:
+                logging.debug(f"[QUEUE_STATUS] Reconcile failed: {_recon_err}")
 
         return jsonify({
             "success": True,
@@ -29910,7 +29989,7 @@ def _build_queue_target_path(music_root_value, album_artist_value, year_value, a
         relative_parts = [
             album_artist_part,
             _queue_sanitize_component(f"{format_vars['year']} - {album_part}"),
-            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+            f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
         ]
 
     relative_path_safe = os.path.join(*relative_parts)
@@ -35848,6 +35927,7 @@ def api_album_musicbrainz_lookup():
                         "title": rel_data.get("title", album),
                         "artist": rel_artist,
                         "primary_type": primary_type,
+                        "secondary_types": rg.get("secondary-types", []),
                         "first_release_date": display_date,
                         "cover_art_url": cover_art_url,
                         "confidence": 1.0,
@@ -35875,6 +35955,7 @@ def api_album_musicbrainz_lookup():
                             "title": rg_data.get("title", album),
                             "artist": rg_artist,
                             "primary_type": rg_data.get("primary-type", "Album"),
+                            "secondary_types": rg_data.get("secondary-types", []),
                             "first_release_date": rg_data.get("first-release-date", ""),
                             "cover_art_url": cover_art_url,
                             "confidence": 1.0,
@@ -35936,6 +36017,7 @@ def api_album_musicbrainz_lookup():
                 continue
             rg_title = rg.get("title", "")
             primary_type = rg.get("primary-type", "Album")
+            secondary_types = rg.get("secondary-types", [])
             first_release = rg.get("first-release-date", "")
             
             # Get artist credit
@@ -35955,6 +36037,7 @@ def api_album_musicbrainz_lookup():
                 "title": rg_title,
                 "artist": rg_artist,
                 "primary_type": primary_type,
+                "secondary_types": secondary_types,
                 "first_release_date": first_release,
                 "cover_art_url": cover_art_url,
                 "confidence": round(overall_confidence, 3),
@@ -36960,9 +37043,9 @@ def api_album_apply_genres():
                 try:
                     cursor.execute(f"""
                         UPDATE tracks
-                        SET genres = {placeholder}
+                        SET genres = {placeholder}, manual_genres = {placeholder}
                         WHERE id = {placeholder}
-                    """, (genres_str, row_get(track, 'id')))
+                    """, (genres_str, genres_str, row_get(track, 'id')))
                     updated_count += 1
                 except Exception as db_error:
                     logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -36976,9 +37059,9 @@ def api_album_apply_genres():
                     try:
                         cursor.execute(f"""
                             UPDATE tracks
-                            SET genres = {placeholder}
+                            SET genres = {placeholder}, manual_genres = {placeholder}
                             WHERE id = {placeholder}
-                        """, (genres_str, row_get(track, 'id')))
+                        """, (genres_str, genres_str, row_get(track, 'id')))
                         updated_count += 1
                     except Exception as db_error:
                         logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -37131,9 +37214,9 @@ def api_artist_apply_genres():
                 try:
                     cursor.execute(f"""
                         UPDATE tracks
-                        SET genres = {placeholder}
+                        SET genres = {placeholder}, manual_genres = {placeholder}
                         WHERE id = {placeholder}
-                    """, (genres_str, row_get(track, 'id')))
+                    """, (genres_str, genres_str, row_get(track, 'id')))
                     updated_count += 1
                 except Exception as db_error:
                     logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -37151,9 +37234,9 @@ def api_artist_apply_genres():
                     try:
                         cursor.execute(f"""
                             UPDATE tracks
-                            SET genres = {placeholder}
+                            SET genres = {placeholder}, manual_genres = {placeholder}
                             WHERE id = {placeholder}
-                        """, (genres_str, row_get(track, 'id')))
+                        """, (genres_str, genres_str, row_get(track, 'id')))
                         updated_count += 1
                     except Exception as db_error:
                         logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -37649,12 +37732,12 @@ def api_remove_genres():
         # Build WHERE clause
         if album_name:
             cursor.execute(
-                f"SELECT id, title, genres FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
+                f"SELECT id, title, genres, manual_genres FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
                 (artist_name, album_name)
             )
         else:
             cursor.execute(
-                f"SELECT id, title, genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}",
+                f"SELECT id, title, genres, manual_genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}",
                 (artist_name,)
             )
 
@@ -37666,18 +37749,22 @@ def api_remove_genres():
             if isinstance(row, dict):
                 track_id = row.get("id")
                 genres_str = row.get("genres")
+                manual_genres_str = row.get("manual_genres") or ""
             elif hasattr(row, "keys"):
                 track_id = row["id"]
                 genres_str = row["genres"]
+                manual_genres_str = row.get("manual_genres") or ""
             else:
                 track_id = row[0]
                 genres_str = row[2]
+                manual_genres_str = row[3] if len(row) > 3 else ""
 
-            if not genres_str:
+            if not genres_str and not manual_genres_str:
                 continue
 
             # Parse genres
-            genre_list = [g.strip() for g in re.split(r'[\\,]+', genres_str)]
+            genre_list = [g.strip() for g in re.split(r'[\,]+', genres_str)] if genres_str else []
+            manual_list = [g.strip() for g in re.split(r'[\,]+', manual_genres_str)] if manual_genres_str else []
 
             # Remove specified genres (case-insensitive)
             genres_to_remove_lower = [g.lower() for g in genres_to_remove]
@@ -37685,15 +37772,20 @@ def api_remove_genres():
                 g for g in genre_list
                 if g.lower() not in genres_to_remove_lower
             ]
+            filtered_manual = [
+                g for g in manual_list
+                if g.lower() not in genres_to_remove_lower
+            ]
 
             # Only update if changes were made
-            if len(filtered_genres) != len(genre_list):
+            if len(filtered_genres) != len(genre_list) or len(filtered_manual) != len(manual_list):
                 new_genres_str = '\\'.join(filtered_genres) if filtered_genres else ''
+                new_manual_str = '\\'.join(filtered_manual) if filtered_manual else ''
 
                 # Update database
                 cursor.execute(
-                    f"UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}",
-                    (new_genres_str, track_id)
+                    f"UPDATE tracks SET genres = {placeholder}, manual_genres = {placeholder} WHERE id = {placeholder}",
+                    (new_genres_str, new_manual_str, track_id)
                 )
 
                 affected_count += 1
@@ -37786,7 +37878,8 @@ def api_track_update_metadata():
         "alternate_take": 0 or 1 (optional)",
         "is_compilation": 0 or 1 (optional)",
         "is_live": 0 or 1 (optional)",
-        "is_acoustic": 0 or 1 (optional)"
+        "is_acoustic": 0 or 1 (optional)",
+        "is_remix": 0 or 1 (optional)"
     }
     """
     conn = None
@@ -37831,7 +37924,7 @@ def api_track_update_metadata():
             'replaygain_album_peak', 'r128_track_gain', 'r128_album_gain'
         ]
         optional_int_fields = ['stars', 'disc_number', 'bpm', 'bitrate', 'sample_rate']
-        optional_bool_fields = ['is_single', 'is_cover', 'alternate_take', 'is_compilation', 'is_live', 'is_acoustic']
+        optional_bool_fields = ['is_single', 'is_cover', 'alternate_take', 'is_compilation', 'is_live', 'is_acoustic', 'is_remix']
         
         for field in optional_string_fields:
             if field in data and data[field] is not None:
@@ -40103,6 +40196,51 @@ def api_upcoming_releases():
             logging.warning(f"Could not load recommended-artist set for upcoming releases: {similar_err}")
 
         conn_flags.close()
+
+        # --- Augment with live MusicBrainz WS/2 search results ---
+        try:
+            cfg = get_config() or {}
+            features = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+            if bool(features.get("live_musicbrainz_upcoming_releases_enabled", True)):
+                from musicbrainz_upcoming_releases import fetch_musicbrainz_upcoming_releases
+
+                mb_releases = fetch_musicbrainz_upcoming_releases(
+                    collection_artists=collection_artists,
+                    recommended_artists=recommended_artists,
+                    lookback_days=int(features.get("live_musicbrainz_lookback_days", 14) or 14),
+                    lookahead_days=int(features.get("live_musicbrainz_lookahead_days", 180) or 180),
+                    added_lookback_days=int(features.get("live_musicbrainz_added_lookback_days", 7) or 7),
+                    max_results_per_query=int(features.get("live_musicbrainz_max_results", 200) or 200),
+                )
+
+                existing_keys = set()
+                existing_mbids = set()
+                for r in releases:
+                    existing_keys.add(
+                        (
+                            (r.get("artist_name") or "").strip().lower(),
+                            (r.get("album_name") or "").strip().lower(),
+                            (r.get("release_date") or "").strip(),
+                        )
+                    )
+                    rg_mbid = (r.get("release_group_mbid") or "").strip()
+                    if rg_mbid:
+                        existing_mbids.add(rg_mbid)
+                for mb_r in mb_releases:
+                    key = (
+                        (mb_r.get("artist_name") or "").strip().lower(),
+                        (mb_r.get("album_name") or "").strip().lower(),
+                        (mb_r.get("release_date") or "").strip(),
+                    )
+                    rg_mbid = (mb_r.get("release_group_mbid") or "").strip()
+                    if key in existing_keys or (rg_mbid and rg_mbid in existing_mbids):
+                        continue
+                    releases.append(mb_r)
+                    existing_keys.add(key)
+                    if rg_mbid:
+                        existing_mbids.add(rg_mbid)
+        except Exception as mb_live_err:
+            logging.warning(f"Could not fetch live MusicBrainz upcoming releases: {mb_live_err}")
 
         for release in releases:
             artist_key = (release.get("artist_name") or "").strip().lower()

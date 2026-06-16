@@ -174,6 +174,65 @@ def test_has_title_track_case_insensitive():
         return False
 
 
+def test_has_title_track_featured_artist_stripped():
+    """Test has_title_track strips featured artists before lookup"""
+    print("\n" + "="*60)
+    print("TEST: has_title_track - Featured Artist Stripped")
+    print("="*60)
+    
+    from requests.exceptions import HTTPError
+    
+    # Create a mock Last.fm client
+    client = LastFmClient(api_key="test_api_key")
+    
+    # First call: 404 for "dArtagnan"
+    mock_404 = Mock()
+    mock_404.status_code = 404
+    mock_404.raise_for_status.side_effect = HTTPError(response=mock_404)
+    
+    # Second call: 200 for "dArtagnan feat. Melissa Bonny" (fallback)
+    mock_200 = Mock()
+    mock_200.json.return_value = {
+        "album": {
+            "name": "Herzblut",
+            "tracks": {
+                "track": [
+                    {"name": "Herzblut"},
+                    {"name": "Bonus Track"}
+                ]
+            }
+        }
+    }
+    mock_200.raise_for_status = Mock()
+    
+    call_count = 0
+    def mock_get(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        params = kwargs.get('params', {})
+        lookup_artist = params.get('artist', '')
+        
+        if call_count == 1:
+            assert lookup_artist == "dArtagnan", f"Expected 'dArtagnan' but got '{lookup_artist}'"
+            return mock_404
+        else:
+            assert lookup_artist == "dArtagnan feat. Melissa Bonny", f"Expected 'dArtagnan feat. Melissa Bonny' but got '{lookup_artist}'"
+            return mock_200
+    
+    client.session = Mock()
+    client.session.get.side_effect = mock_get
+    
+    # Test
+    result = client.has_title_track("dArtagnan feat. Melissa Bonny", "Herzblut")
+    
+    if result == True and call_count == 2:
+        print("  ✅ Correctly stripped featured artist and fell back to full artist")
+        return True
+    else:
+        print(f"  ❌ Failed: result={result}, call_count={call_count}")
+        return False
+
+
 def run_all_tests():
     """Run all tests"""
     print("\n" + "="*70)
@@ -184,7 +243,8 @@ def run_all_tests():
         test_has_title_track_single_track,
         test_has_title_track_multiple_tracks_with_match,
         test_has_title_track_no_match,
-        test_has_title_track_case_insensitive
+        test_has_title_track_case_insensitive,
+        test_has_title_track_featured_artist_stripped
     ]
     
     passed = 0

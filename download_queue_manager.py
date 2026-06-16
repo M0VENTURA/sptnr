@@ -163,6 +163,7 @@ from queue_status_constants import (
     TITLE_VARIANT_TOKENS,
     SOFT_VARIANT_TOKENS,
     _is_live_track_from_genre,
+    _is_remix_track_from_genre,
 )
 
 # Throttle expensive downloads-folder checks triggered by frequent UI polling.
@@ -4932,7 +4933,7 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
                 
                 # Build new filename
                 ext = os.path.splitext(resolved_file_path)[1].lower()
-                filename = _sanitize_path_component(f"{track_num_fmt}. {track_artist} - {track_title}{ext}")
+                filename = _sanitize_path_component(f"{track_num_fmt} - {track_artist} - {track_title}{ext}")
                 new_path = os.path.join(dest_folder, filename)
                 
                 # Handle conflicts with counter
@@ -5465,6 +5466,10 @@ def _metadata_matches_queue_item(
     # recordings that only advertise their nature via the genre field.
     if _is_live_track_from_genre(file_meta.get('genre')):
         _file_variants = _file_variants | {"live"}
+    # Genre guard: treat Genre=Remix as a "remix" variant token even when the
+    # title tag omits it.
+    if _is_remix_track_from_genre(file_meta.get('genre')):
+        _file_variants = _file_variants | {"remix"}
     _hard_from_basename = _basename_variants - SOFT_VARIANT_TOKENS
     if _hard_from_basename and not (_file_variants & _hard_from_basename):
         _augmented_file_title = file_title + " " + " ".join(_hard_from_basename)
@@ -10026,7 +10031,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
 
             src = track['file_path']
             
-            # Build proper filename: [track_number]. [artist] - [title].[ext]
+            # Build proper filename: [track_number] - [artist] - [title].[ext]
             track_artist = track.get('artist', 'Unknown Artist')
             track_title = track.get('title', 'Unknown Title')
             track_num = track.get('track_number')

@@ -34,8 +34,9 @@ For each album, the rating algorithm:
 
 Tracks identified as **singles** through multiple sources get special treatment:
 
-- **High-confidence singles** (confirmed by Discogs, MusicBrainz, or multiple sources): **5 stars**
+- **High-confidence singles** (confirmed by Discogs, MusicBrainz, or multiple sources): **5 stars** only if the track is also in the **top 25% of the artist's catalogue** by popularity; otherwise **demoted to 4 stars**
 - **Medium-confidence singles** (only Spotify/short release indicators): No automatic star boost, but can achieve 5★ through popularity-based confidence system
+- **User-set singles** (manually marked): Always **5 stars** (preserved as a user preference)
 - A cap is applied to prevent too many 4-star ratings (default: top 25% of non-singles)
 
 ### 4. Why Median-Based?

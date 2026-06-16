@@ -213,19 +213,19 @@
             </h5>
         </div>
         <!-- Scrollable Container: 10-row viewport with 100 items available -->
-        <div style="height: 400px; overflow-y: auto; position: relative;">
+        <div class="table-responsive" style="height: 400px; overflow-y: auto; position: relative;">
             <table class="table table-hover mb-0" style="margin-bottom: 0;">
                 <thead style="position: sticky; top: 0; background: white; z-index: 10;">
                     <tr>
-                        <th style="width: 25%;">
+                        <th style="width: 25%; min-width: 120px;">
                             <i class="bi bi-person"></i> Artist
                         </th>
-                        <th style="width: 25%;">
+                        <th style="width: 25%; min-width: 120px;">
                             <i class="bi bi-disc"></i> Album
                         </th>
-                        <th style="width: 25%;">Scan Types</th>
-                        <th style="width: 15%; text-align: right;">Last Scanned</th>
-                        <th style="width: 10%; text-align: center;">Actions</th>
+                        <th style="width: 25%; min-width: 140px;">Scan Types</th>
+                        <th style="width: 15%; text-align: right; min-width: 100px;">Last Scanned</th>
+                        <th style="width: 10%; text-align: center; min-width: 80px;">Actions</th>
                     </tr>
                 </thead>
                 <tbody id="recent-scans-body">

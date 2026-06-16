@@ -384,7 +384,7 @@ async function clearUpcomingReleases() {
       statusEl.style.display = 'none';
       document.getElementById('upcomingReleases').innerHTML = `
         <div class="text-center py-5">
-          <p class="text-muted">Database cleared. Click "Update from Wikipedia" to load new release data.</p>
+          <p class="text-muted">Database cleared. Click <strong>Check for Updates</strong> to search MusicBrainz for new release data.</p>
         </div>
       `;
     }, 2000);
@@ -432,6 +432,11 @@ async function scrapeUpcomingReleases() {
   }
 }
 
+async function checkForUpdates() {
+  localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
+  await refreshUpcomingReleases();
+}
+
 async function refreshUpcomingReleases() {
   const container = document.getElementById('upcomingReleases');
   const filterCollection = document.getElementById('upcomingFilterCollection').checked;
@@ -452,7 +457,7 @@ async function refreshUpcomingReleases() {
       container.innerHTML = `
         <div class="alert alert-info">
           <i class="bi bi-info-circle"></i>
-          No upcoming releases found. Click "Update from Wikipedia" to load release data.
+          No upcoming releases found. Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.
         </div>
       `;
       return;

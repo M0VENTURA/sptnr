@@ -325,7 +325,7 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
         for genre in genres:
             norm = normalize_genre(genre)
             genre_scores[norm] += weight
-    if "live" in title.lower() or "live" in album.lower():
+    if re.search(r'\blive\b', title.lower()) or re.search(r'\blive\b', album.lower()):
         genre_scores["live"] += 0.5
     if any(word in title.lower() or word in album.lower() for word in ["christmas", "xmas"]):
         genre_scores["christmas"] += 0.5

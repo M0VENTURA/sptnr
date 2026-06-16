@@ -1,195 +1,415 @@
-"""AudioDB and ListenBrainz API client module."""
+"""AudioDB and ListenBrainz API client module.
+
+This rewrite fixes the ListenBrainz popularity integration and endpoint consistency.
+
+Key changes:
+- Uses ListenBrainz API v1 consistently
+- Supports global popularity via /1/popularity/recording
+- Parses recommendations using payload.mbids
+- Parses metadata/recording responses keyed by recording MBID
+- Keeps backward-compatible wrappers
+"""
+
+from __future__ import annotations
+
 import logging
 import math
-import json
+import os
+import time
 from datetime import datetime
+from typing import Any, Optional
+
+import requests
+
 from . import session
 
 logger = logging.getLogger(__name__)
 
 
-class ListenBrainzUserClient:
-    """
-    ListenBrainz API wrapper for user-specific operations.
-    Requires user authentication token for love/feedback operations.
-    """
-    
-    def __init__(self, user_token: str, http_session=None):
-        """
-        Initialize ListenBrainz user client.
-        
-        Args:
-            user_token: User's ListenBrainz API token
-            http_session: Optional requests.Session (uses shared if not provided)
-        """
-        self.token = user_token
+# Optional shared rate limiter
+try:
+    from helpers.api_rate_limiter import get_rate_limiter
+    _rate_limiter = get_rate_limiter()
+except Exception:
+    _rate_limiter = None
+
+
+def _get_version() -> str:
+    """Read version from VERSION file."""
+    try:
+        version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")
+        with open(version_file, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return "2.0.0-alpha"
+
+
+# MusicBrainz-standard User-Agent (complies with https://musicbrainz.org/doc/MusicBrainz_API)
+_DEFAULT_USER_AGENT = f"sptnr/{_get_version()} ( https://github.com/M0VENTURA/sptnr )"
+
+
+class ListenBrainzError(Exception):
+    """Raised for ListenBrainz-specific client errors."""
+
+
+class ListenBrainzClient:
+    """ListenBrainz API wrapper for public and optionally authenticated operations."""
+
+    DEFAULT_BASE_URL = "https://api.listenbrainz.org/1"
+
+    def __init__(
+        self,
+        http_session=None,
+        enabled: bool = True,
+        user_token: str = "",
+        base_url: str = DEFAULT_BASE_URL,
+        user_agent: str = "",
+    ):
         self.session = http_session or session
-        self.base_url = "https://api.listenbrainz.org/1"
-        self.headers = {"Authorization": f"Token {user_token}"}
-    
-    def love_track(self, mbid: str) -> bool:
-        """
-        Mark a track as loved on ListenBrainz.
-        
-        Args:
-            mbid: MusicBrainz recording ID
-            
-        Returns:
-            True if successful
-        """
-        try:
-            url = f"{self.base_url}/feedback/recording-feedback"
-            payload = {
-                "recording_mbid": mbid,
-                "score": 1  # 1 = love
-            }
-            res = self.session.post(url, json=payload, headers=self.headers, timeout=(5, 10))  # (connect_timeout, read_timeout)
-            res.raise_for_status()
-            logger.info(f"Marked {mbid} as loved on ListenBrainz")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to love track {mbid} on ListenBrainz: {e}")
-            return False
-    
-    def unlove_track(self, mbid: str) -> bool:
-        """
-        Remove love status from a track on ListenBrainz.
-        
-        Args:
-            mbid: MusicBrainz recording ID
-            
-        Returns:
-            True if successful
-        """
-        try:
-            url = f"{self.base_url}/feedback/recording-feedback"
-            payload = {
-                "recording_mbid": mbid,
-                "score": 0  # 0 = remove feedback
-            }
-            res = self.session.post(url, json=payload, headers=self.headers, timeout=(5, 10))  # (connect_timeout, read_timeout)
-            res.raise_for_status()
-            logger.info(f"Removed love from {mbid} on ListenBrainz")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to unlove track {mbid} on ListenBrainz: {e}")
-            return False
-    
-    def get_loved_tracks(self, limit: int = 100, offset: int = 0) -> list:
-        """
-        Get tracks the user has loved on ListenBrainz.
-        
-        Args:
-            limit: Number of results per page
-            offset: Pagination offset
-            
-        Returns:
-            List of dicts with 'recording_mbid' and 'score'
-        """
-        try:
-            url = f"{self.base_url}/feedback/user/{{username}}/get-feedback"
-            # Note: Need to get username first or use a different endpoint
-            # For now, return empty list - this needs username from token validation
-            logger.warning("get_loved_tracks not fully implemented - needs username")
-            return []
-        except Exception as e:
-            logger.error(f"Failed to get loved tracks from ListenBrainz: {e}")
-            return []
-    
-    def get_recording_tags(self, mbid: str) -> list:
-        """
-        Get genre tags for a recording from ListenBrainz.
-        Does not require authentication.
-        
-        Args:
-            mbid: MusicBrainz recording ID
-            
-        Returns:
-            List of dicts with 'tag' and 'count'
-        """
-        try:
-            url = f"{self.base_url}/metadata/recording/{mbid}/tags"
-            res = self.session.get(url, timeout=(5, 10))  # (connect_timeout, read_timeout)
-            res.raise_for_status()
-            data = res.json()
-            tags = data.get("tag", {}).get("recording", [])
-            # Sort by count descending
-            sorted_tags = sorted(tags, key=lambda x: x.get("count", 0), reverse=True)
-            logger.debug(f"Got {len(sorted_tags)} tags for recording {mbid}")
-            return sorted_tags
-        except Exception as e:
-            logger.debug(f"Failed to get tags for recording {mbid}: {e}")
-            return []
-    
-    def get_artist_tags(self, mbid: str) -> list:
-        """
-        Get genre tags for an artist from ListenBrainz.
-        
-        Args:
-            mbid: MusicBrainz artist ID
-            
-        Returns:
-            List of dicts with 'tag' and 'count'
-        """
-        try:
-            url = f"{self.base_url}/metadata/artist/{mbid}/tags"
-            res = self.session.get(url, timeout=(5, 10))  # (connect_timeout, read_timeout)
-            res.raise_for_status()
-            data = res.json()
-            tags = data.get("tag", {}).get("artist", [])
-            sorted_tags = sorted(tags, key=lambda x: x.get("count", 0), reverse=True)
-            logger.debug(f"Got {len(sorted_tags)} tags for artist {mbid}")
-            return sorted_tags
-        except Exception as e:
-            logger.debug(f"Failed to get tags for artist {mbid}: {e}")
-            return []
-    
-    def get_recommendations(self, username: str, recommendation_type: str = "raw") -> list:
-        """
-        Get personalized recommendations from ListenBrainz.
-        
-        Args:
-            username: ListenBrainz username
-            recommendation_type: Type of recommendations ('raw', 'top_discoveries_for_year', etc.)
-            
-        Returns:
-            List of recommended recordings with metadata
-        """
-        try:
-            url = f"{self.base_url}/user/{username}/recommendations/recording/{recommendation_type}"
-            res = self.session.get(url, headers=self.headers, timeout=(5, 30))
-            res.raise_for_status()
-            data = res.json()
-            # The response structure varies by type, but generally has a 'payload' with 'mbids' or 'recordings'
-            payload = data.get("payload", {})
-            recordings = payload.get("recordings", [])
-            logger.info(f"Got {len(recordings)} recommendations of type '{recommendation_type}' for {username}")
-            return recordings
-        except Exception as e:
-            logger.error(f"Failed to get recommendations for {username}: {e}")
-            return []
+        self.enabled = enabled
+        self.user_token = user_token or ""
+        self.base_url = base_url.rstrip("/")
+        self.user_agent = user_agent or _DEFAULT_USER_AGENT
 
-    def get_created_for_playlists(self, username: str) -> dict:
-        """
-        Fetch ListenBrainz recommendations using Collaborative Filtering API.
-        
-        This uses a 2-step process:
-        1. Get recommendation MBIDs from CF endpoint: /1/cf/recommendation/user/{user}/recording
-        2. Fetch full metadata for those MBIDs: /1/metadata/recording/?recording_mbids=...
-        
-        Note: ListenBrainz API does not provide separate "weekly_exploration" or "last_week_*" 
-        endpoints via the CF API. These are approximations:
-        - weekly_exploration: not available (would need to call /recommendations/explore endpoint separately)
-        - last_week_*: not available via API (would require RSS feeds or playlist archival)
+    # -------------------------------------------------------------------------
+    # Internal helpers
+    # -------------------------------------------------------------------------
+
+    def _headers(self, authenticated: bool = False) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": self.user_agent,
+        }
+        if authenticated and self.user_token:
+            headers["Authorization"] = f"Token {self.user_token}"
+        return headers
+
+    def _throttle(self) -> None:
+        """Best-effort throttling. Falls back to a light sleep if no shared limiter exists."""
+        if _rate_limiter:
+            try:
+                # Reuse the same limiter if your project already shares MB/LB traffic
+                _rate_limiter.throttle_musicbrainz()
+                return
+            except Exception:
+                pass
+        time.sleep(1.0)
+
+    def _get(
+        self,
+        path: str,
+        *,
+        params: Optional[dict[str, Any]] = None,
+        authenticated: bool = False,
+        timeout: tuple[int, int] = (5, 15),
+    ) -> Any:
+        if not self.enabled:
+            raise ListenBrainzError("ListenBrainz client is disabled")
+
+        self._throttle()
+        url = f"{self.base_url}{path}"
+        res = self.session.get(
+            url,
+            params=params,
+            headers=self._headers(authenticated=authenticated),
+            timeout=timeout,
+        )
+        res.raise_for_status()
+        return res.json()
+
+    def _post(
+        self,
+        path: str,
+        *,
+        payload: dict[str, Any],
+        authenticated: bool = False,
+        timeout: tuple[int, int] = (5, 15),
+    ) -> Any:
+        if not self.enabled:
+            raise ListenBrainzError("ListenBrainz client is disabled")
+
+        self._throttle()
+        url = f"{self.base_url}{path}"
+        res = self.session.post(
+            url,
+            json=payload,
+            headers=self._headers(authenticated=authenticated),
+            timeout=timeout,
+        )
+        res.raise_for_status()
+        return res.json()
+
+    # -------------------------------------------------------------------------
+    # Popularity
+    # -------------------------------------------------------------------------
+
+    def get_recording_popularity_batch(
+        self,
+        recording_mbids: list[str],
+    ) -> dict[str, dict[str, Optional[int]]]:
+        """Fetch global ListenBrainz popularity for up to 100 recording MBIDs.
 
         Returns:
-            Dict keyed by canonical playlist type:
             {
-                "weekly_jams": [...],
-                "weekly_exploration": [],  # Not available
-                "last_week_jams": [],      # Not available
-                "last_week_exploration": []  # Not available
+                "<recording_mbid>": {
+                    "total_listen_count": int | None,
+                    "total_user_count": int | None
+                },
+                ...
             }
+        """
+        result = {
+            mbid: {"total_listen_count": None, "total_user_count": None}
+            for mbid in recording_mbids
+            if mbid
+        }
+
+        if not self.enabled or not recording_mbids:
+            return result
+
+        mbids = [m for m in recording_mbids if m]
+        if not mbids:
+            return result
+
+        if len(mbids) > 100:
+            logger.warning("ListenBrainz popularity batch > 100 items; truncating to 100")
+            mbids = mbids[:100]
+
+        try:
+            data = self._post(
+                "/popularity/recording",
+                payload={"recording_mbids": mbids},
+                authenticated=False,
+                timeout=(5, 20),
+            )
+
+            # The documented response is a list preserving request order.
+            # We match by recording_mbid when available for robustness.
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        resp_mbid = item.get("recording_mbid")
+                        if resp_mbid in result:
+                            result[resp_mbid] = {
+                                "total_listen_count": item.get("total_listen_count"),
+                                "total_user_count": item.get("total_user_count"),
+                            }
+            elif isinstance(data, dict):
+                for mbid in mbids:
+                    if mbid in data and isinstance(data[mbid], dict):
+                        result[mbid] = {
+                            "total_listen_count": data[mbid].get("total_listen_count"),
+                            "total_user_count": data[mbid].get("total_user_count"),
+                        }
+            else:
+                logger.warning("Unexpected popularity response type: %s", type(data).__name__)
+
+        except Exception as e:
+            logger.debug("Failed to fetch recording popularity batch: %s", e)
+
+        return result
+
+    def get_recording_popularity(self, recording_mbid: str) -> dict[str, Optional[int]]:
+        """Fetch global ListenBrainz popularity for a single recording MBID."""
+        if not recording_mbid:
+            return {"total_listen_count": None, "total_user_count": None}
+
+        batch = self.get_recording_popularity_batch([recording_mbid])
+        return batch.get(
+            recording_mbid,
+            {"total_listen_count": None, "total_user_count": None},
+        )
+
+    def get_listen_count(self, mbid: str = "", artist: str = "", title: str = "") -> int:
+        """Backward-compatible helper.
+
+        Returns the global ListenBrainz listen count for a recording MBID.
+        If the MBID is missing or not found, returns 0.
+
+        Notes:
+            - This is NOT a normalized 'score'; it is the total global listen count.
+            - 'artist' and 'title' are accepted only for backward-compatibility.
+        """
+        if not self.enabled or not mbid:
+            return 0
+
+        try:
+            popularity = self.get_recording_popularity(mbid)
+            count = popularity.get("total_listen_count")
+            return int(count) if count is not None else 0
+        except Exception:
+            return 0
+
+    def get_top_recordings_for_artist(self, artist_mbid: str) -> list[dict[str, Any]]:
+        """Fetch top recordings for an artist via the ListenBrainz popularity API."""
+        if not self.enabled or not artist_mbid:
+            return []
+
+        try:
+            data = self._get(
+                f"/popularity/top-recordings-for-artist/{artist_mbid}",
+                authenticated=False,
+                timeout=(5, 10),
+            )
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            logger.debug("Failed to fetch top recordings for artist %s: %s", artist_mbid, e)
+            return []
+
+    def get_similar_artists(self, artist_mbid: str) -> list[dict[str, str]]:
+        """Fetch similar artists from the ListenBrainz labs API."""
+        if not self.enabled or not artist_mbid:
+            return []
+
+        try:
+            self._throttle()
+            url = "https://labs.api.listenbrainz.org/similar-artists/json"
+            res = self.session.get(
+                url,
+                params={"artist_mbids": artist_mbid},
+                headers=self._headers(authenticated=False),
+                timeout=(5, 10),
+            )
+            res.raise_for_status()
+            data = res.json()
+            if data and "payload" in data:
+                similar_records = data.get("payload", {}).get("artists", [])
+                return [
+                    {"name": record.get("artist_name", ""), "mbid": record.get("artist_mbid", "")}
+                    for record in similar_records[:10]
+                ]
+            return []
+        except Exception as e:
+            logger.debug("Failed to fetch similar artists for %s: %s", artist_mbid, e)
+            return []
+
+    # -------------------------------------------------------------------------
+    # Metadata
+    # -------------------------------------------------------------------------
+
+    def get_recording_metadata_batch(
+        self,
+        recording_mbids: list[str],
+        inc: str = "artist release tag",
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch recording metadata for one or more MBIDs.
+
+        Returns the raw dict keyed by recording MBID.
+        """
+        if not self.enabled:
+            return {}
+
+        mbids = [m for m in recording_mbids if m]
+        if not mbids:
+            return {}
+
+        try:
+            data = self._get(
+                "/metadata/recording/",
+                params={
+                    "recording_mbids": ",".join(mbids),
+                    "inc": inc,
+                },
+                authenticated=False,
+                timeout=(5, 20),
+            )
+
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.debug("Failed to fetch recording metadata: %s", e)
+            return {}
+
+    def get_recording_tags(self, mbid: str) -> list[dict[str, Any]]:
+        """Get tags for a recording from metadata/recording."""
+        if not mbid:
+            return []
+
+        try:
+            metadata = self.get_recording_metadata_batch([mbid], inc="tag")
+            entry = metadata.get(mbid, {})
+            tags = entry.get("tag", {}).get("recording", [])
+            if not isinstance(tags, list):
+                return []
+            return sorted(tags, key=lambda x: x.get("count", 0), reverse=True)
+        except Exception as e:
+            logger.debug("Failed to fetch recording tags for %s: %s", mbid, e)
+            return []
+
+    def get_artist_tags_from_recording(self, mbid: str) -> list[dict[str, Any]]:
+        """Get artist tags associated with a recording from metadata/recording."""
+        if not mbid:
+            return []
+
+        try:
+            metadata = self.get_recording_metadata_batch([mbid], inc="tag")
+            entry = metadata.get(mbid, {})
+            tags = entry.get("tag", {}).get("artist", [])
+            if not isinstance(tags, list):
+                return []
+            return sorted(tags, key=lambda x: x.get("count", 0), reverse=True)
+        except Exception as e:
+            logger.debug("Failed to fetch artist tags for %s: %s", mbid, e)
+            return []
+
+    # -------------------------------------------------------------------------
+    # User data
+    # -------------------------------------------------------------------------
+
+    def get_user_listen_count(self, username: str) -> int:
+        """Get total listen count for a user."""
+        if not self.enabled or not username:
+            return 0
+
+        try:
+            data = self._get(
+                f"/user/{username}/listen-count",
+                authenticated=False,
+                timeout=(5, 10),
+            )
+            payload = data.get("payload", {}) if isinstance(data, dict) else {}
+            count = payload.get("count", 0)
+            return int(count) if count is not None else 0
+        except Exception as e:
+            logger.debug("Failed to fetch user listen count for %s: %s", username, e)
+            return 0
+
+    # -------------------------------------------------------------------------
+    # Recommendations
+    # -------------------------------------------------------------------------
+
+    def get_recommendation_mbids(
+        self,
+        username: str,
+        count: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Get raw collaborative-filtering recommendation MBIDs."""
+        if not self.enabled or not username:
+            return []
+
+        count = max(1, min(100, int(count)))
+
+        try:
+            data = self._get(
+                f"/cf/recommendation/user/{username}/recording",
+                params={"count": count, "offset": offset},
+                authenticated=False,
+                timeout=(5, 20),
+            )
+            payload = data.get("payload", {}) if isinstance(data, dict) else {}
+            mbids = payload.get("mbids", [])
+            return mbids if isinstance(mbids, list) else []
+        except Exception as e:
+            logger.debug("Failed to fetch recommendation MBIDs for %s: %s", username, e)
+            return []
+
+    def get_created_for_playlists(self, username: str) -> dict[str, list[dict[str, Any]]]:
+        """Fetch current CF recommendations and resolve them to track metadata.
+
+        Notes:
+            - Weekly exploration / last-week archive variants are not reconstructed here.
+            - This method maps the current CF recommendation MBIDs to metadata and returns
+              them under 'weekly_jams' for compatibility with your older code.
         """
         result = {
             "weekly_jams": [],
@@ -198,505 +418,284 @@ class ListenBrainzUserClient:
             "last_week_exploration": [],
         }
 
+        if not self.enabled or not username:
+            return result
+
         try:
-            # STEP 1: Get CF recommendations (returns list of MBIDs)
-            url = f"{self.base_url}/cf/recommendation/user/{username}/recording?count=200"
-            res = self.session.get(url, headers=self.headers, timeout=(5, 30))
-            res.raise_for_status()
-            data = res.json() or {}
-
-            payload = data.get("payload") if isinstance(data, dict) else {}
-            if not isinstance(payload, dict):
-                payload = {}
-
-            # The CF recommendations endpoint returns a list of dicts:
-            # [{"recording_mbid": "...", "score": 0.9, ...}, ...]
-            rec_items = payload.get("recommendations", [])
-            if not isinstance(rec_items, list):
-                rec_items = []
-
-            # Extract plain MBID strings from the recommendation dicts
-            rec_mbids = [r.get("recording_mbid", "") for r in rec_items if isinstance(r, dict) and r.get("recording_mbid")]
-
+            rec_items = self.get_recommendation_mbids(username=username, count=200, offset=0)
+            rec_mbids = [
+                item.get("recording_mbid", "")
+                for item in rec_items
+                if isinstance(item, dict) and item.get("recording_mbid")
+            ]
             if not rec_mbids:
-                logger.warning(f"No CF recommendations from ListenBrainz for {username}")
                 return result
 
-            # STEP 2: Fetch metadata for recommendation MBIDs (in chunks of 100)
-            all_tracks = []
-            for i in range(0, len(rec_mbids), 100):
-                chunk_mbids = rec_mbids[i:i + 100]
-                mbid_list = ",".join(chunk_mbids)
+            metadata = self.get_recording_metadata_batch(rec_mbids, inc="artist release")
 
-                meta_url = f"{self.base_url}/metadata/recording/?recording_mbids={mbid_list}&inc=release+artist"
-                meta_res = self.session.get(meta_url, timeout=(5, 30))
-                meta_res.raise_for_status()
-                meta_data = meta_res.json() or {}
+            tracks = []
+            for item in rec_items:
+                if not isinstance(item, dict):
+                    continue
 
-                recordings = meta_data.get("recordings", [])
-                if not isinstance(recordings, list):
-                    recordings = []
+                recording_mbid = item.get("recording_mbid", "")
+                if not recording_mbid:
+                    continue
 
-                for rec in recordings:
-                    if not isinstance(rec, dict):
-                        continue
+                entry = metadata.get(recording_mbid, {})
+                recording = entry.get("recording", {}) if isinstance(entry, dict) else {}
+                artist = entry.get("artist", {}) if isinstance(entry, dict) else {}
+                release = entry.get("release", {}) if isinstance(entry, dict) else {}
 
-                    # Extract artist name from artist-credit (can be nested)
-                    artist_name = ""
-                    artist_credit = rec.get("artist-credit", [])
-                    if isinstance(artist_credit, list) and len(artist_credit) > 0:
-                        first_credit = artist_credit[0]
-                        if isinstance(first_credit, dict):
-                            artist_obj = first_credit.get("artist", {})
-                            if isinstance(artist_obj, dict):
-                                artist_name = artist_obj.get("name", "")
+                track = {
+                    "artist_name": artist.get("name", ""),
+                    "track_name": recording.get("title", "") or recording.get("name", ""),
+                    "release_name": release.get("name", ""),
+                    "recording_mbid": recording_mbid,
+                    "release_mbid": release.get("mbid", ""),
+                    "score": item.get("score"),
+                    "source": "listenbrainz-cf",
+                }
+                tracks.append(track)
 
-                    # Extract release information
-                    release_obj = rec.get("release", {}) if isinstance(rec.get("release"), dict) else {}
-                    release_name = release_obj.get("title", "")
-                    release_mbid = release_obj.get("id", "")
+            result["weekly_jams"] = tracks
+            return result
 
-                    track = {
-                        "artist_name": artist_name,
-                        "track_name": rec.get("title", ""),
-                        "release_name": release_name,
-                        "recording_mbid": rec.get("id", ""),
-                        "release_mbid": release_mbid,
-                        "source": "listenbrainz-cf",
-                    }
-                    all_tracks.append(track)
+        except Exception as e:
+            logger.error("Failed to fetch created-for playlists for %s: %s", username, e)
+            return result
 
-            # Store all CF recommendations under weekly_jams (primary recommendation type)
-            result["weekly_jams"] = all_tracks
+    def get_weekly_jams(self, username: str) -> list[dict[str, Any]]:
+        return self.get_created_for_playlists(username).get("weekly_jams", [])
 
-            logger.info(
-                "Got CF recommendations for %s: weekly_jams=%s (Note: weekly_exploration, last_week_* unavailable via CF API)",
-                username,
-                len(result["weekly_jams"]),
+    def get_weekly_exploration(self, username: str) -> list[dict[str, Any]]:
+        # Kept for compatibility; not separately built here
+        return self.get_created_for_playlists(username).get("weekly_exploration", [])
+
+    def get_last_week_jams(self, username: str) -> list[dict[str, Any]]:
+        return self.get_created_for_playlists(username).get("last_week_jams", [])
+
+    def get_last_week_exploration(self, username: str) -> list[dict[str, Any]]:
+        return self.get_created_for_playlists(username).get("last_week_exploration", [])
+
+
+class ListenBrainzUserClient(ListenBrainzClient):
+    """Authenticated ListenBrainz operations."""
+
+    def __init__(self, user_token: str, http_session=None, enabled: bool = True, user_agent: str = ""):
+        super().__init__(
+            http_session=http_session,
+            enabled=enabled,
+            user_token=user_token,
+            user_agent=user_agent,
+        )
+
+    def love_track(self, mbid: str) -> bool:
+        """Mark a recording as loved."""
+        if not mbid or not self.user_token:
+            return False
+
+        try:
+            self._post(
+                "/feedback/recording-feedback",
+                payload={"recording_mbid": mbid, "score": 1},
+                authenticated=True,
             )
-            return result
+            logger.info("Marked %s as loved on ListenBrainz", mbid)
+            return True
         except Exception as e:
-            logger.error(f"Failed to fetch CF recommendations for {username}: {e}")
-            return result
-    
-    def get_weekly_jams(self, username: str) -> list:
-        """
-        Get Weekly Jams recommendations (current week).
-        
-        Args:
-            username: ListenBrainz username
-            
-        Returns:
-            List of recommended tracks
-        """
-        created_for = self.get_created_for_playlists(username)
-        jams = created_for.get("weekly_jams", []) if isinstance(created_for, dict) else []
-        return jams
-    
-    def get_weekly_exploration(self, username: str) -> list:
-        """
-        Get Weekly Exploration recommendations (discovery mode).
-        
-        Note: ListenBrainz CF API does not provide a separate exploration endpoint.
-        Returns empty list and logs warning. Users should use weekly_jams instead.
+            logger.error("Failed to love track %s: %s", mbid, e)
+            return False
 
-        Args:
-            username: ListenBrainz username
-            
-        Returns:
-            List of recommended tracks for exploration (currently empty - API limitation)
-        """
-        logger.warning(
-            "get_weekly_exploration: ListenBrainz API does not provide exploration recommendations via CF API. "
-            "Try using weekly_jams instead, or configure RSS feeds for exploration data."
-        )
-        return []
-    
-    def get_last_week_jams(self, username: str) -> list:
-        """
-        Get last week's jams (previous week recommendations).
-        
-        Note: ListenBrainz API does not provide archived/previous week recommendations 
-        via the CF API. This method returns empty list as a limitation.
-        
-        To get archived recommendations, you would need to:
-        1. Use ListenBrainz RSS feeds (if configured)
-        2. Store/archive recommendations from previous weeks manually
-        3. Use Listen History API instead (/user/{user}/listens)
+    def unlove_track(self, mbid: str) -> bool:
+        """Remove feedback from a recording."""
+        if not mbid or not self.user_token:
+            return False
 
-        Args:
-            username: ListenBrainz username
-            
-        Returns:
-            Empty list (API limitation)
-            
-        Note:
-            Currently returns empty list as ListenBrainz API does not 
-            provide a direct endpoint for archived weekly recommendations.
-        """
-        logger.warning(
-            "get_last_week_jams: ListenBrainz API does not provide archived weekly recommendations. "
-            "Consider using weekly_jams (current week) or configure RSS feeds with archival."
-        )
-        return []
-    
-    def get_last_week_exploration(self, username: str) -> list:
-        """
-        Get last week's exploration tracks.
-        
-        Note: ListenBrainz API does not provide archived/previous week recommendations 
-        via the CF API. This method returns empty list as a limitation.
-
-        Args:
-            username: ListenBrainz username
-            
-        Returns:
-            Empty list (API limitation)
-            
-        Note:
-            Currently returns empty list as ListenBrainz API does not
-            provide a direct endpoint for archived weekly exploration.
-        """
-        logger.warning(
-            "get_last_week_exploration: ListenBrainz API does not provide archived exploration recommendations. "
-            "Consider using weekly_jams (current week)."
-        )
-        return []
-    
-    def get_username_from_token(self) -> str:
-        """
-        Validate token and get the associated username.
-        
-        Returns:
-            Username associated with the token, or empty string if invalid
-        """
         try:
-            url = f"{self.base_url}/validate-token"
-            res = self.session.get(url, headers=self.headers, timeout=(5, 10))
-            res.raise_for_status()
-            data = res.json()
-            username = data.get("user_name", "")
-            logger.info(f"Token validated for user: {username}")
-            return username
+            self._post(
+                "/feedback/recording-feedback",
+                payload={"recording_mbid": mbid, "score": 0},
+                authenticated=True,
+            )
+            logger.info("Removed love/feedback for %s on ListenBrainz", mbid)
+            return True
         except Exception as e:
-            logger.error(f"Failed to validate token: {e}")
-            return ""
-    
-    def get_similar_artists(self, mbid: str, limit: int = 10) -> list:
+            logger.error("Failed to remove feedback for %s: %s", mbid, e)
+            return False
+
+    def get_feedback(
+        self,
+        username: str,
+        score: Optional[int] = None,
+        count: int = 100,
+        offset: int = 0,
+        metadata: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Get feedback for a user.
+
+        score:
+            1  -> loved recordings
+           -1  -> hated recordings
+          None -> all feedback
         """
-        Fetch similar artists from ListenBrainz for a given artist MBID.
-        
-        Uses the relationships endpoint to find acoustically/culturally similar artists.
-        This will be used to find artists with similar listener bases,
-        enabling artist-contextual popularity weighting.
-        
-        Args:
-            mbid: MusicBrainz Artist ID
-            limit: Maximum number of results to return (1-100)
-            
-        Returns:
-            List of dicts with 'name', 'mbid', and optional 'score'
-            Example: [{'name': 'Similar Artist 1', 'mbid': 'xxx'}, {...}]
-        """
-        if not mbid:
-            return []
-        
-        limit = max(1, min(100, limit))
-        
-        try:
-            # ListenBrainz API endpoint for artist relationships
-            # This includes similar artists, collaborators, etc.
-            url = f"{self.base_url}/artist/{mbid}/relationships?inc=artist"
-            
-            res = self.session.get(url, headers=self.headers, timeout=(5, 10))
-            res.raise_for_status()
-            data = res.json()
-            
-            relationships = data.get("relationships", [])
-            similar_artists = []
-            
-            # Extract artist relationships (similar-to, collaboration, etc.)
-            for rel in relationships:
-                if rel.get("type") in ["similar-to", "collaboration", "performing in"]:
-                    target = rel.get("artist") or rel.get("target")
-                    if target and isinstance(target, dict):
-                        name = target.get("name", "")
-                        artist_mbid = target.get("id", "")
-                        if name and len(similar_artists) < limit:
-                            similar_artists.append({
-                                "name": name,
-                                "mbid": artist_mbid
-                            })
-            
-            logger.debug(f"Fetched {len(similar_artists)} similar artists for MBID {mbid} from ListenBrainz")
-            return similar_artists
-            
-        except Exception as e:
-            logger.debug(f"Failed to fetch similar artists for MBID {mbid} from ListenBrainz: {e}")
+        if not username:
             return []
 
+        params: dict[str, Any] = {
+            "count": max(1, min(100, int(count))),
+            "offset": max(0, int(offset)),
+            "metadata": "true" if metadata else "false",
+        }
+        if score is not None:
+            params["score"] = int(score)
 
-class ListenBrainzClient:
-    """ListenBrainz API wrapper for listening stats.
-    
-    NOTE: ListenBrainz does NOT provide a public API endpoint for global listen counts.
-    Global listen statistics are only available via:
-    - PostgreSQL data dumps (processed locally)
-    - Big Data infrastructure (Spark pipelines) 
-    
-    User-specific listen counts ARE available if authenticated with a user token.
-    """
-    
-    def __init__(self, http_session=None, enabled: bool = True, user_token: str = ""):
-        """
-        Initialize ListenBrainz client.
-        
-        Args:
-            http_session: Optional requests.Session (uses shared if not provided)
-            enabled: Whether ListenBrainz is enabled
-            user_token: User authentication token for personal stats (optional)
-        """
-        self.session = http_session or session
-        self.enabled = enabled
-        self.user_token = user_token
-        self.base_url = "https://api.listenbrainz.org/1"
-        self.headers = {}
-        if user_token:
-            self.headers["Authorization"] = f"Token {user_token}"
-    
-    def get_listen_count(self, mbid: str = "", artist: str = "", title: str = "") -> int:
-        """
-        Fetch ListenBrainz listen count.
-        
-        IMPORTANT: ListenBrainz does NOT provide a public API for global listen counts.
-        This always returns 0. Global stats require:
-        - Processing PostgreSQL data dumps locally
-        - Access to ListenBrainz Big Data infrastructure
-        
-        User-specific listen stats could be implemented if user provides token.
-        
-        Args:
-            mbid: MusicBrainz recording ID
-            artist: Artist name
-            title: Track title
-            
-        Returns:
-            Always returns 0 (global endpoint not available)
-        """
-        if not self.enabled:
-            logger.debug("ListenBrainz is disabled")
-            return 0
-        
-        # Log why we can't fetch global stats
-        logger.debug(
-            f"ListenBrainz global listen count for '{title}' cannot be fetched via API. "
-            f"ListenBrainz does not provide a public endpoint for global listen counts. "
-            f"Global statistics are only available via data dumps or their Big Data infrastructure."
-        )
-        
-        # Could implement user-specific stats here if token provided
-        if self.user_token and mbid:
-            return self._get_user_listen_count(mbid)
-        
-        return 0
-    
-    def _get_user_listen_count(self, mbid: str) -> int:
-        """
-        Get user's personal listen count for a recording (requires auth token).
-        
-        Args:
-            mbid: MusicBrainz recording ID
-            
-        Returns:
-            User's listen count for this recording, or 0
-        """
-        if not self.user_token or not mbid:
-            return 0
-        
         try:
-            # This endpoint requires authentication - would fetch user's personal stats
-            # Implementation would go here if we wanted to support it
-            logger.debug(f"User-specific listen stats not yet implemented for {mbid}")
-            return 0
+            data = self._get(
+                f"/feedback/user/{username}/get-feedback",
+                params=params,
+                authenticated=False,
+                timeout=(5, 20),
+            )
+
+            payload = data.get("payload", {}) if isinstance(data, dict) else {}
+            feedback = payload.get("feedback", [])
+            return feedback if isinstance(feedback, list) else []
         except Exception as e:
-            logger.debug(f"Failed to fetch user listen count: {e}")
-            return 0
+            logger.error("Failed to get feedback for %s: %s", username, e)
+            return []
+
+    def get_loved_tracks(
+        self,
+        username: str,
+        limit: int = 100,
+        offset: int = 0,
+        metadata: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Get tracks the user has loved."""
+        return self.get_feedback(
+            username=username,
+            score=1,
+            count=limit,
+            offset=offset,
+            metadata=metadata,
+        )
 
 
 class AudioDbClient:
     """TheAudioDB API wrapper for artist genres."""
-    
+
     def __init__(self, api_key: str, http_session=None, enabled: bool = True):
-        """
-        Initialize AudioDB client.
-        
-        Args:
-            api_key: TheAudioDB API key
-            http_session: Optional requests.Session (uses shared if not provided)
-            enabled: Whether AudioDB is enabled
-        """
         self.api_key = api_key
         self.session = http_session or session
         self.enabled = enabled
         self.base_url = "https://theaudiodb.com/api/v1/json"
-    
+
     def get_artist_genres(self, artist: str) -> list[str]:
-        """
-        Fetch genres from TheAudioDB for an artist.
-        
-        Args:
-            artist: Artist name
-            
-        Returns:
-            List of genre strings
-        """
-        if not self.enabled or not self.api_key:
+        if not self.enabled or not self.api_key or not artist:
             return []
-        
+
         try:
             url = f"{self.base_url}/{self.api_key}/search.php"
-            res = self.session.get(url, params={"s": artist}, timeout=(5, 10))  # (connect_timeout, read_timeout)
+            res = self.session.get(url, params={"s": artist}, timeout=(5, 10))
             res.raise_for_status()
-            
+
             data = res.json().get("artists", [])
-            if data and data[0].get("strGenre"):
-                return [data[0]["strGenre"]]
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                genre = data[0].get("strGenre")
+                return [genre] if genre else []
             return []
         except Exception as e:
-            logger.warning(f"AudioDB lookup failed for '{artist}': {e}")
+            logger.warning("AudioDB lookup failed for '%s': %s", artist, e)
             return []
-
-
-def get_recording_popularity_batch(recording_mbids: list[str], user_agent: str = "") -> dict[str, dict]:
-    """
-    Fetch ListenBrainz popularity for multiple recordings in a single batch request.
-    
-    IMPORTANT: ListenBrainz and MusicBrainz share the same MetaBrainz infrastructure.
-    Both APIs enforce 1 request per second rate limit. This function shares rate limiting
-    with MusicBrainz API calls via api_rate_limiter.check_musicbrainz_limit().
-    
-    Args:
-        recording_mbids: List of MusicBrainz recording IDs (up to 100 per request)
-        user_agent: User-Agent header (should match MusicBrainz user agent for consistency)
-                   Falls back to app's user agent if not provided
-    
-    Returns:
-        Dict mapping recording_mbid → {'total_listen_count': int, 'total_user_count': int}
-        Returns null values for not-found recordings
-        Example: {
-            "13dd61c7-ce73-4e97-9f0c-9f0e53144411": {"total_listen_count": 1000, "total_user_count": 50},
-            "22ad712e-ce73-9f0c-4e97-9f0c-4e97": {"total_listen_count": null, "total_user_count": null}
-        }
-    """
-    try:
-        # Import here to avoid circular dependency
-        from helpers.api_rate_limiter import get_rate_limiter
-        from api_clients.musicbrainz import _USER_AGENT as MB_USER_AGENT
-        
-        # Use provided user agent or fall back to MusicBrainz user agent
-        ua = user_agent or MB_USER_AGENT or "sptnr/2.0"
-        
-        # Check rate limit before making request
-        rate_limiter = get_rate_limiter()
-        can_proceed, reason = rate_limiter.check_musicbrainz_limit()
-        
-        if not can_proceed:
-            logger.debug(f"[LB_POPULARITY] Rate limit check failed: {reason}")
-            # Return empty dict on rate limit
-            return {mbid: {"total_listen_count": None, "total_user_count": None} for mbid in recording_mbids}
-        
-        # Limit batch size to ListenBrainz API max (typically around 100)
-        if len(recording_mbids) > 100:
-            logger.warning(f"[LB_POPULARITY] Batch size {len(recording_mbids)} exceeds 100, truncating")
-            recording_mbids = recording_mbids[:100]
-        
-        # Prepare request
-        url = "https://api.listenbrainz.org/1/popularity/recording"
-        payload = {"recording_mbids": recording_mbids}
-        headers = {"User-Agent": ua}
-        
-        logger.debug(f"[LB_POPULARITY] Fetching popularity for {len(recording_mbids)} recordings")
-        
-        # Make request
-        res = session.post(url, json=payload, headers=headers, timeout=(5, 15))
-        res.raise_for_status()
-        
-        # Record the API request for rate limiting
-        rate_limiter.record_musicbrainz_request()
-        logger.debug(f"[LB_POPULARITY] Request successful, rate limit recorded")
-        
-        # Parse response - should be a list maintaining order of input MBIDs
-        data = res.json()
-        
-        if not isinstance(data, list):
-            logger.error(f"[LB_POPULARITY] Unexpected response format: {type(data)}")
-            return {mbid: {"total_listen_count": None, "total_user_count": None} for mbid in recording_mbids}
-        
-        # Convert list response to dict mapping MBID → popularity data
-        result = {}
-        for i, mbid in enumerate(recording_mbids):
-            if i < len(data):
-                item = data[i]
-                result[mbid] = {
-                    "total_listen_count": item.get("total_listen_count"),
-                    "total_user_count": item.get("total_user_count")
-                }
-            else:
-                result[mbid] = {"total_listen_count": None, "total_user_count": None}
-        
-        logger.debug(f"[LB_POPULARITY] Batch complete: {len(result)} recordings processed")
-        return result
-        
-    except Exception as e:
-        logger.debug(f"[LB_POPULARITY] Error fetching popularity: {e}")
-        return {mbid: {"total_listen_count": None, "total_user_count": None} for mbid in recording_mbids}
 
 
 def score_by_age(playcount: int | float, release_str: str) -> tuple[float, int]:
-    """
-    Apply age decay to score based on release date.
-    
-    Args:
-        playcount: Number of plays
-        release_str: Release date as string ("%Y-%m-%d")
-        
-    Returns:
-        Tuple of (decayed_score, days_since_release)
-    """
+    """Apply age decay to a playcount-like metric."""
     try:
-        release_date = datetime.strptime(release_str, "%Y-%m-%d")
+        # Handle year-only strings (e.g. "2004")
+        if len(release_str) == 4 and release_str.isdigit():
+            release_date = datetime.strptime(release_str, "%Y")
+        else:
+            release_date = datetime.strptime(release_str, "%Y-%m-%d")
         days_since = max((datetime.now() - release_date).days, 30)
         capped_days = min(days_since, 5 * 365)
         decay = 1 / math.log2(capped_days + 2)
         return playcount * decay, days_since
     except Exception:
-        return 0, 9999
+        return 0.0, 9999
 
 
+# -----------------------------------------------------------------------------
 # Backward-compatible module functions
-_listenbrainz_client = None
-_audiodb_client = None
+# -----------------------------------------------------------------------------
 
-def _get_listenbrainz_client(enabled: bool = True):
-    """Get or create singleton ListenBrainz client."""
+_listenbrainz_client: Optional[ListenBrainzClient] = None
+_audiodb_client: Optional[AudioDbClient] = None
+
+
+def _get_listenbrainz_client(
+    enabled: bool = True,
+    user_token: str = "",
+) -> ListenBrainzClient:
     global _listenbrainz_client
     if _listenbrainz_client is None:
-        _listenbrainz_client = ListenBrainzClient(enabled=enabled)
+        _listenbrainz_client = ListenBrainzClient(enabled=enabled, user_token=user_token)
     return _listenbrainz_client
 
-def _get_audiodb_client(api_key: str, enabled: bool = True):
-    """Get or create singleton AudioDB client."""
+
+def _get_audiodb_client(api_key: str, enabled: bool = True) -> AudioDbClient:
     global _audiodb_client
     if _audiodb_client is None:
-        _audiodb_client = AudioDbClient(api_key, enabled=enabled)
+        _audiodb_client = AudioDbClient(api_key=api_key, enabled=enabled)
     return _audiodb_client
 
-def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "", enabled: bool = True) -> int:
-    """Backward-compatible wrapper."""
-    client = _get_listenbrainz_client(enabled)
-    return client.get_listen_count(mbid, artist, title)
 
-def get_audiodb_genres(artist: str, api_key: str = "", enabled: bool = True) -> list[str]:
-    """Backward-compatible wrapper."""
+def get_recording_popularity_batch(
+    recording_mbids: list[str],
+    user_agent: str = "",
+) -> dict[str, dict[str, Optional[int]]]:
+    """Backward-compatible wrapper for batch recording popularity."""
+    client = ListenBrainzClient(enabled=True, user_agent=user_agent or _DEFAULT_USER_AGENT)
+    return client.get_recording_popularity_batch(recording_mbids)
+
+
+def get_listenbrainz_score(
+    mbid: str,
+    artist: str = "",
+    title: str = "",
+    enabled: bool = True,
+) -> int:
+    """Backward-compatible wrapper.
+
+    Returns the global total_listen_count for a recording MBID.
+    """
+    client = _get_listenbrainz_client(enabled=enabled)
+    return client.get_listen_count(mbid=mbid, artist=artist, title=title)
+
+
+def get_listenbrainz_popularity(
+    mbid: str,
+    enabled: bool = True,
+) -> dict[str, Optional[int]]:
+    """New convenience wrapper returning both popularity fields."""
+    client = _get_listenbrainz_client(enabled=enabled)
+    return client.get_recording_popularity(mbid)
+
+
+def get_recording_tags(
+    mbid: str,
+    enabled: bool = True,
+) -> list[dict[str, Any]]:
+    """Backward-compatible convenience wrapper for recording tags."""
+    client = _get_listenbrainz_client(enabled=enabled)
+    return client.get_recording_tags(mbid)
+
+
+def get_audiodb_genres(
+    artist: str,
+    api_key: str = "",
+    enabled: bool = True,
+) -> list[str]:
     client = _get_audiodb_client(api_key, enabled)
     return client.get_artist_genres(artist)

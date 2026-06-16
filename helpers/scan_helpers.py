@@ -13,6 +13,7 @@ from .db_utils import get_db_connection, _is_postgres_connection
 from colorama import Fore, Style
 from .logging_config import log_debug, log_info, log_unified
 from api_clients.navidrome import NavidromeClient
+from .helpers import normalize_single_mbid
 
 try:
     from scan_history import log_album_scan
@@ -1061,8 +1062,8 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "musicbrainz_albumstatus": extracted.get("musicbrainz_albumstatus", "") or "",
                     "musicbrainz_albumtype": extracted.get("musicbrainz_albumtype", "") or "",
                     "musicbrainz_releasecountry": extracted.get("musicbrainz_releasecountry", "") or "",
-                    "musicbrainz_artistid": extracted.get("musicbrainz_artistid", "") or "",
-                    "musicbrainz_artist_id": extracted.get("musicbrainz_artist_id", "") or extracted.get("musicbrainz_artistid", "") or "",
+                    "musicbrainz_artistid": normalize_single_mbid(extracted.get("musicbrainz_artistid", "") or ""),
+                    "musicbrainz_artist_id": normalize_single_mbid(extracted.get("musicbrainz_artist_id", "") or extracted.get("musicbrainz_artistid", "") or ""),
                     "musicbrainz_albumartistid": extracted.get("musicbrainz_albumartistid", "") or "",
                     "musicbrainz_workid": extracted.get("musicbrainz_workid", "") or "",
                     # ── Album-level consistency / Navidrome split-cause fields ─
