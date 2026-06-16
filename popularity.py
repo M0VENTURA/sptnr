@@ -6805,9 +6805,27 @@ def popularity_scan(
                 # STEP 7: Singles detection & star rating
                 # ---------------------------------------------------------------------
                 if not metadata_only and not popularity_only:
+
+                    # -----------------------------------------------------------------
+                    # Canonical artist context for stats/catalogue comparisons
+                    # -----------------------------------------------------------------
+                    album_artist = row_get(album_tracks[0], "album_artist") if album_tracks else None
+
+                    canonical_artist = normalize_artist_for_matching(
+                        artist,
+                        album_artist,
+                    )
+
                     try:
-                        album_median, album_stddev, _, album_count = calculate_album_stats(conn, artist, album)
-                        artist_mean, artist_stddev, artist_count = calculate_artist_stats(conn, artist)
+                        album_median, album_stddev, _, album_count = calculate_album_stats(
+                            conn,
+                            canonical_artist,
+                            album,
+                        )
+                        artist_mean, artist_stddev, artist_count = calculate_artist_stats(
+                            conn,
+                            canonical_artist,
+                        )
                     except Exception as e:
                         log_debug(f"Could not compute album/artist stats for star rating: {e}")
                         album_median = album_stddev = artist_mean = artist_stddev = 0.0
@@ -6817,10 +6835,45 @@ def popularity_scan(
                     if album_median > 0 and artist_mean > 0:
                         album_is_underperforming = album_median < (artist_mean * UNDERPERFORMING_THRESHOLD)
 
+                    # -----------------------------------------------------------------
+                    # Helper: artist-catalogue percentile check
+                    # -----------------------------------------------------------------
+                    def is_top_artist_catalog(popularity_score, threshold=0.25):
+                        if artist_count <= 0 or popularity_score <= 0:
+                            return False
+
+                        try:
+                            cursor.execute(
+                                f"""
+                                SELECT
+                                    COUNT(*) as total,
+                                    SUM(CASE WHEN popularity_score >= {placeholder} THEN 1 ELSE 0 END) as above
+                                FROM tracks
+                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                AND popularity_score > 0
+                                """,
+                                (popularity_score, canonical_artist),
+                            )
+
+                            row_stats = cursor.fetchone()
+                            total_cat = row_get(row_stats, "total", 0) or 0
+                            above_cat = row_get(row_stats, "above", 0) or 0
+
+                            if total_cat > 0:
+                                return (above_cat / total_cat) <= threshold
+
+                        except Exception as e:
+                            log_debug(f"Artist percentile check failed for canonical artist '{canonical_artist}': {e}")
+
+                        return False
+
+                    # -----------------------------------------------------------------
                     # Check which tracks still need single detection
+                    # -----------------------------------------------------------------
                     track_ids_in_album = [t["id"] for t in album_tracks]
                     id_placeholders = ", ".join([placeholder] * len(track_ids_in_album))
                     assessed_map = {}
+
                     try:
                         cursor.execute(
                             f"SELECT id, single_detection_last_updated FROM tracks WHERE id IN ({id_placeholders})",
@@ -6868,7 +6921,7 @@ def popularity_scan(
                         try:
                             detection_result = detect_single_for_track(
                                 title=title,
-                                artist=track_artist,
+                                artist=track_artist,  # keep original track artist for metadata lookup
                                 album_track_count=len(album_tracks),
                                 verbose=verbose,
                                 discogs_token=discogs_token,
@@ -6885,9 +6938,11 @@ def popularity_scan(
                                 persist_result=True,
                                 mb_cached_singles=mb_artist_singles_normalized,
                             )
+
                             track["is_single"] = 1 if detection_result.get("is_single") else 0
                             track["single_confidence"] = detection_result.get("confidence", "low")
                             track["single_sources"] = json.dumps(detection_result.get("sources", []))
+
                         except Exception as e:
                             log_debug(f"Single detection failed for '{title}': {e}")
                             track["is_single"] = 0
@@ -6897,14 +6952,31 @@ def popularity_scan(
                     if any_detection_run:
                         log_info(f"🔍 Singles detection completed for '{artist} - {album}'")
 
-                    # Ensure every track has a LB percentile for the rating loop
+                    # -----------------------------------------------------------------
+                    # Ensure every track has a ListenBrainz percentile
+                    # -----------------------------------------------------------------
+                    album_lb_listens = [
+                        d.get("listeners", 0)
+                        for d in album_listenbrainz_data.values()
+                        if d.get("listeners", 0) > 0
+                    ]
+
                     for track in album_tracks:
                         tid = track["id"]
+
                         if "lb_percentile" not in track:
                             lb_l = album_listenbrainz_data.get(tid, {}).get("listeners", 0) or 0
-                            track["lb_percentile"] = calculate_listenbrainz_percentile(lb_l, album_lb_listens)
+                            track["lb_percentile"] = calculate_listenbrainz_percentile(
+                                lb_l,
+                                album_lb_listens,
+                            )
 
-                    # Compute star ratings for every track (recomputed each scan)
+                    # -----------------------------------------------------------------
+                    # Compute star ratings for every track
+                    # -----------------------------------------------------------------
+                    top_pct_threshold = STANDOUT_CONFIG.get("star_5_single", {}).get("artist_pct", 0.25)
+                    lb_override_threshold = STANDOUT_CONFIG.get("lb_unreliable_5star_threshold", 0.50)
+
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]
@@ -6912,55 +6984,145 @@ def popularity_scan(
 
                         album_z = 0.0
                         artist_z = 0.0
+
                         if album_stddev > 0:
                             album_z = (popularity_score - album_median) / album_stddev
+
                         if artist_stddev > 0 and artist_count >= 5:
                             artist_z = (popularity_score - artist_mean) / artist_stddev
+
+                        # Live context disables popularity-only promotion.
+                        # Confirmed live singles can still reach 5★, but only if they are top catalogue.
+                        is_live_context = bool(
+                            row_get(track, "is_live", 0)
+                            or row_get(track, "album_context_live", 0)
+                        )
 
                         stars = 0
                         is_single = row_get(track, "is_single", 0)
                         single_confidence = row_get(track, "single_confidence", "low") or "low"
 
+                        lastfm_listeners = album_lastfm_data.get(track_id, {}).get("listeners", 0) or 0
+                        lb_listens = album_listenbrainz_data.get(track_id, {}).get("listeners", 0) or 0
+                        lb_percentile = track.get("lb_percentile", 0) or 0
+
+                        is_top_catalog = is_top_artist_catalog(
+                            popularity_score,
+                            top_pct_threshold,
+                        )
+
+                        # -------------------------------------------------------------
+                        # 1. User override
+                        # -------------------------------------------------------------
                         if single_confidence == "user":
                             stars = 5
+
+                        # -------------------------------------------------------------
+                        # 2. High-confidence single path
+                        # -------------------------------------------------------------
                         elif is_single and single_confidence == "high":
-                            top_pct_threshold = STANDOUT_CONFIG.get("star_5_single", {}).get("artist_pct", 0.25)
-                            is_top_catalog = False
-                            if artist_count > 0 and popularity_score > 0:
-                                try:
-                                    cursor.execute(
-                                        f"SELECT COUNT(*) as total, SUM(CASE WHEN popularity_score >= {placeholder} THEN 1 ELSE 0 END) as above FROM tracks WHERE artist = {placeholder} AND popularity_score > 0",
-                                        (popularity_score, artist),
-                                    )
-                                    row_stats = cursor.fetchone()
-                                    total_cat = row_get(row_stats, "total", 0) or 0
-                                    above_cat = row_get(row_stats, "above", 0) or 0
-                                    if total_cat > 0:
-                                        is_top_catalog = (above_cat / total_cat) <= top_pct_threshold
-                                except Exception as e:
-                                    log_debug(f"Could not compute artist percentile for '{title}': {e}")
+
+                            if is_live_context:
+                                # Live singles can be 5★ only if they are top of the artist catalogue.
+                                stars = 5 if is_top_catalog else 4
+                            else:
+                                # Studio/non-live singles can become 5★ if top catalogue
+                                # or if they are clearly strong within the album.
+                                if is_top_catalog or album_z >= 0.8:
+                                    stars = 5
+                                else:
+                                    stars = 4
+
+                        # -------------------------------------------------------------
+                        # 3. Non-single popularity-only 5★ path
+                        #    Disabled for live albums/live tracks.
+                        # -------------------------------------------------------------
+                        elif (
+                            album_z >= STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
+                            and not is_live_context
+                        ):
+
+                            # Non-singles still need to be top catalogue for 5★.
                             stars = 5 if is_top_catalog else 4
-                        elif (album_z >= STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
-                              and not row_get(track, "is_live", 0)
-                              and not row_get(track, "album_context_live", 0)):
-                            stars = 5
-                        elif is_lastfm_unreliable(
-                            album_lastfm_data.get(track_id, {}).get("listeners", 0),
-                            album_listenbrainz_data.get(track_id, {}).get("listeners", 0),
-                        ) and track.get("lb_percentile", 0) >= STANDOUT_CONFIG.get("lb_unreliable_5star_threshold", 0.50):
-                            stars = 5
-                            log_debug(f"LB override 5-star for '{title}' (lb_percentile={track.get('lb_percentile', 0):.2f})")
+
+                        # -------------------------------------------------------------
+                        # 4. ListenBrainz rescue path
+                        #    Disabled for live context because it is still popularity-based.
+                        # -------------------------------------------------------------
+                        elif (
+                            not is_live_context
+                            and is_lastfm_unreliable(lastfm_listeners, lb_listens)
+                            and lb_percentile >= lb_override_threshold
+                        ):
+
+                            # LB rescue can promote only if the track is also strong in artist catalogue.
+                            stars = 5 if is_top_catalog else 4
+
+                            log_debug(
+                                f"LB override considered for '{title}' "
+                                f"(lb_percentile={lb_percentile:.2f}, "
+                                f"lastfm_listeners={lastfm_listeners}, "
+                                f"lb_listens={lb_listens}, "
+                                f"is_top_catalog={is_top_catalog})"
+                            )
+
+                        # -------------------------------------------------------------
+                        # 5. Normal rating tiers
+                        # -------------------------------------------------------------
                         else:
-                            if album_z >= STANDOUT_CONFIG["star_5"]["album_z"] and artist_z >= STANDOUT_CONFIG["star_5"]["artist_z"]:
-                                stars = 5
-                            elif album_z >= STANDOUT_CONFIG["star_4"]["album_z"] and artist_z >= STANDOUT_CONFIG["star_4"]["artist_z"]:
+                            # Important: this no longer auto-grants 5★.
+                            # It becomes 4★ unless already handled above via catalogue/single/LB logic.
+                            if (
+                                album_z >= STANDOUT_CONFIG["star_5"]["album_z"]
+                                and artist_z >= STANDOUT_CONFIG["star_5"]["artist_z"]
+                                and not is_live_context
+                            ):
                                 stars = 4
+
+                            elif (
+                                album_z >= STANDOUT_CONFIG["star_4"]["album_z"]
+                                and artist_z >= STANDOUT_CONFIG["star_4"]["artist_z"]
+                            ):
+                                stars = 4
+
                             elif album_z >= STANDOUT_CONFIG["star_3"]["album_z"]:
                                 stars = 3
+
                             elif STANDOUT_CONFIG["star_2"].get("album_mean") and popularity_score >= album_median:
                                 stars = 2
+
                             else:
                                 stars = 1
+
+                        # -------------------------------------------------------------
+                        # Defensive live-context cap
+                        # -------------------------------------------------------------
+                        # Live tracks should not become 5★ from popularity-only routes.
+                        # User overrides and top-catalogue confirmed live singles are allowed.
+                        if is_live_context and stars == 5:
+                            if not (
+                                single_confidence == "user"
+                                or (is_single and single_confidence == "high" and is_top_catalog)
+                            ):
+                                stars = 4
+
+                        track["stars"] = stars
+                        track["album_z"] = album_z
+                        track["artist_z"] = artist_z
+
+                        try:
+                            cursor.execute(
+                                f"UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}",
+                                (stars, track_id),
+                            )
+                        except Exception as e:
+                            log_debug(f"Failed to persist stars for '{title}': {e}")
+                        # Defensive cap:
+                        # Live context should not get 5★ from popularity logic.
+                        # Manual/user overrides and top-catalogue live singles are already handled above.
+                        if is_live_context and stars == 5:
+                            if not (single_confidence == "user" or (is_single and single_confidence == "high" and is_top_catalog)):
+                                stars = 4
 
                         track["stars"] = stars
                         track["album_z"] = album_z
@@ -6983,7 +7145,9 @@ def popularity_scan(
                         except Exception:
                             pass
 
+                    # -----------------------------------------------------------------
                     # Sync ratings to Navidrome when enabled
+                    # -----------------------------------------------------------------
                     if _is_sync_ratings_to_all_users_enabled():
                         for track in album_tracks:
                             try:
