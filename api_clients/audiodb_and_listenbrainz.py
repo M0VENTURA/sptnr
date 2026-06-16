@@ -613,7 +613,11 @@ class AudioDbClient:
 def score_by_age(playcount: int | float, release_str: str) -> tuple[float, int]:
     """Apply age decay to a playcount-like metric."""
     try:
-        release_date = datetime.strptime(release_str, "%Y-%m-%d")
+        # Handle year-only strings (e.g. "2004")
+        if len(release_str) == 4 and release_str.isdigit():
+            release_date = datetime.strptime(release_str, "%Y")
+        else:
+            release_date = datetime.strptime(release_str, "%Y-%m-%d")
         days_since = max((datetime.now() - release_date).days, 30)
         capped_days = min(days_since, 5 * 365)
         decay = 1 / math.log2(capped_days + 2)

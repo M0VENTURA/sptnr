@@ -7103,7 +7103,16 @@ def popularity_scan(
                                     stars = 4
 
                         # -------------------------------------------------------------
-                        # 4. Non-single popularity-only 5★ path
+                        # 4. Medium-confidence single path (e.g. title tracks with metadata)
+                        # -------------------------------------------------------------
+                        elif is_single and single_confidence == "medium":
+                            if is_live_context:
+                                stars = 4 if is_top_catalog else 3
+                            else:
+                                stars = 5 if is_top_catalog else 4
+
+                        # -------------------------------------------------------------
+                        # 5. Non-single popularity-only 5★ path
                         #    Disabled for live albums/live tracks.
                         # -------------------------------------------------------------
                         elif (
