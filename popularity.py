@@ -5971,6 +5971,15 @@ def popularity_scan(
                         title = track.get("title", "")
                         track_artist = track.get("artist", "")
 
+                        # Resolve MBID early so Last.fm can use it for unambiguous
+                        # track.getInfo lookups (especially important when the track
+                        # title matches the album title, e.g. title tracks / singles).
+                        recording_mbid = (
+                            row_get(track, "recording_mbid")
+                            or row_get(track, "musicbrainz_recording_mbid")
+                            or row_get(track, "mbid")
+                        )
+
                         # -------------------------
                         # LAST.FM PREFETCH
                         # -------------------------
@@ -6001,6 +6010,7 @@ def popularity_scan(
                                         f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
                                         track_artist,
                                         normalize_title_for_lookup(title),
+                                        recording_mbid,
                                     )
                                     rate_limiter.record_lastfm_request()
 
@@ -6019,12 +6029,6 @@ def popularity_scan(
                         # -------------------------
                         # LISTENBRAINZ PREFETCH MAP
                         # -------------------------
-                        recording_mbid = (
-                            row_get(track, "recording_mbid")
-                            or row_get(track, "musicbrainz_recording_mbid")
-                            or row_get(track, "mbid")
-                        )
-
                         lb_listens = 0
                         if recording_mbid:
                             lb_entry = lb_batch.get(recording_mbid, {})

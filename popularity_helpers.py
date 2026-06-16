@@ -433,7 +433,7 @@ def search_spotify_track(title: str, artist: str, album: Optional[str] = None):
     return _spotify_client.search_track(normalized_title, artist, album)
 
 
-def get_lastfm_track_info(artist: str, title: str) -> dict:
+def get_lastfm_track_info(artist: str, title: str, track_mbid: str | None = None) -> dict:
     _ensure_clients_from_config()
     if _lastfm_client is None:
         return {"track_play": 0, "listeners": 0}
@@ -444,7 +444,7 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
     if stripped_title != normalized_title:
         logging.debug("Title normalization: '%s' → '%s'", stripped_title, normalized_title)
 
-    result = _lastfm_client.get_track_info(artist, normalized_title)
+    result = _lastfm_client.get_track_info(artist, normalized_title, track_mbid=track_mbid)
     lookup_artist = result.get("lookup_artist", artist)
 
     if lookup_artist != artist:
