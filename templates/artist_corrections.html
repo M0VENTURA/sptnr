@@ -1292,6 +1292,15 @@ async function searchAndApplyAlbumMbid(albumName, rowIndex) {
         }
 
         const selected = top[selectedIndex];
+        if (selected.mbid_type !== 'release') {
+            const ok = confirm(
+                'The selected result is a release group (not a specific release). ' +
+                'The system will attempt to auto-match the best release based on track count. ' +
+                'If you want to manually pick a specific release, use the album page instead.\n\n' +
+                'Proceed with auto-match?'
+            );
+            if (!ok) return;
+        }
         const input = document.getElementById(`mbid-input-${rowIndex}`);
         if (input) input.value = selected.mbid || '';
         await applyAlbumMbidCorrection(albumName, rowIndex);

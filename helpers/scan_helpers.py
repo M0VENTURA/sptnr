@@ -13,6 +13,7 @@ from .db_utils import get_db_connection, _is_postgres_connection
 from colorama import Fore, Style
 from .logging_config import log_debug, log_info, log_unified
 from api_clients.navidrome import NavidromeClient
+from .helpers import normalize_single_mbid
 
 try:
     from scan_history import log_album_scan
@@ -662,26 +663,35 @@ def _artist_album_name_diff(artist_name: str, artist_id: str) -> tuple[bool, set
         )
         return False, set()  # Degrade gracefully – don't skip on error
 
-    nav_names = {a.get("name") or "" for a in nav_albums if a.get("name")}
-    nav_names.discard("")
+    nav_names = set()
+    nav_counts: dict[str, int] = {}
+    for a in nav_albums:
+        name = a.get("name") or ""
+        if name:
+            nav_names.add(name)
+            nav_counts[name] = int(a.get("songCount", 0) or 0)
 
     conn = None
     db_names: set[str] = set()
+    db_counts: dict[str, int] = {}
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT DISTINCT album
+            SELECT album, COUNT(*) as track_count
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
               AND album IS NOT NULL AND TRIM(album) <> ''
+            GROUP BY album
             """,
             (artist_name,),
         )
         for row in cursor.fetchall():
             if row[0]:
-                db_names.add(str(row[0]))
+                album_name = str(row[0])
+                db_names.add(album_name)
+                db_counts[album_name] = row[1]
         conn.close()
     except Exception as exc:
         logging.debug(
@@ -697,9 +707,15 @@ def _artist_album_name_diff(artist_name: str, artist_id: str) -> tuple[bool, set
                 pass
 
     changed = nav_names.symmetric_difference(db_names)
+    # Also flag albums where track counts differ (catches track additions/removals
+    # within albums that still exist in Navidrome).
+    for album in nav_names & db_names:
+        if nav_counts.get(album, 0) != db_counts.get(album, 0):
+            changed.add(album)
+
     if not changed:
         logging.debug(
-            "[NAVIDROME_SCAN] Artist '%s' early-exit: album names unchanged (%d albums)",
+            "[NAVIDROME_SCAN] Artist '%s' early-exit: album names and track counts unchanged (%d albums)",
             artist_name, len(nav_names),
         )
         return True, set()
@@ -1046,8 +1062,8 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "musicbrainz_albumstatus": extracted.get("musicbrainz_albumstatus", "") or "",
                     "musicbrainz_albumtype": extracted.get("musicbrainz_albumtype", "") or "",
                     "musicbrainz_releasecountry": extracted.get("musicbrainz_releasecountry", "") or "",
-                    "musicbrainz_artistid": extracted.get("musicbrainz_artistid", "") or "",
-                    "musicbrainz_artist_id": extracted.get("musicbrainz_artist_id", "") or extracted.get("musicbrainz_artistid", "") or "",
+                    "musicbrainz_artistid": normalize_single_mbid(extracted.get("musicbrainz_artistid", "") or ""),
+                    "musicbrainz_artist_id": normalize_single_mbid(extracted.get("musicbrainz_artist_id", "") or extracted.get("musicbrainz_artistid", "") or ""),
                     "musicbrainz_albumartistid": extracted.get("musicbrainz_albumartistid", "") or "",
                     "musicbrainz_workid": extracted.get("musicbrainz_workid", "") or "",
                     # ── Album-level consistency / Navidrome split-cause fields ─
@@ -1164,6 +1180,28 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     f"[NAVIDROME_SCAN] Album MBID inconsistency detected for '{artist_name} - {album_name}': "
                     f"{len(album_mbids_seen)} distinct MBIDs ({mbid_preview})"
                 )
+
+            # In diff_mode, clean up stale tracks for this specific album immediately.
+            # The global artist-level cleanup is disabled in diff_mode because we
+            # don't fetch tracks for unchanged albums.
+            if diff_mode and cached_ids_for_album:
+                nav_ids_for_album = {t.get("id") for t in tracks if t.get("id")}
+                stale_album_ids = cached_ids_for_album - nav_ids_for_album
+                if stale_album_ids:
+                    try:
+                        conn = get_db_connection()
+                        try:
+                            cursor = conn.cursor()
+                            placeholder = "%s"
+                            placeholders = ", ".join([placeholder] * len(stale_album_ids))
+                            cursor.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", list(stale_album_ids))
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        logging.info(f"Removed {len(stale_album_ids)} stale track(s) from album '{album_name}' (diff_mode)")
+                        log_unified(f"Navidrome Import - {artist_name} - Removed {len(stale_album_ids)} stale track(s) from album '{album_name}'")
+                    except Exception as e:
+                        logging.error(f"Failed to remove stale tracks from album '{album_name}': {e}")
         if verbose:
             print(f"Artist scan complete: {artist_name}")
             logging.info(f"Artist scan complete: {artist_name}")
@@ -1172,7 +1210,8 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         # (e.g. files deleted from disk that show as grey in Navidrome).
         # Only perform this cleanup during a full artist scan, not when using
         # album_filter or filter_missing which intentionally skip some albums.
-        # diff_mode also skips this because we don't fetch tracks for unchanged albums.
+        # diff_mode performs per-album cleanup inside the loop above, so the
+        # global artist-level cleanup is skipped here.
         can_cleanup = not filter_missing and not album_filter and not diff_mode
         if can_cleanup and existing_track_ids:
             stale_ids = existing_track_ids - navidrome_track_ids

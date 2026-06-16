@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import threading
+import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -117,7 +118,23 @@ class MusicBrainzReleaseManager:
 
             try:
                 if is_postgres_connection(conn):
-                    db_query.execute("SELECT pg_advisory_lock(hashtext(%s))", ("sptnr_mb_schema_init_v1",))
+                    _lock_acquired = False
+                    for _lock_attempt in range(5):
+                        try:
+                            db_query.execute(
+                                "SELECT pg_try_advisory_lock(hashtext(%s)) AS acquired",
+                                ("sptnr_mb_schema_init_v1",),
+                            )
+                            if db_query.cursor.fetchone()['acquired']:
+                                _lock_acquired = True
+                                break
+                        except Exception as _adv_err:
+                            logger.debug(f"MusicBrainz schema advisory lock unavailable: {_adv_err}")
+                            break
+                        time.sleep(0.3)
+                    if not _lock_acquired:
+                        logger.warning("Could not acquire MusicBrainz schema advisory lock; deferring")
+                        return
 
                 db_query.execute("""
                     CREATE TABLE IF NOT EXISTS musicbrainz_releases (
@@ -489,7 +506,14 @@ class MusicBrainzReleaseManager:
                             isrc = isrcs[0]
                         
                         # Create search query (artist - title format, no album)
-                        search_query = f"{track_artist} - {track_title}".strip()
+                        # Sanitize apostrophes and curly quotes so the stored query
+                        # is already clean for Soulseek's tokenizer.
+                        try:
+                            from download_queue_manager import _sanitize_search_query_for_slskd
+                        except ImportError:
+                            def _sanitize_search_query_for_slskd(q):
+                                return " ".join(q.split())
+                        search_query = _sanitize_search_query_for_slskd(f"{track_artist} - {track_title}")
 
                         # Duplicate check: skip insert if an active queue entry already
                         # exists for the same (artist, album, title, source) combination.

@@ -15,7 +15,13 @@ _STUCK_SEARCH_TIMEOUT_MS = 3 * 60 * 1000  # 3 minutes
 # Soulseek search states that are terminal AND carry no results (the search
 # was cancelled or failed before collecting any peer responses).  Used by
 # get_search_results() to skip a redundant /responses HTTP call.
-_EMPTY_TERMINAL_STATES = frozenset({"Cancelled", "Errored"})
+# slskd serialises C# flag enums as comma-separated strings (e.g.
+# "Completed, TimedOut", "Completed, Cancelled").  We also keep the plain
+# legacy strings for backward compatibility.
+_EMPTY_TERMINAL_STATES = frozenset({
+    "Completed, Cancelled", "Completed, Errored",
+    "Cancelled", "Errored",
+})
 
 
 @dataclass
@@ -85,10 +91,10 @@ class SearchResponse:
 class SlskdClient:
     """Soulseek (slskd) API wrapper for search and downloads."""
     
-    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: Optional[int] = 10):
+    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: Optional[int] = 15):
         """
         Initialize slskd client.
-        
+
         Args:
             web_url: slskd web URL (e.g., "http://localhost:5030")
             api_key: slskd API key (optional)
@@ -189,11 +195,11 @@ class SlskdClient:
     def get_search_results(self, search_id: str, timeout: Optional[int] = None) -> tuple[list[SearchResponse], str, bool]:
         """
         Poll for search results from Soulseek.
-        
+
         Args:
             search_id: Search ID from start_search()
             timeout: Request timeout (uses default_timeout if not specified)
-            
+
         Returns:
             Tuple of (responses, state, is_complete)
             - responses: List of SearchResponse objects
@@ -202,40 +208,46 @@ class SlskdClient:
         """
         if not self.enabled:
             return [], "Error", True
-        
+
         timeout = timeout or self.default_timeout
-        
+        state = "InProgress"
+
+        # ---- Fetch search state (lightweight) ----
         try:
-            # First, get the search state
             state_url = f"{self.base_url}/searches/{search_id}"
             state_resp = self.session.get(state_url, headers=self.headers, timeout=timeout)
-            
+
             if state_resp.status_code != 200:
                 logger.warning(f"Slskd status failed: {state_resp.status_code} - {state_resp.text[:200]}")
-                return [], "Error", True
-            
+                # We don't know the real state; tell caller to keep polling.
+                return [], state, False
+
             state_data = state_resp.json()
             state = state_data.get("state", "InProgress")
             logger.debug(f"Slskd search {search_id} state: {state}")
-            
-            # Terminal states that carry no search results (the search was
-            # cancelled or failed before collecting any peers).  Skip the
-            # second HTTP call to /responses — it would return an empty list
-            # anyway, and saving the round-trip matters in busy queues.
-            if state in _EMPTY_TERMINAL_STATES:
-                logger.debug(f"Slskd search {search_id} is in terminal no-result state ({state}); skipping responses fetch")
-                return [], state, True
-            
-            # Get the actual responses from the responses endpoint
+        except Exception as e:
+            logger.error(f"Slskd get state failed for search {search_id}: {e}")
+            return [], "InProgress", False
+
+        # Terminal states that carry no search results (the search was
+        # cancelled or failed before collecting any peers).  Skip the
+        # second HTTP call to /responses — it would return an empty list
+        # anyway, and saving the round-trip matters in busy queues.
+        if state in _EMPTY_TERMINAL_STATES:
+            logger.debug(f"Slskd search {search_id} is in terminal no-result state ({state}); skipping responses fetch")
+            return [], state, True
+
+        # ---- Fetch responses (can be slow / large) ----
+        try:
             responses_url = f"{self.base_url}/searches/{search_id}/responses"
             resp = self.session.get(responses_url, headers=self.headers, timeout=timeout)
-            
+
             if resp.status_code != 200:
                 logger.debug(f"Slskd responses endpoint returned {resp.status_code}")
-                return [], state, state not in ["InProgress", "Requested"]
-            
+                return [], state, state not in self.ACTIVE_STATES
+
             raw_responses = resp.json() or []
-            
+
             # Debug: log response structure and count
             if raw_responses:
                 logger.debug(f"Slskd got {len(raw_responses)} raw responses, response type: {type(raw_responses)}")
@@ -244,7 +256,7 @@ class SlskdClient:
                     logger.debug(f"First response type: {type(first_item)}, keys: {first_item.keys() if isinstance(first_item, dict) else 'N/A'}")
             else:
                 logger.debug(f"Slskd responses list is empty or None")
-            
+
             # Parse responses into SearchResponse objects
             responses = []
             for idx, raw_resp in enumerate(raw_responses):
@@ -264,14 +276,16 @@ class SlskdClient:
                         responses.append(raw_resp)
                 except Exception as e:
                     logger.warning(f"Failed to parse slskd response {idx}: {e}")
-            
-            is_complete = state not in ["InProgress", "Requested"]
+
+            is_complete = state not in self.ACTIVE_STATES
             logger.info(f"Slskd search {search_id}: state={state}, peers={len(responses)}, is_complete={is_complete}")
-            
+
             return responses, state, is_complete
         except Exception as e:
-            logger.error(f"Slskd get results failed for search {search_id}: {e}")
-            return [], "Error", True
+            # If we can't fetch responses (timeout, network hiccup, etc.)
+            # assume the search is still active so the caller keeps polling.
+            logger.warning(f"Slskd get responses failed for search {search_id}: {e}")
+            return [], state, state not in self.ACTIVE_STATES
     
     def download_file(self, username: str, filename: str, size: int = 0, timeout: Optional[int] = None) -> bool:
         """
@@ -746,6 +760,60 @@ class SlskdClient:
             logger.debug(f"Slskd get events failed: {e}")
             return []
 
+    def get_server_state(self, timeout: Optional[int] = None) -> dict:
+        """Fetch slskd server state, with backward-compatible fallbacks.
+
+        Modern slskd exposes ``GET /api/v0/server``.  Older versions nest the
+        state inside ``GET /api/v0/application``.  This method tries the
+        canonical endpoint first and falls back to the legacy one on 404.
+
+        Returns:
+            Parsed JSON dict (may be empty on error).
+        """
+        if not self.enabled:
+            return {}
+
+        timeout = timeout or self.default_timeout
+        try:
+            url = f"{self.base_url}/server"
+            resp = self.session.get(url, headers=self.headers, timeout=timeout)
+            if resp.status_code == 200:
+                return resp.json() or {}
+            if resp.status_code == 404:
+                # Fallback for older slskd versions
+                app_url = f"{self.base_url}/application"
+                app_resp = self.session.get(app_url, headers=self.headers, timeout=timeout)
+                if app_resp.status_code == 200:
+                    app_data = app_resp.json() or {}
+                    return app_data.get("server") or {}
+            logger.debug(f"Slskd get_server_state failed: {resp.status_code}")
+        except Exception as e:
+            logger.debug(f"Slskd get_server_state error: {e}")
+        return {}
+
+    def is_connected(self, timeout: Optional[int] = None) -> bool:
+        """Return True when slskd reports it is connected to the Soulseek network.
+
+        Handles the C# enum-flags string that slskd returns in its ``state``
+        field (e.g. ``"Connected, LoggedIn"``) as well as the modern
+        ``isConnected`` boolean field.
+        """
+        if not self.enabled:
+            return False
+
+        state = self.get_server_state(timeout=timeout)
+        # Modern slskd versions expose an explicit boolean
+        if "isConnected" in state:
+            return bool(state["isConnected"])
+
+        raw = str(state.get("state") or state.get("status") or "").strip().lower()
+        if not raw:
+            return False
+
+        # C# enum flags are comma-separated, e.g. "Connected, LoggedIn"
+        flags = {f.strip() for f in raw.split(",") if f.strip()}
+        return "connected" in flags
+
     def get_completed_transfers(self, timeout: Optional[int] = None) -> list[dict]:
         """
         Return only transfers in state 'Completed, Succeeded', each including
@@ -786,29 +854,41 @@ class SlskdClient:
     def cancel_search(self, search_id: str, timeout: Optional[int] = None) -> bool:
         """
         Cancel an active search.
-        
+
         Args:
             search_id: Search ID from start_search()
             timeout: Request timeout (uses default_timeout if not specified)
-            
+
         Returns:
             True if cancelled successfully
         """
         if not self.enabled:
             return False
-        
+
         timeout = timeout or self.default_timeout
-        
+
         try:
             url = f"{self.base_url}/searches/{search_id}"
             resp = self.session.delete(url, headers=self.headers, timeout=timeout)
-            
+
             if resp.status_code in [200, 204]:
                 logger.info(f"Slskd search {search_id} cancelled successfully")
                 return True
-            else:
-                logger.warning(f"Slskd search cancel failed: {resp.status_code} - {resp.text[:200]}")
-                return False
+
+            body_preview = (resp.text or "")[:400]
+            # slskd sometimes throws DbUpdateConcurrencyException when its
+            # internal finalization modifies the search row at the same time
+            # we call DELETE. The row is already gone or updated — treat that
+            # as success rather than a hard failure.
+            if resp.status_code in [409, 500] and "concurrency" in body_preview.lower():
+                logger.debug(
+                    f"Slskd search {search_id} cancel hit concurrency conflict; "
+                    f"treating as already removed"
+                )
+                return True
+
+            logger.warning(f"Slskd search cancel failed: {resp.status_code} - {body_preview[:200]}")
+            return False
         except Exception as e:
             logger.error(f"Slskd cancel search failed for {search_id}: {e}")
             return False
@@ -827,9 +907,23 @@ class SlskdClient:
         ``budget_seconds`` caps the total wall-clock time so that a large
         backlog of entries cannot cause the caller to exceed a request timeout.
         """
-        _TERMINAL_STATES = {"Completed", "Cancelled", "TimedOut", "Errored", "Succeeded"}
-        _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
-
+        # slskd serialises C# SearchStates flag enums as "Completed, <suffix>".
+        # The exact strings are taken from slskd's SearchStatusIcon.jsx (as of 3/26/25).
+        # We also keep plain "Completed" / "Succeeded" and the legacy simple
+        # strings so searches from older slskd versions (or searches that finish
+        # with only the Completed flag) are still cleaned up.
+        _TERMINAL_STATES = {
+            "Completed, TimedOut",
+            "Completed, ResponseLimitReached",
+            "Completed, FileLimitReached",
+            "Completed, Cancelled",
+            "Completed, Errored",
+            "Completed",
+            "Succeeded",
+            "Cancelled",
+            "Errored",
+            "TimedOut",
+        }
         deadline = time.monotonic() + budget_seconds
         try:
             time_left = deadline - time.monotonic()
@@ -844,13 +938,23 @@ class SlskdClient:
                     continue
 
                 should_cancel = state in _TERMINAL_STATES
-                if not should_cancel and state in _ACTIVE_STATES:
+                if not should_cancel and state in self.ACTIVE_STATES:
                     # Also cancel searches that have been running too long.
-                    elapsed_ms = s.get("elapsedMilliseconds") or s.get("elapsed_ms") or 0
-                    try:
-                        elapsed_ms = int(elapsed_ms or 0)
-                    except (TypeError, ValueError):
-                        elapsed_ms = 0
+                    # slskd does not expose elapsedMilliseconds; compute from startedAt.
+                    started_at = s.get("startedAt") or s.get("StartedAt") or s.get("started_at")
+                    elapsed_ms = 0
+                    if started_at:
+                        try:
+                            from datetime import datetime, timezone
+                            if isinstance(started_at, str):
+                                started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                            else:
+                                started_dt = started_at
+                            if started_dt.tzinfo is None:
+                                started_dt = started_dt.replace(tzinfo=timezone.utc)
+                            elapsed_ms = int((datetime.now(timezone.utc) - started_dt).total_seconds() * 1000)
+                        except Exception:
+                            elapsed_ms = 0
                     if elapsed_ms > _STUCK_SEARCH_TIMEOUT_MS:
                         should_cancel = True
                         logger.info(
@@ -859,7 +963,30 @@ class SlskdClient:
                         )
 
                 if should_cancel:
-                    cancel_timeout = min(2, max(1, int(deadline - time.monotonic())))
+                    # Strict budget check before each HTTP call so a large backlog
+                    # of stale searches cannot exceed the caller's timeout.
+                    time_left = deadline - time.monotonic()
+                    if time_left <= 0:
+                        logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                        break
+                    cancel_timeout = max(0.5, min(2, time_left))
+                    # For active searches use PUT (calls slskd TryCancel) so the
+                    # underlying Soulseek operation is stopped before we delete the
+                    # record.  For terminal searches DELETE is sufficient.
+                    if state in self.ACTIVE_STATES:
+                        time_left = deadline - time.monotonic()
+                        if time_left <= 0:
+                            logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                            break
+                        try:
+                            put_url = f"{self.base_url}/searches/{sid}"
+                            self.session.put(put_url, headers=self.headers, timeout=cancel_timeout)
+                        except Exception:
+                            pass
+                    time_left = deadline - time.monotonic()
+                    if time_left <= 0:
+                        logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                        break
                     self.cancel_search(sid, timeout=cancel_timeout)
                     if state in _TERMINAL_STATES:
                         logger.info(

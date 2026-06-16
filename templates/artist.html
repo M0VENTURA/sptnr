@@ -54,7 +54,6 @@
     </ol>
   </nav>
 
-  {% if qbit_config.enabled %}
   <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-3">
     <div class="flex-grow-1">
       <h1 class="h2 mb-2" data-artist-name="{{ artist_name|e }}">
@@ -74,31 +73,26 @@
       <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
         <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
       </a>
-      <form action="{{ url_for('scan_start') }}" method="post" class="d-flex align-items-center gap-2">
-        <input type="hidden" name="scan_type" value="artist">
+      <form action="{{ url_for('scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
         <input type="hidden" name="artist" value="{{ artist_name }}">
+        <select name="scan_type" class="form-select form-select-sm" style="min-width: 160px; width: auto;" title="Select scan type">
+          <option value="full">Full</option>
+          <option value="navidrome">Navidrome</option>
+          <option value="popularity">Popularity</option>
+          <option value="metadata">Metadata</option>
+          <option value="singles">Singles</option>
+          <option value="essentia">Essentia</option>
+        </select>
         <div class="form-check form-check-inline mb-0" title="Force full rescan for this artist">
           <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
           <label class="form-check-label small" for="artistForceScan">Force</label>
         </div>
-        <button type="submit" class="btn btn-warning" title="Full scan: Navidrome + Popularity + Singles">
+        <button type="submit" class="btn btn-warning" title="Run selected scan for this artist">
           <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan Artist</span>
-        </button>
-      </form>
-      <form action="{{ url_for('scan_essentia_mood') }}" method="post" class="d-flex align-items-center gap-2">
-        <input type="hidden" name="artist" value="{{ artist_name }}">
-        <button type="submit" class="btn" style="border-color:#6f42c1;color:#6f42c1;" title="Run Essentia ML mood/genre scan for this artist">
-          <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
-        </button>
-      </form>
-      <form action="{{ url_for('artist_update_metadata', name=artist_name) }}" method="post" class="d-flex align-items-center gap-2">
-        <button type="submit" class="btn btn-info" title="Force metadata update scan for this artist">
-          <i class="bi bi-tags"></i> <span class="d-none d-sm-inline">Update Metadata</span>
         </button>
       </form>
     </div>
   </div>
-  {% endif %}
 
   <!-- Needs Correcting badge — always shown when corrections exist -->
   <div id="artist-corrections-banner" style="display:none;" class="mb-3">
@@ -315,9 +309,10 @@
         </button>
       </div>
       <div class="card-body">
-        <!-- Genre Sources from Database (pre-rendered from scan data) -->
+        <!-- Detected Genres from Database (pre-rendered from scan data) -->
         <div class="mb-4">
-          <h6 class="mb-3"><i class="bi bi-database-fill"></i> Genre & Tag Sources</h6>
+          <h6 class="mb-3"><i class="bi bi-database-fill"></i> Detected Genres</h6>
+          <p class="text-muted small mb-2">All genres detected from external sources (Last.fm, Discogs, MusicBrainz, Essentia, etc.) across all tracks. These are kept in the database for reference.</p>
           <div id="artistGenreSourcesContainer" class="text-muted small">
             {% set sources = [
               ('mood', 'Mood Scan', 'F59C00', 'light'),
@@ -386,10 +381,10 @@
         
         <hr style="margin: 1.5rem 0; border-color: var(--border-color);">
         
-        <!-- Current Genres from All Tracks -->
+        <!-- Top Genres from All Tracks -->
         <div class="mb-3">
-          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Genres Across All Tracks</h6>
-          <p class="text-muted small mb-2">These are aggregated from all track metadata in your library for this artist. Click the × to remove incorrect genres.</p>
+          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Top Genres</h6>
+          <p class="text-muted small mb-2">These are the top genres saved to track metadata across all tracks by this artist (up to 3 per track). Click the × to remove incorrect genres.</p>
           <div id="artistGenresContainer">
             {% if genres %}
             <div class="d-flex flex-wrap gap-2 mb-3" id="currentArtistGenres">
@@ -1703,6 +1698,28 @@ function performSlskdSearch() {
       `;
       return;
     }
+
+    if (data.slotBusy) {
+      document.getElementById('slskdResults').innerHTML = `
+        <div class="alert alert-warning">
+          <i class="bi bi-clock"></i> <strong>Soulseek search slot is busy.</strong>
+          An active search is in progress. Retrying automatically…
+        </div>
+      `;
+      // Poll /api/slskd/search-slot until free, then retry
+      const slotPoll = setInterval(() => {
+        fetch('/api/slskd/search-slot')
+          .then(r => r.json())
+          .then(slotData => {
+            if (slotData.slotFree) {
+              clearInterval(slotPoll);
+              performSlskdSearch();
+            }
+          })
+          .catch(() => {});
+      }, 2000);
+      return;
+    }
     
     const searchId = data.searchId;
     // Poll for results
@@ -2115,8 +2132,8 @@ function checkMissingReleases(artistName, silent = false, background = false) {
     if (categoryRaw.includes('compilation')) return 'compilation';
     if (categoryRaw.includes('live')) return 'live_album';
     if (categoryRaw.includes('remix')) return 'remix_album';
-    if (categoryRaw.includes('ep')) return 'ep';
     if (categoryRaw.includes('single')) return 'single';
+    if (categoryRaw.includes('ep')) return 'ep';
     // Fallback: inspect the title for live/unplugged/remix keywords even when
     // the stored category is the generic "album" value (e.g. secondary type
     // missing from MusicBrainz at scan time).
@@ -3759,7 +3776,7 @@ function toggleMissing(category) {
 
 // Initialize toggle states on page load
 function initializeMissingToggle() {
-  const categories = ['albums', 'compilations', 'live-albums', 'eps', 'singles'];
+  const categories = ['albums', 'compilations', 'live-albums', 'remix-albums', 'eps', 'singles'];
   categories.forEach(category => {
     const section = document.getElementById(category + '-section');
     if (!section) return;

@@ -239,7 +239,13 @@ async function loadNavidromePlaylists() {
   try {
     console.log('[Playlist Manager] Starting loadNavidromePlaylists');
     const response = await fetch('/api/navidrome/playlists');
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (parseErr) {
+      console.error('[Playlist Manager] API returned non-JSON:', parseErr);
+      data = { error: 'Server returned invalid response (HTTP ' + response.status + ')' };
+    }
     console.log('[Playlist Manager] API response:', data);
 
     // Three-bucket selects (browse page)

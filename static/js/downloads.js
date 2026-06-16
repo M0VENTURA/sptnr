@@ -384,7 +384,7 @@ async function clearUpcomingReleases() {
       statusEl.style.display = 'none';
       document.getElementById('upcomingReleases').innerHTML = `
         <div class="text-center py-5">
-          <p class="text-muted">Database cleared. Click "Update from Wikipedia" to load new release data.</p>
+          <p class="text-muted">Database cleared. Click <strong>Check for Updates</strong> to search MusicBrainz for new release data.</p>
         </div>
       `;
     }, 2000);
@@ -432,6 +432,11 @@ async function scrapeUpcomingReleases() {
   }
 }
 
+async function checkForUpdates() {
+  localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
+  await refreshUpcomingReleases();
+}
+
 async function refreshUpcomingReleases() {
   const container = document.getElementById('upcomingReleases');
   const filterCollection = document.getElementById('upcomingFilterCollection').checked;
@@ -452,7 +457,7 @@ async function refreshUpcomingReleases() {
       container.innerHTML = `
         <div class="alert alert-info">
           <i class="bi bi-info-circle"></i>
-          No upcoming releases found. Click "Update from Wikipedia" to load release data.
+          No upcoming releases found. Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.
         </div>
       `;
       return;
@@ -1472,3 +1477,111 @@ document.addEventListener('DOMContentLoaded', function() {
     refreshMbDownloads();
   }
 });
+
+// ===== SOULSEEK SEARCH (downloads_search_soulseek.html) =====
+
+let currentSlskdSearchId = null;
+let slskdPollInterval = null;
+
+function searchSoulseek(event) {
+  if (event && event.preventDefault) event.preventDefault();
+  const queryInput = document.getElementById('slskdSearchQuery');
+  if (!queryInput) return;
+  const query = queryInput.value.trim();
+  if (!query) return;
+
+  const emptyEl = document.getElementById('slskdSearchEmpty');
+  const resultsEl = document.getElementById('slskdSearchResults');
+  if (emptyEl) emptyEl.style.display = 'none';
+  if (resultsEl) {
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = '<div class="text-center p-3"><span class="spinner-border spinner-border-sm me-2"></span>Searching Soulseek…</div>';
+  }
+
+  if (slskdPollInterval) {
+    clearInterval(slskdPollInterval);
+    slskdPollInterval = null;
+  }
+
+  fetch('/api/slskd/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.error) {
+      if (resultsEl) resultsEl.innerHTML = `<div class="alert alert-danger">${escapeHtml(data.error)}</div>`;
+      return;
+    }
+    if (data.slotBusy) {
+      if (resultsEl) resultsEl.innerHTML = '<div class="alert alert-warning"><i class="bi bi-clock"></i> <strong>Soulseek search slot is busy.</strong> Retrying automatically…</div>';
+      const slotPoll = setInterval(() => {
+        fetch('/api/slskd/search-slot')
+          .then(r => r.json())
+          .then(slotData => {
+            if (slotData.slotFree) {
+              clearInterval(slotPoll);
+              searchSoulseek({ preventDefault: () => {} });
+            }
+          })
+          .catch(() => {});
+      }, 2000);
+      return;
+    }
+    currentSlskdSearchId = data.searchId;
+    slskdPollInterval = setInterval(pollSlskdSearchResults, 1500);
+    pollSlskdSearchResults();
+  })
+  .catch(error => {
+    if (resultsEl) resultsEl.innerHTML = `<div class="alert alert-danger">Network error: ${escapeHtml(error.message)}</div>`;
+  });
+}
+
+function pollSlskdSearchResults() {
+  if (!currentSlskdSearchId) return;
+  fetch(`/api/slskd/search/${encodeURIComponent(currentSlskdSearchId)}`)
+    .then(response => response.json())
+    .then(data => {
+      const resultsEl = document.getElementById('slskdSearchResults');
+      if (!resultsEl) return;
+      if (data.error) {
+        resultsEl.innerHTML = `<div class="alert alert-danger">${escapeHtml(data.error)}</div>`;
+        if (slskdPollInterval) { clearInterval(slskdPollInterval); slskdPollInterval = null; }
+        return;
+      }
+      const results = data.results || [];
+      const isComplete = data.isComplete || false;
+      const state = data.state || 'Searching';
+
+      if (isComplete && results.length === 0) {
+        resultsEl.innerHTML = `<div class="alert alert-info"><i class="bi bi-info-circle"></i> Search complete (${state}). No results found.</div>`;
+        if (slskdPollInterval) { clearInterval(slskdPollInterval); slskdPollInterval = null; }
+        return;
+      }
+
+      let html = '<div class="table-responsive"><table class="table table-hover"><thead><tr><th>File</th><th class="text-center">User</th><th class="text-center">Size</th><th class="text-center">Bitrate</th><th class="text-center">Action</th></tr></thead><tbody>';
+      results.forEach(r => {
+        const sizeMB = r.size_mb || (r.size ? (r.size / (1024 * 1024)).toFixed(2) : 'N/A');
+        html += `<tr>
+          <td><div class="small" style="max-width:500px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(r.filename || 'Unknown')}</div></td>
+          <td class="text-center"><small class="text-muted">${escapeHtml(r.username || 'N/A')}</small></td>
+          <td class="text-center">${sizeMB} MB</td>
+          <td class="text-center"><small class="text-muted">${r.bitrate || 'unknown'}</small></td>
+          <td class="text-center"><button class="btn btn-sm btn-success" onclick="downloadSlskdFile('${escapeHtml(r.username)}', '${escapeHtml(r.filename)}', ${parseInt(r.size) || 0})"><i class="bi bi-download"></i> Download</button></td>
+        </tr>`;
+      });
+      html += `</tbody></table></div><div class="text-muted small mt-2">Found ${results.length} result(s) — State: ${escapeHtml(state)}${isComplete ? ' (complete)' : ''}</div>`;
+      resultsEl.innerHTML = html;
+
+      if (isComplete && slskdPollInterval) {
+        clearInterval(slskdPollInterval);
+        slskdPollInterval = null;
+      }
+    })
+    .catch(error => {
+      const resultsEl = document.getElementById('slskdSearchResults');
+      if (resultsEl) resultsEl.innerHTML = `<div class="alert alert-danger">Network error: ${escapeHtml(error.message)}</div>`;
+      if (slskdPollInterval) { clearInterval(slskdPollInterval); slskdPollInterval = null; }
+    });
+}

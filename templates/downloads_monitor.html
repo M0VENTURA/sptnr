@@ -88,50 +88,11 @@
               Click <strong>Open Exportify</strong> to log in with Spotify, export any playlist, and save the <code>.csv</code> file. The site opens in a popup you can close when done.
             </p>
           </div>
-          <button type="button" class="btn btn-success btn-lg text-nowrap" data-bs-toggle="modal" data-bs-target="#exportifyModal">
+           <a href="https://exportify.net" target="_blank" rel="noopener" class="btn btn-success btn-lg text-nowrap">
             <i class="bi bi-spotify"></i> Open Exportify
-          </button>
+          </a>
         </div>
       </div>
-
-      <!-- Exportify modal -->
-      <div class="modal fade" id="exportifyModal" tabindex="-1" aria-labelledby="exportifyModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-xl modal-dialog-centered" style="max-width:90vw;">
-          <div class="modal-content" style="height:85vh;">
-            <div class="modal-header py-2">
-              <h5 class="modal-title" id="exportifyModalLabel">
-                <i class="bi bi-spotify text-success"></i> Exportify — Export Spotify Playlists
-              </h5>
-              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body p-0" style="height:100%;">
-              <iframe id="exportifyFrame" src="" style="width:100%;height:100%;border:none;" allow="cross-origin-isolated" title="Exportify"></iframe>
-            </div>
-            <div class="modal-footer py-2 justify-content-between">
-              <small class="text-muted">Log in with Spotify, click Export next to a playlist, then save the <code>.csv</code> file.</small>
-              <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <script>
-        (function () {
-          var modal = document.getElementById('exportifyModal');
-          if (modal) {
-            modal.addEventListener('show.bs.modal', function () {
-              var frame = document.getElementById('exportifyFrame');
-              if (frame && !frame.src) {
-                frame.src = 'https://exportify.net';
-              }
-            });
-            // Stop loading the iframe when the modal is hidden to free resources.
-            modal.addEventListener('hidden.bs.modal', function () {
-              var frame = document.getElementById('exportifyFrame');
-              if (frame) { frame.src = ''; }
-            });
-          }
-        })();
-      </script>
 
       <!-- Step 2 — inline CSV upload form -->
       <div class="card" id="csvImportCard">
@@ -247,10 +208,9 @@
         const allTracks = parseData.all_tracks || [];
         if (!allTracks.length) throw new Error('No tracks found in CSV');
 
-        // Step 2 – queue all tracks
-        csvSetProgress(50, 'Adding to queue…',
-          `Sending ${allTracks.length} track${allTracks.length !== 1 ? 's' : ''} to the download queue.`);
-
+        // Step 2 – queue tracks in small batches so the progress bar moves
+        // and we don't hit gateway timeouts on large playlists.
+        const BATCH_SIZE = 10;
         const nameSlug    = importName.replace(/\s+/g, '_').substring(0, 80);
         const currentYear = String(new Date().getFullYear());
         const items = allTracks.map((t, idx) => ({
@@ -268,26 +228,46 @@
         }));
 
         let totalAdded = 0, totalSkipped = 0, totalFailed = 0;
-        try {
-          const res  = await fetch('/api/queue/add-batch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items, import_group: nameSlug, import_type: 'playlist', source: 'soulseek' }),
-          });
-          const data = await res.json();
-          // Read real counts from response body regardless of HTTP status.
-          // The API returns accurate added/skipped/failed even when it responds
-          // with 500 (e.g. "all failed" edge-case uses 500 but includes counts).
-          if (data && (data.added !== undefined || data.failed !== undefined)) {
-            totalAdded   = data.added   || 0;
-            totalSkipped = data.skipped || 0;
-            totalFailed  = data.failed  || 0;
-          } else if (!res.ok) {
-            totalFailed = items.length;
+        let processedCount = 0;
+
+        csvSetProgress(2, 'Adding to queue…',
+          `Sending ${items.length} track${items.length !== 1 ? 's' : ''} to the download queue.`);
+
+        for (let i = 0; i < items.length; i += BATCH_SIZE) {
+          const batch = items.slice(i, i + BATCH_SIZE);
+          let batchAdded = 0, batchSkipped = 0, batchFailed = 0;
+          try {
+            const res = await fetch('/api/queue/add-batch', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                items: batch,
+                import_group: nameSlug,
+                import_type: 'playlist',
+                source: 'soulseek',
+              }),
+            });
+            const data = await res.json();
+            if (data && (data.added !== undefined || data.failed !== undefined)) {
+              batchAdded   = data.added   || 0;
+              batchSkipped = data.skipped || 0;
+              batchFailed  = data.failed  || 0;
+            } else if (!res.ok) {
+              batchFailed = batch.length;
+            }
+          } catch (batchErr) {
+            console.warn('Batch queue add error:', batchErr);
+            batchFailed = batch.length;
           }
-        } catch (batchErr) {
-          console.error('CSV queue batch error:', batchErr);
-          totalFailed = items.length;
+
+          totalAdded   += batchAdded;
+          totalSkipped += batchSkipped;
+          totalFailed  += batchFailed;
+          processedCount += batch.length;
+
+          const pct = (processedCount / items.length) * 100;
+          csvSetProgress(pct, 'Adding to queue…',
+            `Processed ${processedCount} of ${items.length}  •  Added ${totalAdded}  •  Failed ${totalFailed}`);
         }
 
         csvSetProgress(100, 'Done!', `${totalAdded} track${totalAdded !== 1 ? 's' : ''} added to the queue.`);
@@ -374,6 +354,9 @@
       <div class="d-flex align-items-center gap-2 flex-wrap">
         <button class="btn btn-sm btn-outline-success" id="autoMatchAllMonitorBtn" onclick="autoMatchAllUpcomingReleasesMonitor(this)" title="Auto-match MusicBrainz MBID for all unmatched releases">
           <i class="bi bi-magic"></i> Auto Match All
+        </button>
+        <button class="btn btn-sm btn-success" onclick="checkForUpdatesMonitor()">
+          <i class="bi bi-bell"></i> Check for Updates
         </button>
         <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleasesMonitor()">
           <i class="bi bi-download"></i> Update from Wikipedia
@@ -504,6 +487,21 @@
     <div class="card-body p-0">
       <div id="folderGroupsList" style="max-height: 600px; overflow-y: auto;">
         <!-- Queue items rendered here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Unmatched Folders in Downloads Section -->
+  <div class="card mb-4" id="unmatchedFoldersSection" style="display: none;">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-folder"></i> Matched Folders in Downloads
+      </h5>
+      <span class="badge bg-info" id="unmatchedFoldersBadge">0 items</span>
+    </div>
+    <div class="card-body p-0">
+      <div id="unmatchedFoldersList" style="max-height: 600px; overflow-y: auto;">
+        <!-- Unmatched folder items rendered here -->
       </div>
     </div>
   </div>
@@ -648,6 +646,28 @@
     </div>
     <div class="card-body p-2">
       <pre id="queueActivityLog" style="height:250px; overflow-y:auto; font-family:monospace; font-size:12px; background:#111; color:#ccc; padding:8px; margin:0; border-radius:4px;"></pre>
+      <div class="mt-2">
+        <a href="/api/download-log/queue" class="btn btn-sm btn-outline-info" download>
+          <i class="bi bi-download"></i> Download Last Hour
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-search"></i> Soulseek Search Log</span>
+      <button id="searchLogPauseBtn" type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleSearchLogPause()">
+        <i class="bi bi-pause-fill"></i> Pause
+      </button>
+    </div>
+    <div class="card-body p-2">
+      <pre id="soulseekSearchLog" style="height:250px; overflow-y:auto; font-family:monospace; font-size:12px; background:#111; color:#ccc; padding:8px; margin:0; border-radius:4px;"></pre>
+      <div class="mt-2">
+        <a href="/api/download-log/search" class="btn btn-sm btn-outline-info" download>
+          <i class="bi bi-download"></i> Download Last Hour
+        </a>
+      </div>
     </div>
   </div>
 
@@ -675,6 +695,24 @@
     background-color: rgba(25, 135, 84, 0.15) !important;
     border-left: 3px solid #198754;
   }
+  .queue-track-row td {
+    border-bottom: none !important;
+  }
+  .queue-track-row:last-child td {
+    border-bottom: 1px solid #495057 !important;
+  }
+  .queue-track-match-row {
+    font-size: 0.85rem;
+  }
+  .queue-track-final-row {
+    font-size: 0.85rem;
+  }
+  .folder-header-meta {
+    font-size: 0.9rem;
+  }
+  .folder-header-meta .badge {
+    font-size: 0.8rem;
+  }
 </style>
 
 <!-- Include existing JavaScript -->
@@ -684,6 +722,7 @@
 // Queue management functions for downloads monitor
 
 let queueLogPaused = false;
+let searchLogPaused = false;
 const QUEUE_PAGE_LIMIT = 500;  // Show up to 500 items per page to avoid pagination
 let queuePageOffset = 0;
 
@@ -929,7 +968,7 @@ async function clearUpcomingReleasesMonitor() {
       statusEl.style.display = 'none';
       container.innerHTML = `
         <div class="text-center py-4">
-          <p class="text-muted mb-0">Database cleared. Click "Update from Wikipedia" to load new release data.</p>
+          <p class="text-muted mb-0">Database cleared. Click <strong>Check for Updates</strong> to search MusicBrainz for new release data.</p>
         </div>
       `;
     }, 1500);
@@ -979,6 +1018,11 @@ async function scrapeUpcomingReleasesMonitor() {
   }
 }
 
+async function checkForUpdatesMonitor() {
+  localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
+  await refreshUpcomingReleasesMonitor();
+}
+
 async function refreshUpcomingReleasesMonitor() {
   const container = document.getElementById('upcomingReleasesMonitor');
   if (!container) {
@@ -1016,7 +1060,7 @@ async function refreshUpcomingReleasesMonitor() {
     if (!Array.isArray(data.releases) || data.releases.length === 0) {
       container.innerHTML = `
         <div class="text-center py-4">
-          <p class="text-muted mb-0">No upcoming releases found. Click "Update from Wikipedia" to load release data.</p>
+          <p class="text-muted mb-0">No upcoming releases found. Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.</p>
         </div>
       `;
       return;
@@ -1037,7 +1081,7 @@ async function refreshUpcomingReleasesMonitor() {
     if (releases.length === 0) {
       container.innerHTML = `
         <div class="text-center py-4">
-          <p class="text-muted mb-0">No upcoming releases found. Click "Update from Wikipedia" to load release data.</p>
+          <p class="text-muted mb-0">No upcoming releases found. Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.</p>
         </div>
       `;
       return;
@@ -1696,7 +1740,7 @@ function _cancelWaitForSlot() {
   }
 }
 
-async function pollSoulseekManualSearchResults(searchId, attempt) {
+async function pollSoulseekManualSearchResults(searchId, attempt, transientErrors = 0) {
   const statusEl = document.getElementById('soulseekManualStatus');
   const resultsEl = document.getElementById('soulseekManualResults');
   const state = window.soulseekManualSearchState || {};
@@ -1706,7 +1750,9 @@ async function pollSoulseekManualSearchResults(searchId, attempt) {
   }
 
   try {
-    const data = await fetchJsonOrThrow(`/api/slskd/search/${encodeURIComponent(searchId)}`);
+    // Use a 45 s timeout for polling so slow slskd responses don't trip the
+    // frontend abort before the backend has a chance to return.
+    const data = await fetchJsonOrThrow(`/api/slskd/search/${encodeURIComponent(searchId)}`, {}, 45000);
     const results = Array.isArray(data.results) ? data.results : [];
     const responseCount = Number(data.responseCount || 0);
     const isComplete = !!data.isComplete;
@@ -1719,7 +1765,7 @@ async function pollSoulseekManualSearchResults(searchId, attempt) {
 
     if (!isComplete && attempt < 60) {
       state.pollTimer = setTimeout(() => {
-        pollSoulseekManualSearchResults(searchId, attempt + 1);
+        pollSoulseekManualSearchResults(searchId, attempt + 1, 0);
       }, 1500);
       window.soulseekManualSearchState = state;
       return;
@@ -1730,6 +1776,29 @@ async function pollSoulseekManualSearchResults(searchId, attempt) {
     }
   } catch (error) {
     console.error('Error polling Soulseek manual search results:', error);
+    const msg = (error.message || '').toLowerCase();
+    const isTransient = (
+      msg.includes('timed out') ||
+      msg.includes('timeout') ||
+      msg.includes('network') ||
+      msg.includes('524') ||
+      msg.includes('504') ||
+      msg.includes('502') ||
+      msg.includes('503') ||
+      msg.includes('500') ||
+      msg.includes('abort') ||
+      msg.includes('fetch')
+    );
+    if (isTransient && transientErrors < 5) {
+      if (statusEl) {
+        statusEl.textContent = `Poll failed (${transientErrors + 1}/5) — retrying…`;
+      }
+      state.pollTimer = setTimeout(() => {
+        pollSoulseekManualSearchResults(searchId, attempt + 1, transientErrors + 1);
+      }, 2000);
+      window.soulseekManualSearchState = state;
+      return;
+    }
     if (statusEl) {
       statusEl.innerHTML = `<span class="text-danger">${escapeHtml(error.message)}</span>`;
     }
@@ -1755,6 +1824,7 @@ function renderSoulseekManualSearchResults(results) {
     const bitrate = row.bitrate || '-';
     const duration = row.duration || row.length || '-';
     const size = Number(row.size || 0);
+    const length = Number(row.length || 0);
 
     return `
       <tr>
@@ -1764,7 +1834,7 @@ function renderSoulseekManualSearchResults(results) {
         <td>${escapeHtml(String(bitrate))}</td>
         <td>${escapeHtml(String(duration))}</td>
         <td class="text-center">
-          <button class="btn btn-sm btn-success" onclick="downloadSoulseekManualResult('${encodeInlineArg(username)}', '${encodeInlineArg(filename)}', ${size}, this)">
+          <button class="btn btn-sm btn-success" onclick="downloadSoulseekManualResult('${encodeInlineArg(username)}', '${encodeInlineArg(filename)}', ${size}, ${length}, this)">
             Select
           </button>
         </td>
@@ -1797,9 +1867,17 @@ document.addEventListener('DOMContentLoaded', function() {
   if (searchParam) {
     openSoulseekManualSearchModal(searchParam);
   }
+
+  // Auto-poll queue status and folder groups for real-time updates
+  if (document.getElementById('folderGroupsSection')) {
+    setInterval(() => {
+      loadQueueStatus();
+      loadFolderGroups({ keepVisibleOnEmpty: true });
+    }, 5000);
+  }
 });
 
-async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, buttonEl = null) {
+async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, length, buttonEl = null) {
   const username = decodeInlineArg(usernameEnc, '');
   const filename = decodeInlineArg(filenameEnc, '');
   const statusEl = document.getElementById('soulseekManualStatus');
@@ -1821,8 +1899,8 @@ async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, butt
   const queueId = window.soulseekManualSearchState?.queueId || null;
   const endpoint = queueId ? '/api/slskd/queue-download' : '/api/slskd/download';
   const body = queueId
-    ? { queue_id: queueId, username, filename, size: Number(size || 0) }
-    : { username, filename, size: Number(size || 0) };
+    ? { queue_id: queueId, username, filename, size: Number(size || 0), length: Number(length || 0) || null }
+    : { username, filename, size: Number(size || 0), length: Number(length || 0) || null };
 
   try {
     const data = await fetchJsonOrThrow(endpoint, {
@@ -1839,6 +1917,14 @@ async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, butt
       statusEl.innerHTML = `<span class="text-success">Queued: ${escapeHtml(filename)}</span>`;
     }
     alert('✅ Soulseek download queued');
+
+    // Refresh queue UI so the status change to "downloading" is visible immediately
+    if (typeof loadQueueStatus === 'function') {
+      await loadQueueStatus();
+    }
+    if (typeof loadFolderGroups === 'function') {
+      await loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+    }
   } catch (error) {
     console.error('Error queueing Soulseek manual download:', error);
     if (statusEl) {
@@ -1959,6 +2045,24 @@ function getTrackSimilarity(a, b) {
   }
 
   return score;
+}
+
+function getCommonReleaseId(items) {
+  const ids = items.map(i => i.release_mbid || i.release_id).filter(Boolean);
+  if (ids.length === 0) return null;
+  const first = ids[0];
+  if (ids.every(id => id === first)) return first;
+  const counts = {};
+  let maxCount = 0;
+  let maxId = null;
+  for (const id of ids) {
+    counts[id] = (counts[id] || 0) + 1;
+    if (counts[id] > maxCount) {
+      maxCount = counts[id];
+      maxId = id;
+    }
+  }
+  return maxId;
 }
 
 function buildFolderToReleaseTrackMap(folderTracks, releaseTracks) {
@@ -2593,7 +2697,8 @@ function buildQueueTrackStatusDetail(track, group) {
   const status = String(track?.status || group?.queue_item_status || '').toLowerCase();
   const queueId = Number(track?.id || 0);
   const source = String(track?.source || '').trim();
-  const mbid = String(track?.release_mbid || group?.release_id || '').trim();
+  const groupMbid = String(group?.release_id || '').trim();
+  const trackMbid = String(track?.release_mbid || '').trim();
   const filePath = String(
     track?.file_path || track?.matched_file_path || track?.music_file_path || track?.source_file_path || ''
   ).trim();
@@ -2628,8 +2733,8 @@ function buildQueueTrackStatusDetail(track, group) {
   if (source) {
     parts.push(`Source ${source}`);
   }
-  if (mbid) {
-    parts.push(`MBID ${mbid}`);
+  if (trackMbid && trackMbid !== groupMbid) {
+    parts.push(`MBID ${trackMbid}`);
   }
   if (filePath) {
     parts.push('File path detected');
@@ -2709,6 +2814,150 @@ function buildTrackPathDetailsHtml(track) {
   }
 
   return rows.join('');
+}
+
+function getTrackMatchInfo(track, group) {
+  const status = String(track?.status || group?.queue_item_status || '').toLowerCase();
+  const source = String(track?.source || '').toLowerCase();
+
+  // If downloading via soulseek, show remote path (fallback if path not yet set)
+  if (status === 'downloading' && source === 'soulseek') {
+    return { type: 'remote', text: track.source_file_path || 'Soulseek download in progress', label: 'Remote Match', icon: 'bi-cloud-arrow-down', color: 'text-warning' };
+  }
+
+  // If manual copy selected and detected in downloads
+  if (track.source_music_path && (status === 'copy_recommended' || status === 'pending_match')) {
+    return { type: 'copy', text: track.source_music_path, label: 'Copy Source', icon: 'bi-copy', color: 'text-info' };
+  }
+
+  // If matched locally, show local file path
+  if (track.matched_file_path) {
+    return { type: 'local', text: track.matched_file_path, label: 'Local Match', icon: 'bi-folder-check', color: 'text-success' };
+  }
+
+  // If file downloaded from soulseek
+  if (track.file_path) {
+    return { type: 'local', text: track.file_path, label: 'Downloaded', icon: 'bi-download', color: 'text-success' };
+  }
+
+  // If music file path exists (final location known before move)
+  if (track.music_file_path) {
+    return { type: 'music', text: track.music_file_path, label: 'Music Library', icon: 'bi-music-note-beamed', color: 'text-success' };
+  }
+
+  return null;
+}
+
+function _getTrackFileExtension(track) {
+  const extSources = [
+    track?.music_file_path,
+    track?.matched_file_path,
+    track?.file_path,
+    track?.found_filename,
+    track?.filename,
+  ];
+  for (const src of extSources) {
+    if (src) {
+      const m = String(src).match(/\.([a-zA-Z0-9]+)$/);
+      if (m) return '.' + m[1].toLowerCase();
+    }
+  }
+  return '';
+}
+
+function getTrackFinalLocation(track, group) {
+  // If the track has a music_file_path, that's the final location
+  if (track.music_file_path) {
+    return track.music_file_path;
+  }
+
+  // If the track has a matched_file_path in the music library
+  if (track.matched_file_path && String(track.matched_file_path).includes('/music/')) {
+    return track.matched_file_path;
+  }
+
+  // Construct expected final path following:
+  // /music/album artist/year - album/track number - track artist - trackname.filetype
+  const albumArtist = group?.album_artist || track?.album_artist || group?.artist || track?.artist || '';
+  const album = group?.album || track?.album || '';
+  const title = track?.title || '';
+  const year = track?.release_year || track?.year || group?.year || '';
+  const trackNumber = track?.track_number || '';
+  const trackArtist = track?.artist || '';
+  const ext = _getTrackFileExtension(track);
+
+  if (albumArtist && album && title) {
+    const tn = trackNumber ? String(trackNumber).padStart(2, '0') : '';
+    const fileName = tn
+      ? `${tn} - ${trackArtist || albumArtist} - ${title}${ext}`
+      : `${trackArtist || albumArtist} - ${title}${ext}`;
+    return `/music/${albumArtist}/${year ? year + ' - ' : ''}${album}/${fileName}`;
+  }
+
+  // Format track number with disc prefix logic (matching backend)
+  let trackNum = track?.track_number || '0';
+  const discNum = track?.disc_number || '1';
+  try {
+    const trackNumInt = parseInt(String(trackNum).split('/')[0]) || 0;
+    const discNumInt = parseInt(String(discNum).split('/')[0]) || 1;
+    if (discNumInt > 1) {
+      trackNum = `${discNumInt}${String(trackNumInt).padStart(2, '0')}`;
+    } else {
+      trackNum = String(trackNumInt).padStart(2, '0');
+    }
+  } catch (e) {
+    trackNum = '00';
+  }
+
+  // Extract file extension from available paths
+  let ext = '';
+  const pathWithExt = track?.file_path || track?.found_filename || track?.source_file_path || '';
+  if (pathWithExt) {
+    const match = String(pathWithExt).match(/\.([a-zA-Z0-9]{2,5})$/);
+    if (match) {
+      ext = `.${match[1]}`;
+    }
+  }
+
+  const trackArtist = track?.artist || artist || 'Unknown Artist';
+  return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${trackNum}. ${trackArtist} - ${title}${ext}`;
+}
+
+function isTrackInFinalLocation(track) {
+  return !!(track.music_file_path || (track.matched_file_path && String(track.matched_file_path).includes('/music/')));
+}
+
+function getFolderFinalLocation(group) {
+  // Use the first track's final location parent directory
+  const tracks = group?.tracks || [];
+  for (const track of tracks) {
+    const loc = getTrackFinalLocation(track, group);
+    if (loc) {
+      // Get parent directory
+      const parts = String(loc).replace(/\\/g, '/').split('/');
+      parts.pop();
+      return parts.join('/');
+    }
+  }
+
+  // Construct from group info
+  const artist = group?.album_artist || group?.artist || '';
+  const album = group?.album || '';
+  const year = getFolderYear(group);
+  if (artist && album) {
+    return `/music/${artist}/${year ? year + ' - ' : ''}${album}`;
+  }
+
+  return null;
+}
+
+function getFolderYear(group) {
+  if (group.year) return group.year;
+  const tracks = group?.tracks || [];
+  for (const track of tracks) {
+    if (track.release_year) return track.release_year;
+  }
+  return '';
 }
 
 async function loadFolderGroups(options = {}) {
@@ -2816,6 +3065,7 @@ async function loadFolderGroups(options = {}) {
           source_file_path: item.source_file_path || '',
           source_music_path: item.source_music_path || '',
           track_number: item.track_number,
+          disc_number: item.disc_number,
           duration: item.duration || 0,
           release_mbid: item.release_mbid || item.release_id || '',
           release_year: item.release_year || item.year || ''
@@ -2833,6 +3083,7 @@ async function loadFolderGroups(options = {}) {
       artist: release.artist,
       album_artist: release.artist,
       album: release.album,
+      year: release.tracks[0]?.release_year || '',
       track_count: release.tracks.length,
       is_queue_item: true,
       is_release_group: true,
@@ -2881,6 +3132,7 @@ async function loadFolderGroups(options = {}) {
         folder_name: `[Queue] ${albumGroup.artist || 'Unknown'} - ${(albumGroup.album || firstItem.title || 'Unknown')}`,
         artist: albumGroup.items[0]?.album_artist || albumGroup.artist,
         album: albumGroup.album,
+        year: firstItem.release_year || firstItem.year || '',
         track_count: albumGroup.items.length,
         is_queue_item: true,
         queue_item_id: isMulti ? null : firstItem.id,
@@ -2900,11 +3152,12 @@ async function loadFolderGroups(options = {}) {
           source_file_path: item.source_file_path || '',
           source_music_path: item.source_music_path || '',
           track_number: item.track_number,
+          disc_number: item.disc_number,
           duration: item.duration || 0,
           release_mbid: item.release_mbid || item.release_id || '',
           release_year: item.release_year || item.year || ''
         })),
-        release_id: isMulti ? null : (firstItem.release_mbid || firstItem.release_id || null),
+        release_id: getCommonReleaseId(albumGroup.items),
         release_source: isMulti ? null : (firstItem.release_source || null),
         is_musicbrainz_release: false
       };
@@ -3004,9 +3257,9 @@ async function loadFolderGroups(options = {}) {
       return fp && !matchedFolderPaths.has(fp);
     });
 
-    // Queue items first (active/in-progress work), then unmatched /downloads
-    // folders so the user can still sort files that arrived outside the queue.
-    groups = [...queueGroups, ...unmatchedFolderGroups];
+    // Keep queue items and unmatched folders separate for rendering
+    groups = [...queueGroups];
+    const unmatchedGroups = [...unmatchedFolderGroups];
 
     console.log('[loadFolderGroups] API Response:', {
       success: folderData.success,
@@ -3047,6 +3300,29 @@ async function loadFolderGroups(options = {}) {
       return keyA.localeCompare(keyB);
     });
     
+    // Sort unmatched groups with the same logic
+    const filteredUnmatched = unmatchedGroups.sort((a, b) => {
+      if (sortMode === 'artist') {
+        const artistA = String(a.artist || '').toLowerCase();
+        const artistB = String(b.artist || '').toLowerCase();
+        if (artistA !== artistB) return artistA.localeCompare(artistB);
+        const albumA = String(a.album || '').toLowerCase();
+        const albumB = String(b.album || '').toLowerCase();
+        return albumA.localeCompare(albumB);
+      }
+      if (sortMode === 'album') {
+        const albumA = String(a.album || '').toLowerCase();
+        const albumB = String(b.album || '').toLowerCase();
+        if (albumA !== albumB) return albumA.localeCompare(albumB);
+        const artistA = String(a.artist || '').toLowerCase();
+        const artistB = String(b.artist || '').toLowerCase();
+        return artistA.localeCompare(artistB);
+      }
+      const keyA = String(a.folder_path || a.folder_name || '').toLowerCase();
+      const keyB = String(b.folder_path || b.folder_name || '').toLowerCase();
+      return keyA.localeCompare(keyB);
+    });
+
     const showFolderGroups = true;
     const visibleFolderCount = filteredGroups.length;
     const totalGroups = visibleFolderCount;
@@ -3061,7 +3337,16 @@ async function loadFolderGroups(options = {}) {
         artist: group.artist,
         album: group.album,
         matched_folder_path: group.matched_folder_path || null,
-        queue_item_status: group.queue_item_status
+        queue_item_status: group.queue_item_status,
+        // Include per-track statuses so status changes inside multi-track groups
+        // are detected and the list re-renders automatically.
+        track_statuses: (group.tracks || []).map(t => `${t.id || 0}:${t.status || 'unknown'}`).join(',')
+      })),
+      unmatched: filteredUnmatched.map(group => ({
+        folder_path: group.folder_path,
+        track_count: group.track_count,
+        artist: group.artist,
+        album: group.album
       }))
     });
     
@@ -3093,11 +3378,11 @@ async function loadFolderGroups(options = {}) {
     badge.textContent = `${totalGroups} items`;
     updateQueuePageControls(totalQueueCount, queue.length);
     
-    let html = '';
+    let queueHtml = '';
+    let unmatchedHtml = '';
 
-    if (showFolderGroups) {
-      const visibleFolderStateKeys = new Set();
-      filteredGroups.forEach((group, index) => {
+    function buildGroupCardHtml(group, index, visibleFolderStateKeys) {
+      let groupHtml = '';
       const folderPathEnc = encodeInlineArg(group.folder_path || '');
       const artistEnc = encodeInlineArg(group.artist || '');
       const albumEnc = encodeInlineArg(group.album || '');
@@ -3198,6 +3483,35 @@ async function loadFolderGroups(options = {}) {
         }
       }
       
+      // Calculate track counts for queue items
+      let trackCountSummary = '';
+      if (isQueueItem && group.tracks) {
+        const total = group.tracks.length;
+        const completed = group.tracks.filter(t => ['completed', 'matched', 'in_collection', 'moving'].includes(t.status)).length;
+        const left = total - completed;
+        trackCountSummary = `<span class="badge bg-light text-dark">${total} tracks</span> <span class="badge bg-success">${completed} completed</span> <span class="badge bg-warning">${left} left</span>`;
+      } else {
+        trackCountSummary = `<span class="badge bg-light text-dark">${group.track_count} tracks</span>`;
+      }
+      
+      // Final folder location
+      const finalFolderPath = getFolderFinalLocation(group);
+      const anyTrackConfirmed = (group?.tracks || []).some(t => isTrackInFinalLocation(t));
+      const finalLocationHtml = finalFolderPath
+        ? anyTrackConfirmed
+          ? `<span class="ms-2 text-success"><i class="bi bi-folder-check"></i> <strong>Final:</strong> <code>${escapeHtml(finalFolderPath)}</code></span>`
+          : `<span class="ms-2 text-warning"><i class="bi bi-folder"></i> <strong>Final:</strong> <code>${escapeHtml(finalFolderPath)}</code></span>`
+        : `<span class="ms-2 text-muted"><i class="bi bi-folder-x"></i> Final location not yet determined</span>`;
+      
+      // MBID match display
+      const mbidMatchHtml = groupMbid
+        ? `<span class="badge bg-info text-dark ms-2">MBID Match: ${escapeHtml(groupMbid)}</span>`
+        : `<span class="badge bg-secondary ms-2">No MBID Match</span>`;
+      
+      // Year display
+      const year = getFolderYear(group);
+      const yearHtml = year ? `<span class="badge bg-dark text-light ms-2">${escapeHtml(year)}</span>` : '';
+      
       // Check if this group was previously expanded
       const isExpanded = expandedFolderGroupIds.has(folderStateKey);
       const displayStyle = isExpanded ? 'block' : 'none';
@@ -3205,23 +3519,20 @@ async function loadFolderGroups(options = {}) {
       const toggleIcon = isExpanded ? 'bi-chevron-up' : 'bi-chevron-down';
       const tracklistId = `group-${folderStateKey}`;
       
-      html += `
+      groupHtml += `
         <div class="card border-bottom mb-2 ${inconsistentClass}">
           <div class="card-body p-3">
             <div class="row align-items-center">
               <div class="col-md-6">
                 <h6 class="card-title mb-1">
-                  <i class="bi bi-list-task"></i> ${escapeHtml(group.album_artist || group.artist || '')} – ${escapeHtml(group.album || '')}
+                  <i class="bi bi-list-task"></i> ${escapeHtml(group.album_artist || group.artist || '')} – ${yearHtml ? yearHtml + ' – ' : ''}${escapeHtml(group.album || '')}
                   ${queueStatusBadge}
                   ${mbidBadge}
                 </h6>
-                <div class="text-muted small">
-                  <span class="badge bg-light text-dark">${group.track_count} tracks</span>
-                  ${group.matched_folder_path ? `
-                    <span class="ms-2 text-success"><i class="bi bi-folder-check"></i> <strong>Folder:</strong> <code>${escapeHtml(group.matched_folder_path)}</code></span>
-                  ` : `
-                    <span class="ms-2 text-muted"><i class="bi bi-folder-x"></i> No matching folder found yet</span>
-                  `}
+                <div class="folder-header-meta text-muted">
+                  ${trackCountSummary}
+                  ${finalLocationHtml}
+                  ${mbidMatchHtml}
                 </div>
               </div>
               <div class="col-md-6 text-end">
@@ -3293,9 +3604,9 @@ async function loadFolderGroups(options = {}) {
                 <table class="table table-sm table-striped table-dark align-middle mb-0">
                   <thead>
                     <tr>
-                      <th>#</th>
+                      <th style="width: 40px;">#</th>
                       <th>Title</th>
-                      <th>Duration</th>
+                      <th style="width: 60px;">Duration</th>
                       ${isQueueItem ? '<th style="width: 100px; text-align: center;">Status</th>' : ''}
                       <th style="width: 100px; text-align: center;">Actions</th>
                     </tr>
@@ -3310,12 +3621,9 @@ async function loadFolderGroups(options = {}) {
                   '-';
                 const normalizedGroupAlbumArtist = String(group.album_artist || group.artist || '').trim().toLowerCase();
                 const trackArtistLabel = String(track.artist || '').trim();
-                const showTrackArtistInline = !!trackArtistLabel
+                const showTrackArtist = !!trackArtistLabel
                   && trackArtistLabel.toLowerCase() !== 'unknown artist'
                   && trackArtistLabel.toLowerCase() !== normalizedGroupAlbumArtist;
-                const inlineTrackArtistHtml = showTrackArtistInline
-                  ? `<span class="text-muted ms-2">${escapeHtml(trackArtistLabel)}</span>`
-                  : '';
                 
                 // Check if this track has been organized (from folder status)
                 let trackMatched = false;
@@ -3377,14 +3685,15 @@ async function loadFolderGroups(options = {}) {
                   const inferredAlbumEnc = encodeInlineArg(inferredAlbum || '');
                   const inferredTitleEnc = encodeInlineArg(track.title || '');
                   const showRetry = queueStatusRow === 'failed';
-                  const canCopyFromLocal = queueStatusRow === 'copy_recommended' && queueId > 0 && !!(track.source_music_path);
-                  const hasFilePath = !!(track.file_path || track.matched_file_path || track.music_file_path || group.matched_folder_path);
+                  const canCopyFromLocal = (queueStatusRow === 'copy_recommended' || queueStatusRow === 'queued') && queueId > 0 && !!(track.source_music_path);
+                  const hasFilePath = !!(track.file_path || track.matched_file_path || track.music_file_path || group.matched_folder_path || track.source_music_path);
                   const hasReleaseMbid = !!(track.release_mbid || group.release_id);
-                  const canMoveStatuses = ['matched', 'completed', 'pending_match'];
+                  const canMoveStatuses = ['matched', 'completed', 'pending_match', 'copy_recommended'];
                   const canMoveToMusic = (
                     canMoveStatuses.includes(queueStatusRow)
                     || (queueStatusRow === 'in_collection' && isDownloadsBacked)
                     || ((queueStatusRow === 'queued' || queueStatusRow === 'discovered') && hasFilePath && hasReleaseMbid)
+                    || (queueStatusRow === 'downloading' && hasFilePath)
                   ) && queueId > 0;
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
                   const canChangeMatch = queueId > 0;
@@ -3458,52 +3767,86 @@ async function loadFolderGroups(options = {}) {
                   }
                 }
                 
-                html += `
-                      <tr class="${trackClass}">
-                        <td><span style="font-size: 14px; font-weight: 500;">${trackIcon}${track.track_number || '-'}</span></td>
+                // Get match info and final location for the track
+                const matchInfo = getTrackMatchInfo(track, group);
+                const finalLocation = getTrackFinalLocation(track, group);
+                
+                const trackStatus = String(track.status || group.queue_item_status || 'queued').toLowerCase();
+                const statusMap = {
+                  queued: ['secondary', 'Queued'],
+                  searching: ['info', 'Searching'],
+                  downloading: ['primary', 'Downloading'],
+                  matched: ['success', 'Matched'],
+                  completed: ['success', 'Completed'],
+                  duplicate: ['warning', 'Duplicate'],
+                  unmatched: ['dark', 'Unmatched'],
+                  queried: ['info', 'Queried'],
+                  in_collection: ['secondary', 'In Collection'],
+                  discovered: ['warning', 'Discovered'],
+                  possible_duplicate: ['warning', 'Duplicate'],
+                  pending_match: ['warning', 'Pending Match'],
+                  copy_recommended: ['warning', 'Copy Recommended'],
+                  failed: ['danger', 'Failed']
+                };
+                const statusPair = statusMap[trackStatus] || ['secondary', trackStatus || 'Unknown'];
+                
+                groupHtml += `
+                      <tr class="${trackClass} queue-track-row">
+                        <td rowspan="3"><span style="font-size: 14px; font-weight: 500;">${trackIcon}${track.track_number || '-'}</span></td>
+                        <td><span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span></td>
+                        <td rowspan="3"><span style="font-size: 14px;">${duration}</span></td>
+                        ${isQueueItem ? `<td rowspan="3" style="text-align: center;"><span class="badge bg-${statusPair[0]}"><i class="bi bi-hourglass-split"></i> ${statusPair[1]}</span></td>` : ''}
+                        <td rowspan="3" style="text-align: center; min-width: 120px;">${moveButtonHtml}</td>
+                      </tr>
+                      <tr class="${trackClass} queue-track-match-row">
                         <td>
-                          <span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}${inlineTrackArtistHtml}</span>
-                          ${mappingHint}
-                          ${isQueueItem ? `<div class="small text-muted mt-1"><i class="bi bi-info-circle"></i> ${escapeHtml(statusDetail)}</div>` : ''}
-                          ${trackPathDetailsHtml || (displayPath ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(displayPath)}</div>` : '')}
+                          <div class="d-flex flex-column gap-1">
+                            <div>
+                              ${showTrackArtist ? `<span class="text-muted fw-semibold">${escapeHtml(trackArtistLabel)}</span>` : '<span class="text-muted">—</span>'}
+                            </div>
+                            ${matchInfo ? `<div class="${matchInfo.color}"><i class="bi ${matchInfo.icon}"></i> <strong>${matchInfo.label}:</strong> ${escapeHtml(matchInfo.text)}</div>` : ''}
+                            ${mappingHint}
+                            ${isQueueItem ? `<div class="small text-muted"><i class="bi bi-info-circle"></i> ${escapeHtml(statusDetail)}</div>` : ''}
+                            ${trackPathDetailsHtml || (displayPath ? `<div class="small text-muted"><i class="bi bi-file-earmark"></i> ${escapeHtml(displayPath)}</div>` : '')}
+                          </div>
                         </td>
-                        <td><span style="font-size: 14px;">${duration}</span></td>
-                        ${isQueueItem ? (() => {
-                          const trackStatus = String(track.status || group.queue_item_status || 'queued').toLowerCase();
-                          const statusMap = {
-                            queued: ['secondary', 'Queued'],
-                            searching: ['info', 'Searching'],
-                            downloading: ['primary', 'Downloading'],
-                            matched: ['success', 'Matched'],
-                            completed: ['success', 'Completed'],
-                            duplicate: ['warning', 'Duplicate'],
-                            unmatched: ['dark', 'Unmatched'],
-                            queried: ['info', 'Queried'],
-                            in_collection: ['secondary', 'In Collection'],
-                            discovered: ['warning', 'Discovered'],
-                            possible_duplicate: ['warning', 'Duplicate'],
-                            pending_match: ['warning', 'Pending Match'],
-                            copy_recommended: ['warning', 'Copy Recommended'],
-                            failed: ['danger', 'Failed']
-                          };
-                          const statusPair = statusMap[trackStatus] || ['secondary', trackStatus || 'Unknown'];
-                          return `<td style="text-align: center;"><span class="badge bg-${statusPair[0]}"><i class="bi bi-hourglass-split"></i> ${statusPair[1]}</span></td>`;
-                        })() : ''}
-                        <td style="text-align: center; min-width: 120px;">${moveButtonHtml}</td>
+                      </tr>
+                      <tr class="${trackClass} queue-track-final-row">
+                        <td>
+                          ${finalLocation
+                            ? isTrackInFinalLocation(track)
+                              ? `<div class="text-success"><i class="bi bi-check-circle"></i> <strong>Final:</strong> ${escapeHtml(finalLocation)}</div>`
+                              : `<div class="text-warning"><strong>Final:</strong> ${escapeHtml(finalLocation)}</div>`
+                            : '<div class="text-muted">—</div>'}
+                        </td>
                       </tr>`;
               });
               
               console.log(`[loadFolderGroups] Finished rendering ${group.tracks.length} tracks for folder: ${group.folder_path}`);
               
-              html += `
+              groupHtml += `
                   </tbody>
                 </table>
               </div>
             </div>
           </div>
         </div>`;
-      });
+      return groupHtml;
+    }
 
+    if (showFolderGroups) {
+      const visibleFolderStateKeys = new Set();
+      
+      // Build queue items HTML
+      filteredGroups.forEach((group, index) => {
+        queueHtml += buildGroupCardHtml(group, index, visibleFolderStateKeys);
+      });
+      
+      // Build unmatched folders HTML
+      filteredUnmatched.forEach((group, index) => {
+        unmatchedHtml += buildGroupCardHtml(group, index, visibleFolderStateKeys);
+      });
+      
       // Keep persisted state clean so stale groups don't accumulate forever.
       Array.from(expandedFolderGroupIds).forEach(stateKey => {
         if (!visibleFolderStateKeys.has(stateKey)) {
@@ -3514,13 +3857,30 @@ async function loadFolderGroups(options = {}) {
     }
 
     if (totalGroups === 0) {
-      html = `
+      queueHtml = `
         <div class="alert alert-info m-3 mb-0">
-          <i class="bi bi-info-circle"></i> No groups match the selected filter.
+          <i class="bi bi-info-circle"></i> No items in download queue right now.
         </div>`;
     }
     
-    list.innerHTML = html;
+    list.innerHTML = queueHtml;
+    
+    // Update unmatched folders section
+    const unmatchedSection = document.getElementById('unmatchedFoldersSection');
+    const unmatchedList = document.getElementById('unmatchedFoldersList');
+    const unmatchedBadge = document.getElementById('unmatchedFoldersBadge');
+    if (unmatchedSection && unmatchedList) {
+      if (unmatchedHtml) {
+        unmatchedSection.style.display = 'block';
+        unmatchedList.innerHTML = unmatchedHtml;
+        if (unmatchedBadge) unmatchedBadge.textContent = `${filteredUnmatched.length} items`;
+      } else {
+        unmatchedSection.style.display = 'none';
+        unmatchedList.innerHTML = '';
+        if (unmatchedBadge) unmatchedBadge.textContent = '0 items';
+      }
+    }
+    
     lastFolderGroupsRenderSignature = nextSignature;
   } catch (error) {
     console.error('Error loading folder groups:', error);
@@ -6986,6 +7346,97 @@ function toggleQueueLogPause() {
   }
 }
 
+async function loadSearchLog() {
+  if (searchLogPaused) {
+    return;
+  }
+
+  const logEl = document.getElementById('soulseekSearchLog');
+  if (!logEl) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/search-events?limit=100');
+    const events = Array.isArray(data.events) ? data.events : [];
+    const chunks = [];
+    events.slice().reverse().forEach(event => {
+      const ts = event.timestamp ? new Date(event.timestamp) : null;
+      const timeLabel = ts && !Number.isNaN(ts.getTime())
+        ? ts.toLocaleTimeString([], { hour12: false })
+        : '--:--:--';
+      const searchType = String(event.search_type || 'unknown').toUpperCase();
+      const typeBadge = searchType === 'AUTOMATIC' ? '[AUTO] ' : '[MANUAL]';
+      const query = event.query || '';
+      const artist = event.artist || '';
+      const title = event.title || '';
+      const rc = event.result_count ?? 0;
+      const dur = event.duration_seconds != null ? `${event.duration_seconds}s` : 'n/a';
+
+      // Header line
+      let header = `${typeBadge} [${timeLabel}]  Query: "${query}"`;
+      if (artist || title) {
+        header += `  |  ${artist} - ${title}`;
+      }
+      chunks.push(header);
+      chunks.push(`    Results: ${rc}  |  Duration: ${dur}`);
+      if (event.notes) {
+        chunks.push(`    Notes: ${event.notes}`);
+      }
+
+      // Selected result (prominent)
+      if (event.selected_result) {
+        const sel = event.selected_result;
+        const selScore = sel.score != null ? sel.score.toFixed(2) : '?';
+        const selSize = sel.size != null ? formatBytes(sel.size) : '?';
+        const selLen = sel.length != null ? `${Math.round(sel.length)}s` : '?';
+        chunks.push(`    >>> SELECTED FOR DOWNLOAD <<<`);
+        chunks.push(`        Score: ${selScore}  |  User: ${sel.username || '?'}  |  Size: ${selSize}  |  Length: ${selLen}`);
+        chunks.push(`        File:  ${sel.filename || '?'}`);
+      }
+
+      // All returned results
+      const results = event.results || [];
+      if (results.length) {
+        chunks.push(`    --- All Returned Results (${results.length}) ---`);
+        results.forEach((r, idx) => {
+          const score = r.score != null ? r.score.toFixed(2) : '?';
+          const len = r.length != null ? `${Math.round(r.length)}s` : '?';
+          const size = r.size != null ? formatBytes(r.size) : '?';
+          const user = r.username || '?';
+          const file = r.filename || '?';
+          chunks.push(`      ${String(idx + 1).padStart(2)}.  score=${score}  len=${len}  size=${size}  user=${user}`);
+          chunks.push(`          file: ${file}`);
+        });
+      }
+
+      chunks.push(''); // blank line between events
+    });
+
+    logEl.textContent = chunks.length ? chunks.join('\n') : 'No Soulseek search events yet.';
+    logEl.scrollTop = logEl.scrollHeight;
+  } catch (error) {
+    console.error('Error loading Soulseek search log:', error);
+    logEl.textContent = 'Failed to load Soulseek search log.';
+  }
+}
+
+function toggleSearchLogPause() {
+  searchLogPaused = !searchLogPaused;
+  const btn = document.getElementById('searchLogPauseBtn');
+  if (!btn) {
+    return;
+  }
+
+  btn.innerHTML = searchLogPaused
+    ? '<i class="bi bi-play-fill"></i> Resume'
+    : '<i class="bi bi-pause-fill"></i> Pause';
+
+  if (!searchLogPaused) {
+    loadSearchLog();
+  }
+}
+
 // Load queue status on page load
 document.addEventListener('DOMContentLoaded', function() {
   // Load queue status and folder groups together to keep them in sync
@@ -7003,11 +7454,22 @@ document.addEventListener('DOMContentLoaded', function() {
   setTimeout(() => loadBothAsync({ forceRender: true }), 500);
   // Delay upcoming releases so the critical queue / folder data renders first.
   // It reads from the local database; there is no Wikipedia fetch on load.
-  setTimeout(refreshUpcomingReleasesMonitor, 2000);
+  // Auto-check for updates once a day.
+  setTimeout(() => {
+    const lastChecked = localStorage.getItem('upcomingReleasesLastChecked');
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    if (!lastChecked || (Date.now() - parseInt(lastChecked, 10)) > oneDayMs) {
+      checkForUpdatesMonitor();
+    } else {
+      refreshUpcomingReleasesMonitor();
+    }
+  }, 2000);
   loadQueueLog();
+  loadSearchLog();
   // Refresh both together every 5 seconds to keep them synchronized
   setInterval(loadBothAsync, 5000);
   setInterval(loadQueueLog, 5000);
+  setInterval(loadSearchLog, 5000);
   // Auto-discover files every 60 seconds
   setInterval(autoDiscoverFiles, 60000);
 
@@ -7027,6 +7489,7 @@ document.addEventListener('DOMContentLoaded', function() {
       loadQueueStatus();
       loadFolderGroups({ keepVisibleOnEmpty: true });
       loadQueueLog();
+      loadSearchLog();
     }
   });
 });

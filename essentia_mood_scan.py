@@ -955,13 +955,6 @@ def run_essentia_mood_scan(
             continue
 
         # ------------------------------------------------------------------
-        # Capture existing genre tags before Essentia overwrites the file.
-        # ------------------------------------------------------------------
-        pre_existing_genres: List[str] = (
-            _read_existing_tcon_genres(file_path) if tag_genres else []
-        )
-
-        # ------------------------------------------------------------------
         # Run Essentia on this file.
         # ------------------------------------------------------------------
         cmd = base_cmd + [file_path]
@@ -1074,6 +1067,21 @@ def run_essentia_mood_scan(
         # ------------------------------------------------------------------
         mood = _read_essentia_mood_from_file(file_path) if tag_moods else None
         essentia_genre = _read_essentia_genre_from_file(file_path) if tag_genres else None
+
+        # If the same label appears in both the MOOD and GENRE tags, keep it
+        # in mood only. A buggy Essentia-to-Metadata build may write mood
+        # values into the GENRE tag, causing them to pollute the top-genres
+        # resolution later.
+        if mood and essentia_genre:
+            _mood_labels = {m.strip().lower() for m in mood.split(";") if m.strip()}
+            _genre_parts = [g.strip() for g in essentia_genre.split(";") if g.strip()]
+            _filtered_genres = [g for g in _genre_parts if g.lower() not in _mood_labels]
+            if _filtered_genres:
+                essentia_genre = "; ".join(_filtered_genres)
+            else:
+                essentia_genre = None
+                has_genre_update = False
+
         file_bpm = _read_numeric_tag_from_file(file_path, "bpm", "tempo", "TBPM")
         file_danceability = _read_numeric_tag_from_file(
             file_path,
@@ -1193,40 +1201,23 @@ def run_essentia_mood_scan(
         if cursor.rowcount and cursor.rowcount > 0:
             updated_tracks += 1
 
-            if tag_genres:
-                # Write proper (child-only) genre tags and TXXX:MOOD to the
-                # file, merging with any genres already present.
-                selective_updates: Dict[str, Any] = {}
-                if bpm_value is not None:
-                    selective_updates["bpm"] = float(bpm_value)
-                if danceability_value is not None:
-                    selective_updates["danceability"] = float(danceability_value)
+            # Write mood and features to the file, but NOT genres.
+            # Genres are resolved centrally during metadata scans so that
+            # cross-source frequency / priority logic can be applied.
+            selective_updates: Dict[str, Any] = {}
+            if bpm_value is not None:
+                selective_updates["bpm"] = float(bpm_value)
+            if danceability_value is not None:
+                selective_updates["danceability"] = float(danceability_value)
+            if mood and tag_moods:
+                selective_updates["mood"] = mood
 
-                # Extract child genres (e.g. "Heavy Metal" from "Rock---Heavy Metal")
-                # and merge with existing non-hierarchical genres that were captured
-                # before the Essentia script ran (it uses --overwrite which would
-                # otherwise erase the original genres from the file).
-                child_genres = _extract_child_genres(essentia_genre) if essentia_genre else []
-                if child_genres:
-                    selective_updates["genres"] = _merge_genres(pre_existing_genres, child_genres)
-
-                # Write mood to the standard TMOO frame (Navidrome-compatible)
-                # in addition to any COMM frame the external script may have written.
-                if mood:
-                    selective_updates["mood"] = mood
-
-                if selective_updates:
-                    if update_file_tags(file_path, selective_updates):
-                        synced_files += 1
-                else:
+            if selective_updates:
+                if update_file_tags(file_path, selective_updates):
                     synced_files += 1
-            else:
-                # Mood-only mode: write TMOO frame so Navidrome and players
-                # recognise it, then do the full DB->file sync for all other fields.
-                if mood:
-                    update_file_tags(file_path, {"mood": mood})
-                if sync_track_tags_to_file(track_id):
-                    synced_files += 1
+            elif tag_moods and mood:
+                # Mood-only with no feature updates – still count as synced
+                synced_files += 1
 
             if parse_json_features and delete_json_after_import and json_path:
                 try:

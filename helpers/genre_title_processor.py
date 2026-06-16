@@ -143,7 +143,7 @@ def check_album_for_tags(album_name: str) -> Dict[str, bool]:
     return {
         'acoustic': 'acoustic' in album_lower,
         'unplugged': 'unplugged' in album_lower,
-        'live': 'live' in album_lower
+        'live': re.search(r'\blive\b', album_lower) is not None
     }
 
 

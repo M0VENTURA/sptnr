@@ -14,6 +14,7 @@ import re
 import tempfile
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 import requests
@@ -27,6 +28,60 @@ except Exception:
     _write_tags_to_file = None
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_artist_name(text: str) -> str:
+    """Normalize artist names for comparison."""
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _find_existing_artist_in_db(discogs_artist: str) -> str | None:
+    """Look up a Discogs artist in the local DB and return the canonical DB name if matched.
+
+    Discogs often appends disambiguation numbers like '(3)' or '(4)' to artist names.
+    This function queries the local tracks table for existing artist names and returns
+    the closest match when the normalized names are identical, preventing duplicate
+    artist entries on import.
+    """
+    if not discogs_artist:
+        return None
+    try:
+        from helpers.db_utils import get_db_connection
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist_name
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+            """
+        )
+        rows = cursor.fetchall() or []
+        conn.close()
+    except Exception:
+        return None
+
+    discogs_norm = _normalize_artist_name(discogs_artist)
+    # Strip common Discogs suffixes like (3), (4) for matching
+    discogs_stripped = re.sub(r"\s*\(\d+\)\s*$", "", discogs_artist).strip()
+    discogs_stripped_norm = _normalize_artist_name(discogs_stripped)
+
+    best_match = None
+    for row in rows:
+        db_artist = row[0] if isinstance(row, (tuple, list)) else row.get("artist_name", "")
+        if not db_artist:
+            continue
+        db_norm = _normalize_artist_name(db_artist)
+        if db_norm == discogs_norm or db_norm == discogs_stripped_norm:
+            best_match = db_artist
+            break
+    return best_match
 
 _GROUP_SCAN_CACHE = {
     'timestamp': 0.0,
@@ -557,10 +612,14 @@ def try_discogs_match(folder_path, artist, album):
         # Format Discogs results to match MusicBrainz format
         candidates = []
         for result in results:
+            discogs_artist = result.get('artist', artist)
+            # Try to match against the local DB to avoid duplicate artists with (3)/(4)
+            db_artist = _find_existing_artist_in_db(discogs_artist)
+            canonical_artist = db_artist if db_artist else discogs_artist
             candidates.append({
                 'id': str(result.get('id', '')),
                 'title': result.get('title', ''),
-                'artist': result.get('artist', artist),
+                'artist': canonical_artist,
                 'date': str(result.get('year', '')),
                 'country': result.get('country', ''),
                 'track_count': 0,  # Discogs search doesn't return track count

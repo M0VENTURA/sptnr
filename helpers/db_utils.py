@@ -402,66 +402,23 @@ def ensure_musicbrainz_album_mbid_column():
         has_new = "musicbrainz_album_mbid" in columns
 
         if has_legacy and not has_new:
-            logging.info("Renaming tracks.beets_album_mbid -> tracks.musicbrainz_album_mbid")
+            # Do NOT rename beets_album_mbid to musicbrainz_album_mbid.
+            # beets_album_mbid stores release-group MBIDs (from beets albums.mb_albumid),
+            # whereas musicbrainz_album_mbid should store release MBIDs (specific pressings).
+            # Renaming would copy release-group IDs into the release-level column,
+            # causing tracks to split in Navidrome.  Just add the new column empty.
+            logging.info("Adding musicbrainz_album_mbid as a new column (not renaming beets_album_mbid)")
             try:
-                cursor.execute(
-                    "ALTER TABLE tracks RENAME COLUMN beets_album_mbid TO musicbrainz_album_mbid"
-                )
+                cursor.execute("ALTER TABLE tracks ADD COLUMN musicbrainz_album_mbid TEXT")
                 conn.commit()
-                logging.info("✓ Renamed beets_album_mbid to musicbrainz_album_mbid")
-            except Exception as rename_error:
-                logging.warning(f"Rename failed (may already be done): {rename_error}")
-                columns_after = _get_table_columns(cursor, "tracks")
-                if "musicbrainz_album_mbid" not in columns_after:
-                    logging.info("New column doesn't exist; adding it instead")
-                    cursor.execute("ALTER TABLE tracks ADD COLUMN musicbrainz_album_mbid TEXT")
-                    conn.commit()
-                    logging.info("✓ Added musicbrainz_album_mbid column")
+                logging.info("✓ Added musicbrainz_album_mbid column")
+            except Exception as add_error:
+                logging.warning(f"Add column failed (may already exist): {add_error}")
         elif has_legacy and has_new:
-            mbid_lock_key = 915317412
-            cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (mbid_lock_key,))
-            lock_row = cursor.fetchone()
-            lock_acquired = bool(lock_row.get("acquired")) if isinstance(lock_row, dict) else bool(lock_row[0])
-            if not lock_acquired:
-                logging.info("Another worker is already running musicbrainz_album_mbid backfill; skipping")
-                return True
-            try:
-                total_updated = 0
-                batch_size = 500
-                while True:
-                    cursor.execute(
-                        """
-                        WITH to_update AS (
-                            SELECT id
-                            FROM tracks
-                            WHERE (musicbrainz_album_mbid IS NULL OR musicbrainz_album_mbid = '')
-                              AND beets_album_mbid IS NOT NULL
-                              AND beets_album_mbid != ''
-                            ORDER BY id
-                            FOR UPDATE SKIP LOCKED
-                            LIMIT %s
-                        )
-                        UPDATE tracks t
-                        SET musicbrainz_album_mbid = t.beets_album_mbid
-                        FROM to_update u
-                        WHERE t.id = u.id
-                        """,
-                        (batch_size,)
-                    )
-                    batch_updated = cursor.rowcount or 0
-                    conn.commit()
-                    total_updated += batch_updated
-                    if batch_updated == 0:
-                        break
-                logging.info(f"✓ Backfilled musicbrainz_album_mbid from legacy beets_album_mbid ({total_updated} rows)")
-            except Exception as backfill_error:
-                logging.warning(f"Backfill failed: {backfill_error}")
-            finally:
-                try:
-                    cursor.execute("SELECT pg_advisory_unlock(%s)", (mbid_lock_key,))
-                    conn.commit()
-                except Exception:
-                    pass
+            # Do NOT backfill musicbrainz_album_mbid from beets_album_mbid.
+            # beets_album_mbid contains release-group MBIDs which are semantically
+            # wrong for musicbrainz_album_mbid (which should hold release MBIDs).
+            logging.info("Skipping backfill of musicbrainz_album_mbid from beets_album_mbid (beets stores release-group IDs)")
         elif not has_new:
             logging.info("Adding missing musicbrainz_album_mbid column")
             try:
@@ -589,6 +546,7 @@ def ensure_cover_columns():
         ("cover_manual_override", "BOOLEAN DEFAULT FALSE"),
         ("is_live", "BIGINT DEFAULT 0"),
         ("is_acoustic", "BIGINT DEFAULT 0"),
+        ("is_remix", "BIGINT DEFAULT 0"),
     ]
 
     conn = None
@@ -1179,6 +1137,47 @@ def ensure_mb_ignored_fields_column():
             conn.close()
 
 
+def ensure_manual_genres_column():
+    """Ensure the ``manual_genres`` TEXT column exists on the tracks table.
+
+    This column stores genres that were manually added by a user via the UI.
+    Manual genres are preserved across all subsequent scans and are never
+    overwritten by automatic genre resolution.
+    """
+    import logging
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not _table_exists(cursor, "tracks"):
+            logging.warning("Tracks table does not exist yet, skipping manual_genres migration")
+            return False
+
+        existing = _get_table_columns(cursor, "tracks")
+        if "manual_genres" in existing:
+            logging.debug("manual_genres column already present; skipping migration")
+            return True
+
+        cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS manual_genres TEXT")
+        conn.commit()
+        logging.info("✓ Added 'manual_genres' column to tracks table")
+        return True
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping manual_genres migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping manual_genres migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring manual_genres column exists: {e}", exc_info=True)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def ensure_artists_name_unique_constraint():
     """Ensure a UNIQUE constraint exists on the artists.name column.
 
@@ -1235,6 +1234,153 @@ def ensure_artists_name_unique_constraint():
         return False
     except Exception as e:
         logging.error(f"✗ Error ensuring artists.name unique constraint: {e}", exc_info=True)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def ensure_lastfm_tables():
+    """Ensure lastfm_recommendations and lastfm_sync_history tables exist
+    with proper PostgreSQL schema (id SERIAL PRIMARY KEY).
+
+    Fixes existing tables that were created by the legacy SQLite migration
+    script where ``id INTEGER PRIMARY KEY AUTOINCREMENT`` was interpreted
+    by PostgreSQL as ``id INTEGER PRIMARY KEY`` with no default/sequence,
+    causing "null value in column id violates not-null constraint" errors.
+    """
+    import logging
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Create lastfm_recommendations if missing (PostgreSQL-native schema)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lastfm_recommendations (
+                id SERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                recommendation_type TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                artist_name TEXT,
+                image_url TEXT,
+                playcount INTEGER DEFAULT 0,
+                lastfm_url TEXT,
+                mbid TEXT,
+                metadata TEXT,
+                synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(username, recommendation_type, item_name, artist_name)
+            )
+        """)
+
+        # Create lastfm_sync_history if missing (PostgreSQL-native schema)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lastfm_sync_history (
+                id SERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                sync_type TEXT NOT NULL,
+                artists_count INTEGER DEFAULT 0,
+                albums_count INTEGER DEFAULT 0,
+                tracks_count INTEGER DEFAULT 0,
+                filtered_count INTEGER DEFAULT 0,
+                sync_status TEXT DEFAULT 'success',
+                error_message TEXT,
+                sync_start TIMESTAMP,
+                sync_end TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Indexes
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_lastfm_username_type
+            ON lastfm_recommendations(username, recommendation_type)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_lastfm_synced_at
+            ON lastfm_recommendations(synced_at)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sync_history_username_time
+            ON lastfm_sync_history(username, created_at)
+        """)
+
+        # Fix existing tables created by legacy SQLite migration where id has no default.
+        # Table names are hard-coded safe literals, so simple string formatting is fine here.
+        for table_name in ("lastfm_recommendations", "lastfm_sync_history"):
+            try:
+                cursor.execute(f"""
+                    DO $$
+                    DECLARE
+                        v_has_id boolean;
+                        v_has_default boolean;
+                    BEGIN
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = '{table_name}' AND column_name = 'id'
+                        ) INTO v_has_id;
+
+                        IF NOT v_has_id THEN
+                            EXECUTE format(
+                                'CREATE SEQUENCE IF NOT EXISTS %I_id_seq;',
+                                '{table_name}'
+                            );
+                            EXECUTE format(
+                                'ALTER TABLE %I ADD COLUMN id BIGINT DEFAULT nextval(%L);',
+                                '{table_name}', '{table_name}_id_seq'
+                            );
+                            EXECUTE format(
+                                'UPDATE %I SET id = nextval(%L) WHERE id IS NULL;',
+                                '{table_name}', '{table_name}_id_seq'
+                            );
+                            EXECUTE format(
+                                'ALTER TABLE %I ALTER COLUMN id SET NOT NULL;',
+                                '{table_name}'
+                            );
+                        ELSE
+                            SELECT column_default IS NOT NULL
+                              INTO v_has_default
+                              FROM information_schema.columns
+                             WHERE table_name = '{table_name}' AND column_name = 'id';
+
+                            IF NOT v_has_default THEN
+                                EXECUTE format(
+                                    'CREATE SEQUENCE IF NOT EXISTS %I_id_seq;',
+                                    '{table_name}'
+                                );
+                                EXECUTE format(
+                                    'SELECT setval(%L, COALESCE((SELECT MAX(id) FROM %I), 0) + 1);',
+                                    '{table_name}_id_seq', '{table_name}'
+                                );
+                                EXECUTE format(
+                                    'ALTER TABLE %I ALTER COLUMN id SET DEFAULT nextval(%L);',
+                                    '{table_name}', '{table_name}_id_seq'
+                                );
+                                EXECUTE format(
+                                    'UPDATE %I SET id = nextval(%L) WHERE id IS NULL;',
+                                    '{table_name}', '{table_name}_id_seq'
+                                );
+                            END IF;
+                        END IF;
+                    END $$;
+                """)
+            except Exception as fix_err:
+                logging.warning(f"⚠ lastfm table fix for {table_name} encountered an issue (may already be correct): {fix_err}")
+
+        conn.commit()
+        logging.debug("✓ lastfm_recommendations and lastfm_sync_history tables ensured")
+        return True
+
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping lastfm tables migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping lastfm tables migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring lastfm tables: {e}", exc_info=True)
         return False
     finally:
         if conn is not None:

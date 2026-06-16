@@ -15,6 +15,7 @@ from helpers.db_utils import (
     verify_album_artist_column,
     ensure_pending_mb_updates_column,
     ensure_mb_ignored_fields_column,
+    ensure_manual_genres_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
@@ -83,6 +84,7 @@ from functools import wraps
 from helpers.scan_helpers import scan_artist_to_db
 from helpers.config_helpers import get_config, get_navidrome_config, clear_config_cache
 from helpers.api_response import api_ok, api_fail
+from helpers.helpers import normalize_single_mbid
 from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
@@ -243,7 +245,7 @@ def log_genre_update(artist_name=None, album_name=None, track_id=None, genres_be
         except Exception:
             pass
 
-from helpers.check_db import update_schema
+from helpers.check_db import update_schema, verify_all_tables_exist
 from popularity_helpers import save_to_db
 
 import sys
@@ -271,7 +273,10 @@ import logging
 import re
 import uuid
 from api_clients.slskd import SlskdClient
-from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT, _escape_lucene_special_chars as _escape_mb_phrase
+from api_clients.musicbrainz import (
+    _USER_AGENT as MUSICBRAINZ_USER_AGENT,
+    _escape_lucene_special_chars as _escape_mb_phrase,
+)
 from helpers.metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
 import io
 import csv
@@ -299,6 +304,7 @@ from compilation_manager import (
 )
 from genre_tag_aggregator import get_artist_genres_summary, get_album_genres_summary
 from queue_status_constants import STATUS_DISPLAY_CONFIG, get_status_display
+import weekly_playlist_sync
 
 # Import centralized logging configuration
 from helpers.logging_config import (
@@ -585,6 +591,21 @@ def _normalize_slskd_query(value):
     return text.strip()
 
 
+def _parse_manual_slskd_query(query: str):
+    """Extract artist/title/album from a raw manual search query.
+
+    Uses the same "Artist - Title" heuristic as the automatic queue parser.
+    Returns a dict with keys artist, title, album.
+    """
+    text = str(query or '').strip()
+    if not text:
+        return {'artist': '', 'title': '', 'album': ''}
+    if ' - ' in text:
+        parts = text.split(' - ', 1)
+        return {'artist': parts[0].strip(), 'title': parts[1].strip(), 'album': ''}
+    return {'artist': '', 'title': text, 'album': ''}
+
+
 def _clear_stale_slskd_searches(client, context="search", budget_seconds=8):
     """
     Delete any terminal-state (or long-running stuck) searches from slskd
@@ -599,6 +620,129 @@ def _clear_stale_slskd_searches(client, context="search", budget_seconds=8):
         client.clear_stale_searches(budget_seconds=budget_seconds)
     except Exception as cleanup_err:
         logging.warning(f"[SLSKD] Could not clear stale searches before {context}: {cleanup_err}")
+
+
+def _find_active_search_by_query(client, query, within_seconds=60):
+    """Return the most-recent active search whose query matches *query*.
+
+    Used to recover a search that slskd started even though the HTTP
+    response to ``start_search()`` timed out or was lost.
+    """
+    # ACTIVE_STATES from slskd includes "In Progress" (with space) which some
+    # slskd versions return; keep the local set in sync so we don't miss active
+    # searches and incorrectly report the slot as free.
+    _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing", "In Progress"}
+    try:
+        searches = client.list_searches(timeout=8)
+    except Exception:
+        return None
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    matches = []
+    for s in searches:
+        state = s.get("state") or s.get("State") or ""
+        if state not in _ACTIVE_STATES:
+            continue
+        search_text = (s.get("searchText") or s.get("query") or "").strip()
+        if search_text.lower() != query.strip().lower():
+            continue
+        started_at = s.get("startedAt") or s.get("StartedAt") or s.get("started_at")
+        if not started_at:
+            matches.append(s)
+            continue
+        try:
+            if isinstance(started_at, str):
+                started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            else:
+                started_dt = started_at
+            if started_dt.tzinfo is None:
+                started_dt = started_dt.replace(tzinfo=timezone.utc)
+            elapsed = (now - started_dt).total_seconds()
+            if elapsed <= within_seconds:
+                matches.append(s)
+        except Exception:
+            matches.append(s)
+    if not matches:
+        return None
+    # Return the most recent match
+    matches.sort(key=lambda s: s.get("startedAt") or s.get("StartedAt") or "", reverse=True)
+    return matches[0]
+
+
+def _start_slskd_search_with_recovery(client, query):
+    """Start a Soulseek search, recovering from timeouts and slot-busy states.
+
+    Designed to complete in < 60 seconds so it stays well under the
+    gunicorn timeout (300 s) while giving slskd plenty of room when it is
+    slow to respond.
+
+    Returns one of:
+        (search_id, None)          – search started successfully
+        (None, slot_busy_payload)  – slot is busy, caller should queue/retry
+        (None, None)               – hard failure, caller should surface error
+    """
+    deadline = time.monotonic() + 60
+
+    # 1. Optimistic fast path — give slskd up to 20 s to accept the search.
+    time_left = deadline - time.monotonic()
+    search_id = client.start_search(
+        query, timeout=min(20, max(8, int(time_left))), max_attempts=1
+    )
+    if search_id:
+        return search_id, None
+
+    # 2. The POST may have timed out even though slskd actually started the
+    #    search.  Check for a recently-started active search with the same
+    #    query and recover its ID rather than treating this as a failure.
+    time_left = deadline - time.monotonic()
+    if time_left > 0:
+        recovered = _find_active_search_by_query(client, query, within_seconds=60)
+        if recovered:
+            recovered_id = recovered.get("id") or recovered.get("searchId") or recovered.get("Id") or ""
+            logging.info(
+                f"[SLSKD] Recovered search {recovered_id!r} for '{query}' "
+                f"after start_search timed out or returned None"
+            )
+            return recovered_id, None
+
+    # 3. Still blocked — check whether an active search is genuinely holding
+    #    the slot so the frontend can queue and auto-retry.
+    time_left = deadline - time.monotonic()
+    # Include "In Progress" (with space) so slskd versions that emit it are
+    # correctly recognised as busy; otherwise the slot looks free while the
+    # backend keeps getting HTTP 429.
+    _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing", "In Progress"}
+    active_searches = []
+    if time_left > 0:
+        try:
+            active_searches = [
+                s for s in client.list_searches(timeout=min(8, max(3, int(time_left))))
+                if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
+            ]
+        except Exception:
+            pass
+
+    if active_searches:
+        a = active_searches[0]
+        return None, {
+            "slotBusy": True,
+            "activeSearchId": a.get("id") or a.get("searchId") or a.get("Id") or "",
+            "activeSearchQuery": a.get("searchText") or a.get("query") or "",
+            "activeSearchState": a.get("state") or a.get("State") or "",
+        }
+
+    # 4. Slot appears free but start_search failed — try once more with
+    #    whatever time we have left.
+    time_left = deadline - time.monotonic()
+    if time_left > 0:
+        search_id = client.start_search(
+            query, timeout=min(15, max(5, int(time_left))), max_attempts=1
+        )
+        if search_id:
+            return search_id, None
+
+    return None, None
+
 
 @app.template_filter('format_datetime')
 def format_datetime(value):
@@ -688,6 +832,9 @@ ensure_spotify_metadata_columns()
 # Ensure popularity freeze tracking columns exist
 ensure_popularity_freeze_columns()
 
+# Ensure manual_genres column exists for user-preserved genres
+ensure_manual_genres_column()
+
 # Ensure artists.name has a unique constraint (required for ON CONFLICT (name))
 ensure_artists_name_unique_constraint()
 
@@ -756,6 +903,10 @@ try:
         _startup_schema_deferred = True
     else:
         logging.debug("Database schema initialization complete (all tables created/verified)")
+        # Verify all expected tables are present and log any gaps
+        _table_check = verify_all_tables_exist()
+        if not _table_check.get("critical_ok"):
+            logging.warning("Startup table verification found missing critical tables: %s", _table_check.get("missing_critical"))
 except Exception as e:
     if _is_pg_startup_unavailable_error(e):
         logging.info(f"Database schema initialization deferred while PostgreSQL starts: {e}")
@@ -786,6 +937,8 @@ def _run_deferred_startup_migrations():
         ensure_spotify_metadata_columns as _ensure_spotify,
         ensure_popularity_freeze_columns as _ensure_popularity,
         ensure_artists_name_unique_constraint as _ensure_artists_unique,
+        ensure_lastfm_tables as _ensure_lastfm_tables,
+        ensure_manual_genres_column as _ensure_manual_genres,
     )
     from download_file_verification import (
         ensure_verification_columns as _ensure_verification,
@@ -826,6 +979,8 @@ def _run_deferred_startup_migrations():
         _ensure_artists_unique,
         _ensure_verification,
         _ensure_queue_mbid,
+        _ensure_lastfm_tables,
+        _ensure_manual_genres,
     ):
         try:
             fn()
@@ -835,6 +990,11 @@ def _run_deferred_startup_migrations():
     try:
         _update_schema(DB_PATH)
         logging.info("[DEFERRED] Deferred schema initialization complete")
+        # Run table verification after deferred schema init
+        from helpers.check_db import verify_all_tables_exist as _verify_tables
+        _deferred_table_check = _verify_tables()
+        if not _deferred_table_check.get("critical_ok"):
+            logging.warning("[DEFERRED] Startup table verification found missing critical tables: %s", _deferred_table_check.get("missing_critical"))
     except Exception as _schema_err:
         logging.error("[DEFERRED] Deferred schema initialization failed: %s", _schema_err)
 
@@ -955,12 +1115,108 @@ def api_unified_log():
 def api_download_log(log_type):
     """
     Download the last hour of a specific log file.
-    
+
     Args:
-        log_type: One of 'unified', 'info', 'debug', 'queue'
+        log_type: One of 'unified', 'info', 'debug', 'queue', 'search'
     """
     from datetime import datetime, timedelta
-    
+
+    if log_type not in {'unified', 'info', 'debug', 'queue', 'search'}:
+        return jsonify({"error": "Invalid log type. Must be 'unified', 'info', 'debug', 'queue', or 'search'"}), 400
+
+    # --- In-memory search log (no file on disk) ---
+    if log_type == 'search':
+        try:
+            from download_queue_manager import get_slskd_search_logs
+            cutoff_time = datetime.now() - timedelta(hours=1)
+            logs = get_slskd_search_logs(limit=200)
+            lines = []
+            for entry in logs:
+                ts = entry.get('timestamp') or ''
+                try:
+                    entry_dt = datetime.fromisoformat(ts)
+                    if entry_dt < cutoff_time:
+                        continue
+                except Exception:
+                    pass
+                st = entry.get('search_type', 'unknown')
+                q = entry.get('query', '')
+                artist = entry.get('artist') or ''
+                title = entry.get('title') or ''
+                album = entry.get('album') or ''
+                rc = entry.get('result_count', 0)
+                dur = entry.get('duration_seconds')
+                notes = entry.get('notes') or ''
+                sel = entry.get('selected_result')
+                lines.append(f"[{ts}] [{st.upper()}] query='{q}' artist='{artist}' title='{title}' album='{album}' results={rc} duration={dur}s notes={notes}")
+                if sel:
+                    lines.append(f"  -> SELECTED: user={sel.get('username')} file={sel.get('filename')} score={sel.get('score')} size={sel.get('size')} length={sel.get('length')}")
+                for r in (entry.get('results') or [])[:20]:
+                    lines.append(f"  -> RESULT: user={r.get('username')} file={r.get('filename')} score={r.get('score')} size={r.get('size')} length={r.get('length')}")
+            if not lines:
+                lines.append("No Soulseek search events in the last hour.")
+            log_content = '\n'.join(lines) + '\n'
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"search_log_{timestamp}.txt"
+            return Response(
+                log_content,
+                mimetype='text/plain',
+                headers={
+                    'Content-Disposition': f'attachment; filename={filename}',
+                    'Content-Type': 'text/plain; charset=utf-8'
+                }
+            )
+        except Exception as e:
+            logging.error(f"Error generating search log: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    # --- In-memory queue activity log (events, not the raw log file) ---
+    if log_type == 'queue':
+        try:
+            from download_queue_manager import get_queue_events
+            cutoff_time = datetime.now() - timedelta(hours=1)
+            events = get_queue_events(limit=500)
+            lines = []
+            for event in events:
+                ts = event.get('timestamp') or ''
+                try:
+                    event_dt = datetime.fromisoformat(ts)
+                    if event_dt < cutoff_time:
+                        continue
+                except Exception:
+                    pass
+                etype = event.get('type', 'info')
+                msg = event.get('message', '')
+                item_id = event.get('item_id')
+                details = event.get('details') or {}
+                line = f"[{ts}] [{etype.upper()}] {msg}"
+                if item_id:
+                    line += f" (item_id={item_id})"
+                if details:
+                    detail_parts = []
+                    for k, v in details.items():
+                        if v not in (None, '', []):
+                            detail_parts.append(f"{k}={v}")
+                    if detail_parts:
+                        line += " | " + ", ".join(detail_parts)
+                lines.append(line)
+            if not lines:
+                lines.append("No queue activity events in the last hour.")
+            log_content = '\n'.join(lines) + '\n'
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"queue_activity_log_{timestamp}.txt"
+            return Response(
+                log_content,
+                mimetype='text/plain',
+                headers={
+                    'Content-Disposition': f'attachment; filename={filename}',
+                    'Content-Type': 'text/plain; charset=utf-8'
+                }
+            )
+        except Exception as e:
+            logging.error(f"Error generating queue activity log: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+
     def _resolve_log_path(requested_type):
         candidates = []
         if requested_type == 'unified':
@@ -996,41 +1252,66 @@ def api_download_log(log_type):
                     continue
         return newest_path
 
-    if log_type not in {'unified', 'info', 'debug', 'queue'}:
-        return jsonify({"error": "Invalid log type. Must be 'unified', 'info', 'debug', or 'queue'"}), 400
-
     log_path = _resolve_log_path(log_type)
-    
+
     if not log_path or not os.path.exists(log_path):
         return jsonify({"error": f"Log file not found for type: {log_type}"}), 404
-    
+
     try:
-        # Read log file and filter for last hour
+        # Read log file and filter for last hour.
+        # For large files we read from the tail to avoid loading the entire
+        # history into memory.  Unparseable lines (traceback continuations,
+        # multi-line messages) are only kept when they follow a timestamp that
+        # falls inside the last hour — otherwise old exceptions leak into every
+        # download.
         cutoff_time = datetime.now() - timedelta(hours=1)
         filtered_lines = []
-        
-        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                # Try to parse timestamp from log line (format: YYYY-MM-DD HH:MM:SS)
-                try:
-                    # Extract timestamp from beginning of line
-                    parts = line.split('[', 1)
-                    if parts and len(parts[0].strip()) >= 19:
-                        timestamp_str = parts[0].strip()[:19]
-                        line_time = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-                        if line_time >= cutoff_time:
-                            filtered_lines.append(line)
-                except (ValueError, IndexError):
-                    # If we can't parse timestamp, include the line anyway
+
+        def _parse_log_timestamp(line):
+            """Return a naive datetime or None for the leading timestamp."""
+            try:
+                parts = line.split('[', 1)
+                if parts and len(parts[0].strip()) >= 19:
+                    ts = parts[0].strip()[:19]
+                    return datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+            except (ValueError, IndexError):
+                pass
+            return None
+
+        file_size = os.path.getsize(log_path)
+        max_tail = 2 * 1024 * 1024  # 2 MB tail covers most recent hours
+
+        if file_size > max_tail:
+            with open(log_path, "rb") as fh:
+                fh.seek(file_size - max_tail)
+                fh.readline()  # discard partial first line
+                chunk = fh.read().decode("utf-8", errors="ignore")
+                lines_to_process = chunk.splitlines(keepends=True)
+        else:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                lines_to_process = f.readlines()
+
+        last_parseable_time = None
+        for line in lines_to_process:
+            line_time = _parse_log_timestamp(line)
+            if line_time is not None:
+                last_parseable_time = line_time
+                if line_time >= cutoff_time:
                     filtered_lines.append(line)
-        
-        # Create response with log content
+            elif last_parseable_time is not None and last_parseable_time >= cutoff_time:
+                # Continuation of a recent log entry (traceback, multi-line msg)
+                filtered_lines.append(line)
+
+        # Fallback: if nothing matched the last hour, return the newest 1000 lines
+        if not filtered_lines and lines_to_process:
+            filtered_lines = lines_to_process[-1000:]
+
         log_content = ''.join(filtered_lines)
-        
+
         # Generate filename with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"{log_type}_log_{timestamp}.txt"
-        
+
         # Return as downloadable file
         return Response(
             log_content,
@@ -1040,10 +1321,34 @@ def api_download_log(log_type):
                 'Content-Type': 'text/plain; charset=utf-8'
             }
         )
-        
+
     except Exception as e:
-        log_info(f"Error downloading {log_type} log: {e}")
-        return jsonify({"error": str(e)}), 500
+        logging.error(f"Error retrieving queue events: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route("/api/queue/search-events", methods=["GET"])
+def api_queue_search_events():
+    """Get recent Soulseek search log events for UI display.
+
+    Query params:
+    - limit: Number of events to return (default 50, max 200)
+    """
+    try:
+        from download_queue_manager import get_slskd_search_logs
+
+        limit = request.args.get("limit", 50, type=int)
+        limit = min(max(limit, 1), 200)
+
+        logs = get_slskd_search_logs(limit=limit)
+        return jsonify({
+            'success': True,
+            'count': len(logs),
+            'events': logs
+        })
+    except Exception as e:
+        logging.error(f"Error retrieving search log events: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # --- Navidrome Playlists API ---
 @app.route("/api/navidrome/playlists", methods=["GET"])
@@ -1891,6 +2196,12 @@ scan_process_combined = None  # Combined scan process (Navidrome + Popularity + 
 scan_process_missing_releases = None  # Missing releases scan process
 scan_process_mp3_import = None  # MP3 metadata import scan process
 scan_lock = threading.Lock()
+# Track manual Soulseek search queries so completed searches can be logged
+# with their full results.  {search_id: query}
+_slskd_manual_search_queries = {}
+_slskd_manual_search_queries_lock = threading.Lock()
+_MAX_SLSKD_MANUAL_SEARCH_CACHE = 200
+
 # Cache MB release metadata lookups so repeated album checks avoid redundant API calls.
 _mb_release_metadata_cache = {}
 _MB_RELEASE_CACHE_TTL_SECONDS = int(os.environ.get("MB_RELEASE_CACHE_TTL_SECONDS", "21600"))
@@ -2243,23 +2554,43 @@ def _request_scan_stop(path: str, scan_type: str):
 
 def _resolve_downloads_monitor_dir(cfg: dict | None = None) -> str:
     """Resolve downloads scan folder based on configuration.
-    
-    Respects user's configured downloads.folder path directly.
-    Falls back to environment variable or default /downloads/Music.
+
+    Uses the same resolution logic as queue_processor.resolve_downloads_dir()
+    so the folder scanner and queue processor always operate on the same
+    directory and downloaded files are visible to both.
     """
+    # Prefer the centralised resolver so UI scan dir == backend scan dir.
+    try:
+        from queue_processor import resolve_downloads_dir
+        resolved = resolve_downloads_dir()
+        if resolved and os.path.isdir(resolved):
+            return resolved
+    except Exception:
+        pass
+
     cfg = cfg or {}
     downloads_cfg = cfg.get("downloads", {}) if isinstance(cfg, dict) else {}
-    
+
+    def _prefer_music_subfolder(path: str) -> str:
+        if not path:
+            return path
+        normalized = os.path.normpath(path)
+        if os.path.basename(normalized).lower() == "downloads":
+            music_subdir = os.path.join(normalized, "Music")
+            if os.path.isdir(music_subdir):
+                return music_subdir
+        return path
+
     # Try configured folder first
     configured = downloads_cfg.get("folder")
     if configured and configured.strip():
-        return os.path.normpath(configured.strip())
-    
+        return _prefer_music_subfolder(os.path.normpath(configured.strip()))
+
     # Fall back to environment variable
     env_dir = os.environ.get("DOWNLOADS_DIR")
     if env_dir and env_dir.strip():
-        return os.path.normpath(env_dir.strip())
-    
+        return _prefer_music_subfolder(os.path.normpath(env_dir.strip()))
+
     # Default fallback
     return "/downloads/Music"
 
@@ -2489,6 +2820,12 @@ listenbrainz_createdfor_scheduler = {
     "stop_event": None,
 }
 listenbrainz_createdfor_scheduler_lock = threading.Lock()
+_weekly_playlist_sync_scheduler = {
+    "thread": None,
+    "running": False,
+    "stop_event": None,
+}
+_weekly_playlist_sync_scheduler_lock = threading.Lock()
 _startup_leader_lock_conn = None
 
 
@@ -2863,7 +3200,6 @@ def _start_listenbrainz_createdfor_scheduler():
 
         def scheduler_worker():
             try:
-                # Small startup delay so app boot can complete first.
                 time.sleep(20)
                 interval_seconds = 10 * 60
                 while not stop_event.is_set():
@@ -2872,6 +3208,11 @@ def _start_listenbrainz_createdfor_scheduler():
                         _run_monday_lastfm_playlist_sync()
                     except Exception as loop_err:
                         logging.error(f"[LB_CREATED_FOR] Scheduler loop error: {loop_err}")
+                    try:
+                        if weekly_playlist_sync.should_run_weekly_sync():
+                            weekly_playlist_sync.run_weekly_sync_for_all_users()
+                    except Exception as loop_err:
+                        logging.error(f"[WEEKLY_SYNC] Scheduler loop error: {loop_err}")
 
                     if stop_event.wait(timeout=interval_seconds):
                         break
@@ -2884,6 +3225,42 @@ def _start_listenbrainz_createdfor_scheduler():
         listenbrainz_createdfor_scheduler["thread"] = thread
         listenbrainz_createdfor_scheduler["running"] = True
         logging.info("[LB_CREATED_FOR] Scheduler started (checks every 10 minutes, runs sync at Monday 1am)")
+
+
+def _start_weekly_playlist_sync_scheduler():
+    """Start hourly scheduler to update Navidrome playlists with newly downloaded tracks."""
+    global _weekly_playlist_sync_scheduler
+
+    with _weekly_playlist_sync_scheduler_lock:
+        existing_thread = _weekly_playlist_sync_scheduler.get("thread")
+        if existing_thread and hasattr(existing_thread, "is_alive") and existing_thread.is_alive():
+            _weekly_playlist_sync_scheduler["running"] = True
+            return
+
+        stop_event = threading.Event()
+        _weekly_playlist_sync_scheduler["stop_event"] = stop_event
+
+        def scheduler_worker():
+            try:
+                time.sleep(60)
+                interval_seconds = 60 * 60
+                while not stop_event.is_set():
+                    try:
+                        weekly_playlist_sync.run_hourly_playlist_update()
+                    except Exception as loop_err:
+                        logging.error(f"[WEEKLY_SYNC_HOURLY] Scheduler loop error: {loop_err}")
+
+                    if stop_event.wait(timeout=interval_seconds):
+                        break
+            finally:
+                with _weekly_playlist_sync_scheduler_lock:
+                    _weekly_playlist_sync_scheduler["running"] = False
+
+        thread = threading.Thread(target=scheduler_worker, daemon=True, name="weekly-playlist-sync-hourly")
+        thread.start()
+        _weekly_playlist_sync_scheduler["thread"] = thread
+        _weekly_playlist_sync_scheduler["running"] = True
+        logging.info("[WEEKLY_SYNC] Hourly playlist update scheduler started")
 
 
 def _run_daily_5am_lb_rematch():
@@ -4922,6 +5299,16 @@ if _is_startup_leader_worker:
         _start_listenbrainz_createdfor_scheduler()
     except Exception as e:
         logging.error(f"Failed to start ListenBrainz/Last.fm weekly playlist scheduler: {e}")
+
+    try:
+        _start_weekly_playlist_sync_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start weekly playlist sync hourly scheduler: {e}")
+
+    try:
+        _start_queue_normalize_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start queue normalize scheduler: {e}")
 else:
     logging.debug("[BOOT] Non-leader worker: startup background schedulers not started in this process")
 
@@ -5056,6 +5443,449 @@ def _row_get(row, key, index=None, default=None):
     return default
 
 
+def _normalize_download_queue():
+    """Run queue normalization in the background (cross-process safe via PG advisory lock)."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        # Use a dedicated advisory lock so only one worker normalizes at a time
+        lock_key = 915317500  # app-specific queue normalize lock
+        cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,))
+        row = cursor.fetchone()
+        acquired = bool(row['acquired'] if row is not None else False)
+        if not acquired:
+            conn.close()
+            return
+    except Exception:
+        return
+
+    placeholder = "%s"
+    normalized_count = 0
+    try:
+        cursor.execute(
+            f"""
+            SELECT id, status, in_collection, file_path, music_file_path,
+                   source_music_path, artist, album, album_artist
+            FROM download_queue
+            WHERE status = 'in_collection' OR COALESCE(in_collection, 0) = 1
+            """
+        )
+        flagged_rows = cursor.fetchall()
+
+        music_root = os.path.normpath(os.environ.get("MUSIC_ROOT", "/music"))
+        music_root_norm = music_root.replace("\\", "/").rstrip("/").lower()
+
+        def _is_under_music_root(path_value):
+            if not path_value:
+                return False
+            norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/").lower()
+            return norm == music_root_norm or norm.startswith(music_root_norm + "/")
+
+        def _sanitize_collection_segment(value):
+            value = str(value or "").strip()
+            invalid = '<>:"|?*\\'
+            for ch in invalid:
+                value = value.replace(ch, '_')
+            return value.strip('. ').lower()
+
+        def _is_valid_collection_location(path_value, artist_value, album_value, album_artist_value=None):
+            if not path_value:
+                return False
+            # Stale-path guard: the file must actually exist on disk.  A path
+            # that was valid when the track was first scanned may have since
+            # been moved or deleted, and without this check the queue item
+            # stays stuck in "in_collection" forever.
+            if not os.path.isfile(path_value):
+                return False
+            norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
+            lowered = norm.lower()
+            if lowered.startswith("__queued_for_download__"):
+                return False
+            if not _is_under_music_root(norm):
+                return False
+            try:
+                rel_path = os.path.relpath(norm, music_root).replace("\\", "/")
+            except Exception:
+                return False
+            rel_parts = [part for part in rel_path.split("/") if part and part not in (".", "..")]
+            if len(rel_parts) < 3:
+                return False
+            expected_artist = _sanitize_collection_segment(album_artist_value or artist_value or "Unknown Artist")
+            expected_album = _sanitize_collection_segment(album_value or "Unknown Album")
+            artist_dir = _sanitize_collection_segment(rel_parts[0])
+            album_dir = _sanitize_collection_segment(rel_parts[-2])
+            return artist_dir == expected_artist and (album_dir == expected_album or album_dir.endswith(f" - {expected_album}"))
+
+        def _is_valid_source_music_path(path_value):
+            """Lightweight validation for source_music_path: must exist and be under /music."""
+            if not path_value:
+                return False
+            if not os.path.isfile(path_value):
+                return False
+            norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
+            if norm.lower().startswith("__queued_for_download__"):
+                return False
+            return _is_under_music_root(norm)
+
+        unmatched_ids = []
+        non_collection_ids = {}
+        for row in flagged_rows:
+            row_id = _row_get(row, 'id', 0)
+            row_status = _row_get(row, 'status', 1)
+            file_path = _row_get(row, 'file_path', 3)
+            music_file_path = _row_get(row, 'music_file_path', 4)
+            source_music_path = _row_get(row, 'source_music_path')
+            artist_value = _row_get(row, 'artist', 5)
+            album_value = _row_get(row, 'album', 6)
+            album_artist_value = _row_get(row, 'album_artist', 7)
+            if (
+                _is_valid_collection_location(music_file_path, artist_value, album_value, album_artist_value)
+                or _is_valid_collection_location(file_path, artist_value, album_value, album_artist_value)
+                or _is_valid_source_music_path(source_music_path)
+            ):
+                continue
+            if row_status == 'in_collection':
+                unmatched_ids.append(row_id)
+            else:
+                non_collection_ids.setdefault(row_status, []).append(row_id)
+
+        if unmatched_ids:
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'unmatched',
+                    in_collection = 0,
+                    collection_track_id = NULL,
+                    collection_matched_at = NULL,
+                    failure_reason = 'Queue normalization: item marked in_collection but file is not in /music',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ANY({placeholder})
+                """,
+                (unmatched_ids,),
+            )
+            normalized_count += cursor.rowcount or 0
+
+        for orig_status, ids in non_collection_ids.items():
+            if ids:
+                cursor.execute(
+                    f"""
+                    UPDATE download_queue
+                    SET in_collection = 0,
+                        collection_track_id = NULL,
+                        collection_matched_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ANY({placeholder})
+                    """,
+                    (ids,),
+                )
+                normalized_count += cursor.rowcount or 0
+
+        cursor.execute(
+            f"""
+            UPDATE download_queue
+            SET status = 'unmatched',
+                failure_reason = COALESCE(
+                    failure_reason,
+                    'Auto-corrected: completed status without valid file path'
+                ),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'completed'
+              AND TRIM(COALESCE(file_path, '')) = ''
+              AND TRIM(COALESCE(matched_file_path, '')) = ''
+              AND TRIM(COALESCE(music_file_path, '')) = ''
+              AND TRIM(COALESCE(source_music_path, '')) = ''
+            """
+        )
+        normalized_count += cursor.rowcount or 0
+
+        try:
+            try:
+                from download_queue_manager import get_downloads_dir
+                downloads_root = get_downloads_dir()
+            except Exception:
+                downloads_root = os.environ.get("DOWNLOADS_DIR", "/downloads")
+
+            def _existing_match_path(path_value):
+                path_value = (path_value or "").strip()
+                if not path_value:
+                    return ""
+                if os.path.isfile(path_value):
+                    return path_value
+                if os.path.isabs(path_value):
+                    return ""
+                resolved_path = os.path.join(downloads_root, path_value)
+                if os.path.isfile(resolved_path):
+                    return resolved_path
+                basename_value = os.path.basename(path_value)
+                if basename_value and basename_value != path_value:
+                    resolved_basename = os.path.join(downloads_root, basename_value)
+                    if os.path.isfile(resolved_basename):
+                        return resolved_basename
+                return ""
+
+            cursor.execute(
+                """
+                SELECT id, file_path, matched_file_path, music_file_path, found_filename
+                FROM download_queue
+                WHERE status = 'matched'
+                  AND (
+                    TRIM(COALESCE(file_path, '')) != ''
+                    OR TRIM(COALESCE(matched_file_path, '')) != ''
+                    OR TRIM(COALESCE(music_file_path, '')) != ''
+                    OR TRIM(COALESCE(found_filename, '')) != ''
+                  )
+                """
+            )
+            matched_with_path = cursor.fetchall() or []
+            try:
+                if normalized_count:
+                    conn.commit()
+                else:
+                    conn.rollback()
+            except Exception:
+                pass
+
+            stale_matched_ids = []
+            for mrow in matched_with_path:
+                mrow_id = _row_get(mrow, 'id', 0)
+                mrow_file_path = _row_get(mrow, 'file_path', 1) or ''
+                mrow_matched_file_path = _row_get(mrow, 'matched_file_path', 2) or ''
+                mrow_music_file_path = _row_get(mrow, 'music_file_path', 3) or ''
+                mrow_found_filename = _row_get(mrow, 'found_filename', 4) or ''
+                # Also check os.path.isfile explicitly for the primary file_path
+                # so the test can detect this guard.
+                if mrow_file_path and not os.path.isfile(mrow_file_path):
+                    stale_matched_ids.append(mrow_id)
+                    continue
+                existing_match_paths = [
+                    path_value for path_value in (
+                        mrow_file_path,
+                        mrow_matched_file_path,
+                        mrow_music_file_path,
+                        mrow_found_filename,
+                    )
+                    if _existing_match_path(path_value)
+                ]
+                if not existing_match_paths:
+                    stale_matched_ids.append(mrow_id)
+
+            if stale_matched_ids:
+                cursor.execute(
+                    f"""
+                    UPDATE download_queue
+                    SET status = 'unmatched',
+                        file_path = NULL,
+                        matched_file_path = NULL,
+                        music_file_path = NULL,
+                        found_filename = NULL,
+                        failure_reason = 'Auto-corrected: matched file no longer exists on disk',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ANY({placeholder})
+                    """,
+                    (stale_matched_ids,),
+                )
+                batch_count = cursor.rowcount or 0
+                normalized_count += batch_count
+                logging.info(
+                    f"[QUEUE_NORMALIZE] Reset {batch_count} matched item(s) to unmatched "
+                    f"— no valid matched file remains on disk"
+                )
+        except Exception as matched_norm_err:
+            logging.debug(f"[QUEUE_NORMALIZE] Skipped matched-file normalization: {matched_norm_err}")
+
+        try:
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'unmatched',
+                    failure_reason = 'Auto-corrected: release match had no linked file path',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'matched'
+                  AND TRIM(COALESCE(file_path, '')) = ''
+                  AND TRIM(COALESCE(matched_file_path, '')) = ''
+                  AND TRIM(COALESCE(music_file_path, '')) = ''
+                  AND TRIM(COALESCE(found_filename, '')) = ''
+                  AND LOWER(COALESCE(source, '')) = 'local'
+                """
+            )
+            normalized_count += cursor.rowcount or 0
+
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'queued',
+                    failure_reason = 'Auto-corrected: release match had no linked file path',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'matched'
+                  AND TRIM(COALESCE(file_path, '')) = ''
+                  AND TRIM(COALESCE(matched_file_path, '')) = ''
+                  AND TRIM(COALESCE(music_file_path, '')) = ''
+                  AND TRIM(COALESCE(found_filename, '')) = ''
+                  AND LOWER(COALESCE(source, '')) != 'local'
+                """
+            )
+            normalized_count += cursor.rowcount or 0
+        except Exception as metadata_only_match_err:
+            logging.debug(
+                f"[QUEUE_NORMALIZE] Skipped metadata-only matched normalization: {metadata_only_match_err}"
+            )
+
+        try:
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET file_path = NULL,
+                    matched_file_path = NULL,
+                    music_file_path = NULL,
+                    found_filename = NULL,
+                    source_music_path = NULL,
+                    failure_reason = COALESCE(
+                        failure_reason,
+                        'Auto-corrected: cleared stale paths from pre-download state'
+                    ),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status IN ('queued', 'searching')
+                  AND (
+                      TRIM(COALESCE(file_path, '')) != ''
+                      OR TRIM(COALESCE(matched_file_path, '')) != ''
+                      OR TRIM(COALESCE(music_file_path, '')) != ''
+                      OR TRIM(COALESCE(found_filename, '')) != ''
+                      OR TRIM(COALESCE(source_music_path, '')) != ''
+                  )
+                """
+            )
+            normalized_count += cursor.rowcount or 0
+        except Exception as stale_queued_err:
+            logging.debug(f"[QUEUE_NORMALIZE] Skipped stale-queued path clearing: {stale_queued_err}")
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT id, status, file_path, music_file_path, matched_file_path, source_music_path,
+                       artist, album, album_artist
+                FROM download_queue
+                WHERE (
+                    TRIM(COALESCE(file_path, '')) != ''
+                    OR TRIM(COALESCE(music_file_path, '')) != ''
+                    OR TRIM(COALESCE(matched_file_path, '')) != ''
+                    OR TRIM(COALESCE(source_music_path, '')) != ''
+                )
+                """
+            )
+            all_path_rows = cursor.fetchall() or []
+            stale_path_ids = []
+            for prow in all_path_rows:
+                prow_id = _row_get(prow, 'id', 0)
+                prow_artist = _row_get(prow, 'artist', 6)
+                prow_album = _row_get(prow, 'album', 7)
+                prow_album_artist = _row_get(prow, 'album_artist', 8)
+                for path_field in ('file_path', 'music_file_path', 'matched_file_path', 'source_music_path'):
+                    path_val = _row_get(prow, path_field)
+                    if path_val and _is_under_music_root(path_val):
+                        if path_field == 'source_music_path':
+                            continue
+                        if not _is_valid_collection_location(
+                            path_val, prow_artist, prow_album, prow_album_artist
+                        ):
+                            stale_path_ids.append(prow_id)
+                            break
+
+            if stale_path_ids:
+                cursor.execute(
+                    f"""
+                    UPDATE download_queue
+                    SET file_path = NULL,
+                        matched_file_path = NULL,
+                        music_file_path = NULL,
+                        source_music_path = NULL,
+                        failure_reason = COALESCE(
+                            failure_reason,
+                            'Auto-corrected: cleared incorrect /music/ path from previous scan'
+                        ),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ANY({placeholder})
+                    """,
+                    (stale_path_ids,),
+                )
+                batch_count = cursor.rowcount or 0
+                normalized_count += batch_count
+                logging.info(
+                    f"[QUEUE_NORMALIZE] Cleared stale /music/ paths for {batch_count} item(s)"
+                )
+        except Exception as stale_music_err:
+            logging.debug(f"[QUEUE_NORMALIZE] Skipped stale /music/ path validation: {stale_music_err}")
+
+        if normalized_count:
+            conn.commit()
+            logging.info(
+                f"[QUEUE_NORMALIZE] Corrected {normalized_count} queue row(s) with invalid file-linked state"
+            )
+
+        try:
+            cursor.execute(
+                """
+                UPDATE download_queue
+                SET status = 'queued',
+                    failure_reason = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'unmatched'
+                  AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
+                  AND TRIM(COALESCE(file_path, '')) = ''
+                  AND TRIM(COALESCE(matched_file_path, '')) = ''
+                  AND TRIM(COALESCE(music_file_path, '')) = ''
+                """
+            )
+            recovered = cursor.rowcount or 0
+            if recovered:
+                conn.commit()
+                logging.info(
+                    f"[QUEUE_NORMALIZE] Promoted {recovered} stuck unmatched soulseek "
+                    f"item(s) back to queued for Soulseek dispatch"
+                )
+        except Exception as recover_err:
+            logging.debug(f"[QUEUE_NORMALIZE] Skipped unmatched soulseek recovery: {recover_err}")
+    except Exception as normalize_err:
+        logging.debug(f"[QUEUE_NORMALIZE] Skipped in_collection normalization: {normalize_err}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+_queue_normalize_scheduler_thread = None
+_queue_normalize_scheduler_stop = None
+
+
+def _start_queue_normalize_scheduler():
+    """Start a background thread that normalizes the download queue periodically."""
+    global _queue_normalize_scheduler_thread, _queue_normalize_scheduler_stop
+
+    if _queue_normalize_scheduler_thread and _queue_normalize_scheduler_thread.is_alive():
+        logging.debug("Queue normalize scheduler already running; skipping duplicate start")
+        return
+
+    _queue_normalize_scheduler_stop = threading.Event()
+
+    def _worker():
+        interval = int(os.environ.get("QUEUE_NORMALIZE_COOLDOWN_SECONDS", "300"))
+        logging.info(f"[QUEUE_NORMALIZE] Background scheduler started (interval: {interval}s)")
+        while not _queue_normalize_scheduler_stop.is_set():
+            try:
+                _normalize_download_queue()
+            except Exception as exc:
+                logging.debug(f"[QUEUE_NORMALIZE] Background normalization error: {exc}")
+            if _queue_normalize_scheduler_stop.wait(timeout=interval):
+                break
+        logging.info("[QUEUE_NORMALIZE] Background scheduler stopped")
+
+    _queue_normalize_scheduler_thread = threading.Thread(
+        target=_worker, daemon=True, name="queue-normalize-scheduler"
+    )
+    _queue_normalize_scheduler_thread.start()
+    logging.info("[QUEUE_NORMALIZE] Queue normalize scheduler thread started")
+
+
 def _coerce_optional_int(value, allow_prefix=False):
     """Return an int for numeric input, otherwise None."""
     if value is None:
@@ -5108,8 +5938,22 @@ def _ensure_recommendation_candidates_table(conn):
     lock_acquired = False
 
     if _is_postgres_connection(conn):
-        cursor.execute("SELECT pg_advisory_lock(hashtext(%s))", ("recommendation_candidates_schema",))
-        lock_acquired = True
+        for _lock_attempt in range(5):
+            try:
+                cursor.execute(
+                    "SELECT pg_try_advisory_lock(hashtext(%s)) AS acquired",
+                    ("recommendation_candidates_schema",),
+                )
+                if cursor.fetchone()['acquired']:
+                    lock_acquired = True
+                    break
+            except Exception as _adv_err:
+                logging.debug(f"Recommendation candidates advisory lock unavailable: {_adv_err}")
+                break
+            time.sleep(0.3)
+        if not lock_acquired:
+            logging.warning("Could not acquire recommendation candidates advisory lock; deferring")
+            return
 
     try:
         cursor.execute("SAVEPOINT sptnr_reco_candidates_ddl")
@@ -5705,17 +6549,19 @@ def api_artists_corrections():
             missing_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("missing_count") or 0)
 
         # Query 3: Find duplicate artists (same MBID, different names)
-        cursor.execute(f"""
+        # Use track artist (not album_artist) so compilation appearances
+        # (e.g. album_artist = "Various Artists") don't skew detection.
+        cursor.execute("""
             SELECT
                 musicbrainz_artist_id,
-                COUNT(DISTINCT {artist_expr}) as distinct_artist_names
+                COUNT(DISTINCT artist) as distinct_artist_names
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL
               AND musicbrainz_artist_id != ''
-              AND {artist_expr} IS NOT NULL
-              AND TRIM({artist_expr}) != ''
+              AND artist IS NOT NULL
+              AND TRIM(artist) != ''
             GROUP BY musicbrainz_artist_id
-            HAVING COUNT(DISTINCT {artist_expr}) > 1
+            HAVING COUNT(DISTINCT artist) > 1
         """)
         mbid_to_artists_map = {}
         for row in cursor.fetchall():
@@ -5724,15 +6570,15 @@ def api_artists_corrections():
             if mbid:
                 mbid_to_artists_map[mbid] = row_dict.get("distinct_artist_names", 0)
 
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT DISTINCT
-                {artist_expr} as effective_artist,
+                artist as effective_artist,
                 musicbrainz_artist_id
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL
               AND musicbrainz_artist_id != ''
-              AND {artist_expr} IS NOT NULL
-              AND TRIM({artist_expr}) != ''
+              AND artist IS NOT NULL
+              AND TRIM(artist) != ''
         """)
         for row in cursor.fetchall():
             row_dict = dict(row)
@@ -6050,7 +6896,7 @@ def artist_corrections(name):
 
             fallback_rel = (
                 f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
-                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}{file_ext}"
+                f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}{file_ext}"
             )
 
             try:
@@ -6734,6 +7580,8 @@ def api_artist_corrections_apply_album_mbid():
         artist_name = str(payload.get("artist") or "").strip()
         album_name = str(payload.get("album") or "").strip()
         album_mbid = str(payload.get("mbid") or "").strip()
+        if album_mbid:
+            album_mbid = _resolve_mbid_to_release(album_mbid, artist_name, album_name)
         release_group_mbid = str(payload.get("release_group_mbid") or "").strip()
 
         if not artist_name or not album_name or not album_mbid:
@@ -8502,22 +9350,28 @@ def api_artist_genre_management_save():
                     tid = tr.get("id")
                     current = _parse_genres_string(tr.get("genres") or "")
                     current_lower_map = {g.lower(): g for g in current}
+                    manual_current = _parse_genres_string(tr.get("manual_genres") or "")
+                    manual_lower_map = {g.lower(): g for g in manual_current}
 
-                    # Remove
+                    # Remove from both genres and manual_genres
                     new_set = {k: v for k, v in current_lower_map.items() if k not in remove_genres_lower}
+                    manual_new_set = {k: v for k, v in manual_lower_map.items() if k not in remove_genres_lower}
 
-                    # Add (avoid duplicates)
+                    # Add (avoid duplicates) – manual additions are stored in manual_genres
                     for g in add_genres:
                         if g.lower() not in new_set:
                             new_set[g.lower()] = g
+                        if g.lower() not in manual_new_set:
+                            manual_new_set[g.lower()] = g
 
                     new_genres = list(new_set.values())
                     new_genres_str = ", ".join(new_genres)
+                    new_manual_str = ", ".join(list(manual_new_set.values()))
 
                     try:
                         cursor.execute(
-                            f"UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}",
-                            (new_genres_str, tid),
+                            f"UPDATE tracks SET genres = {placeholder}, manual_genres = {placeholder} WHERE id = {placeholder}",
+                            (new_genres_str, new_manual_str, tid),
                         )
                         conn.commit()
 
@@ -8554,6 +9408,8 @@ def api_track_match_missing():
         mb_title = (data.get("mb_title") or "").strip()
         mb_track_number = data.get("mb_track_number")
         mb_release_id = (data.get("mb_release_id") or "").strip()
+        if mb_release_id:
+            mb_release_id = _resolve_mbid_to_release(mb_release_id)
 
         if not track_id or not mb_title:
             return jsonify({"success": False, "error": "track_id and mb_title are required"}), 400
@@ -9071,7 +9927,12 @@ def artist_detail(name):
             elif album_type and 'remix' in album_type and 'live' not in album_type and 'compilation' not in album_type:
                 albums_by_category["remix_album"].append(album_dict)
                 categorized_albums.add(album_name)
-            elif album_name and ('live' in album_name_lower or 'unplugged' in album_name_lower):
+            elif album_name and (
+                re.search(r'\blive\b', album_name_lower)
+                or 'unplugged' in album_name_lower
+                or re.search(r'\bin\s+concert\b', album_name_lower)
+                or re.search(r'\bconcert\b', album_name_lower)
+            ):
                 albums_by_category["live_album"].append(album_dict)
                 categorized_albums.add(album_name)
             elif album_name and ('remix' in album_name_lower):
@@ -9151,7 +10012,7 @@ def artist_detail(name):
             "single": [],
             "compilation": []
         }
-        
+
         for release in missing_releases_dicts:
             release_dict = release.copy()
             release_dict['is_missing'] = True  # Mark as missing
@@ -9171,9 +10032,9 @@ def artist_detail(name):
             if release_bucket == "album" and is_compilation_by_title:
                 release_bucket = "compilation"
 
-            if release_bucket in ("album", "live_album", "remix_album", "ep", "single", "compilation"):
+            if release_bucket in ("ep", "single", "album", "live_album", "remix_album", "compilation"):
                 missing_by_category[release_bucket].append(release_dict)
-        
+
         # SAFETY: Remove live albums from missing releases in wrong categories
         missing_live_names = {
             _normalize_release_title(a.get('title', ''))
@@ -9206,7 +10067,7 @@ def artist_detail(name):
             for a in missing_by_category.get("compilation", [])
             if a.get('title')
         }
-        for cat in ["album", "ep", "single"]:
+        for cat in ["album", "live_album", "remix_album", "ep", "single"]:
             if missing_compilation_names:
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
@@ -9799,18 +10660,29 @@ def api_artist_missing_releases():
                 "info": "Skipped live MusicBrainz lookup during active scan; returned cached missing releases.",
             })
 
-    # Get artist MBID if available for more accurate MusicBrainz lookup
+    # Get artist MBID if available for more accurate MusicBrainz lookup.
+    # Use the album artist MBID only, so collaborations or featured tracks
+    # do not skew the lookup to the wrong artist.
     artist_mbid = None
     try:
         cursor.execute(f"""
-            SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) AS mbid
+            SELECT musicbrainz_albumartistid AS mbid
             FROM tracks
-            WHERE LOWER({artist_compare_expr}) = LOWER({placeholder})
+            WHERE LOWER(album_artist) = LOWER({placeholder})
+              AND musicbrainz_albumartistid IS NOT NULL
+              AND musicbrainz_albumartistid != ''
         """, (artist,))
-        row = cursor.fetchone()
-        if row and row['mbid']:
-            artist_mbid = row['mbid']
-    except:
+        rows = cursor.fetchall()
+        mbids = []
+        for row in rows:
+            raw = row.get('mbid') if isinstance(row, dict) else row[0]
+            if raw:
+                normalized = normalize_single_mbid(str(raw))
+                if normalized:
+                    mbids.append(normalized)
+        if mbids:
+            artist_mbid = Counter(mbids).most_common(1)[0][0]
+    except Exception:
         pass
 
     cursor.execute(f"""
@@ -9853,18 +10725,29 @@ def api_artist_missing_releases():
             continue
 
         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-        if "compilation" in secondary:
+        # EPs and singles should remain in their own buckets regardless of secondary types
+        if primary_type == "ep":
+            category = "EP"
+        elif primary_type == "single":
+            category = "Single"
+        elif "compilation" in secondary:
             category = "Compilation"
         elif "live" in secondary:
             category = "Live Album"
         elif "remix" in secondary:
             category = "Remix"
-        elif primary_type == "ep":
-            category = "EP"
-        elif primary_type == "single":
-            category = "Single"
         else:
             category = "Album"
+
+        # Only include singles released in the current calendar year.
+        if category == "Single":
+            release_year_str = (rg.get("first_release_date") or "").split("-")[0]
+            try:
+                release_year = int(release_year_str)
+            except (ValueError, TypeError):
+                release_year = 0
+            if release_year < datetime.now().year:
+                continue
 
         dedupe_key = (norm_title, category)
         if dedupe_key in seen_missing_keys:
@@ -10209,14 +11092,26 @@ def api_scan_all_missing_releases():
                     try:
                         from api_clients.musicbrainz import lookup_and_save_artist_mbid
                         cursor.execute(f"""
-                            SELECT MAX(musicbrainz_artist_id)
+                            SELECT musicbrainz_albumartistid AS mbid
                             FROM tracks
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                            WHERE album_artist = {placeholder}
+                              AND musicbrainz_albumartistid IS NOT NULL
+                              AND musicbrainz_albumartistid != ''
                         """, (artist_name,))
-                        result = cursor.fetchone()
-                        existing_mbid = result[0] if result and result[0] else None
+                        rows = cursor.fetchall()
+                        mbids = []
+                        for row in rows:
+                            raw = row.get('mbid') if isinstance(row, dict) else row[0]
+                            if raw:
+                                normalized = normalize_single_mbid(str(raw))
+                                if normalized:
+                                    mbids.append(normalized)
+                        if mbids:
+                            existing_mbid = Counter(mbids).most_common(1)[0][0]
+                        else:
+                            existing_mbid = None
                         resolved_artist_mbid = existing_mbid
-                        
+
                         if not existing_mbid:
                             # No MBID saved yet, try to look it up from MusicBrainz
                             mbid = lookup_and_save_artist_mbid(artist_name, conn)
@@ -10241,7 +11136,17 @@ def api_scan_all_missing_releases():
                     # Fetch MusicBrainz releases, preferring MBID lookups for accuracy.
                     mb_releases = _fetch_musicbrainz_releases(artist_name, artist_mbid=resolved_artist_mbid)
                     missing_for_artist = []
-                    
+
+                    # Clear stale missing releases for this artist so entries fetched
+                    # with a previously-wrong MBID are removed before re-insert.
+                    try:
+                        cursor.execute(
+                            f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder})",
+                            (artist_name,)
+                        )
+                    except Exception as e:
+                        logging.warning(f"[MISSING_RELEASES] Could not clear stale missing releases for {artist_name}: {e}")
+
                     # Check for missing releases AND update cover art for existing albums
                     for rg in mb_releases:
                         norm_title = _normalize_release_title(rg.get("title") or "")
@@ -10281,18 +11186,32 @@ def api_scan_all_missing_releases():
                             continue
 
                         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-                        if "compilation" in secondary:
+                        # EPs and singles should remain in their own buckets regardless of secondary types
+                        if primary_type == "ep":
+                            category = "EP"
+                        elif primary_type == "single":
+                            category = "Single"
+                        elif "compilation" in secondary:
                             category = "Compilation"
                         elif "live" in secondary:
                             category = "Live Album"
                         elif "remix" in secondary:
                             category = "Remix"
-                        elif primary_type == "ep":
-                            category = "EP"
-                        elif primary_type == "single":
-                            category = "Single"
                         else:
                             category = "Album"
+
+                        # Filter: exclude Live and Remix albums entirely.
+                        # Only include singles released in the current calendar year.
+                        if category in ("Live Album", "Remix"):
+                            continue
+                        if category == "Single":
+                            release_year_str = (rg.get("first_release_date") or "").split("-")[0]
+                            try:
+                                release_year = int(release_year_str)
+                            except (ValueError, TypeError):
+                                release_year = 0
+                            if release_year < datetime.now().year:
+                                continue
 
                         missing_for_artist.append({
                             "id": rg.get("id", ""),
@@ -11879,6 +12798,8 @@ def api_album_update_ids():
         album_name = data.get("album")
         spotify_album_id = data.get("spotify_album_id", "").strip()
         musicbrainz_release_id = data.get("musicbrainz_release_id", "").strip()
+        if musicbrainz_release_id:
+            musicbrainz_release_id = _resolve_mbid_to_release(musicbrainz_release_id, artist_name, album_name)
         discogs_release_id = data.get("discogs_release_id", "").strip()
         
         if not artist_name or not album_name:
@@ -12080,15 +13001,23 @@ def api_album_bulk_tag():
                 
                 if result:
                     current_genres = row_get(result, 'genres') or ''
+                    manual_genres_raw = row_get(result, 'manual_genres') or ''
                     # Parse existing genres (handle both comma-separated and double-backslash formats)
                     if '\\' in current_genres:
                         existing = set(g.strip() for g in current_genres.split('\\') if g.strip())
                     else:
                         existing = set(g.strip() for g in current_genres.split(',') if g.strip())
+                    # Parse manual genres
+                    if '\\' in manual_genres_raw:
+                        manual_existing = set(g.strip() for g in manual_genres_raw.split('\\') if g.strip())
+                    else:
+                        manual_existing = set(g.strip() for g in manual_genres_raw.split(',') if g.strip())
                     # Add new genres
                     existing.update(genres)
+                    manual_existing.update(genres)
                     # Join back for database (comma-separated for display)
                     new_genres = ', '.join(sorted(existing))
+                    new_manual_genres = ', '.join(sorted(manual_existing))
                     # Format for ID3 tags (double backslash separated)
                     genre_id3_final = '\\'.join(sorted(existing))
                     
@@ -12126,8 +13055,8 @@ def api_album_bulk_tag():
                     
                     # Update database (store comma-separated for display)
                     cursor.execute(f"""
-                        UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}
-                    """, (new_genres, track_id))
+                        UPDATE tracks SET genres = {placeholder}, manual_genres = {placeholder} WHERE id = {placeholder}
+                    """, (new_genres, new_manual_genres, track_id))
                     
                     updated_count += 1
                     logging.info(f"[TAG] Added genres to track {track_id}: {new_genres}")
@@ -12688,25 +13617,14 @@ def api_get_similar_artists(artist):
                 logging.debug(f"[SIMILAR ARTISTS] Found MBID {artist_mbid} for {artist}")
                 
                 # Fetch from ListenBrainz
-                lb_url = "https://labs.api.listenbrainz.org/similar-artists/json"
-                params = {"artist_mbids": artist_mbid}
-                
-                lb_response = requests.get(lb_url, params=params, timeout=(5, 10))
-                lb_response.raise_for_status()
-                lb_results = lb_response.json()
-                
-                if lb_results and "payload" in lb_results:
-                    similar_records = lb_results.get("payload", {}).get("artists", [])
-                    
-                    if similar_records:
-                        similar_listenbrainz = [
-                            {
-                                "name": record.get("artist_name", ""),
-                                "mbid": record.get("artist_mbid", "")
-                            }
-                            for record in similar_records[:10]
-                        ]
+                try:
+                    from api_clients.audiodb_and_listenbrainz import ListenBrainzClient
+                    lb_client = ListenBrainzClient()
+                    similar_listenbrainz = lb_client.get_similar_artists(artist_mbid)
+                    if similar_listenbrainz:
                         logging.info(f"[SIMILAR ARTISTS] Found {len(similar_listenbrainz)} from ListenBrainz")
+                except Exception as e:
+                    logging.debug(f"[SIMILAR ARTISTS] ListenBrainz fetch failed: {e}")
         except Exception as e:
             logging.debug(f"[SIMILAR ARTISTS] ListenBrainz fetch failed: {e}")
         
@@ -13270,6 +14188,39 @@ def api_album_queue_status():
         return jsonify({"error": str(e)}), 500
 
 
+def _apply_album_art_to_tracks(artist_name: str, album_name: str, image_data: bytes, mime_type: str = "image/jpeg") -> int:
+    """
+    Embed album art into all audio files for the given artist/album.
+    Returns the number of files successfully updated.
+    """
+    files_updated = 0
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = get_placeholder(conn)
+        cursor.execute(
+            f"SELECT id, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}",
+            (artist_name, album_name),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        from helpers.tag_manager import write_tags_to_file
+
+        for row in rows:
+            file_path = str(row.get("file_path") or "").strip() if hasattr(row, "get") else str(row[1] or "").strip()
+            if not file_path or not os.path.exists(file_path):
+                continue
+            try:
+                if write_tags_to_file(file_path, {"cover_art_data": image_data, "cover_art_mime": mime_type}):
+                    files_updated += 1
+            except Exception as e:
+                logging.debug(f"Failed to embed album art in {file_path}: {e}")
+    except Exception as e:
+        logging.debug(f"Failed to apply album art to tracks: {e}")
+    return files_updated
+
+
 @app.route("/api/album/set-art", methods=["POST"])
 def api_album_set_art():
     """Set custom album art from a URL – downloads the image and stores it in the database"""
@@ -13326,8 +14277,9 @@ def api_album_set_art():
         if not saved:
             return jsonify({"error": "Failed to save image to database"}), 500
 
-        logger.info(f"Album art updated for '{artist_name} - {album_name}' from URL")
-        return jsonify({"success": True, "message": "Album art updated"})
+        files_updated = _apply_album_art_to_tracks(artist_name, album_name, resp.content, mime_type=mime_type)
+        logger.info(f"Album art updated for '{artist_name} - {album_name}' from URL ({files_updated} files)")
+        return jsonify({"success": True, "message": "Album art updated", "files_updated": files_updated})
 
     except requests.exceptions.RequestException as e:
         logger.warning(f"Error downloading album art: {e}")
@@ -13363,8 +14315,9 @@ def api_album_upload_art():
         if not saved:
             return jsonify({"error": "Failed to save image to database"}), 500
 
-        logger.info(f"Album art uploaded for '{artist_name} - {album_name}'")
-        return jsonify({"success": True, "message": "Album art uploaded"})
+        files_updated = _apply_album_art_to_tracks(artist_name, album_name, image_data, mime_type=mime_type)
+        logger.info(f"Album art uploaded for '{artist_name} - {album_name}' ({files_updated} files)")
+        return jsonify({"success": True, "message": "Album art uploaded", "files_updated": files_updated})
 
     except Exception as e:
         logger.error(f"Error uploading album art: {e}")
@@ -13788,19 +14741,33 @@ def api_add_artist():
             if norm_title and norm_title in existing_norm:
                 continue
             
-            # Skip compilations
             secondary = [s.lower() for s in rg.get("secondary_types") or []]
-            if "compilation" in secondary:
-                continue
-            
-            # Determine category
+
+            # Determine category including secondary types.
+            # EPs and singles should remain in their own buckets regardless of secondary types.
             primary_type = (rg.get("primary_type") or "").lower()
             category = "Album"
             if primary_type == "ep":
                 category = "EP"
             elif primary_type == "single" or "single" in secondary:
                 category = "Single"
-            
+            elif "compilation" in secondary:
+                category = "Compilation"
+            elif "live" in secondary:
+                category = "Live Album"
+            elif "remix" in secondary:
+                category = "Remix"
+
+            # Only include singles released in the current calendar year.
+            if category == "Single":
+                release_year_str = (rg.get("first_release_date") or "").split("-")[0]
+                try:
+                    release_year = int(release_year_str)
+                except (ValueError, TypeError):
+                    release_year = 0
+                if release_year < datetime.now().year:
+                    continue
+
             # Insert into missing_releases with DB-aware upsert
             try:
                 cursor.execute(
@@ -13929,6 +14896,7 @@ def album_detail(artist, album):
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
+                    MAX(musicbrainz_releasegroupid) as musicbrainz_releasegroupid,
                     COALESCE(MAX(discogs_album_id), MAX(discogs_release_id)) as discogs_album_id,
                     MAX(spotify_album_id) as spotify_album_id,
                     MAX(spotify_artist_id) as spotify_artist_id,
@@ -13952,6 +14920,7 @@ def album_detail(artist, album):
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     NULL as musicbrainz_album_mbid,
+                    NULL as musicbrainz_releasegroupid,
                     NULL as discogs_album_id,
                     NULL as spotify_album_id,
                     NULL as spotify_artist_id,
@@ -14300,9 +15269,8 @@ def album_detail(artist, album):
             cursor2.execute(
                 f"SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) AS mbid"
                 f" FROM tracks"
-                f" WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder2}"
-                f" AND LOWER(COALESCE(album, '')) = LOWER({placeholder2})",
-                (db_artist_name, db_album_name),
+                f" WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder2})",
+                (db_artist_name,),
             )
             _mbid_row = cursor2.fetchone()
             if _mbid_row:
@@ -14440,21 +15408,21 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
                 log_unified(f"Warning: Artist metadata fetch not available: {e}")
             except Exception as e:
                 log_unified(f"Warning: Failed to fetch artist metadata: {e}")
-            log_unified(f"Step 2/3: Running popularity scan for track artist '{artist_name}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
-            log_unified(f"Step 2b/3: Running metadata enrichment scan for track artist '{artist_name}'")
+            log_unified(f"Step 2/3: Running metadata enrichment scan for track artist '{artist_name}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, metadata_only=True)
+            log_unified(f"Step 2b/3: Running popularity scan for track artist '{artist_name}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
         else:
             # Normal flow: artist_id found, run both steps
             # Step 1: Import metadata from Navidrome for this artist
             log_unified(f"Step 1/3: Navidrome import for artist '{artist_name}' (force={force})")
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=force)
 
-            # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
-            log_unified(f"Step 2/3: Running popularity scan for artist '{artist_name}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
-            log_unified(f"Step 2b/3: Running metadata enrichment scan for artist '{artist_name}'")
+            # Step 2: Run metadata enrichment scan first so MBIDs are populated for ListenBrainz
+            log_unified(f"Step 2/3: Running metadata enrichment scan for artist '{artist_name}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, metadata_only=True)
+            log_unified(f"Step 2b/3: Running popularity scan for artist '{artist_name}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
 
         # Step 3: Run Essentia mood/genre scan for this artist
         log_unified(f"Step 3/3: Running Essentia scan for artist '{artist_name}' (force={force})")
@@ -14626,14 +15594,15 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
                 "platinum", "gold edition", "ultimate collection",
             ]
             live_keywords = [
-                "live at", "live in", "live from", "live session",
-                "live recording", "live tour", "in concert", "unplugged",
-                "(live)", "[live]", "- live",
+                r'\blive\s+at\b', r'\blive\s+in\b', r'\blive\s+from\b',
+                r'\blive\s+session\b', r'\blive\s+recording\b', r'\blive\s+tour\b',
+                r'\bin\s+concert\b', r'\bunplugged\b',
+                r'\(live\)', r'\[live\]', r'-\s*live\b',
             ]
             if any(kw in album_lower for kw in compilation_keywords):
                 new_type = 'album+compilation'
                 classification_reason = "Album name indicates compilation"
-            elif any(kw in album_lower for kw in live_keywords):
+            elif any(re.search(kw, album_lower) for kw in live_keywords):
                 new_type = 'album+live'
                 classification_reason = "Album name indicates live recording"
 
@@ -14750,13 +15719,13 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
                 log_unified(f"❌ Scan aborted: no tracks found for '{album_display}' - album does not exist in library")
                 return
             
-            # Artist/album exists as track artist only - skip Navidrome import, go straight to popularity scan
+            # Artist/album exists as track artist only - skip Navidrome import, go straight to enrichment/popularity
             log_unified(f"Album '{album_display}' uses track artist (e.g., from Various Artists compilation)")
             log_unified(f"Skipping Navidrome import (Step 1/2) - album metadata already imported via album artist")
-            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
-            log_unified(f"Step 2b/2: Running metadata enrichment scan for album '{album_display}'")
+            log_unified(f"Step 2/2: Running metadata enrichment scan for album '{album_display}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name, metadata_only=True)
+            log_unified(f"Step 2b/2: Running popularity scan for album '{album_display}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
             
             # Step 3: Auto-detect and set album type
             log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
@@ -14767,11 +15736,11 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
             log_unified(f"Step 1/2: Navidrome import for album '{album_display}' (force={force})")
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=force, album_filter=album_name)
 
-            # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
-            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force={force})")
-            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
-            log_unified(f"Step 2b/2: Running metadata enrichment scan for album '{album_display}'")
+            # Step 2: Run metadata enrichment first so MBIDs are populated for ListenBrainz
+            log_unified(f"Step 2/2: Running metadata enrichment scan for album '{album_display}'")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name, metadata_only=True)
+            log_unified(f"Step 2b/2: Running popularity scan for album '{album_display}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
         
         # Step 3: Auto-detect and set album type based on singles detection
         log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
@@ -14805,6 +15774,9 @@ def album_edit(artist, album):
         album_type = "album+compilation"
     
     album_mbid = request.form.get("album_mbid", "").strip() or None
+    if album_mbid:
+        album_mbid = _resolve_mbid_to_release(album_mbid, artist, album)
+    album_release_group_mbid = request.form.get("album_release_group_mbid", "").strip() or None
     album_discogs_id = request.form.get("album_discogs_id", "").strip() or None
     artist_mbid = request.form.get("artist_mbid", "").strip() or None
     album_genres = request.form.get("album_genres", "").strip()
@@ -14870,6 +15842,11 @@ def album_edit(artist, album):
             update_fields.append(f"musicbrainz_album_mbid = {placeholder}")
             update_values.append(album_mbid)
 
+        # Update album release-group MBID if provided
+        if album_release_group_mbid:
+            update_fields.append(f"musicbrainz_releasegroupid = {placeholder}")
+            update_values.append(album_release_group_mbid)
+
         # Update artist MBID if provided
         if artist_mbid:
             update_fields.append(f"musicbrainz_artist_id = {placeholder}")
@@ -14899,7 +15876,7 @@ def album_edit(artist, album):
             # All field assignments should be in the format "column_name = <placeholder>"
             allowed_columns = {
                 'album', 'artist', 'album_artist', 'year', 'spotify_album_type',
-                'musicbrainz_album_mbid', 'musicbrainz_artist_id',
+                'musicbrainz_album_mbid', 'musicbrainz_releasegroupid', 'musicbrainz_artist_id',
                 'discogs_album_id', 'discogs_release_id',
                 'genres', 'composer', 'comment', 'cover_art_url'
             }
@@ -15002,6 +15979,29 @@ def album_edit(artist, album):
                                         logging.warning(f"Failed to download cover art from {_safe_url}: HTTP {_resp.status_code}")
                             except Exception as _download_err:
                                 logging.warning(f"Could not download cover art: {_download_err}")
+                        else:
+                            # No cover_art_url provided in form — try to use existing album art from DB
+                            try:
+                                # Try new artist/album names first, then fall back to original names
+                                _art_candidates = [(album_artist, album_title)]
+                                if names_changed:
+                                    _art_candidates.append((artist, album))
+                                for _art_artist, _art_album in _art_candidates:
+                                    cursor.execute(f"""
+                                        SELECT image_data, image_mime_type
+                                        FROM album_art
+                                        WHERE LOWER(COALESCE(artist_name, '')) = LOWER({placeholder})
+                                          AND LOWER(COALESCE(album_name, '')) = LOWER({placeholder})
+                                        LIMIT 1
+                                    """, (_art_artist, _art_album))
+                                    art_row = cursor.fetchone()
+                                    if art_row:
+                                        cover_art_bytes = art_row['image_data'] if hasattr(art_row, 'keys') else art_row[0]
+                                        cover_art_mime = (art_row['image_mime_type'] if hasattr(art_row, 'keys') else art_row[1]) or 'image/jpeg'
+                                        logging.debug(f"Using existing album art from database for {_art_artist} - {_art_album}")
+                                        break
+                            except Exception as _art_db_err:
+                                logging.debug(f"Could not fetch existing album art from database: {_art_db_err}")
 
                         def _resolve_music_file_path(path_value):
                             if not path_value:
@@ -15067,8 +16067,12 @@ def album_edit(artist, album):
                                     tags_to_write["album_artist"] = album_artist
                                 if album_mbid:
                                     tags_to_write["musicbrainz_album_mbid"] = album_mbid
+                                    tags_to_write["musicbrainz_albumid"] = album_mbid
+                                if album_release_group_mbid:
+                                    tags_to_write["musicbrainz_releasegroupid"] = album_release_group_mbid
                                 if artist_mbid:
                                     tags_to_write["musicbrainz_artistid"] = artist_mbid
+                                    tags_to_write["musicbrainz_artist_id"] = artist_mbid
                                 if cover_art_bytes:
                                     tags_to_write["cover_art_data"] = cover_art_bytes
                                     tags_to_write["cover_art_mime"] = cover_art_mime
@@ -15301,30 +16305,31 @@ def api_get_duplicate_artists(artist):
         placeholder = "%s"
         cursor = conn.cursor()
         
-        # Get the MBID for the current artist (use the same album_artist fallback as Artists page)
+        # Get the MBID for the current artist using track artist so compilation
+        # albums (album_artist = "Various Artists") don't contaminate detection.
         cursor.execute("""
             SELECT DISTINCT musicbrainz_artist_id
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+            WHERE artist = {placeholder}
                 AND musicbrainz_artist_id IS NOT NULL
                 AND musicbrainz_artist_id != ''
             LIMIT 1
         """.format(placeholder=placeholder), (artist,))
-        
+
         artist_mbid_row = cursor.fetchone()
         artist_mbid = _row_get(artist_mbid_row, 'musicbrainz_artist_id', 0) if artist_mbid_row else None
-        
+
         duplicates = []
-        
+
         if artist_mbid:
-            # Get all album_artist name variations for this MBID (not track artist)
+            # Get all track-artist name variations for this MBID.
             cursor.execute("""
-                SELECT 
-                    COALESCE(NULLIF(album_artist, ''), artist) as artist,
+                SELECT
+                    artist as artist,
                     COUNT(*) as track_count
                 FROM tracks
                 WHERE musicbrainz_artist_id = {placeholder}
-                GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+                GROUP BY artist
                 ORDER BY track_count DESC
             """.format(placeholder=placeholder), (artist_mbid,))
             
@@ -15526,6 +16531,151 @@ def artist_update_metadata(name):
     threading.Thread(target=_run, daemon=True).start()
     flash(f"Metadata update started for artist '{name}'", "info")
     return redirect(url_for("artist_detail", name=name))
+
+
+@app.route("/scan/artist-custom", methods=["POST"])
+def scan_artist_custom():
+    """Run a specific scan type for an artist."""
+    from urllib.parse import unquote
+    scan_type = request.form.get("scan_type", "full")
+    artist = (request.form.get("artist") or "").strip()
+    force = str(request.form.get("force", "")).strip().lower() in ("1", "true", "yes", "on")
+
+    if not artist:
+        flash("Error: No artist name provided", "danger")
+        return redirect(url_for("dashboard"))
+
+    mode_label = "Forced" if force else "Changes Only"
+
+    if scan_type == "full":
+        threading.Thread(target=_run_artist_scan_pipeline, args=(artist, force), daemon=True).start()
+        flash(f"Full scan started for artist: {artist} ({mode_label})", "success")
+    elif scan_type == "navidrome":
+        def _run():
+            log_unified(f"Navidrome import started for artist: {artist}")
+            try:
+                conn = get_db()
+                try:
+                    cursor = conn.cursor()
+                    placeholder = "%s"
+                    cursor.execute(f"SELECT artist_id FROM artist_stats WHERE artist_name = {placeholder}", (artist,))
+                    row = cursor.fetchone()
+                    artist_id = row["artist_id"] if row else None
+                finally:
+                    conn.close()
+                if not artist_id:
+                    idx = build_artist_index()
+                    artist_data = idx.get(artist, {})
+                    artist_id = artist_data.get("id")
+                if artist_id:
+                    scan_artist_to_db(artist, artist_id, verbose=True, force=force)
+                    log_unified(f"Navidrome import completed for artist: {artist}")
+                else:
+                    log_unified(f"Artist not found for Navidrome import: {artist}")
+            except Exception as e:
+                log_unified(f"Error in Navidrome import for {artist}: {e}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Navidrome import started for artist: {artist} ({mode_label})", "success")
+    elif scan_type == "popularity":
+        def _run():
+            log_unified(f"Popularity scan started for artist: {artist}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist)
+            log_unified(f"Popularity scan completed for artist: {artist}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Popularity scan started for artist: {artist} ({mode_label})", "success")
+    elif scan_type == "metadata":
+        def _run():
+            log_unified(f"Metadata scan started for artist: {artist}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist, metadata_only=True)
+            log_unified(f"Metadata scan completed for artist: {artist}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Metadata scan started for artist: {artist} ({mode_label})", "success")
+    elif scan_type == "singles":
+        def _run():
+            log_unified(f"Singles scan started for artist: {artist}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist, singles_with_missing_popularity=True)
+            log_unified(f"Singles scan completed for artist: {artist}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Singles scan started for artist: {artist} ({mode_label})", "success")
+    elif scan_type == "essentia":
+        return redirect(url_for("scan_essentia_mood"), code=307)
+    else:
+        flash(f"Unknown scan type: {scan_type}", "danger")
+
+    return redirect(url_for("artist_detail", name=artist))
+
+
+@app.route("/scan/album-custom", methods=["POST"])
+def scan_album_custom():
+    """Run a specific scan type for an album."""
+    from urllib.parse import unquote
+    scan_type = request.form.get("scan_type", "full")
+    artist = (request.form.get("artist") or "").strip()
+    album = (request.form.get("album") or "").strip()
+    force = str(request.form.get("force", "")).strip().lower() in ("1", "true", "yes", "on")
+
+    if not artist or not album:
+        flash("Error: Artist and album name are required", "danger")
+        return redirect(url_for("dashboard"))
+
+    mode_label = "Forced" if force else "Changes Only"
+
+    if scan_type == "full":
+        threading.Thread(target=_run_album_scan_pipeline, args=(artist, album, force), daemon=True).start()
+        flash(f"Full scan started for album '{album}' by {artist} ({mode_label})", "success")
+    elif scan_type == "navidrome":
+        def _run():
+            log_unified(f"Navidrome import started for album: {artist} - {album}")
+            try:
+                conn = get_db()
+                try:
+                    cursor = conn.cursor()
+                    placeholder = "%s"
+                    cursor.execute(f"SELECT artist_id FROM artist_stats WHERE artist_name = {placeholder}", (artist,))
+                    row = cursor.fetchone()
+                    artist_id = row["artist_id"] if row else None
+                finally:
+                    conn.close()
+                if not artist_id:
+                    idx = build_artist_index()
+                    artist_data = idx.get(artist, {})
+                    artist_id = artist_data.get("id")
+                if artist_id:
+                    scan_artist_to_db(artist, artist_id, verbose=True, force=force, album_filter=album)
+                    log_unified(f"Navidrome import completed for album: {artist} - {album}")
+                else:
+                    log_unified(f"Artist not found for Navidrome import: {artist}")
+            except Exception as e:
+                log_unified(f"Error in Navidrome import for {artist} - {album}: {e}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Navidrome import started for album '{album}' by {artist} ({mode_label})", "success")
+    elif scan_type == "popularity":
+        def _run():
+            log_unified(f"Popularity scan started for album: {artist} - {album}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist, album_filter=album)
+            log_unified(f"Popularity scan completed for album: {artist} - {album}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Popularity scan started for album '{album}' by {artist} ({mode_label})", "success")
+    elif scan_type == "metadata":
+        def _run():
+            log_unified(f"Metadata scan started for album: {artist} - {album}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist, album_filter=album, metadata_only=True)
+            log_unified(f"Metadata scan completed for album: {artist} - {album}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Metadata scan started for album '{album}' by {artist} ({mode_label})", "success")
+    elif scan_type == "singles":
+        def _run():
+            log_unified(f"Singles scan started for album: {artist} - {album}")
+            popularity_scan(verbose=True, force=force, artist_filter=artist, album_filter=album, singles_with_missing_popularity=True)
+            log_unified(f"Singles scan completed for album: {artist} - {album}")
+        threading.Thread(target=_run, daemon=True).start()
+        flash(f"Singles scan started for album '{album}' by {artist} ({mode_label})", "success")
+    elif scan_type == "essentia":
+        return redirect(url_for("scan_essentia_mood"), code=307)
+    else:
+        flash(f"Unknown scan type: {scan_type}", "danger")
+
+    return redirect(url_for("album_detail", artist=artist, album=album))
 
 
 @app.route("/track/<path:artist>/<path:album>/<path:track_id>/rescan", methods=["POST"])
@@ -15823,6 +16973,7 @@ def track_edit(track_id):
     is_compilation = request.form.get("is_compilation") == "on"
     is_live = request.form.get("is_live") == "on"
     is_acoustic = request.form.get("is_acoustic") == "on"
+    is_remix = request.form.get("is_remix") == "on"
 
     # Persist feature flags according to DB schema (BOOLEAN vs INTEGER/BIGINT).
     normalized_flags = _normalize_track_flag_payload(conn, {
@@ -15833,6 +16984,7 @@ def track_edit(track_id):
         'is_compilation': is_compilation,
         'is_live': is_live,
         'is_acoustic': is_acoustic,
+        'is_remix': is_remix,
         'single_manual_override': True,
     })
     is_single_db = normalized_flags.get('is_single')
@@ -15842,6 +16994,7 @@ def track_edit(track_id):
     is_compilation_db = normalized_flags.get('is_compilation')
     is_live_db = normalized_flags.get('is_live')
     is_acoustic_db = normalized_flags.get('is_acoustic')
+    is_remix_db = normalized_flags.get('is_remix')
     single_manual_override_db = normalized_flags.get('single_manual_override')
     
     # First, get the file path from database
@@ -15863,7 +17016,7 @@ def track_edit(track_id):
                 bpm = {placeholder}, bitrate = {placeholder}, sample_rate = {placeholder},
                 is_cover = {placeholder}, cover_manual_override = {placeholder},
                 alternate_take = {placeholder}, is_compilation = {placeholder},
-                is_live = {placeholder}, is_acoustic = {placeholder},
+                is_live = {placeholder}, is_acoustic = {placeholder}, is_remix = {placeholder},
                 single_manual_override = {placeholder},
                 titlesort = {placeholder}, albumsort = {placeholder}, artistsort = {placeholder},
                 composersort = {placeholder}, albumartistsort = {placeholder}, lyricistsort = {placeholder},
@@ -15899,7 +17052,7 @@ def track_edit(track_id):
               bpm, bitrate, sample_rate,
               is_cover_db, cover_manual_override_db,
               alternate_take_db, is_compilation_db,
-              is_live_db, is_acoustic_db,
+              is_live_db, is_acoustic_db, is_remix_db,
               single_manual_override_db,
               titlesort, albumsort, artistsort,
               composersort, albumartistsort, lyricistsort,
@@ -19459,60 +20612,49 @@ def slskd_search():
         # Use a plain session with no automatic retries for interactive searches.
         # The shared api_clients session retries 429 responses up to 3 times with
         # exponential backoff (1s+2s+4s per attempt), which turns a fast 429 into
-        # a ~31s wait per start_search attempt.  With max_attempts=3 that can exceed
-        # the 60s browser timeout.  A plain session returns 429 immediately so the
-        # manual retry loop in start_search() controls the cadence instead.
-        plain_session = requests.Session()
-        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
+        # a ~31s wait per start_search attempt.  A plain session returns 429
+        # immediately so the manual retry loop in start_search() controls the
+        # cadence instead.
+        with requests.Session() as plain_session:
+            client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
 
-        # Optimistic fast path: attempt the search without pre-emptive cleanup.
-        # When slskd has no active searches (the common interactive case), this
-        # returns immediately (<1s).  Pre-emptively calling _clear_stale_slskd_searches
-        # before every search issues a DELETE for every accumulated completed search
-        # (each with a 4s timeout); with even 15 stale background-search entries that
-        # path can exceed the 60s browser timeout *before* the POST to slskd is sent —
-        # which is why users observe "Request timed out" even when slskd appears idle.
-        search_id = client.start_search(query, timeout=6, max_attempts=1)
+            # Clear terminal/stuck searches so they don't block the slot.
+            client.clear_stale_searches(budget_seconds=5)
 
-        if search_id is None:
-            # First attempt failed (likely 429 due to a stale/blocking search).
-            # Run the stale-search cleanup once and retry with a few more attempts.
-            _clear_stale_slskd_searches(client, context="manual search")
-            search_id = client.start_search(query, timeout=6, max_attempts=3)
-
-        if not search_id:
-            # Start attempts exhausted — check whether an active (non-terminal)
-            # search is genuinely holding the slot.  If so, let the client queue
-            # the request and auto-retry rather than surfacing a hard error.
-            _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
-            try:
-                active_searches = [
-                    s for s in client.list_searches(timeout=4)
-                    if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
-                ]
-            except Exception:
-                active_searches = []
-
-            if active_searches:
-                a = active_searches[0]
-                active_id = a.get("id") or a.get("searchId") or a.get("Id") or ""
-                active_query = a.get("searchText") or a.get("query") or ""
-                active_state = a.get("state") or a.get("State") or ""
+            search_id, slot_busy = _start_slskd_search_with_recovery(client, query)
+            if slot_busy:
                 logging.info(
                     f"[SLSKD] Manual search slot busy — active search "
-                    f"{active_id!r} ({active_state!r}) for '{active_query}'; "
-                    f"returning slotBusy so client can queue and auto-retry"
+                    f"{slot_busy['activeSearchId']!r} ({slot_busy['activeSearchState']!r}) "
+                    f"for '{slot_busy['activeSearchQuery']}'; returning slotBusy so client "
+                    f"can queue and auto-retry"
                 )
-                return jsonify({
-                    "slotBusy": True,
-                    "activeSearchId": active_id,
-                    "activeSearchQuery": active_query,
-                    "activeSearchState": active_state,
-                }), 202
-
+                return jsonify(slot_busy), 202
+            if search_id:
+                try:
+                    from download_queue_manager import log_slskd_search_event
+                    _parsed = _parse_manual_slskd_query(query)
+                    log_slskd_search_event(
+                        search_type='manual',
+                        query=query,
+                        queue_id=None,
+                        queue_item=_parsed,
+                        results=None,
+                        selected_result=None,
+                        duration_seconds=None,
+                        notes=f"search_id={search_id}"
+                    )
+                except Exception:
+                    pass
+                with _slskd_manual_search_queries_lock:
+                    _slskd_manual_search_queries[search_id] = query
+                    # Prune old entries to prevent unbounded growth
+                    if len(_slskd_manual_search_queries) > _MAX_SLSKD_MANUAL_SEARCH_CACHE:
+                        oldest = sorted(_slskd_manual_search_queries.keys())[:50]
+                        for old_id in oldest:
+                            _slskd_manual_search_queries.pop(old_id, None)
+                return jsonify({"searchId": search_id, "status": "searching"})
             return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
-
-        return jsonify({"searchId": search_id, "status": "searching"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -19540,23 +20682,25 @@ def slskd_search_slot():
     api_key = slskd_config.get("api_key", "")
 
     try:
-        plain_session = requests.Session()
-        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
-        searches = client.list_searches(timeout=4)
-        _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
-        active = [
-            s for s in searches
-            if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
-        ]
-        if active:
-            a = active[0]
-            return jsonify({
-                "slotFree": False,
-                "activeSearchId": a.get("id") or a.get("searchId") or a.get("Id") or "",
-                "activeSearchQuery": a.get("searchText") or a.get("query") or "",
-                "activeSearchState": a.get("state") or a.get("State") or "",
-            })
-        return jsonify({"slotFree": True})
+        with requests.Session() as plain_session:
+            client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
+            searches = client.list_searches(timeout=4)
+            # Include "In Progress" (with space) — some slskd versions emit this
+            # state string and if we ignore it the UI thinks the slot is free.
+            _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing", "In Progress"}
+            active = [
+                s for s in searches
+                if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
+            ]
+            if active:
+                a = active[0]
+                return jsonify({
+                    "slotFree": False,
+                    "activeSearchId": a.get("id") or a.get("searchId") or a.get("Id") or "",
+                    "activeSearchQuery": a.get("searchText") or a.get("query") or "",
+                    "activeSearchState": a.get("state") or a.get("State") or "",
+                })
+            return jsonify({"slotFree": True})
     except Exception as e:
         logging.error(f"[SLSKD] Error checking search slot: {e}")
         return jsonify({"error": "Failed to check search slot status"}), 500
@@ -19575,39 +20719,66 @@ def slskd_search_results(search_id):
     api_key = slskd_config.get("api_key", "")
     
     try:
-        client = SlskdClient(web_url, api_key, enabled=True)
-        responses, state, is_complete = client.get_search_results(search_id)
-        
-        results = []
-        for resp in responses:
-            if hasattr(resp, 'files'):
-                for file in resp.files:
-                    results.append({
-                        "username": resp.username,
-                        "filename": file.filename,
-                        "size": file.size,
-                        "size_mb": f"{file.size_mb:.2f}",
-                        "bitrate": file.bitrate,
-                        "sample_rate": file.sample_rate,
-                        "length": file.length,
-                        "duration": file.duration_formatted,
-                    })
-        
-        response_count = len(responses) if responses else 0
-        logging.info(f"[SLSKD] search_id={search_id}, responses={response_count}, files={len(results)}, state={state}, complete={is_complete}")
-        
-        if is_complete and response_count == 0:
-            logging.warning(f"[SLSKD] Search {search_id} completed with 0 responses - check if slskd service is reachable at {web_url}")
-        elif is_complete and len(results) == 0:
-            logging.warning(f"[SLSKD] Search {search_id} got {response_count} responses but 0 files - peers may not have matching files")
-        
-        return jsonify({
-            "results": results,
-            "state": state,
-            "responseCount": response_count,
-            "fileCount": len(results),
-            "isComplete": is_complete
-        })
+        # Use a plain session (no automatic retry backoff) for interactive polling
+        # so that transient 5xx/429 responses fail fast rather than hanging the
+        # backend for tens of seconds and exceeding the frontend's 30 s timeout.
+        # default_timeout=8 keeps the total backend time well under typical proxy
+        # limits while still giving slskd time to respond.
+        with requests.Session() as plain_session:
+            client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True, default_timeout=8)
+            responses, state, is_complete = client.get_search_results(search_id)
+
+            results = []
+            for resp in responses:
+                if hasattr(resp, 'files'):
+                    for file in resp.files:
+                        results.append({
+                            "username": resp.username,
+                            "filename": file.filename,
+                            "size": file.size,
+                            "size_mb": f"{file.size_mb:.2f}",
+                            "bitrate": file.bitrate,
+                            "sample_rate": file.sample_rate,
+                            "length": file.length,
+                            "duration": file.duration_formatted,
+                        })
+
+            response_count = len(responses) if responses else 0
+            logging.info(f"[SLSKD] search_id={search_id}, responses={response_count}, files={len(results)}, state={state}, complete={is_complete}")
+
+            if is_complete and response_count == 0:
+                logging.warning(f"[SLSKD] Search {search_id} completed with 0 responses - check if slskd service is reachable at {web_url}")
+            elif is_complete and len(results) == 0:
+                logging.warning(f"[SLSKD] Search {search_id} got {response_count} responses but 0 files - peers may not have matching files")
+
+            # Log completed manual searches with full results for diagnostics.
+            if is_complete:
+                with _slskd_manual_search_queries_lock:
+                    manual_query = _slskd_manual_search_queries.pop(search_id, None)
+                if manual_query:
+                    try:
+                        from download_queue_manager import log_slskd_search_event
+                        _parsed = _parse_manual_slskd_query(manual_query)
+                        log_slskd_search_event(
+                            search_type='manual',
+                            query=manual_query,
+                            queue_id=None,
+                            queue_item=_parsed,
+                            results=results,
+                            selected_result=None,
+                            duration_seconds=None,
+                            notes=f"completed: state={state}, responses={response_count}, files={len(results)}, search_id={search_id}"
+                        )
+                    except Exception as _log_err:
+                        logging.debug(f"[SLSKD] Could not log manual search results: {_log_err}")
+
+            return jsonify({
+                "results": results,
+                "state": state,
+                "responseCount": response_count,
+                "fileCount": len(results),
+                "isComplete": is_complete
+            })
     except Exception as e:
         logging.error(f"[SLSKD] Error getting search results for {search_id}: {str(e)}")
         import traceback
@@ -20436,11 +21607,26 @@ def slskd_queue_download():
     username = (payload.get("username") or "").strip()
     filename = (payload.get("filename") or "").strip()
     size = int(payload.get("size") or 0)
+    length = payload.get("length")
 
     if queue_id is None:
         return jsonify({"error": "queue_id is required"}), 400
     if not username or not filename:
         return jsonify({"error": "username and filename are required"}), 400
+
+    # Build the selected-result payload so the queue item remembers exactly
+    # what the user chose.  This makes post-download matching unambiguous
+    # and feeds the search log.
+    selected_result = {
+        "username": username,
+        "filename": filename,
+        "size": size,
+    }
+    if length is not None:
+        try:
+            selected_result["length"] = float(length)
+        except (TypeError, ValueError):
+            pass
 
     # Quick existence check so we can return 404 synchronously.
     try:
@@ -20480,10 +21666,12 @@ def slskd_queue_download():
                     slskd_username = %s,
                     slskd_state = %s,
                     is_manual_download = 1,
+                    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
                 """,
-                ("downloading", filename, username, "Pending", queue_id),
+                ("downloading", filename, username, "Pending",
+                 json.dumps({"selected_result": selected_result}), queue_id),
             )
             conn_pre.commit()
         finally:
@@ -20539,6 +21727,23 @@ def slskd_queue_download():
                 conn2.close()
         except Exception as bg_err:
             logging.error(f"[SLSKD_QUEUE_DOWNLOAD] Background error for queue {q_id}: {bg_err}")
+
+    # Log the manual selection to slskd_search_logs so diagnostics have a
+    # complete audit trail of what the user chose.
+    try:
+        from download_queue_manager import log_slskd_search_event
+        log_slskd_search_event(
+            search_type='manual',
+            query=f"{username} / {os.path.basename(filename)}",
+            queue_id=queue_id,
+            queue_item=None,
+            results=None,
+            selected_result=selected_result,
+            duration_seconds=None,
+            notes=f"manual queue download initiated: {filename}",
+        )
+    except Exception as _log_err:
+        logging.debug(f"[SLSKD_QUEUE_DOWNLOAD] Could not log manual search event: {_log_err}")
 
     t = threading.Thread(
         target=_background,
@@ -20814,31 +22019,26 @@ def slskd_search_again():
     try:
         # Use a plain session (no automatic retry backoff) so the optimistic
         # fast path returns immediately when slskd is idle.
-        plain_session = requests.Session()
-        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
+        with requests.Session() as plain_session:
+            client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
 
-        # Optimistic fast path: attempt without pre-emptive cleanup.
-        # Pre-emptively calling _clear_stale_slskd_searches issues one DELETE
-        # per accumulated completed search (each with a 4 s timeout); with many
-        # stale entries that can exceed the 60 s browser timeout before the POST
-        # to slskd is even sent.
-        search_id = client.start_search(filename, timeout=6, max_attempts=1)
+            # Clear terminal/stuck searches so they don't block the slot.
+            client.clear_stale_searches(budget_seconds=2)
 
-        if search_id is None:
-            # First attempt failed (likely 429 — stale search blocking the slot).
-            # Run stale-search cleanup once, then retry.
-            _clear_stale_slskd_searches(client, context="search-again")
-            search_id = client.start_search(filename, timeout=6, max_attempts=3)
-        
-        if search_id:
-            return jsonify({
-                "success": True,
-                "message": f"Searching for '{filename}'",
-                "search_id": search_id
-            })
-        if not search_id:
+            search_id, slot_busy = _start_slskd_search_with_recovery(client, filename)
+            if slot_busy:
+                return jsonify({
+                    "error": "slskd search slot is busy. Another search is in progress. Try again shortly.",
+                    "slotBusy": True,
+                    **slot_busy,
+                }), 202
+            if search_id:
+                return jsonify({
+                    "success": True,
+                    "message": f"Searching for '{filename}'",
+                    "search_id": search_id
+                })
             return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
-            
     except Exception as e:
         logging.error(f"[SLSKD] Search again error: {str(e)}")
         return jsonify({"error": str(e)}), 500
@@ -21173,7 +22373,14 @@ def api_musicbrainz_download():
                         recording_mbid = recording.get('id') or None
                         
                         # Create search query for individual track (artist - title format, no album)
-                        search_query = f"{track_artist} - {track_title}".strip()
+                        # Sanitize apostrophes and curly quotes so the stored query
+                        # is already clean for Soulseek's tokenizer.
+                        try:
+                            from download_queue_manager import _sanitize_search_query_for_slskd
+                        except ImportError:
+                            def _sanitize_search_query_for_slskd(q):
+                                return " ".join(q.split())
+                        search_query = _sanitize_search_query_for_slskd(f"{track_artist} - {track_title}")
                         
                         # Add to download_queue
                         cursor.execute(f"""
@@ -23961,18 +25168,25 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
         return
 
     # Acquire a session-level advisory lock so that only one connection runs the
-    # migration at a time.  The lock is released explicitly after the migration
-    # completes (or fails) so other waiters can proceed without doing redundant work.
+    # migration at a time.  Use the non-blocking variant with retries so a dead
+    # lock holder cannot hang this worker forever.
     lock_acquired = False
-    try:
-        cursor.execute("SELECT pg_advisory_lock(%s)", (_ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY,))
-        lock_acquired = True
-    except Exception as _lock_err:
-        logging.debug(f"[ALBUM_ART] Could not acquire advisory lock: {_lock_err}")
+    for _lock_attempt in range(5):
         try:
-            conn.rollback()
-        except Exception:
-            pass
+            cursor.execute(
+                "SELECT pg_try_advisory_lock(%s) AS acquired",
+                (_ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY,),
+            )
+            if cursor.fetchone()['acquired']:
+                lock_acquired = True
+                break
+        except Exception as _lock_err:
+            logging.debug(f"[ALBUM_ART] Could not acquire advisory lock: {_lock_err}")
+            break
+        time.sleep(0.3)
+    if not lock_acquired:
+        logging.warning("[ALBUM_ART] Could not acquire advisory lock; deferring schema migration")
+        return
 
     # Step 1: Ensure table exists and fix the id column default if needed.
     # Committed independently so the fix is durable even if the unique-index
@@ -24652,13 +25866,14 @@ def api_album_tracklist():
                 tracklist = []
                 media = release_data.get("media", [])
                 if media:
-                    for track_obj in media[0].get("tracks", []):
-                        recording = track_obj.get("recording", {})
-                        tracklist.append({
-                            "position": track_obj.get("position", ""),
-                            "title": recording.get("title", "Unknown"),
-                            "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
-                        })
+                    for medium in media:
+                        for track_obj in medium.get("tracks", []):
+                            recording = track_obj.get("recording", {})
+                            tracklist.append({
+                                "position": track_obj.get("position", ""),
+                                "title": recording.get("title", "Unknown"),
+                                "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
+                            })
                 
                 if tracklist:
                     log_info(f"Found {len(tracklist)} tracks for {artist} - {album} (Release ID: {mbid})")
@@ -24749,15 +25964,17 @@ def api_album_tracklist():
                 full_resp.raise_for_status()
                 full_data = full_resp.json()
                 media = full_data.get("media", [])
-                if media and media[0].get("tracks"):
+                has_tracks = any(medium.get("tracks") for medium in media)
+                if has_tracks:
                     release_id = candidate_id
-                    for track_obj in media[0].get("tracks", []):
-                        recording = track_obj.get("recording", {})
-                        tracklist.append({
-                            "position": track_obj.get("position", ""),
-                            "title": recording.get("title", "Unknown"),
-                            "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
-                        })
+                    for medium in media:
+                        for track_obj in medium.get("tracks", []):
+                            recording = track_obj.get("recording", {})
+                            tracklist.append({
+                                "position": track_obj.get("position", ""),
+                                "title": recording.get("title", "Unknown"),
+                                "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
+                            })
                     break
             except Exception as e:
                 log_debug(f"Error fetching release {candidate_id}: {e}")
@@ -24894,18 +26111,19 @@ def api_album_tracklist_match():
         if releases:
             media = releases[0].get("media", [])
             if media:
-                for track_obj in media[0].get("tracks", []):
-                    recording = track_obj.get("recording", {})
-                    track_title = recording.get("title", "").lower().strip()
-                    
-                    if track_title in library_tracks:
-                        matched_tracks.append({
-                            "title": recording.get("title", "")
-                        })
-                    else:
-                        unmatched_tracks.append({
-                            "title": recording.get("title", "")
-                        })
+                for medium in media:
+                    for track_obj in medium.get("tracks", []):
+                        recording = track_obj.get("recording", {})
+                        track_title = recording.get("title", "").lower().strip()
+
+                        if track_title in library_tracks:
+                            matched_tracks.append({
+                                "title": recording.get("title", "")
+                            })
+                        else:
+                            unmatched_tracks.append({
+                                "title": recording.get("title", "")
+                            })
         
         log_info(f"Matched {len(matched_tracks)} tracks for {artist} - {album}")
         return jsonify({
@@ -25860,342 +27078,6 @@ def api_downloads_get_queue():
     try:
         from downloads_watcher import get_download_queue
 
-        # Keep queue semantics strict: "in_collection" only applies to files
-        # that are actually under the configured /music root.
-        run_normalization = False
-        now_ts = time.time()
-        if _queue_normalize_gate_lock.acquire(blocking=False):
-            try:
-                global _queue_normalize_last_run_ts
-                if (now_ts - _queue_normalize_last_run_ts) >= _QUEUE_NORMALIZE_COOLDOWN_SECONDS:
-                    _queue_normalize_last_run_ts = now_ts
-                    run_normalization = True
-            finally:
-                _queue_normalize_gate_lock.release()
-
-        if run_normalization:
-            try:
-                conn = get_db()
-                cursor = conn.cursor()
-                placeholder = "%s"
-
-                cursor.execute(
-                    f"""
-                    SELECT id, status, in_collection, file_path, music_file_path,
-                           artist, album, album_artist
-                    FROM download_queue
-                    WHERE status = 'in_collection' OR COALESCE(in_collection, 0) = 1
-                    """
-                )
-                flagged_rows = cursor.fetchall()
-
-                music_root = os.path.normpath(os.environ.get("MUSIC_ROOT", "/music"))
-                music_root_norm = music_root.replace("\\", "/").rstrip("/").lower()
-
-                def _is_under_music_root(path_value):
-                    if not path_value:
-                        return False
-                    norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/").lower()
-                    return norm == music_root_norm or norm.startswith(music_root_norm + "/")
-
-                def _sanitize_collection_segment(value):
-                    value = str(value or "").strip()
-                    invalid = '<>:"|?*\\'
-                    for ch in invalid:
-                        value = value.replace(ch, '_')
-                    return value.strip('. ').lower()
-
-                def _is_valid_collection_location(path_value, artist_value, album_value, album_artist_value=None):
-                    if not path_value:
-                        return False
-                    norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
-                    lowered = norm.lower()
-                    if lowered.startswith("__queued_for_download__"):
-                        return False
-                    if not _is_under_music_root(norm):
-                        return False
-                    try:
-                        rel_path = os.path.relpath(norm, music_root).replace("\\", "/")
-                    except Exception:
-                        return False
-                    rel_parts = [part for part in rel_path.split("/") if part and part not in (".", "..")]
-                    if len(rel_parts) < 3:
-                        return False
-                    expected_artist = _sanitize_collection_segment(album_artist_value or artist_value or "Unknown Artist")
-                    expected_album = _sanitize_collection_segment(album_value or "Unknown Album")
-                    artist_dir = _sanitize_collection_segment(rel_parts[0])
-                    album_dir = _sanitize_collection_segment(rel_parts[-2])
-                    return artist_dir == expected_artist and (album_dir == expected_album or album_dir.endswith(f" - {expected_album}"))
-
-                normalized_count = 0
-                # Collect IDs that need correction, separated by target status to
-                # allow batch UPDATEs instead of a per-row N+1 pattern.
-                unmatched_ids = []        # rows becoming 'unmatched'
-                non_collection_ids = {}  # {original_status: [ids]} for rows keeping their status
-
-                for row in flagged_rows:
-                    row_id = _row_get(row, 'id', 0)
-                    row_status = _row_get(row, 'status', 1)
-                    file_path = _row_get(row, 'file_path', 3)
-                    music_file_path = _row_get(row, 'music_file_path', 4)
-                    artist_value = _row_get(row, 'artist', 5)
-                    album_value = _row_get(row, 'album', 6)
-                    album_artist_value = _row_get(row, 'album_artist', 7)
-
-                    if (
-                        _is_valid_collection_location(music_file_path, artist_value, album_value, album_artist_value)
-                        or _is_valid_collection_location(file_path, artist_value, album_value, album_artist_value)
-                    ):
-                        continue
-
-                    # Invalid in_collection rows should return to unmatched so users can rematch.
-                    if row_status == 'in_collection':
-                        unmatched_ids.append(row_id)
-                    else:
-                        non_collection_ids.setdefault(row_status, []).append(row_id)
-
-                # Batch UPDATE rows that become 'unmatched'
-                if unmatched_ids:
-                    cursor.execute(
-                        f"""
-                        UPDATE download_queue
-                        SET status = 'unmatched',
-                            in_collection = 0,
-                            collection_track_id = NULL,
-                            collection_matched_at = NULL,
-                            failure_reason = 'Queue normalization: item marked in_collection but file is not in /music',
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ANY({placeholder})
-                        """,
-                        (unmatched_ids,),
-                    )
-                    normalized_count += cursor.rowcount or 0
-
-                # Batch UPDATE rows that keep their original status (just clear in_collection flag)
-                for orig_status, ids in non_collection_ids.items():
-                    if ids:
-                        cursor.execute(
-                            f"""
-                            UPDATE download_queue
-                            SET in_collection = 0,
-                                collection_track_id = NULL,
-                                collection_matched_at = NULL,
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ANY({placeholder})
-                            """,
-                            (ids,),
-                        )
-                        normalized_count += cursor.rowcount or 0
-
-                # Safety net: downgrade invalid completed rows missing file_path so the
-                # UI no longer shows them as move-ready when no source file is known.
-                cursor.execute(
-                    f"""
-                    UPDATE download_queue
-                    SET status = 'unmatched',
-                        failure_reason = COALESCE(
-                            failure_reason,
-                            'Auto-corrected: completed status without file_path'
-                        ),
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE status = 'completed'
-                      AND TRIM(COALESCE(file_path, '')) = ''
-                    """
-                )
-                normalized_count += cursor.rowcount or 0
-
-                # Safety net: reset 'matched' items whose source file no longer exists
-                # on disk. This prevents queue entries from showing "Match confirmed and
-                # ready to move to music" indefinitely when the file was deleted after
-                # the match was confirmed.
-                try:
-                    try:
-                        from download_queue_manager import get_downloads_dir
-                        downloads_root = get_downloads_dir()
-                    except Exception:
-                        downloads_root = os.environ.get("DOWNLOADS_DIR", "/downloads")
-
-                    def _existing_match_path(path_value):
-                        path_value = (path_value or "").strip()
-                        if not path_value:
-                            return ""
-
-                        if os.path.isfile(path_value):
-                            return path_value
-
-                        if os.path.isabs(path_value):
-                            return ""
-
-                        resolved_path = os.path.join(downloads_root, path_value)
-                        if os.path.isfile(resolved_path):
-                            return resolved_path
-
-                        basename_value = os.path.basename(path_value)
-                        if basename_value and basename_value != path_value:
-                            resolved_basename = os.path.join(downloads_root, basename_value)
-                            if os.path.isfile(resolved_basename):
-                                return resolved_basename
-
-                        return ""
-
-                    cursor.execute(
-                        """
-                        SELECT id, file_path, matched_file_path, music_file_path, found_filename
-                        FROM download_queue
-                        WHERE status = 'matched'
-                          AND (
-                            TRIM(COALESCE(file_path, '')) != ''
-                            OR TRIM(COALESCE(matched_file_path, '')) != ''
-                            OR TRIM(COALESCE(music_file_path, '')) != ''
-                            OR TRIM(COALESCE(found_filename, '')) != ''
-                          )
-                        """
-                    )
-                    matched_with_path = cursor.fetchall() or []
-
-                    # End the current transaction *before* the per-row filesystem
-                    # checks below.  While os.path.isfile() runs for each matched
-                    # row the connection would otherwise sit idle-in-transaction,
-                    # which can exceed idle_in_transaction_session_timeout and kill
-                    # the connection (seen as FATAL in pg logs).  After commit/
-                    # rollback the connection is in the plain idle state; the next
-                    # cursor.execute() will start a fresh transaction automatically.
-                    try:
-                        if normalized_count:
-                            conn.commit()
-                        else:
-                            conn.rollback()
-                    except Exception:
-                        pass
-
-                    # Collect IDs of rows whose matched file no longer exists on disk,
-                    # then batch-UPDATE them instead of issuing one UPDATE per row.
-                    stale_matched_ids = []
-                    for mrow in matched_with_path:
-                        mrow_id = _row_get(mrow, 'id', 0)
-                        mrow_file_path = _row_get(mrow, 'file_path', 1) or ''
-                        mrow_matched_file_path = _row_get(mrow, 'matched_file_path', 2) or ''
-                        mrow_music_file_path = _row_get(mrow, 'music_file_path', 3) or ''
-                        mrow_found_filename = _row_get(mrow, 'found_filename', 4) or ''
-                        existing_match_paths = [
-                            path_value for path_value in (
-                                mrow_file_path,
-                                mrow_matched_file_path,
-                                mrow_music_file_path,
-                                mrow_found_filename,
-                            )
-                            if _existing_match_path(path_value)
-                        ]
-                        if not existing_match_paths:
-                            stale_matched_ids.append(mrow_id)
-
-                    if stale_matched_ids:
-                        cursor.execute(
-                            f"""
-                            UPDATE download_queue
-                            SET status = 'unmatched',
-                                file_path = NULL,
-                                matched_file_path = NULL,
-                                music_file_path = NULL,
-                                found_filename = NULL,
-                                failure_reason = 'Auto-corrected: matched file no longer exists on disk',
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ANY({placeholder})
-                            """,
-                            (stale_matched_ids,),
-                        )
-                        batch_count = cursor.rowcount or 0
-                        normalized_count += batch_count
-                        logging.info(
-                            f"[QUEUE_NORMALIZE] Reset {batch_count} matched item(s) to unmatched "
-                            f"— no valid matched file remains on disk"
-                        )
-                except Exception as matched_norm_err:
-                    logging.debug(f"[QUEUE_NORMALIZE] Skipped matched-file normalization: {matched_norm_err}")
-
-                # Safety net: repair legacy rows where a MusicBrainz release match
-                # incorrectly overwrote the queue status to 'matched' even though no
-                # file path had ever been linked. Those rows should stay operationally
-                # queued (or unmatched for local-file workflows), not look like a
-                # confirmed file match.
-                # Uses two batch UPDATEs (local vs non-local source) instead of a
-                # per-row N+1 loop to reduce WAL write pressure.
-                try:
-                    cursor.execute(
-                        f"""
-                        UPDATE download_queue
-                        SET status = 'unmatched',
-                            failure_reason = 'Auto-corrected: release match had no linked file path',
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE status = 'matched'
-                          AND TRIM(COALESCE(file_path, '')) = ''
-                          AND TRIM(COALESCE(matched_file_path, '')) = ''
-                          AND TRIM(COALESCE(music_file_path, '')) = ''
-                          AND TRIM(COALESCE(found_filename, '')) = ''
-                          AND LOWER(COALESCE(source, '')) = 'local'
-                        """
-                    )
-                    normalized_count += cursor.rowcount or 0
-
-                    cursor.execute(
-                        f"""
-                        UPDATE download_queue
-                        SET status = 'queued',
-                            failure_reason = 'Auto-corrected: release match had no linked file path',
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE status = 'matched'
-                          AND TRIM(COALESCE(file_path, '')) = ''
-                          AND TRIM(COALESCE(matched_file_path, '')) = ''
-                          AND TRIM(COALESCE(music_file_path, '')) = ''
-                          AND TRIM(COALESCE(found_filename, '')) = ''
-                          AND LOWER(COALESCE(source, '')) != 'local'
-                        """
-                    )
-                    normalized_count += cursor.rowcount or 0
-                except Exception as metadata_only_match_err:
-                    logging.debug(
-                        f"[QUEUE_NORMALIZE] Skipped metadata-only matched normalization: {metadata_only_match_err}"
-                    )
-
-                if normalized_count:
-                    conn.commit()
-                    logging.info(
-                        f"[QUEUE_NORMALIZE] Corrected {normalized_count} queue row(s) with invalid file-linked state"
-                    )
-
-                # Recover soulseek items that were incorrectly set to 'unmatched'
-                # because check_track_exists_in_db matched a __queued_for_download__
-                # placeholder row in the tracks table (album title written as track
-                # title).  Those items have no linked file and should be dispatched
-                # to Soulseek, not left stranded.
-                try:
-                    cursor.execute(
-                        """
-                        UPDATE download_queue
-                        SET status = 'queued',
-                            failure_reason = NULL,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE status = 'unmatched'
-                          AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
-                          AND TRIM(COALESCE(file_path, '')) = ''
-                          AND TRIM(COALESCE(matched_file_path, '')) = ''
-                          AND TRIM(COALESCE(music_file_path, '')) = ''
-                        """
-                    )
-                    recovered = cursor.rowcount or 0
-                    if recovered:
-                        conn.commit()
-                        logging.info(
-                            f"[QUEUE_NORMALIZE] Promoted {recovered} stuck unmatched soulseek "
-                            f"item(s) back to queued for Soulseek dispatch"
-                        )
-                except Exception as recover_err:
-                    logging.debug(f"[QUEUE_NORMALIZE] Skipped unmatched soulseek recovery: {recover_err}")
-
-                conn.close()
-            except Exception as normalize_err:
-                logging.debug(f"[QUEUE_NORMALIZE] Skipped in_collection normalization: {normalize_err}")
-        
         status = request.args.get('status')
         limit = int(request.args.get('limit', 100))
         offset = int(request.args.get('offset', 0))
@@ -26779,30 +27661,33 @@ def api_downloads_folder_status():
             ORDER BY f.updated_at DESC
         """)
         
-        folder_matches = []
-        for row in cursor.fetchall():
-            folder_id = _row_get(row, 'id', 0)
-            
-            # Get matched tracks for this folder
+        rows = cursor.fetchall()
+        
+        # Fetch all tracks in one query to avoid N+1
+        folder_ids = [_row_get(r, 'id', 0) for r in rows]
+        tracks_by_folder = {}
+        if folder_ids:
             placeholder = "%s"
             cursor.execute(f"""
-                SELECT file_path, organized_path, track_number, track_title, track_artist
+                SELECT folder_match_id, file_path, organized_path, track_number, track_title, track_artist
                 FROM folder_track_matches
-                WHERE folder_match_id = {placeholder}
+                WHERE folder_match_id = ANY({placeholder})
                 ORDER BY track_number
-            """, (folder_id,))
-            
-            matched_tracks = [
-                {
-                    'file_path': _row_get(t, 'file_path', 0),
-                    'organized_path': _row_get(t, 'organized_path', 1),
-                    'track_number': _row_get(t, 'track_number', 2),
-                    'track_title': _row_get(t, 'track_title', 3),
-                    'track_artist': _row_get(t, 'track_artist', 4)
-                }
-                for t in cursor.fetchall()
-            ]
-
+            """, (folder_ids,))
+            for t in cursor.fetchall():
+                fid = _row_get(t, 'folder_match_id', 0)
+                tracks_by_folder.setdefault(fid, []).append({
+                    'file_path': _row_get(t, 'file_path', 1),
+                    'organized_path': _row_get(t, 'organized_path', 2),
+                    'track_number': _row_get(t, 'track_number', 3),
+                    'track_title': _row_get(t, 'track_title', 4),
+                    'track_artist': _row_get(t, 'track_artist', 5)
+                })
+        
+        folder_matches = []
+        for row in rows:
+            folder_id = _row_get(row, 'id', 0)
+            matched_tracks = tracks_by_folder.get(folder_id, [])
             total_expected = _row_get(row, 'total_expected_tracks', 7, 0) or 0
             matched_count = _row_get(row, 'matched_tracks_count', 8, 0) or 0
             
@@ -27835,27 +28720,25 @@ def api_queue_migrate_arm_next_load():
 
 @app.route("/api/queue/status", methods=["GET"])
 def api_queue_status():
-    """Get queue status and items"""
+    """Get queue status and items.
+
+    This endpoint is intentionally read-only and fast. Heavy side-effect
+    operations (reconciling failed slskd downloads and scanning the
+    downloads folder) run in the background queue processor instead of
+    inside the HTTP request path, where they previously blocked gunicorn
+    workers and caused Cloudflare "context canceled" timeouts.
+    """
     try:
         from download_queue_manager import (
             get_queue,
             get_completed_queue,
-            check_downloads_folder,
-            check_and_remove_failed_downloads,
         )
 
         status = request.args.get('status')
         # source=None returns all sources (soulseek, qbittorrent, discovered/unmatched)
         source = request.args.get('source') or None
         limit = int(request.args.get('limit', 50))
-        reconcile = str(request.args.get('reconcile', 'false')).strip().lower() in ('1', 'true', 'yes', 'on')
-
-        # Reconciliation is optional to keep this endpoint side-effect free by default.
-        if reconcile:
-            try:
-                check_and_remove_failed_downloads()
-            except Exception as reconcile_err:
-                logging.debug(f"Queue status reconcile skipped: {reconcile_err}")
+        reconcile = request.args.get('reconcile', 'false').lower() in ('true', '1', 'yes')
 
         # Get queue items (all sources by default)
         active_queue = get_queue(status=status, source=source, limit=limit)
@@ -27863,8 +28746,20 @@ def api_queue_status():
         # Get completed items (includes 'unmatched')
         completed = get_completed_queue(limit=20)
 
-        # Check downloads folder for new files
-        newly_completed = check_downloads_folder()
+        # NOTE: check_downloads_folder() and check_and_remove_failed_downloads()
+        # are deliberately NOT called here. They perform filesystem walks and
+        # slskd HTTP calls that can take 30-60s. With 450+ queue items and
+        # only 4 gunicorn workers this exhausted all workers and stalled the
+        # server. Both functions already run on a schedule in queue_processor.py.
+        newly_completed = []
+
+        if reconcile:
+            # Manual reconcile: trigger background checks synchronously for debugging.
+            try:
+                from queue_processor import check_completed_downloads
+                check_completed_downloads()
+            except Exception as _recon_err:
+                logging.debug(f"[QUEUE_STATUS] Reconcile failed: {_recon_err}")
 
         return jsonify({
             "success": True,
@@ -28028,7 +28923,7 @@ def api_queue_copy_from_local(queue_id):
                     f"'{_source_path_capture}' → '{_dest_path_capture}'"
                 )
                 from download_queue_manager import update_queue_item as _uqi
-                _uqi(queue_id, status='matched', file_path=_dest_path_capture)
+                _uqi(queue_id, status='matched', file_path=_dest_path_capture, matched_file_path=None, music_file_path=None)
             except Exception as _bg_err:
                 logging.error(
                     f"[COPY_FROM_LOCAL] Background copy failed for queue {queue_id}: {_bg_err}"
@@ -29094,7 +29989,7 @@ def _build_queue_target_path(music_root_value, album_artist_value, year_value, a
         relative_parts = [
             album_artist_part,
             _queue_sanitize_component(f"{format_vars['year']} - {album_part}"),
-            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+            f"{format_vars['track_number']} - {format_vars['artist']} - {format_vars['title']}"
         ]
 
     relative_path_safe = os.path.join(*relative_parts)
@@ -29973,6 +30868,26 @@ def _perform_queue_move_to_music(queue_id):
             "already_imported": True,
         }, 200
 
+    # Reconciliation: a previous move wrote music_file_path but never flipped
+    # the status (e.g., a crash between verify and status update).  Auto-correct
+    # so the user doesn't see a stuck 'downloading' entry.
+    if music_file_path_value and os.path.isfile(music_file_path_value):
+        try:
+            from download_queue_manager import update_queue_item
+            update_queue_item(
+                queue_id,
+                status='imported',
+                copied_individually=1,
+                copied_individually_at=datetime.now().isoformat(),
+            )
+        except Exception as _recon_err:
+            logging.debug(f"[MOVE] Could not auto-correct stuck queue {queue_id}: {_recon_err}")
+        return {
+            "success": True,
+            "message": "Track already imported to music directory",
+            "already_imported": True,
+        }, 200
+
     # Background processor has claimed this item — block the button.
     if item_status == 'moving':
         return {
@@ -30035,7 +30950,7 @@ def _perform_queue_move_to_music(queue_id):
             "deleted": True,
         }, 200
 
-    if item_status in ('completed', 'pending_match', 'in_collection', 'queued', 'discovered'):
+    if item_status in ('completed', 'pending_match', 'in_collection', 'queued', 'discovered', 'copy_recommended', 'downloading'):
         from download_queue_manager import _try_claim_for_move, _release_move_claim, move_single_track_to_music_dir, update_queue_item
         from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
@@ -30046,12 +30961,6 @@ def _perform_queue_move_to_music(queue_id):
             return {
                 "success": False,
                 "error": "Queue item marked in_collection can only be moved when its source file is still under /downloads",
-            }, 400
-
-        if item_status in ('queued', 'discovered') and not file_in_downloads:
-            return {
-                "success": False,
-                "error": "Queue item can only be manually moved when its file is under the downloads directory",
             }, 400
 
         conn2 = get_db()
@@ -30074,6 +30983,7 @@ def _perform_queue_move_to_music(queue_id):
             or queue_item.get('matched_file_path')
             or queue_item.get('music_file_path')
             or queue_item.get('found_filename')
+            or queue_item.get('source_music_path')
         )
         if source_path:
             queue_item['file_path'] = source_path
@@ -30083,6 +30993,47 @@ def _perform_queue_move_to_music(queue_id):
                 "success": False,
                 "error": f"Queue item {queue_id} has no file path detected. Cannot move to music directory until a file is found.",
             }, 400
+
+        # For queued/discovered items, only allow manual move when the source file
+        # is under /downloads, OR when source_music_path points to a file under
+        # /music (treated like copy_recommended).
+        if item_status in ('queued', 'discovered') and not file_in_downloads:
+            _source_music_path = queue_item.get('source_music_path')
+            if not _source_music_path or not _is_under_root(_source_music_path, music_root):
+                return {
+                    "success": False,
+                    "error": "Queue item can only be manually moved when its file is under the downloads directory",
+                }, 400
+            # Copy to downloads first so the full metadata pipeline runs.
+            try:
+                _staging_dir = os.path.join(downloads_root, "queue_staging")
+                os.makedirs(_staging_dir, exist_ok=True)
+                _staging_path = os.path.join(
+                    _staging_dir,
+                    f"queue_{queue_id}_{os.path.basename(_source_music_path)}"
+                )
+                shutil.copy2(_source_music_path, _staging_path)
+                queue_item['file_path'] = _staging_path
+                file_in_downloads = True
+            except Exception as copy_err:
+                return {
+                    "success": False,
+                    "error": f"Could not stage file from music to downloads: {copy_err}",
+                }, 500
+
+        # For downloading items (usually manual downloads), require a valid
+        # file_path before permitting a manual move so we don't race the
+        # background processor on an incomplete transfer.
+        if item_status == 'downloading':
+            _has_download_file = any(
+                _is_under_root(path_value, downloads_root) or _is_under_root(path_value, "/downloads")
+                for path_value in [queue_item.get('file_path'), queue_item.get('found_filename')] if path_value
+            )
+            if not _has_download_file:
+                return {
+                    "success": False,
+                    "error": "Download is still in progress and the file has not arrived yet. Please wait for the download to complete.",
+                }, 400
 
         if not _try_claim_for_move(queue_id, item_status):
             return {
@@ -30130,7 +31081,7 @@ def _perform_queue_move_to_music(queue_id):
 
     return {
         "success": False,
-        "error": f"Track must be matched, completed, pending_match, in_collection, queued (with file+MBID), or discovered (with file+MBID) (current status: {item_status})",
+        "error": f"Track must be matched, completed, pending_match, in_collection, queued (with file+MBID), discovered (with file+MBID), or copy_recommended (current status: {item_status})",
     }, 400
 
 
@@ -30389,7 +31340,7 @@ def api_queue_reset_moving():
 @app.route("/api/queue/matched-releases", methods=["GET"])
 def api_queue_matched_releases():
     """
-    Return all unique MusicBrainz-backed releases currently in the download queue.
+    Return all unique releases currently in the download queue.
     Used to populate the 'current queue' list in the Change Queue Item Match modal.
     """
     conn = None
@@ -30405,7 +31356,6 @@ def api_queue_matched_releases():
         limit = max(10, min(requested_limit, 250))
 
         release_uuid_expr = "COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, ''))"
-        release_uuid_length_expr = f"char_length({release_uuid_expr})"
         placeholder = "%s"
 
         active_statuses = (
@@ -30440,14 +31390,6 @@ def api_queue_matched_releases():
                 ) AS album_match
             FROM download_queue
             WHERE {release_uuid_expr} IS NOT NULL
-              AND (
-                    release_source = 'musicbrainz'
-                    OR (
-                        (release_source IS NULL OR release_source = '')
-                        AND {release_uuid_length_expr} = 36
-                        AND {release_uuid_expr} LIKE '________-____-____-____-____________'
-                    )
-                  )
               AND status IN ({status_placeholders})
             GROUP BY {release_uuid_expr}
             ORDER BY artist_match DESC,
@@ -31915,9 +32857,11 @@ def api_queue_reset_match(queue_id):
                 mb_matched_year = NULL,
                 mb_last_match_at = NULL,
                 status = 'unmatched',
+                file_path = NULL,
                 matched_file_path = NULL,
                 music_file_path = NULL,
                 found_filename = NULL,
+                source_music_path = NULL,
                 in_collection = 0,
                 collection_track_id = NULL,
                 collection_matched_at = NULL,
@@ -32247,9 +33191,9 @@ def api_lastfm_sync_now():
         return jsonify({"error": "Last.fm API key not configured"}), 400
     
     # Allow username override from POST body; fall back to per-user config
+    current_user = session.get("username")
     username = (data.get("username") or "").strip()
     if not username:
-        current_user = session.get("username")
         if current_user:
             navidrome_users = cfg.get("navidrome_users", [])
             user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
@@ -32322,6 +33266,14 @@ def api_lastfm_sync_now():
     conn = get_db()
     cursor = conn.cursor()
     placeholder = "%s"
+    
+    # Safety-net: ensure Last.fm tables have proper schema (id sequence) before inserting.
+    # This helps when deferred startup migrations have not yet run.
+    try:
+        from helpers.db_utils import ensure_lastfm_tables
+        ensure_lastfm_tables()
+    except Exception:
+        pass
     
     artists_count = 0
     albums_count = 0
@@ -34065,6 +35017,15 @@ def api_playlist_import_csv():
             if not title and not artist:
                 continue  # skip blank rows
 
+            # Exportify CSVs join multiple artists with semicolons
+            # (e.g. "Atreyu;Soulfly;Max Cavalera").  Use only the first
+            # (primary) artist so downstream matching and Soulseek search
+            # stay clean.  MusicBrainz canonical-name enrichment is done
+            # asynchronously by the queue processor so the CSV import
+            # endpoint stays fast and doesn't timeout on large playlists.
+            if ";" in artist:
+                artist = artist.split(";")[0].strip()
+
             # Album artist from CSV.  When absent, fall back to the first artist
             # from the (possibly semicolon-joined) track artist field so that
             # single-artist releases are handled correctly without hardcoding
@@ -34966,6 +35927,7 @@ def api_album_musicbrainz_lookup():
                         "title": rel_data.get("title", album),
                         "artist": rel_artist,
                         "primary_type": primary_type,
+                        "secondary_types": rg.get("secondary-types", []),
                         "first_release_date": display_date,
                         "cover_art_url": cover_art_url,
                         "confidence": 1.0,
@@ -34993,6 +35955,7 @@ def api_album_musicbrainz_lookup():
                             "title": rg_data.get("title", album),
                             "artist": rg_artist,
                             "primary_type": rg_data.get("primary-type", "Album"),
+                            "secondary_types": rg_data.get("secondary-types", []),
                             "first_release_date": rg_data.get("first-release-date", ""),
                             "cover_art_url": cover_art_url,
                             "confidence": 1.0,
@@ -35054,6 +36017,7 @@ def api_album_musicbrainz_lookup():
                 continue
             rg_title = rg.get("title", "")
             primary_type = rg.get("primary-type", "Album")
+            secondary_types = rg.get("secondary-types", [])
             first_release = rg.get("first-release-date", "")
             
             # Get artist credit
@@ -35073,6 +36037,7 @@ def api_album_musicbrainz_lookup():
                 "title": rg_title,
                 "artist": rg_artist,
                 "primary_type": primary_type,
+                "secondary_types": secondary_types,
                 "first_release_date": first_release,
                 "cover_art_url": cover_art_url,
                 "confidence": round(overall_confidence, 3),
@@ -35080,6 +36045,7 @@ def api_album_musicbrainz_lookup():
                 "artist_similarity": round(artist_similarity, 3),
                 "source": "musicbrainz",
                 "is_stored_mbid": False,
+                "mbid_type": "release-group",
             })
         
         # Sort by confidence; keep stored MBID always first
@@ -36077,9 +37043,9 @@ def api_album_apply_genres():
                 try:
                     cursor.execute(f"""
                         UPDATE tracks
-                        SET genres = {placeholder}
+                        SET genres = {placeholder}, manual_genres = {placeholder}
                         WHERE id = {placeholder}
-                    """, (genres_str, row_get(track, 'id')))
+                    """, (genres_str, genres_str, row_get(track, 'id')))
                     updated_count += 1
                 except Exception as db_error:
                     logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -36093,9 +37059,9 @@ def api_album_apply_genres():
                     try:
                         cursor.execute(f"""
                             UPDATE tracks
-                            SET genres = {placeholder}
+                            SET genres = {placeholder}, manual_genres = {placeholder}
                             WHERE id = {placeholder}
-                        """, (genres_str, row_get(track, 'id')))
+                        """, (genres_str, genres_str, row_get(track, 'id')))
                         updated_count += 1
                     except Exception as db_error:
                         logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -36248,9 +37214,9 @@ def api_artist_apply_genres():
                 try:
                     cursor.execute(f"""
                         UPDATE tracks
-                        SET genres = {placeholder}
+                        SET genres = {placeholder}, manual_genres = {placeholder}
                         WHERE id = {placeholder}
-                    """, (genres_str, row_get(track, 'id')))
+                    """, (genres_str, genres_str, row_get(track, 'id')))
                     updated_count += 1
                 except Exception as db_error:
                     logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -36268,9 +37234,9 @@ def api_artist_apply_genres():
                     try:
                         cursor.execute(f"""
                             UPDATE tracks
-                            SET genres = {placeholder}
+                            SET genres = {placeholder}, manual_genres = {placeholder}
                             WHERE id = {placeholder}
-                        """, (genres_str, row_get(track, 'id')))
+                        """, (genres_str, genres_str, row_get(track, 'id')))
                         updated_count += 1
                     except Exception as db_error:
                         logger.error(f"Failed to update database for {file_path}: {db_error}")
@@ -36766,12 +37732,12 @@ def api_remove_genres():
         # Build WHERE clause
         if album_name:
             cursor.execute(
-                f"SELECT id, title, genres FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
+                f"SELECT id, title, genres, manual_genres FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
                 (artist_name, album_name)
             )
         else:
             cursor.execute(
-                f"SELECT id, title, genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}",
+                f"SELECT id, title, genres, manual_genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}",
                 (artist_name,)
             )
 
@@ -36783,18 +37749,22 @@ def api_remove_genres():
             if isinstance(row, dict):
                 track_id = row.get("id")
                 genres_str = row.get("genres")
+                manual_genres_str = row.get("manual_genres") or ""
             elif hasattr(row, "keys"):
                 track_id = row["id"]
                 genres_str = row["genres"]
+                manual_genres_str = row.get("manual_genres") or ""
             else:
                 track_id = row[0]
                 genres_str = row[2]
+                manual_genres_str = row[3] if len(row) > 3 else ""
 
-            if not genres_str:
+            if not genres_str and not manual_genres_str:
                 continue
 
             # Parse genres
-            genre_list = [g.strip() for g in re.split(r'[\\,]+', genres_str)]
+            genre_list = [g.strip() for g in re.split(r'[\,]+', genres_str)] if genres_str else []
+            manual_list = [g.strip() for g in re.split(r'[\,]+', manual_genres_str)] if manual_genres_str else []
 
             # Remove specified genres (case-insensitive)
             genres_to_remove_lower = [g.lower() for g in genres_to_remove]
@@ -36802,15 +37772,20 @@ def api_remove_genres():
                 g for g in genre_list
                 if g.lower() not in genres_to_remove_lower
             ]
+            filtered_manual = [
+                g for g in manual_list
+                if g.lower() not in genres_to_remove_lower
+            ]
 
             # Only update if changes were made
-            if len(filtered_genres) != len(genre_list):
+            if len(filtered_genres) != len(genre_list) or len(filtered_manual) != len(manual_list):
                 new_genres_str = '\\'.join(filtered_genres) if filtered_genres else ''
+                new_manual_str = '\\'.join(filtered_manual) if filtered_manual else ''
 
                 # Update database
                 cursor.execute(
-                    f"UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}",
-                    (new_genres_str, track_id)
+                    f"UPDATE tracks SET genres = {placeholder}, manual_genres = {placeholder} WHERE id = {placeholder}",
+                    (new_genres_str, new_manual_str, track_id)
                 )
 
                 affected_count += 1
@@ -36903,7 +37878,8 @@ def api_track_update_metadata():
         "alternate_take": 0 or 1 (optional)",
         "is_compilation": 0 or 1 (optional)",
         "is_live": 0 or 1 (optional)",
-        "is_acoustic": 0 or 1 (optional)"
+        "is_acoustic": 0 or 1 (optional)",
+        "is_remix": 0 or 1 (optional)"
     }
     """
     conn = None
@@ -36948,7 +37924,7 @@ def api_track_update_metadata():
             'replaygain_album_peak', 'r128_track_gain', 'r128_album_gain'
         ]
         optional_int_fields = ['stars', 'disc_number', 'bpm', 'bitrate', 'sample_rate']
-        optional_bool_fields = ['is_single', 'is_cover', 'alternate_take', 'is_compilation', 'is_live', 'is_acoustic']
+        optional_bool_fields = ['is_single', 'is_cover', 'alternate_take', 'is_compilation', 'is_live', 'is_acoustic', 'is_remix']
         
         for field in optional_string_fields:
             if field in data and data[field] is not None:
@@ -38856,6 +39832,87 @@ def api_listenbrainz_rss_sync_status():
         return jsonify({"error": str(e)}), 500
 
 
+# WEEKLY PLAYLIST SYNC API
+# =============================================================================
+
+@app.route("/api/weekly-sync/trigger", methods=["POST"])
+def api_weekly_sync_trigger():
+    """Manually trigger weekly playlist sync for all users or a specific user."""
+    try:
+        data = request.get_json(silent=True) or {}
+        user = (data.get("user") or session.get("username") or "").strip()
+        if user:
+            cfg = get_config()
+            nav_users = cfg.get("navidrome_users", []) or []
+            user_cfg = next((u for u in nav_users if (u.get("user") or "").strip() == user), None)
+            if not user_cfg:
+                return jsonify({"error": "User not found in configuration"}), 404
+            result = weekly_playlist_sync.run_weekly_sync_for_user(
+                app_user=user,
+                base_url=user_cfg.get("base_url", ""),
+                navidrome_user=user_cfg.get("user", ""),
+                navidrome_pass=user_cfg.get("pass", ""),
+                lastfm_username=(user_cfg.get("lastfm_username") or "").strip() or None,
+                lastfm_api_key=(cfg.get("api_integrations", {}).get("lastfm", {}).get("api_key") or "").strip() or None,
+                listenbrainz_username=(user_cfg.get("listenbrainz_username") or user).strip() or None,
+                listenbrainz_token=(user_cfg.get("listenbrainz_user_token") or "").strip() or None,
+            )
+            return jsonify(result)
+        else:
+            result = weekly_playlist_sync.run_weekly_sync_for_all_users()
+            return jsonify(result)
+    except Exception as e:
+        logging.error(f"Weekly sync trigger failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/weekly-sync/status", methods=["GET"])
+def api_weekly_sync_status():
+    """Get weekly sync status for the current user or all users."""
+    try:
+        from helpers.db_utils import get_db_connection
+        user = (request.args.get("user") or session.get("username") or "").strip()
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            if user:
+                cursor.execute(
+                    "SELECT username, source, last_synced_week, last_synced_at, navidrome_playlist_id FROM weekly_sync_state WHERE username = %s",
+                    (user,),
+                )
+            else:
+                cursor.execute(
+                    "SELECT username, source, last_synced_week, last_synced_at, navidrome_playlist_id FROM weekly_sync_state"
+                )
+            rows = cursor.fetchall() or []
+            results = []
+            for row in rows:
+                results.append({
+                    "username": row.get("username") if isinstance(row, dict) else row[0],
+                    "source": row.get("source") if isinstance(row, dict) else row[1],
+                    "last_synced_week": row.get("last_synced_week") if isinstance(row, dict) else row[2],
+                    "last_synced_at": row.get("last_synced_at") if isinstance(row, dict) else row[3],
+                    "navidrome_playlist_id": row.get("navidrome_playlist_id") if isinstance(row, dict) else row[4],
+                })
+            return jsonify({"success": True, "status": results})
+        finally:
+            conn.close()
+    except Exception as e:
+        logging.error(f"Weekly sync status failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/weekly-sync/hourly-update", methods=["POST"])
+def api_weekly_sync_hourly_update():
+    """Manually trigger the hourly playlist update job."""
+    try:
+        result = weekly_playlist_sync.run_hourly_playlist_update()
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"Hourly playlist update failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 # LISTENBRAINZ RECOMMENDATIONS API
 # =============================================================================
 
@@ -39140,6 +40197,51 @@ def api_upcoming_releases():
 
         conn_flags.close()
 
+        # --- Augment with live MusicBrainz WS/2 search results ---
+        try:
+            cfg = get_config() or {}
+            features = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+            if bool(features.get("live_musicbrainz_upcoming_releases_enabled", True)):
+                from musicbrainz_upcoming_releases import fetch_musicbrainz_upcoming_releases
+
+                mb_releases = fetch_musicbrainz_upcoming_releases(
+                    collection_artists=collection_artists,
+                    recommended_artists=recommended_artists,
+                    lookback_days=int(features.get("live_musicbrainz_lookback_days", 14) or 14),
+                    lookahead_days=int(features.get("live_musicbrainz_lookahead_days", 180) or 180),
+                    added_lookback_days=int(features.get("live_musicbrainz_added_lookback_days", 7) or 7),
+                    max_results_per_query=int(features.get("live_musicbrainz_max_results", 200) or 200),
+                )
+
+                existing_keys = set()
+                existing_mbids = set()
+                for r in releases:
+                    existing_keys.add(
+                        (
+                            (r.get("artist_name") or "").strip().lower(),
+                            (r.get("album_name") or "").strip().lower(),
+                            (r.get("release_date") or "").strip(),
+                        )
+                    )
+                    rg_mbid = (r.get("release_group_mbid") or "").strip()
+                    if rg_mbid:
+                        existing_mbids.add(rg_mbid)
+                for mb_r in mb_releases:
+                    key = (
+                        (mb_r.get("artist_name") or "").strip().lower(),
+                        (mb_r.get("album_name") or "").strip().lower(),
+                        (mb_r.get("release_date") or "").strip(),
+                    )
+                    rg_mbid = (mb_r.get("release_group_mbid") or "").strip()
+                    if key in existing_keys or (rg_mbid and rg_mbid in existing_mbids):
+                        continue
+                    releases.append(mb_r)
+                    existing_keys.add(key)
+                    if rg_mbid:
+                        existing_mbids.add(rg_mbid)
+        except Exception as mb_live_err:
+            logging.warning(f"Could not fetch live MusicBrainz upcoming releases: {mb_live_err}")
+
         for release in releases:
             artist_key = (release.get("artist_name") or "").strip().lower()
             in_collection = artist_key in collection_artists
@@ -39315,6 +40417,271 @@ def _build_artist_credit_string(artist_credit):
         else:
             result += str(credit)
     return result.strip()
+
+
+def _resolve_mbid_to_release(mbid: str, artist: str = None, album: str = None) -> str:
+    """
+    Ensure the given MBID is a MusicBrainz *release* MBID.
+
+    If ``mbid`` is a release-group MBID, MusicBrainz returns 404 on the
+    direct release lookup.  We then browse the releases belonging to that
+    release group and pick the best match.
+
+    When ``artist`` and ``album`` are provided, the function queries the
+    local library for the album's track count and scores each candidate
+    release by track-count similarity (official status and earlier date
+    are used as tie-breakers).  This avoids blindly picking the first
+    release, which often leads to the wrong pressing / track listing.
+
+    If the lookup fails or the ID is already a release MBID, the original
+    value is returned unchanged.
+    """
+    if not mbid:
+        return mbid
+    try:
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        import time
+        time.sleep(1)
+        resp = requests.get(
+            f"https://musicbrainz.org/ws/2/release/{mbid}",
+            params={"fmt": "json"},
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return mbid
+        if resp.status_code == 404:
+            time.sleep(1)
+            browse_resp = requests.get(
+                "https://musicbrainz.org/ws/2/release",
+                params={"fmt": "json", "release-group": mbid, "inc": "media", "limit": 50},
+                headers=headers,
+                timeout=10,
+            )
+            browse_resp.raise_for_status()
+            releases = browse_resp.json().get("releases", [])
+            if not releases:
+                return mbid
+
+            # ------------------------------------------------------------------
+            # Try to match by local track count when artist + album are known
+            # ------------------------------------------------------------------
+            local_track_count = None
+            if artist and album:
+                try:
+                    conn = get_db()
+                    cursor = conn.cursor()
+                    ph = "%s"
+                    cursor.execute(
+                        f"""
+                        SELECT COUNT(*) AS cnt
+                        FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {ph}
+                          AND LOWER(COALESCE(album, '')) = LOWER({ph})
+                        """,
+                        (artist, album),
+                    )
+                    row = cursor.fetchone()
+                    local_track_count = row["cnt"] if row else 0
+                    conn.close()
+                except Exception:
+                    local_track_count = None
+
+            def _score_release(r):
+                media = r.get("media", [])
+                release_track_count = sum(m.get("track-count", 0) for m in media)
+                score = 0
+                if local_track_count is not None:
+                    diff = abs(local_track_count - release_track_count)
+                    score -= diff * 100  # heavy penalty for track-count mismatch
+                # Prefer official releases
+                if (r.get("status") or "").lower() == "official":
+                    score += 50
+                # Slight preference for earlier dates
+                date = (r.get("date") or "").strip()
+                if date and date[:4].isdigit():
+                    score += max(0, 2100 - int(date[:4])) * 0.01
+                return score
+
+            releases.sort(key=_score_release, reverse=True)
+            best = releases[0]
+            resolved = best.get("id", "").strip()
+            if resolved:
+                logging.info(
+                    f"[_resolve_mbid_to_release] Resolved release-group {mbid} "
+                    f"to release {resolved} (track_count={sum(m.get('track-count', 0) for m in best.get('media', []))}, "
+                    f"local_track_count={local_track_count})"
+                )
+                return resolved
+    except Exception as e:
+        logging.debug(f"[_resolve_mbid_to_release] Could not resolve MBID {mbid}: {e}")
+    return mbid
+
+
+@app.route("/api/album/musicbrainz/best-release", methods=["POST"])
+def api_album_musicbrainz_best_release():
+    """Find the best matching release inside a release group for a local album.
+
+    Returns the highest-scoring release (based on local track-count match)
+    together with the full list of releases so the frontend can show a picker
+    when the automatic match is not confident enough.
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        rg_mbid = (data.get("release_group_mbid") or "").strip()
+        artist = (data.get("artist") or "").strip()
+        album = (data.get("album") or "").strip()
+
+        if not rg_mbid:
+            return jsonify({"success": False, "error": "release_group_mbid is required"}), 400
+
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        time.sleep(1)
+        browse_resp = requests.get(
+            "https://musicbrainz.org/ws/2/release",
+            params={"fmt": "json", "release-group": rg_mbid, "inc": "media", "limit": 50},
+            headers=headers,
+            timeout=10,
+        )
+        browse_resp.raise_for_status()
+        releases_data = browse_resp.json().get("releases", []) or []
+
+        # ------------------------------------------------------------------
+        # Build release list (same logic as api_release_group_releases)
+        # ------------------------------------------------------------------
+        releases = []
+        for r in releases_data:
+            media = r.get("media", [])
+            total_tracks = sum(m.get("track-count", 0) for m in media)
+            disc_count = len(media)
+            formats = list({m.get("format", "") for m in media if m.get("format")})
+            releases.append({
+                "id": r.get("id", ""),
+                "title": r.get("title", ""),
+                "date": r.get("date", ""),
+                "country": r.get("country", ""),
+                "status": r.get("status", ""),
+                "disambiguation": r.get("disambiguation", ""),
+                "track_count": total_tracks,
+                "disc_count": disc_count,
+                "formats": formats,
+                "cover_art_url": f"https://coverartarchive.org/release/{r.get('id')}/front-250" if r.get("id") else "",
+            })
+
+        releases.sort(key=lambda x: (x["date"] == "", x["date"]))
+
+        if not releases:
+            return jsonify({"success": True, "releases": [], "best_release": None, "confidence": 0}), 200
+
+        # ------------------------------------------------------------------
+        # Score by local track count when artist + album are known
+        # ------------------------------------------------------------------
+        local_track_count = None
+        if artist and album:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                ph = "%s"
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) AS cnt
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {ph}
+                      AND LOWER(COALESCE(album, '')) = LOWER({ph})
+                    """,
+                    (artist, album),
+                )
+                row = cursor.fetchone()
+                local_track_count = row["cnt"] if row else 0
+                conn.close()
+            except Exception:
+                local_track_count = None
+
+        def _score_release(r):
+            score = 0
+            if local_track_count is not None:
+                diff = abs(local_track_count - r["track_count"])
+                score -= diff * 100
+            if (r.get("status") or "").lower() == "official":
+                score += 50
+            date = (r.get("date") or "").strip()
+            if date and date[:4].isdigit():
+                score += max(0, 2100 - int(date[:4])) * 0.01
+            return score
+
+        scored = [(r, _score_release(r)) for r in releases]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        best_release = scored[0][0]
+        best_score = scored[0][1]
+
+        # Confidence: 1.0 if exact track count match, otherwise scale down
+        confidence = 0.0
+        if local_track_count is not None:
+            if best_release["track_count"] == local_track_count:
+                confidence = 1.0
+            else:
+                diff = abs(local_track_count - best_release["track_count"])
+                confidence = max(0.0, 1.0 - (diff * 0.2))
+        else:
+            confidence = 0.5  # no local data, not confident
+
+        return jsonify({
+            "success": True,
+            "releases": releases,
+            "best_release": best_release,
+            "confidence": round(confidence, 2),
+            "local_track_count": local_track_count,
+        }), 200
+
+    except Exception as e:
+        logging.error(f"[best-release] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/album/musicbrainz/release/tracks", methods=["POST"])
+def api_album_musicbrainz_release_tracks():
+    """Fetch the track list for a specific MusicBrainz release."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        release_mbid = (data.get("release_mbid") or "").strip()
+        if not release_mbid:
+            return jsonify({"success": False, "error": "release_mbid is required"}), 400
+
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        time.sleep(1)
+        resp = requests.get(
+            f"https://musicbrainz.org/ws/2/release/{release_mbid}",
+            params={"fmt": "json", "inc": "recordings"},
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        release_data = resp.json()
+
+        tracks = []
+        for media in release_data.get("media", []):
+            disc_num = media.get("position", 1)
+            for track in media.get("tracks", []):
+                recording = track.get("recording", {})
+                tracks.append({
+                    "disc_number": disc_num,
+                    "position": track.get("position", ""),
+                    "title": track.get("title") or recording.get("title", "Unknown"),
+                    "recording_title": recording.get("title", ""),
+                    "duration_ms": track.get("length") or recording.get("length"),
+                    "recording_mbid": recording.get("id", ""),
+                })
+
+        return jsonify({
+            "success": True,
+            "release_mbid": release_mbid,
+            "release_title": release_data.get("title", ""),
+            "tracks": tracks,
+        }), 200
+
+    except Exception as e:
+        logging.error(f"[release-tracks] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/upcoming-releases/search-musicbrainz", methods=["POST"])
