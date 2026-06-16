@@ -127,7 +127,7 @@ services:
 
   flask:
     container_name: webui
-    image: moventura/sptnr:develop
+    image: moventura/sptnr:latest
     entrypoint: ["./entrypoint.sh"]
 
     depends_on:
