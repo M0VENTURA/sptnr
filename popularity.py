@@ -1858,6 +1858,7 @@ from popularity_helpers import (
     calculate_listenbrainz_percentile,
     calculate_combined_popularity_score,
     get_listenbrainz_batch_for_tracks,
+    get_aggregated_listenbrainz_popularity,
     score_by_age,
     update_artist_id_for_artist,
     get_lastfm_client,
@@ -6490,6 +6491,54 @@ def popularity_scan(
                                 log_debug(f'No ListenBrainz data for "{title}" (MBID: {recording_mbid})')
                             else:
                                 log_debug(f'No ListenBrainz MBID available for "{title}"')
+
+                        # ------------------------------------------------------------
+                        # Cross-release ListenBrainz lookup
+                        # When Last.fm is unreliable/low, search for all recordings of
+                        # this track by the same artist (e.g. single vs album version)
+                        # and aggregate their ListenBrainz popularity.
+                        # ------------------------------------------------------------
+                        if lastfm_listeners < 20 and title and track_artist:
+                            try:
+                                # Attempt to fetch the artist MBID from the database
+                                # or from the track row to make the MB search more accurate
+                                artist_mbid = None
+                                try:
+                                    _ph = "%s"
+                                    cursor.execute(
+                                        f"SELECT musicbrainz_artist_id FROM tracks WHERE id = {_ph}",
+                                        (track_id,),
+                                    )
+                                    mb_row = cursor.fetchone()
+                                    if mb_row and mb_row.get("musicbrainz_artist_id"):
+                                        artist_mbid = mb_row["musicbrainz_artist_id"]
+                                except Exception:
+                                    pass
+
+                                aggregated = get_aggregated_listenbrainz_popularity(
+                                    title=title,
+                                    artist=track_artist,
+                                    artist_mbid=artist_mbid,
+                                )
+                                agg_total = aggregated.get("total_listens", 0)
+                                agg_count = aggregated.get("recording_count", 0)
+
+                                if agg_total > lb_listens and agg_count > 1:
+                                    log_info(
+                                        f'Cross-release LB boost for "{title}": '
+                                        f'{lb_listens} -> {agg_total} listens '
+                                        f'({agg_count} recordings found)'
+                                    )
+                                    lb_listens = agg_total
+                                    lb_percentile = calculate_listenbrainz_percentile(lb_listens, album_lb_listens)
+                                    lb_album_score = calculate_listenbrainz_popularity_score(lb_listens)
+                                elif agg_count > 1:
+                                    log_debug(
+                                        f'Cross-release LB search for "{title}": '
+                                        f'{agg_count} recordings, no boost (best={aggregated.get("max_listens", 0)})'
+                                    )
+                            except Exception as e:
+                                log_debug(f'Cross-release LB lookup failed for "{title}": {e}')
 
                         # ------------------------------------------------------------
                         # Age score

@@ -1366,8 +1366,105 @@ class MusicBrainzClient:
             except Exception as e:
                 logger.debug(f"MusicBrainz composer lookup error for '{title}' by '{artist}': {e}")
                 return [], "", 0.0
-        
-        return [], "", 0.0
+
+    def search_recordings_by_artist(
+        self,
+        title: str,
+        artist: str,
+        artist_mbid: Optional[str] = None,
+        limit: int = 25,
+    ) -> list[dict]:
+        """Search MusicBrainz for all recordings of a track by an artist.
+
+        Returns a list of recording dicts with ``id`` and ``title`` keys,
+        filtered to only those whose base title matches the query title
+        (ignoring version suffixes like Live/Acoustic/Remix).
+
+        Args:
+            title: Track title to search for.
+            artist: Artist name (used for query and fallback matching).
+            artist_mbid: Optional artist MBID for more accurate queries.
+            limit: Maximum recordings to return.
+
+        Returns:
+            List of recording dicts, each with at least ``id`` and ``title``.
+        """
+        if not self.enabled or not title or not artist:
+            return []
+
+        base_title, track_versions = _extract_version_info(title)
+        search_artist = _strip_featured_artist(artist)
+
+        # Build query: prefer artist MBID when available for accuracy
+        if artist_mbid:
+            query = f'recording:"{_escape_lucene_special_chars(base_title)}" AND arid:{artist_mbid}'
+        else:
+            escaped_title = _escape_lucene_special_chars(base_title)
+            escaped_artist = _escape_lucene_special_chars(search_artist)
+            query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
+
+        max_retries = 3
+        retry_delay = 1.0
+        for attempt in range(max_retries):
+            try:
+                if _rate_limiter:
+                    _rate_limiter.throttle_musicbrainz()
+                else:
+                    time.sleep(1.0)
+
+                params = {
+                    "query": query,
+                    "fmt": "json",
+                    "limit": limit,
+                }
+                logger.debug(f"MusicBrainz recording search: {params}")
+                res = self.session.get(
+                    f"{self.base_url}recording/",
+                    params=params,
+                    headers=self.headers,
+                    timeout=(5, 10),
+                )
+                res.raise_for_status()
+                recordings = res.json().get("recordings", []) or []
+
+                matched = []
+                for rec in recordings:
+                    rec_title = rec.get("title", "")
+                    rec_base, rec_versions = _extract_version_info(rec_title)
+                    # Require exact base-title match and identical version modifiers
+                    if base_title.lower() == rec_base.lower() and track_versions == rec_versions:
+                        matched.append({
+                            "id": rec.get("id"),
+                            "title": rec_title,
+                            "artist": search_artist,
+                        })
+
+                logger.debug(
+                    f"MusicBrainz recording search for '{title}' by '{artist}': "
+                    f"{len(recordings)} raw, {len(matched)} matched"
+                )
+                return matched
+
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if getattr(e, "response", None) is not None else None
+                if status_code in (429, 503, 504) and attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                logger.debug(f"MusicBrainz recording search HTTP error: {e}")
+                return []
+            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.debug(f"MusicBrainz recording search network error: {e}")
+                    return []
+            except Exception as e:
+                logger.debug(f"MusicBrainz recording search error: {e}")
+                return []
+
+        return []
 
 
 # Backward-compatible module functions
