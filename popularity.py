@@ -7028,174 +7028,151 @@ def popularity_scan(
                     lb_override_threshold = STANDOUT_CONFIG.get("lb_unreliable_5star_threshold", 0.50)
 
                     for track in album_tracks:
-                    track_id = track["id"]
-                    title = track["title"]
-                    popularity_score = row_get(track, "popularity_score", 0) or 0
+                        track_id = track["id"]
+                        title = track["title"]
+                        popularity_score = row_get(track, "popularity_score", 0) or 0
 
-                    album_z = 0.0
-                    artist_z = 0.0
+                        album_z = 0.0
+                        artist_z = 0.0
 
-                    if album_stddev > 0:
-                        album_z = (popularity_score - album_median) / album_stddev
+                        if album_stddev > 0:
+                            album_z = (popularity_score - album_median) / album_stddev
 
-                    if artist_stddev > 0 and artist_count >= 5:
-                        artist_z = (popularity_score - artist_mean) / artist_stddev
+                        if artist_stddev > 0 and artist_count >= 5:
+                            artist_z = (popularity_score - artist_mean) / artist_stddev
 
-                    # Live context disables popularity-only promotion.
-                    # Confirmed live singles can still reach 5★, but only if they are top/elite catalogue.
-                    is_live_context = bool(
-                        row_get(track, "is_live", 0)
-                        or row_get(track, "album_context_live", 0)
-                    )
-
-                    stars = 0
-                    is_single = row_get(track, "is_single", 0)
-                    single_confidence = row_get(track, "single_confidence", "low") or "low"
-
-                    lastfm_listeners = album_lastfm_data.get(track_id, {}).get("listeners", 0) or 0
-                    lb_listens = album_listenbrainz_data.get(track_id, {}).get("listeners", 0) or 0
-                    lb_percentile = track.get("lb_percentile", 0) or 0
-
-                    # Top catalogue = broader 5★ eligibility, usually top 25%
-                    is_top_catalog = is_top_artist_catalog(
-                        popularity_score,
-                        top_pct_threshold,
-                    )
-
-                    # Elite catalogue = true artist-wide standout, usually top 10%
-                    # This gives major catalogue tracks a direct 5★ path.
-                    is_elite_catalog = is_top_artist_catalog(
-                        popularity_score,
-                        STANDOUT_CONFIG.get("artist_top_percentile", 0.10),
-                    )
-
-                    # -------------------------------------------------------------
-                    # 1. User override
-                    # -------------------------------------------------------------
-                    if single_confidence == "user":
-                        stars = 5
-
-                    # -------------------------------------------------------------
-                    # 2. Elite artist-catalogue standout
-                    # -------------------------------------------------------------
-                    # This is the missing global 5★ path.
-                    # It allows tracks like The Distance, Never There, or Short Skirt/Long Jacket
-                    # to reach 5★ if they are genuinely near the top of the artist catalogue.
-                    elif is_elite_catalog and not is_live_context:
-                        stars = 5
-
-                    # -------------------------------------------------------------
-                    # 3. High-confidence single path
-                    # -------------------------------------------------------------
-                    elif is_single and single_confidence == "high":
-
-                        if is_live_context:
-                            # Live singles can be 5★ only if they are elite/top catalogue.
-                            # Do not allow album_z alone to promote live recordings.
-                            stars = 5 if is_elite_catalog else 4
-                        else:
-                            # Studio/non-live singles can become 5★ if:
-                            # - they are top catalogue, OR
-                            # - they are clearly strong within the album.
-                            if is_top_catalog or album_z >= 0.8:
-                                stars = 5
-                            else:
-                                stars = 4
-
-                    # -------------------------------------------------------------
-                    # 4. Non-single popularity-only 5★ path
-                    #    Disabled for live albums/live tracks.
-                    # -------------------------------------------------------------
-                    elif (
-                        album_z >= STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
-                        and not is_live_context
-                    ):
-                        # Non-singles still need to be top catalogue for 5★.
-                        stars = 5 if is_top_catalog else 4
-
-                    # -------------------------------------------------------------
-                    # 5. ListenBrainz rescue path
-                    #    Disabled for live context because it is still popularity-based.
-                    # -------------------------------------------------------------
-                    elif (
-                        not is_live_context
-                        and is_lastfm_unreliable(lastfm_listeners, lb_listens)
-                        and lb_percentile >= lb_override_threshold
-                    ):
-                        # LB rescue can promote only if the track is also strong in artist catalogue.
-                        stars = 5 if is_top_catalog else 4
-
-                        log_debug(
-                            f"LB override considered for '{title}' "
-                            f"(lb_percentile={lb_percentile:.2f}, "
-                            f"lastfm_listeners={lastfm_listeners}, "
-                            f"lb_listens={lb_listens}, "
-                            f"is_top_catalog={is_top_catalog}, "
-                            f"is_elite_catalog={is_elite_catalog})"
+                        # Live context disables popularity-only promotion.
+                        # Confirmed live singles can still reach 5★, but only if they are top/elite catalogue.
+                        is_live_context = bool(
+                            row_get(track, "is_live", 0)
+                            or row_get(track, "album_context_live", 0)
                         )
 
-                    # -------------------------------------------------------------
-                    # 6. Normal rating tiers
-                    # -------------------------------------------------------------
-                    else:
-                        # Important:
-                        # This no longer auto-grants 5★.
-                        # 5★ should come from elite catalogue, strong single, non-single standout,
-                        # or LB rescue paths above.
-                        if (
-                            album_z >= STANDOUT_CONFIG["star_5"]["album_z"]
-                            and artist_z >= STANDOUT_CONFIG["star_5"]["artist_z"]
+                        stars = 0
+                        is_single = row_get(track, "is_single", 0)
+                        single_confidence = row_get(track, "single_confidence", "low") or "low"
+
+                        lastfm_listeners = album_lastfm_data.get(track_id, {}).get("listeners", 0) or 0
+                        lb_listens = album_listenbrainz_data.get(track_id, {}).get("listeners", 0) or 0
+                        lb_percentile = track.get("lb_percentile", 0) or 0
+
+                        # Top catalogue = broader 5★ eligibility, usually top 25%
+                        is_top_catalog = is_top_artist_catalog(
+                            popularity_score,
+                            top_pct_threshold,
+                        )
+
+                        # Elite catalogue = true artist-wide standout, usually top 10%
+                        # This gives major catalogue tracks a direct 5★ path.
+                        is_elite_catalog = is_top_artist_catalog(
+                            popularity_score,
+                            STANDOUT_CONFIG.get("artist_top_percentile", 0.10),
+                        )
+
+                        # -------------------------------------------------------------
+                        # 1. User override
+                        # -------------------------------------------------------------
+                        if single_confidence == "user":
+                            stars = 5
+
+                        # -------------------------------------------------------------
+                        # 2. Elite artist-catalogue standout
+                        # -------------------------------------------------------------
+                        # This is the missing global 5★ path.
+                        # It allows tracks like The Distance, Never There, or Short Skirt/Long Jacket
+                        # to reach 5★ if they are genuinely near the top of the artist catalogue.
+                        elif is_elite_catalog and not is_live_context:
+                            stars = 5
+
+                        # -------------------------------------------------------------
+                        # 3. High-confidence single path
+                        # -------------------------------------------------------------
+                        elif is_single and single_confidence == "high":
+
+                            if is_live_context:
+                                # Live singles can be 5★ only if they are elite/top catalogue.
+                                # Do not allow album_z alone to promote live recordings.
+                                stars = 5 if is_elite_catalog else 4
+                            else:
+                                # Studio/non-live singles can become 5★ if:
+                                # - they are top catalogue, OR
+                                # - they are clearly strong within the album.
+                                if is_top_catalog or album_z >= 0.8:
+                                    stars = 5
+                                else:
+                                    stars = 4
+
+                        # -------------------------------------------------------------
+                        # 4. Non-single popularity-only 5★ path
+                        #    Disabled for live albums/live tracks.
+                        # -------------------------------------------------------------
+                        elif (
+                            album_z >= STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
                             and not is_live_context
                         ):
-                            stars = 4
+                            # Non-singles still need to be top catalogue for 5★.
+                            stars = 5 if is_top_catalog else 4
 
+                        # -------------------------------------------------------------
+                        # 5. ListenBrainz rescue path
+                        #    Disabled for live context because it is still popularity-based.
+                        # -------------------------------------------------------------
                         elif (
-                            album_z >= STANDOUT_CONFIG["star_4"]["album_z"]
-                            and artist_z >= STANDOUT_CONFIG["star_4"]["artist_z"]
+                            not is_live_context
+                            and is_lastfm_unreliable(lastfm_listeners, lb_listens)
+                            and lb_percentile >= lb_override_threshold
                         ):
-                            stars = 4
+                            # LB rescue can promote only if the track is also strong in artist catalogue.
+                            stars = 5 if is_top_catalog else 4
 
-                        elif album_z >= STANDOUT_CONFIG["star_3"]["album_z"]:
-                            stars = 3
+                            log_debug(
+                                f"LB override considered for '{title}' "
+                                f"(lb_percentile={lb_percentile:.2f}, "
+                                f"lastfm_listeners={lastfm_listeners}, "
+                                f"lb_listens={lb_listens}, "
+                                f"is_top_catalog={is_top_catalog}, "
+                                f"is_elite_catalog={is_elite_catalog})"
+                            )
 
-                        elif STANDOUT_CONFIG["star_2"].get("album_mean") and popularity_score >= album_median:
-                            stars = 2
-
+                        # -------------------------------------------------------------
+                        # 6. Normal rating tiers
+                        # -------------------------------------------------------------
                         else:
-                            stars = 1
+                            # Important:
+                            # This no longer auto-grants 5★.
+                            # 5★ should come from elite catalogue, strong single, non-single standout,
+                            # or LB rescue paths above.
+                            if (
+                                album_z >= STANDOUT_CONFIG["star_5"]["album_z"]
+                                and artist_z >= STANDOUT_CONFIG["star_5"]["artist_z"]
+                                and not is_live_context
+                            ):
+                                stars = 4
 
-                    # -------------------------------------------------------------
-                    # Defensive live-context cap
-                    # -------------------------------------------------------------
-                    # Live tracks should not become 5★ from popularity-only routes.
-                    # User overrides and elite confirmed live singles are allowed.
-                    if is_live_context and stars == 5:
-                        if not (
-                            single_confidence == "user"
-                            or (is_single and single_confidence == "high" and is_elite_catalog)
-                        ):
-                            stars = 4
+                            elif (
+                                album_z >= STANDOUT_CONFIG["star_4"]["album_z"]
+                                and artist_z >= STANDOUT_CONFIG["star_4"]["artist_z"]
+                            ):
+                                stars = 4
 
-                    track["stars"] = stars
-                    track["album_z"] = album_z
-                    track["artist_z"] = artist_z
+                            elif album_z >= STANDOUT_CONFIG["star_3"]["album_z"]:
+                                stars = 3
 
-                    try:
-                        cursor.execute(
-                            f"UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}",
-                            (stars, track_id),
-                        )
-                    except Exception as e:
-                        log_debug(f"Failed to persist stars for '{title}': {e}")
+                            elif STANDOUT_CONFIG["star_2"].get("album_mean") and popularity_score >= album_median:
+                                stars = 2
+
+                            else:
+                                stars = 1
+
                         # -------------------------------------------------------------
                         # Defensive live-context cap
                         # -------------------------------------------------------------
                         # Live tracks should not become 5★ from popularity-only routes.
-                        # User overrides and top-catalogue confirmed live singles are allowed.
+                        # User overrides and elite confirmed live singles are allowed.
                         if is_live_context and stars == 5:
                             if not (
                                 single_confidence == "user"
-                                or (is_single and single_confidence == "high" and is_top_catalog)
+                                or (is_single and single_confidence == "high" and is_elite_catalog)
                             ):
                                 stars = 4
 
@@ -7210,24 +7187,47 @@ def popularity_scan(
                             )
                         except Exception as e:
                             log_debug(f"Failed to persist stars for '{title}': {e}")
-                        # Defensive cap:
-                        # Live context should not get 5★ from popularity logic.
-                        # Manual/user overrides and top-catalogue live singles are already handled above.
-                        if is_live_context and stars == 5:
-                            if not (single_confidence == "user" or (is_single and single_confidence == "high" and is_top_catalog)):
-                                stars = 4
+                            # -------------------------------------------------------------
+                            # Defensive live-context cap
+                            # -------------------------------------------------------------
+                            # Live tracks should not become 5★ from popularity-only routes.
+                            # User overrides and top-catalogue confirmed live singles are allowed.
+                            if is_live_context and stars == 5:
+                                if not (
+                                    single_confidence == "user"
+                                    or (is_single and single_confidence == "high" and is_top_catalog)
+                                ):
+                                    stars = 4
 
-                        track["stars"] = stars
-                        track["album_z"] = album_z
-                        track["artist_z"] = artist_z
+                            track["stars"] = stars
+                            track["album_z"] = album_z
+                            track["artist_z"] = artist_z
 
-                        try:
-                            cursor.execute(
-                                f"UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}",
-                                (stars, track_id),
-                            )
-                        except Exception as e:
-                            log_debug(f"Failed to persist stars for '{title}': {e}")
+                            try:
+                                cursor.execute(
+                                    f"UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}",
+                                    (stars, track_id),
+                                )
+                            except Exception as e:
+                                log_debug(f"Failed to persist stars for '{title}': {e}")
+                            # Defensive cap:
+                            # Live context should not get 5★ from popularity logic.
+                            # Manual/user overrides and top-catalogue live singles are already handled above.
+                            if is_live_context and stars == 5:
+                                if not (single_confidence == "user" or (is_single and single_confidence == "high" and is_top_catalog)):
+                                    stars = 4
+
+                            track["stars"] = stars
+                            track["album_z"] = album_z
+                            track["artist_z"] = artist_z
+
+                            try:
+                                cursor.execute(
+                                    f"UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}",
+                                    (stars, track_id),
+                                )
+                            except Exception as e:
+                                log_debug(f"Failed to persist stars for '{title}': {e}")
 
                     try:
                         conn.commit()
