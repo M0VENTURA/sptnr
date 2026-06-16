@@ -5971,6 +5971,15 @@ def popularity_scan(
                         title = track.get("title", "")
                         track_artist = track.get("artist", "")
 
+                        # Resolve MBID early so Last.fm can use it for unambiguous
+                        # track.getInfo lookups (especially important when the track
+                        # title matches the album title, e.g. title tracks / singles).
+                        recording_mbid = (
+                            row_get(track, "recording_mbid")
+                            or row_get(track, "musicbrainz_recording_mbid")
+                            or row_get(track, "mbid")
+                        )
+
                         # -------------------------
                         # LAST.FM PREFETCH
                         # -------------------------
@@ -6001,6 +6010,7 @@ def popularity_scan(
                                         f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
                                         track_artist,
                                         normalize_title_for_lookup(title),
+                                        recording_mbid,
                                     )
                                     rate_limiter.record_lastfm_request()
 
@@ -6019,12 +6029,6 @@ def popularity_scan(
                         # -------------------------
                         # LISTENBRAINZ PREFETCH MAP
                         # -------------------------
-                        recording_mbid = (
-                            row_get(track, "recording_mbid")
-                            or row_get(track, "musicbrainz_recording_mbid")
-                            or row_get(track, "mbid")
-                        )
-
                         lb_listens = 0
                         if recording_mbid:
                             lb_entry = lb_batch.get(recording_mbid, {})
@@ -6605,6 +6609,19 @@ def popularity_scan(
                             total_weight = sum(weights)
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
 
+                            # Apply minimum popularity floor for tracks with metadata (MBID)
+                            # to prevent known tracks from getting abnormally low scores
+                            # when external APIs have no data
+                            if popularity_score < 5.0:
+                                track_mbid = (
+                                    row_get(track, "recording_mbid")
+                                    or row_get(track, "musicbrainz_recording_mbid")
+                                    or row_get(track, "mbid")
+                                )
+                                if track_mbid:
+                                    popularity_score = 5.0
+                                    log_debug(f'Applying minimum popularity floor (5.0) for track with MBID: {title}')
+
                             track_updates.append((
                                 popularity_score,
                                 spotify_score,
@@ -6820,9 +6837,8 @@ def popularity_scan(
                             except Exception:
                                 pass
                             raise
-
-                        else:
-                            log_debug(f"Skipped batch update for album '{album}': no popularity-related fields changed")
+                    else:
+                        log_debug(f"Skipped batch update for album '{album}': no popularity-related fields changed")
 
                         if album_art_url:
                             log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
