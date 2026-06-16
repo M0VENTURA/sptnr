@@ -11,6 +11,29 @@ _MUSICBRAINZ_UUID_RE = re.compile(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE
 )
 
+def normalize_artist_for_matching(artist: str, album_artist: str = None) -> str:
+    """
+    Normalize artist names for grouping and statistical comparisons.
+    Removes featured artist suffixes and standardizes formatting.
+    """
+
+    if album_artist and album_artist.strip():
+        return album_artist.strip().lower()
+
+    if not artist:
+        return ""
+
+    normalized = artist.lower()
+
+    # Remove featured/collab suffixes
+    normalized = re.sub(r"\s+(feat\.?|featuring|ft\.?)\s+.+$", "", normalized)
+    normalized = re.sub(r"\s+(with|x|vs\.?)\s+.+$", "", normalized)
+
+    # Normalize whitespace
+    normalized = " ".join(normalized.split())
+
+    return normalized.strip()
+
 
 def normalize_single_mbid(value: str) -> str:
     """
