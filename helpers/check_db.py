@@ -65,6 +65,44 @@ def update_schema(_db_path: str | None = None) -> bool:
             logging.warning("Could not acquire schema bootstrap advisory lock; deferring schema initialization")
             return False
 
+        # Core tables required for all app functionality.
+        # These were previously only created by database/database.py init_db(),
+        # which was never called during startup, causing fresh installs to fail.
+        _ensure_table(
+            cursor,
+            "artists",
+            """
+            CREATE TABLE IF NOT EXISTS artists (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
+            )
+            """,
+        )
+
+        _ensure_table(
+            cursor,
+            "tracks",
+            """
+            CREATE TABLE IF NOT EXISTS tracks (
+                id TEXT PRIMARY KEY
+            )
+            """,
+        )
+
+        _ensure_table(
+            cursor,
+            "artist_stats",
+            """
+            CREATE TABLE IF NOT EXISTS artist_stats (
+                artist_id TEXT PRIMARY KEY,
+                artist_name TEXT NOT NULL,
+                album_count INTEGER,
+                track_count INTEGER,
+                last_updated TEXT
+            )
+            """,
+        )
+
         _ensure_table(
             cursor,
             "listenbrainz_playlist_scheduler_state",
@@ -182,3 +220,114 @@ def update_schema(_db_path: str | None = None) -> bool:
                 conn.close()
             except Exception:
                 pass
+
+
+# Tables that must exist for basic app operation.
+_CRITICAL_TABLES = frozenset(
+    {
+        "artists",
+        "tracks",
+        "artist_stats",
+    }
+)
+
+# Tables created/verified at startup or lazily by feature modules.
+# Listed here so verify_all_tables_exist() can report any unexpected gaps.
+_FEATURE_TABLES = frozenset(
+    {
+        "album_art",
+        "artist_images",
+        "artist_metadata",
+        "correction_ignores",
+        "discogs_cache_metadata",
+        "discogs_singles_cache",
+        "download_queue",
+        "flash_results",
+        "folder_album_matches",
+        "folder_track_matches",
+        "genre_updates",
+        "lastfm_recommendations",
+        "lastfm_scheduler_config",
+        "lastfm_sync_history",
+        "listenbrainz_playlist_scheduler_state",
+        "listenbrainz_playlist_tracks",
+        "missing_album_tracks",
+        "musicbrainz_release_tracks",
+        "musicbrainz_releases",
+        "recommendation_candidates",
+        "scan_history",
+        "slsk_banned_words",
+        "slskd_search_logs",
+        "upcoming_releases",
+        "weekly_playlist_tracks",
+        "weekly_sync_state",
+    }
+)
+
+
+def verify_all_tables_exist() -> dict:
+    """Check that all expected tables exist in the current PostgreSQL schema.
+
+    Returns a dict with keys:
+      - ``critical_ok`` (bool): all _CRITICAL_TABLES present
+      - ``feature_ok`` (bool): all _FEATURE_TABLES present
+      - ``missing_critical`` (list): missing critical table names
+      - ``missing_feature`` (list): missing feature table names
+      - ``present`` (list): all tables that were found
+    """
+    conn = None
+    result = {
+        "critical_ok": False,
+        "feature_ok": False,
+        "missing_critical": [],
+        "missing_feature": [],
+        "present": [],
+    }
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        present = set()
+        for table_name in sorted(_CRITICAL_TABLES | _FEATURE_TABLES):
+            if _table_exists(cursor, table_name):
+                present.add(table_name)
+
+        missing_critical = sorted(_CRITICAL_TABLES - present)
+        missing_feature = sorted(_FEATURE_TABLES - present)
+
+        result["critical_ok"] = not missing_critical
+        result["feature_ok"] = not missing_feature
+        result["missing_critical"] = missing_critical
+        result["missing_feature"] = missing_feature
+        result["present"] = sorted(present)
+
+        if missing_critical:
+            logging.warning(
+                "CRITICAL tables missing from database: %s",
+                ", ".join(missing_critical),
+            )
+        if missing_feature:
+            logging.info(
+                "Feature tables not yet created (will be created on-demand): %s",
+                ", ".join(missing_feature),
+            )
+        logging.info(
+            "Table verification complete — %d/%d critical, %d/%d feature tables present",
+            len(_CRITICAL_TABLES) - len(missing_critical),
+            len(_CRITICAL_TABLES),
+            len(_FEATURE_TABLES) - len(missing_feature),
+            len(_FEATURE_TABLES),
+        )
+    except Exception as exc:
+        if is_transient_pg_startup_error(exc):
+            logging.info("Table verification deferred while PostgreSQL starts: %s", exc)
+        else:
+            logging.error("Table verification failed: %s", exc)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return result

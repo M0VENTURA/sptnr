@@ -11,35 +11,16 @@ def is_postgres_connection(conn):
     return _is_postgres_connection(conn)
 
 def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Artists table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS artists (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE
-    )
-    """)
-    # Tracks table (basic structure; columns added dynamically by check_db.py)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS tracks (
-        id TEXT PRIMARY KEY
-    )
-    """)
-    
-    # Artist stats table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS artist_stats (
-        artist_id TEXT PRIMARY KEY,
-        artist_name TEXT NOT NULL,
-        album_count INTEGER,
-        track_count INTEGER,
-        last_updated TEXT
-    )
-    """)
-    conn.commit()
-    conn.close()
+    """Initialize the core database schema.
+
+    Delegates to the centralized :func:`helpers.check_db.update_schema` so
+    that table creation stays in one place.  Also runs table verification
+    to confirm everything is present.
+    """
+    from helpers.check_db import update_schema, verify_all_tables_exist
+
+    update_schema()
+    verify_all_tables_exist()
 
 def insert_artist(artist_id, name):
     conn = get_db_connection()
