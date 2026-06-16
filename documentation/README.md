@@ -1,16 +1,16 @@
-# 🎧 SPTNR – Navidrome Rating CLI
+# 🎧 Popularr – Navidrome Rating CLI
 
 > **Note:** This tool was created with the help of AI assistance. While the code works well, it’s still evolving. The goal is to provide intelligent star ratings for your Navidrome library using multiple data sources.
 
-SPTNR (pronounced "Spotner") is a command-line tool that automates and enriches star ratings inside your Navidrome library. It intelligently fuses data from **Spotify**, **Last.fm**, and other sources to assign culturally aware ratings — perfect for playlist curation, auto-tagging, or metadata enrichment.
+Popularr is a command-line tool that automates and enriches star ratings inside your Navidrome library. It intelligently fuses data from **Last.fm**, **MusicBrainz**, **Discogs**, and other sources to assign culturally aware ratings — perfect for playlist curation, auto-tagging, or metadata enrichment.
 
 ---
 
-## 🧠 What Is SPTNR?
-SPTNR works by blending multiple sources of listening data:
+## 🧠 What Is Popularr?
+Popularr works by blending multiple sources of listening data:
 
-- 🎵 **Spotify popularity**
 - 📊 **Last.fm playcount ratios**
+- 🎵 **MusicBrainz & Discogs metadata**
 - 🕰️ **Age-based momentum scoring**
 - 🎬 **Single detection via metadata**
 
@@ -32,7 +32,7 @@ SPTNR works by blending multiple sources of listening data:
 
 
 ## 🧪 How Does It Work?
-SPTNR fetches each artist’s tracks from Navidrome and calculates a composite score using:
+Popularr fetches each artist’s tracks from Navidrome and calculates a composite score using:
 
 - **Spotify popularity** (weighted)
 - **Last.fm track vs. artist ratio** (weighted)
@@ -44,7 +44,7 @@ You can adjust score weights in `config.yaml`.
 ---
 
 ## 🧩 Modular Structure
-SPTNR is now fully modularized for maintainability and clarity:
+Popularr is now fully modularized for maintainability and clarity:
 
 - **single_detector.py**: All advanced single detection logic and helpers (multi-source, weighted, explainable decisions)
 - **singledetection.py**: Only DB helpers and orchestration wrappers for single detection state (no detection logic)
@@ -58,7 +58,7 @@ If you want to extend or debug single detection, start with `single_detector.py`
 ---
 
 ## 🛠 Setup Requirements
-Before running SPTNR, you’ll need:
+Before running Popularr, you’ll need:
 
 - A **Navidrome API token**
 - **Spotify API credentials**
@@ -72,26 +72,25 @@ Before running SPTNR, you’ll need:
 ### ✅ Docker Installation
 Clone the repo:
 
-git clone https://github.com/M0VENTURA/sptnr.git
-cd sptnr
+git clone https://github.com/M0VENTURA/Popularr.git
+cd Popularr
 
 Build and run:
 
-docker build -t sptnr .
-docker run -v ./config:/config -v ./database:/database sptnr --batchrate --sync
+docker build -t popularr .
+docker run -v ./config:/config popularr --batchrate --sync
 
 Or use **Docker Compose**:
 
 version: "3.9"
 services:
-sptnr:
-build: .
-container_name: sptnr
-image: moventura/sptnr:latest
-volumes:
-- ./config:/config
-- ./database:/database
-command: ["--batchrate", "--sync"]
+  popularr:
+    build: .
+    container_name: popularr
+    image: moventura/popularr:latest
+    volumes:
+      - ./config:/config
+    command: ["--batchrate", "--sync"]
 
 Run:
 docker compose up -d
@@ -100,8 +99,8 @@ docker compose up -d
 
 ### ✅ Local Installation (Python)
 
-git clone https://github.com/M0VENTURA/sptnr.git
-cd sptnr
+git clone https://github.com/M0VENTURA/Popularr.git
+cd Popularr
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -214,4 +213,4 @@ weights:
 ---
 
 ## 📬 Feedback & Support
-SPTNR is designed for personal/local use. PRs and ideas welcome!
+Popularr is designed for personal/local use. PRs and ideas welcome!

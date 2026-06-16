@@ -1,13 +1,13 @@
-# 🎧 SPTNR – Navidrome Rating & Management System
+# 🎧 Popularr – Navidrome Rating & Management System
 
 > **⚠️ AI-Assisted Project Notice**
-> The bulk of this project is AI-assisted. SPTNR has evolved substantially from its origins — it originally integrated with Spotify, but due to Spotify's API changes and restrictions it has completely moved away from Spotify. The project now uses **MusicBrainz**, **Discogs**, and **Last.fm** as its primary data sources. Much of the codebase has been rewritten with AI assistance to support this new direction.
+> The bulk of this project is AI-assisted. Popularr has evolved substantially from its origins — it originally integrated with Spotify, but due to Spotify's API changes and restrictions it has completely moved away from Spotify. The project now uses **MusicBrainz**, **Discogs**, and **Last.fm** as its primary data sources. Much of the codebase has been rewritten with AI assistance to support this new direction.
 
-SPTNR (pronounced "Spotner") is a comprehensive music library management system that automates star ratings, provides a rich web interface, and integrates with multiple music metadata services and download clients.
+Popularr is a comprehensive music library management system that automates star ratings, provides a rich web interface, and integrates with multiple music metadata services and download clients.
 
 ---
 
-## ✨ What Can SPTNR Do?
+## ✨ What Can Popularr Do?
 
 ### 🌟 Intelligent Star Rating System
 - Automated 1–5 star ratings for your entire Navidrome library
@@ -63,8 +63,8 @@ SPTNR (pronounced "Spotner") is a comprehensive music library management system 
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/M0VENTURA/sptnr.git
-cd sptnr
+git clone https://github.com/M0VENTURA/Popularr.git
+cd Popularr
 cp docker-compose.yml.example docker-compose.yml
 ```
 
@@ -88,9 +88,9 @@ On first run you will be taken through the **Setup Wizard** where you can enter 
 version: '3.8'
 
 services:
-  sptnr:
-    container_name: sptnr
-    image: moventura/sptnr:latest
+  popularr:
+    container_name: popularr
+    image: moventura/popularr:latest
     entrypoint: ["./entrypoint.sh"]
 
     environment:
@@ -104,14 +104,17 @@ services:
       - LASTFM_WEIGHT=0.70
       - AGE_WEIGHT=0.30
       - MUSIC_FOLDER=/music
-      - DB_PATH=/database/sptnr.db
+      - PG_HOST=your-postgres-host
+      - PG_PORT=5432
+      - PG_USER=your_postgres_username
+      - PG_PASSWORD=your_postgres_password
+      - PG_DATABASE=popularr
 
     ports:
       - "5000:5000"
 
     volumes:
       - ./logs:/config          # config.yaml and log files stored here
-      - ./data:/database        # SQLite database stored here
       - /path/to/your/music:/music
       - /path/to/your/downloads:/downloads
 
@@ -122,15 +125,15 @@ services:
 
 ## 🗄️ Database Requirements
 
-SPTNR uses **SQLite** by default. No extra setup is required — the database file is created automatically on first run.
+Popularr uses **PostgreSQL**.
 
-- Default path inside the container: `/database/sptnr.db`
-- Map a host folder to `/database` in your volume mounts so the database persists across container restarts:
-  ```yaml
-  volumes:
-    - ./data:/database
-  ```
-- **PostgreSQL** is also supported for production deployments. See [documentation/INSTALLATION.md](documentation/INSTALLATION.md) for PostgreSQL setup instructions.
+- Configure the connection using these environment variables:
+  - `PG_HOST` — PostgreSQL host address
+  - `PG_PORT` — PostgreSQL port (default: `5432`)
+  - `PG_USER` — PostgreSQL username
+  - `PG_PASSWORD` — PostgreSQL password
+  - `PG_DATABASE` — PostgreSQL database name
+- See [documentation/INSTALLATION.md](documentation/INSTALLATION.md) for full PostgreSQL setup instructions.
 
 ---
 
@@ -147,7 +150,11 @@ Copy `.env.example` to `.env` for local (non-Docker) runs, or set these as envir
 | `LASTFM_API_SECRET` | Recommended | Last.fm API secret |
 | `DISCOGS_TOKEN` | Recommended | Discogs personal access token — https://www.discogs.com/settings/developers |
 | `MUSIC_FOLDER` | Optional | Path to your music library (default: `/music`) |
-| `DB_PATH` | Optional | Path to SQLite database (default: `/database/sptnr.db`) |
+| `PG_HOST` | ✅ | PostgreSQL host address |
+| `PG_PORT` | Optional | PostgreSQL port (default: `5432`) |
+| `PG_USER` | ✅ | PostgreSQL username |
+| `PG_PASSWORD` | Optional | PostgreSQL password |
+| `PG_DATABASE` | ✅ | PostgreSQL database name |
 | `LASTFM_WEIGHT` | Optional | Last.fm weighting (default: `0.70`) |
 | `AGE_WEIGHT` | Optional | Age/recency weighting (default: `0.30`) |
 
@@ -176,8 +183,8 @@ Optional integrations:
 ## 🏠 Local Installation
 
 ```bash
-git clone https://github.com/M0VENTURA/sptnr.git
-cd sptnr
+git clone https://github.com/M0VENTURA/Popularr.git
+cd Popularr
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -228,7 +235,7 @@ python start.py --perpetual --batchrate --sync
 
 ## 🤝 Contributing
 
-SPTNR is designed for personal/local use. PRs and ideas are welcome!
+Popularr is designed for personal/local use. PRs and ideas are welcome!
 
 ---
 

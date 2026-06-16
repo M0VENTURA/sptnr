@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  sptnr:
-    container_name: sptnr
-    image: moventura/sptnr:latest
+  popularr:
+    container_name: popularr
+    image: moventura/popularr:latest
     
     # Uncomment the next line to build the Docker image locally
     # build: .
@@ -22,7 +22,11 @@ services:
       - LASTFM_WEIGHT=0.70                 #Adjust Last.FM Weighting (lastfm + age should sum to 1.0)
       - AGE_WEIGHT=0.30                    #Adjust Age/Recency Weighting
       - MUSIC_FOLDER=/music                #Path to music folder inside container
-      - DB_PATH=/database/sptnr.db         #Path to SQLite database
+      - PG_HOST=                           #PostgreSQL host
+      - PG_PORT=5432                       #PostgreSQL port
+      - PG_USER=                           #PostgreSQL username
+      - PG_PASSWORD=                       #PostgreSQL password
+      - PG_DATABASE=popularr               #PostgreSQL database name
       - DOWNLOADS_DIR=/downloads/Music     #Path to downloads folder
       - MUSIC_ROOT=/music                  #Path to music library folder
       - SPTNR_AUTO_INSTALL_FFMPEG=0        #Set 1 to attempt apt-based ffmpeg install at container start if missing
@@ -32,7 +36,6 @@ services:
     
     volumes:
       - ./logs:/config                     # Config and log files
-      - ./data:/database                   # SQLite database
       - /path/to/your/downloads:/downloads # Downloads folder for Soulseek
       - /path/to/your/music:/music         # Music library folder
 

@@ -1,6 +1,6 @@
 # Installation & Setup Guide
 
-This guide covers all installation methods for SPTNR.
+This guide covers all installation methods for Popularr.
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)
@@ -12,7 +12,7 @@ This guide covers all installation methods for SPTNR.
 
 ## Prerequisites
 
-Before installing SPTNR, ensure you have:
+Before installing Popularr, ensure you have:
 
 ### Required Services
 - **Navidrome** music server (running and accessible)
@@ -21,12 +21,12 @@ Before installing SPTNR, ensure you have:
 
 ### API Keys
 You'll need API credentials for:
-- **Spotify API** (for popularity data and metadata)
-  - Get at: https://developer.spotify.com/dashboard/
 - **Last.fm API** (for listening statistics)
   - Get at: https://www.last.fm/api/account/create
 - **ListenBrainz** (optional, for love/hate tracking)
   - Get token at: https://listenbrainz.org/settings/profile/
+- **Discogs** (optional, for format data and release verification)
+  - Get token at: https://www.discogs.com/settings/developers
 
 ### Optional Integrations
 - **qBittorrent** with Web UI (for torrent downloads)
@@ -39,8 +39,8 @@ You'll need API credentials for:
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/M0VENTURA/sptnr.git
-cd sptnr
+git clone https://github.com/M0VENTURA/Popularr.git
+cd Popularr
 ```
 
 2. **Copy the example docker-compose file:**
@@ -52,27 +52,30 @@ cp docker-compose.yml.example docker-compose.yml
 ```yaml
 version: "3.9"
 services:
-  sptnr:
+  popularr:
     build: .
-    container_name: sptnr
-    image: moventura/sptnr:latest
+    container_name: popularr
+    image: moventura/popularr:latest
     ports:
       - "5000:5000"  # Web UI port
     volumes:
       - ./config:/config
-      - ./database:/database
       - /path/to/music:/music:ro  # Optional: for MP3 scanning
     environment:
       - SECRET_KEY=change-this-to-something-random
       - CONFIG_PATH=/config/config.yaml
-      - DB_PATH=/database/sptnr.db
+      - PG_HOST=your-postgres-host
+      - PG_PORT=5432
+      - PG_USER=your_postgres_username
+      - PG_PASSWORD=your_postgres_password
+      - PG_DATABASE=popularr
     command: python /app/app.py
     restart: unless-stopped
 ```
 
 4. **Create config directory:**
 ```bash
-mkdir -p config database
+mkdir -p config
 ```
 
 5. **Copy example config:**
@@ -93,21 +96,24 @@ docker compose up -d
 ### Method 2: Docker Run
 
 ```bash
-docker build -t sptnr .
+docker build -t popularr .
 docker run -d \
-  --name sptnr \
+  --name popularr \
   -p 5000:5000 \
   -v $(pwd)/config:/config \
-  -v $(pwd)/database:/database \
   -v /path/to/music:/music:ro \
   -e SECRET_KEY=your-secret-key \
-  sptnr
+  -e PG_HOST=your-postgres-host \
+  -e PG_USER=your_postgres_username \
+  -e PG_PASSWORD=your_postgres_password \
+  -e PG_DATABASE=popularr \
+  popularr
 ```
 
 ### Updating Docker Installation
 
 ```bash
-cd sptnr
+cd Popularr
 git pull
 docker compose down
 docker compose build
@@ -124,8 +130,8 @@ docker compose up -d
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/M0VENTURA/sptnr.git
-cd sptnr
+git clone https://github.com/M0VENTURA/Popularr.git
+cd Popularr
 ```
 
 2. **Create virtual environment:**
@@ -141,7 +147,7 @@ pip install -r requirements.txt
 
 4. **Create config directory:**
 ```bash
-mkdir -p config database
+mkdir -p config
 ```
 
 5. **Create configuration file:**
@@ -161,19 +167,19 @@ python app.py
 
 ### Running as a Service (Linux)
 
-Create `/etc/systemd/system/sptnr.service`:
+Create `/etc/systemd/system/popularr.service`:
 
 ```ini
 [Unit]
-Description=SPTNR Music Rating Service
+Description=Popularr Music Rating Service
 After=network.target
 
 [Service]
 Type=simple
 User=your-user
-WorkingDirectory=/path/to/sptnr
-Environment="PATH=/path/to/sptnr/.venv/bin"
-ExecStart=/path/to/sptnr/.venv/bin/python /path/to/sptnr/app.py
+WorkingDirectory=/path/to/popularr
+Environment="PATH=/path/to/popularr/.venv/bin"
+ExecStart=/path/to/popularr/.venv/bin/python /path/to/popularr/app.py
 Restart=always
 
 [Install]
@@ -182,9 +188,9 @@ WantedBy=multi-user.target
 
 Enable and start:
 ```bash
-sudo systemctl enable sptnr
-sudo systemctl start sptnr
-sudo systemctl status sptnr
+sudo systemctl enable popularr
+sudo systemctl start popularr
+sudo systemctl status popularr
 ```
 
 ## Configuration
@@ -249,9 +255,15 @@ You can also use environment variables (they override config.yaml):
 ```bash
 # Core settings
 export CONFIG_PATH=/path/to/config.yaml
-export DB_PATH=/path/to/sptnr.db
 export LOG_PATH=/path/to/app.log
 export SECRET_KEY=your-secret-key-here
+
+# PostgreSQL connection
+export PG_HOST=your-postgres-host
+export PG_PORT=5432
+export PG_USER=your_postgres_username
+export PG_PASSWORD=your_postgres_password
+export PG_DATABASE=popularr
 
 # Music folder for MP3 scanning
 export MUSIC_FOLDER=/path/to/music
@@ -282,13 +294,13 @@ export MUSIC_FOLDER=/path/to/music
 
 ### Using the Setup Wizard (Web UI)
 
-1. Start SPTNR (Docker or local)
+1. Start Popularr (Docker or local)
 2. Navigate to http://localhost:5000
 3. You'll be redirected to the setup page
 4. Fill in your credentials:
    - Navidrome URL and credentials
-   - Spotify API keys
    - Last.fm API key
+   - Discogs token (optional)
    - (Optional) ListenBrainz token
 5. Click "Save Configuration"
 6. You'll be redirected to the dashboard
@@ -314,15 +326,15 @@ python start.py --batchrate --sync
 
 ### Check Database
 ```bash
-sqlite3 database/sptnr.db "SELECT COUNT(*) FROM artists;"
-sqlite3 database/sptnr.db "SELECT COUNT(*) FROM albums;"
-sqlite3 database/sptnr.db "SELECT COUNT(*) FROM tracks;"
+psql -h $PG_HOST -U $PG_USER -d $PG_DATABASE -c "SELECT COUNT(*) FROM artists;"
+psql -h $PG_HOST -U $PG_USER -d $PG_DATABASE -c "SELECT COUNT(*) FROM albums;"
+psql -h $PG_HOST -U $PG_USER -d $PG_DATABASE -c "SELECT COUNT(*) FROM tracks;"
 ```
 
 ### Check Logs
 ```bash
 # Docker
-docker logs sptnr
+docker logs popularr
 
 # Local
 tail -f config/app.log
@@ -351,11 +363,10 @@ If port 5000 is already taken:
 - **Docker**: Change port mapping in docker-compose.yml: `"5001:5000"`
 - **Local**: Set `PORT` environment variable: `export PORT=5001`
 
-### Database Permission Errors
-```bash
-chmod 755 database
-chmod 664 database/sptnr.db
-```
+### Database Connection Errors
+- Verify `PG_HOST`, `PG_USER`, and `PG_DATABASE` are set correctly
+- Ensure the PostgreSQL server is running and accessible
+- Check that the database exists and the user has appropriate permissions
 
 ### Config Not Found
 Ensure config.yaml exists:
