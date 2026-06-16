@@ -766,7 +766,7 @@ def adjust_weights(
     metadata_confirmed=False
 ):
     """Adjust Last.fm / ListenBrainz weights when sources are mismatched."""
-    if lastfm_listeners <= 20 and lb_listens >= 75:
+    if lastfm_listeners < 20:
         lf_weight = 0.0
     elif lb_listens > lastfm_listeners * 3:
         lf_weight = 0.25

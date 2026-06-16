@@ -1298,6 +1298,7 @@ def determine_final_status(
     radio_edit_found: bool = False,
     is_remastered_only: bool = False,
     single_release_date_match: bool = False,
+    is_title_track: bool = False,
 ) -> str:
     """
     Final single status based on source detection and z-score analysis.
@@ -1346,6 +1347,8 @@ def determine_final_status(
         radio_edit_found: Whether a Radio Edit version was found in Spotify search results
         is_remastered_only: Whether the track is a remastered-only variant (bypasses z<=0 gate)
         single_release_date_match: Whether the single release date is close to the album's original release date
+        
+    is_title_track: Whether the track title matches the album title (title-track boost)
         
     Returns:
         Confidence level: 'high', 'medium', 'low', or 'none'
@@ -1437,6 +1440,8 @@ def determine_final_status(
     # metadata evidence get a chance via the same "0-1" threshold (1 high OR 2 medium
     # sources). Their low popularity may reflect sparse Last.fm data, niche appeal, or
     # collaboration/streaming-split issues — not the absence of single status.
+    # Title tracks (song name matches album name) get an extra boost — they are
+    # frequently released as singles and should not be penalised for low popularity.
     elif max_z <= 0.0:
         if is_remastered_only or high_confidence_count >= 1 or medium_confidence_count >= 2:
             if high_confidence_count >= 1:
@@ -1445,6 +1450,10 @@ def determine_final_status(
             elif medium_confidence_count >= 2:
                 log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z<=0 bypass with metadata: has {medium_confidence_count} medium sources)")
                 return 'medium'
+        # Title-track boost: a single confirmed medium source is enough for title tracks
+        if is_title_track and medium_confidence_count >= 1:
+            log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z<=0 title-track boost: has {medium_confidence_count} medium source)")
+            return 'medium'
         log_debug(
             f"[CONFIDENCE] → RETURNING 'none' (z<=0 gate: max_z={max_z:.2f}, "
             f"requires z>0 or explicit metadata (1 high / 2 medium) before confidence sources can qualify)"
@@ -2837,6 +2846,8 @@ def detect_single_enhanced(
     log_debug(f"[FINAL_DECISION] Has metadata: {has_metadata}, discogs: {discogs_confirmed}, mb: {musicbrainz_confirmed}, video: {discogs_video_confirmed}")
     log_debug(f"[FINAL_DECISION] Additional params: lastfm={lastfm_single_confirmed}, radio_edit={radio_edit_found}, album_z={album_z:.2f}, artist_z={artist_z:.2f}, version_count={version_count_value}")
     
+    is_title_track = normalize_title_strict(title) == normalize_title_strict(album)
+    
     final_status = determine_final_status(
         discogs_confirmed,
         musicbrainz_confirmed,
@@ -2855,16 +2866,17 @@ def detect_single_enhanced(
         radio_edit_found,
         is_remastered_only,
         single_release_date_match=single_release_date_match,
+        is_title_track=is_title_track,
     )
     
     log_debug(f"[FINAL_DECISION] Final status determined: {final_status}")
     
     result['single_status'] = final_status
     result['single_confidence'] = final_status
-    # Only high-confidence singles are marked as is_single=True.
-    # Medium-confidence tracks retain their confidence level for star-rating logic
-    # but do not get the is_single flag until they are promoted during star rating.
-    result['is_single'] = final_status == 'high'
+    # High and medium-confidence singles are both marked as is_single=True.
+    # Medium-confidence tracks (e.g. title tracks with one confirmed source) are
+    # valid singles and should appear in the UI.
+    result['is_single'] = final_status in ('high', 'medium')
     
     # ===== SPECIAL CASE: High Z-Score without sources = "Popular" =====
     # If z-score exceeds the configured threshold but no confidence sources were found,
