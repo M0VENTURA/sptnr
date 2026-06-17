@@ -1100,8 +1100,8 @@ def adjust_weights(
     """Adjust Last.fm / ListenBrainz weights when sources are mismatched."""
     if lastfm_listeners < 20:
         lf_weight = 0.0
-    elif lb_listens > lastfm_listeners * 3:
-        lf_weight = 0.25
+    elif lb_listens > lastfm_listeners * 2:
+        lf_weight = 0.4
     else:
         lf_weight = 0.6
 
@@ -1223,6 +1223,20 @@ def apply_album_deviation_adjustment(
                 return track_popularity
 
             album_popularities = [row["popularity"] for row in rows]
+
+            # Guard: skip adjustment for underperforming albums to avoid double-penalising tracks
+            if artist_mean_popularity is not None and artist_mean_popularity > 0:
+                album_median = median(album_popularities)
+                album_is_underperforming = album_median < (artist_mean_popularity * 0.6)
+                if album_is_underperforming:
+                    logging.debug(
+                        "Album deviation adjustment skipped for '%s' - '%s': album is underperforming (median=%.1f < artist_mean=%.1f * 0.6)",
+                        artist_name,
+                        album_name,
+                        album_median,
+                        artist_mean_popularity,
+                    )
+                    return track_popularity
 
             try:
                 album_mean = mean(album_popularities)
