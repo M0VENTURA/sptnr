@@ -1697,6 +1697,13 @@ def detect_single_enhanced(
     # Create cursor for queries
     placeholder = "%s"
     cursor = conn.cursor()
+
+    # Defensive fallback for normalize_title_strict in case of module reload issues
+    try:
+        _normalize_title_strict = normalize_title_strict
+    except NameError:
+        def _normalize_title_strict(t):
+            return (t or "").lower().strip()
     
     # Get album popularities list for pre-filter
     cursor.execute(f"""
@@ -1768,7 +1775,7 @@ def detect_single_enhanced(
     album_type_is_single = False
     if album_type and album_type.lower() == 'single':
         # Only treat as high-confidence source if track title matches the album name
-        if normalize_title_strict(title) == normalize_title_strict(album):
+        if _normalize_title_strict(title) == _normalize_title_strict(album):
             album_type_is_single = True
             log_debug(f"[ALBUM_TYPE] Album marked as single type with matching title — will be treated as high-confidence source")
             log_info(f"   Album type is 'single' and title matches — treating as high-confidence indicator for {title}")
@@ -2845,7 +2852,7 @@ def detect_single_enhanced(
     log_debug(f"[FINAL_DECISION] Has metadata: {has_metadata}, discogs: {discogs_confirmed}, mb: {musicbrainz_confirmed}, video: {discogs_video_confirmed}")
     log_debug(f"[FINAL_DECISION] Additional params: lastfm={lastfm_single_confirmed}, radio_edit={radio_edit_found}, album_z={album_z:.2f}, artist_z={artist_z:.2f}, version_count={version_count_value}")
     
-    is_title_track = normalize_title_strict(title) == normalize_title_strict(album)
+    is_title_track = _normalize_title_strict(title) == _normalize_title_strict(album)
     
     final_status = determine_final_status(
         discogs_confirmed,
