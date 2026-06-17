@@ -6005,6 +6005,7 @@ def popularity_scan(
                                         log_debug(f'Rate limit still active for "{title}" after wait, skipping Last.fm prefetch')
 
                                 if can_proceed:
+                                    album_artist = track.get("album_artist") or track_artist
                                     lastfm_info = _run_with_timeout(
                                         get_lastfm_track_info,
                                         API_CALL_TIMEOUT,
@@ -6012,6 +6013,7 @@ def popularity_scan(
                                         track_artist,
                                         normalize_title_for_lookup(title),
                                         recording_mbid,
+                                        album_artist,
                                     )
                                     rate_limiter.record_lastfm_request()
 
@@ -6515,10 +6517,12 @@ def popularity_scan(
                                 except Exception:
                                     pass
 
+                                album_artist = track.get("album_artist") or track_artist
                                 aggregated = get_aggregated_listenbrainz_popularity(
                                     title=title,
                                     artist=track_artist,
                                     artist_mbid=artist_mbid,
+                                    album_artist=album_artist,
                                 )
                                 agg_total = aggregated.get("total_listens", 0)
                                 agg_count = aggregated.get("recording_count", 0)

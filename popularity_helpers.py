@@ -7,12 +7,14 @@ Functions are used by both the main scanner (start.py) and popularity.py.
 from __future__ import annotations
 
 import os
+import re
 import yaml
 import math
 import logging
 import json
 import time
 import difflib
+import unicodedata
 from contextlib import contextmanager
 from typing import Any, Tuple, List, Dict, Optional
 from datetime import datetime
@@ -397,6 +399,135 @@ def get_spotify_artist_single_track_ids(artist_id: str) -> set[str]:
 
 
 # -----------------------------------------------------------------------------
+# Artist matching helpers (preserve case for APIs, lowercase for internal keys)
+# -----------------------------------------------------------------------------
+
+_FEATURE_SPLIT_RE = re.compile(
+    r"""
+    \s+
+    (?:
+        feat\.? |
+        ft\.? |
+        featuring |
+        with |
+        w/
+    )
+    \s+
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_ARTIST_JOIN_RE = re.compile(
+    r"""
+    \s+
+    (?:
+        & |
+        and |
+        x |
+        × |
+        \+
+    )
+    \s+
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _clean_artist_spacing(value: str) -> str:
+    """
+    Preserve artist casing, but clean whitespace.
+    Do NOT lowercase this value if it will be sent to Last.fm/MusicBrainz/etc.
+    """
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def get_primary_artist_preserve_case(artist: str) -> str:
+    """
+    Return the likely primary artist while preserving original casing.
+
+    Examples:
+      Feuerschwanz feat. Dag von SDP -> Feuerschwanz
+      +44 -> +44
+      AC/DC -> AC/DC
+    """
+    artist = _clean_artist_spacing(artist)
+    if not artist:
+        return ""
+
+    primary = _FEATURE_SPLIT_RE.split(artist, maxsplit=1)[0]
+    return _clean_artist_spacing(primary)
+
+
+def get_artist_lookup_candidates(artist: str, album_artist: str | None = None) -> list[str]:
+    """
+    Build provider lookup candidates in preferred order.
+
+    Important:
+      - preserve casing
+      - try album_artist / primary artist first
+      - keep original featured string as fallback
+      - do not send lowercased normalised matching keys to APIs
+    """
+    candidates: list[str] = []
+
+    def add(value: str | None):
+        value = _clean_artist_spacing(value or "")
+        if value and value not in candidates:
+            candidates.append(value)
+
+    # Album artist is usually the safest identity for popularity lookups.
+    add(album_artist)
+
+    # Primary artist stripped from "feat." but casing preserved.
+    add(get_primary_artist_preserve_case(artist))
+
+    # Original track artist as fallback.
+    add(artist)
+
+    return candidates
+
+
+def make_artist_match_key(artist: str) -> str:
+    """
+    Internal-only key for matching/cache grouping.
+    This value may be lowercase because it is NOT used for provider lookups.
+    """
+    artist = get_primary_artist_preserve_case(artist)
+    artist = unicodedata.normalize("NFKC", artist)
+    artist = artist.casefold()
+    artist = re.sub(r"\s+", " ", artist).strip()
+    return artist
+
+
+def make_track_match_key(artist: str, title: str) -> str:
+    """
+    Canonical key for combining variants of the same song.
+    Internal use only.
+    """
+    artist_key = make_artist_match_key(artist)
+    title_key = unicodedata.normalize("NFKC", title or "").casefold()
+    title_key = re.sub(r"\s+", " ", title_key).strip()
+    return f"{artist_key}::{title_key}"
+
+
+def choose_best_provider_counts(results: list[dict]) -> dict:
+    """
+    Pick the strongest provider result across artist variants.
+    Avoids double-counting alias/featured variants.
+    """
+    if not results:
+        return {}
+
+    def evidence_score(item: dict) -> int:
+        listeners = int(item.get("listeners") or 0)
+        playcount = int(item.get("playcount") or 0)
+        listens = int(item.get("listens") or 0)
+        return max(listeners, playcount, listens)
+
+    return max(results, key=evidence_score)
+
+
+# -----------------------------------------------------------------------------
 # Last.fm title normalization + helpers
 # -----------------------------------------------------------------------------
 
@@ -433,7 +564,7 @@ def search_spotify_track(title: str, artist: str, album: Optional[str] = None):
     return _spotify_client.search_track(normalized_title, artist, album)
 
 
-def get_lastfm_track_info(artist: str, title: str, track_mbid: str | None = None) -> dict:
+def get_lastfm_track_info(artist: str, title: str, track_mbid: str | None = None, album_artist: str | None = None) -> dict:
     _ensure_clients_from_config()
     if _lastfm_client is None:
         return {"track_play": 0, "listeners": 0}
@@ -444,13 +575,67 @@ def get_lastfm_track_info(artist: str, title: str, track_mbid: str | None = None
     if stripped_title != normalized_title:
         logging.debug("Title normalization: '%s' → '%s'", stripped_title, normalized_title)
 
-    result = _lastfm_client.get_track_info(artist, normalized_title, track_mbid=track_mbid)
-    lookup_artist = result.get("lookup_artist", artist)
+    candidates = get_artist_lookup_candidates(artist, album_artist=album_artist)
+    logging.debug(
+        "[LASTFM] Artist candidates for '%s': %s",
+        title,
+        candidates,
+    )
 
-    if lookup_artist != artist:
-        logging.debug("Last.fm artist fallback: '%s' -> '%s' for '%s'", artist, lookup_artist, normalized_title)
+    results: list[dict] = []
 
+    for candidate_artist in candidates:
+        candidate_result = _lastfm_client.get_track_info(
+            candidate_artist, normalized_title, track_mbid=track_mbid
+        )
+        if candidate_result:
+            listeners = int(candidate_result.get("listeners", 0) or 0)
+            playcount = int(candidate_result.get("track_play", 0) or 0)
+            logging.debug(
+                "[LASTFM] Candidate result for '%s' by '%s': listeners=%s, playcount=%s",
+                normalized_title,
+                candidate_artist,
+                listeners,
+                playcount,
+            )
+            if listeners > 0 or playcount > 0:
+                results.append({
+                    "track_play": playcount,
+                    "listeners": listeners,
+                    "toptags": candidate_result.get("toptags", {}) or {},
+                    "lookup_artist": candidate_result.get("lookup_artist", candidate_artist),
+                    "returned_artist": candidate_result.get("returned_artist", ""),
+                    "track_name": candidate_result.get("track_name", title),
+                    "url": candidate_result.get("url", ""),
+                    "album": candidate_result.get("album", ""),
+                })
+
+    if results:
+        result = choose_best_provider_counts(results)
+        lookup_artist = result.get("lookup_artist", artist)
+        logging.debug(
+            "[LASTFM] Best result for '%s': artist='%s', listeners=%s, playcount=%s (from %s candidates)",
+            normalized_title,
+            lookup_artist,
+            result.get("listeners", 0),
+            result.get("track_play", 0),
+            len(results),
+        )
+    else:
+        result = {
+            "track_play": 0,
+            "listeners": 0,
+            "toptags": {},
+            "lookup_artist": artist,
+            "returned_artist": "",
+            "track_name": title,
+            "url": "",
+            "album": "",
+        }
+
+    # Fallback fuzzy search if no candidate returned data
     if result.get("listeners", 0) == 0 and result.get("track_play", 0) == 0:
+        lookup_artist = result.get("lookup_artist", artist)
         logging.debug("Exact match failed for '%s' by '%s', trying fuzzy search...", normalized_title, lookup_artist)
         search_results = _lastfm_client.search_track(lookup_artist, normalized_title, limit=10)
 
@@ -479,7 +664,18 @@ def get_lastfm_track_info(artist: str, title: str, track_mbid: str | None = None
                     lookup_artist,
                     best_ratio,
                 )
-                result = _lastfm_client.get_track_info(lookup_artist, best_match)
+                fuzzy_result = _lastfm_client.get_track_info(lookup_artist, best_match)
+                if fuzzy_result:
+                    result = {
+                        "track_play": int(fuzzy_result.get("track_play", 0) or 0),
+                        "listeners": int(fuzzy_result.get("listeners", 0) or 0),
+                        "toptags": fuzzy_result.get("toptags", {}) or {},
+                        "lookup_artist": fuzzy_result.get("lookup_artist", lookup_artist),
+                        "returned_artist": fuzzy_result.get("returned_artist", ""),
+                        "track_name": fuzzy_result.get("track_name", best_match),
+                        "url": fuzzy_result.get("url", ""),
+                        "album": fuzzy_result.get("album", ""),
+                    }
             else:
                 logging.debug(
                     "No fuzzy match above threshold (best: %.2f) for '%s' by '%s'",
@@ -604,6 +800,7 @@ def get_aggregated_listenbrainz_popularity(
     title: str,
     artist: str,
     artist_mbid: Optional[str] = None,
+    album_artist: Optional[str] = None,
 ) -> dict[str, Any]:
     """Search all recordings of a track and aggregate ListenBrainz popularity.
 
@@ -617,6 +814,7 @@ def get_aggregated_listenbrainz_popularity(
         title: Track title.
         artist: Artist name.
         artist_mbid: Optional MusicBrainz artist MBID for more accurate queries.
+        album_artist: Optional album artist for building lookup candidates.
 
     Returns:
         Dict with keys:
@@ -637,40 +835,71 @@ def get_aggregated_listenbrainz_popularity(
     if not _listenbrainz_enabled or not title or not artist:
         return result
 
+    candidates = get_artist_lookup_candidates(artist, album_artist=album_artist)
+    logging.debug(
+        "[LB_AGG] Artist candidates for '%s': %s",
+        title,
+        candidates,
+    )
+
+    all_recordings: list[dict] = []
+    seen_mbids: set[str] = set()
+
     try:
         from api_clients.musicbrainz import MusicBrainzClient
         mb_client = MusicBrainzClient()
-        recordings = mb_client.search_recordings_by_artist(
-            title=title,
-            artist=artist,
-            artist_mbid=artist_mbid,
-            limit=25,
-        )
     except Exception as e:
-        logging.debug("Failed to search MusicBrainz recordings for '%s' by '%s': %s", title, artist, e)
+        logging.debug("Failed to create MusicBrainz client for LB aggregation: %s", e)
         return result
 
-    if not recordings:
+    for candidate_artist in candidates:
+        try:
+            recordings = mb_client.search_recordings_by_artist(
+                title=title,
+                artist=candidate_artist,
+                artist_mbid=artist_mbid,
+                limit=25,
+            )
+        except Exception as e:
+            logging.debug(
+                "[LB_AGG] Failed to search MusicBrainz recordings for '%s' by '%s': %s",
+                title, candidate_artist, e,
+            )
+            continue
+
+        if not recordings:
+            continue
+
+        for rec in recordings:
+            mbid = rec.get("id")
+            if mbid and mbid not in seen_mbids:
+                seen_mbids.add(mbid)
+                all_recordings.append(rec)
+
+    if not all_recordings:
+        logging.debug("[LB_AGG] No recordings found for '%s' by any candidate", title)
         return result
 
-    mbids = [r["id"] for r in recordings if r.get("id")]
+    mbids = [r["id"] for r in all_recordings if r.get("id")]
     if not mbids:
         return result
 
     try:
         batch = _lb_get_recording_popularity_batch(mbids)
     except Exception as e:
-        logging.debug("Failed to fetch aggregated LB popularity for '%s' by '%s': %s", title, artist, e)
+        logging.debug("[LB_AGG] Failed to fetch aggregated LB popularity for '%s': %s", title, e)
         return result
 
     total = 0
     max_val = 0
+    best_result: dict | None = None
     for mbid in mbids:
         entry = batch.get(mbid, {})
         count = entry.get("total_listen_count") or 0
         total += count
         if count > max_val:
             max_val = count
+            best_result = entry
 
     result["total_listens"] = total
     result["max_listens"] = max_val
@@ -678,12 +907,12 @@ def get_aggregated_listenbrainz_popularity(
     result["recording_mbids"] = mbids
 
     logging.debug(
-        "Aggregated LB popularity for '%s' by '%s': %s recordings, total=%s, max=%s",
+        "[LB_AGG] Aggregated LB popularity for '%s': %s recordings, total=%s, max=%s, best=%s",
         title,
-        artist,
         len(mbids),
         total,
         max_val,
+        best_result,
     )
     return result
 
@@ -1990,4 +2219,10 @@ __all__ = [
     "get_lastfm_client",
     "detect_via_iterative_zscore",
     "get_top_standout_tracks_with_gap",
+    "get_primary_artist_preserve_case",
+    "get_artist_lookup_candidates",
+    "make_artist_match_key",
+    "make_track_match_key",
+    "choose_best_provider_counts",
+    "get_aggregated_listenbrainz_popularity",
 ]
