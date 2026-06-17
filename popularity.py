@@ -651,7 +651,7 @@ def detect_compilation_album(artist: str, album: str, tracks: list, album_artist
     try:
         track_artists = set()
         for track in tracks:
-            track_artist = row_get(track, 'artist', '')
+            track_artist = get_canonical_artist(row_get(track, 'artist', ''))
             if track_artist and track_artist.lower() != artist.lower():
                 track_artists.add(track_artist.lower())
 
@@ -3947,6 +3947,10 @@ def popularity_scan(
         tracks_raw = cursor.fetchall()
         # Convert row objects to dictionaries to allow item assignment
         tracks = [dict(row) for row in tracks_raw]
+        # Enforce canonical artist globally so that featured-artist suffixes
+        # (feat., ft., etc.) never fragment catalogue groupings or stats.
+        for track in tracks:
+            track["canonical_artist"] = get_canonical_artist(track["artist"])
         log_info(f"Found {len(tracks)} tracks to scan for popularity")
         log_debug(f"Fetched {len(tracks)} tracks from database")
         # Commit the SELECT transaction immediately so the connection transitions
@@ -4000,7 +4004,7 @@ def popularity_scan(
             # Otherwise, preserve existing (only update if current is empty and we find a non-empty one)
             if album_name not in album_canonical_artist:
                 # First track with this album - set initial value
-                album_canonical_artist[album_name] = album_artist_value if album_artist_value else get_canonical_artist(track["artist"])
+                album_canonical_artist[album_name] = album_artist_value if album_artist_value else track["canonical_artist"]
             elif not album_canonical_artist[album_name] and album_artist_value:
                 # Update if canonical is empty but current track has a value
                 album_canonical_artist[album_name] = album_artist_value
@@ -4015,7 +4019,7 @@ def popularity_scan(
         for track in tracks:
             album_name = track["album"]
             # Use the canonical artist we determined in first pass
-            grouping_artist = album_canonical_artist.get(album_name, get_canonical_artist(track["artist"]))
+            grouping_artist = album_canonical_artist.get(album_name, track["canonical_artist"])
 
             artist_album_tracks[grouping_artist][album_name].append(track)
 
@@ -7018,7 +7022,7 @@ def popularity_scan(
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]
-                        track_artist = track["artist"]
+                        track_artist = track["canonical_artist"]
 
                         needs_detection = force or singles_only or singles_with_missing_popularity
                         if not needs_detection:
@@ -7044,7 +7048,7 @@ def popularity_scan(
                         try:
                             detection_result = detect_single_for_track(
                                 title=title,
-                                artist=get_canonical_artist(track_artist),
+                                artist=track_artist,
                                 album_track_count=len(album_tracks),
                                 verbose=verbose,
                                 discogs_token=discogs_token,
