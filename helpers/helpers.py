@@ -35,6 +35,36 @@ def normalize_artist_for_matching(artist: str, album_artist: str = None) -> str:
     return normalized.strip()
 
 
+def get_canonical_artist(artist: str) -> str:
+    """
+    Return the primary artist name, stripping featured-artist suffixes.
+
+    Preserves original casing and spacing (unlike normalize_artist_for_matching,
+    which lowercases).  Use this for DB grouping / stats lookups and for
+    provider API queries where the primary artist is the correct identity.
+
+    Examples:
+      "Feuerschwanz feat. Dag von SDP" -> "Feuerschwanz"
+      "dArtagnan feat. Melissa Bonny"  -> "dArtagnan"
+      "AC/DC"                          -> "AC/DC"
+    """
+    if not artist:
+        return ""
+
+    artist = artist.strip()
+
+    # Split on " feat.", " ft.", " featuring " etc. (case-insensitive)
+    lower = artist.lower()
+    if " feat." in lower:
+        idx = lower.index(" feat.")
+        return artist[:idx].strip()
+    if " ft." in lower:
+        idx = lower.index(" ft.")
+        return artist[:idx].strip()
+
+    return artist
+
+
 def normalize_single_mbid(value: str) -> str:
     """
     Extract a single MusicBrainz UUID from a string that may contain multiple

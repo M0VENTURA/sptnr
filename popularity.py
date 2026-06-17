@@ -35,6 +35,7 @@ from helpers.helpers import (
     strip_cover_attribution,
     strip_parentheses as _strip_parentheses_unified,
     normalize_artist_for_matching,
+    get_canonical_artist,
 )
 
 from helpers.matching_utils import normalize_album, strip_search_parentheses
@@ -714,7 +715,7 @@ def detect_greatest_hits_album(album: str, artist: str, conn: object, album_trac
                     cursor.execute(f"""
                         SELECT AVG(popularity_score) as avg_pop, COUNT(*) as track_count
                         FROM tracks
-                        WHERE artist = {placeholder} AND popularity_score > 0
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
                     """, (artist,))
                     row = cursor.fetchone()
 
@@ -2805,6 +2806,11 @@ def detect_single_for_track(
             - metadata_single: Metadata single status (if advanced)
             - is_compilation: Compilation status (if advanced)
     """
+    # Normalize artist for stats/API lookups while preserving display name.
+    # Featured-artist suffixes (feat., ft.) fragment catalogue groupings,
+    # so we strip them for all internal DB queries and provider calls.
+    artist = get_canonical_artist(artist)
+
     # Use enhanced detection algorithm per problem statement if enabled
     # This implements the exact 8-stage algorithm with pre-filter, Discogs primary, etc.
     log_info(f"🔎 [SINGLE DETECTION ENTRY] Checking detection options for: {title}")
@@ -2965,7 +2971,7 @@ def detect_single_for_track(
                 cursor.execute(f"""
                     SELECT popularity_score
                     FROM tracks
-                    WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
                 """, (artist, album))
                 album_popularities = [row['popularity_score'] for row in cursor.fetchall()]
 
@@ -3001,7 +3007,7 @@ def detect_single_for_track(
                 cursor.execute(f"""
                     SELECT popularity_score
                     FROM tracks
-                    WHERE artist = {placeholder} AND popularity_score > 0
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
                 """, (artist,))
                 artist_popularities = [row['popularity_score'] for row in cursor.fetchall()]
                 artist_passed = True
@@ -3444,12 +3450,12 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
         cursor.execute(f"""
             SELECT id, title, album, lastfm_track_playcount
             FROM tracks
-            WHERE artist = {placeholder} AND lastfm_track_playcount > 0 AND {is_single_false_expr}
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND lastfm_track_playcount > 0 AND {is_single_false_expr}
                 AND album NOT IN (
-                    SELECT DISTINCT album FROM tracks WHERE artist = {placeholder} AND album_context_live = 1
+                    SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album_context_live = 1
                 )
                 AND album NOT IN (
-                    SELECT DISTINCT album FROM tracks WHERE artist = {placeholder} AND discogs_format_descriptions LIKE {placeholder}
+                    SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND discogs_format_descriptions LIKE {placeholder}
                 )
         """, (artist_name, artist_name, artist_name, '%live%'))
 
@@ -3994,7 +4000,7 @@ def popularity_scan(
             # Otherwise, preserve existing (only update if current is empty and we find a non-empty one)
             if album_name not in album_canonical_artist:
                 # First track with this album - set initial value
-                album_canonical_artist[album_name] = album_artist_value if album_artist_value else track["artist"]
+                album_canonical_artist[album_name] = album_artist_value if album_artist_value else get_canonical_artist(track["artist"])
             elif not album_canonical_artist[album_name] and album_artist_value:
                 # Update if canonical is empty but current track has a value
                 album_canonical_artist[album_name] = album_artist_value
@@ -4009,7 +4015,7 @@ def popularity_scan(
         for track in tracks:
             album_name = track["album"]
             # Use the canonical artist we determined in first pass
-            grouping_artist = album_canonical_artist.get(album_name, track["artist"])
+            grouping_artist = album_canonical_artist.get(album_name, get_canonical_artist(track["artist"]))
 
             artist_album_tracks[grouping_artist][album_name].append(track)
 
@@ -6931,20 +6937,17 @@ def popularity_scan(
                     # -----------------------------------------------------------------
                     album_artist = row_get(album_tracks[0], "album_artist") if album_tracks else None
 
-                    canonical_artist = normalize_artist_for_matching(
-                        artist,
-                        album_artist,
-                    )
+                    canonical_artist = album_artist if album_artist else get_canonical_artist(artist)
 
                     try:
                         album_median, album_stddev, _, album_count = calculate_album_stats(
                             conn,
-                            artist,
+                            canonical_artist,
                             album,
                         )
                         artist_mean, artist_stddev, artist_count = calculate_artist_stats(
                             conn,
-                            artist,
+                            canonical_artist,
                         )
                     except Exception as e:
                         log_debug(f"Could not compute album/artist stats for star rating: {e}")
@@ -6972,7 +6975,7 @@ def popularity_scan(
                                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                                 AND popularity_score > 0
                                 """,
-                                (popularity_score, artist),
+                                (popularity_score, canonical_artist),
                             )
 
                             row_stats = cursor.fetchone()
@@ -6983,7 +6986,7 @@ def popularity_scan(
                                 return (above_cat / total_cat) <= threshold
 
                         except Exception as e:
-                            log_debug(f"Artist percentile check failed for artist '{artist}': {e}")
+                            log_debug(f"Artist percentile check failed for artist '{canonical_artist}': {e}")
 
                         return False
 
@@ -7041,7 +7044,7 @@ def popularity_scan(
                         try:
                             detection_result = detect_single_for_track(
                                 title=title,
-                                artist=track_artist,  # keep original track artist for metadata lookup
+                                artist=get_canonical_artist(track_artist),
                                 album_track_count=len(album_tracks),
                                 verbose=verbose,
                                 discogs_token=discogs_token,

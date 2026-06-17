@@ -21,7 +21,7 @@ from datetime import datetime
 # Use centralized logging to ensure API activity appears in unified_scan.log, info.log, and debug.log
 # instead of Python's default logging system which doesn't route to these files
 from helpers.logging_config import log_unified, log_info, log_debug
-from helpers.helpers import strip_cover_attribution
+from helpers.helpers import strip_cover_attribution, get_canonical_artist
 from database_abstraction import is_postgres_connection
 
 logger = logging.getLogger(__name__)
@@ -1004,7 +1004,7 @@ def calculate_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
         cursor.execute(f"""
             SELECT popularity_score, title, album
             FROM tracks
-            WHERE artist = {placeholder} AND popularity_score > 0
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
         """, (artist,))
         rows = cursor.fetchall()
     except Exception as e:
@@ -1663,10 +1663,14 @@ def detect_single_enhanced(
         log_info(f"   ⚠ Skipping {title}: {validation_error}")
         return result
     
+    # Normalize artist for stats/API lookups — featured-artist suffixes fragment
+    # catalogue groupings, so we strip them for all internal DB queries.
+    artist = get_canonical_artist(artist)
+
     # Load source confidence settings from config
     source_confidence_settings = get_source_confidence_settings()
     log_debug(f"[CONFIG] Source confidence settings: {source_confidence_settings}")
-    
+
     # Log entry for this track detection
     log_debug(f"[DETECT] Starting single detection for: '{title}' by {artist} (album: {album}, pop: {popularity:.1f})")
 
@@ -1720,7 +1724,7 @@ def detect_single_enhanced(
     cursor.execute(f"""
         SELECT id, title, popularity_score, album
         FROM tracks
-        WHERE artist = {placeholder} AND popularity_score > 0
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
         ORDER BY popularity_score DESC
     """, (artist,))
     artist_rows = cursor.fetchall()
@@ -2032,7 +2036,7 @@ def detect_single_enhanced(
                             _primary_artist = re.split(r"\s+(?:feat\.?|featuring|ft\.?)\s+", artist, maxsplit=1, flags=re.IGNORECASE)[0].strip()
                             if _primary_artist and _primary_artist != artist:
                                 cursor.execute(
-                                    f"SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE artist = {placeholder} AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1",
+                                    f"SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1",
                                     (_primary_artist,)
                                 )
                                 row = cursor.fetchone()
@@ -2429,14 +2433,14 @@ def detect_single_enhanced(
                     log_debug(f"[MUSICBRAINZ] Querying MusicBrainz API for single: {title} by {artist}")
                     log_info(f"   Checking MusicBrainz for single: {title}")
                     log_debug(f"   MusicBrainz API: Searching for single '{title}' by '{artist}'")
-                    
+
                     # Get artist MBID if available (for more accurate lookup)
                     # Check both beets_artist_mbid (from Beets import) and musicbrainz_artist_id (from scan)
                     artist_mbid = None
                     try:
                         cursor = conn.cursor()
                         cursor.execute(
-                            f"SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE artist = {placeholder} AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1", 
+                            f"SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1",
                             (artist,)
                         )
                         row = cursor.fetchone()
