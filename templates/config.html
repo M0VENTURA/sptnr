@@ -44,6 +44,7 @@
         <a href="#watcher" class="btn btn-sm btn-outline-primary">Automation</a>
         <a href="#essentia-mood-scan" class="btn btn-sm btn-outline-primary">Essentia</a>
         <a href="#single-detection-zscore" class="btn btn-sm btn-outline-primary">Z-Score</a>
+        <a href="#popularity-weights" class="btn btn-sm btn-outline-primary">Weights</a>
         <a href="#search-filters" class="btn btn-sm btn-outline-primary">Search Filters</a>
       </div>
     </div>
@@ -840,6 +841,39 @@
     </div>
   </div>
 
+  <!-- Popularity Weights Section -->
+  <div class="card shadow-sm mb-3" id="popularity-weights">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-gear-wide-connected"></i> Popularity Weights</h5>
+      <small class="text-muted">Control how Last.fm, ListenBrainz, and release-age scores are blended into the final popularity score</small>
+    </div>
+    <div class="card-body">
+      <div class="alert alert-secondary mb-3 py-2">
+        <small class="text-muted">
+          Weights are normalised automatically when calculating popularity. If a source has no data (e.g. no ListenBrainz MBID), its weight is ignored.
+          Dynamic weighting can still override these base values when Last.fm and ListenBrainz data disagree strongly.
+        </small>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Last.fm Weight</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="weight_lastfm" placeholder="0.70" value="{{ config.get('weights', {}).get('lastfm', 0.70) }}">
+          <small class="form-text text-muted">Base weight for Last.fm listener / playcount scores. Default: <strong>0.70</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">ListenBrainz Weight</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="weight_listenbrainz" placeholder="0.20" value="{{ config.get('weights', {}).get('listenbrainz', 0.20) }}">
+          <small class="form-text text-muted">Base weight for ListenBrainz listen counts. Default: <strong>0.20</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Age Weight</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="weight_age" placeholder="0.10" value="{{ config.get('weights', {}).get('age', 0.10) }}">
+          <small class="form-text text-muted">Base weight for release-date recency scoring. Default: <strong>0.10</strong></small>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Search Strip Keywords Section -->
   <div class="card shadow-sm mb-3" id="search-filters">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -1292,6 +1326,11 @@ function buildConfigObject() {
     single_detection: {
       zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
       standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75
+    },
+    weights: {
+      lastfm: parseFloat(getValue('weight_lastfm', '0.70')) || 0.70,
+      listenbrainz: parseFloat(getValue('weight_listenbrainz', '0.20')) || 0.20,
+      age: parseFloat(getValue('weight_age', '0.10')) || 0.10
     },
     api_integrations: {
       spotify: {
