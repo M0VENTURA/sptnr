@@ -175,7 +175,7 @@ STANDOUT_CONFIG = {
 }
 
 # Threshold for detecting underperforming albums (album median < artist_median * this value)
-UNDERPERFORMING_THRESHOLD = 0.7
+UNDERPERFORMING_THRESHOLD = 0.6
 
 # --- Single Detection Confidence Thresholds ---
 # These are loaded from config, with fallbacks to defaults
@@ -6319,11 +6319,6 @@ def popularity_scan(
                         title = track["title"]
                         track_artist = track["artist"]
 
-                        # Skip singles - they have separate prominence logic
-                        if row_get(track, "is_single", 0):
-                            log_debug(f'Skipping popularity scoring for single: "{title}" (already marked as is_single=1)')
-                            continue
-
                         is_cover_song, normalized_title = detect_cover_and_normalize_title(title)
                         if is_cover_song:
                             log_debug(f'Cover song detected: "{title}" -> normalized to "{normalized_title}" for API lookups')
@@ -6674,6 +6669,11 @@ def popularity_scan(
                                 if track_mbid:
                                     popularity_score = 5.0
                                     log_debug(f'Applying minimum popularity floor (5.0) for track with MBID: {title}')
+
+                            # Slight single boost (subtle 15%)
+                            if row_get(track, "is_single", 0):
+                                popularity_score *= 1.15
+                                log_debug(f'Single boost applied to "{title}": {popularity_score:.1f}')
 
                             track_updates.append((
                                 popularity_score,
