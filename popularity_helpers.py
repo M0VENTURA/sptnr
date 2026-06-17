@@ -224,8 +224,8 @@ def get_db_connection_context(conn=None):
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 
 _DEFAULT_WEIGHTS = {
-    "lastfm": 0.70,
-    "listenbrainz": 0.20,
+    "lastfm": 0.55,
+    "listenbrainz": 0.35,
     "age": 0.10,
 }
 

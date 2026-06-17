@@ -857,13 +857,13 @@
       <div class="row g-3">
         <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Last.fm Weight</label>
-          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="weight_lastfm" placeholder="0.70" value="{{ config.get('weights', {}).get('lastfm', 0.70) }}">
-          <small class="form-text text-muted">Base weight for Last.fm listener / playcount scores. Default: <strong>0.70</strong></small>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="weight_lastfm" placeholder="0.55" value="{{ config.get('weights', {}).get('lastfm', 0.55) }}">
+          <small class="form-text text-muted">Base weight for Last.fm listener / playcount scores. Default: <strong>0.55</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">ListenBrainz Weight</label>
-          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="weight_listenbrainz" placeholder="0.20" value="{{ config.get('weights', {}).get('listenbrainz', 0.20) }}">
-          <small class="form-text text-muted">Base weight for ListenBrainz listen counts. Default: <strong>0.20</strong></small>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="weight_listenbrainz" placeholder="0.35" value="{{ config.get('weights', {}).get('listenbrainz', 0.35) }}">
+          <small class="form-text text-muted">Base weight for ListenBrainz listen counts. Default: <strong>0.35</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Age Weight</label>
@@ -1328,8 +1328,8 @@ function buildConfigObject() {
       standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75
     },
     weights: {
-      lastfm: parseFloat(getValue('weight_lastfm', '0.70')) || 0.70,
-      listenbrainz: parseFloat(getValue('weight_listenbrainz', '0.20')) || 0.20,
+      lastfm: parseFloat(getValue('weight_lastfm', '0.55')) || 0.55,
+      listenbrainz: parseFloat(getValue('weight_listenbrainz', '0.35')) || 0.35,
       age: parseFloat(getValue('weight_age', '0.10')) || 0.10
     },
     api_integrations: {
@@ -1427,6 +1427,7 @@ function saveConfig() {
       showToast('Error', result.data.error || 'Failed to save configuration', 'error');
     } else if (result.data.success) {
       showToast('Success', 'Configuration saved successfully', 'success');
+      window.currentConfig = config;
     } else {
       showToast('Error', result.data.error || 'Failed to save configuration', 'error');
     }
@@ -1857,10 +1858,6 @@ function saveFeaturesWeights() {
     }
     config.features[key] = val;
   });
-  
-  if (window.currentConfig && window.currentConfig.weights) {
-    config.weights = window.currentConfig.weights;
-  }
   
   // Save via AJAX
   const saveBtn = event.target;
