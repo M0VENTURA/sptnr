@@ -2312,7 +2312,6 @@ def get_top_standout_tracks_with_gap(
                         standout_count,
                         total_tracks,
                     )
-                return set()
             elif standout_count > total_tracks / 2 and (is_compilation or is_greatest_hits):
                 if verbose:
                     album_type = "compilation" if is_compilation else "greatest hits"
