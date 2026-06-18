@@ -75,7 +75,9 @@ from collections import Counter, OrderedDict
 import json
 import uuid
 import yaml
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session, abort, g, has_request_context
+from flask import Flask, jsonify, Response, send_file, session, abort, g, has_request_context
+from routes.ui import ui_bp
+from routes.api_navidrome import navidrome_bp
 from werkzeug.exceptions import HTTPException
 import traceback
 from datetime import datetime, timedelta
@@ -347,7 +349,8 @@ static_folder = os.path.join(app_root, 'static')
 
 # Initialize Flask with explicit static folder configuration
 app = Flask(__name__, static_folder=static_folder, static_url_path='/static')
-
+app.register_blueprint(ui_bp) 
+app.register_blueprint(navidrome_bp, url_prefix='/api/navidrome')
 
 @app.context_processor
 def _inject_status_config():
