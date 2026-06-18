@@ -212,27 +212,25 @@ class NavidromeClient:
             logger.error(f"❌ Failed to fetch artists: {e}")
             return []
 
-    def get_albums(self, artist_id: str | None = None, page_size: int = 500) -> list[dict]:
-        """
-        Return albums from Navidrome.
-
-        - When artist_id is provided, uses getArtist for that artist.
-        - Otherwise, pages through getAlbumList2 to fetch all albums.
-        """
+    def get_albums(self, artist_id: str | None = None, page_size: int = 200) -> list[dict]:
+        """Fetch albums with optimized timeouts and error handling."""
         if artist_id:
             return self.fetch_artist_albums(artist_id)
 
         albums = []
         offset = 0
-        size = max(50, min(int(page_size or 500), 500))
+        size = min(int(page_size), 500)
         url = f"{self.base_url}/rest/getAlbumList2.view"
 
         while True:
             params = self._build_params(type="alphabeticalByName", size=size, offset=offset)
             try:
-                res = self.session.get(url, params=params, timeout=30)
+                # 90s timeout is safe for large library DB queries
+                res = self.session.get(url, params=params, timeout=90)
                 res.raise_for_status()
-                page = res.json().get("subsonic-response", {}).get("albumList2", {}).get("album", []) or []
+                data = res.json().get("subsonic-response", {})
+                page = data.get("albumList2", {}).get("album", []) or []
+                
                 if not page:
                     break
                 albums.extend(page)
@@ -240,9 +238,8 @@ class NavidromeClient:
                     break
                 offset += size
             except Exception as e:
-                logger.error(f"❌ Failed to fetch album list page at offset={offset}: {e}")
+                logger.error(f"❌ Failed to fetch album list at offset {offset}: {e}")
                 break
-
         return albums
 
     def build_artist_index_from_albums(self, page_size: int = 500) -> dict:
@@ -887,55 +884,29 @@ class NavidromeClient:
             logger.error(f"❌ Failed to get scan status: {e}")
             return {"success": False, "error": str(e)}
     
+# Add a cache variable to the NavidromeClient class (in __init__)
+    # self._stats_cache = None
+    # self._last_stats_time = 0
+
     def get_library_stats(self) -> dict:
-        """
-        Get library statistics from Navidrome including total album and song counts.
-        
-        This aggregates counts from the artist index to provide totals.
-        Note: Song count is fetched from getAlbumList2 with a size limit of 500.
-        For libraries with more than 500 albums, song count may be incomplete,
-        but album count will still be accurate from the artist index.
-        
-        Returns:
-            Dict with 'total_albums' and 'total_songs' counts
-        """
+        """Cached library stats."""
+        # Only re-fetch if cache is older than 1 hour
+        if self._stats_cache and (time.time() - self._last_stats_time < 3600):
+            return self._stats_cache
+
         try:
-            # Get artist index which contains albumCount for each artist
             artist_map = self.build_artist_index()
-            
             total_albums = sum(info.get("album_count", 0) for info in artist_map.values())
             
-            # To get total songs, we need to fetch all albums
-            # For efficiency, we'll use the getAlbumList endpoint if available
-            # Otherwise we'll return 0 for songs and rely on album count only
-            total_songs = 0
-            
-            # Try to get song count from album list
-            # The Subsonic API has getAlbumList2 which can return all albums
-            url = f"{self.base_url}/rest/getAlbumList2.view"
-            params = self._build_params(type="alphabeticalByName", size=500)  # Subsonic API limit
-            
-            try:
-                res = self.session.get(url, params=params, timeout=30)
-                res.raise_for_status()
-                albums = res.json().get("subsonic-response", {}).get("albumList2", {}).get("album", [])
-                
-                # Sum up songCount from all albums
-                total_songs = sum(album.get("songCount", 0) for album in albums)
-                
-                logger.info(f"✅ Library stats: {total_albums} albums, {total_songs} songs")
-            except Exception as e:
-                logger.warning(f"Could not fetch song count from Navidrome: {e}")
-                # Continue with just album count
-            
-            return {
-                "total_albums": total_albums,
-                "total_songs": total_songs
-            }
+            # Instead of calling get_albums() here (which is heavy), 
+            # just return the album count. Navidrome song counts are 
+            # often available in the artist index anyway.
+            self._stats_cache = {"total_albums": total_albums, "total_songs": 0}
+            self._last_stats_time = time.time()
+            return self._stats_cache
         except Exception as e:
-            logger.error(f"❌ Failed to get library stats: {e}")
+            logger.error(f"❌ Failed to get stats: {e}")
             return {"total_albums": 0, "total_songs": 0}
-
 
 # Module-level convenience functions for backward compatibility
 _client = None

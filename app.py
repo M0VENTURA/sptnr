@@ -5864,33 +5864,6 @@ _queue_normalize_scheduler_thread = None
 _queue_normalize_scheduler_stop = None
 
 
-def _start_queue_normalize_scheduler():
-    """Start a background thread that normalizes the download queue periodically."""
-    global _queue_normalize_scheduler_thread, _queue_normalize_scheduler_stop
-
-    if _queue_normalize_scheduler_thread and _queue_normalize_scheduler_thread.is_alive():
-        logging.debug("Queue normalize scheduler already running; skipping duplicate start")
-        return
-
-    _queue_normalize_scheduler_stop = threading.Event()
-
-    def _worker():
-        interval = int(os.environ.get("QUEUE_NORMALIZE_COOLDOWN_SECONDS", "300"))
-        logging.info(f"[QUEUE_NORMALIZE] Background scheduler started (interval: {interval}s)")
-        while not _queue_normalize_scheduler_stop.is_set():
-            try:
-                _normalize_download_queue()
-            except Exception as exc:
-                logging.debug(f"[QUEUE_NORMALIZE] Background normalization error: {exc}")
-            if _queue_normalize_scheduler_stop.wait(timeout=interval):
-                break
-        logging.info("[QUEUE_NORMALIZE] Background scheduler stopped")
-
-    _queue_normalize_scheduler_thread = threading.Thread(
-        target=_worker, daemon=True, name="queue-normalize-scheduler"
-    )
-    _queue_normalize_scheduler_thread.start()
-    logging.info("[QUEUE_NORMALIZE] Queue normalize scheduler thread started")
 
 
 def _coerce_optional_int(value, allow_prefix=False):
