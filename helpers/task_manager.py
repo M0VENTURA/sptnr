@@ -5,10 +5,16 @@ import time
 from helpers.logging_config import log_unified, log_error, log_info
 from check_db_schema import update_schema, verify_all_tables_exist
 from helpers.db_utils import get_db_connection
+from queue_processor import normalize_download_queue as _normalize_download_queue
+
 
 # Global flag to track if the background service has been started
 _queue_service_started = False
 _startup_leader_lock_conn = None
+
+# Add these at the top of helpers/task_manager.py
+_queue_normalize_scheduler_thread = None
+_queue_normalize_scheduler_stop = None
 
 def acquire_startup_leader_lock():
     """
@@ -93,3 +99,45 @@ def initialize_app_services():
         run_queue_processor_service()
     else:
         log_info("Another instance is handling startup tasks. Skipping.")
+
+def _start_queue_normalize_scheduler():
+    """Start a background thread that normalizes the download queue periodically."""
+    global _queue_normalize_scheduler_thread, _queue_normalize_scheduler_stop
+
+    if _queue_normalize_scheduler_thread and _queue_normalize_scheduler_thread.is_alive():
+        logging.debug("Queue normalize scheduler already running; skipping duplicate start")
+        return
+
+    _queue_normalize_scheduler_stop = threading.Event()
+
+    def _worker():
+        interval = int(os.environ.get("QUEUE_NORMALIZE_COOLDOWN_SECONDS", "300"))
+        logging.info(f"[QUEUE_NORMALIZE] Background scheduler started (interval: {interval}s)")
+        while not _queue_normalize_scheduler_stop.is_set():
+            try:
+                _normalize_download_queue()
+            except Exception as exc:
+                logging.debug(f"[QUEUE_NORMALIZE] Background normalization error: {exc}")
+            if _queue_normalize_scheduler_stop.wait(timeout=interval):
+                break
+        logging.info("[QUEUE_NORMALIZE] Background scheduler stopped")
+
+    _queue_normalize_scheduler_thread = threading.Thread(
+        target=_worker, daemon=True, name="queue-normalize-scheduler"
+    )
+    _queue_normalize_scheduler_thread.start()
+    logging.info("[QUEUE_NORMALIZE] Queue normalize scheduler thread started")
+
+def start_all_schedulers():
+    """Consolidated boot sequence for all background schedulers."""
+    # Move the logic from app.py here
+    try: _start_boot_album_artist_sync_only() 
+    except Exception as e: log_error(f"Sync error: {e}")
+    
+    try: _run_queue_migration_once_if_armed()
+    except Exception as e: log_error(f"Migration error: {e}")
+    
+    # ... move all your other try/except blocks here ...
+    
+    try: _start_queue_normalize_scheduler()
+    except Exception as e: log_error(f"Normalize scheduler error: {e}")

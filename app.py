@@ -5249,75 +5249,15 @@ def _cleanup_request_db_connections(exception=None):
 
 
 # Elect a leader worker to run startup background tasks exactly once.
-# Must be called after get_db() is defined above.
-_is_startup_leader_worker = _acquire_startup_leader_lock()
-
-# Kick off startup background tasks only in the elected leader worker.
-if _is_startup_leader_worker:
-    try:
-        # Always perform a lightweight album-list sync on reboot so newly
-        # added album artists appear quickly, even when full boot import is off.
-        _start_boot_album_artist_sync_only()
-    except Exception as e:
-        logging.error(f"Failed to start boot album-list artist sync: {e}")
-
-    try:
-        _run_queue_migration_once_if_armed()
-    except Exception as e:
-        logging.error(f"Failed to run one-time queue migration hook: {e}")
-
-    try:
-        _start_queue_processor_if_needed(force_restart=False)
-    except Exception as e:
-        logging.error(f"Failed to start queue processor on boot: {e}")
-
-    if AUTO_BOOT_ND_IMPORT:
-        try:
-            _start_boot_navidrome_import()
-        except Exception as e:
-            logging.error(f"Failed to start boot Navidrome import: {e}")
-
-    try:
-        _start_navidrome_incremental_scheduler()
-    except Exception as e:
-        logging.error(f"Failed to start Navidrome incremental scheduler: {e}")
-
-    try:
-        _schedule_configured_startup_scan_launch()
-    except Exception as e:
-        logging.error(f"Failed to schedule startup scan launch: {e}")
-
-    try:
-        _auto_resume_interrupted_scans()
-    except Exception as e:
-        logging.error(f"Failed to schedule auto-resume of interrupted scans: {e}")
-
-    try:
-        _start_daily_scheduler()
-    except Exception as e:
-        logging.error(f"Failed to start daily scheduler: {e}")
-
-    try:
-        _start_upcoming_release_match_scheduler()
-    except Exception as e:
-        logging.error(f"Failed to start upcoming release match scheduler: {e}")
-
-    try:
-        _start_listenbrainz_createdfor_scheduler()
-    except Exception as e:
-        logging.error(f"Failed to start ListenBrainz/Last.fm weekly playlist scheduler: {e}")
-
-    try:
-        _start_weekly_playlist_sync_scheduler()
-    except Exception as e:
-        logging.error(f"Failed to start weekly playlist sync hourly scheduler: {e}")
-
-    try:
-        _start_queue_normalize_scheduler()
-    except Exception as e:
-        logging.error(f"Failed to start queue normalize scheduler: {e}")
+if _acquire_startup_leader_lock():
+    log_info("Leader lock acquired. Running startup tasks...")
+    # This one function handles everything, including schema, migration, and all schedulers
+    from helpers.task_manager import initialize_app_services, start_all_schedulers
+    
+    init_database_and_schema() # Your DB setup
+    start_all_schedulers()     # Your new consolidated scheduler launcher
 else:
-    logging.debug("[BOOT] Non-leader worker: startup background schedulers not started in this process")
+    logging.debug("[BOOT] Non-leader worker: startup background tasks skipped")
 
 
 def _is_postgres_connection(conn):

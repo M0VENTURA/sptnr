@@ -2918,12 +2918,15 @@ def detect_single_for_track(
                     artist_stddev = stat_stdev(artist_popularities) if len(artist_popularities) > 1 else 1
                     artist_zscore = (popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0
 
-                    if artist_zscore >= 0.5:
-                        single_sources.append("iterative_zscore")
-                        single_confidence = "high"
-                        is_single = True
-                    else:
-                        return {"sources": [], "confidence": "low", "is_single": False, "stage_blocked": "artist_filter"}
+                    
+                if artist_zscore >= 0.5:
+                    single_sources.append("iterative_zscore")
+                    single_confidence = "high"
+                    is_single = True
+                else:
+                    # allow further detection
+                pass
+
 
         except Exception as e:
             if fallback_conn is not None: fallback_conn.rollback()

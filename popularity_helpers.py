@@ -526,76 +526,188 @@ def choose_best_provider_counts(results: list[dict]) -> dict:
 
     return max(results, key=evidence_score)
 
+
+def build_artist_variants(artist: str) -> list[str]:
+    variants = {artist.strip()} if artist else set()
+
+    if not artist:
+        return []
+
+    split_patterns = [
+        r"\s+feat\.\s+",
+        r"\s+ft\.\s+",
+        r"\s+featuring\s+",
+    ]
+
+    for pattern in split_patterns:
+        if re.search(pattern, artist, flags=re.I):
+            main, featured = re.split(pattern, artist, maxsplit=1, flags=re.I)
+            main = main.strip()
+            featured = featured.strip()
+
+            if main:
+                variants.add(main)
+            if featured:
+                variants.add(featured)
+            if main and featured:
+                variants.add(f"{main} & {featured}")
+                variants.add(f"{featured} & {main}")
+
+    return [v for v in variants if v]
+
+
 def get_aggregated_listenbrainz_popularity(
     title: str,
     artist: str,
     primary_mbid: Optional[str] = None,
-    lb_client: Optional[ListenBrainzClient] = None,
-    mb_client: Optional[MusicBrainzClient] = None
-) -> dict[str, Optional[int]]:
+    lb_client=None,
+    mb_client=None,
+) -> dict:
     """
-    Finds variant entries and sums ListenBrainz stats across multiple split MBIDs 
+    Finds variant entries and sums ListenBrainz stats across multiple split MBIDs
     for the same canonical song, avoiding double-counting.
     """
+
     if lb_client is None:
         from api_clients.audiodb_and_listenbrainz import _get_listenbrainz_client
         lb_client = _get_listenbrainz_client()
-        
+
     if mb_client is None:
         from api_clients.musicbrainz import _get_musicbrainz_client
         mb_client = _get_musicbrainz_client()
 
-    # Track all valid deduplicated MBIDs to calculate stats for
     target_mbids: set[str] = set()
+
     if primary_mbid:
         target_mbids.add(primary_mbid)
 
-    # Find duplicate/split recordings via MusicBrainz using base-title logic
+    base_title = normalize_for_aggregation(title)
+
     try:
-        variant_recordings = mb_client.search_recordings_by_artist(title=title, artist=artist)
-        for rec in variant_recordings:
-            rec_id = rec.get("id")
-            if rec_id:
-                target_mbids.add(rec_id)
+        for artist_variant in build_artist_variants(artist):
+            try:
+                variant_recordings = mb_client.search_recordings_by_artist(
+                    title=title,
+                    artist=artist_variant
+                ) or []
+
+                for rec in variant_recordings:
+                    rec_id = rec.get("id")
+                    rec_title = rec.get("title") or rec.get("name") or ""
+
+                    if not rec_id:
+                        continue
+
+                    if normalize_for_aggregation(rec_title) != base_title:
+                        logger.debug(
+                            "[LB_AGG] Skipping candidate MBID %s due to title mismatch: '%s' != '%s'",
+                            rec_id,
+                            rec_title,
+                            title,
+                        )
+                        continue
+
+                    target_mbids.add(rec_id)
+
+            except Exception as e:
+                logger.debug(
+                    "[LB_AGG] Failed variant search for '%s' by '%s': %s",
+                    title,
+                    artist_variant,
+                    e,
+                )
+
     except Exception as e:
-        logger.debug("Failed to discover variant MBIDs during split-data aggregation: %s", e)
+        logger.debug(
+            "Failed to discover variant MBIDs during split-data aggregation: %s",
+            e,
+        )
 
-    # Establish fallback baseline response
-    aggregated_result = {"total_listen_count": 0, "total_user_count": 0}
-    
     if not target_mbids:
-        return {"total_listen_count": None, "total_user_count": None}
+        return {
+            "total_listen_count": None,
+            "total_user_count": None,
+            "listen_count": None,
+            "user_count": None,
+            "mbids": [],
+        }
 
-    # Fetch total numbers across all matching entries in a single batched payload
-    mbid_list = list(target_mbids)
-    logger.debug("Aggregating ListenBrainz stats across %d MBIDs for '%s'", len(mbid_list), title)
-    
+    mbid_list = sorted(target_mbids)
+
+    logger.debug(
+        "[LB_AGG] Aggregating ListenBrainz stats across %d MBIDs for '%s' by '%s': %s",
+        len(mbid_list),
+        title,
+        artist,
+        mbid_list,
+    )
+
+    aggregated_result = {
+        "total_listen_count": 0,
+        "total_user_count": 0,
+    }
+
     try:
-        batch_data = lb_client.get_recording_popularity_batch(mbid_list)
-        
+        batch_data = lb_client.get_recording_popularity_batch(mbid_list) or {}
+
         has_any_data = False
+
         for mbid, stats in batch_data.items():
+            if not stats:
+                continue
+
             listens = stats.get("total_listen_count")
             users = stats.get("total_user_count")
-            
+
             if listens is not None:
-                aggregated_result["total_listen_count"] += listens
+                aggregated_result["total_listen_count"] += int(listens)
                 has_any_data = True
+
             if users is not None:
-                aggregated_result["total_user_count"] += users
+                aggregated_result["total_user_count"] += int(users)
                 has_any_data = True
-                
+
         if not has_any_data:
-            return {"total_listen_count": None, "total_user_count": None}
-            
+            return {
+                "total_listen_count": None,
+                "total_user_count": None,
+                "listen_count": None,
+                "user_count": None,
+                "mbids": mbid_list,
+            }
+
     except Exception as e:
         logger.error("Failed batch aggregation on ListenBrainz data: %s", e)
-        # Fallback to single lookup if batch fails drastically
-        if primary_mbid:
-            return lb_client.get_recording_popularity(primary_mbid)
-        return {"total_listen_count": None, "total_user_count": None}
 
-    return aggregated_result
+        if primary_mbid:
+            fallback = lb_client.get_recording_popularity(primary_mbid) or {}
+            listens = fallback.get("total_listen_count") or fallback.get("listen_count")
+            users = fallback.get("total_user_count") or fallback.get("user_count")
+
+            return {
+                "total_listen_count": listens,
+                "total_user_count": users,
+                "listen_count": listens,
+                "user_count": users,
+                "mbids": [primary_mbid],
+            }
+
+        return {
+            "total_listen_count": None,
+            "total_user_count": None,
+            "listen_count": None,
+            "user_count": None,
+            "mbids": [],
+        }
+
+    return {
+        "total_listen_count": aggregated_result["total_listen_count"],
+        "total_user_count": aggregated_result["total_user_count"],
+        "listen_count": aggregated_result["total_listen_count"],
+        "user_count": aggregated_result["total_user_count"],
+        "mbids": mbid_list,
+    }
+
 
 def normalize_for_aggregation(title: str) -> str:
     """
