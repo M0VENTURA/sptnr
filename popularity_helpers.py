@@ -526,7 +526,76 @@ def choose_best_provider_counts(results: list[dict]) -> dict:
 
     return max(results, key=evidence_score)
 
+def get_aggregated_listenbrainz_popularity(
+    title: str,
+    artist: str,
+    primary_mbid: Optional[str] = None,
+    lb_client: Optional[ListenBrainzClient] = None,
+    mb_client: Optional[MusicBrainzClient] = None
+) -> dict[str, Optional[int]]:
+    """
+    Finds variant entries and sums ListenBrainz stats across multiple split MBIDs 
+    for the same canonical song, avoiding double-counting.
+    """
+    if lb_client is None:
+        from api_clients.audiodb_and_listenbrainz import _get_listenbrainz_client
+        lb_client = _get_listenbrainz_client()
+        
+    if mb_client is None:
+        from api_clients.musicbrainz import _get_musicbrainz_client
+        mb_client = _get_musicbrainz_client()
 
+    # Track all valid deduplicated MBIDs to calculate stats for
+    target_mbids: set[str] = set()
+    if primary_mbid:
+        target_mbids.add(primary_mbid)
+
+    # Find duplicate/split recordings via MusicBrainz using base-title logic
+    try:
+        variant_recordings = mb_client.search_recordings_by_artist(title=title, artist=artist)
+        for rec in variant_recordings:
+            rec_id = rec.get("id")
+            if rec_id:
+                target_mbids.add(rec_id)
+    except Exception as e:
+        logger.debug("Failed to discover variant MBIDs during split-data aggregation: %s", e)
+
+    # Establish fallback baseline response
+    aggregated_result = {"total_listen_count": 0, "total_user_count": 0}
+    
+    if not target_mbids:
+        return {"total_listen_count": None, "total_user_count": None}
+
+    # Fetch total numbers across all matching entries in a single batched payload
+    mbid_list = list(target_mbids)
+    logger.debug("Aggregating ListenBrainz stats across %d MBIDs for '%s'", len(mbid_list), title)
+    
+    try:
+        batch_data = lb_client.get_recording_popularity_batch(mbid_list)
+        
+        has_any_data = False
+        for mbid, stats in batch_data.items():
+            listens = stats.get("total_listen_count")
+            users = stats.get("total_user_count")
+            
+            if listens is not None:
+                aggregated_result["total_listen_count"] += listens
+                has_any_data = True
+            if users is not None:
+                aggregated_result["total_user_count"] += users
+                has_any_data = True
+                
+        if not has_any_data:
+            return {"total_listen_count": None, "total_user_count": None}
+            
+    except Exception as e:
+        logger.error("Failed batch aggregation on ListenBrainz data: %s", e)
+        # Fallback to single lookup if batch fails drastically
+        if primary_mbid:
+            return lb_client.get_recording_popularity(primary_mbid)
+        return {"total_listen_count": None, "total_user_count": None}
+
+    return aggregated_result
 # -----------------------------------------------------------------------------
 # Last.fm title normalization + helpers
 # -----------------------------------------------------------------------------

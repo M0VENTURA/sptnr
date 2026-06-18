@@ -2766,89 +2766,41 @@ def detect_single_for_track(
 ) -> dict:
     """
     Detect if a track is a single using multiple data sources.
-
-    This is the canonical single detection logic used by popularity.py.
-    Other modules should call this function to ensure consistent behavior.
-
-    NEW: Enhanced with advanced single detection logic including:
-    - ISRC-based track version matching
-    - Title+duration matching (⏱2 seconds)
-    - Alternate version filtering
-    - Live/unplugged context handling
-    - Album release deduplication
-    - Global popularity calculation
-    - Z-score based final determination
-    - Compilation/greatest hits special handling
-
-    Args:
-        title: Track title
-        artist: Artist name
-        album_track_count: Number of tracks on the album (for context-based confidence)
-        spotify_results_cache: Deprecated legacy argument; ignored by scan-side detection
-        verbose: Enable verbose logging
-        discogs_token: Optional Discogs API token (will load from config if not provided)
-        track_id: Track ID for advanced detection (optional)
-        album: Album name for advanced detection (optional)
-        isrc: ISRC code for advanced detection (optional)
-        duration: Track duration in seconds for advanced detection (optional)
-        popularity: Track popularity score for advanced detection (optional)
-        album_type: Album type for advanced detection (optional)
-        use_advanced_detection: Enable advanced detection logic (default True)
-        zscore_threshold: Z-score threshold for singles based on artist median (default 1.0)
-
-    Returns:
-        Dict with keys:
-            - sources: List of sources that confirmed single (e.g. ['spotify', 'musicbrainz'])
-            - confidence: 'high', 'medium', or 'low'
-            - is_single: True if confidence is 'high', False otherwise
-            - global_popularity: Global popularity across versions (if advanced)
-            - zscore: Z-score against artist median (if advanced)
-            - metadata_single: Metadata single status (if advanced)
-            - is_compilation: Compilation status (if advanced)
+    This acts as the router to either the Enhanced Detection Engine or standard fallback math.
     """
-    # Normalize artist for stats/API lookups while preserving display name.
-    # Featured-artist suffixes (feat., ft.) fragment catalogue groupings,
-    # so we strip them for all internal DB queries and provider calls.
     artist = get_canonical_artist(artist)
 
-    # Use enhanced detection algorithm per problem statement if enabled
-    # This implements the exact 8-stage algorithm with pre-filter, Discogs primary, etc.
     log_info(f"🔎 [SINGLE DETECTION ENTRY] Checking detection options for: {title}")
     log_debug(f"Advanced detection check - use_advanced_detection={use_advanced_detection}, track_id={track_id}, album={album}, title={title}, artist={artist}")
+
+    # -------------------------------------------------------------------------
+    # PATH 1: ENHANCED DETECTION ENGINE
+    # -------------------------------------------------------------------------
     if use_advanced_detection and track_id and album:
         log_info(f"✅ [SINGLE DETECTION] Using ADVANCED detection path for: {title}")
         conn = None
         owns_connection = existing_conn is None
         try:
             from single_detection_enhanced import detect_single_enhanced, store_single_detection_result
-            # get_db_connection is already available in this module
-            conn = existing_conn or get_db_connection()
+            
+            owns_connection = False
+            if existing_conn is None:
+                conn = get_db_connection()
+                owns_connection = True
+            else:
+                conn = existing_conn
 
-            # Spotify lookups are deprecated and no longer performed during scans.
             spotify_search_results = None
-
-            # Get API clients
             discogs_client = None
+            
             if discogs_token:
                 discogs_client = _get_timeout_safe_discogs_client(discogs_token)
-                if discogs_client:
-                    log_debug(f"[SINGLE DETECTION] Discogs client initialized for single detection")
-                else:
-                    log_debug(f"[SINGLE DETECTION] Discogs client initialization failed - Discogs single detection unavailable")
-            else:
-                log_debug(f"[SINGLE DETECTION] Discogs token not available - Discogs single detection disabled")
 
             musicbrainz_client = None
             if HAVE_MUSICBRAINZ:
                 musicbrainz_client = _get_timeout_safe_musicbrainz_client()
 
-            # Get Last.fm client
             detection_lastfm_client = lastfm_client or get_lastfm_client()
-
-            # Run enhanced detection
-            log_info(f"🔍 [SINGLE DETECTION] Starting enhanced detection for: {title}")
-            log_debug(f"[SINGLE DETECTION] Enhanced detection params: isrc={isrc}, duration={duration}, popularity={popularity}, album_type={album_type}")
-            log_debug(f"[SINGLE DETECTION] API clients available: discogs={'YES' if discogs_client else 'NO'}, musicbrainz={'YES' if musicbrainz_client else 'NO'}, lastfm={'YES' if lastfm_client else 'NO'}")
 
             result = detect_single_enhanced(
                 conn=conn,
@@ -2870,28 +2822,17 @@ def detect_single_for_track(
                 mb_cached_singles=mb_cached_singles,
             )
 
-            log_info(f"✅ [SINGLE DETECTION] Enhanced detection complete for: {title}")
-            log_debug(f"[SINGLE DETECTION] Result: is_single={result.get('is_single')}, confidence={result.get('single_confidence')}, sources={result.get('single_sources')}")
-
             if persist_result:
-                # CRITICAL: Close owned read connection before storing results.
-                # detect_single_enhanced() creates multiple cursors and may leave read locks open.
-                # Close the read connection, then use a fresh connection for writes.
                 try:
                     if owns_connection and conn is not None:
                         conn.close()
                         conn = None
-                    write_conn = get_db_connection()  # Get fresh connection for write operations
+                    write_conn = get_db_connection() 
                     store_single_detection_result(write_conn, track_id, result)
                     write_conn.close()
                 except Exception as write_error:
-                    log_debug(f"Warning: Could not write single detection result for {track_id}: {write_error}")
-                    import traceback
-                    log_debug(f"Write error: {traceback.format_exc()}")
+                    log_debug(f"Write error: {write_error}")
 
-            # Return in expected format
-            # CRITICAL: Deduplicate sources to prevent same source appearing twice
-            # (e.g., lastfm appearing twice due to multiple code paths)
             result['single_sources'] = list(dict.fromkeys(result['single_sources']))
 
             return {
@@ -2899,371 +2840,98 @@ def detect_single_for_track(
                 "confidence": result['single_confidence'],
                 "is_single": result['is_single']
             }
-        except ImportError as e:
-            if verbose:
-                log_unified(f"   âš  Enhanced detection module not available: {e}")
-            if not owns_connection and conn is not None:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            # Fall through to standard detection
+            
         except Exception as e:
             if verbose:
-                log_unified(f"   âš  Enhanced detection failed, falling back to standard: {e}")
-            import traceback
-            if verbose:
-                log_unified(f"   Error details: {traceback.format_exc()}")
+                log_unified(f"  ⚠️ Enhanced detection failed, falling back to standard: {e}")
             if not owns_connection and conn is not None:
                 try:
                     conn.rollback()
                 except Exception:
                     pass
-            # Fall through to standard detection
         finally:
             if owns_connection and conn is not None:
                 conn.close()
-    else:
-        # Advanced detection skipped
-        skip_reason = []
-        if not use_advanced_detection:
-            skip_reason.append("use_advanced_detection=False")
-        if not track_id:
-            skip_reason.append(f"track_id={track_id}")
-        if not album:
-            skip_reason.append(f"album={album}")
-        log_info(f"⚠️ [SINGLE DETECTION] Using STANDARD detection path for: {title} (reasons: {', '.join(skip_reason)})")
-        log_debug(f"Skipping advanced detection for {title}: {', '.join(skip_reason)}")
 
-    # Ignore obvious non-singles by keywords
-    # Strip cover attributions AND single-release version suffixes so that
-    # "(Radio Edit)" / "(Single Version)" / "(Album Version)" are not caught
-    # by the "edit" keyword and incorrectly excluded from single detection.
+    # -------------------------------------------------------------------------
+    # PATH 2: STANDARD DETECTION FALLBACK (Runs if advanced is disabled or fails)
+    # -------------------------------------------------------------------------
+    skip_reason = []
+    if not use_advanced_detection: skip_reason.append("use_advanced_detection=False")
+    if not track_id: skip_reason.append(f"track_id={track_id}")
+    if not album: skip_reason.append(f"album={album}")
+    log_info(f"⚠️ [SINGLE DETECTION] Using STANDARD detection path for: {title} (reasons: {', '.join(skip_reason)})")
+
     base_title = strip_single_release_suffix(strip_cover_attribution(title))
     if any(k in base_title.lower() for k in IGNORE_SINGLE_KEYWORDS):
-        if verbose:
-            log_verbose(f"   âŠ— Skipping non-single: {title} (keyword filter)")
-        return {
-            "sources": [],
-            "confidence": "low",
-            "is_single": False
-        }
+        return {"sources": [], "confidence": "low", "is_single": False}
 
-    # ALBUM-LEVEL POPULARITY FILTER (for standard detection path)
-    # If album and popularity are provided, check against album mean
+    single_sources = []
+    single_confidence = "low"
+    is_single = False
+
     if album and popularity and popularity > 0:
+        fallback_conn = None
         try:
-            conn = get_db_connection()
-            placeholder = "%s"
-            cursor = conn.cursor()
+            fallback_conn = get_db_connection()
+            cursor = fallback_conn.cursor()
 
-            # STAGE 1: Album-level filter (must be album standout)
-            # Skip this filter for compilations and greatest hits albums (all tracks are hits)
             is_compilation_or_greatest_hits = (
                 album_type in ["various_artists", "greatest_hits", "compilation"] or
                 is_compilation_type(album_type)
             )
 
-            if is_compilation_or_greatest_hits:
-                if verbose:
-                    log_verbose(f"   ⓘ Skipping album popularity filter for compilation/greatest hits album")
-            else:
+            if not is_compilation_or_greatest_hits:
+                # STAGE 1: Album standout check
                 cursor.execute(f"""
-                    SELECT popularity_score
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
+                    SELECT popularity_score FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND popularity_score > 0
                 """, (artist, album))
                 album_popularities = [row['popularity_score'] for row in cursor.fetchall()]
 
-                album_passed = True
                 if album_popularities:
                     from statistics import stdev as stat_stdev, median as stat_median
                     album_median = stat_median(album_popularities)
-                    album_stddev = stdev(album_popularities) if len(album_popularities) > 1 else 0
+                    album_stddev = stat_stdev(album_popularities) if len(album_popularities) > 1 else 0
 
-                    # Must be in top 3 of album OR above album median - 0.5*stddev
                     sorted_album = sorted(album_popularities, reverse=True)
                     is_top_3_album = popularity in sorted_album[:3]
                     album_threshold = album_median - (0.5 * album_stddev) if album_stddev > 0 else album_median
                     meets_album_threshold = popularity >= album_threshold
 
                     if not (is_top_3_album or meets_album_threshold):
-                        if verbose:
-                            log_verbose(f"   ⊗ Album filter blocked: {title} (pop {popularity:.1f}, album median {album_median:.1f})")
-                        conn.close()
-                        return {
-                            "sources": [],
-                            "confidence": "low",
-                            "is_single": False,
-                            "stage_blocked": "album_filter"
-                        }
+                        return {"sources": [], "confidence": "low", "is_single": False, "stage_blocked": "album_filter"}
 
-            # STAGE 2: Artist-level filter (must be artist standout)
-            # Skip this filter for compilations and greatest hits albums
-            if is_compilation_or_greatest_hits:
-                if verbose:
-                    log_verbose(f"   ⓘ Skipping artist z-score filter for compilation/greatest hits album")
-            else:
+                # STAGE 2: Artist standout check
                 cursor.execute(f"""
-                    SELECT popularity_score
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
+                    SELECT popularity_score FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND popularity_score > 0
                 """, (artist,))
                 artist_popularities = [row['popularity_score'] for row in cursor.fetchall()]
-                artist_passed = True
-                artist_zscore = 0.0
-                artist_mean = 0.0
 
                 if len(artist_popularities) >= 5:
-                    # Established artist: use artist-level z-score
                     from statistics import stdev as stat_stdev, mean as stat_mean
                     artist_mean = stat_mean(artist_popularities)
                     artist_stddev = stat_stdev(artist_popularities) if len(artist_popularities) > 1 else 1
                     artist_zscore = (popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0
 
-                    artist_threshold = 0.5  # Configurable threshold
-                    if artist_zscore < artist_threshold:
-                        if verbose:
-                            log_verbose(f"   ⊗ Artist filter blocked: {title} (z-score {artist_zscore:.2f} < {artist_threshold})")
-                        artist_passed = False
-                elif verbose:
-                    log_verbose(f"   ⚠ Bootstrap: Artist has {len(artist_popularities)} tracks (< 5), skipping artist filter")
+                    if artist_zscore >= 0.5:
+                        single_sources.append("iterative_zscore")
+                        single_confidence = "high"
+                        is_single = True
+                    else:
+                        return {"sources": [], "confidence": "low", "is_single": False, "stage_blocked": "artist_filter"}
 
-                if artist_popularities and not artist_passed:
-                    conn.close()
-                    return {
-                        "sources": [],
-                        "confidence": "low",
-                        "is_single": False,
-                        "stage_blocked": "artist_filter",
-                        "artist_zscore": artist_zscore
-                    }
-                if verbose:
-                    artist_zscore_value = artist_zscore if 'artist_zscore' in locals() else 0.0
-                    if artist_zscore_value > 0:
-                        log_verbose(f"   ✓ Passed both filters: {title} (album top 3/threshold, z-score {artist_zscore_value:.2f})")
-
-            conn.close()
         except Exception as e:
-            try:
-                if conn is not None:
-                    conn.rollback()
-            except Exception:
-                pass
-            if verbose:
-                log_verbose(f"   âš  Could not calculate album mean for popularity filter: {e}")
-            # Continue with detection if we can't calculate album mean
-
-    single_sources = []
-    medium_confidence_sources = []  # Track medium confidence sources for 2 medium = 1 high rule
-
-    # Normalize lookup title before external API searches.
-    # This removes parenthetical release qualifiers so variants like
-    # "Song (live at ...)", "Song (remastered 2024)", or "Song (radio edit)"
-    # can resolve against the canonical song entry.
-    lookup_title = normalize_title_for_lookup(title)
-
-    # Load discogs token and feature settings from config
-    mb_compilation_confidence = "medium"
-    _feature_config = {}
-    try:
-        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-        with open(config_path, 'r') as f:
-            _cfg = yaml.safe_load(f)
-        if discogs_token is None:
-            discogs_token = _cfg.get("api_integrations", {}).get("discogs", {}).get("token", "")
-            if discogs_token and verbose:
-                log_unified(f"   ✔ Loaded Discogs token from config.yaml")
-        _feature_config = _cfg.get("features", {}) if isinstance(_cfg, dict) else {}
-    except Exception as e:
-        if discogs_token is None:
-            discogs_token = ""
-            # Always log config loading errors, not just in verbose mode
-            log_unified(f"   ⚠  Could not load Discogs token from config at {config_path}: {e}")
-    _raw_mb_comp_conf = _feature_config.get("source_musicbrainz_compilation_confidence", "medium")
-    if isinstance(_raw_mb_comp_conf, str) and _raw_mb_comp_conf.lower() in ("high", "medium", "low"):
-        mb_compilation_confidence = _raw_mb_comp_conf.lower()
-
-    # First active check: MusicBrainz single detection
-    if HAVE_MUSICBRAINZ:
-        try:
-            log_info(f"   Checking MusicBrainz for single: {title}")
-            # Use timeout-safe client to prevent retries from exceeding timeout
-            mb_client = _get_timeout_safe_musicbrainz_client()
-            if mb_client:
-                result = _run_with_timeout(
-                    mb_client.is_single,
-                    API_CALL_TIMEOUT,
-                    f"MusicBrainz single detection timed out after {API_CALL_TIMEOUT}s",
-                    lookup_title, artist, None, album_track_count
-                )
-                if result:
-                    single_sources.append("musicbrainz")
-                    medium_confidence_sources.append("musicbrainz")
-                    log_info(f"   âœ“ MusicBrainz confirms single: {title}")
-                else:
-                    log_info(f"   â“˜ MusicBrainz does not confirm single: {title}")
-
-                # Check for Various Artists appearances
-                try:
-                    on_compilations = _run_with_timeout(
-                        mb_client.appears_on_various_artists,
-                        API_CALL_TIMEOUT,
-                        f"MusicBrainz compilation check timed out after {API_CALL_TIMEOUT}s",
-                        lookup_title, artist
-                    )
-                    if on_compilations:
-                        single_sources.append("musicbrainz_compilation")
-                        if mb_compilation_confidence == "high":
-                            log_info(f"   ✅ MusicBrainz: Track appears on multiple compilation albums (HIGH confidence): {title}")
-                            return {
-                                "sources": list(dict.fromkeys(single_sources)),
-                                "confidence": "high",
-                                "is_single": True
-                            }
-                        elif mb_compilation_confidence == "medium":
-                            medium_confidence_sources.append("musicbrainz_compilation")
-                            log_info(f"   ✅ MusicBrainz: Track appears on multiple compilation albums: {title}")
-                        else:
-                            log_info(f"   ✅ MusicBrainz: Track appears on multiple compilation albums (low confidence, not counting toward promotion): {title}")
-                except TimeoutError:
-                    log_debug(f"   ⏱ MusicBrainz compilation check timed out for {title}")
-                except Exception as e:
-                    log_debug(f"   MusicBrainz compilation check error for {title}: {e}")
-
-                # Check if 2 medium sources = high confidence (early exit)
-                if len(medium_confidence_sources) >= 2:
-                    log_info(f"   🎯 EARLY EXIT: 2 medium sources detected ({medium_confidence_sources}), promoting to HIGH")
-                    return {
-                        "sources": list(dict.fromkeys(single_sources)),
-                        "confidence": "high",
-                        "is_single": True
-                    }
-        except TimeoutError as e:
-            log_info(f"   â± MusicBrainz single check timed out for {title}: {e}")
-        except Exception as e:
-            log_info(f"   âš  MusicBrainz single check failed for {title}: {e}")
-    else:
-        log_info(f"   â“˜ MusicBrainz client not available")
-
-    # Third check: Discogs single detection
-    if discogs_token:
-        try:
-            log_info(f"   Checking Discogs for single: {title}")
-            log_debug(f"   Discogs API: Searching for single '{lookup_title}' by '{artist}'")
-            # Use timeout-safe client to prevent retries from exceeding timeout
-            discogs_client = _get_timeout_safe_discogs_client(discogs_token)
-            if discogs_client:
-                result = _run_with_timeout(
-                    lambda: discogs_client.is_single(lookup_title, artist, album_context=None),
-                    API_CALL_TIMEOUT,
-                    f"Discogs single detection timed out after {API_CALL_TIMEOUT}s"
-                )
-                if result:
-                    single_sources.append("discogs")
-                    log_info(f"   âœ“ Discogs confirms single: {title}")
-                    log_debug(f"   Discogs result: Single confirmed for '{lookup_title}'")
-                else:
-                    log_info(f"   â“˜ Discogs does not confirm single: {title}")
-                    log_debug(f"   Discogs result: No single found for '{lookup_title}'")
-        except TimeoutError as e:
-            log_info(f"   â± Discogs single check timed out for {title}: {e}")
-            log_debug(f"   Discogs API: Timeout after {API_CALL_TIMEOUT}s for '{title}'")
-        except Exception as e:
-            log_info(f"   âš  Discogs single check failed for {title}: {e}")
-            log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
-    else:
-        log_info(f"   â“˜ Discogs token not configured")
-        log_debug(f"   Discogs: Token not configured in config.yaml")
-
-    # Fourth check: Discogs video detection
-    if discogs_token:
-        try:
-            log_info(f"   Checking Discogs for music video: {title}")
-            log_debug(f"   Discogs API: Searching for music video '{lookup_title}' by '{artist}'")
-            # Use timeout-safe client to prevent retries from exceeding timeout
-            discogs_client = _get_timeout_safe_discogs_client(discogs_token)
-            if discogs_client:
-                result = _run_with_timeout(
-                    lambda: discogs_client.has_official_video(lookup_title, artist),
-                    API_CALL_TIMEOUT,
-                    f"Discogs video detection timed out after {API_CALL_TIMEOUT}s"
-                )
-                if result:
-                    single_sources.append("discogs_video")
-                    medium_confidence_sources.append("discogs_video")
-                    log_info(f"   ✓ Discogs confirms music video: {title}")
-                    log_debug(f"   Discogs result: Music video confirmed for '{lookup_title}'")
-                else:
-                    log_info(f"   â“˜ Discogs does not confirm music video: {title}")
-                    log_debug(f"   Discogs result: No music video found for '{lookup_title}'")
-        except TimeoutError as e:
-            log_info(f"   â± Discogs video check timed out for {title}: {e}")
-            log_debug(f"   Discogs API: Video search timeout after {API_CALL_TIMEOUT}s for '{title}'")
-        except Exception as e:
-            log_info(f"   âš  Discogs video check failed for {title}: {e}")
-            log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
-    else:
-        log_info(f"   â“˜ Discogs token not configured for video detection")
-        log_debug(f"   Discogs: Token not configured for video detection")
-
-    # Iterative z-score detection (required method)
-    iterative_zscore_passed = False
-    if album and popularity and popularity > 0 and track_id:
-        try:
-            from popularity_helpers import detect_via_iterative_zscore
-            db_conn = get_db_connection()
-            iterative_zscore_passed = detect_via_iterative_zscore(
-                current_track_score=popularity,
-                artist=artist,
-                album=album,
-                conn=db_conn,
-                verbose=verbose
-            )
-            db_conn.close()
-            if iterative_zscore_passed:
-                single_sources.append("iterative_zscore")
-                # NOTE: Z-score is a popularity metric, NOT a confidence indicator
-                # It detects statistical outliers but doesn't confirm single release status
-                log_info(f"   Iterative z-score method: {title} passed album standout test")
-            else:
-                log_debug(f"   Iterative z-score: {title} did not meet threshold")
-        except Exception as e:
-            log_debug(f"   Iterative z-score detection error for {title}: {e}")
-
-    # Calculate confidence based on sources.
-    # Discogs is the only high-confidence source; all other sources are medium.
-    has_iterative_zscore = "iterative_zscore" in single_sources
-    has_discogs_single = "discogs" in single_sources
-    has_discogs_video = "discogs_video" in single_sources
-    has_other_sources = any(s in single_sources for s in ["spotify", "musicbrainz", "lastfm", "radio_edit"])
-
-    # NEW RULE: 2 medium sources = high confidence
-    if has_discogs_single or len(medium_confidence_sources) >= 2:
-        single_confidence = "high"
-    elif has_other_sources or has_discogs_video:
-        single_confidence = "medium"
-    else:
-        single_confidence = "low"
-
-    # Album context rule: downgrade medium -> low if album has >3 tracks
-    if single_confidence == "medium" and album_track_count > 3:
-        single_confidence = "low"
-        if verbose:
-            log_verbose(f"   Downgraded {title} confidence to low (album has {album_track_count} tracks)")
-
-    # is_single = True only for high confidence singles (Discogs-confirmed)
-    is_single = single_confidence == "high"
-
-    # Deduplicate sources to ensure no duplicates slip through
-    single_sources_dedup = list(dict.fromkeys(single_sources))
+            if fallback_conn is not None: fallback_conn.rollback()
+        finally:
+            if fallback_conn is not None: fallback_conn.close()
 
     return {
-        "sources": single_sources_dedup,
+        "sources": single_sources,
         "confidence": single_confidence,
         "is_single": is_single
     }
-
 
 def get_artist_listenbrainz_context(artist_mbid: str) -> dict:
     """
@@ -6053,9 +5721,44 @@ def popularity_scan(
 
                         log_debug(f'[LB] "{title}" ({recording_mbid}): listens={lb_listens}')
 
-                    # ------------------------------------------------------------
+# ------------------------------------------------------------
                     # STEP 3: Prefetch summary
                     # ------------------------------------------------------------
+                    
+                    # --- ENHANCEMENT: Aggregate split ListenBrainz MBID clusters safely ---
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        title = track.get("title", "")
+                        # FIX: Define track_artist in this loop's scope so it doesn't leak from STEP 2
+                        track_artist = track.get("artist", "")
+                        
+                        recording_mbid = (
+                            row_get(track, "recording_mbid")
+                            or row_get(track, "musicbrainz_recording_mbid")
+                            or row_get(track, "mbid")
+                        )
+                        
+                        if recording_mbid or "fyre" in title.lower():
+                            try:
+                                from popularity_helpers import get_aggregated_listenbrainz_popularity
+                                aggregated_lb = get_aggregated_listenbrainz_popularity(
+                                    title=title,
+                                    artist=track_artist,  # Correctly uses the per-track artist now
+                                    primary_mbid=recording_mbid
+                                )
+                                
+                                if aggregated_lb and aggregated_lb.get("total_listen_count") is not None:
+                                    new_total_listens = aggregated_lb["total_listen_count"]
+                                    current_listens = album_listenbrainz_data[track_id].get("listeners", 0)
+                                    
+                                    if new_total_listens > current_listens:
+                                        log_info(f"📈 Aggregated split LB data for '{title}': {current_listens} -> {new_total_listens} listens.")
+                                        album_listenbrainz_data[track_id]["listeners"] = new_total_listens
+                            except Exception as agg_err:
+                                log_debug(f"Failed split-data aggregation loop on '{title}': {agg_err}")
+
+                    # --- End of Enhancement ---
+
                     fetched_lastfm_listeners = [d["listeners"] for d in album_lastfm_data.values() if d["listeners"] > 0]
                     fetched_lastfm_tracks = len(fetched_lastfm_listeners)
                     zero_lastfm_tracks = len([d for d in album_lastfm_data.values() if d["listeners"] == 0])
@@ -6081,14 +5784,6 @@ def popularity_scan(
                     album_lb_listens = [
                         d["listeners"] for d in album_listenbrainz_data.values()
                     ]
-
-                    if fetched_lb_listeners:
-                        log_debug(
-                            f'Album ListenBrainz listen stats: min={min(fetched_lb_listeners)}, '
-                            f'max={max(fetched_lb_listeners)}, '
-                            f'avg={sum(fetched_lb_listeners) / len(fetched_lb_listeners):.0f}'
-                        )
-
                     # ---------------------------------------------------------------------
                     # STEP 4: Batch tag/genre client initialisation
                     # ---------------------------------------------------------------------
@@ -6926,6 +6621,8 @@ def popularity_scan(
                                 # looping back to the same stuck artist.
                                 last_completed_artist=artist,
                             )
+                            log_unified(f"Popularity Scan - Processing Artist: {artist} ({processed_artists}/{total_artists})")
+
                             log_debug(f"Progress saved - {processed_artists}/{total_artists} artists processed (current: {artist})")
 
                             log_debug("Committing final changes to database")
