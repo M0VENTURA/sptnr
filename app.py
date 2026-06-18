@@ -17,6 +17,7 @@ from helpers.db_utils import (
     ensure_mb_ignored_fields_column,
     ensure_manual_genres_column,
 )
+
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
 import glob
@@ -351,6 +352,9 @@ static_folder = os.path.join(app_root, 'static')
 app = Flask(__name__, static_folder=static_folder, static_url_path='/static')
 app.register_blueprint(ui_bp) 
 app.register_blueprint(navidrome_bp, url_prefix='/api/navidrome')
+
+
+
 
 @app.context_processor
 def _inject_status_config():
@@ -41300,9 +41304,12 @@ def api_search_upcoming_release():
         logging.error(f"Error processing release search: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+# Start the background tasks
+from helpers.task_manager import initialize_app_services
+initialize_app_services()
 
-if __name__ == "__main__":
-    # Check if background scanner should auto-start on app launch
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)if background scanner should auto-start on app launch
     try:
         cfg = get_config()
         features = cfg.get('features', {})
