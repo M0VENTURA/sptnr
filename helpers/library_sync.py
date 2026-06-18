@@ -13,9 +13,9 @@ import os
 import threading
 from typing import Dict, Set, Tuple
 
-from helpers.db_utils import get_db_connection
 from helpers.logging_config import log_debug
 from api_clients.navidrome import NavidromeClient
+from helpers.db_utils import get_db_connection, get_existing_track_ids, bulk_upsert_navidrome_tracks
 
 # ---------------------------------------------------------------------------
 # Internal worker state (single-flight)
@@ -24,6 +24,49 @@ _library_sync_lock = threading.Lock()
 _library_sync_state: dict = {"running": False, "pending": False}
 _last_processed_scan_marker: int | None = None
 
+def _sync_artist_with_diff(artist_name: str, artist_id: str) -> dict:
+    """Run ``scan_artist_to_db`` with diff-mode gates enabled.
+
+    Returns a guaranteed schema dict with keys:
+        - skipped_mtime      (bool)
+        - skipped_album_diff (bool)
+        - changed            (bool)
+        - changed_albums     (int)
+        - tracks             (list)
+    """
+    # Leave here ONLY if you have an unresolvable circular import
+    from helpers.scan_helpers import scan_artist_to_db 
+
+    log_debug(
+        "[LIBRARY_SYNC] Diff-scan artist='%s' id=%s", artist_name, artist_id
+    )
+
+    result = scan_artist_to_db(
+        artist_name,
+        artist_id,
+        verbose=False,
+        force=False,
+        diff_mode=True,
+    )
+
+    # Explicitly handle the 'Full Scan' state
+    if result is None:
+        return {
+            "skipped_mtime": False,
+            "skipped_album_diff": False,
+            "changed": True,
+            "changed_albums": 0,  
+            "tracks": []  # Ensures our bulk updater doesn't crash
+        }
+
+    # Ensure a consistent schema is ALWAYS passed back to the caller
+    return {
+        "skipped_mtime": result.get("skipped_mtime", False),
+        "skipped_album_diff": result.get("skipped_album_diff", False),
+        "changed": result.get("changed", False),
+        "changed_albums": result.get("changed_albums", 0),
+        "tracks": result.get("tracks", [])
+    }
 
 def request_library_sync() -> dict:
     """Request a library diff/sync.
@@ -74,7 +117,7 @@ def _run_library_sync() -> None:
             logging.debug("[LIBRARY_SYNC] Pending follow-up sync detected; scheduling one more")
             request_library_sync()
 
-
+        
 def _get_navidrome_config() -> dict | None:
     """Return the first usable Navidrome user config dict."""
     try:
@@ -98,12 +141,8 @@ def _get_navidrome_config() -> dict | None:
 
 
 def _perform_library_sync() -> None:
-    """Core sync logic.
-
-    1. Gate on ``getScanStatus`` – skip while Navidrome is scanning.
-    2. De-dupe by scan marker (count).
-    3. Determine candidate album artists (cheap).
-    4. Scan each artist with aggressive early-exit gates.
+    """
+    Core sync logic updated for high-speed bulk PostgreSQL operations.
     """
     global _last_processed_scan_marker
 
@@ -117,80 +156,66 @@ def _perform_library_sync() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 1. Scan-status barrier
+    # 1. & 2. Scan-status and Marker check (Kept for safety)
     # ------------------------------------------------------------------
     scan_status = client.get_scan_status()
-    if not scan_status.get("success"):
-        logging.debug(
-            "[LIBRARY_SYNC] Skipped sync – could not read scan status: %s",
-            scan_status.get("error"),
-        )
+    if not scan_status.get("success") or scan_status.get("scanning"):
         return
 
-    if scan_status.get("scanning"):
-        logging.debug(
-            "[LIBRARY_SYNC] Skipped sync because Navidrome is currently scanning"
-        )
-        return
-
-    # ------------------------------------------------------------------
-    # 2. Scan-marker dedupe
-    # ------------------------------------------------------------------
     marker = scan_status.get("count")
     if marker is not None and marker == _last_processed_scan_marker:
-        logging.debug(
-            "[LIBRARY_SYNC] Skipped sync – already processed scan marker count=%s",
-            marker,
-        )
         return
 
-    # ------------------------------------------------------------------
-    # 3. Candidate artists (album-artist ownership only)
-    # ------------------------------------------------------------------
     candidate_artists = _get_candidate_artists(client)
     if not candidate_artists:
-        logging.debug("[LIBRARY_SYNC] No candidate artists found")
         return
 
-    logging.debug(
-        "[LIBRARY_SYNC] Starting diff for %d candidate artist(s)",
-        len(candidate_artists),
-    )
-
-    changed_artists = 0
-    total_changed_albums = 0
-    skipped_by_mtime = 0
-    skipped_by_album_diff = 0
-
+    # ------------------------------------------------------------------
+    # 3. Optimized Bulk Sync Loop
+    # ------------------------------------------------------------------
+    logging.info("[LIBRARY_SYNC] Starting bulk diff-sync for %d artists", len(candidate_artists))
+    
+    all_tracks_to_upsert = []
+    
+    # We loop through artists to maintain your existing "early-exit" gates
     for artist_name, artist_id in candidate_artists.items():
         if not artist_id:
             continue
         try:
+            # result = _sync_artist_with_diff(...) calls scan_artist_to_db
             result = _sync_artist_with_diff(artist_name, artist_id)
-            if result.get("skipped_mtime"):
-                skipped_by_mtime += 1
-            elif result.get("skipped_album_diff"):
-                skipped_by_album_diff += 1
-            elif result.get("changed"):
-                changed_artists += 1
-                total_changed_albums += result.get("changed_albums", 0)
+            
+            # Extract tracks if the scan helper populated them
+            if isinstance(result, dict) and 'tracks' in result:
+                all_tracks_to_upsert.extend(result['tracks'])
+            
+            # Memory management: commit every 5000 tracks to prevent OOM
+            if len(all_tracks_to_upsert) >= 5000:
+                _run_bulk_commit(all_tracks_to_upsert)
+                all_tracks_to_upsert = []
+                
         except Exception as exc:
-            logging.warning(
-                "[LIBRARY_SYNC] Artist sync failed for '%s': %s", artist_name, exc
-            )
+            logging.warning("[LIBRARY_SYNC] Artist sync failed for '%s': %s", artist_name, exc)
 
-    logging.debug(
-        "[LIBRARY_SYNC] Sync complete: artists=%d changed=%d "
-        "skipped_mtime=%d skipped_album_diff=%d changed_albums=%d",
-        len(candidate_artists),
-        changed_artists,
-        skipped_by_mtime,
-        skipped_by_album_diff,
-        total_changed_albums,
-    )
+    # Final bulk commit for any remaining tracks
+    if all_tracks_to_upsert:
+        _run_bulk_commit(all_tracks_to_upsert)
 
-    # Update marker so we don't re-run for the same Navidrome scan cycle.
     _last_processed_scan_marker = marker
+    logging.info("[LIBRARY_SYNC] Bulk sync complete.")
+
+def _run_bulk_commit(tracks):
+    """Utility to perform bulk upsert into PostgreSQL."""
+    from helpers.db_utils import get_db_connection, bulk_upsert_navidrome_tracks
+    conn = get_db_connection()
+    try:
+        bulk_upsert_navidrome_tracks(conn, tracks)
+        logging.info("[LIBRARY_SYNC] Committed batch of %d tracks", len(tracks))
+    except Exception as e:
+        logging.error("[LIBRARY_SYNC] Bulk commit failed: %s", e)
+        conn.rollback()
+    finally:
+        conn.close()
 
 
 def _get_candidate_artists(client: NavidromeClient) -> Dict[str, str]:
@@ -230,16 +255,24 @@ def _get_candidate_artists(client: NavidromeClient) -> Dict[str, str]:
     if db_artists:
         try:
             index = client.build_artist_index()
+            
+            # 🚀 NEW: Build an O(1) case-insensitive lookup map ONCE before the loop
+            case_insensitive_index = {
+                idx_name.lower(): idx_info.get("id") 
+                for idx_name, idx_info in index.items() 
+                if idx_info.get("id")
+            }
+            
             for name in list(db_artists.keys()):
                 info = index.get(name)
                 if info and info.get("id"):
                     db_artists[name] = info["id"]
                 else:
-                    # Case-insensitive fallback
-                    for idx_name, idx_info in index.items():
-                        if idx_name.lower() == name.lower() and idx_info.get("id"):
-                            db_artists[name] = idx_info["id"]
-                            break
+                    # 🚀 NEW: Case-insensitive fallback is now a direct dictionary lookup!
+                    fallback_id = case_insensitive_index.get(name.lower())
+                    if fallback_id:
+                        db_artists[name] = fallback_id
+                        
             resolved = {k: v for k, v in db_artists.items() if v}
             if resolved:
                 logging.debug(
@@ -266,36 +299,4 @@ def _get_candidate_artists(client: NavidromeClient) -> Dict[str, str]:
         return {}
 
 
-def _sync_artist_with_diff(artist_name: str, artist_id: str) -> dict:
-    """Run ``scan_artist_to_db`` with diff-mode gates enabled.
 
-    Returns a dict with keys:
-        - skipped_mtime   (bool)
-        - skipped_album_diff (bool)
-        - changed         (bool)
-        - changed_albums  (int)
-    """
-    from helpers.scan_helpers import scan_artist_to_db
-
-    log_debug(
-        "[LIBRARY_SYNC] Diff-scan artist='%s' id=%s", artist_name, artist_id
-    )
-
-    # diff_mode=True enables the mtime + album-name gates and restricts
-    # processing to changed albums only.
-    result = scan_artist_to_db(
-        artist_name,
-        artist_id,
-        verbose=False,
-        force=False,
-        diff_mode=True,
-    )
-
-    # scan_artist_to_db returns None on a normal full scan.  When diff_mode
-    # causes an early-exit we return a dict from the helper so the caller
-    # can log skip reasons.
-    if isinstance(result, dict):
-        return result
-
-    # Full scan happened (e.g. new artist with no DB rows) – treat as changed.
-    return {"changed": True, "changed_albums": 0}

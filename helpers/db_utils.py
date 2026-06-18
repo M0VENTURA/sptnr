@@ -1,6 +1,7 @@
 import os
 import logging
 import time
+from psycopg2.extras import execute_values
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 _pg_last_failure_monotonic = 0.0
@@ -16,6 +17,51 @@ _PG_IDLE_IN_TRANSACTION_TIMEOUT_MS = int(
     os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "60000")  # 60 seconds (was 5 min)
 )
 
+from psycopg2.extras import execute_values
+
+def get_existing_track_ids(conn):
+    """Fetches all known track IDs into memory instantly for fast diffing."""
+    cursor = conn.cursor()
+    # Ensure 'id' matches the primary key column name of your tracks table
+    cursor.execute("SELECT id FROM tracks;")
+    existing_ids = {row['id'] for row in cursor.fetchall()}
+    cursor.close()
+    return existing_ids
+
+def bulk_upsert_navidrome_tracks(conn, tracks):
+    """
+    Inserts or updates thousands of tracks in one transaction using Postgres execute_values.
+    """
+    if not tracks:
+        return
+
+    cursor = conn.cursor()
+    
+    # Map the dictionary keys to your actual database column names
+    values = [
+        (
+            t.get('id'), 
+            t.get('title', ''), 
+            t.get('artist', ''), 
+            t.get('album', ''), 
+            t.get('duration', 0)
+        ) 
+        for t in tracks
+    ]
+
+    query = """
+        INSERT INTO tracks (id, title, artist, album, duration)
+        VALUES %s
+        ON CONFLICT (id) DO UPDATE SET 
+            title = EXCLUDED.title,
+            artist = EXCLUDED.artist,
+            album = EXCLUDED.album,
+            duration = EXCLUDED.duration;
+    """
+
+    execute_values(cursor, query, values, page_size=1000)
+    conn.commit()
+    cursor.close()
 
 class _AutoRollbackPGConnection:
     """Wraps a psycopg2 connection to guarantee a ROLLBACK is sent before the

@@ -2890,17 +2890,20 @@ def detect_single_for_track(
                 album_popularities = [row['popularity_score'] for row in cursor.fetchall()]
 
                 if album_popularities:
-                    from statistics import stdev as stat_stdev, median as stat_median
+                    from statistics import median as stat_median
                     album_median = stat_median(album_popularities)
-                    album_stddev = stat_stdev(album_popularities) if len(album_popularities) > 1 else 0
 
+                    # Top 2 standout check
                     sorted_album = sorted(album_popularities, reverse=True)
-                    is_top_3_album = popularity in sorted_album[:3]
-                    album_threshold = album_median - (0.5 * album_stddev) if album_stddev > 0 else album_median
-                    meets_album_threshold = popularity >= album_threshold
+                    is_top_2_album = popularity in sorted_album[:2]
+                    
+                    # 1.5x Multiplier check (much better than standard deviation for this)
+                    rel_popularity = popularity / album_median if album_median > 0 else 0
+                    is_highly_promoted = rel_popularity >= 1.5
 
-                    if not (is_top_3_album or meets_album_threshold):
-                        return {"sources": [], "confidence": "low", "is_single": False, "stage_blocked": "album_filter"}
+                    # If it is neither in the top 2 nor highly promoted, it fails the filter
+                    if not (is_top_2_album or is_highly_promoted):
+                        return {"sources": [], "confidence": "low", "is_single": False, "stage_blocked": "album_filter"}    
 
                 # STAGE 2: Artist standout check
                 cursor.execute(f"""

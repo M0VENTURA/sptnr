@@ -10,11 +10,36 @@ Usage:
 """
 
 import logging
+import concurrent.futures
 from datetime import datetime
 from api_clients import session
 
+
 logger = logging.getLogger(__name__)
 
+def fetch_all_tracks_concurrently(self, total_tracks, page_size=500, max_workers=10):
+    """
+    Fetches all tracks from Navidrome concurrently using a ThreadPool.
+    """
+    offsets = range(0, total_tracks, page_size)
+    all_tracks = []
+
+    def fetch_page(offset):
+        # Swap 'self.get_songs' with whatever your actual API fetch method is named
+        return self.get_songs(offset=offset, size=page_size)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_offset = {executor.submit(fetch_page, offset): offset for offset in offsets}
+        
+        for future in concurrent.futures.as_completed(future_to_offset):
+            try:
+                page_data = future.result()
+                if page_data:
+                    all_tracks.extend(page_data)
+            except Exception as e:
+                print(f"Failed to fetch Navidrome page at offset {future_to_offset[future]}: {e}")
+
+    return all_tracks
 
 class NavidromeClient:
     """Client for interacting with Navidrome Subsonic API."""
