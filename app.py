@@ -41222,7 +41222,8 @@ from helpers.task_manager import initialize_app_services
 initialize_app_services()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)if background scanner should auto-start on app launch
+    app.run(host='0.0.0.0', port=5000)
+    if background scanner should auto-start on app launch
     try:
         cfg = get_config()
         features = cfg.get('features', {})
