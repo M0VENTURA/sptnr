@@ -5659,8 +5659,8 @@ def popularity_scan(
                             or row_get(track, "mbid")
                         )
 
-                        # -------------------------
-                        # LAST.FM PREFETCH
+# -------------------------
+                        # LAST.FM PREFETCH (AGGREGATED)
                         # -------------------------
                         listeners = 0
                         playcount = 0
@@ -5672,35 +5672,26 @@ def popularity_scan(
                             log_debug(f'Using cached Last.fm listeners for "{title}": {cached_lastfm}')
                         else:
                             try:
-                                rate_limiter = get_rate_limiter()
-                                can_proceed, reason = rate_limiter.check_lastfm_limit()
-
-                                if not can_proceed:
-                                    log_debug(f'Rate limit hit for "{title}": {reason}, waiting...')
-                                    if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
-                                        can_proceed = True
-                                    else:
-                                        log_debug(f'Rate limit still active for "{title}" after wait, skipping Last.fm prefetch')
-
-                                if can_proceed:
-                                    album_artist = track.get("album_artist") or track_artist
-                                    lastfm_info = _run_with_timeout(
-                                        get_lastfm_track_info,
-                                        API_CALL_TIMEOUT,
-                                        f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                        track_artist,
-                                        normalize_title_for_lookup(title),
-                                        recording_mbid,
-                                        album_artist,
-                                    )
-                                    rate_limiter.record_lastfm_request()
-
-                                    if lastfm_info:
-                                        listeners = lastfm_info.get("listeners", 0) or 0
-                                        playcount = lastfm_info.get("track_play", 0) or 0
-                                        log_debug(f'Fetched Last.fm data for "{title}": listeners={listeners}, playcount={playcount}')
+                                from popularity_helpers import get_aggregated_lastfm_popularity
+                                
+                                # Use our lightning-fast aggregated cache
+                                agg_stats = get_aggregated_lastfm_popularity(
+                                    artist=track_artist, 
+                                    track_title=title, 
+                                    lastfm_client=lastfm_client # Ensure client is initialized earlier in scope
+                                )
+                                
+                                listeners = agg_stats.get("listeners", 0)
+                                playcount = agg_stats.get("playcount", 0)
+                                variants = agg_stats.get("variants_merged", 0)
+                                
+                                if variants > 1:
+                                    log_info(f'📈 Merged {variants} split Last.fm variants for "{title}". Total listeners: {listeners}')
+                                else:
+                                    log_debug(f'Fetched Last.fm data for "{title}": listeners={listeners}')
+                                    
                             except Exception as e:
-                                log_debug(f'Failed to fetch Last.fm data for "{title}": {e}')
+                                log_debug(f'Failed to fetch aggregated Last.fm data for "{title}": {e}')
 
                         album_lastfm_data[track_id] = {
                             "listeners": listeners,

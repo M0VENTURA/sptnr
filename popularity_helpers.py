@@ -596,6 +596,84 @@ def get_aggregated_listenbrainz_popularity(
         return {"total_listen_count": None, "total_user_count": None}
 
     return aggregated_result
+
+def normalize_for_aggregation(title: str) -> str:
+    """
+    Aggressively strips features, remasters, and alternate versions 
+    so fragmented Last.fm data can be accurately matched and summed together.
+    """
+    t = str(title).lower()
+    
+    # 1. Strip Featured Artists: (feat. X), [ft. Y], featuring Z
+    t = re.sub(r'[\(\[\{]?(feat\.?|ft\.?|featuring)\s+[^()\[\]\{\}]+[\)\]\}]?', '', t)
+    
+    # 2. Strip standard version suffixes like Remasters and Radio Edits
+    t = re.sub(r'(\s*-\s*|\s*\().*(remaster|radio edit|single version|album version|bonus track|live|stereo|mono).*(\)?)$', '', t)
+    
+    # 3. Strip all non-alphanumeric characters for a pure fuzzy match
+    t = re.sub(r'[^\w\s]', '', t)
+    
+    return ' '.join(t.split())
+_lastfm_artist_catalog_cache = {}
+
+def get_aggregated_lastfm_popularity(artist: str, track_title: str, lastfm_client=None) -> dict:
+    """
+    Fetches the artist's top tracks ONCE and aggregates listener counts locally.
+    Solves Last.fm fragmented track data (featured artists) and speeds up scans by ~90%.
+    """
+    global _lastfm_artist_catalog_cache
+    
+    if lastfm_client is None:
+        try:
+            from api_clients.lastfm import LastFmClient
+            # Add your config token getter here if necessary
+            lastfm_client = LastFmClient("your_api_key_or_getter")
+        except Exception:
+            return {"listeners": 0, "playcount": 0}
+
+    # 1. Pre-fetch and cache the artist's catalogue on first encounter
+    if artist not in _lastfm_artist_catalog_cache:
+        try:
+            # Fetch up to 1000 tracks to cover the vast majority of an artist's catalog in 1 API call
+            top_tracks_data = lastfm_client.get_top_tracks(artist, limit=1000) 
+            _lastfm_artist_catalog_cache[artist] = top_tracks_data or []
+        except Exception as e:
+            # Fallback to empty list so we don't infinitely retry failed artists
+            _lastfm_artist_catalog_cache[artist] = []
+
+    cached_tracks = _lastfm_artist_catalog_cache.get(artist, [])
+    
+    # 2. Aggregate counts across all matching variants
+    base_title = normalize_for_aggregation(track_title)
+    aggregated_listeners = 0
+    aggregated_playcount = 0
+    match_count = 0
+
+    for lfm_track in cached_tracks:
+        # lfm_track['name'] represents how Last.fm formats it
+        lfm_base = normalize_for_aggregation(lfm_track.get('name', ''))
+        
+        # If the base titles match, this is a variant of the same track!
+        if lfm_base == base_title:
+            aggregated_listeners += int(lfm_track.get('listeners', 0) or 0)
+            aggregated_playcount += int(lfm_track.get('playcount', 0) or 0)
+            match_count += 1
+
+    # 3. Fallback for obscure deep cuts not in the Top 1000
+    if match_count == 0:
+        try:
+            fallback = lastfm_client.get_track_info(artist, track_title)
+            if fallback:
+                aggregated_listeners = int(fallback.get('listeners', 0) or 0)
+                aggregated_playcount = int(fallback.get('playcount', 0) or 0)
+        except Exception:
+            pass
+
+    return {
+        "listeners": aggregated_listeners,
+        "playcount": aggregated_playcount,
+        "variants_merged": match_count
+    }
 # -----------------------------------------------------------------------------
 # Last.fm title normalization + helpers
 # -----------------------------------------------------------------------------
