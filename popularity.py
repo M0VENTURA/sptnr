@@ -40,7 +40,27 @@ from helpers.helpers import (
 
 from helpers.matching_utils import normalize_album, strip_search_parentheses
 from database_abstraction import DatabaseQuery
-
+from popularity_helpers import (
+    get_lastfm_track_info,
+    calculate_lastfm_popularity_score,
+    calculate_lastfm_zscore_popularity,
+    calculate_listenbrainz_popularity_score,
+    calculate_listenbrainz_percentile,
+    calculate_combined_popularity_score,
+    configure_popularity_helpers,
+    get_listenbrainz_batch_for_tracks,
+    get_aggregated_listenbrainz_popularity,
+    get_aggregated_lastfm_popularity,
+    score_by_age,
+    update_artist_id_for_artist,
+    update_discogs_artist_id_for_artist,
+    get_lastfm_client,
+    adjust_weights,
+    is_lastfm_unreliable,
+    LASTFM_WEIGHT,
+    LISTENBRAINZ_WEIGHT,
+    AGE_WEIGHT,
+)
 # Import centralized logging
 from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
 
@@ -1851,24 +1871,7 @@ PG_PORT = int(os.environ.get("PG_PORT", 5432))
 PG_USER = os.environ.get("PG_USER", "")
 PG_PASSWORD = os.environ.get("PG_PASSWORD", "")
 PG_DATABASE = os.environ.get("PG_DATABASE", "")
-from popularity_helpers import (
-    get_lastfm_track_info,
-    calculate_lastfm_popularity_score,
-    calculate_lastfm_zscore_popularity,
-    calculate_listenbrainz_popularity_score,
-    calculate_listenbrainz_percentile,
-    calculate_combined_popularity_score,
-    get_listenbrainz_batch_for_tracks,
-    get_aggregated_listenbrainz_popularity,
-    score_by_age,
-    update_artist_id_for_artist,
-    get_lastfm_client,
-    adjust_weights,
-    is_lastfm_unreliable,
-    LASTFM_WEIGHT,
-    LISTENBRAINZ_WEIGHT,
-    AGE_WEIGHT,
-)
+
 from helpers.api_rate_limiter import get_rate_limiter
 
 # Import scan history tracker
@@ -3488,7 +3491,6 @@ def popularity_scan(
     if not metadata_only and not singles_only:
         # Initialize popularity helpers for scan-time weighting logic.
         # Force Spotify disabled for scans to avoid any Spotify client/API usage.
-        from popularity_helpers import configure_popularity_helpers
         try:
             helper_config = {}
             helper_config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
@@ -3807,7 +3809,6 @@ def popularity_scan(
                 # Fetch and update Discogs artist ID from Discogs API during popularity scan.
                 # This remains useful metadata even after Spotify popularity removal.
                 try:
-                    from popularity_helpers import update_discogs_artist_id_for_artist
                     from api_clients.discogs import DiscogsClient
 
                     discogs_config = config.get("api_integrations", {}).get("discogs", {})
@@ -5677,9 +5678,7 @@ def popularity_scan(
                             playcount = 0
                             log_debug(f'Using cached Last.fm listeners for "{title}": {cached_lastfm}')
                         else:
-                            try:
-                                from popularity_helpers import get_aggregated_lastfm_popularity
-                                
+                            try:                              
                                 # Use our lightning-fast aggregated cache
                                 agg_stats = get_aggregated_lastfm_popularity(
                                     artist=track_artist, 
@@ -5735,9 +5734,9 @@ def popularity_scan(
                             or row_get(track, "mbid")
                         )
                         
-                        if recording_mbid or "fyre" in title.lower():
+                        if recording_mbid or title:
                             try:
-                                from popularity_helpers import get_aggregated_listenbrainz_popularity
+
                                 aggregated_lb = get_aggregated_listenbrainz_popularity(
                                     title=title,
                                     artist=track_artist,  # Correctly uses the per-track artist now
@@ -5750,7 +5749,9 @@ def popularity_scan(
                                     
                                     if new_total_listens > current_listens:
                                         log_info(f"📈 Aggregated split LB data for '{title}': {current_listens} -> {new_total_listens} listens.")
-                                        album_listenbrainz_data[track_id]["listeners"] = new_total_listens
+                                        album_listenbrainz_data[track_id]["total_listen_count"] = new_total_listens
+                                        album_listenbrainz_data[track_id]["listen_count"] = new_total_listens
+
                             except Exception as agg_err:
                                 log_debug(f"Failed split-data aggregation loop on '{title}': {agg_err}")
 
