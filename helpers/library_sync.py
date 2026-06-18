@@ -13,9 +13,12 @@ import os
 import threading
 from typing import Dict, Set, Tuple
 
-from helpers.logging_config import log_debug
+import time
+start_time = time.time()
+
+from helpers.logging_config import log_debug, log_unified, log_error
 from api_clients.navidrome import NavidromeClient
-from helpers.db_utils import get_db_connection, get_existing_track_ids, bulk_upsert_navidrome_tracks
+from helpers.db_utils import get_db_connection, bulk_upsert_navidrome_tracks
 
 # ---------------------------------------------------------------------------
 # Internal worker state (single-flight)
@@ -157,7 +160,13 @@ def _perform_library_sync() -> None:
 
     # 1. & 2. Scan-status and Marker check
     scan_status = client.get_scan_status()
-    if not scan_status.get("success") or scan_status.get("scanning"):
+
+    if not scan_status.get("success"):
+        log_debug("[LIBRARY_SYNC] Scan status request failed — skipping sync")
+        return
+
+    if scan_status.get("scanning"):
+        log_debug("[LIBRARY_SYNC] Navidrome is still scanning — skipping sync")
         return
 
     marker = scan_status.get("count")
@@ -171,7 +180,9 @@ def _perform_library_sync() -> None:
     # 3. Optimized Bulk Sync Loop
     log_unified(f"[LIBRARY_SYNC] 🚀 Starting bulk diff-sync for {len(candidate_artists)} artists...")
     
+    BATCH_SIZE = 1000
     all_tracks_to_upsert = []
+    seen_track_ids = set()
     
     for artist_name, artist_id in candidate_artists.items():
         if not artist_id:
@@ -180,22 +191,33 @@ def _perform_library_sync() -> None:
             result = _sync_artist_with_diff(artist_name, artist_id)
             
             if isinstance(result, dict) and 'tracks' in result:
-                all_tracks_to_upsert.extend(result['tracks'])
+                for track in result['tracks']:
+                    track_id = track.get("id")
+
+                    if track_id and track_id in seen_track_ids:
+                        continue
+
+                    if track_id:
+                        seen_track_ids.add(track_id)
+
+                    all_tracks_to_upsert.append(track)
             
             # Commit every 5000 tracks
-            if len(all_tracks_to_upsert) >= 1000:
+            if len(all_tracks_to_upsert) >= BATCH_SIZE:
                 _run_bulk_commit(all_tracks_to_upsert)
-                all_tracks_to_upsert = []
+                all_tracks_to_upsert.clear()
                 
         except Exception as exc:
             log_error(f"[LIBRARY_SYNC] Artist sync failed for '{artist_name}': {exc}")
 
     # Final bulk commit
     if all_tracks_to_upsert:
-        _run_bulk_commit(all_tracks_to_upsert)
+        log_unified(f"[LIBRARY_SYNC] 💾 Final commit of {len(all_tracks_to_upsert)} tracks...")
+    _run_bulk_commit(all_tracks_to_upsert)
 
     _last_processed_scan_marker = marker
-    log_unified("[LIBRARY_SYNC] ✅ Bulk sync complete!")
+    duration = time.time() - start_time
+    log_unified(f"[LIBRARY_SYNC] ✅ Bulk sync complete in {duration:.2f}s") 
 
 def _run_bulk_commit(tracks):
     """Utility to perform bulk upsert into PostgreSQL."""
