@@ -28428,6 +28428,11 @@ def api_queue_add_batch():
             if not artist or not title:
                 failed_count += 1
                 failed_tracks.append(title or 'Unknown')
+                failed_details.append({
+                    "artist": artist or '',
+                    "title": title or 'Unknown',
+                    "reason": "missing required fields"
+                })
                 logging.warning(f"Skipping item with missing fields: artist='{artist}', title='{title}'")
                 continue
 
@@ -28522,6 +28527,53 @@ def api_queue_add_batch():
                                 added_count += 1
                     except Exception as retry_err:
                         logging.error(f"Retry after schema self-heal failed for '{title}': {retry_err}")
+
+        # ── Verify any "failed" items: transient DB blips can insert the row
+        # but still return None / raise to the caller.  Look up every failed
+        # item and move successes from failed_count → added_count so the
+        # frontend shows accurate stats and never reports 0 added when the
+        # tracks are actually queued.
+        if failed_count > 0 and failed_details:
+            try:
+                from queue_status_constants import ACTIVE_QUEUE_STATUS_SQL as _ACTIVE_SQL
+                verify_conn = get_db()
+                verify_cursor = verify_conn.cursor()
+                still_failed_details = []
+                verified_added = 0
+                for detail in failed_details:
+                    fa = detail.get('artist', '')
+                    ft = detail.get('title', '')
+                    if not fa or not ft:
+                        still_failed_details.append(detail)
+                        continue
+                    verify_cursor.execute(
+                        f"""
+                        SELECT id FROM download_queue
+                        WHERE LOWER(artist) = LOWER(%s)
+                          AND LOWER(title) = LOWER(%s)
+                          AND source = %s
+                          AND status IN ({_ACTIVE_SQL})
+                        LIMIT 1
+                        """,
+                        (fa, ft, source),
+                    )
+                    row = verify_cursor.fetchone()
+                    if row:
+                        verified_added += 1
+                    else:
+                        still_failed_details.append(detail)
+                verify_conn.close()
+                if verified_added:
+                    added_count += verified_added
+                    failed_count -= verified_added
+                    failed_details = still_failed_details
+                    failed_tracks = [d['title'] for d in still_failed_details]
+                    logging.info(
+                        f"[QUEUE_BATCH] Verified {verified_added} previously-reported failures are "
+                        f"actually in queue; adjusted counts to added={added_count}, failed={failed_count}"
+                    )
+            except Exception as verify_err:
+                logging.warning(f"[QUEUE_BATCH] Failure-verification query failed: {verify_err}")
 
         # When every item was already in the library, treat as full success (nothing to download)
         all_failed = failed_count > 0 and added_count == 0 and skipped_count == 0
