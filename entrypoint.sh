@@ -92,32 +92,57 @@ check_ffmpeg() {
 start_queue_processor() {
     local interval="${SPTNR_QUEUE_PROCESSOR_INTERVAL:-30}"
     local log_file="${SPTNR_QUEUE_PROCESSOR_LOG:-/config/queue_processor.log}"
+    # Ensure log directory exists before redirect
+    local log_dir
+    log_dir="$(dirname "$log_file")"
+    mkdir -p "$log_dir" 2>/dev/null || true
     log "Starting download queue processor (interval: ${interval}s)..."
     export SPTNR_QUEUE_PROCESSOR_MANAGED_EXTERNALLY=1
-    python3 -m services.queue.queue_worker "$interval" > "$log_file" 2>&1 &
-    QUEUE_PID=$!
-    ok "Queue processor started (PID: $QUEUE_PID)"
+    if python3 -m services.queue.queue_worker "$interval" > "$log_file" 2>&1 &
+    then
+        QUEUE_PID=$!
+        ok "Queue processor started (PID: $QUEUE_PID)"
+    else
+        warn "Queue processor failed to start (non-fatal, continuing)"
+    fi
 }
 
 preflight_python() {
     log "Running Python syntax checks..."
-    python3 -m py_compile app.py
-    python3 -m py_compile services/queue/queue_worker.py
-    python3 -m py_compile db/utils.py
-    python3 -m py_compile db/context.py
-    python3 -m py_compile db/schema.py
-    python3 -m py_compile db/schema_helpers.py
-    python3 -m py_compile db/bootstrap.py
-    python3 -m py_compile db/cleanup.py
-    python3 -m py_compile db/database.py
-    python3 -m py_compile db/repositories/artists.py
-    python3 -m py_compile db/repositories/bookmarks.py
-    python3 -m py_compile db/repositories/genres.py
-    python3 -m py_compile db/repositories/library.py
-    python3 -m py_compile db/repositories/navidrome.py
-    python3 -m py_compile db/repositories/tracks.py
-    python3 -m py_compile migrations/ensure_queue_startup_schema.py
-    ok "Python syntax checks passed"
+    local errors=0
+    local failed_files=""
+    local files=(
+        app.py
+        services/queue/queue_worker.py
+        db/utils.py
+        db/context.py
+        db/schema.py
+        db/schema_helpers.py
+        db/bootstrap.py
+        db/cleanup.py
+        db/database.py
+        db/repositories/artists.py
+        db/repositories/bookmarks.py
+        db/repositories/genres.py
+        db/repositories/library.py
+        db/repositories/navidrome.py
+        db/repositories/tracks.py
+        migrations/ensure_queue_startup_schema.py
+    )
+    for f in "${files[@]}"; do
+        if ! python3 -m py_compile "$f" 2>&1; then
+            errors=$((errors + 1))
+            failed_files="${failed_files}  - ${f}\n"
+            warn "Syntax check FAILED: $f"
+        fi
+    done
+    if [ "$errors" -gt 0 ]; then
+        warn "Python syntax checks completed with ${errors} error(s):"
+        printf "%b" "$failed_files"
+        warn "Continuing despite syntax errors (non-fatal)"
+    else
+        ok "Python syntax checks passed"
+    fi
 }
 
 start_web_app() {
@@ -127,6 +152,9 @@ start_web_app() {
 
 main() {
     trap cleanup SIGTERM SIGINT EXIT
+    # ERR trap: log the failing line so it's visible in docker logs
+    trap 'warn "ERROR on line $LINENO (exit code $?): command was $BASH_COMMAND"' ERR
+
     log "=== Popularr Starting ==="
     wait_for_db
     run_queue_startup_schema
@@ -135,4 +163,9 @@ main() {
     start_queue_processor
     preflight_python
     start_web_app
+
+    # If we reach here, gunicorn failed to start — pause so logs are visible
+    warn "Flask/gunicorn did not start. Container will exit in 60 seconds."
+    warn "Run 'docker logs popularr' to inspect the full output."
+    sleep 60
 }
