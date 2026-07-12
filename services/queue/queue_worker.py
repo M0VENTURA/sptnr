@@ -3,6 +3,7 @@
 Standalone process entry point for the background queue processing loop.
 
 Features:
+    - Event-driven wake-up (no 30-second polling latency).
     - Signal-based graceful shutdown (SIGTERM/SIGINT).
     - Periodic processing cycles via ``queue_orchestrator.process_cycle``.
     - Error recovery and automatic restart logic.
@@ -11,6 +12,10 @@ Architecture:
     Designed to run as a standalone process (not a thread), typically
     managed by systemd or Docker. Uses signal handlers for clean
     shutdown without data loss.
+
+    The worker uses ``queue_signal.wait_for_item(timeout=interval)``
+    which blocks until either a new download is queued (instant wake-up)
+    or the timeout expires (periodic safety-net poll).
 
     Call Chain:
         queue_worker \u2192 queue_orchestrator.process_cycle()
@@ -124,11 +129,15 @@ def run(interval: int | None = None, batch_size: int | None = None) -> None:
         except Exception:
             logger.exception("Queue worker cycle crashed")
 
-        # ✅ Safe sleep with interruptibility
-        for _ in range(max(1, effective_interval)):
-            if _SHOULD_STOP:
-                break
-            time.sleep(1)
+        # ── Event-driven wait ──────────────────────────────────────────
+        # Instead of sleeping for `interval` seconds, block on a
+        # threading.Event that is signalled the instant a new download
+        # is queued via the WebUI/API.  Falls back to periodic polling
+        # after `interval` seconds as a safety net.
+        from services.queue.queue_signal import wait_for_item
+        woke = wait_for_item(timeout=float(effective_interval))
+        if woke:
+            logger.debug("[QUEUE_WORKER] Woke up — new item signalled")
 
     logger.info("[QUEUE_WORKER] Queue worker stopped cleanly after %s cycles", loop_count)
 

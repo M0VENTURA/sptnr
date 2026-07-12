@@ -77,6 +77,14 @@ def add_to_queue(
             **kwargs,
         )
 
+        # Signal the event-driven queue worker to wake up immediately
+        # instead of waiting for the next 30-second polling cycle.
+        try:
+            from services.queue.queue_signal import signal_new_item
+            signal_new_item()
+        except Exception:
+            pass  # Non-critical — worker will pick it up on next cycle
+
         return {"success": True, "item": item}
 
     except Exception as e:

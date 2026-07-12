@@ -247,23 +247,49 @@ def find_track_row(conn: Any = None, track_id: str = ""):
 
 
 def delete_track_row(conn: Any = None, track_id: str = "") -> int:
+    """Delete a track row by ID.
+
+    When a raw psycopg2 connection is passed, runs on that connection
+    so the delete participates in the caller's transaction.
+    """
+    sql = text("DELETE FROM tracks WHERE CAST(id AS TEXT) = :id")
+    params = {"id": track_id}
+
+    if conn is not None and not hasattr(conn, "execute"):
+        # Caller passed a psycopg2 connection — get a cursor
+        cursor = conn.cursor()
+        cursor.execute(sql.text, params)
+        return cursor.rowcount or 0
+
     with db_session() as session:
-        result = session.execute(
-            text("DELETE FROM tracks WHERE CAST(id AS TEXT) = :id"),
-            {"id": track_id},
-        )
+        result = session.execute(sql, params)
         return result.rowcount or 0
 
 
 def fetch_track_for_delete(conn: Any = None, track_id: str = "") -> tuple | None:
-    """Fetch track data by ID for deletion processing."""
+    """Fetch track data by ID for deletion processing.
+
+    When a raw psycopg2 connection/cursor is passed (e.g. from
+    ``artist_service.delete_track``), the query runs on that connection
+    so it participates in the caller's transaction.  Otherwise falls
+    back to ``db_session()``.
+    """
+    sql = text("""
+        SELECT id, file_path, artist, album, title
+        FROM tracks
+        WHERE CAST(id AS TEXT) = :id
+        LIMIT 1
+    """)
+    params = {"id": track_id}
+
+    if conn is not None:
+        # Caller passed a psycopg2 connection or cursor — use it directly
+        cursor = conn.cursor() if not hasattr(conn, "execute") else conn
+        cursor.execute(sql.text, params)
+        return cursor.fetchone()
+
     with db_session() as session:
-        result = session.execute(text("""
-            SELECT id, file_path, artist, album, title
-            FROM tracks
-            WHERE CAST(id AS TEXT) = :id
-            LIMIT 1
-        """), {"id": track_id})
+        result = session.execute(sql, params)
         return result.fetchone()
 
 

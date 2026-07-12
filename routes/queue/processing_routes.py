@@ -87,3 +87,49 @@ def api_queue_requeue_all_unmatched():
 @queue_processing_bp.route("/api/queue/retry-all-failed", methods=["POST"])
 def api_queue_retry_all_failed():
     return _json_response(queue_retry_all_failed())
+
+
+# ── SSE: real-time queue progress stream ──────────────────────────────────
+
+import asyncio
+import json
+import time
+
+@queue_processing_bp.route("/api/queue/stream", methods=["GET"])
+async def api_queue_stream():
+    """Server-Sent Events endpoint for live queue status updates.
+
+    Frontend connects via:
+        const es = new EventSource("/api/queue/stream");
+        es.onmessage = (e) => { const data = JSON.parse(e.data); ... };
+
+    Events are emitted every ~2 seconds with current queue counts.
+    Connection closes automatically when the client disconnects.
+    """
+    async def event_generator():
+        last_payload = None
+        while True:
+            try:
+                from db.repositories.queue import get_queue_status_counts
+                counts = get_queue_status_counts()
+                payload = json.dumps(counts)
+
+                # Only send if data changed (reduces bandwidth)
+                if payload != last_payload:
+                    yield f"data: {payload}\n\n"
+                    last_payload = payload
+            except Exception:
+                yield f"data: {json.dumps({'error': 'failed to read queue status'})}\n\n"
+
+            await asyncio.sleep(2)
+
+    from quart import Response
+    return Response(
+        event_generator(),
+        content_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
