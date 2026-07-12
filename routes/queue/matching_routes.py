@@ -5,7 +5,7 @@ Queue matching routes.
 from __future__ import annotations
 
 
-from flask import Blueprint, request
+from quart import Blueprint, request
 from routes.utils import json_response as _json_response
 
 

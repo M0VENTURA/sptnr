@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from flask import jsonify, session
+from quart import jsonify, session
 
 from sqlalchemy import text
 from db.engine import db_session

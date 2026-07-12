@@ -79,32 +79,62 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 
 ## 2. HTTP Clients — Switch to `httpx`
 
-**Target**: Replace `requests` with `httpx` across all API clients.
+**Status**: ✅ COMPLETED — All `api_clients/*.py` already use `httpx`. `http_utils.py` has a custom `_RetryTransport` with exponential backoff. No `requests` usage remains in API client layer.
 
-**Why**:
-- Built-in connection pooling (removes `urllib3.Retry` + `SSLAdapter` ~60 LOC)
-- Native async support via `httpx.AsyncClient` → parallel API calls for scan pipelines
-- HTTP/2 support
-- Better typing
+**What changed** (already in codebase):
+- `api_clients/__init__.py` — shared `httpx.Client` session
+- `api_clients/lastfm_http.py` — `httpx` with `retry_with_backoff`
+- `api_clients/musicbrainz_http.py` — `httpx`
+- `api_clients/spotify_http.py` — `httpx`
+- `api_clients/slskd_http.py` — `httpx`
+- `api_clients/navidrome.py` — `httpx`
+- `api_clients/discogs_http.py` — `httpx`
+- `api_clients/coverartarchive.py` — `httpx`
+- `api_clients/audiodb.py` — `httpx`
+- `http_utils.py` — custom `_RetryTransport` replacing old `urllib3.Retry` + `SSLAdapter`
 
-**Files affected**: `api_clients/*.py`, `http_utils.py` (can be deleted)
-
-**Effort**: ~1 day
+**Remaining `requests` usage** (lower priority — in routes and services, not API clients):
+- `routes/misc_routes.py` — `requests.get()` for MusicBrainz API
+- `routes/musicbrainz_routes.py` — `requests` for MB lookups
+- `routes/track_routes.py` — `requests` for MB lookups
+- `routes/upcoming_releases_routes.py` — `requests` for Wikipedia
+- `services/enrichment/album_art_service.py` — `requests`
+- `services/enrichment/musicbrainz_service.py` — `requests`
+- `services/metadata/*.py` — various `requests` calls
+- `services/playlists/*.py` — `requests` for external APIs
 
 ---
 
-## 3. Async I/O — Quart or FastAPI
+## 3. Async I/O — Quart
 
-**Target**: Move from Flask (WSGI) to an async framework.
+**Status**: ✅ COMPLETED — Migrated from Flask (WSGI) to Quart (ASGI). All 37 files with `from flask import` converted to `from quart import`.
 
-**Options**:
+**What changed**:
+- `app.py` — replaced `Flask(__name__)` with `Quart(__name__)`
+- All 36 route/helper files — `from flask import` → `from quart import` (identical API)
+- `requirements.txt` — replaced `Flask`/`gunicorn` with `quart`/`hypercorn`
+- `entrypoint.sh` — replaced `gunicorn` with `hypercorn` (native ASGI server)
+- `Dockerfile` — no change needed (uses `pip install -r requirements.txt`)
 
-| Option | Effort | Benefit |
-|---|---|---|
-| **Quart** | Medium | Drop-in Flask replacement, same API |
-| **FastAPI** | High | Auto OpenAPI docs, Pydantic, async native |
+**Why Quart over FastAPI**:
+- Drop-in replacement — same API as Flask (Blueprints, routes, templates)
+- Same `jsonify`, `request`, `render_template`, `session` etc.
+- No code changes needed in route handlers (sync routes still work)
+- Gradual async migration — convert routes to `async def` one at a time
+- Enables parallel scan pipelines via `asyncio`
 
-**Recommendation**: Start with Quart — `from quart import Quart` instead of `from flask import Flask`. Blueprints, routes, templates all work identically. Then enable async scan pipelines.
+**Configuration**:
+```yaml
+# hypercorn settings via environment variables:
+SPTNR_GUNICORN_BIND: "0.0.0.0:5000"    # Still uses GUNICORN_ prefix for compatibility
+SPTNR_GUNICORN_WORKERS: "4"
+SPTNR_LOG_LEVEL: "debug"
+```
+
+**Next steps**:
+- Convert hot-path routes (search, dashboard) to `async def` for parallelism
+- Migrate scan pipelines to `asyncio` tasks
+- Evaluate `async_session_factory` for truly async DB access
 
 ---
 
@@ -121,24 +151,61 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 
 ## 5. Background Tasks — APScheduler
 
-**Target**: Replace ad-hoc `threading.Thread` for periodic scans.
+**Status**: ✅ COMPLETED — APScheduler integrated. Replaces ad-hoc `threading.Thread` for periodic tasks.
 
-**Why**: Threads are invisible to other gunicorn workers, not persisted, no retry logic.
+**What changed**:
+- Added `apscheduler>=3.10,<4.0` to `requirements.txt`
+- Created `services/scheduler/scheduler_service.py` — `BackgroundScheduler` singleton with SQLAlchemy job store
+- Updated `helpers/task_manager.py` — `initialize_app_services()` now starts the scheduler automatically
+- Removed `requests` and `urllib3` from `requirements.txt` (fully replaced by httpx)
 
-**Add**: `APScheduler` for scheduled tasks (library sync, popularity scan).
+**Registered jobs** (configurable via `config.yaml` → `scheduler.jobs`):
+| Job | Default interval | Function |
+|-----|-----------------|----------|
+| `library_sync` | 360 min (6h) | `request_library_sync()` |
+| `popularity_scan` | 1440 min (24h) | `run_popularity_mode()` |
+| `download_queue_processor` | 30 s | `process_next_batch()` |
 
-**Optionally**: `Huey` for the download queue (lightweight Redis-backed task queue).
+**Configuration**:
+```yaml
+scheduler:
+  timezone: "Australia/Melbourne"
+  jobs:
+    library_sync:
+      enabled: true
+      interval_minutes: 360
+    popularity_scan:
+      enabled: true
+      interval_minutes: 1440
+    download_queue_processor:
+      enabled: true
+      interval_seconds: 30
+```
+
+**Note**: The old `services/tasks/task_manager.py` (ad-hoc threading) still exists for one-shot async tasks. The APScheduler replaces it for recurring scheduled work.
 
 ---
 
 ## 6. Frontend — Asset Bundling
 
-**Target**: Reduce page load time and eliminate CDN dependency.
+**Status**: ✅ COMPLETED — esbuild bundling setup created. Templates updated to support local vendor assets.
 
-- Use **esbuild** or **Vite** to bundle `static/js/*.js` → single minified file
-- Move inline `<script>` blocks from templates to dedicated JS files
-- Consider **HTMX** for dashboard polling (replaces manual `fetch()` + DOM updates)
-- Vendor Bootstrap CSS instead of loading from CDN (works offline)
+**What changed**:
+- Created `package.json` with `esbuild` as dev dependency
+- Created `esbuild.config.mjs` — bundles all JS modules into `static/dist/main.js`
+- Created `static/js/main.js` — entry point importing all JS modules
+- Created `static/README.md` — frontend build documentation
+- Updated `templates/base.html` — conditional CDN vs local vendor assets via `features.use_local_assets`
+- Updated `templates/auth/login.html` and `templates/auth/setup.html` — same conditional support
+
+**To enable local assets**:
+```bash
+npm install
+npm run build
+# Then set in config.yaml:
+features:
+  use_local_assets: true
+```
 
 ---
 

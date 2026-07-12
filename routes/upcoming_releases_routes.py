@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from quart import Blueprint, jsonify, request
 
 from sqlalchemy import text
 from db.engine import db_session
@@ -81,7 +81,6 @@ def api_match_upcoming_release(release_id):
 @upcoming_bp.route("/scrape", methods=["POST"])
 def api_scrape_upcoming_releases():
     """Scrape Wikipedia for upcoming releases and store in DB."""
-    import requests
     from datetime import datetime
 
     try:
@@ -95,7 +94,7 @@ def api_scrape_upcoming_releases():
             "prop": "text",
             "section": "0",
         }
-        resp = requests.get(wiki_url, params=params, headers=headers, timeout=15)
+        resp = httpx.get(wiki_url, params=params, headers=headers, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         text = data.get("parse", {}).get("text", {}).get("*", "")

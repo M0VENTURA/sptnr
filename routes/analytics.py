@@ -4,7 +4,7 @@ Provides genre/mood analytics page for the WebUI.
 Delegates data aggregation to ``services.catalog.analytics_service``.
 """
 
-from flask import Blueprint, render_template, jsonify, request
+from quart import Blueprint, render_template, jsonify, request
 import logging
 
 from services.catalog.analytics_service import get_genre_mood_analytics

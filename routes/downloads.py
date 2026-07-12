@@ -9,7 +9,7 @@ Handles:
 
 from __future__ import annotations
 
-from flask import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify
 import logging
 
 from helpers.config_helpers import get_config

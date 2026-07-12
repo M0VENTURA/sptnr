@@ -5,7 +5,7 @@ Provides shared helpers used across route modules:
   ``(jsonify, status)`` tuples.
 """
 
-from flask import jsonify
+from quart import jsonify
 
 def json_response(result):
     if isinstance(result, tuple):

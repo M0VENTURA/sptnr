@@ -10,7 +10,7 @@ Routes should only:
 
 from __future__ import annotations
 
-from flask import flash, redirect, request, url_for
+from quart import flash, redirect, request, url_for
 
 from routes.scan_routes import scans_bp
 from routes.scan_routes._common import run_async

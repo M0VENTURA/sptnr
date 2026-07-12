@@ -8,7 +8,7 @@ import re
 import time
 import threading
 
-from flask import Blueprint, jsonify, request, session
+from quart import Blueprint, jsonify, request, session
 
 from helpers.config_helpers import get_config
 from helpers.response_helpers import _ok, _fail

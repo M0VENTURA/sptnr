@@ -1,0 +1,13 @@
+{
+  "name": "popularr",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Popularr - Music library management & popularity scoring",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

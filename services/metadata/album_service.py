@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
-import requests
+import httpx
 
 from sqlalchemy import text
 from db.engine import db_session
@@ -213,7 +213,7 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
             "limit": 5,
         }
 
-        resp = requests.get(search_url, params=params, headers=headers, timeout=5)
+        resp = httpx.get(search_url, params=params, headers=headers, timeout=5)
         resp.raise_for_status()
         releases = resp.json().get("releases", [])
 
@@ -221,7 +221,7 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
             search_url = "https://musicbrainz.org/ws/2/release-group"
             params = {"query": f'"{album}" AND artist:"{artist}"', "fmt": "json", "limit": 1}
 
-            resp = requests.get(search_url, params=params, headers=headers, timeout=5)
+            resp = httpx.get(search_url, params=params, headers=headers, timeout=5)
             resp.raise_for_status()
             release_groups = resp.json().get("release-groups", [])
 
@@ -231,7 +231,7 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
             rg_id = release_groups[0]["id"]
             releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases"
 
-            releases_resp = requests.get(releases_url, params={"fmt": "json", "limit": 5}, headers=headers, timeout=5)
+            releases_resp = httpx.get(releases_url, params={"fmt": "json", "limit": 5}, headers=headers, timeout=5)
             releases_resp.raise_for_status()
             releases = releases_resp.json().get("releases", [])
 
@@ -239,7 +239,7 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
             release_id = releases[0].get("id")
             release_detail_url = f"https://musicbrainz.org/ws/2/release/{release_id}"
             
-            detail_resp = requests.get(
+            detail_resp = httpx.get(
                 release_detail_url,
                 params={"fmt": "json", "inc": "recordings"},
                 headers=headers,

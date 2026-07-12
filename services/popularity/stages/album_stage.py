@@ -18,6 +18,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from sqlalchemy import text
 from db.engine import db_session
 from db.utils import get_db_connection, row_get
@@ -102,8 +104,7 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
         from api_clients.audiodb import get_album_artwork
         art_url = get_album_artwork(artist, album, enabled=True)
         if art_url:
-            import requests
-            resp = requests.get(art_url, timeout=10)
+            resp = httpx.get(art_url, timeout=10)
             if resp.status_code == 200 and resp.content:
                 save_album_art_to_db(artist, album, resp.content, source="audiodb")
                 return "audiodb"
@@ -118,8 +119,7 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
             # Use the existing discogs_http-based search
             results = client.search_album_release(artist, album)
             if results and results[0].get("cover_image"):
-                import requests
-                resp = requests.get(results[0]["cover_image"], timeout=10)
+                resp = httpx.get(results[0]["cover_image"], timeout=10)
                 if resp.status_code == 200 and resp.content:
                     save_album_art_to_db(artist, album, resp.content, source="discogs")
                     return "discogs"

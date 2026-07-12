@@ -14,7 +14,7 @@ import re
 import glob
 import logging
 from datetime import datetime
-from flask import Response, send_file
+from quart import Response, send_file
 from helpers.logging_config import resolve_log_dir
 
 logger = logging.getLogger(__name__)

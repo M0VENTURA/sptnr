@@ -10,7 +10,7 @@ Handles:
 
 from __future__ import annotations
 
-from flask import Blueprint, render_template, redirect, url_for, session, request, jsonify
+from quart import Blueprint, render_template, redirect, url_for, session, request, jsonify
 import logging
 
 from helpers.config_helpers import get_config

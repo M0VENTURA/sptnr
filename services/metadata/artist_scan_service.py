@@ -11,7 +11,7 @@ import logging
 import threading
 from typing import Any
 
-import requests
+import httpx
 
 from sqlalchemy import text
 from db.engine import db_session
@@ -44,7 +44,7 @@ def _fetch_musicbrainz_releases(artist: str, artist_mbid: str | None = None) -> 
     else:
         url = "https://musicbrainz.org/ws/2/release-group"
         params = {"fmt": "json", "query": f'artist:"{artist}"', "type": "album|ep|single"}
-    response = requests.get(url, headers=headers, params=params, timeout=10)
+    response = httpx.get(url, headers=headers, params=params, timeout=10)
     response.raise_for_status()
     return response.json().get("release-groups", []) or []
 
@@ -100,7 +100,7 @@ def import_release(artist: str, release_id: str, title: str):
     as a compatibility bridge.
     """
     headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-    response = requests.get(
+    response = httpx.get(
         f"https://musicbrainz.org/ws/2/release/{release_id}",
         params={"fmt": "json", "inc": "recordings"},
         headers=headers,

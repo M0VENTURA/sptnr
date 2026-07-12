@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from flask import flash, jsonify, redirect, request, url_for
+from quart import flash, jsonify, redirect, request, url_for
 
 import services.scanning.runtime_state as runtime_state
 from routes.scan_routes import scans_bp

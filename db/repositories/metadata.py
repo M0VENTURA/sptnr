@@ -199,12 +199,9 @@ def update_album_discogs_fields(conn: Any = None, artist: str = "", album: str =
             result = session.execute(text("""
                 UPDATE tracks
                 SET discogs_album_id = :did
-                WHERE artist = %s AND album = %s
-            """, (discogs_id, artist, album))
-
-        return cursor.rowcount or 0
-    finally:
-        cursor.close()
+                WHERE artist = :artist AND album = :album
+            """), {"did": discogs_id, "artist": artist, "album": album})
+        return result.rowcount or 0
 
 
 def ignore_missing_track_db(

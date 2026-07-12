@@ -108,44 +108,33 @@ def fetch_all_artists_with_stats(conn: Any = None, has_album_artist: bool = Fals
 def fetch_genre_mood_analytics(conn: Any = None, top_n: int = 50):
     """Fetch top genres, moods, and genre+mood combinations."""
     with db_session() as session:
+        genres = session.execute(text("""
+            SELECT genre, COUNT(*) AS count
             FROM tracks
             WHERE genre IS NOT NULL AND TRIM(genre) != ''
             GROUP BY genre
             ORDER BY count DESC
-            LIMIT %s
-            """,
-            (top_n,),
-        )
-        genres = cursor.fetchall() or []
+            LIMIT :limit
+        """), {"limit": top_n}).fetchall() or []
 
-        # ---- Top Moods ----
-        cursor.execute(
-            """
+        moods = session.execute(text("""
             SELECT mood, COUNT(*) AS count
             FROM tracks
             WHERE mood IS NOT NULL AND TRIM(mood) != ''
             GROUP BY mood
             ORDER BY count DESC
-            LIMIT %s
-            """,
-            (top_n,),
-        )
-        moods = cursor.fetchall() or []
+            LIMIT :limit
+        """), {"limit": top_n}).fetchall() or []
 
-        # ---- Genre + Mood combinations ----
-        cursor.execute(
-            """
+        combos = session.execute(text("""
             SELECT genre, mood, COUNT(*) AS count
             FROM tracks
             WHERE genre IS NOT NULL AND mood IS NOT NULL
               AND TRIM(genre) != '' AND TRIM(mood) != ''
             GROUP BY genre, mood
             ORDER BY count DESC
-            LIMIT %s
-            """,
-            (top_n,),
-        )
-        combos = cursor.fetchall() or []
+            LIMIT :limit
+        """), {"limit": top_n}).fetchall() or []
 
         return genres, moods, combos
 
@@ -239,29 +228,30 @@ def upsert_musicbrainz_release(
                 logging.info(f"[RELEASE_ENTRY] Updated {release_db_id}")
 
             else:
-                cursor.execute("""
+                result = session.execute(text("""
                     INSERT INTO musicbrainz_releases
                     (release_id, release_title, artist, release_year,
                      total_tracks, monitoring_folder_path,
                      status, method, album_artist, release_source,
                      created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s,
-                            'active', %s, %s, %s,
+                    VALUES (:rid, :rtitle, :artist, :ryear,
+                            :ttracks, :mfp,
+                            'active', :method, :aa, :rs,
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     RETURNING id
-                """, (
-                    release_id,
-                    release_title,
-                    artist,
-                    release_year,
-                    total_tracks,
-                    str(monitoring_folder_path),
-                    method,
-                    album_artist,
-                    release_source or "musicbrainz",
-                ))
+                """), {
+                    "rid": release_id,
+                    "rtitle": release_title,
+                    "artist": artist,
+                    "ryear": release_year,
+                    "ttracks": total_tracks,
+                    "mfp": str(monitoring_folder_path),
+                    "method": method,
+                    "aa": album_artist,
+                    "rs": release_source or "musicbrainz",
+                })
 
-                release_db_id = cursor.fetchone()[0]
+                release_db_id = result.scalar()
                 logging.info(f"[RELEASE_ENTRY] Created {release_db_id}")
 
         return release_db_id

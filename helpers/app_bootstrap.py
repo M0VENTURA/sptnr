@@ -23,6 +23,7 @@ from routes.social_routes import listenbrainz_bp, lastfm_bp, weekly_bp
 from routes.upcoming_releases_routes import upcoming_bp
 from routes.misc_routes import misc_api_bp
 from routes.ui_routes import ui_bp
+from routes.api_v1 import api_v1_bp
 from routes.beets_routes import beets_bp
 
 
@@ -44,5 +45,6 @@ def register_all_blueprints(app):
     app.register_blueprint(weekly_bp)
     app.register_blueprint(upcoming_bp)
     app.register_blueprint(misc_api_bp)
+    app.register_blueprint(api_v1_bp)
     app.register_blueprint(ui_bp)
     app.register_blueprint(beets_bp)

@@ -4,7 +4,7 @@ General scan start/stop/status routes.
 
 from __future__ import annotations
 
-from flask import flash, jsonify, redirect, request, url_for
+from quart import flash, jsonify, redirect, request, url_for
 
 from routes.scan_routes import scans_bp
 from routes.scan_routes._common import form_bool, run_async

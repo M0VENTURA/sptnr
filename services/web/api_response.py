@@ -20,7 +20,7 @@ Architecture:
 from __future__ import annotations
 
 from datetime import datetime
-from flask import jsonify
+from quart import jsonify
 
 
 def api_ok(message: str | None = None, status: int = 200, **kwargs):

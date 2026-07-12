@@ -151,9 +151,8 @@ preflight_python() {
 }
 
 start_web_app() {
-    log "Starting Flask web application..."
-    # Error logfile set to "-" (stdout) so gunicorn errors appear in docker logs
-    exec gunicorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class gthread             --threads "${SPTNR_GUNICORN_THREADS:-4}"             --timeout "${SPTNR_GUNICORN_TIMEOUT:-300}"             --graceful-timeout "${SPTNR_GUNICORN_GRACEFUL_TIMEOUT:-60}"             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --worker-tmp-dir "${SPTNR_GUNICORN_WORKER_TMP_DIR:-/dev/shm}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile -             --log-level "${SPTNR_LOG_LEVEL:-debug}"             "app:app"
+    log "Starting Quart web application with hypercorn..."
+    exec hypercorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class asyncio             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile -             --log-level "${SPTNR_LOG_LEVEL:-debug}"             "app:app"
 }
 
 main() {
@@ -166,26 +165,22 @@ main() {
     if wait_for_db; then ok "Database ready"; else warn "Database wait failed"; fi
 
     if run_queue_startup_schema; then :; fi
-    # Alembic migrations are handled by app.py → run_migrations_on_startup()
-    # which runs after the SQLAlchemy engine is created.  Running them here
-    # in the entrypoint is redundant and adds a second DB connection attempt
-    # before the engine is ready.  Removed to avoid confusion.
     if check_ffmpeg; then :; fi
     if start_queue_processor; then :; fi
     if preflight_python; then :; fi
 
-    # Test Flask import BEFORE gunicorn — catches import errors explicitly
-    log "Testing Flask app import..."
-    if python3 -c "import sys; sys.path.insert(0, '.'); from app import app; print('✓ Flask app loaded OK')" 2>&1; then
-        ok "Flask import test passed"
+    # Test Quart app import BEFORE hypercorn — catches import errors explicitly
+    log "Testing Quart app import..."
+    if python3 -c "import sys; sys.path.insert(0, '.'); from app import app; print('✓ Quart app loaded OK')" 2>&1; then
+        ok "Quart import test passed"
     else
-        warn "Flask import FAILED — see error above. Continuing to gunicorn for full error trace."
+        warn "Quart import FAILED — see error above. Continuing to hypercorn for full error trace."
     fi
 
     start_web_app
 
-    # If we reach here, gunicorn failed to start — pause so logs are visible
-    warn "Flask/gunicorn did not start. Container will exit in 60 seconds."
+    # If we reach here, hypercorn failed to start — pause so logs are visible
+    warn "Quart/hypercorn did not start. Container will exit in 60 seconds."
     warn "Run 'docker logs popularr' to inspect the full output."
     sleep 60
 }

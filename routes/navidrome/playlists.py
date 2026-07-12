@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from flask import jsonify
+from quart import jsonify
 
 from routes.navidrome import get_navidrome_client, navidrome_bp
 

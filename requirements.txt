@@ -1,12 +1,12 @@
-Flask>=3.0,<4.0
-gunicorn>=21.2,<23.0
+quart>=0.19,<1.0
+hypercorn>=0.17,<1.0
 psycopg2-binary>=2.9,<3.0
-requests>=2.31,<3.0
 httpx>=0.28,<1.0
 PyYAML>=6.0,<7.0
 mutagen>=1.47,<2.0
 beautifulsoup4>=4.12,<5.0
-urllib3>=2.0,<3.0
+apscheduler>=3.10,<4.0
+pydantic-settings>=2.0,<3.0
 
 # Database — SQLAlchemy ORM + async driver + migrations
 sqlalchemy>=2.0,<3.0

@@ -21,7 +21,7 @@ import json
 import logging
 import os
 from typing import Any, List, Dict, Tuple
-import requests
+import httpx
 import time
 
 
@@ -424,7 +424,7 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
         # ✅ simple rate limit
         time.sleep(1.0)
 
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response = httpx.get(url, headers=headers, params=params, timeout=10)
 
         if response.status_code == 404:
             logger.debug(f"[MB] Release {release_id} not found")
@@ -469,7 +469,7 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
         # ✅ cover art (best effort)
         try:
             cover_url = f"https://coverartarchive.org/release/{release_id}/front-500"
-            cover = requests.get(cover_url, timeout=5)
+            cover = httpx.get(cover_url, timeout=5)
             if cover.status_code == 200:
                 release_info["cover_art"] = cover.content
         except Exception:
@@ -543,9 +543,8 @@ def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -
 def get_release_group_releases(rg_mbid: str) -> dict:
     """Fetch all releases within a release group."""
     try:
-        import requests
         headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
-        resp = requests.get(
+        resp = httpx.get(
             f"https://musicbrainz.org/ws/2/release-group/{rg_mbid}",
             params={"fmt": "json", "inc": "releases"},
             headers=headers,

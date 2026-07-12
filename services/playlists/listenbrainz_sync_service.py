@@ -133,13 +133,12 @@ def _parse_rss(xml_text: str) -> list[dict]:
 
 
 def _fetch_feed_tracks(listenbrainz_username: str, rec_type: str) -> list[dict]:
-    import requests
     from api_clients.listenbrainz import ListenBrainzUserClient
 
     headers = {"User-Agent": "popularr/1.0", "Accept": "application/rss+xml, application/atom+xml"}
     for url in _rss_candidates(listenbrainz_username, rec_type):
         try:
-            resp = requests.get(url, headers=headers, timeout=10)
+            resp = httpx.get(url, headers=headers, timeout=10)
             if resp.status_code == 200:
                 tracks = _parse_rss(resp.text)
                 if tracks:

@@ -10,7 +10,7 @@ Handles:
 import io
 import logging
 from urllib.parse import unquote
-from flask import Blueprint, jsonify, request, send_file
+from quart import Blueprint, jsonify, request, send_file
 
 from services.metadata.album_service import (
     rename_album_files_service,

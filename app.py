@@ -24,7 +24,7 @@ All heavy logic lives in:
 import os
 import secrets
 
-from flask import Flask
+from quart import Quart
 
 from helpers.logging_config import setup_logging
 from db.bootstrap import init_database_and_schema
@@ -72,7 +72,7 @@ if _sqlalchemy_available:
 
 setup_logging("WebUI")
 
-app = Flask(__name__)
+app = Quart(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(16))
 app.config["PERMANENT_SESSION_LIFETIME"] = 86400
 

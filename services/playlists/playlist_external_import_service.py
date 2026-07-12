@@ -17,7 +17,7 @@ Architecture:
 """
 
 import logging
-import requests
+import httpx
 from urllib.parse import urlparse
 
 
@@ -31,7 +31,7 @@ def extract_spotify_playlist_id(url: str):
 
 def get_spotify_access_token():
     try:
-        resp = requests.get(
+        resp = httpx.get(
             "https://open.spotify.com/get_access_token",
             params={"reason": "transport", "productType": "web_player"},
             headers={
@@ -61,7 +61,7 @@ def fetch_spotify_playlist(playlist_id: str):
     # Playlist metadata
     name = playlist_id
     try:
-        meta = requests.get(
+        meta = httpx.get(
             f"https://api.spotify.com/v1/playlists/{playlist_id}",
             headers=headers,
             params={"fields": "name"},
@@ -78,7 +78,7 @@ def fetch_spotify_playlist(playlist_id: str):
     params = {"limit": 100}
 
     while next_url:
-        resp = requests.get(next_url, headers=headers, params=params, timeout=(5, 30))
+        resp = httpx.get(next_url, headers=headers, params=params, timeout=(5, 30))
         resp.raise_for_status()
 
         data = resp.json()

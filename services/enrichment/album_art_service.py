@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 import os
-import requests
 
-from flask import Response
+import httpx
+
+from quart import Response
 
 from api_clients.coverartarchive import get_release_group_front_image_bytes
 from api_clients.discogs_http import DiscogsHttpClient
@@ -109,7 +110,7 @@ def fetch_album_art_from_itunes(
             "limit": 5,
         }
 
-        response = requests.get(
+        response = httpx.get(
             search_url,
             params=params,
             headers=headers,
@@ -187,7 +188,7 @@ def fetch_album_art_from_itunes(
                     album_name,
                 )
 
-                art_response = requests.get(
+                art_response = httpx.get(
                     artwork_url,
                     headers=headers,
                     timeout=5,
@@ -227,7 +228,7 @@ def fetch_album_art_from_itunes(
                 album_name,
             )
 
-            art_response = requests.get(
+            art_response = httpx.get(
                 artwork_url,
                 headers=headers,
                 timeout=5,
@@ -292,9 +293,8 @@ def fetch_album_art_from_audiodb(artist_name: str, album_name: str) -> bytes | N
         Raw image bytes, or None if not found.
     """
     try:
-        import requests
         url = "https://theaudiodb.com/api/v1/json/2/searchalbum.php"
-        resp = requests.get(url, params={"s": artist_name, "a": album_name}, timeout=10)
+        resp = httpx.get(url, params={"s": artist_name, "a": album_name}, timeout=10)
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -304,7 +304,7 @@ def fetch_album_art_from_audiodb(artist_name: str, album_name: str) -> bytes | N
         art_url = albums[0].get("strAlbumThumb") or albums[0].get("strAlbumCDart")
         if not art_url:
             return None
-        img_resp = requests.get(art_url, timeout=10)
+        img_resp = httpx.get(art_url, timeout=10)
         if img_resp.status_code == 200:
             logger.debug("Fetched album art from AudioDB for %s — %s", artist_name, album_name)
             return img_resp.content
@@ -435,8 +435,7 @@ def search_album_art_external(artist: str, album: str, source: str = "musicbrain
 def set_album_art_from_url(artist: str, album: str, image_url: str) -> dict:
     """Download image from URL and save to database."""
     try:
-        import requests
-        resp = requests.get(image_url, timeout=10)
+        resp = httpx.get(image_url, timeout=10)
         if resp.status_code != 200:
             return {"success": False, "error": "Failed to download image"}
         mime = resp.headers.get("content-type", "image/jpeg")

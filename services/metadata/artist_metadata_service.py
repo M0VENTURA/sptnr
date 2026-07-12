@@ -106,7 +106,7 @@ def get_covered_by(artist: str) -> tuple[dict, int]:
 
 def artist_favourite(request) -> tuple[dict, int]:
     """Check/add/remove artist favourite via bookmarks table."""
-    from flask import jsonify
+    from quart import jsonify
     artist = (request.args.get("artist") or (request.json or {}).get("artist") or "").strip()
     if not artist:
         return {"success": False, "error": "artist required"}, 400
@@ -139,7 +139,7 @@ def artist_favourite(request) -> tuple[dict, int]:
 
 def get_artist_image(artist: str):
     """Get artist image URL from database."""
-    from flask import Response
+    from quart import Response
     if not artist:
         return Response("", status=404)
     conn = get_db_connection()
@@ -303,10 +303,9 @@ def genre_recommendations(artist: str) -> tuple[dict, int]:
     if not artist:
         return {"success": False, "error": "artist required"}, 400
     try:
-        import requests
         from urllib.parse import quote
         headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
-        resp = requests.get(
+        resp = httpx.get(
             f"https://musicbrainz.org/ws/2/artist/?query=artist:{quote(artist)}&fmt=json&limit=1",
             headers=headers, timeout=10,
         )

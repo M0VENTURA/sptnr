@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Any
 
-from flask import Blueprint, jsonify, request, Response, send_file
+from quart import Blueprint, jsonify, request, Response, send_file
 
 from sqlalchemy import text
 
@@ -317,10 +317,10 @@ def api_track_mb_releases(track_id):
                 return jsonify({"error": "Track not found"}), 404
             artist = row[0]
             title = row[1]
-        import requests
+        import httpx
         from urllib.parse import quote
         headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
-        resp = requests.get(
+        resp = httpx.get(
             f"https://musicbrainz.org/ws/2/recording/?query=artist:{quote(artist)}+AND+recording:{quote(title)}&fmt=json&limit=10",
             headers=headers, timeout=10,
         )

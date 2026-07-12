@@ -8,8 +8,9 @@ import time
 import re
 from typing import Any
 
-from flask import Blueprint, jsonify, request, session
+from quart import Blueprint, jsonify, request, session
 
+import httpx
 from sqlalchemy import text
 from db.engine import db_session
 from helpers.config_helpers import get_config
@@ -34,10 +35,9 @@ def api_musicbrainz_tags_track():
     if not (artist and album and title):
         return jsonify({"error": "artist, album, and title required"}), 400
     try:
-        import requests as req
         from urllib.parse import quote
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT, "Accept": "application/json"}
-        resp = req.get(
+        resp = httpx.get(
             f"https://musicbrainz.org/ws/2/recording/?query=artist:{quote(artist)}+AND+recording:{quote(title)}&fmt=json&limit=5",
             headers=headers, timeout=10,
         )
@@ -177,16 +177,15 @@ def api_musicbrainz_search():
     if not query:
         return jsonify({"error": "query required"}), 400
     try:
-        import requests as req
         from urllib.parse import quote
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT, "Accept": "application/json"}
         if artist_only:
-            resp = req.get(
+            resp = httpx.get(
                 f"https://musicbrainz.org/ws/2/artist/?query=artist:{quote(query)}&fmt=json&limit=10",
                 headers=headers, timeout=10,
             )
         else:
-            resp = req.get(
+            resp = httpx.get(
                 f"https://musicbrainz.org/ws/2/release-group/?query=releasegroup:{quote(query)}&fmt=json&limit=20",
                 headers=headers, timeout=10,
             )
@@ -208,10 +207,9 @@ def api_musicbrainz_search_releases():
     if not artist or not album:
         return jsonify({"error": "artist and album required"}), 400
     try:
-        import requests as req
         from urllib.parse import quote
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT, "Accept": "application/json"}
-        resp = req.get(
+        resp = httpx.get(
             f"https://musicbrainz.org/ws/2/release/?query=artist:{quote(artist)}+AND+release:{quote(album)}&fmt=json&limit=10",
             headers=headers, timeout=10,
         )

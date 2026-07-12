@@ -169,25 +169,17 @@ def _set_int_if(env_suffix: str, cfg: dict, *keys: str) -> None:
 
 def get_config() -> dict:
     """
-    Load config.yaml with caching.
+    Load config.yaml with caching, with Pydantic Settings as defaults.
 
-    Environment variables with the ``POPULARLR_`` prefix override
-    corresponding config.yaml keys at load time.  This lets operators
-    set critical values (API keys, feature flags) without writing a
-    config file.
+    Pydantic ``Settings`` (loaded from ``POPULARLR_*`` env vars) provide
+    the base values.  The YAML file overrides those defaults.  Finally,
+    legacy ``POPULARLR_*`` env vars (via ``_apply_env_overrides``) can
+    still override everything.
 
-    Mapping rules (examples):
-      ``POPULARLR_NAV_URL``            → ``navidrome_users[0].base_url``
-      ``POPULARLR_NAV_USER``           → ``navidrome_users[0].user``
-      ``POPULARLR_NAV_PASS``           → ``navidrome_users[0].pass``
-      ``POPULARLR_SPOTIFY_CLIENT_ID``  → ``api_integrations.spotify.client_id``
-      ``POPULARLR_LASTFM_API_KEY``     → ``api_integrations.lastfm.api_key``
-      ``POPULARLR_DISCOGS_TOKEN``      → ``api_integrations.discogs.token``
-      ``POPULARLR_DOWNLOADS_FOLDER``   → ``downloads.folder``
-      ``POPULARLR_AUTO_IMPORT``        → ``watcher.auto_import_enabled``
-      ``POPULARLR_SCAN_INTERVAL``      → ``watcher.scan_interval``
-      ``POPULARLR_ESSENTIA_ENABLED``   → ``essentia.tag_moods``
-      ``POPULARLR_AUDIODB_API_KEY``    → ``api_integrations.audiodb.api_key``
+    This layered approach:
+    1. Settings (env vars + code defaults) — type-safe, auto-complete
+    2. ``config.yaml`` — file-based overrides
+    3. Legacy ``_apply_env_overrides`` — backward compatibility
     """
 
     global _CONFIG_CACHE
@@ -195,16 +187,64 @@ def get_config() -> dict:
     if _CONFIG_CACHE is not None:
         return _CONFIG_CACHE
 
-    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    # ── Layer 1: Pydantic Settings (env vars + code defaults) ──────
+    from helpers.settings import get_settings
+    s = get_settings()
 
-    cfg, _ = _read_yaml(config_path)
+    cfg: dict[str, Any] = {
+        "pg_host": s.pg_host,
+        "pg_port": s.pg_port,
+        "pg_user": s.pg_user,
+        "pg_password": s.pg_password,
+        "pg_database": s.pg_database,
+        "database_url": s.database_url,
+        "db_pool_size": s.db_pool_size,
+        "db_pool_overflow": s.db_pool_overflow,
+        "music_root": s.music_root,
+        "music_folder": s.music_folder,
+        "downloads_folder": s.downloads_folder,
+        "config_path": s.config_path,
+        "log_path": s.log_path,
+        "db_path": s.db_path,
+        "nav_url": s.nav_url,
+        "nav_user": s.nav_user,
+        "nav_pass": s.nav_pass,
+        "spotify_client_id": s.spotify_client_id,
+        "spotify_client_secret": s.spotify_client_secret,
+        "lastfm_api_key": s.lastfm_api_key,
+        "lastfm_api_secret": s.lastfm_api_secret,
+        "discogs_token": s.discogs_token,
+        "essentia_enabled": s.essentia_enabled,
+        "essentia_script_path": s.essentia_script_path,
+        "essentia_models_dir": s.essentia_models_dir,
+        "auto_import": s.auto_import,
+        "bind": s.bind,
+        "workers": s.workers,
+        "log_level": s.log_level,
+        "state_dir": s.state_dir,
+        "use_local_assets": s.use_local_assets,
+    }
 
-    # ── Environment variable overrides ──────────────────────────────
+    # ── Layer 2: YAML file ─────────────────────────────────────────
+    config_path = os.environ.get("CONFIG_PATH", s.config_path)
+    yaml_cfg, _ = _read_yaml(config_path)
+    _deep_merge(cfg, yaml_cfg)
+
+    # ── Layer 3: Legacy env var overrides ──────────────────────────
     _apply_env_overrides(cfg)
 
-    _CONFIG_CACHE = cfg or {}
+    _CONFIG_CACHE = cfg
 
     return _CONFIG_CACHE
+
+
+def _deep_merge(base: dict, override: dict) -> None:
+    """Merge ``override`` into ``base`` recursively (in-place)."""
+    for key, value in override.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
 
 
 def clear_config_cache():

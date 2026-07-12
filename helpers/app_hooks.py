@@ -12,7 +12,7 @@ Called once during app factory setup.
 import time
 import logging
 
-from flask import g, request
+from quart import g, request
 
 logger = logging.getLogger(__name__)
 

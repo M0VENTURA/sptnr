@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from flask import jsonify, request
+from quart import jsonify, request
 from sqlalchemy import text
 from db.engine import db_session
 from routes.scan_routes import scans_bp

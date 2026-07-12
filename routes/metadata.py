@@ -4,7 +4,7 @@ Provides API endpoints for querying MusicBrainz release metadata
 by MBID. Used by the download matching and album detail UIs.
 """
 
-from flask import Blueprint, jsonify
+from quart import Blueprint, jsonify
 from services.metadata.release_service import get_release_details
 metadata_bp = Blueprint("metadata", __name__)
 

@@ -6,7 +6,7 @@ Handles:
 - Artist metadata display.
 """
 
-from flask import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify
 from routes.utils import json_response as _json_response
 from services.metadata import artist_service as corrections
 from services.metadata.release_service import get_cached_missing_releases

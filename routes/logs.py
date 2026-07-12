@@ -4,7 +4,7 @@ Log viewing and download routes.
 
 from __future__ import annotations
 
-from flask import (
+from quart import (
     Blueprint,
     jsonify,
     request,

@@ -11,7 +11,7 @@ from urllib.parse import unquote
 
 import re
 
-from flask import (
+from quart import (
     Blueprint, flash, jsonify, redirect, render_template, request,
     Response, session, url_for,
 )

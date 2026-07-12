@@ -1,5 +1,5 @@
 
-from flask import Blueprint
+from quart import Blueprint
 
 scans_bp = Blueprint("scans", __name__)
 

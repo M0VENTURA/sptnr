@@ -5,7 +5,7 @@ A single blueprint is shared by playlist, scan and ratings route modules.
 
 from __future__ import annotations
 
-from flask import Blueprint, session
+from quart import Blueprint, session
 
 from api_clients.navidrome import NavidromeClient
 from helpers.config_helpers import get_config

@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from flask import Blueprint, jsonify, request, Response
+import httpx
+from quart import Blueprint, jsonify, request, Response
 from sqlalchemy import text
 
 from db.engine import db_session
@@ -145,10 +146,10 @@ def api_fetch_artist_country():
     if not artist:
         return jsonify({"error": "artist_name required"}), 400
     try:
-        import requests
+        from urllib.parse import quote
         headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
-        resp = requests.get(
-            f"https://musicbrainz.org/ws/2/artist/?query=artist:%22{requests.utils.quote(artist)}%22&fmt=json&limit=1",
+        resp = httpx.get(
+            f"https://musicbrainz.org/ws/2/artist/?query=artist:%22{quote(artist)}%22&fmt=json&limit=1",
             headers=headers, timeout=10,
         )
         data = resp.json()
@@ -421,7 +422,7 @@ def api_correcting_mb_suggestions():
         import requests, time
         headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
         time.sleep(1.0)
-        resp = requests.get(
+        resp = httpx.get(
             f"https://musicbrainz.org/ws/2/release/{mbid}",
             params={"fmt": "json", "inc": "release-groups+labels"},
             headers=headers, timeout=12,

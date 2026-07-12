@@ -11,6 +11,8 @@ import re
 import time
 from typing import Any
 
+import httpx
+
 from sqlalchemy import text
 from db.engine import db_session
 from db.utils import get_db_connection, row_get  # TODO: migrate
@@ -39,7 +41,6 @@ def get_library_tracks(artist: str, album: str) -> list[dict]:
 
 def get_missing_tracks(artist: str, album: str) -> dict:
     """Check which tracks are in the MusicBrainz release but missing from the library."""
-    import requests
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -73,7 +74,7 @@ def get_missing_tracks(artist: str, album: str) -> dict:
             headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
             search_url = "https://musicbrainz.org/ws/2/release/"
             from urllib.parse import quote
-            resp = requests.get(
+            resp = httpx.get(
                 search_url,
                 params={"query": f'artist:"{quote(artist)}" AND release:"{quote(album)}"', "fmt": "json", "limit": 5},
                 headers=headers, timeout=10,
@@ -129,7 +130,6 @@ def get_missing_tracks(artist: str, album: str) -> dict:
 
 def get_title_mismatches(artist: str, album: str) -> dict:
     """Compare library track titles against the full MusicBrainz release tracklist."""
-    import requests
     conn = get_db_connection()
     try:
         cursor = conn.cursor()

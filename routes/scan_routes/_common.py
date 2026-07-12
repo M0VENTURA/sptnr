@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable
 
-from flask import redirect, url_for
+from quart import redirect, url_for
 
 
 TRUE_VALUES = {"1", "true", "yes", "on"}

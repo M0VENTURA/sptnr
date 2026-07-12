@@ -1,6 +1,6 @@
 """Library sync API routes."""
 from __future__ import annotations
-from flask import Blueprint
+from quart import Blueprint
 from services.library.library_sync_service import get_library_sync_state, request_library_sync
 from services.web.api_response import api_ok
 

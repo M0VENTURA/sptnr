@@ -1,20 +1,27 @@
 """Background service initialisation bridge.
 
 Provides ``initialize_app_services()`` for ``app.py`` to start background
-worker services. Currently a placeholder — no services auto-start by default.
+worker services. Currently starts the APScheduler for periodic tasks.
 
 To add background services, import and start them here so ``app.py`` stays
 clean of business logic.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def initialize_app_services(app=None):
     """Start background services after the Flask app is created.
 
-    Called once during app factory setup (app.py). Currently a placeholder
-    that logs the event. Extend here to start queue workers, schedulers,
-    or periodic sync loops.
+    Called once during app factory setup (``app.py``). Starts APScheduler
+    for periodic tasks (library sync, popularity scan, queue processor).
     """
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.debug("[TASK_MANAGER] Background service initialisation complete (app=%s)", bool(app))
+    try:
+        from services.scheduler.scheduler_service import start_scheduler
+        start_scheduler(app=app)
+    except Exception as exc:
+        logger.warning("Failed to start scheduler: %s", exc)
+
+    logger.debug("[TASK_MANAGER] Background services initialised (app=%s)", bool(app))

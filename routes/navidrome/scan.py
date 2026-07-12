@@ -6,7 +6,7 @@ status and stop-all routes remain under ``routes/scan_routes``.
 
 from __future__ import annotations
 
-from flask import flash, jsonify, redirect, request, url_for
+from quart import flash, jsonify, redirect, request, url_for
 
 import services.scanning.runtime_state as runtime_state
 from routes.navidrome import navidrome_bp, get_navidrome_client
