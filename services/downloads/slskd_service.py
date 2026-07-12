@@ -33,12 +33,17 @@ class SearchFile:
     bitrate: int
     sample_rate: int
     length: int
+    bit_depth: int | None = None
+    extension: str | None = None
+    is_locked: bool = False
 
     def __post_init__(self):
         self.size = int(self.size or 0)
         self.bitrate = int(self.bitrate or 0)
         self.sample_rate = int(self.sample_rate or 0)
         self.length = int(self.length or 0)
+        if self.bit_depth is not None:
+            self.bit_depth = int(self.bit_depth) if self.bit_depth else None
 
     @property
     def size_mb(self) -> float:
@@ -50,7 +55,21 @@ class SearchFile:
             return "0:00"
         return f"{self.length // 60}:{self.length % 60:02d}"
 
-    def matches_quality(self, min_bitrate: int = 320, min_sample_rate: int = 44100) -> bool:
+    @property
+    def is_lossless(self) -> bool:
+        return (self.extension or "").lower() in ("flac", "wav", "aiff", "alac")
+
+    def matches_quality(self, min_bitrate: int = 192, min_sample_rate: int = 44100) -> bool:
+        """Check if this file meets minimum quality thresholds.
+
+        Lossless formats (FLAC, WAV, etc.) pass automatically on bitrate
+        since their bitrate varies with content.  Sample rate must still
+        meet the minimum.
+        """
+        if self.is_locked:
+            return False
+        if self.is_lossless:
+            return self.sample_rate >= min_sample_rate
         return self.bitrate >= min_bitrate and self.sample_rate >= min_sample_rate
 
 
@@ -59,6 +78,8 @@ class SearchResponse:
     username: str
     files: list[SearchFile]
     has_free_upload_slot: bool = True
+    upload_speed: int | None = None
+    queue_length: int | None = None
 
     def __post_init__(self):
         if not self.files:
@@ -71,6 +92,9 @@ class SearchResponse:
                     bitrate=f.get("bitRate", 0),
                     sample_rate=f.get("sampleRate", 0),
                     length=f.get("length", 0),
+                    bit_depth=f.get("bitDepth"),
+                    extension=f.get("extension"),
+                    is_locked=bool(f.get("isLocked", f.get("is_locked", False))),
                 )
                 for f in self.files
             ]
@@ -181,6 +205,8 @@ class SlskdService:
                         username=raw_resp.get("username", "Unknown"),
                         files=raw_resp.get("files", []),
                         has_free_upload_slot=raw_resp.get("hasFreeUploadSlot", raw_resp.get("HasFreeUploadSlot", True)),
+                        upload_speed=raw_resp.get("uploadSpeed"),
+                        queue_length=raw_resp.get("queueLength"),
                     ))
             return responses, state, state not in self.ACTIVE_STATES
         except Exception as exc:
@@ -197,7 +223,7 @@ class SlskdService:
             logger.error("slskd download exception for %s/%s: %s", username, filename[:50], exc, exc_info=True)
             return False
 
-    def filter_results_by_quality(self, responses: list[SearchResponse], min_bitrate: int = 320, min_sample_rate: int = 44100, max_results: int = 10) -> list[dict]:
+    def filter_results_by_quality(self, responses: list[SearchResponse], min_bitrate: int = 192, min_sample_rate: int = 44100, max_results: int = 50) -> list[dict]:
         qualified = []
         for response in responses:
             for file in response.files:
@@ -208,9 +234,14 @@ class SlskdService:
                         "size_mb": file.size_mb,
                         "bitrate": file.bitrate,
                         "sample_rate": file.sample_rate,
+                        "bit_depth": file.bit_depth,
+                        "extension": file.extension,
+                        "is_lossless": file.is_lossless,
                         "duration": file.duration_formatted,
                         "length_seconds": file.length,
                         "has_free_upload_slot": getattr(response, "has_free_upload_slot", True),
+                        "upload_speed": getattr(response, "upload_speed", None),
+                        "queue_length": getattr(response, "queue_length", None),
                     })
         qualified.sort(key=lambda item: (-item["bitrate"], -item["sample_rate"]))
         return qualified[:max_results]

@@ -261,8 +261,26 @@ async def artist_detail(name):
         """), {"name": name})
         top_tracks = [dict(r._mapping) for r in result.fetchall()]
 
+        # Fetch genre columns for all tracks to build genre_sources.
+        result = session.execute(text("""
+            SELECT lastfm_tags, listenbrainz_genres, discogs_genres,
+                   musicbrainz_genres, spotify_genres, essentia_genres,
+                   navidrome_genres, manual_genres, mood
+            FROM tracks
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
+        """), {"name": name})
+        genre_rows = [dict(r._mapping) for r in result.fetchall()]
+
+    genre_sources = {}
+    try:
+        from services.enrichment.genre_tag_aggregator import get_artist_genre_sources
+        genre_sources = get_artist_genre_sources(genre_rows)
+    except Exception as exc:
+        logger.debug("Failed to aggregate artist genre sources: %s", exc)
+
     return await render_template(
-        "pages/artist_detail.html", artist_name=name, albums=albums, stats=stats, top_tracks=top_tracks,
+        "pages/artist_detail.html", artist_name=name, albums=albums, stats=stats,
+        top_tracks=top_tracks, genre_sources=genre_sources,
     )
 
 
@@ -276,7 +294,19 @@ async def album_detail(artist, album):
             {"artist": artist, "album": album},
         )
         tracks = [dict(r._mapping) for r in result.fetchall()]
-        return await render_template("pages/album_detail.html", artist=artist, album=album, tracks=tracks)
+
+    genre_sources = {}
+    try:
+        from services.enrichment.genre_tag_aggregator import get_album_genre_sources
+        genre_sources = get_album_genre_sources(tracks)
+    except Exception as exc:
+        logger.debug("Failed to aggregate album genre sources: %s", exc)
+
+    return await render_template(
+        "pages/album_detail.html",
+        artist=artist, album=album, tracks=tracks,
+        genre_sources=genre_sources,
+    )
 
 
 @ui_bp.route("/track/<track_id>")
@@ -286,7 +316,19 @@ async def track_detail(track_id):
         row = result.fetchone()
         if not row:
             return await render_template("pages/track_detail.html", track=None, error="Track not found")
-        return await render_template("pages/track_detail.html", track=dict(row._mapping))
+
+        track = dict(row._mapping)
+
+    genre_sources = {}
+    try:
+        from services.enrichment.genre_tag_aggregator import get_track_genre_sources
+        genre_sources = get_track_genre_sources(track)
+    except Exception as exc:
+        logger.debug("Failed to aggregate track genre sources: %s", exc)
+
+    return await render_template(
+        "pages/track_detail.html", track=track, genre_sources=genre_sources,
+    )
 
 
 @ui_bp.route("/search")

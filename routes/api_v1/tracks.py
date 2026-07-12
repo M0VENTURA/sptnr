@@ -31,10 +31,13 @@ async def get_track(track_id: str):
 async def get_track_genres(track_id: str):
     """Get all genre sources for a track."""
     try:
+        from services.enrichment.genre_tag_aggregator import get_track_genre_sources
+
         with db_session() as session:
             result = session.execute(
                 text("""SELECT spotify_genres, lastfm_tags, musicbrainz_genres,
-                    discogs_genres, essentia_genres, mood, listenbrainz_genres
+                    discogs_genres, essentia_genres, mood, listenbrainz_genres,
+                    navidrome_genres, manual_genres
                     FROM tracks WHERE CAST(id AS TEXT) = :id"""),
                 {"id": track_id},
             )
@@ -42,23 +45,17 @@ async def get_track_genres(track_id: str):
             if not row:
                 return jsonify(_fail("Track not found", 404))
 
-            import json as _json
-            source_keys = ["discogs_genres", "mood", "essentia_genres",
-                          "musicbrainz_genres", "lastfm_tags", "listenbrainz_genres", "spotify_genres"]
-            genres = {}
-            for idx, key in enumerate(source_keys):
-                raw = row[idx]
-                if not raw:
-                    genres[key] = []
-                    continue
-                try:
-                    parsed = _json.loads(raw) if isinstance(raw, str) else raw
-                except Exception:
-                    parsed = [g.strip() for g in str(raw).split(",") if g.strip()]
-                if isinstance(parsed, list):
-                    genres[key] = parsed
-                else:
-                    genres[key] = []
+            keys = ["spotify_genres", "lastfm_tags", "musicbrainz_genres",
+                    "discogs_genres", "essentia_genres", "mood",
+                    "listenbrainz_genres", "navidrome_genres", "manual_genres"]
+            track_dict = dict(zip(keys, [row[i] for i in range(len(keys))]))
+            sources = get_track_genre_sources(track_dict)
+
+            # Flatten to simple name lists for the API response.
+            genres = {
+                source: [t["name"] for t in tags]
+                for source, tags in sources.items()
+            }
             return jsonify(_ok(genres=genres))
     except Exception as exc:
         return jsonify(_fail(str(exc), 500))

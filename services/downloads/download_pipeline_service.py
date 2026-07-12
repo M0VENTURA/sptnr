@@ -3,8 +3,10 @@
 Orchestrates the end-to-end download processing pipeline:
 1. Fetch ready-to-process queue items.
 2. Resolve MusicBrainz release metadata.
-3. Execute downloads via slskd.
-4. Update queue status and library records.
+3. Build structured search queries for slskd.
+4. Score and rank results to pick the best match.
+5. Execute downloads via slskd.
+6. Update queue status and library records.
 
 Coordinates between ``downloads/slskd_service``, ``enrichment/musicbrainz_service``,
 and ``db/repositories``.
@@ -13,7 +15,9 @@ and ``db/repositories``.
 from __future__ import annotations
 
 import logging
+import re
 
+from difflib import SequenceMatcher
 from typing import Any, Dict
 
 from services.downloads.slskd_service import SlskdService
@@ -37,19 +41,231 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# TEXT NORMALISATION HELPERS
+# =============================================================================
+
+def _normalise(text: str) -> str:
+    """Lower-case, strip, and collapse whitespace for comparison."""
+    return re.sub(r"\s+", " ", text.lower()).strip()
+
+
+def _similarity(a: str, b: str) -> float:
+    """Return a 0–1 similarity score between two strings."""
+    return SequenceMatcher(None, _normalise(a), _normalise(b)).ratio()
+
+
+def _parse_filename_parts(filename: str) -> dict[str, str | None]:
+    """Try to extract artist, album, title, bitrate, and format from a Soulseek filename.
+
+    Common patterns found on Soulseek:
+        Artist - Title.mp3
+        Artist - Album - 01 - Title.flac
+        Artist\Album\01 Title.mp3
+        Various - Artist - Title (Year).mp3
+    """
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]  # strip path, keep filename
+    name = name.rsplit(".", 1)[0] if "." in name else name  # strip extension
+
+    result: dict[str, str | None] = {
+        "artist": None,
+        "album": None,
+        "title": None,
+        "has_track_number": False,
+        "format": None,
+    }
+
+    # Detect format from original filename
+    ext_match = re.search(r"\.(flac|mp3|wav|aac|ogg|wma|m4a|opus)$", filename.lower())
+    if ext_match:
+        result["format"] = ext_match.group(1)
+
+    # Pattern: "Artist - Album - 01 - Title.flac" or "Artist - 01 - Title.mp3"
+    parts = re.split(r"\s*-\s*", name)
+    parts = [p.strip() for p in parts if p.strip()]
+
+    if len(parts) >= 3:
+        # Check if second-to-last part is a track number
+        track_match = re.match(r"^(\d{1,3})(?:\s|$)", parts[-2])
+        if track_match:
+            result["artist"] = parts[0]
+            result["album"] = parts[1] if len(parts) >= 4 else None
+            result["title"] = parts[-1]
+            result["has_track_number"] = True
+        else:
+            result["artist"] = parts[0]
+            result["title"] = parts[-1]
+    elif len(parts) == 2:
+        result["artist"] = parts[0]
+        result["title"] = parts[1]
+
+    # If nothing worked, try "TrackNumber Title" pattern with no dash
+    if not result["artist"]:
+        fallback = re.match(r"^(\d{1,3})\s+(.+)", name)
+        if fallback:
+            result["title"] = fallback.group(2).strip()
+            result["has_track_number"] = True
+
+    return result
+
+
+# =============================================================================
 # QUERY BUILDER
 # =============================================================================
 
 def build_search_query(item: dict) -> str:
-    artist = item.get("artist")
-    title = item.get("title")
-    album = item.get("album")
+    """Build a structured search query for slskd.
 
-    parts = [artist, title]
+    Produces targeted queries that reduce noise:
+    - For album downloads: ``Artist - Album Year``
+    - For track downloads: ``Artist - Title``
+    """
+    artist = (item.get("artist") or "").strip()
+    title = (item.get("title") or "").strip()
+    album = (item.get("album") or "").strip()
+    year = (item.get("year") or item.get("release_year") or "")
+
+    # Prefer hyphen-separated queries (common on Soulseek)
     if album:
-        parts.append(album)
+        query = f"{artist} - {album}"
+        if year:
+            query += f" {year}"
+    else:
+        query = f"{artist} - {title}"
 
-    return " ".join(p for p in parts if p)
+    return query
+
+
+# =============================================================================
+# RESULT SCORING
+# =============================================================================
+
+def _score_result(
+    result: dict[str, Any],
+    expected_artist: str,
+    expected_title: str,
+    expected_album: str | None = None,
+    expected_duration: int | None = None,
+) -> float:
+    """Score a single slskd search result (0–100).
+
+    Scoring criteria:
+    - Filename contains expected artist (+30)
+    - Filename contains expected title  (+25)
+    - Filename contains expected album  (+20, if relevant)
+    - Duration within 10% of expected   (+15, if available)
+    - High bitrate bonus                (+10 for lossless, +5 for 320)
+    - Penalty for format mismatch       (-10)
+    """
+    score = 0.0
+    filename = str(result.get("filename", ""))
+    parts = _parse_filename_parts(filename)
+
+    # Artist match
+    art_score = _similarity(str(parts.get("artist") or ""), expected_artist)
+    if art_score > 0.7:
+        score += 30 * min(1.0, art_score)
+    elif _normalise(expected_artist) in _normalise(filename):
+        score += 20  # partial match
+
+    # Title match
+    title_score = _similarity(str(parts.get("title") or ""), expected_title)
+    if title_score > 0.7:
+        score += 25 * min(1.0, title_score)
+    elif _normalise(expected_title) in _normalise(filename):
+        score += 15  # partial match
+
+    # Album match (bonus if searching for an album)
+    if expected_album:
+        album_score = _similarity(str(parts.get("album") or ""), expected_album)
+        if album_score > 0.6:
+            score += 20 * min(1.0, album_score)
+        elif _normalise(expected_album) in _normalise(filename):
+            score += 10  # partial match
+
+    # Duration match (requires MusicBrainz metadata)
+    if expected_duration and result.get("length_seconds"):
+        dur_ratio = min(expected_duration, result["length_seconds"]) / max(expected_duration, result["length_seconds"])
+        if dur_ratio >= 0.9:
+            score += 15 * dur_ratio
+
+    # Quality bonus (prefer API-provided extension over parsed filename)
+    bitrate = int(result.get("bitrate", 0) or 0)
+    ext = (result.get("extension") or parts.get("format") or "").lower()
+
+    is_lossless = bool(result.get("is_lossless")) or ext in ("flac", "wav", "aiff", "alac")
+    if is_lossless:
+        score += 10
+    elif bitrate >= 320:
+        score += 5
+    elif bitrate > 0 and bitrate < 192:
+        score -= 10  # low-bitrate penalty
+
+    # Higher bit-depth bonus (24-bit > 16-bit)
+    bit_depth = result.get("bit_depth")
+    if bit_depth and is_lossless:
+        if int(bit_depth) >= 24:
+            score += 3
+
+    # Free upload slot bonus
+    if result.get("has_free_upload_slot"):
+        score += 3
+
+    # Shorter queue = faster download start
+    qlen = result.get("queue_length")
+    if qlen is not None:
+        try:
+            qlen = int(qlen)
+            if qlen == 0:
+                score += 5
+            elif qlen <= 5:
+                score += 3
+            elif qlen > 50:
+                score -= 2
+        except (TypeError, ValueError):
+            pass
+
+    # Upload speed bonus (above average = more reliable)
+    uspeed = result.get("upload_speed")
+    if uspeed is not None:
+        try:
+            if int(uspeed) > 1_000_000:  # > 1 MB/s
+                score += 3
+        except (TypeError, ValueError):
+            pass
+
+    return round(score, 1)
+
+
+def _select_best_result(
+    results: list[dict[str, Any]],
+    expected_artist: str,
+    expected_title: str,
+    expected_album: str | None = None,
+    expected_duration: int | None = None,
+    min_score: float = 30.0,
+) -> dict[str, Any] | None:
+    """Score all results and return the best match above the threshold."""
+    scored: list[tuple[float, dict]] = []
+
+    for r in results:
+        s = _score_result(r, expected_artist, expected_title, expected_album, expected_duration)
+        scored.append((s, r))
+
+    scored.sort(key=lambda pair: -pair[0])  # descending by score
+
+    if scored and scored[0][0] >= min_score:
+        best_score, best = scored[0]
+        logger.debug(
+            "Best result score=%.1f for '%s' — pick from %d candidates",
+            best_score, best.get("filename", "")[:80], len(scored),
+        )
+        return best
+
+    logger.debug(
+        "No result met min_score=%.1f for %s - %s (top score=%.1f)",
+        min_score, expected_artist, expected_title, scored[0][0] if scored else 0,
+    )
+    return None
 
 
 # =============================================================================
@@ -67,20 +283,45 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             "error": "missing_queue_id"
         }
 
+    expected_artist = (item.get("artist") or "").strip()
+    expected_title = (item.get("title") or "").strip()
+    expected_album = (item.get("album") or "").strip() or None
+    expected_duration = item.get("duration")
+    if expected_duration:
+        try:
+            expected_duration = int(expected_duration)
+        except (TypeError, ValueError):
+            expected_duration = None
+
     query = build_search_query(item)
 
     try:
         # ✅ mark processing
         mark_processing(queue_id)
 
-        # ✅ search
-        results = slskd.search_and_filter(query)
+        # ✅ search (allow lower bitrates since scoring handles quality)
+        results = slskd.search_and_filter(query, min_bitrate=192)
 
         if not results:
             mark_failed(queue_id, "no_results")
             return {"success": False, "status": "no_results"}
 
-        best = results[0]
+        # ✅ score and pick best match
+        best = _select_best_result(
+            results,
+            expected_artist=expected_artist,
+            expected_title=expected_title,
+            expected_album=expected_album,
+            expected_duration=expected_duration,
+        )
+
+        if not best:
+            logger.info(
+                "[PIPELINE] No qualifying result for queue %s (%s - %s)",
+                queue_id, expected_artist, expected_title,
+            )
+            mark_failed(queue_id, "no_qualifying_result")
+            return {"success": False, "status": "no_qualifying_result"}
 
         # ✅ update searching → downloading
         update_queue_item(queue_id, status="downloading")
@@ -177,6 +418,66 @@ def sync_transfers(slskd: SlskdService) -> Dict[str, Any]:
         "updated": updated,
         "total": len(transfers)
     }
+
+
+# =============================================================================
+# TRANSFER & VERIFY
+# =============================================================================
+
+def transfer_and_verify_download(
+    source_path: str,
+    dest_path: str,
+    queue_id: int | None = None,
+    *,
+    convert_flac_to_mp3: bool = False,
+    mp3_bitrate: int = 320,
+) -> dict[str, Any]:
+    """Move/convert a downloaded file into /music, then verify it landed safely.
+
+    Handles FLAC->MP3 conversion when enabled.  After the move, checks that
+    the file exists, is readable, and has non-zero size.
+    """
+    import os
+    import subprocess
+
+    from services.downloads.download_verification_service import (
+        mark_queue_item_moved,
+        verify_file_in_music,
+    )
+    from services.infrastructure.filesystem_service import transfer_download_to_music
+
+    final_dest = dest_path
+    source_ext = os.path.splitext(source_path)[1].lower()
+
+    if convert_flac_to_mp3 and source_ext == ".flac":
+        final_dest = os.path.splitext(dest_path)[0] + ".mp3"
+        os.makedirs(os.path.dirname(final_dest), exist_ok=True)
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", source_path,
+                 "-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k",
+                 "-id3v2_version", "3", final_dest],
+                capture_output=True, timeout=300, check=True,
+            )
+            logger.info("Converted FLAC->MP3: %s -> %s", source_path, final_dest)
+            try:
+                os.remove(source_path)
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.error("FLAC->MP3 conversion failed for %s: %s", source_path, exc)
+            return {"success": False, "error": f"Conversion failed: {exc}"}
+    else:
+        tr = transfer_download_to_music(source_path, final_dest)
+        if not tr.get("success"):
+            return tr
+        final_dest = tr.get("target_path", final_dest)
+
+    if queue_id:
+        mark_queue_item_moved(queue_id, final_dest)
+
+    return verify_file_in_music(queue_id or 0, final_dest)
+
 
 def start_release_download(release_id, release_title, artist, method='slskd'):
 
