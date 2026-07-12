@@ -56,6 +56,113 @@ def _read_yaml(path):
         return {}, ""
 
 
+# ---------------------------------------------------------------------------
+# Environment variable overrides
+# ---------------------------------------------------------------------------
+# Any ``POPULARLR_*`` env var overrides a config.yaml key at load time.
+# This lets operators set critical values without a config file.
+#
+# Mapping rules (examples):
+#   POPULARLR_NAV_URL            → navidrome_users[0].base_url
+#   POPULARLR_NAV_USER           → navidrome_users[0].user
+#   POPULARLR_NAV_PASS           → navidrome_users[0].pass
+#   POPULARLR_SPOTIFY_CLIENT_ID  → api_integrations.spotify.client_id
+#   POPULARLR_LASTFM_API_KEY     → api_integrations.lastfm.api_key
+#   POPULARLR_DISCOGS_TOKEN      → api_integrations.discogs.token
+#   POPULARLR_DOWNLOADS_FOLDER   → downloads.folder
+#   POPULARLR_AUTO_IMPORT        → watcher.auto_import_enabled
+#   POPULARLR_SCAN_INTERVAL      → watcher.scan_interval
+#   POPULARLR_ESSENTIA_ENABLED   → essentia.tag_moods
+#
+# Boolean env vars accept "1", "true", "yes" (case-insensitive) for True,
+# everything else is False.
+# ---------------------------------------------------------------------------
+
+_POPULARLR_PREFIX = "POPULARLR_"
+_TRUE_STRINGS = frozenset({"1", "true", "yes"})
+
+
+def _apply_env_overrides(cfg: dict) -> None:
+    """Mutate ``cfg`` in-place with values from ``POPULARLR_*`` env vars."""
+
+    # ── Navidrome (first user) ───────────────────────────────────────
+    nav_url = _pop_env("NAV_URL")
+    nav_user = _pop_env("NAV_USER")
+    nav_pass = _pop_env("NAV_PASS")
+    if nav_url or nav_user or nav_pass:
+        users = cfg.setdefault("navidrome_users", [])
+        if not users:
+            users.append({})
+        first = users[0]
+        if nav_url:
+            first["base_url"] = nav_url
+        if nav_user:
+            first["user"] = nav_user
+        if nav_pass:
+            first["pass"] = nav_pass
+        if not first.get("display_name"):
+            first["display_name"] = first.get("user", "Admin")
+
+    # ── API integrations ─────────────────────────────────────────────
+    _set_if("SPOTIFY_CLIENT_ID", cfg, "api_integrations", "spotify", "client_id")
+    _set_if("SPOTIFY_CLIENT_SECRET", cfg, "api_integrations", "spotify", "client_secret")
+    _set_if("LASTFM_API_KEY", cfg, "api_integrations", "lastfm", "api_key")
+    _set_if("DISCOGS_TOKEN", cfg, "api_integrations", "discogs", "token")
+    _set_if("AUDIODB_API_KEY", cfg, "api_integrations", "audiodb", "api_key")
+
+    # ── Downloads ────────────────────────────────────────────────────
+    _set_if("DOWNLOADS_FOLDER", cfg, "downloads", "folder")
+
+    # ── Watcher / automation ─────────────────────────────────────────
+    _set_bool_if("AUTO_IMPORT", cfg, "watcher", "auto_import_enabled")
+    _set_bool_if("AUTO_POPULARITY_SCAN", cfg, "watcher", "auto_popularity_scan")
+    _set_int_if("SCAN_INTERVAL", cfg, "watcher", "scan_interval")
+
+    # ── Essentia ─────────────────────────────────────────────────────
+    _set_bool_if("ESSENTIA_ENABLED", cfg, "essentia", "tag_moods")
+    _set_if("ESSENTIA_MODELS_DIR", cfg, "essentia", "models_dir")
+    _set_if("ESSENTIA_SCRIPT_PATH", cfg, "essentia", "script_path")
+
+
+def _pop_env(suffix: str) -> str | None:
+    """Read and remove a ``POPULARLR_<suffix>`` env var, or return None."""
+    val = os.environ.pop(f"{_POPULARLR_PREFIX}{suffix}", "").strip()
+    return val if val else None
+
+
+def _set_if(env_suffix: str, cfg: dict, *keys: str) -> None:
+    """Set ``cfg[keys[0]][keys[1]]... = env_val`` if the env var exists."""
+    val = _pop_env(env_suffix)
+    if val is not None:
+        d = cfg
+        for k in keys[:-1]:
+            d = d.setdefault(k, {})
+        d[keys[-1]] = val
+
+
+def _set_bool_if(env_suffix: str, cfg: dict, *keys: str) -> None:
+    """Like ``_set_if`` but converts the value to a bool."""
+    raw = _pop_env(env_suffix)
+    if raw is not None:
+        d = cfg
+        for k in keys[:-1]:
+            d = d.setdefault(k, {})
+        d[keys[-1]] = raw.lower() in _TRUE_STRINGS
+
+
+def _set_int_if(env_suffix: str, cfg: dict, *keys: str) -> None:
+    """Like ``_set_if`` but converts the value to an int."""
+    raw = _pop_env(env_suffix)
+    if raw is not None:
+        try:
+            d = cfg
+            for k in keys[:-1]:
+                d = d.setdefault(k, {})
+            d[keys[-1]] = int(raw)
+        except ValueError:
+            pass
+
+
 # -----------------------------------------------------------------------------
 # Public API
 # -----------------------------------------------------------------------------
@@ -63,6 +170,24 @@ def _read_yaml(path):
 def get_config() -> dict:
     """
     Load config.yaml with caching.
+
+    Environment variables with the ``POPULARLR_`` prefix override
+    corresponding config.yaml keys at load time.  This lets operators
+    set critical values (API keys, feature flags) without writing a
+    config file.
+
+    Mapping rules (examples):
+      ``POPULARLR_NAV_URL``            → ``navidrome_users[0].base_url``
+      ``POPULARLR_NAV_USER``           → ``navidrome_users[0].user``
+      ``POPULARLR_NAV_PASS``           → ``navidrome_users[0].pass``
+      ``POPULARLR_SPOTIFY_CLIENT_ID``  → ``api_integrations.spotify.client_id``
+      ``POPULARLR_LASTFM_API_KEY``     → ``api_integrations.lastfm.api_key``
+      ``POPULARLR_DISCOGS_TOKEN``      → ``api_integrations.discogs.token``
+      ``POPULARLR_DOWNLOADS_FOLDER``   → ``downloads.folder``
+      ``POPULARLR_AUTO_IMPORT``        → ``watcher.auto_import_enabled``
+      ``POPULARLR_SCAN_INTERVAL``      → ``watcher.scan_interval``
+      ``POPULARLR_ESSENTIA_ENABLED``   → ``essentia.tag_moods``
+      ``POPULARLR_AUDIODB_API_KEY``    → ``api_integrations.audiodb.api_key``
     """
 
     global _CONFIG_CACHE
@@ -73,6 +198,9 @@ def get_config() -> dict:
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 
     cfg, _ = _read_yaml(config_path)
+
+    # ── Environment variable overrides ──────────────────────────────
+    _apply_env_overrides(cfg)
 
     _CONFIG_CACHE = cfg or {}
 
