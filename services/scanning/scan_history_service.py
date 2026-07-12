@@ -11,27 +11,22 @@ Architecture:
     column names mapped from the database schema.
 """
 
-from db.utils import get_db_connection
+from sqlalchemy import text
+from db.engine import db_session
 
 
 def get_recent_album_scans(limit: int = 50):
-    conn = get_db_connection()
-    try:
-        cur = conn.cursor()
-
-        cur.execute("""
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT *
             FROM scan_history
             ORDER BY started_at DESC
-            LIMIT %s
-        """, (limit,))
+            LIMIT :limit
+        """), {"limit": limit})
 
-        cols = [c[0] for c in cur.description]
+        cols = list(result.keys())
 
         return [
             dict(zip(cols, row))
-            for row in cur.fetchall() or []
+            for row in result.fetchall() or []
         ]
-
-    finally:
-        conn.close()

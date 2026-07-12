@@ -19,7 +19,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from db.utils import get_db_connection, row_get
+from sqlalchemy import text
+from db.engine import db_session
 
 
 def sanitize_playlist_name(name: str) -> str:
@@ -55,18 +56,13 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
 
 
 def refresh_all_playlists_from_db():
-    conn = get_db_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist FROM tracks WHERE rating >= 4")
-        artists = [row_get(row, "artist", 0) for row in cur.fetchall() or [] if row_get(row, "artist", 0)]
+    with db_session() as session:
+        result = session.execute(text("SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist FROM tracks WHERE rating >= 4"))
+        artists = [str(row[0]) for row in result.fetchall() or [] if row[0]]
         count = 0
         for artist in artists:
-            cur.execute("SELECT id, title, rating FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND rating >= 4", (artist,))
-            tracks = [dict(id=row_get(row, "id", 0), title=row_get(row, "title", 1), rating=row_get(row, "rating", 2)) for row in cur.fetchall() or []]
+            result = session.execute(text("SELECT id, title, rating FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND rating >= 4"), {"artist": artist})
+            tracks = [{"id": str(row[0]), "title": str(row[1]), "rating": int(row[2])} for row in result.fetchall() or []]
             if create_or_update_playlist_for_artist(artist, tracks):
                 count += 1
         return count
-    finally:
-        conn.close()
-

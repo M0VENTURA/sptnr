@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 from sqlalchemy import text
 from db.engine import db_session
-from db.context import db_cursor  # TODO: migrate to db_session
 
 
 from collections.abc import Callable
@@ -47,7 +46,7 @@ def match_playlist_tracks(
     stats = {"isrc": 0, "fuzzy": 0, "strict": 0, "unmatched": 0}
 
     # Open the database context here, so the service is self-contained
-    with db_cursor() as (conn, cursor):
+    with db_session() as session:
         # Resolve fuzzy threshold from config
         _fuzzy_threshold = 0.80
         try:
@@ -55,6 +54,9 @@ def match_playlist_tracks(
             _fuzzy_threshold = get_matching_thresholds()["fuzzy_threshold"]
         except Exception:
             pass
+
+        # Get a raw DBAPI cursor from the session for enhanced_match_track compatibility
+        cursor = session.connection().connection.cursor()
 
         for track in tracks:
             # We no longer pass 'cursor' or 'logger' into the matching function

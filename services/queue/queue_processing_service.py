@@ -24,7 +24,6 @@ from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.context import db_cursor  # TODO: migrate to db_session
 from db.repositories.queue import get_completed_group_queue_items, update_queue_item
 from db.repositories.tracks import find_library_track
 from helpers.metadata_reader import read_mp3_metadata
@@ -113,19 +112,19 @@ def organize_group_sync(group_id: Any, metadata: dict | None = None) -> dict[str
             resolved_year = year or item_year
 
             try:
-                with db_cursor() as (_conn, cursor):
-                    cursor.execute(
-                        """
-                        SELECT r.release_title, r.artist, r.release_year,
-                               rt.track_number, rt.track_title, rt.track_artist
-                        FROM musicbrainz_release_tracks rt
-                        JOIN musicbrainz_releases r ON r.release_id = rt.release_id
-                        WHERE rt.queue_id = %s
-                        LIMIT 1
-                        """,
-                        (item_id,),
+                with db_session() as session:
+                    result = session.execute(
+                        text("""
+                            SELECT r.release_title, r.artist, r.release_year,
+                                   rt.track_number, rt.track_title, rt.track_artist
+                            FROM musicbrainz_release_tracks rt
+                            JOIN musicbrainz_releases r ON r.release_id = rt.release_id
+                            WHERE rt.queue_id = :id
+                            LIMIT 1
+                        """),
+                        {"id": item_id},
                     )
-                    mb_row = cursor.fetchone()
+                    mb_row = result.fetchone()
                 if mb_row:
                     resolved_album_name = mb_row[0] or resolved_album_name
                     resolved_album_artist = mb_row[1] or resolved_album_artist
@@ -255,7 +254,7 @@ def add_release_tracks_to_queue(
         normalized_source = "soulseek"
 
     try:
-        with db_cursor(commit=True) as (_conn, cursor):
+        with db_session() as session:
 
             import_group = f"mbid_{release_id}"
 
@@ -305,57 +304,56 @@ def add_release_tracks_to_queue(
                     f"{track_artist} - {track_title}"
                 )
 
-                cursor.execute(
-                    """
-                    INSERT INTO download_queue
-                    (
-                        artist,
-                        album,
-                        title,
-                        search_query,
-                        source,
-                        status,
-                        release_id,
-                        import_group,
-                        track_number,
-                        disc_number,
-                        album_artist,
-                        recording_mbid,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES
-                    (
-                        %s,
-                        %s,
-                        %s,
-                        %s,
-                        %s,
-                        'queued',
-                        %s,
-                        %s,
-                        %s,
-                        %s,
-                        %s,
-                        %s,
-                        CURRENT_TIMESTAMP,
-                        CURRENT_TIMESTAMP
-                    )
-                    RETURNING id
-                    """,
-                    (
-                        track_artist,
-                        album,
-                        track_title,
-                        search_query,
-                        normalized_source,
-                        release_id,
-                        import_group,
-                        track_number,
-                        disc_number,
-                        album_artist or artist,
-                        recording_mbid,
-                    ),
+                session.execute(
+                    text("""
+                        INSERT INTO download_queue
+                        (
+                            artist,
+                            album,
+                            title,
+                            search_query,
+                            source,
+                            status,
+                            release_id,
+                            import_group,
+                            track_number,
+                            disc_number,
+                            album_artist,
+                            recording_mbid,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES
+                        (
+                            :artist,
+                            :album,
+                            :title,
+                            :search_query,
+                            :source,
+                            'queued',
+                            :release_id,
+                            :import_group,
+                            :track_number,
+                            :disc_number,
+                            :album_artist,
+                            :recording_mbid,
+                            CURRENT_TIMESTAMP,
+                            CURRENT_TIMESTAMP
+                        )
+                    """),
+                    {
+                        "artist": track_artist,
+                        "album": album,
+                        "title": track_title,
+                        "search_query": search_query,
+                        "source": normalized_source,
+                        "release_id": release_id,
+                        "import_group": import_group,
+                        "track_number": track_number,
+                        "disc_number": disc_number,
+                        "album_artist": album_artist or artist,
+                        "recording_mbid": recording_mbid,
+                    },
                 )
 
                 row = cursor.fetchone()

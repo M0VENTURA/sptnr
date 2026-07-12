@@ -123,8 +123,6 @@ def get_aggregated_lastfm_popularity(artist: str, track_title: str, lastfm_clien
 
 
 def get_aggregated_listenbrainz_popularity(
-    logger.debug("[POPULARITY_SOURCES] Fetching aggregated ListenBrainz popularity")
-    
     title: str,
     artist: str,
     primary_mbid: Optional[str] = None,
@@ -132,6 +130,7 @@ def get_aggregated_listenbrainz_popularity(
     mb_client=None,
 ) -> dict:
     """Aggregate ListenBrainz stats across split MBIDs when possible."""
+    logger.debug("[POPULARITY_SOURCES] Fetching aggregated ListenBrainz popularity")
     mbids: set[str] = set()
     if primary_mbid:
         mbids.add(primary_mbid)

@@ -13,21 +13,17 @@ Architecture:
     the playlist editing UI.
 """
 
-from db.utils import get_db_connection
+from sqlalchemy import text
+from db.engine import db_session
 
 def search_songs_in_db(query):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    try:
-        cursor.execute("""
+    """Search tracks by title or artist."""
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT id, title, artist, album
             FROM tracks
-            WHERE LOWER(title) LIKE %s
-               OR LOWER(artist) LIKE %s
+            WHERE LOWER(title) LIKE :query
+               OR LOWER(artist) LIKE :query
             LIMIT 50
-        """, (f"%{query.lower()}%", f"%{query.lower()}%"))
-
-        return cursor.fetchall()
-    finally:
-        conn.close()
+        """), {"query": f"%{query.lower()}%"})
+        return [dict(r._mapping) for r in result.fetchall()]
