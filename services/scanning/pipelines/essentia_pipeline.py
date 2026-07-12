@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from helpers.config_helpers import get_config
-from services.scanning.progress import write_progress_file
+from services.scanning.scan_state import write_progress_file
 
 
 def run_essentia_pipeline(

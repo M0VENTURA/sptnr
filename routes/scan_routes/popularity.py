@@ -11,7 +11,7 @@ import services.scanning.runtime_state as runtime_state
 from routes.scan_routes import scans_bp
 from routes.scan_routes._common import form_bool, is_process_alive, run_async
 from services.popularity.pipeline import run_popularity_from_artist, run_popularity_scan
-from services.scanning.progress import progress_path, write_progress_file
+from services.scanning.scan_state import progress_path, write_progress_file
 from services.scanning.scan_state import write_progress_with_current_artist
 
 logger = logging.getLogger(__name__)

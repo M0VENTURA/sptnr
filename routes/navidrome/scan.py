@@ -12,7 +12,7 @@ import services.scanning.runtime_state as runtime_state
 from routes.navidrome import navidrome_bp, get_navidrome_client
 from routes.scan_routes._common import form_bool, is_process_alive, run_async
 from services.scanning.pipelines.navidrome_pipeline import run_navidrome_import_scan
-from services.scanning.progress import progress_path, request_scan_stop
+from services.scanning.scan_state import progress_path, request_scan_stop
 
 
 @navidrome_bp.route("/api/navidrome/scan/start", methods=["POST"])
