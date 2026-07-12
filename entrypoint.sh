@@ -2,6 +2,11 @@
 # Popularr container entrypoint.
 # Orchestration only; database logic lives in db/ and migrations/.
 
+echo "=== ENTRYPOINT STARTED ==="
+echo "Shell: $(readlink -f /proc/$$/exe 2>/dev/null || echo $0)"
+echo "Args: $@"
+echo "PWD: $(pwd)"
+
 set -Eeuo pipefail
 
 QUEUE_PID=""
@@ -153,16 +158,30 @@ start_web_app() {
 
 main() {
     trap cleanup SIGTERM SIGINT EXIT
-    # ERR trap: log the failing line so it's visible in docker logs
     trap 'warn "ERROR on line $LINENO (exit code $?): command was $BASH_COMMAND"' ERR
 
     log "=== Popularr Starting ==="
-    wait_for_db
-    run_queue_startup_schema
-    run_alembic_migrations
-    check_ffmpeg
-    start_queue_processor
-    preflight_python
+
+    # Wrap ALL function calls in if/else so set -e never kills PID 1
+    if wait_for_db; then ok "Database ready"; else warn "Database wait failed"; fi
+
+    if run_queue_startup_schema; then :; fi
+    # Alembic migrations are handled by app.py → run_migrations_on_startup()
+    # which runs after the SQLAlchemy engine is created.  Running them here
+    # in the entrypoint is redundant and adds a second DB connection attempt
+    # before the engine is ready.  Removed to avoid confusion.
+    if check_ffmpeg; then :; fi
+    if start_queue_processor; then :; fi
+    if preflight_python; then :; fi
+
+    # Test Flask import BEFORE gunicorn — catches import errors explicitly
+    log "Testing Flask app import..."
+    if python3 -c "import sys; sys.path.insert(0, '.'); from app import app; print('✓ Flask app loaded OK')" 2>&1; then
+        ok "Flask import test passed"
+    else
+        warn "Flask import FAILED — see error above. Continuing to gunicorn for full error trace."
+    fi
+
     start_web_app
 
     # If we reach here, gunicorn failed to start — pause so logs are visible
@@ -170,3 +189,5 @@ main() {
     warn "Run 'docker logs popularr' to inspect the full output."
     sleep 60
 }
+
+main "$@"

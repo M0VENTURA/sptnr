@@ -80,6 +80,14 @@ def run_popularity_mode(
             scan_type = "popularity_scan"
             kwargs["popularity_only"] = True
 
+        elif mode == "all":
+            scan_type = "full_scan"
+            # No kwargs needed — full scan does everything
+
+        else:
+            logger.warning("Unknown popularity scan mode '%s' — defaulting to full scan", mode)
+            scan_type = "full_scan"
+
         # ---------------------------------------------------------------------
         # Mark scan start
         # ---------------------------------------------------------------------
@@ -175,6 +183,9 @@ def _build_targeted_popularity_kwargs(
         kwargs["metadata_only"] = True
 
     elif scan_type == "singles":
+        kwargs["singles_only"] = True
+
+    elif scan_type == "singles_detection":
         kwargs["singles_with_missing_popularity"] = True
 
     return kwargs

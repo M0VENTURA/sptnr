@@ -20,6 +20,9 @@ from api_clients.musicbrainz_http import MusicBrainzHttpClient
 from api_clients.lastfm_http import LastFmHttpClient
 from api_clients.listenbrainz import ListenBrainzClient
 
+# Enrichment services (better metadata than raw API clients)
+from services.enrichment.musicbrainz_service import MusicBrainzService
+
 # Popularity
 from services.popularity.popularity_math import (
     calculate_combined_popularity_score,
@@ -88,7 +91,7 @@ def process_track(
     score_data: dict[str, Any] = {}
 
     # -------------------------------------------------------------------------
-    # 1. METADATA - MusicBrainz (via updated api_clients)
+    # 1. METADATA - MusicBrainz (via enrichment service for better matching)
     # -------------------------------------------------------------------------
 
     if not popularity_only:
@@ -97,23 +100,67 @@ def process_track(
             artist = _as_str(track.get("artist"))
 
             if title and artist:
-                mb = MusicBrainzHttpClient()
-                results = mb.search_recordings(f'artist:"{artist}" AND recording:"{title}"', limit=3)
+                mb_service = MusicBrainzService()
+                mb_data = mb_service.lookup_recording_metadata(title, artist)
 
-                if results:
-                    # Use the top result for metadata merge
-                    recording = results[0]
-                    update_payload["mbid"] = recording.get("id", "")
-                    update_payload["recording_mbid"] = recording.get("id", "")
-                    update_payload["musicbrainz_confidence"] = 0.9
+                if mb_data:
+                    recording_mbid = mb_data.get("recording_mbid")
+                    confidence = mb_data.get("confidence")
 
-                    if recording.get("title"):
-                        update_payload["musicbrainz_title"] = recording["title"]
-                    if recording.get("length"):
-                        import math
-                        update_payload["duration"] = int(recording["length"]) / 1000 if recording["length"] else None
-                    if recording.get("first-release-date"):
-                        update_payload["release_date"] = recording["first-release-date"]
+                    if recording_mbid:
+                        update_payload["recording_mbid"] = recording_mbid
+                        update_payload["mbid"] = recording_mbid
+                    if confidence is not None:
+                        update_payload["musicbrainz_confidence"] = confidence
+                    if mb_data.get("title"):
+                        update_payload["musicbrainz_title"] = mb_data["title"]
+                    if mb_data.get("album"):
+                        update_payload["album"] = mb_data["album"]
+                    if mb_data.get("artist"):
+                        update_payload["artist"] = mb_data["artist"]
+                    if mb_data.get("year"):
+                        update_payload["year"] = mb_data["year"]
+
+            # Also fetch genre/tag data from MusicBrainz via genre-aware endpoint
+            if title and artist:
+                try:
+                    mb_raw = MusicBrainzHttpClient()
+                    recs = mb_raw.search_recordings_with_genres(
+                        f'artist:"{artist.replace(chr(34), "")}" AND recording:"{title.replace(chr(34), "")}"',
+                        limit=3,
+                    )
+                    if recs:
+                        rec = recs[0]
+                        mb_genres = rec.get("genres") or []
+                        mb_tags = rec.get("tags") or []
+                        if mb_genres:
+                            update_payload["musicbrainz_genres"] = [
+                                g.get("name", "") for g in mb_genres if g.get("name")
+                            ]
+                        if mb_tags:
+                            update_payload["musicbrainz_tags"] = [
+                                t.get("name", "") for t in mb_tags if t.get("name")
+                            ]
+                except Exception as e:
+                    logger.debug("[track_stage][MB_GENRE] %s: %s", track_id, e)
+
+            # Fetch Discogs genres for the track
+            if title and artist:
+                try:
+                    from api_clients.discogs_http import DiscogsHttpClient
+                    discogs = DiscogsHttpClient(token="")
+                    results = discogs.search_database({
+                        "q": f'{artist} {title}',
+                        "type": "release",
+                        "per_page": 3,
+                    })
+                    if results and len(results) > 0:
+                        genres = results[0].get("genre", []) or []
+                        styles = results[0].get("style", []) or []
+                        if genres or styles:
+                            update_payload["discogs_genres"] = list(set(genres + styles))
+                except Exception as e:
+                    logger.debug("[track_stage][DISCOGS_GENRE] %s: %s", track_id, e)
 
         except Exception as e:
             logger.debug("[track_stage][MB] %s: %s", track_id, e)
@@ -220,7 +267,42 @@ def process_track(
             logger.debug("[track_stage][SINGLE] %s: %s", track_id, e)
 
     # -------------------------------------------------------------------------
-    # 5. PERSISTENCE
+    # 5. GENRE AGGREGATION (using enrichment service)
+    # -------------------------------------------------------------------------
+
+    if not metadata_only and not popularity_only:
+        try:
+            effective_track = _build_effective_track(track, update_payload)
+            source_map = {}
+
+            for key, source_name in [
+                ("musicbrainz_genres", "musicbrainz"),
+                ("discogs_genres", "discogs"),
+                ("lastfm_tags", "lastfm"),
+                ("listenbrainz_genres", "listenbrainz"),
+                ("spotify_genres", "spotify"),
+            ]:
+                raw = effective_track.get(key) or track.get(key) or ""
+                if raw:
+                    import json
+                    try:
+                        genres = json.loads(raw) if isinstance(raw, str) else raw
+                    except Exception:
+                        genres = [g.strip() for g in str(raw).split(",") if g.strip()]
+                    if genres:
+                        source_map[source_name] = genres
+
+            if source_map:
+                from services.enrichment.genre_aggregation_service import aggregate_genres
+                aggregated = aggregate_genres(source_map)
+                if aggregated:
+                    update_payload["aggregated_genres"] = aggregated
+
+        except Exception as e:
+            logger.debug("[track_stage][GENRE] %s: %s", track_id, e)
+
+    # -------------------------------------------------------------------------
+    # 6. PERSISTENCE
     # -------------------------------------------------------------------------
 
     effective_track = _build_effective_track(track, update_payload)
@@ -242,7 +324,7 @@ def process_track(
             logger.debug("[track_stage][SINGLE_DB] %s: %s", track_id, e)
 
     # -------------------------------------------------------------------------
-    # 6. RETURN RESULT
+    # 7. RETURN RESULT
     # -------------------------------------------------------------------------
 
     return {

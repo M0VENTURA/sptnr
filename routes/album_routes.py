@@ -292,6 +292,22 @@ def api_album_upload_art():
     return jsonify(result), status_code
 
 
+@album_bp.route("/submit-musicbrainz", methods=["POST"])
+def api_album_submit_musicbrainz():
+    """Generate a MusicBrainz submission URL for an album."""
+    data = request.get_json(silent=True) or {}
+    artist = str(data.get("artist", "")).strip()
+    album = str(data.get("album", "")).strip()
+    if not artist or not album:
+        return jsonify({"error": "artist and album required"}), 400
+    submit_url = (
+        f"https://musicbrainz.org/login?redirect=/release/create?"
+        f"artist-credit.names.0.artist.name={__import__('urllib.parse').quote(artist)}"
+        f"&name={__import__('urllib.parse').quote(album)}"
+    )
+    return jsonify({"success": True, "url": submit_url, "artist": artist, "album": album})
+
+
 @album_bp.route("/<path:artist>/<path:album>/track-recommendations", methods=["GET"])
 def api_album_track_recommendations(artist, album):
     """Get genre recommendations for all tracks in an album."""

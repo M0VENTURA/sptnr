@@ -516,7 +516,117 @@ def artist_genre_management(name):
 
 @ui_bp.route("/metadata-compare")
 def metadata_compare():
-    return render_template("pages/metadata_compare.html")
+    """Metadata comparison page — compare Navidrome vs Beets album data."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT
+                album, COALESCE(NULLIF(album_artist, ''), artist) AS artist,
+                year, beets_year, navidrome_genres, musicbrainz_genres,
+                COUNT(*) AS track_count
+            FROM tracks
+            GROUP BY album, artist, year, beets_year, navidrome_genres, musicbrainz_genres
+            ORDER BY artist, album
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+
+        album_comparisons = []
+        for row in rows:
+            album = row_get(row, "album", "")
+            artist = row_get(row, "artist", "")
+            nav_year = row_get(row, "year")
+            beets_year = row_get(row, "beets_year")
+            nav_genres_raw = row_get(row, "navidrome_genres", "")
+            beets_genres_raw = row_get(row, "musicbrainz_genres", "")
+            track_count = row_get(row, "track_count", 0)
+
+            if (nav_year != beets_year) or (nav_genres_raw != beets_genres_raw):
+                album_comparisons.append({
+                    "album": album,
+                    "artist": artist,
+                    "track_count": track_count,
+                    "navidrome": {
+                        "year": nav_year,
+                        "genres": nav_genres_raw.split(",") if nav_genres_raw else [],
+                    },
+                    "beets": {
+                        "year": beets_year,
+                        "genres": beets_genres_raw.split(",") if beets_genres_raw else [],
+                    },
+                })
+
+        return render_template("pages/metadata_compare.html", album_comparisons=album_comparisons)
+    except Exception as exc:
+        logger.error("metadata-compare: %s", exc)
+        flash(f"Error loading metadata comparison: {exc}", "danger")
+        return redirect(url_for("ui.dashboard"))
+
+
+@ui_bp.route("/api/metadata-compare/search-musicbrainz", methods=["POST"])
+def metadata_compare_search_mb():
+    """Search MusicBrainz for an album match to resolve metadata conflicts."""
+    data = request.get_json(silent=True) or {}
+    artist = str(data.get("artist", "")).strip()
+    album = str(data.get("album", "")).strip()
+    if not artist or not album:
+        return jsonify({"error": "artist and album required"}), 400
+    try:
+        from services.enrichment.musicbrainz_service import MusicBrainzService
+        svc = MusicBrainzService()
+        mbid, confidence = svc.get_suggested_mbid(album, artist)
+        return jsonify({"success": True, "result": {"mbid": mbid, "confidence": confidence, "album": album, "artist": artist}})
+    except Exception as exc:
+        logger.error("metadata-compare MB search: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@ui_bp.route("/api/metadata-compare/accept-navidrome", methods=["POST"])
+def metadata_compare_accept_navidrome():
+    """Mark an album as locked to prevent Beets from overwriting it."""
+    data = request.get_json(silent=True) or {}
+    artist = str(data.get("artist", "")).strip()
+    album = str(data.get("album", "")).strip()
+    if not artist or not album:
+        return jsonify({"error": "artist and album required"}), 400
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE tracks SET metadata_locked = 1 WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s", (artist, album))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": f"Navidrome data locked for {artist} - {album}"})
+    except Exception as exc:
+        logger.error("metadata-compare accept navidrome: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@ui_bp.route("/api/metadata-compare/apply-musicbrainz", methods=["POST"])
+def metadata_compare_apply_mb():
+    """Apply MusicBrainz metadata to an album — updates both DB and audio files."""
+    data = request.get_json(silent=True) or {}
+    artist = str(data.get("artist", "")).strip()
+    album = str(data.get("album", "")).strip()
+    mb_data = data.get("mb_data", {})
+    if not artist or not album or not mb_data:
+        return jsonify({"error": "artist, album, and mb_data required"}), 400
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE tracks
+            SET year = %s, musicbrainz_genres = %s, mb_override = TRUE
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
+            RETURNING id
+        """, (mb_data.get("year"), ",".join(mb_data.get("genres", []) or []), artist, album))
+        updated_ids = [row_get(row, "id", 0) for row in cursor.fetchall()]
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": f"Applied MB data to {artist} - {album} ({len(updated_ids)} tracks)", "tracks_updated": len(updated_ids)})
+    except Exception as exc:
+        logger.error("metadata-compare apply MB: %s", exc)
+        return jsonify({"error": str(exc)}), 500
 
 
 @ui_bp.route("/beets")

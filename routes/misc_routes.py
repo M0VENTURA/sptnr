@@ -252,6 +252,142 @@ def api_merge_duplicate_artists():
 # GENRES
 # ===========================================================================
 
+@misc_api_bp.route("/genres/track/<path:track_id>", methods=["GET"])
+def api_genres_track(track_id: str):
+    """Get all genre sources for a single track."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres,
+                   essentia_genres, mood, listenbrainz_genres
+            FROM tracks WHERE CAST(id AS TEXT) = %s
+        """, (track_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({"error": "Track not found"}), 404
+
+        import json as _json
+        genres: dict[str, list[dict[str, str | int]]] = {}
+        source_keys = [
+            ("discogs_genres", "discogs_genres"),
+            ("mood", "mood"),
+            ("essentia_genres", "essentia_genres"),
+            ("musicbrainz_genres", "musicbrainz_genres"),
+            ("lastfm_tags", "lastfm_tags"),
+            ("listenbrainz_genres", "listenbrainz_genres"),
+            ("spotify_genres", "spotify_genres"),
+        ]
+        for db_key, output_key in source_keys:
+            raw = row.get(db_key) if hasattr(row, "get") else None
+            if not raw:
+                genres[output_key] = []
+                continue
+            try:
+                parsed = _json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                parsed = [g.strip() for g in str(raw).split(",") if g.strip()]
+            if isinstance(parsed, list):
+                genres[output_key] = [{"name": g["name"] if isinstance(g, dict) else str(g), "count": g.get("count", 1) if isinstance(g, dict) else 1} for g in parsed]
+            else:
+                genres[output_key] = []
+        return jsonify({"success": True, "genres": genres})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@misc_api_bp.route("/genres/album/<path:album>/<path:artist>", methods=["GET"])
+def api_genres_album(album: str, artist: str):
+    """Get aggregated genres across all tracks in an album."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres,
+                   essentia_genres, mood, listenbrainz_genres
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
+        """, (artist, album))
+        rows = cursor.fetchall()
+        conn.close()
+
+        from collections import Counter
+        source_keys = [
+            "discogs_genres", "mood", "essentia_genres",
+            "musicbrainz_genres", "lastfm_tags", "listenbrainz_genres", "spotify_genres",
+        ]
+        result: dict[str, list[dict[str, str | int]]] = {k: [] for k in source_keys}
+
+        import json as _json
+        for row in rows:
+            for key in source_keys:
+                raw = row.get(key) if hasattr(row, "get") else None
+                if not raw:
+                    continue
+                try:
+                    parsed = _json.loads(raw) if isinstance(raw, str) else raw
+                except Exception:
+                    parsed = [g.strip() for g in str(raw).split(",") if g.strip()]
+                if isinstance(parsed, list):
+                    for g in parsed:
+                        name = g["name"] if isinstance(g, dict) else str(g)
+                        result[key].append(name)
+        # Deduplicate and count
+        for key in source_keys:
+            counter = Counter(result[key])
+            result[key] = [{"name": name, "count": count} for name, count in counter.most_common(25)]
+
+        return jsonify({"success": True, "genres": result})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@misc_api_bp.route("/genres/artist/<path:artist>", methods=["GET"])
+def api_genres_artist(artist: str):
+    """Get aggregated genres across all tracks by an artist."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres,
+                   essentia_genres, mood, listenbrainz_genres
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+        """, (artist,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        from collections import Counter
+        source_keys = [
+            "discogs_genres", "mood", "essentia_genres",
+            "musicbrainz_genres", "lastfm_tags", "listenbrainz_genres", "spotify_genres",
+        ]
+        result: dict[str, list[dict[str, str | int]]] = {k: [] for k in source_keys}
+
+        import json as _json
+        for row in rows:
+            for key in source_keys:
+                raw = row.get(key) if hasattr(row, "get") else None
+                if not raw:
+                    continue
+                try:
+                    parsed = _json.loads(raw) if isinstance(raw, str) else raw
+                except Exception:
+                    parsed = [g.strip() for g in str(raw).split(",") if g.strip()]
+                if isinstance(parsed, list):
+                    for g in parsed:
+                        name = g["name"] if isinstance(g, dict) else str(g)
+                        result[key].append(name)
+        for key in source_keys:
+            counter = Counter(result[key])
+            result[key] = [{"name": name, "count": count} for name, count in counter.most_common(30)]
+
+        return jsonify({"success": True, "genres": result})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @misc_api_bp.route("/genres/remove", methods=["POST"])
 def api_remove_genres():
     """Remove specific genres from artist or album's tracks."""

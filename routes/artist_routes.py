@@ -75,6 +75,52 @@ def api_artist_corrections_albums():
     return jsonify(data), code
 
 
+@artist_bp.route("/api/artists/corrections")
+def api_artists_corrections():
+    """Return per-artist correction indicators for the artist list page."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                COALESCE(NULLIF(album_artist, ''), artist) AS artist_name,
+                COUNT(*) FILTER (WHERE duplicate_count > 0) AS duplicate_track_count,
+                COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') AS disc_inconsistent_count,
+                COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') AS mbid_inconsistent_count,
+                COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') AS missing_tracks_count
+            FROM tracks
+            GROUP BY artist_name
+            HAVING
+                COUNT(*) FILTER (WHERE duplicate_count > 0) > 0
+                OR COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') > 0
+                OR COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') > 0
+                OR COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') > 0
+        """)
+        rows = cursor.fetchall()
+        corrections_out = {}
+        for row in rows:
+            artist_name = row_get(row, "artist_name", "")
+            needs_correction = False
+            dup_count = row_get(row, "duplicate_track_count", 0) or 0
+            disc_ic = row_get(row, "disc_inconsistent_count", 0) or 0
+            mbid_ic = row_get(row, "mbid_inconsistent_count", 0) or 0
+            missing_ic = row_get(row, "missing_tracks_count", 0) or 0
+            if any([dup_count, disc_ic, mbid_ic, missing_ic]):
+                needs_correction = True
+            corrections_out[artist_name] = {
+                "needs_correction": needs_correction,
+                "duplicate_track_count": dup_count,
+                "disc_inconsistent_count": disc_ic,
+                "mbid_inconsistent_count": mbid_ic,
+                "missing_tracks_count": missing_ic,
+            }
+        return jsonify({"success": True, "corrections": corrections_out})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        conn.close()
+
+
 # =============================
 # METADATA
 # =============================

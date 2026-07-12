@@ -48,15 +48,41 @@ Architecture:
 """
 
 from __future__ import annotations
+import re
 from collections import defaultdict
 
 # Import centralized configuration getters
 from helpers.config_helpers import get_genre_weights, get_genre_synonyms
 
 # Load configuration at module initialization
-# These will use defaults from config.yaml if not explicitly set
 GENRE_WEIGHTS = get_genre_weights()
 GENRE_SYNONYMS = get_genre_synonyms()
+
+_CHRISTMAS_KEYWORDS = [
+    "christmas", "xmas", "yuletide", "jingle bells", "silent night",
+    "deck the halls", "winter wonderland", "feliz navidad",
+    "rudolph", "santa claus", "sleigh bells", "noel", "hanukkah",
+]
+_LIVE_PATTERNS = [
+    r"\blive\b", r"\bunplugged\b", r"\bconcert\b",
+    r"\bat\s+\w+\s+(arena|stadium|hall|club|theatre|theater)",
+]
+_SPECIFIC_TO_GENERIC: dict[str, list[str]] = {
+    "progressive metal": ["metal", "heavy metal"],
+    "death metal": ["metal", "heavy metal"],
+    "black metal": ["metal", "heavy metal"],
+    "doom metal": ["metal", "heavy metal"],
+    "power metal": ["metal", "heavy metal"],
+    "symphonic metal": ["metal", "heavy metal"],
+    "folk metal": ["metal", "heavy metal"],
+    "nu metal": ["metal", "heavy metal"],
+    "metalcore": ["metal", "heavy metal"],
+    "post-punk": ["punk", "rock"],
+    "hardcore punk": ["punk"],
+    "electronic rock": ["electronic", "rock"],
+    "indie rock": ["rock", "alternative"],
+    "alternative rock": ["rock", "alternative"],
+}
 
 
 def normalize_genre(genre):
@@ -65,38 +91,61 @@ def normalize_genre(genre):
 
 
 def clean_conflicting_genres(genres):
+    """Remove conflicting/broad genres when more specific ones exist."""
     cleaned = []
     lowered = {normalize_genre(g) for g in genres or []}
 
     for genre in lowered:
+        if not genre:
+            continue
+        removed = False
+        for specific, generics in _SPECIFIC_TO_GENERIC.items():
+            if genre in generics and specific in lowered:
+                removed = True
+                break
         if genre == "electronic" and ("punk" in lowered or "metal" in lowered):
             continue
-        if genre:
+        if not removed:
             cleaned.append(genre)
-
     return sorted(cleaned)
 
 
-def aggregate_genres(source_map):
+def aggregate_genres(source_map, max_genres: int = 5, context_title: str = "", context_album: str = ""):
+    """Aggregate genres from multiple sources with weighted scoring and context boosts."""
     scores = defaultdict(float)
-
     for source, genres in source_map.items():
         weight = GENRE_WEIGHTS.get(source, 0.05)
-
         for g in genres:
             scores[normalize_genre(g)] += weight
 
+    context_lower = f"{context_title} {context_album}".lower()
+    if any(kw in context_lower for kw in _CHRISTMAS_KEYWORDS):
+        scores["christmas"] += 2.0
+    if any(re.search(p, context_lower) for p in _LIVE_PATTERNS):
+        scores["live"] += 0.5
+
     ordered = sorted(scores, key=scores.get, reverse=True)
-    return clean_conflicting_genres(ordered)[:5]
+    return clean_conflicting_genres(ordered)[:max_genres]
 
 
-def get_top_genres_with_navidrome(sources, nav_genres):
+def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
+    """Combine online-sourced genres with Navidrome genres."""
     scores = defaultdict(float)
-
     for source, genres in (sources or {}).items():
         weight = GENRE_WEIGHTS.get(source, 0.05)
         for genre in genres:
             scores[normalize_genre(genre)] += weight
+
+    context_lower = f"{title} {album}".lower()
+    if any(kw in context_lower for kw in _CHRISTMAS_KEYWORDS):
+        scores["christmas"] += 2.0
+    if any(re.search(p, context_lower) for p in _LIVE_PATTERNS):
+        scores["live"] += 0.5
+
+    ordered = sorted(scores, key=scores.get, reverse=True)
+    online_top = clean_conflicting_genres(ordered)[:3]
+    nav_cleaned = sorted({normalize_genre(g).capitalize() for g in nav_genres if g})
+    return online_top, nav_cleaned
 
     for genre in nav_genres or []:
         scores[normalize_genre(genre)] += 0.30

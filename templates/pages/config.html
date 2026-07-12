@@ -4,7 +4,7 @@
 <div class="container-fluid py-3 py-md-4">
   <script>
     // Make config data available to JavaScript
-    window.pageConfig = {{ config | tojson }};
+    window.pageConfig = {{ config | tojson | safe }};
   </script>
   <div class="row mb-3">
     <div class="col-12 col-md-auto">

@@ -58,6 +58,32 @@ class SlskdHttpClient:
     # Search management
     # ------------------------------------------------------------------
 
+    def start_search(self, query: str, timeout: int = 20) -> str | None:
+        """Start a new Soulseek search. Returns the search ID."""
+        try:
+            resp = self.post_json("searches", {"searchText": query}, timeout=timeout)
+            data = resp.json() if hasattr(resp, "json") else resp
+            return (data if isinstance(data, str) else data.get("id") or data.get("searchId")) or None
+        except Exception as exc:
+            logger.debug("Failed to start search: %s", exc)
+            return None
+
+    def list_searches(self, timeout: int = 8) -> list[dict[str, Any]]:
+        """List all searches and their states."""
+        try:
+            return self.get_json("searches", timeout=timeout, default=[])
+        except Exception as exc:
+            logger.debug("Failed to list searches: %s", exc)
+            return []
+
+    def get_search_results(self, search_id: str, timeout: int = 10) -> list[dict[str, Any]]:
+        """Get results for a completed search."""
+        try:
+            return self.get_json(f"searches/{search_id}/results", timeout=timeout, default=[])
+        except Exception as exc:
+            logger.debug("Failed to get search results: %s", exc)
+            return []
+
     def stop_search(self, search_id: str) -> bool:
         """Stop a running search."""
         try:
@@ -80,6 +106,40 @@ class SlskdHttpClient:
     # Transfer management
     # ------------------------------------------------------------------
 
+    def enqueue_download(self, username: str, filename: str, timeout: int = 15) -> dict[str, Any]:
+        """Queue a file for download from a user."""
+        try:
+            resp = self.post_json(
+                "transfers/downloads",
+                {"username": username, "filename": filename},
+                timeout=timeout,
+            )
+            return resp.json() if hasattr(resp, "json") else {}
+        except Exception as exc:
+            logger.debug("Failed to enqueue download: %s", exc)
+            return {}
+
+    def get_active_downloads(self, timeout: int = 10) -> list[dict[str, Any]]:
+        """Get all active/in-progress downloads."""
+        try:
+            return self.get_json("transfers/downloads", timeout=timeout, default=[])
+        except Exception as exc:
+            logger.debug("Failed to get active downloads: %s", exc)
+            return []
+
+    def retry_download(self, username: str, filename: str, timeout: int = 10) -> bool:
+        """Retry a failed download."""
+        try:
+            resp = self.post_json(
+                "transfers/downloads/retry",
+                {"username": username, "filename": filename},
+                timeout=timeout,
+            )
+            return resp.status_code in (200, 204) if hasattr(resp, "status_code") else True
+        except Exception as exc:
+            logger.debug("Failed to retry download: %s", exc)
+            return False
+
     def get_download(self, download_id: str) -> dict[str, Any]:
         """Get details for a specific download."""
         try:
@@ -88,14 +148,30 @@ class SlskdHttpClient:
             logger.debug("Failed to get download %s: %s", download_id, exc)
             return {}
 
-    def cancel_download(self, download_id: str) -> bool:
-        """Cancel a specific download."""
+    def cancel_download(self, download_id_or_username: str, filename: str | None = None, transfer_id: str | None = None) -> bool:
+        """Cancel a specific download.
+
+        Accepts either a ``download_id`` (str) or ``(username, filename)``
+        for backward compatibility with legacy route callers.
+        """
         try:
-            resp = self.delete(f"transfers/downloads/{download_id}")
+            if filename is not None:
+                # Legacy signature: (username, filename, transfer_id?)
+                resp = self.delete(f"transfers/downloads/{download_id_or_username}/{filename}")
+            else:
+                resp = self.delete(f"transfers/downloads/{download_id_or_username}")
             return resp.status_code in (200, 204)
         except Exception as exc:
-            logger.debug("Failed to cancel download %s: %s", download_id, exc)
+            logger.debug("Failed to cancel download: %s", exc)
             return False
+
+    def get_events(self, timeout: int = 10) -> list[dict[str, Any]]:
+        """Get recent slskd events."""
+        try:
+            return self.get_json("events", timeout=timeout, default=[])
+        except Exception as exc:
+            logger.debug("Failed to get events: %s", exc)
+            return []
 
     def remove_completed_downloads(self) -> bool:
         """Remove all completed downloads from the queue."""

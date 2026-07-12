@@ -807,7 +807,7 @@
 
   async function downloadSoulseekFile(username, filename, size) {
     try {
-      const response = await fetch('/api/slskd/download-single', {
+      const response = await fetch('/api/slskd/download', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
