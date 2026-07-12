@@ -10,8 +10,7 @@ from quart import flash, jsonify, redirect, request, url_for
 import services.scanning.runtime_state as runtime_state
 from routes.scan_routes import scans_bp
 from routes.scan_routes._common import form_bool, is_process_alive, run_async
-from services.popularity.pipeline import run_popularity_from_artist
-from services.scanning.pipelines.popularity_pipeline import run_popularity_mode
+from services.popularity.pipeline import run_popularity_from_artist, run_popularity_scan
 from services.scanning.progress import progress_path, write_progress_file
 from services.scanning.scan_state import write_progress_with_current_artist
 
@@ -129,12 +128,24 @@ def scan_popularity_route():
             progress_file = progress_path("popularity_scan_progress.json")
 
         write_progress_file(progress_file, "popularity_scan", True, {"status": "starting"})
+
+        # Build kwargs for the new orchestrator directly (Phase 1 fix)
+        scan_kwargs: dict[str, Any] = {
+            "force": force_rescan,
+            "progress_file": progress_file,
+        }
+        if scan_mode == "metadata":
+            scan_kwargs["metadata_only"] = True
+        elif scan_mode == "singles":
+            scan_kwargs["singles_only"] = True
+        elif scan_mode == "singles_detection":
+            scan_kwargs["singles_with_missing_popularity"] = True
+        # "all" / "popularity" → default behaviour (no mode flag needed)
+
         thread = run_async(
-            run_popularity_mode,
-            mode=scan_mode,
-            progress_file=progress_file,
-            force_rescan=force_rescan,
+            run_popularity_scan,
             daemon=False,
+            **scan_kwargs,
         )
         runtime_state.scan_process_popularity = {"thread": thread, "type": "popularity"}
 
@@ -151,7 +162,12 @@ def scan_singles():
             return redirect(url_for("dashboard"))
 
         progress_file = progress_path("singles_scan_progress.json")
-        thread = run_async(run_popularity_mode, mode="singles", progress_file=progress_file, daemon=False)
+        thread = run_async(
+            run_popularity_scan,
+            singles_only=True,
+            progress_file=progress_file,
+            daemon=False,
+        )
         runtime_state.scan_process_singles = {"thread": thread, "type": "singles"}
 
     flash("✅ Singles detection scan started", "success")

@@ -29,14 +29,14 @@ _ALBUM_ART_SCHEMA_LOCK_KEY = 1986627450
 # =============================================================================
 
 def _ensure_table(cursor: Any, table_name: str, ddl: str) -> None:
-    cursor.execute("SAVEPOINT popularr_schema_table_create")
+    cursor.execute(text("SAVEPOINT popularr_schema_table_create"))
     try:
-        cursor.execute(ddl)
+        cursor.execute(text(ddl))
     except Exception as exc:
-        cursor.execute("ROLLBACK TO SAVEPOINT popularr_schema_table_create")
+        cursor.execute(text("ROLLBACK TO SAVEPOINT popularr_schema_table_create"))
         if "already exists" not in str(exc).lower() and "duplicate" not in str(exc).lower(): raise
     finally:
-        try: cursor.execute("RELEASE SAVEPOINT popularr_schema_table_create")
+        try: cursor.execute(text("RELEASE SAVEPOINT popularr_schema_table_create"))
         except Exception: pass
 
 def _ensure_columns(cursor: Any, table_name: str, columns: dict[str, str]) -> None:
@@ -45,25 +45,32 @@ def _ensure_columns(cursor: Any, table_name: str, columns: dict[str, str]) -> No
     for col_name, col_def in columns.items():
         if col_name not in existing:
             try:
-                cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
+                cursor.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_def}"))
                 logging.info("Added column: %s.%s", table_name, col_name)
             except Exception as e:
                 logging.warning("Could not add %s.%s: %s", table_name, col_name, e)
 
 def _ensure_index(cursor: Any, ddl: str) -> None:
-    try: cursor.execute(ddl)
+    try: cursor.execute(text(ddl))
     except Exception as e:
         if "already exists" not in str(e).lower() and "duplicate" not in str(e).lower(): raise
 
-def _try_advisory_lock(cursor: Any, key: int | str, attempts: int = 10) -> bool:
+def _try_advisory_lock(conn_or_session: Any, key: int | str, attempts: int = 10) -> bool:
     for _ in range(max(1, attempts)):
-        cursor.execute("SELECT pg_try_advisory_lock(hashtext(%s))" if isinstance(key, str) else "SELECT pg_try_advisory_lock(%s)", (key,))
-        if bool(cursor.fetchone()[0]): return True
+        result = conn_or_session.execute(
+            text("SELECT pg_try_advisory_lock(hashtext(:key))" if isinstance(key, str) else "SELECT pg_try_advisory_lock(:key)"),
+            {"key": key},
+        )
+        if bool(result.scalar()): return True
         time.sleep(0.3)
     return False
 
-def _release_advisory_lock(cursor: Any, key: int | str) -> None:
-    try: cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))" if isinstance(key, str) else "SELECT pg_advisory_unlock(%s)", (key,))
+def _release_advisory_lock(conn_or_session: Any, key: int | str) -> None:
+    try:
+        conn_or_session.execute(
+            text("SELECT pg_advisory_unlock(hashtext(:key))" if isinstance(key, str) else "SELECT pg_advisory_unlock(:key)"),
+            {"key": key},
+        )
     except Exception: pass
 
 # =============================================================================
@@ -71,18 +78,18 @@ def _release_advisory_lock(cursor: Any, key: int | str) -> None:
 # =============================================================================
 
 def ensure_status_changed_trigger(cursor: Any) -> None:
-    cursor.execute("""
+    cursor.execute(text("""
         CREATE OR REPLACE FUNCTION fn_dq_status_changed_at() RETURNS TRIGGER LANGUAGE plpgsql AS $$
         BEGIN
             IF NEW.status IS DISTINCT FROM OLD.status THEN NEW.status_changed_at = CURRENT_TIMESTAMP; END IF;
             RETURN NEW;
-        END; $$""")
-    cursor.execute("DROP TRIGGER IF EXISTS trg_dq_status_changed_at ON download_queue")
-    cursor.execute("CREATE TRIGGER trg_dq_status_changed_at BEFORE UPDATE ON download_queue FOR EACH ROW EXECUTE FUNCTION fn_dq_status_changed_at()")
+        END; $$"""))
+    cursor.execute(text("DROP TRIGGER IF EXISTS trg_dq_status_changed_at ON download_queue"))
+    cursor.execute(text("CREATE TRIGGER trg_dq_status_changed_at BEFORE UPDATE ON download_queue FOR EACH ROW EXECUTE FUNCTION fn_dq_status_changed_at()"))
 
 def ensure_musicbrainz_release_unique_constraint(cursor: Any) -> None:
-    cursor.execute("DELETE FROM musicbrainz_releases WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY release_id ORDER BY updated_at DESC) as rn FROM musicbrainz_releases) t WHERE rn > 1)")
-    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_musicbrainz_releases_release_id ON musicbrainz_releases (release_id)")
+    cursor.execute(text("DELETE FROM musicbrainz_releases WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY release_id ORDER BY updated_at DESC) as rn FROM musicbrainz_releases) t WHERE rn > 1)"))
+    cursor.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_musicbrainz_releases_release_id ON musicbrainz_releases (release_id)"))
 
 def ensure_album_artist_column_data() -> bool:
     try:
