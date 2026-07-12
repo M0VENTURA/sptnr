@@ -1,0 +1,100 @@
+# Popularr — Docker Compose
+#
+# Start:   docker compose up -d
+# Stop:    docker compose down
+# Logs:    docker compose logs -f
+# Rebuild: docker compose build --no-cache
+#
+# Environment variables are loaded from .env if present.
+# See .env.example for available settings.
+
+services:
+  # ================================================================
+  # PostgreSQL database
+  # ================================================================
+  db:
+    image: postgres:16-alpine
+    container_name: popularr-db
+    restart: unless-stopped
+    shm_size: 256mb
+    environment:
+      POSTGRES_DB: ${PG_DATABASE:-popularr}
+      POSTGRES_USER: ${PG_USER:-popularr}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-popularr}
+      TZ: ${TZ:-Australia/Melbourne}
+    ports:
+      - "${PG_PORT_EXTERNAL:-127.0.0.1:5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-popularr} -d ${PG_DATABASE:-popularr}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ================================================================
+  # Popularr web application
+  # ================================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: popularr-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-5000}:5000"
+    environment:
+      # Database — compose sets PG_HOST to the service name "db"
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: ${PG_USER:-popularr}
+      PG_PASSWORD: ${PG_PASSWORD:-popularr}
+      PG_DATABASE: ${PG_DATABASE:-popularr}
+
+      # Configuration paths
+      CONFIG_PATH: ${CONFIG_PATH:-/config/config.yaml}
+      LOG_PATH: ${LOG_PATH:-/config/app.log}
+      DB_PATH: ${DB_PATH:-/database/popularr.db}
+
+      # Gunicorn
+      SPTNR_GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
+      SPTNR_GUNICORN_THREADS: ${GUNICORN_THREADS:-4}
+      SPTNR_GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-300}
+      SPTNR_LOG_LEVEL: ${LOG_LEVEL:-info}
+      TZ: ${TZ:-Australia/Melbourne}
+
+      # Queue processor
+      SPTNR_QUEUE_PROCESSOR_INTERVAL: ${QUEUE_INTERVAL:-30}
+
+    volumes:
+      # Persistent config and database (SQLite fallback)
+      - config_data:/config
+      - db_data:/database
+
+      # Music library — mount your music directory here
+      - ${MUSIC_ROOT:-./music}:/music:ro
+
+      # Downloads — mount your downloads directory here
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
+
+      # Optional: pre-downloaded Essentia models (avoids re-downloading)
+      - ${ESSENTIA_MODELS_DIR:-./essentia_models}:/opt/essentia_models:ro
+
+      # Timezone
+      - /etc/localtime:/etc/localtime:ro
+
+# ================================================================
+# Persistent volumes
+# ================================================================
+volumes:
+  pgdata:
+    driver: local
+  config_data:
+    driver: local
+  db_data:
+    driver: local

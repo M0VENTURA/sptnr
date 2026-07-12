@@ -19,12 +19,60 @@ cleanup() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Wait for PostgreSQL to accept connections (Docker Compose support)
+# ---------------------------------------------------------------------------
+wait_for_db() {
+    local host="${PG_HOST:-}"
+    local port="${PG_PORT:-5432}"
+    local user="${PG_USER:-popularr}"
+    local retries=15
+    local delay=2
+
+    # Skip if no PG_HOST is set (SQLite fallback)
+    if [ -z "$host" ] || [ "$host" = "localhost" ]; then
+        return 0
+    fi
+
+    log "Waiting for PostgreSQL at $host:$port..."
+    for i in $(seq 1 $retries); do
+        if command -v pg_isready >/dev/null 2>&1; then
+            if pg_isready -h "$host" -p "$port" -U "$user" >/dev/null 2>&1; then
+                ok "PostgreSQL is ready (attempt $i)"
+                return 0
+            fi
+        else
+            # Fallback: try a TCP connection using python
+            if python3 -c "import socket; s=socket.create_connection(('$host',$port), timeout=3); s.close()" 2>/dev/null; then
+                ok "PostgreSQL port is open (attempt $i)"
+                return 0
+            fi
+        fi
+        if [ "$i" -lt "$retries" ]; then
+            log "  PostgreSQL not ready yet, retrying in ${delay}s... ($i/$retries)"
+            sleep "$delay"
+        fi
+    done
+    warn "PostgreSQL did not become ready after $retries attempts — continuing anyway"
+}
+
 run_queue_startup_schema() {
     log "Running minimal queue startup schema bootstrap..."
     if python3 migrations/ensure_queue_startup_schema.py; then
         ok "Minimal queue startup schema bootstrap complete"
     else
         warn "Minimal queue startup schema bootstrap failed (non-fatal)"
+    fi
+}
+
+run_alembic_migrations() {
+    if [ -f alembic.ini ] && [ -d migrations/versions ]; then
+        log "Running Alembic database migrations..."
+        if python3 -m alembic upgrade head 2>/dev/null; then
+            ok "Alembic migrations applied"
+        else
+            warn "Alembic migrations failed (non-fatal — legacy schema bootstrap covers it)"
+        fi
     fi
 }
 
@@ -80,11 +128,11 @@ start_web_app() {
 main() {
     trap cleanup SIGTERM SIGINT EXIT
     log "=== Popularr Starting ==="
+    wait_for_db
     run_queue_startup_schema
+    run_alembic_migrations
     check_ffmpeg
     start_queue_processor
     preflight_python
     start_web_app
 }
-
-main "$@"

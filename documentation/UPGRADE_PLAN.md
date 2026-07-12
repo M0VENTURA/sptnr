@@ -95,15 +95,20 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 
 ## 8. Docker Compose
 
-**Target**: Single-command dev/deploy environment.
+**Status**: ✅ COMPLETED — `docker-compose.yml` + `.env.example` created.
 
-```yaml
-services:
-  db: postgres:16-alpine
-  app: build from Dockerfile
+**What changed**:
+- `docker-compose.yml` — PostgreSQL 16 + app service with health checks, volumes, env vars
+- `.env.example` — documented all configurable environment variables
+- `entrypoint.sh` — added `wait_for_db()` to wait for PostgreSQL readiness, `run_alembic_migrations()` for auto-migration
+- Obsoletes `popularr.env` — config now lives in `.env` / `docker-compose.yml`
+
+**Usage**:
+```bash
+cp .env.example .env
+# Edit .env to set MUSIC_ROOT and DOWNLOADS_DIR
+docker compose up -d
 ```
-
-Eliminates `popularr.env` — config lives in `docker-compose.yml` or `.env`.
 
 ---
 
