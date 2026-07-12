@@ -31,7 +31,7 @@ class AppleMusicClient:
         self.base_url = "https://itunes.apple.com/search"
         self.headers = {"User-Agent": "sptnr-cli/1.0"}
 
-    def _search(self, term: str, entity: str, limit: int, timeout: tuple[int, int] | int) -> list[dict[str, Any]]:
+    def _search(self, term: str, entity: str, limit: int, timeout: float = 10.0) -> list[dict[str, Any]]:
         if not self.enabled or not term:
             return []
         try:
@@ -44,28 +44,28 @@ class AppleMusicClient:
             logger.debug("Apple Music/iTunes search failed for %s: %s", term, exc)
             return []
 
-    def search_artist(self, artist: str, limit: int = 5, timeout: tuple[int, int] | int = (5, 10)) -> list[dict[str, Any]]:
+    def search_artist(self, artist: str, limit: int = 5, timeout: float = 10.0) -> list[dict[str, Any]]:
         return [item for item in self._search(artist, "allArtist", limit, timeout) if item.get("wrapperType") == "artist"]
 
-    def search_track(self, title: str, artist: str, limit: int = 10, timeout: tuple[int, int] | int = (5, 10)) -> list[dict[str, Any]]:
+    def search_track(self, title: str, artist: str, limit: int = 10, timeout: float = 10.0) -> list[dict[str, Any]]:
         return self._search(f"{artist} {title}".strip(), "song", limit, timeout)
 
-    def search_album(self, album: str, artist: str, limit: int = 10, timeout: tuple[int, int] | int = (5, 10)) -> list[dict[str, Any]]:
+    def search_album(self, album: str, artist: str, limit: int = 10, timeout: float = 10.0) -> list[dict[str, Any]]:
         return self._search(f"{artist} {album}".strip(), "album", limit, timeout)
 
     @staticmethod
     def _resize_artwork(url: str, size: int) -> str:
         return url.replace("100x100bb", f"{size}x{size}bb") if url else ""
 
-    def get_artist_artwork(self, artist: str, size: int = 500, timeout: tuple[int, int] | int = (5, 10)) -> str:
+    def get_artist_artwork(self, artist: str, size: int = 500, timeout: float = 10.0) -> str:
         results = self.search_artist(artist, limit=1, timeout=timeout)
         return self._resize_artwork(results[0].get("artworkUrl100", ""), size) if results else ""
 
-    def get_track_artwork(self, title: str, artist: str, size: int = 600, timeout: tuple[int, int] | int = (5, 10)) -> str:
+    def get_track_artwork(self, title: str, artist: str, size: int = 600, timeout: float = 10.0) -> str:
         results = self.search_track(title, artist, limit=1, timeout=timeout)
         return self._resize_artwork(results[0].get("artworkUrl100", ""), size) if results else ""
 
-    def get_album_artwork(self, album: str, artist: str, size: int = 600, timeout: tuple[int, int] | int = (5, 10)) -> str:
+    def get_album_artwork(self, album: str, artist: str, size: int = 600, timeout: float = 10.0) -> str:
         results = self.search_album(album, artist, limit=1, timeout=timeout)
         return self._resize_artwork(results[0].get("artworkUrl100", ""), size) if results else ""
 
@@ -80,13 +80,13 @@ def _get_apple_music_client(enabled: bool = True) -> AppleMusicClient:
     return _apple_music_client
 
 
-def get_artist_artwork(artist: str, size: int = 500, enabled: bool = True, timeout: tuple[int, int] | int = (5, 10)) -> str:
+def get_artist_artwork(artist: str, size: int = 500, enabled: bool = True, timeout: float = 10.0) -> str:
     return _get_apple_music_client(enabled).get_artist_artwork(artist, size, timeout)
 
 
-def get_track_artwork(title: str, artist: str, size: int = 600, enabled: bool = True, timeout: tuple[int, int] | int = (5, 10)) -> str:
+def get_track_artwork(title: str, artist: str, size: int = 600, enabled: bool = True, timeout: float = 10.0) -> str:
     return _get_apple_music_client(enabled).get_track_artwork(title, artist, size, timeout)
 
 
-def get_album_artwork(album: str, artist: str, size: int = 600, enabled: bool = True, timeout: tuple[int, int] | int = (5, 10)) -> str:
+def get_album_artwork(album: str, artist: str, size: int = 600, enabled: bool = True, timeout: float = 10.0) -> str:
     return _get_apple_music_client(enabled).get_album_artwork(album, artist, size, timeout)

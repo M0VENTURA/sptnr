@@ -40,37 +40,37 @@ class DiscogsClient:
         self.base_url = self.http.base_url
         self.headers = self.http.headers
 
-    def get_comprehensive_metadata(self, title: str, artist: str, duration: float | None = None, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any] | None:
+    def get_comprehensive_metadata(self, title: str, artist: str, duration: float | None = None, timeout: float = 10.0) -> dict[str, Any] | None:
         return self.service.get_comprehensive_metadata(title, artist, duration=duration, timeout=timeout)
 
-    def search_releases(self, query: str, limit: int = 5, timeout: tuple[int, int] | int = (5, 10)) -> list[dict[str, Any]]:
+    def search_releases(self, query: str, limit: int = 5, timeout: float = 10.0) -> list[dict[str, Any]]:
         return self.service.search_releases(query, limit=limit, timeout=timeout)
 
-    def is_single(self, title: str, artist: str, album_context: dict[str, Any] | None = None, timeout: tuple[int, int] | int = (5, 10)) -> bool:
+    def is_single(self, title: str, artist: str, album_context: dict[str, Any] | None = None, timeout: float = 10.0) -> bool:
         return self.service.is_single(title, artist, album_context=album_context, timeout=timeout)
 
-    def get_single_release_year(self, title: str, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> int | None:
+    def get_single_release_year(self, title: str, artist: str, timeout: float = 10.0) -> int | None:
         return self.service.get_single_release_year(title, artist, timeout=timeout)
 
-    def has_official_video(self, title: str, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> bool:
+    def has_official_video(self, title: str, artist: str, timeout: float = 10.0) -> bool:
         return self.service.has_official_video(title, artist, timeout=timeout)
 
-    def get_artist_id(self, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> str | None:
+    def get_artist_id(self, artist: str, timeout: float = 10.0) -> str | None:
         return self.service.get_artist_id(artist, timeout=timeout)
 
-    def get_genres(self, title: str, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> list[str]:
+    def get_genres(self, title: str, artist: str, timeout: float = 10.0) -> list[str]:
         return self.service.get_genres(title, artist, timeout=timeout)
 
-    def get_release(self, release_id: str, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any] | None:
+    def get_release(self, release_id: str, timeout: float = 10.0) -> dict[str, Any] | None:
         return self.service.get_release(release_id, timeout=timeout)
 
-    def get_release_genres_by_id(self, release_id: str, timeout: tuple[int, int] | int = (5, 10)) -> list[dict[str, str]]:
+    def get_release_genres_by_id(self, release_id: str, timeout: float = 10.0) -> list[dict[str, str]]:
         return self.service.get_release_genres_by_id(release_id, timeout=timeout)
 
-    def get_artist_biography(self, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_artist_biography(self, artist: str, timeout: float = 10.0) -> dict[str, Any]:
         return self.service.get_artist_biography(artist, timeout=timeout)
 
-    def get_artist_biography_by_id(self, artist_id: str, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_artist_biography_by_id(self, artist_id: str, timeout: float = 10.0) -> dict[str, Any]:
         return self.service.get_artist_biography_by_id(artist_id, timeout=timeout)
 
 
@@ -85,17 +85,17 @@ def _get_discogs_client(token: str, enabled: bool = True) -> DiscogsClient:
     return _discogs_client
 
 
-def is_discogs_single(title: str, artist: str, album_context: dict[str, Any] | None = None, timeout: tuple[int, int] | int = (5, 10), token: str = "", enabled: bool = True) -> bool:
+def is_discogs_single(title: str, artist: str, album_context: dict[str, Any] | None = None, timeout: float = 10.0, token: str = "", enabled: bool = True) -> bool:
     return _get_discogs_client(token, enabled=enabled).is_single(title, artist, album_context=album_context, timeout=timeout)
 
 
-def get_discogs_genres(title: str, artist: str, token: str = "", enabled: bool = True, timeout: tuple[int, int] | int = (5, 10)) -> list[str]:
+def get_discogs_genres(title: str, artist: str, token: str = "", enabled: bool = True, timeout: float = 10.0) -> list[str]:
     return _get_discogs_client(token, enabled=enabled).get_genres(title, artist, timeout=timeout)
 
 
-def has_discogs_video(title: str, artist: str, token: str = "", enabled: bool = True, timeout: tuple[int, int] | int = (5, 10)) -> bool:
+def has_discogs_video(title: str, artist: str, token: str = "", enabled: bool = True, timeout: float = 10.0) -> bool:
     return _get_discogs_client(token, enabled=enabled).has_official_video(title, artist, timeout=timeout)
 
 
-def get_discogs_artist_biography(artist: str, token: str = "", enabled: bool = True, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+def get_discogs_artist_biography(artist: str, token: str = "", enabled: bool = True, timeout: float = 10.0) -> dict[str, Any]:
     return _get_discogs_client(token, enabled=enabled).get_artist_biography(artist, timeout=timeout)

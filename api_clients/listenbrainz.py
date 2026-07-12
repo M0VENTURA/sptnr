@@ -68,7 +68,7 @@ class ListenBrainzClient:
                 pass
         time.sleep(1.0)
 
-    def _get(self, path: str, *, params: dict[str, Any] | None = None, authenticated: bool = False, timeout: tuple[int, int] = (5, 15)) -> Any:
+    def _get(self, path: str, *, params: dict[str, Any] | None = None, authenticated: bool = False, timeout: float = 15.0) -> Any:
         if not self.enabled:
             raise ListenBrainzError("ListenBrainz client is disabled")
         self._throttle()
@@ -76,7 +76,7 @@ class ListenBrainzClient:
         response.raise_for_status()
         return response.json()
 
-    def _post(self, path: str, *, payload: dict[str, Any], authenticated: bool = False, timeout: tuple[int, int] = (5, 15)) -> Any:
+    def _post(self, path: str, *, payload: dict[str, Any], authenticated: bool = False, timeout: float = 15.0) -> Any:
         if not self.enabled:
             raise ListenBrainzError("ListenBrainz client is disabled")
         self._throttle()
@@ -101,7 +101,7 @@ class ListenBrainzClient:
             logger.warning("ListenBrainz popularity batch > 100 items; truncating to 100")
             mbids = mbids[:100]
         try:
-            data = self._post("/popularity/recording", payload={"recording_mbids": mbids}, timeout=(5, 20))
+            data = self._post("/popularity/recording", payload={"recording_mbids": mbids}, timeout=20.0)
             if isinstance(data, list):
                 for item in data:
                     if isinstance(item, dict) and item.get("recording_mbid") in result:
@@ -142,7 +142,7 @@ class ListenBrainzClient:
         if not self.enabled or not mbids:
             return {}
         try:
-            data = self._get("/metadata/recording/", params={"recording_mbids": ",".join(mbids), "inc": inc}, timeout=(5, 20))
+            data = self._get("/metadata/recording/", params={"recording_mbids": ",".join(mbids), "inc": inc}, timeout=20.0)
             return data if isinstance(data, dict) else {}
         except Exception as exc:
             logger.debug("Failed to fetch recording metadata: %s", exc)
@@ -165,7 +165,7 @@ class ListenBrainzClient:
         if not self.enabled or not artist_mbid:
             return []
         try:
-            data = self._get(f"/popularity/top-recordings-for-artist/{artist_mbid}", timeout=(5, 10))
+            data = self._get(f"/popularity/top-recordings-for-artist/{artist_mbid}", timeout=10.0)
             return data if isinstance(data, list) else []
         except Exception as exc:
             logger.debug("Failed to fetch top recordings for artist %s: %s", artist_mbid, exc)
@@ -176,7 +176,7 @@ class ListenBrainzClient:
         if not self.enabled or not username:
             return 0
         try:
-            data = self._get(f"/user/{username}/listen-count", timeout=(5, 10))
+            data = self._get(f"/user/{username}/listen-count", timeout=10.0)
             count = data.get("payload", {}).get("count", 0) if isinstance(data, dict) else 0
             return int(count or 0)
         except Exception as exc:
@@ -199,7 +199,7 @@ class ListenBrainzClient:
         if len(mbids) > 100:
             mbids = mbids[:100]
         try:
-            data = self._post("/popularity/artist", payload={"artist_mbids": mbids}, timeout=(5, 20))
+            data = self._post("/popularity/artist", payload={"artist_mbids": mbids}, timeout=20.0)
             if isinstance(data, list):
                 for item in data:
                     mbid = item.get("artist_mbid") if isinstance(item, dict) else None
@@ -221,7 +221,7 @@ class ListenBrainzClient:
         if len(mbids) > 100:
             mbids = mbids[:100]
         try:
-            data = self._post("/popularity/release", payload={"release_mbids": mbids}, timeout=(5, 20))
+            data = self._post("/popularity/release", payload={"release_mbids": mbids}, timeout=20.0)
             if isinstance(data, list):
                 for item in data:
                     mbid = item.get("release_mbid") if isinstance(item, dict) else None
@@ -243,7 +243,7 @@ class ListenBrainzClient:
         if len(mbids) > 100:
             mbids = mbids[:100]
         try:
-            data = self._post("/popularity/release-group", payload={"release_group_mbids": mbids}, timeout=(5, 20))
+            data = self._post("/popularity/release-group", payload={"release_group_mbids": mbids}, timeout=20.0)
             if isinstance(data, list):
                 for item in data:
                     mbid = item.get("release_group_mbid") if isinstance(item, dict) else None
@@ -261,7 +261,7 @@ class ListenBrainzClient:
         if not self.enabled or not artist_mbid:
             return []
         try:
-            data = self._get(f"/popularity/top-release-groups-for-artist/{artist_mbid}", timeout=(5, 10))
+            data = self._get(f"/popularity/top-release-groups-for-artist/{artist_mbid}", timeout=10.0)
             return data if isinstance(data, list) else []
         except Exception as exc:
             logger.debug("Failed to fetch top release groups for artist %s: %s", artist_mbid, exc)
@@ -284,7 +284,7 @@ class ListenBrainzClient:
         if max_ts is not None:
             params["max_ts"] = max_ts
         try:
-            return self._get(f"/user/{username}/listens", params=params, timeout=(5, 15))
+            return self._get(f"/user/{username}/listens", params=params, timeout=15.0)
         except Exception as exc:
             logger.debug("Failed to fetch listens for %s: %s", username, exc)
             return {"payload": {"listens": []}}
@@ -341,7 +341,7 @@ class ListenBrainzUserClient(ListenBrainzClient):
             data = self._get(f"/cf/recommendation/user/{self.user_token}/recording",
                              params={"count": max(1, min(count, 100)), "offset": max(0, offset)},
                              authenticated=True,
-                             timeout=(10, 30))
+                             timeout=30.0)
             return data if isinstance(data, dict) else {"payload": {"mbids": []}}
         except Exception as exc:
             logger.debug("Failed to fetch recommendations: %s", exc)
@@ -367,7 +367,7 @@ class ListenBrainzUserClient(ListenBrainzClient):
         if score is not None:
             params["score"] = score
         try:
-            data = self._get(f"/feedback/user/{username}/get-feedback", params=params, authenticated=True, timeout=(5, 15))
+            data = self._get(f"/feedback/user/{username}/get-feedback", params=params, authenticated=True, timeout=15.0)
             return data if isinstance(data, dict) else {"feedback": []}
         except Exception as exc:
             logger.debug("Failed to fetch user feedback for %s: %s", username, exc)

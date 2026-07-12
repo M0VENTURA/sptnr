@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from api_clients.http_utils import create_retry_session
+from api_clients.http_utils import create_retry_client
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 WIKIPEDIA_SUMMARY_API = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
@@ -12,7 +12,7 @@ WIKIPEDIA_SUMMARY_API = "https://en.wikipedia.org/api/rest_v1/page/summary/{titl
 
 class WikidataHttpClient:
     def __init__(self, http_session=None):
-        self.session = http_session or create_retry_session(
+        self.session = http_session or create_retry_client(
             user_agent="sptnr/2.0 ( https://github.com/M0VENTURA/sptnr )",
             retries=2,
             backoff=1.0,

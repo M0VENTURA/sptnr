@@ -18,7 +18,7 @@ import random
 import time
 from typing import Any, Callable
 
-from requests.exceptions import ConnectionError, HTTPError, RequestException, Timeout
+import httpx
 
 from api_clients import session
 
@@ -37,7 +37,7 @@ def retry_with_backoff(
     backoff_factor: float = LASTFM_DEFAULTS["RETRY_BACKOFF"],
     rate_limit_delay: float = LASTFM_DEFAULTS["RATE_LIMIT_DELAY"],
 ):
-    """Retry a callable returning a requests.Response with exponential backoff."""
+    """Retry a callable returning an httpx.Response with exponential backoff."""
     for attempt in range(max_retries):
         try:
             time.sleep(rate_limit_delay)
@@ -57,14 +57,14 @@ def retry_with_backoff(
 
             return result
 
-        except (ConnectionError, ConnectionResetError, Timeout, RequestException) as exc:
+        except (httpx.ConnectError, ConnectionResetError, httpx.TimeoutException, httpx.RequestError) as exc:
             if attempt == max_retries - 1:
                 raise
             wait_time = (backoff_factor ** attempt) + random.uniform(0, 1)
             logger.debug("Last.fm retry %s/%s after %.2fs: %s", attempt + 1, max_retries, wait_time, exc)
             time.sleep(wait_time)
 
-        except HTTPError as exc:
+        except httpx.HTTPStatusError as exc:
             response = getattr(exc, "response", None)
             status_code = getattr(response, "status_code", None)
             if status_code and status_code >= 500 and attempt < max_retries - 1:
@@ -91,8 +91,8 @@ class LastFmHttpClient:
         params.update(kwargs)
         return params
 
-    def request(self, method: str, *, timeout: tuple[int, int] = (5, 10), **kwargs):
-        """Perform a raw Last.fm request and return requests.Response.
+    def request(self, method: str, *, timeout: float = 10.0, **kwargs):
+        """Perform a raw Last.fm request and return httpx.Response.
 
         Uses ``retry_with_backoff`` for resilience against rate limits and
         transient network errors.
@@ -110,7 +110,7 @@ class LastFmHttpClient:
             retry_kwargs["rate_limit_delay"] = self.lastfm_config.get("rate_limit_delay", 0.5)
         return retry_with_backoff(_do_request, **retry_kwargs)
 
-    def get_json(self, method: str, *, timeout: tuple[int, int] = (5, 10), **kwargs) -> dict[str, Any]:
+    def get_json(self, method: str, *, timeout: float = 10.0, **kwargs) -> dict[str, Any]:
         """Perform a Last.fm request and return JSON dict.
 
         Handles Last.fm error responses (which return HTTP 200 with an
@@ -133,7 +133,7 @@ class LastFmHttpClient:
     # Endpoint wrappers (return raw Last.fm response dicts)
     # ------------------------------------------------------------------
 
-    def _get(self, method: str, *, timeout: tuple[int, int] = (5, 10), **kwargs) -> dict[str, Any]:
+    def _get(self, method: str, *, timeout: float = 10.0, **kwargs) -> dict[str, Any]:
         """Internal helper with retry support for GET requests."""
         func = lambda: self.request(method, timeout=timeout, **kwargs)
         try:
@@ -167,7 +167,7 @@ class LastFmAuthClient(LastFmHttpClient):
         raw = "".join(f"{k}{params[k]}" for k in sorted_keys) + self.api_secret
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
-    def _signed_request(self, method: str, *, timeout: tuple[int, int] = (10, 20), **kwargs) -> dict[str, Any]:
+    def _signed_request(self, method: str, *, timeout: float = 20.0, **kwargs) -> dict[str, Any]:
         """Perform an authenticated (signed) Last.fm request."""
         from api_clients.lastfm_http import retry_with_backoff
 

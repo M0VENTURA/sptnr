@@ -23,7 +23,7 @@ import time
 from typing import Any
 
 from api_clients import session as shared_session, timeout_safe_session
-from api_clients.http_utils import create_retry_session
+from api_clients.http_utils import create_retry_client
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ _DISCOGS_CONSECUTIVE_ERRORS = 0
 
 def build_discogs_session():
     """Create a Discogs-specific session that does not auto-retry 429s."""
-    return create_retry_session(
+    return create_retry_client(
         user_agent=DEFAULT_USER_AGENT,
         retries=3,
         backoff=1.0,
@@ -135,7 +135,7 @@ class DiscogsHttpClient:
         path_or_url: str,
         *,
         params: dict[str, Any] | None = None,
-        timeout: tuple[int, int] | int = (5, 10),
+        timeout: float = 10.0,
         max_retries: int = 2,
     ) -> dict[str, Any]:
         """Perform a Discogs request and return JSON dict.
@@ -184,31 +184,31 @@ class DiscogsHttpClient:
 
         return {}
 
-    def search_database(self, params: dict[str, Any], timeout: tuple[int, int] | int = (5, 10)) -> list[dict[str, Any]]:
+    def search_database(self, params: dict[str, Any], timeout: float = 10.0) -> list[dict[str, Any]]:
         """Call /database/search and return the results list."""
         payload = self._request("GET", "/database/search", params=params, timeout=timeout)
         results = payload.get("results", [])
         return results if isinstance(results, list) else []
 
-    def get_release(self, release_id: str | int, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_release(self, release_id: str | int, timeout: float = 10.0) -> dict[str, Any]:
         """Fetch a release by ID."""
         if not release_id:
             return {}
         return self._request("GET", f"/releases/{release_id}", timeout=timeout)
 
-    def get_master(self, master_id: str | int, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_master(self, master_id: str | int, timeout: float = 10.0) -> dict[str, Any]:
         """Fetch a master release by ID."""
         if not master_id:
             return {}
         return self._request("GET", f"/masters/{master_id}", timeout=timeout)
 
-    def get_artist(self, artist_id: str | int, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_artist(self, artist_id: str | int, timeout: float = 10.0) -> dict[str, Any]:
         """Fetch an artist by ID."""
         if not artist_id:
             return {}
         return self._request("GET", f"/artists/{artist_id}", timeout=timeout)
 
-    def get_artist_releases(self, artist_id: str | int, per_page: int = 100, timeout: tuple[int, int] | int = (5, 10)) -> list[dict[str, Any]]:
+    def get_artist_releases(self, artist_id: str | int, per_page: int = 100, timeout: float = 10.0) -> list[dict[str, Any]]:
         """Fetch the first page of artist releases."""
         if not artist_id:
             return []
@@ -216,7 +216,7 @@ class DiscogsHttpClient:
         releases = payload.get("releases", [])
         return releases if isinstance(releases, list) else []
 
-    def get_resource_url(self, url: str, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_resource_url(self, url: str, timeout: float = 10.0) -> dict[str, Any]:
         """Fetch a Discogs resource_url returned by another Discogs endpoint."""
         if not url:
             return {}
@@ -285,13 +285,13 @@ class DiscogsHttpClient:
     # Label endpoints
     # ------------------------------------------------------------------
 
-    def get_label(self, label_id: str | int, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_label(self, label_id: str | int, timeout: float = 10.0) -> dict[str, Any]:
         """Fetch a label by ID."""
         if not label_id:
             return {}
         return self._request("GET", f"/labels/{label_id}", timeout=timeout)
 
-    def get_label_releases(self, label_id: str | int, per_page: int = 100, timeout: tuple[int, int] | int = (5, 10)) -> list[dict[str, Any]]:
+    def get_label_releases(self, label_id: str | int, per_page: int = 100, timeout: float = 10.0) -> list[dict[str, Any]]:
         """Fetch releases for a label (first page)."""
         if not label_id:
             return []
@@ -321,8 +321,8 @@ def fetch_image_bytes(client_or_token, image_url: str) -> bytes | None:
             headers = client_or_token.headers
             session = client_or_token.session
         else:
-            from api_clients.http_utils import create_retry_session
-            session = create_retry_session()
+            from api_clients.http_utils import create_retry_client
+            session = create_retry_client()
             headers = {"Authorization": f"Discogs token={client_or_token}", "User-Agent": DEFAULT_USER_AGENT}
 
         response = session.get(image_url, headers=headers, timeout=15)

@@ -39,7 +39,7 @@ class SpotifyHttpClient:
                 return _spotify_token
         auth_str = f"{self.client_id}:{self.client_secret}"
         headers = {"Authorization": "Basic " + base64.b64encode(auth_str.encode()).decode(), "Content-Type": "application/x-www-form-urlencoded"}
-        resp = self.session.post("https://accounts.spotify.com/api/token", headers=headers, data={"grant_type": "client_credentials"}, timeout=(5, 10))
+        resp = self.session.post("https://accounts.spotify.com/api/token", headers=headers, data={"grant_type": "client_credentials"}, timeout=10.0)
         resp.raise_for_status()
         payload = resp.json()
         with _token_lock:
@@ -50,15 +50,15 @@ class SpotifyHttpClient:
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.get_token()}", "Content-Type": "application/json"}
 
-    def get(self, endpoint_or_url: str, *, params: dict[str, Any] | None = None, timeout=(5, 10)):
+    def get(self, endpoint_or_url: str, *, params: dict[str, Any] | None = None, timeout: float = 10.0):
         url = endpoint_or_url if endpoint_or_url.startswith("http") else f"{self.base_url}/{endpoint_or_url.lstrip('/')}"
         return self.session.get(url, headers=self.headers(), params=params, timeout=timeout)
 
-    def get_json(self, endpoint_or_url: str, *, params: dict[str, Any] | None = None, timeout=(5, 10), default=None):
+    def get_json(self, endpoint_or_url: str, *, params: dict[str, Any] | None = None, timeout: float = 10.0, default=None):
         resp = self.get(endpoint_or_url, params=params, timeout=timeout)
         resp.raise_for_status()
         payload = resp.json()
         return payload if payload is not None else default
 
     def search(self, query: str, search_type: str, limit: int = 10) -> dict:
-        return self.get_json("search", params={"q": query, "type": search_type, "limit": limit}, timeout=(5, 10), default={})
+        return self.get_json("search", params={"q": query, "type": search_type, "limit": limit}, timeout=10.0, default={})

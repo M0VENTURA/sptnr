@@ -49,7 +49,7 @@ playlists_bp = Blueprint("playlists", __name__)
 def playlist_manager():
     cfg = get_config()
     return render_template(
-        "playlist_manager.html",
+        "playlists/manager.html",
         navidrome_users=cfg.get("navidrome_users", [])
     )
 
@@ -58,28 +58,28 @@ def playlist_manager():
 def playlist_importer():
     cfg = get_config()
     return render_template(
-        "playlist_importer.html",
+        "playlists/importer.html",
         navidrome_users=cfg.get("navidrome_users", [])
     )
 
 
 @playlists_bp.route("/playlist/import/csv")
 def playlist_importer_csv():
-    return render_template("playlist_importer_csv.html")
+    return render_template("playlists/importer_csv.html")
 
 
 @playlists_bp.route("/playlists/browse")
 def playlists_browse():
     cfg = get_config()
     nav_users = cfg.get("navidrome_users", [])
-    return render_template("playlists_browse.html", navidrome_users=nav_users)
+    return render_template("playlists/browse.html", navidrome_users=nav_users)
 
 
 @playlists_bp.route("/playlists/create/<playlist_type>")
 def playlists_create(playlist_type):
     cfg = get_config()
     return render_template(
-        "playlists_create.html",
+        "playlists/create.html",
         playlist_type=playlist_type,
         navidrome_users=cfg.get("navidrome_users", [])
     )
@@ -89,7 +89,7 @@ def playlists_create(playlist_type):
 def playlists_import():
     cfg = get_config()
     return render_template(
-        "playlists_import.html",
+        "playlists/import.html",
         navidrome_users=cfg.get("navidrome_users", [])
     )
 

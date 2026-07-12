@@ -17,7 +17,7 @@ def analytics_genres_moods_page():
     genres, moods, combos = get_genre_mood_analytics(top_n=50)
 
     return render_template(
-        "genres_moods_analytics.html",
+        "pages/analytics.html",
         top_genres=genres,
         top_moods=moods,
         top_combos=combos

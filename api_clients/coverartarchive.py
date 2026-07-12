@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import requests
 
 from api_clients import session
 from api_clients.musicbrainz_http import USER_AGENT
@@ -23,10 +22,8 @@ def _get_front_image(url_template: str, mbid: str) -> str:
         response = session.get(
             url_template.format(mbid=mbid), 
             params={"type": "front"}, 
-            timeout=(5, 10), 
-            allow_redirects=True
         )
-        return response.url if response.status_code == 200 else ""
+        return str(response.url) if response.status_code == 200 else ""
     except Exception as exc:
         logger.debug("Failed to fetch CAA front image for %s: %s", mbid, exc)
         return ""
@@ -47,7 +44,7 @@ def get_release_group_front_image_bytes(release_group_mbid: str, size: str = "50
     try:
         url = CAA_RELEASE_GROUP_URL.format(mbid=release_group_mbid, size=size)
         # Using the shared session to maintain connection pooling benefits
-        response = session.get(url, headers={"User-Agent": USER_AGENT}, timeout=(5, 10))
+        response = session.get(url, headers={"User-Agent": USER_AGENT}, timeout=10.0)
         return response.content if response.status_code == 200 else None
     except Exception as exc:
         logger.debug("CAA release-group binary image fetch failed for %s: %s", release_group_mbid, exc)

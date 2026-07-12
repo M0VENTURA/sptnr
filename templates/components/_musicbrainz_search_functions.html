@@ -1,0 +1,74 @@
+<script>
+// Shared MusicBrainz Release Search Functions
+// Used across artist, album, track, and downloads pages
+
+// ===== Utility Functions =====
+
+if (typeof escapeHtml === 'undefined') {
+  function escapeHtml(text) {
+    if (!text) return '';
+    const element = document.createElement('div');
+    element.appendChild(document.createTextNode(text));
+    return element.innerHTML;
+  }
+}
+
+// ===== Search Interface =====
+
+async function searchMusicBrainzReleases(query, releaseType = '', limit = 12) {
+  if (!query || query.trim().length === 0) return { releases: [] };
+  const params = new URLSearchParams({ q: query, limit: limit.toString() });
+  if (releaseType) params.set('type', releaseType);
+  try {
+    const res = await fetch(`/api/musicbrainz/search-releases?${params}`);
+    if (!res.ok) return { releases: [] };
+    return await res.json();
+  } catch (e) {
+    console.error('MusicBrainz search failed:', e);
+    return { releases: [] };
+  }
+}
+
+// ===== Modal Helpers =====
+
+function showMusicBrainzModal() {
+  const modal = new bootstrap.Modal(document.getElementById('musicBrainzModal'));
+  modal.show();
+}
+
+function hideMusicBrainzModal() {
+  const modalEl = document.getElementById('musicBrainzModal');
+  const modal = bootstrap.Modal.getInstance(modalEl);
+  if (modal) modal.hide();
+}
+
+function handleReleaseSelection(release) {
+  // Store selection and close modal
+  window._selectedMusicBrainzRelease = release;
+  hideMusicBrainzModal();
+}
+
+// ===== Auto-populate / search =====
+
+function populateMusicBrainzSearch(artist, album) {
+  const input = document.getElementById('mbSearchInput');
+  if (input) {
+    let query = artist || '';
+    if (album) query += ' ' + album;
+    input.value = query.trim();
+    if (query.trim().length > 0) {
+      document.getElementById('mbSearchBtn')?.click();
+    }
+  }
+}
+
+// Initialize modal listeners
+document.addEventListener('DOMContentLoaded', function() {
+  const modalEl = document.getElementById('musicBrainzModal');
+  if (!modalEl) return;
+  
+  modalEl.addEventListener('shown.bs.modal', function () {
+    document.getElementById('mbSearchInput')?.focus();
+  });
+});
+</script>

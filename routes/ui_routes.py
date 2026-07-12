@@ -67,8 +67,8 @@ def login():
                 flash(f"Welcome back, {username}!", "success")
                 return redirect(url_for("ui.dashboard"))
         flash("Invalid credentials", "error")
-        return render_template("login.html")
-    return render_template("login.html")
+        return render_template("auth/login.html")
+    return render_template("auth/login.html")
 
 
 @ui_bp.route("/logout")
@@ -85,8 +85,8 @@ def logout():
 @ui_bp.route("/setup", methods=["GET", "POST"])
 def setup():
     if request.method == "POST":
-        return render_template("setup.html", message="Setup not yet implemented")
-    return render_template("setup.html")
+        return render_template("auth/setup.html", message="Setup not yet implemented")
+    return render_template("auth/setup.html")
 
 
 # ===========================================================================
@@ -108,7 +108,7 @@ def dashboard():
             nav_users = [cfg["navidrome"]]
         features = cfg.get("features", {})
         return render_template(
-            "dashboard.html",
+            "pages/dashboard.html",
             recent_scans=recent_scans,
             nav_users=nav_users,
             scan_running=False,
@@ -119,7 +119,7 @@ def dashboard():
         )
     except Exception as exc:
         logger.error("Dashboard error: %s", exc)
-        return render_template("dashboard.html", recent_scans=[], nav_users=[], error=str(exc))
+        return render_template("pages/dashboard.html", recent_scans=[], nav_users=[], error=str(exc))
 
 
 @ui_bp.route("/artists")
@@ -137,7 +137,7 @@ def artists():
         artists_data = [dict(r) for r in cursor.fetchall()]
         cursor.execute("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac FROM tracks")
         total_stats = dict(cursor.fetchone())
-        return render_template("artists.html", artists=artists_data, total_stats=total_stats)
+        return render_template("pages/artist_list.html", artists=artists_data, total_stats=total_stats)
     finally:
         conn.close()
 
@@ -172,7 +172,7 @@ def artist_detail(name):
         top_tracks = [dict(r) for r in cursor.fetchall()]
 
         return render_template(
-            "artist.html", artist_name=name, albums=albums, stats=stats, top_tracks=top_tracks,
+            "pages/artist_detail.html", artist_name=name, albums=albums, stats=stats, top_tracks=top_tracks,
         )
     finally:
         conn.close()
@@ -190,7 +190,7 @@ def album_detail(artist, album):
             (artist, album),
         )
         tracks = [dict(r) for r in cursor.fetchall()]
-        return render_template("album.html", artist=artist, album=album, tracks=tracks)
+        return render_template("pages/album_detail.html", artist=artist, album=album, tracks=tracks)
     finally:
         conn.close()
 
@@ -203,8 +203,8 @@ def track_detail(track_id):
         cursor.execute("SELECT * FROM tracks WHERE CAST(id AS TEXT) = %s", (track_id,))
         row = cursor.fetchone()
         if not row:
-            return render_template("track.html", track=None, error="Track not found")
-        return render_template("track.html", track=dict(row))
+            return render_template("pages/track_detail.html", track=None, error="Track not found")
+        return render_template("pages/track_detail.html", track=dict(row))
     finally:
         conn.close()
 
@@ -212,7 +212,7 @@ def track_detail(track_id):
 @ui_bp.route("/search")
 def search():
     query = request.args.get("q", "").strip()
-    return render_template("search.html", initial_query=query)
+    return render_template("pages/search.html", initial_query=query)
 
 
 @ui_bp.route("/config", methods=["GET", "POST"])
@@ -231,7 +231,7 @@ def config_editor():
     if request.method == "POST":
         return redirect(url_for("ui.config_editor"))
     return render_template(
-        "config.html",
+        "pages/config.html",
         config=config,
         config_raw=raw,
     )
@@ -273,7 +273,7 @@ def logs():
         "popularity": os.path.join(config_dir, "popularity.log"),
         "downloads": os.path.join(config_dir, "downloads.log"),
     }
-    return render_template("logs.html", log_path=log_path, log_files=log_files)
+    return render_template("pages/logs.html", log_path=log_path, log_files=log_files)
 
 
 @ui_bp.route("/help")
@@ -295,37 +295,37 @@ def help_page(doc_name=None):
                 content = f.read()
         doc_title = doc_name.replace(".md", "").replace("_", " ").title()
     return render_template(
-        "help.html", content=content, doc_title=doc_title,
+        "pages/help.html", content=content, doc_title=doc_title,
         doc_files=doc_files, current_doc=doc_name,
     )
 
 
 @ui_bp.route("/bookmarks")
 def bookmarks():
-    return render_template("bookmarks.html")
+    return render_template("pages/bookmarks.html")
 
 
 @ui_bp.route("/correcting")
 def correcting():
-    return render_template("correcting.html")
+    return render_template("pages/corrections.html")
 
 
 @ui_bp.route("/missing")
 def missing_page():
     cfg = get_config()
-    return render_template("missing.html", qbit_config=cfg.get("qbittorrent", {}), slskd_config=cfg.get("slskd", {}))
+    return render_template("pages/missing_releases.html", qbit_config=cfg.get("qbittorrent", {}), slskd_config=cfg.get("slskd", {}))
 
 
 @ui_bp.route("/discover")
 def discover():
-    return render_template("discover.html")
+    return render_template("pages/discover.html")
 
 
 @ui_bp.route("/downloads/monitor")
 def downloads_monitor():
     cfg = get_config()
     return render_template(
-        "downloads_monitor.html",
+        "pages/downloads/monitor.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
@@ -333,14 +333,14 @@ def downloads_monitor():
 
 @ui_bp.route("/downloads/banned-words")
 def banned_words_page():
-    return render_template("banned_words.html")
+    return render_template("pages/banned_words.html")
 
 
 @ui_bp.route("/downloads")
 def downloads_page():
     cfg = get_config()
     return render_template(
-        "downloads.html",
+        "pages/downloads/queue.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
@@ -350,7 +350,7 @@ def downloads_page():
 def downloads_search_soulseek():
     cfg = get_config()
     return render_template(
-        "downloads_search_soulseek.html",
+        "pages/downloads/search_soulseek.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
@@ -360,7 +360,7 @@ def downloads_search_soulseek():
 def downloads_search_musicbrainz():
     cfg = get_config()
     return render_template(
-        "downloads_search_musicbrainz.html",
+        "pages/downloads/search_musicbrainz.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
@@ -370,7 +370,7 @@ def downloads_search_musicbrainz():
 def downloads_search_qbittorrent():
     cfg = get_config()
     return render_template(
-        "downloads_search_qbittorrent.html",
+        "pages/downloads/search_qbittorrent.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
@@ -380,7 +380,7 @@ def downloads_search_qbittorrent():
 def downloads_search_playlists():
     cfg = get_config()
     return render_template(
-        "downloads_search_playlists.html",
+        "pages/downloads/search_playlists.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
@@ -390,7 +390,7 @@ def downloads_search_playlists():
 def downloads_manager():
     cfg = get_config()
     return render_template(
-        "downloads_manager.html",
+        "pages/downloads/manager.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
@@ -398,47 +398,47 @@ def downloads_manager():
 
 @ui_bp.route("/downloads/discover/similar-artists")
 def downloads_discover_similar_artists():
-    return render_template("downloads_discover_similar_artists.html")
+    return render_template("pages/downloads/similar_artists.html")
 
 
 @ui_bp.route("/downloads/discover/upcoming")
 def downloads_discover_upcoming():
-    return render_template("downloads_discover_upcoming.html")
+    return render_template("pages/downloads/upcoming.html")
 
 
 @ui_bp.route("/artist/<path:name>/corrections")
 def artist_corrections(name):
-    return render_template("artist_corrections.html", artist_name=name)
+    return render_template("pages/artist_corrections.html", artist_name=name)
 
 
 @ui_bp.route("/artist/<path:name>/genre-management")
 def artist_genre_management(name):
-    return render_template("artist_genre_management.html", artist_name=name)
+    return render_template("pages/artist_genres.html", artist_name=name)
 
 
 @ui_bp.route("/metadata-compare")
 def metadata_compare():
-    return render_template("metadata_compare.html")
+    return render_template("pages/metadata_compare.html")
 
 
 @ui_bp.route("/beets")
 def beets():
-    return render_template("beets.html")
+    return render_template("pages/beets_integration.html")
 
 
 @ui_bp.route("/smart-playlists")
 def smart_playlists():
-    return render_template("smart_playlists.html")
+    return render_template("pages/smart_playlists.html")
 
 
 @ui_bp.route("/dashboard-external")
 def dashboard_external():
-    return render_template("dashboard_external.html")
+    return render_template("pages/dashboard_external.html")
 
 
 @ui_bp.route("/analytics/genres-moods")
 def analytics_genres_moods_page():
-    return render_template("genres_moods_analytics.html")
+    return render_template("pages/analytics.html")
 
 
 @ui_bp.route("/debug/static")

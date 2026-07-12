@@ -75,7 +75,7 @@ class MusicBrainzHttpClient:
                 pass
         time.sleep(1.0)
 
-    def get(self, endpoint: str, *, params: dict[str, Any] | None = None, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get(self, endpoint: str, *, params: dict[str, Any] | None = None, timeout: float = 10.0) -> dict[str, Any]:
         if not self.enabled:
             return {}
         self.throttle()
@@ -114,7 +114,7 @@ class MusicBrainzHttpClient:
         payload = self.get("artist/", params=params)
         return payload.get("artists", []) if isinstance(payload.get("artists"), list) else []
 
-    def get_release(self, release_mbid: str, inc: str = "", timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_release(self, release_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not release_mbid:
             return {}
         params = {"fmt": "json"}
@@ -122,12 +122,12 @@ class MusicBrainzHttpClient:
             params["inc"] = inc
         return self.get(f"release/{release_mbid}", params=params, timeout=timeout)
 
-    def get_release_group(self, release_group_mbid: str, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_release_group(self, release_group_mbid: str, timeout: float = 10.0) -> dict[str, Any]:
         if not release_group_mbid:
             return {}
         return self.get(f"release-group/{release_group_mbid}", params={"fmt": "json"}, timeout=timeout)
 
-    def get_recording(self, recording_mbid: str, inc: str = "", timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_recording(self, recording_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not recording_mbid:
             return {}
         params = {"fmt": "json"}
@@ -135,7 +135,7 @@ class MusicBrainzHttpClient:
             params["inc"] = inc
         return self.get(f"recording/{recording_mbid}", params=params, timeout=timeout)
 
-    def get_artist(self, artist_mbid: str, inc: str = "", timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def get_artist(self, artist_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not artist_mbid:
             return {}
         params = {"fmt": "json"}

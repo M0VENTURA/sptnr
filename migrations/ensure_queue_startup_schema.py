@@ -45,8 +45,12 @@ def _safe_int(value, default=None):
         return default
 
 
-def get_connection():
-    """Builds connection string from environment variables."""
+def get_connection(retries: int = 5, delay: float = 2.0):
+    """Builds connection string from environment variables.
+
+    Retries up to ``retries`` times with exponential backoff so the
+    script survives the database still starting up in a compose stack.
+    """
     db_url = os.environ.get("DATABASE_URL")
     
     # Fallback to granular variables if DATABASE_URL is missing
@@ -58,11 +62,23 @@ def get_connection():
         port = os.environ.get("PG_PORT", "5432")
         db_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
 
-    return psycopg2.connect(
-        db_url,
-        connect_timeout=5,
-        options="-c lock_timeout=5000 -c statement_timeout=30000"
-    )
+    import time
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            return psycopg2.connect(
+                db_url,
+                connect_timeout=5,
+                options="-c lock_timeout=5000 -c statement_timeout=30000"
+            )
+        except Exception as exc:
+            last_error = exc
+            if attempt < retries:
+                wait = delay * (2 ** (attempt - 1))
+                print(f"  ⏳ DB connection attempt {attempt}/{retries} failed, retrying in {wait:.0f}s: {exc}")
+                time.sleep(wait)
+            else:
+                raise last_error  # type: ignore[misc]
 
 
 def ensure_schema(cursor):
@@ -108,10 +124,24 @@ def ensure_schema(cursor):
         """)
 
 
+def _is_pg_configured() -> bool:
+    """Return True when the environment has PostgreSQL configuration."""
+    if os.environ.get("DATABASE_URL", "").strip():
+        return True
+    if os.environ.get("PG_HOST", "").strip():
+        return True
+    return False
+
+
 def main():
+    # Skip entirely if no PG config is present — new systems or SQLite fallback
+    if not _is_pg_configured():
+        print("⏭️  No PostgreSQL config found (set PG_HOST or DATABASE_URL) — skipping startup schema.")
+        return 0
+
     try:
-        conn = get_connection()
-        with conn: # Starts transaction
+        conn = get_connection(retries=5, delay=2.0)
+        with conn:  # auto-commit/rollback on exit
             with conn.cursor() as cursor:
                 ensure_schema(cursor)
         conn.close()

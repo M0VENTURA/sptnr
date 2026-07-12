@@ -1,0 +1,91 @@
+{% macro render_album_row(album, artist_name, is_missing=False) %}
+{% set safe_artist = artist_name|regex_replace(' +', '_') %}
+{% set safe_album = (album.get('album') or album.get('title') or '')|regex_replace(' +', '_') %}
+<tr class="album-row" data-year="{{ album.get('album_year') or (album.get('first_release_date') or '')[:4] or 0 }}" data-status="{% if album.get('is_downloading') %}downloading{% elif is_missing %}missing{% else %}discovered{% endif %}" data-album="{{ album.get('album') or album.get('title') }}" {% if not is_missing and album.get('musicbrainz_album_mbid') %}data-mb-mbid="{{ album.get('musicbrainz_album_mbid') }}" data-artist="{{ artist_name|e }}" data-album-name="{{ (album.get('album') or album.get('title'))|e }}"{% endif %}>
+  <!-- Album Art -->
+  <td class="text-center" style="width: 100px; padding: 0.5rem;">
+    {% if is_missing %}
+      <img src="{{ album.get('cover_art_url', '') }}" 
+           alt="{{ album.get('title') }}" 
+           class="img-thumbnail"
+           style="width: 75px; height: 75px; object-fit: cover; border-radius: 6px; background: var(--tertiary-bg);">
+    {% else %}
+      <div class="album-art-wrapper" style="width: 75px; height: 75px; margin: 0 auto;">
+        <img src="/api/album/{{ artist_name|e }}/{{ (album.get('album') or album.get('title'))|e }}/art?s=75"
+             alt="{{ album.get('album') or album.get('title') }}"
+             class="img-thumbnail"
+             style="width: 75px; height: 75px; object-fit: cover; border-radius: 6px; background: var(--tertiary-bg);"
+             loading="lazy"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+        <div class="album-art-placeholder" style="display:none; width:75px; height:75px; background:var(--tertiary-bg); border-radius:6px; align-items:center; justify-content:center; color:var(--text-secondary); font-size:1.5rem;">
+          <i class="bi bi-music-note"></i>
+        </div>
+      </div>
+    {% endif %}
+  </td>
+  <!-- Album Name -->
+  <td>
+    {% if is_missing %}
+      <span>{{ album.get('title', '') }}</span>
+    {% else %}
+      <a href="{{ url_for('album_detail', artist=artist_name, album=album.get('album') or album.get('title') or '') }}" class="fw-semibold text-decoration-none">
+        {{ album.get('album') or album.get('title') }}
+      </a>
+    {% endif %}
+  </td>
+  <!-- Year -->
+  <td class="text-muted small">
+    {{ album.get('album_year') or (album.get('first_release_date') or '')[:4] or '-' }}
+  </td>
+  <!-- Track Count -->
+  <td class="text-center small text-muted">
+    {{ album.get('track_count') or album.get('total_tracks') or '-' }}
+  </td>
+  <!-- Stars -->
+  <td class="text-center" style="min-width: 100px;">
+    {% if album.get('avg_stars') is not none %}
+      {% set avg = album.get('avg_stars') %}
+      {% for i in range(5) %}
+        {% if avg >= (i + 0.75) %}
+          <i class="bi bi-star-fill" style="color: #ffc107;"></i>
+        {% elif avg >= (i + 0.25) %}
+          <i class="bi bi-star-half" style="color: #ffc107;"></i>
+        {% else %}
+          <i class="bi bi-star" style="color: #444;"></i>
+        {% endif %}
+      {% endfor %}
+    {% else %}
+      <span class="text-muted small">-</span>
+    {% endif %}
+  </td>
+  <!-- Actions -->
+  <td class="text-center">
+    <div class="d-flex gap-1 justify-content-center">
+      {% if is_missing %}
+        <form method="POST" action="/downloads/albums/use-existing" class="d-inline">
+          <input type="hidden" name="album" value="{{ album.get('title', '') }}">
+          <input type="hidden" name="artist" value="{{ artist_name }}">
+          <button type="submit" class="btn btn-outline-primary btn-sm" title="I already have this album">
+            <i class="bi bi-check-lg"></i>
+          </button>
+        </form>
+      {% endif %}
+      <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" class="d-inline">
+        <input type="hidden" name="artist" value="{{ artist_name }}">
+        <input type="hidden" name="album" value="{{ album.get('album') or album.get('title') or '' }}">
+        <button type="submit" class="btn btn-outline-info btn-sm" title="Run Essentia mood/genre analysis">
+          <i class="bi bi-music-note-list"></i>
+        </button>
+      </form>
+      <form method="POST" action="{{ url_for('scan_album_custom') }}" class="d-inline">
+        <input type="hidden" name="artist" value="{{ artist_name }}">
+        <input type="hidden" name="album" value="{{ album.get('album') or album.get('title') or '' }}">
+        <input type="hidden" name="scan_type" value="popularity">
+        <button type="submit" class="btn btn-outline-success btn-sm" title="Scan popularity">
+          <i class="bi bi-graph-up"></i>
+        </button>
+      </form>
+    </div>
+  </td>
+</tr>
+{% endmacro %}

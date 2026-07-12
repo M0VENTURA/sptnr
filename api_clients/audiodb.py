@@ -23,7 +23,7 @@ class AudioDbClient:
         self.enabled = enabled
         self.base_url = "https://www.theaudiodb.com/api/v1/json"
 
-    def _get(self, endpoint: str, params: dict[str, Any], timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+    def _get(self, endpoint: str, params: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
         """GET an AudioDB endpoint and return a JSON dict."""
         if not self.enabled or not self.api_key:
             return {}
@@ -33,7 +33,7 @@ class AudioDbClient:
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
 
-    def search_artist(self, artist_name: str, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any] | None:
+    def search_artist(self, artist_name: str, timeout: float = 10.0) -> dict[str, Any] | None:
         """Return first TheAudioDB artist match."""
         if not artist_name:
             return None
@@ -46,7 +46,7 @@ class AudioDbClient:
             logger.debug("AudioDB artist search failed for %s: %s", artist_name, exc)
         return None
 
-    def search_album(self, artist_name: str, album_name: str, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any] | None:
+    def search_album(self, artist_name: str, album_name: str, timeout: float = 10.0) -> dict[str, Any] | None:
         """Return first TheAudioDB album match."""
         if not artist_name or not album_name:
             return None
@@ -59,7 +59,7 @@ class AudioDbClient:
             logger.debug("AudioDB album search failed for %s - %s: %s", artist_name, album_name, exc)
         return None
 
-    def get_artist_fanart(self, artist_name: str, timeout: tuple[int, int] | int = (5, 10)) -> str | None:
+    def get_artist_fanart(self, artist_name: str, timeout: float = 10.0) -> str | None:
         """Return best available artist image URL."""
         artist = self.search_artist(artist_name, timeout=timeout)
         if not artist:
@@ -72,21 +72,21 @@ class AudioDbClient:
             or None
         )
 
-    def get_artist_biography(self, artist_name: str, timeout: tuple[int, int] | int = (5, 10)) -> str | None:
+    def get_artist_biography(self, artist_name: str, timeout: float = 10.0) -> str | None:
         """Return English artist biography where available."""
         artist = self.search_artist(artist_name, timeout=timeout)
         if not artist:
             return None
         return artist.get("strBiographyEN") or artist.get("strBiography") or None
 
-    def get_album_artwork(self, artist_name: str, album_name: str, timeout: tuple[int, int] | int = (5, 10)) -> str | None:
+    def get_album_artwork(self, artist_name: str, album_name: str, timeout: float = 10.0) -> str | None:
         """Return album artwork URL where available."""
         album = self.search_album(artist_name, album_name, timeout=timeout)
         if not album:
             return None
         return album.get("strAlbumThumb") or album.get("strAlbumCDart") or None
 
-    def get_artist_genres(self, artist_name: str, timeout: tuple[int, int] | int = (5, 10)) -> list[str]:
+    def get_artist_genres(self, artist_name: str, timeout: float = 10.0) -> list[str]:
         """Return primary artist genre as a list for compatibility."""
         artist = self.search_artist(artist_name, timeout=timeout)
         if not artist:

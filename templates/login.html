@@ -138,7 +138,7 @@
             </div>
 
             {% with messages = get_flashed_messages(with_categories=true) %}
-                {% include '_flash_messages.html' %}
+                {% include 'layouts/_flash_messages.html' %}
             {% endwith %}
 
             <form method="post" action="{{ url_for('login') }}">

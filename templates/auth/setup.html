@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Setup Wizard · Popularr{% endblock %}
+{% block content %}
+<div class="py-5" style="background: radial-gradient(circle at 20% 20%, #101820 0, #0d1117 35%, #0b0f14 75%); min-height: calc(100vh - 4rem);">
+  <div class="container">
+    <div class="row g-4 align-items-stretch">
+      <div class="col-lg-4">
+        <div class="card h-100 shadow-sm border-0 bg-dark text-white">
+          <div class="card-body d-flex flex-column">
+            <div class="d-flex align-items-center mb-3">
+              <div class="me-3 text-primary fs-3"><i class="bi bi-magic"></i></div>
+              <div>
+                <h1 class="h4 mb-1">First-Run Setup</h1>
+                <p class="mb-0 text-secondary">Get started in 3 quick steps</p>
+              </div>
+            </div>
+            <ol class="ps-3 small text-secondary mb-0">
+              <li class="mb-2"><strong>Connect Navidrome:</strong> Your music server (required)</li>
+              <li class="mb-2"><strong>Add API Keys:</strong> For scoring and recommendations (optional)</li>
+              <li><strong>Start Scanning:</strong> From the dashboard</li>
+            </ol>
+            <div class="mt-auto pt-3 small text-secondary border-top">
+              You can change these settings anytime from <strong>Config</strong> page.
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-8">
+        <div class="card h-100 shadow-sm border-0 bg-dark text-white">
+          <div class="card-body">
+            {% if message %}
+              <div class="alert alert-info">{{ message }}</div>
+            {% endif %}
+            <form method="POST" action="{{ url_for('setup') }}">
+              <div class="mb-3">
+                <label class="form-label">Navidrome Base URL</label>
+                <input type="url" class="form-control" name="base_url" placeholder="http://navidrome:4533" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Navidrome Username</label>
+                <input type="text" class="form-control" name="username" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Navidrome Password</label>
+                <input type="password" class="form-control" name="password" required>
+              </div>
+              <button type="submit" class="btn btn-primary">Save & Continue</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

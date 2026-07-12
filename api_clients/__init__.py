@@ -7,23 +7,28 @@ API clients should stay deliberately boring:
 
 Service-level modules under ``services/`` should compose these clients into
 application workflows.
+
+HTTP layer: uses ``httpx`` instead of ``requests`` for built-in connection
+pooling, HTTP/2 support, and future async compatibility.
 """
 
 from __future__ import annotations
 
 import logging
 
-from api_clients.http_utils import create_retry_session
+from api_clients.http_utils import create_retry_client
 
 logger = logging.getLogger(__name__)
 
-session = create_retry_session(
+# Standard shared session — used by most API clients
+session = create_retry_client(
     retries=3,
     backoff=1.0,
     status_forcelist=(429, 500, 502, 503, 504),
 )
 
-timeout_safe_session = create_retry_session(
+# Lightweight session for operations where quick failure is preferred
+timeout_safe_session = create_retry_client(
     retries=1,
     backoff=0.5,
     status_forcelist=(429, 500, 502, 503, 504),

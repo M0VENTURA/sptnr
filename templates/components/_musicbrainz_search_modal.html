@@ -1,0 +1,70 @@
+{# Shared MusicBrainz Release Search Modal #}
+{# Used across artist, album, track, and downloads pages for unified release searching #}
+<div class="modal fade" id="musicBrainzModal" tabindex="-1" aria-labelledby="musicBrainzModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="musicBrainzModalLabel">
+          <i class="bi bi-music-note-list"></i> MusicBrainz Release Search
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <!-- Search Controls -->
+        <div class="row g-2 mb-3">
+          <div class="col-12 col-md-6">
+            <div class="input-group">
+              <input type="text" id="mbSearchInput" class="form-control" placeholder="Search MusicBrainz..." aria-label="Search MusicBrainz">
+              <button id="mbSearchBtn" class="btn btn-primary" onclick="performMbSearch()">
+                <i class="bi bi-search"></i> Search
+              </button>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <select id="mbReleaseType" class="form-select" onchange="performMbSearch()">
+              <option value="">All Types</option>
+              <option value="album">Album</option>
+              <option value="single">Single</option>
+              <option value="ep">EP</option>
+              <option value="compilation">Compilation</option>
+              <option value="soundtrack">Soundtrack</option>
+              <option value="live">Live</option>
+              <option value="remix">Remix</option>
+            </select>
+          </div>
+          <div class="col-6 col-md-2">
+            <select id="mbResultLimit" class="form-select" onchange="performMbSearch()">
+              <option value="12">12</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+            </select>
+          </div>
+          <div class="col-12 col-md-1">
+            <button class="btn btn-outline-secondary w-100" onclick="clearMbSearch()" title="Clear search">
+              <i class="bi bi-x-lg"></i>
+            </button>
+          </div>
+        </div>
+        <!-- Results -->
+        <div id="mbSearchResults" class="row g-2" style="max-height: 60vh; overflow-y: auto;">
+          <div class="col-12 text-center text-muted py-5">
+            <i class="bi bi-music-note-beamed" style="font-size: 2rem;"></i>
+            <p class="mt-2">Enter a search term above to find releases on MusicBrainz.</p>
+          </div>
+        </div>
+        <!-- Selected Release Details -->
+        <div id="mbSelectedRelease" class="mt-3 p-3 border rounded d-none">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <h6 id="mbSelectedTitle" class="mb-1"></h6>
+              <small id="mbSelectedArtist" class="text-muted"></small>
+            </div>
+            <button class="btn btn-success btn-sm" onclick="confirmReleaseSelection()">
+              <i class="bi bi-check-lg"></i> Select This Release
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
