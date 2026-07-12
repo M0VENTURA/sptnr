@@ -16,7 +16,9 @@ from flask import (
     Response, session, url_for,
 )
 
-from db.utils import get_db_connection, row_get
+from sqlalchemy import text
+
+from db.engine import db_session
 from helpers.config_helpers import get_config
 from services.scanning.scan_history_service import get_recent_album_scans
 
@@ -193,16 +195,12 @@ def dashboard():
         features = cfg.get("features", {})
 
         # Library stats for the header
-        from db.utils import get_db_connection
-        conn = get_db_connection()
-        cursor = conn.cursor()
         try:
-            cursor.execute("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac, COUNT(DISTINCT COALESCE(NULLIF(album_artist, ''), artist)) as artists_c, ROUND(AVG(stars), 1) as avg_stars FROM tracks")
-            stats = dict(cursor.fetchone())
+            with db_session() as session:
+                result = session.execute(text("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac, COUNT(DISTINCT COALESCE(NULLIF(album_artist, ''), artist)) as artists_c, ROUND(AVG(stars), 1) as avg_stars FROM tracks"))
+                stats = dict(result.fetchone()._mapping)
         except Exception:
             stats = {"tc": 0, "ac": 0, "artists_c": 0, "avg_stars": None}
-        finally:
-            conn.close()
 
         return render_template(
             "pages/dashboard.html",
@@ -222,89 +220,73 @@ def dashboard():
 
 @ui_bp.route("/artists")
 def artists():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT COALESCE(NULLIF(album_artist, ''), artist) as display_name,
                    COUNT(DISTINCT album) as album_count,
                    COUNT(*) as track_count,
                    COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count
             FROM tracks GROUP BY display_name HAVING album_count > 0 ORDER BY display_name
-        """)
-        artists_data = [dict(r) for r in cursor.fetchall()]
-        cursor.execute("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac FROM tracks")
-        total_stats = dict(cursor.fetchone())
+        """))
+        artists_data = [dict(r._mapping) for r in result.fetchall()]
+        result = session.execute(text("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac FROM tracks"))
+        total_stats = dict(result.fetchone()._mapping)
         return render_template("pages/artist_list.html", artists=artists_data, total_stats=total_stats)
-    finally:
-        conn.close()
 
 
 @ui_bp.route("/artist/<path:name>")
 def artist_detail(name):
     name = unquote(name)
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT album, COUNT(*) as track_count, AVG(stars) as avg_stars,
                    MIN(year) as album_year
-            FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+            FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
             GROUP BY LOWER(TRIM(COALESCE(album, '')))
             ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST
-        """, (name,))
-        albums = [dict(r) for r in cursor.fetchall()]
+        """), {"name": name})
+        albums = [dict(r._mapping) for r in result.fetchall()]
 
-        cursor.execute("""
+        result = session.execute(text("""
             SELECT COUNT(*) as track_count, COUNT(DISTINCT album) as album_count,
                    AVG(stars) as avg_stars, MIN(year) as earliest_year, MAX(year) as latest_year
-            FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-        """, (name,))
-        stats = dict(cursor.fetchone())
+            FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
+        """), {"name": name})
+        stats = dict(result.fetchone()._mapping) if result.fetchone() else {}
 
-        cursor.execute("""
+        result = session.execute(text("""
             SELECT id, title, album, stars, final_score FROM tracks
-            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
             ORDER BY stars DESC NULLS LAST LIMIT 20
-        """, (name,))
-        top_tracks = [dict(r) for r in cursor.fetchall()]
+        """), {"name": name})
+        top_tracks = [dict(r._mapping) for r in result.fetchall()]
 
-        return render_template(
-            "pages/artist_detail.html", artist_name=name, albums=albums, stats=stats, top_tracks=top_tracks,
-        )
-    finally:
-        conn.close()
+    return render_template(
+        "pages/artist_detail.html", artist_name=name, albums=albums, stats=stats, top_tracks=top_tracks,
+    )
 
 
 @ui_bp.route("/album/<path:artist>/<path:album>")
 def album_detail(artist, album):
     artist = unquote(artist)
     album = unquote(album)
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "SELECT * FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s ORDER BY disc_number, track_number",
-            (artist, album),
+    with db_session() as session:
+        result = session.execute(
+            text("SELECT * FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album ORDER BY disc_number, track_number"),
+            {"artist": artist, "album": album},
         )
-        tracks = [dict(r) for r in cursor.fetchall()]
+        tracks = [dict(r._mapping) for r in result.fetchall()]
         return render_template("pages/album_detail.html", artist=artist, album=album, tracks=tracks)
-    finally:
-        conn.close()
 
 
 @ui_bp.route("/track/<track_id>")
 def track_detail(track_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT * FROM tracks WHERE CAST(id AS TEXT) = %s", (track_id,))
-        row = cursor.fetchone()
+    with db_session() as session:
+        result = session.execute(text("SELECT * FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
+        row = result.fetchone()
         if not row:
             return render_template("pages/track_detail.html", track=None, error="Track not found")
-        return render_template("pages/track_detail.html", track=dict(row))
-    finally:
-        conn.close()
+        return render_template("pages/track_detail.html", track=dict(row._mapping))
 
 
 @ui_bp.route("/search")
@@ -518,29 +500,27 @@ def artist_genre_management(name):
 def metadata_compare():
     """Metadata comparison page — compare Navidrome vs Beets album data."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT
-                album, COALESCE(NULLIF(album_artist, ''), artist) AS artist,
-                year, beets_year, navidrome_genres, musicbrainz_genres,
-                COUNT(*) AS track_count
-            FROM tracks
-            GROUP BY album, artist, year, beets_year, navidrome_genres, musicbrainz_genres
-            ORDER BY artist, album
-        """)
-        rows = cursor.fetchall()
-        conn.close()
+        with db_session() as session:
+            result = session.execute(text("""
+                SELECT DISTINCT
+                    album, COALESCE(NULLIF(album_artist, ''), artist) AS artist,
+                    year, beets_year, navidrome_genres, musicbrainz_genres,
+                    COUNT(*) AS track_count
+                FROM tracks
+                GROUP BY album, artist, year, beets_year, navidrome_genres, musicbrainz_genres
+                ORDER BY artist, album
+            """))
+            rows = result.fetchall()
 
         album_comparisons = []
         for row in rows:
-            album = row_get(row, "album", "")
-            artist = row_get(row, "artist", "")
-            nav_year = row_get(row, "year")
-            beets_year = row_get(row, "beets_year")
-            nav_genres_raw = row_get(row, "navidrome_genres", "")
-            beets_genres_raw = row_get(row, "musicbrainz_genres", "")
-            track_count = row_get(row, "track_count", 0)
+            album = row[0] or ""
+            artist = row[1] or ""
+            nav_year = row[2]
+            beets_year = row[3]
+            nav_genres_raw = row[4] or ""
+            beets_genres_raw = row[5] or ""
+            track_count = int(row[6] or 0)
 
             if (nav_year != beets_year) or (nav_genres_raw != beets_genres_raw):
                 album_comparisons.append({
@@ -591,11 +571,8 @@ def metadata_compare_accept_navidrome():
     if not artist or not album:
         return jsonify({"error": "artist and album required"}), 400
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE tracks SET metadata_locked = 1 WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s", (artist, album))
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            session.execute(text("UPDATE tracks SET metadata_locked = 1 WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"), {"artist": artist, "album": album})
         return jsonify({"success": True, "message": f"Navidrome data locked for {artist} - {album}"})
     except Exception as exc:
         logger.error("metadata-compare accept navidrome: %s", exc)
@@ -612,17 +589,19 @@ def metadata_compare_apply_mb():
     if not artist or not album or not mb_data:
         return jsonify({"error": "artist, album, and mb_data required"}), 400
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE tracks
-            SET year = %s, musicbrainz_genres = %s, mb_override = TRUE
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
-            RETURNING id
-        """, (mb_data.get("year"), ",".join(mb_data.get("genres", []) or []), artist, album))
-        updated_ids = [row_get(row, "id", 0) for row in cursor.fetchall()]
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            result = session.execute(text("""
+                UPDATE tracks
+                SET year = :year, musicbrainz_genres = :genres, mb_override = TRUE
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album
+                RETURNING id
+            """), {
+                "year": mb_data.get("year"),
+                "genres": ",".join(mb_data.get("genres", []) or []),
+                "artist": artist,
+                "album": album,
+            })
+            updated_ids = [row[0] for row in result.fetchall()]
         return jsonify({"success": True, "message": f"Applied MB data to {artist} - {album} ({len(updated_ids)} tracks)", "tracks_updated": len(updated_ids)})
     except Exception as exc:
         logger.error("metadata-compare apply MB: %s", exc)

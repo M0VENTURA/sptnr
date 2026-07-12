@@ -863,3 +863,44 @@ def apply_musicbrainz_match(data: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         logger.error("apply_musicbrainz_match failed: %s", exc, exc_info=True)
         return {"success": False, "error": str(exc)}
+
+
+def get_release_status(data: dict[str, Any]) -> dict[str, Any]:
+    """Get release tracks with queue/library status for a given artist/album/release.
+
+    Called from ``/api/downloads/release-tracks``.
+
+    Expects ``data`` keys:
+        artist (str)           — Artist name.
+        album (str)            — Album name.
+        release_group_id (str) — MusicBrainz release group ID.
+        folder_path (str)      — Optional folder path for file matching.
+
+    Returns:
+        dict with ``success``, ``tracks``, ``summary``.
+    """
+    artist = (data or {}).get("artist", "").strip()
+    album = (data or {}).get("album", "").strip()
+    release_id = (data or {}).get("release_group_id", "").strip()
+    folder_path = (data or {}).get("folder_path", "").strip()
+
+    if not artist or not album or not release_id:
+        return {"success": False, "tracks": [], "summary": {}, "error": "artist, album, and release_group_id are required"}
+
+    try:
+        current_folder_files: list[str] = []
+        if folder_path and os.path.isdir(folder_path):
+            current_folder_files = [
+                f for f in os.listdir(folder_path)
+                if os.path.isfile(os.path.join(folder_path, f))
+            ]
+
+        return get_release_tracks_with_status(
+            artist=artist,
+            album=album,
+            release_id=release_id,
+            current_folder_files=current_folder_files,
+        )
+    except Exception as exc:
+        logger.error("get_release_status failed: %s", exc, exc_info=True)
+        return {"success": False, "tracks": [], "summary": {}, "error": str(exc)}

@@ -14,7 +14,9 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
-from db.context import db_cursor
+from sqlalchemy import text
+from db.engine import db_session
+from db.context import db_cursor  # TODO: migrate to db_session
 from services.infrastructure.filesystem_service import _get_files_in_folder, get_folder_group_details
 from services.metadata.release_service import get_active_releases_with_progress
 
@@ -195,4 +197,28 @@ def cancel_folder_downloads(folder_path: str):
 
     except Exception as e:
         logger.error("[CANCEL_FOLDER] Error: %s", e, exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+def check_folder_duplicates(folder_path: str, data: dict) -> dict:
+    """Check a folder for duplicate queue items."""
+    try:
+        from db.repositories.queue import get_queue_items_by_folder
+        items = get_queue_items_by_folder(folder_path)
+        return {"success": True, "duplicates": items or [], "count": len(items or [])}
+    except Exception as e:
+        logger.error("[check_folder_duplicates] Error: %s", e, exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+def process_album_existing(data: dict) -> dict:
+    """Process an existing album match from queue data."""
+    try:
+        queue_id = (data or {}).get("queue_id")
+        if not queue_id:
+            return {"success": False, "error": "queue_id required"}
+        from services.downloads.match_orchestrator import apply_mbid_match_batch
+        return apply_mbid_match_batch(queue_ids=[int(queue_id)], new_mbid="", expand_tracks=False)
+    except Exception as e:
+        logger.error("[process_album_existing] Error: %s", e, exc_info=True)
         return {"success": False, "error": str(e)}

@@ -128,25 +128,32 @@ def insert_queue_item(
     Returns:
         The inserted row as a dict.
     """
-    with db_cursor(commit=True) as (conn, cursor):
-        cursor.execute(
-            """
-            INSERT INTO download_queue
-                (artist, title, album, source, priority, track_number, disc_number,
-                 album_artist, year, release_id, release_mbid, recording_mbid,
-                 duration, status, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            RETURNING id
-            """,
-            (
-                artist, title, album, source, priority,
-                kwargs.get("track_number"), kwargs.get("disc_number"),
-                kwargs.get("album_artist"), kwargs.get("year"),
-                kwargs.get("release_id"), kwargs.get("release_mbid"),
-                kwargs.get("recording_mbid"), kwargs.get("duration"),
-            ),
+    with db_session() as session:
+        result = session.execute(
+            text("""
+                INSERT INTO download_queue
+                    (artist, title, album, source, priority, track_number, disc_number,
+                     album_artist, year, release_id, release_mbid, recording_mbid,
+                     duration, status, created_at, updated_at)
+                VALUES (:artist, :title, :album, :source, :priority, :track_number, :disc_number,
+                        :album_artist, :year, :release_id, :release_mbid, :recording_mbid,
+                        :duration, 'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id
+            """),
+            {
+                "artist": artist, "title": title, "album": album, "source": source,
+                "priority": priority,
+                "track_number": kwargs.get("track_number"),
+                "disc_number": kwargs.get("disc_number"),
+                "album_artist": kwargs.get("album_artist"),
+                "year": kwargs.get("year"),
+                "release_id": kwargs.get("release_id"),
+                "release_mbid": kwargs.get("release_mbid"),
+                "recording_mbid": kwargs.get("recording_mbid"),
+                "duration": kwargs.get("duration"),
+            },
         )
-        new_id = cursor.fetchone()[0]
+        new_id = result.scalar()
 
     return get_queue_item(new_id) or {}
 
@@ -156,26 +163,26 @@ def update_queue_item(queue_id: int, **kwargs) -> Optional[Dict[str, Any]]:
         return get_queue_item(queue_id)
 
     set_clauses = []
-    params = []
+    params = {}
 
     for key, value in kwargs.items():
-        set_clauses.append(f"{key} = %s")
-        params.append(json.dumps(value) if isinstance(value, (dict, list)) else value)
+        set_clauses.append(f"{key} = :{key}")
+        params[key] = json.dumps(value) if isinstance(value, (dict, list)) else value
 
-    params.append(queue_id)
+    params["id"] = queue_id
 
-    query = f"""
+    query = text(f"""
         UPDATE download_queue
         SET {', '.join(set_clauses)}, updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s
+        WHERE id = :id
         RETURNING *
-    """
+    """)
 
     try:
-        with db_cursor(commit=True) as (conn, cursor):
-            cursor.execute(query, params)
-            row = cursor.fetchone()
-            return _row_to_dict(row, cursor) if row else None
+        with db_session() as session:
+            result = session.execute(query, params)
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
     except Exception as e:
         logger.error(f"[update_queue_item] {e}")
         return None
@@ -183,9 +190,12 @@ def update_queue_item(queue_id: int, **kwargs) -> Optional[Dict[str, Any]]:
 
 def delete_queue_item(queue_id: int) -> bool:
     try:
-        with db_cursor(commit=True) as (conn, cursor):
-            cursor.execute("DELETE FROM download_queue WHERE id=%s", (queue_id,))
-            return cursor.rowcount > 0
+        with db_session() as session:
+            result = session.execute(
+                text("DELETE FROM download_queue WHERE id=:id"),
+                {"id": queue_id},
+            )
+            return result.rowcount > 0
     except Exception as e:
         logger.error(f"[delete_queue_item] {e}")
         return False
@@ -199,13 +209,12 @@ def delete_queue_item(queue_id: int) -> bool:
 
 def get_items_by_group(group_id: str) -> List[Dict[str, Any]]:
     try:
-        with db_cursor() as (conn, cursor):
-            cursor.execute("""
-                SELECT *
-                FROM download_queue
-                WHERE import_group = %s
-            """, (group_id,))
-            return [_row_to_dict(r, cursor) for r in cursor.fetchall()]
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT * FROM download_queue WHERE import_group = :group"),
+                {"group": group_id},
+            )
+            return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
         logger.error(f"[get_items_by_group] {e}")
         return []
@@ -216,16 +225,21 @@ def apply_release_mbid(queue_ids: list, mbid: str, artist: str, album: str) -> i
         return 0
 
     try:
-        with db_cursor(commit=True) as (conn, cursor):
-            placeholders = ",".join(["%s"] * len(queue_ids))
-            cursor.execute(f"""
-                UPDATE download_queue
-                SET release_mbid = %s,
-                    album_artist = %s,
-                    album = %s
-                WHERE id IN ({placeholders})
-            """, (mbid, artist, album, *queue_ids))
-            return cursor.rowcount
+        with db_session() as session:
+            placeholders = ",".join([f":id_{i}" for i in range(len(queue_ids))])
+            params = {"mbid": mbid, "artist": artist, "album": album}
+            params.update({f"id_{i}": qid for i, qid in enumerate(queue_ids)})
+            result = session.execute(
+                text(f"""
+                    UPDATE download_queue
+                    SET release_mbid = :mbid,
+                        album_artist = :artist,
+                        album = :album
+                    WHERE id IN ({placeholders})
+                """),
+                params,
+            )
+            return result.rowcount
     except Exception as e:
         logger.error(f"[apply_release_mbid] {e}")
         return 0
@@ -239,13 +253,11 @@ def apply_release_mbid(queue_ids: list, mbid: str, artist: str, album: str) -> i
 
 def get_queue_status_counts() -> Dict[str, int]:
     try:
-        with db_cursor() as (conn, cursor):
-            cursor.execute("""
-                SELECT status, COUNT(*)
-                FROM download_queue
-                GROUP BY status
-            """)
-            return {r[0]: r[1] for r in cursor.fetchall()}
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT status, COUNT(*) FROM download_queue GROUP BY status")
+            )
+            return {str(r[0]): int(r[1]) for r in result.fetchall()}
     except Exception as e:
         logger.error(f"[get_queue_status_counts] {e}")
         return {}
@@ -263,15 +275,18 @@ def get_processing_snapshot() -> Dict[str, int]:
 
 def get_ready_for_processing(limit: int = 100) -> List[Dict]:
     try:
-        with db_cursor() as (conn, cursor):
-            cursor.execute("""
-                SELECT *
-                FROM download_queue
-                WHERE status = 'queued'
-                ORDER BY created_at ASC
-                LIMIT %s
-            """, (limit,))
-            return [_row_to_dict(r, cursor) for r in cursor.fetchall()]
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT *
+                    FROM download_queue
+                    WHERE status = 'queued'
+                    ORDER BY created_at ASC
+                    LIMIT :limit
+                """),
+                {"limit": limit},
+            )
+            return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
         logger.error(f"[get_ready_for_processing] {e}")
         return []
@@ -291,19 +306,19 @@ def get_completed_queue(limit: int = 50) -> List[Dict[str, Any]]:
     - moving
     """
     try:
-        with db_cursor() as (conn, cursor):
-            cursor.execute(
-                """
-                SELECT *
-                FROM download_queue
-                WHERE status = ANY(%s)
-                ORDER BY updated_at DESC
-                LIMIT %s
-                """,
-                (list(COMPLETED_QUEUE_STATUSES), limit),
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT *
+                    FROM download_queue
+                    WHERE status = ANY(:statuses)
+                    ORDER BY updated_at DESC
+                    LIMIT :limit
+                """),
+                {"statuses": list(COMPLETED_QUEUE_STATUSES), "limit": limit},
             )
 
-            return [_row_to_dict(r, cursor) for r in cursor.fetchall()]
+            return [dict(r._mapping) for r in result.fetchall()]
 
     except Exception as e:
         logger.error(f"[get_completed_queue] {e}")
@@ -317,16 +332,19 @@ def get_completed_queue(limit: int = 50) -> List[Dict[str, Any]]:
 # queue.py
 def get_completed_by_group(group_id: str) -> List[Dict[str, Any]]:
     try:
-        with db_cursor() as (conn, cursor):
-            cursor.execute("""
-                SELECT id, file_path, artist, album, title,
-                       track_number, disc_number, album_artist, year
-                FROM download_queue
-                WHERE import_group = %s
-                AND status = 'completed'
-            """, (group_id,))
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT id, file_path, artist, album, title,
+                           track_number, disc_number, album_artist, year
+                    FROM download_queue
+                    WHERE import_group = :group
+                    AND status = 'completed'
+                """),
+                {"group": group_id},
+            )
 
-            return [_row_to_dict(r, cursor) for r in cursor.fetchall()]
+            return [dict(r._mapping) for r in result.fetchall()]
 
     except Exception as e:
         logger.error(f"[get_completed_by_group] {e}")
@@ -445,22 +463,22 @@ def get_album_queue_tracks(
     album: str,
 ) -> list[dict[str, Any]]:
     try:
-        with db_cursor() as (_, cursor):
-            cursor.execute(
-                """
-                SELECT id, title, file_path, status, track_number,
-                       disc_number, artist, album_artist
-                FROM download_queue
-                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-                  AND LOWER(COALESCE(album, '')) = LOWER(%s)
-                ORDER BY
-                    CASE WHEN NULLIF(TRIM(COALESCE(track_number, '')), '') ~ '^\d+$'
-                        THEN TRIM(track_number)::integer ELSE 9999 END,
-                    title
-                """,
-                (artist, album),
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT id, title, file_path, status, track_number,
+                           disc_number, artist, album_artist
+                    FROM download_queue
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                      AND LOWER(COALESCE(album, '')) = LOWER(:album)
+                    ORDER BY
+                        CASE WHEN NULLIF(TRIM(COALESCE(track_number, '')), '') ~ '^\d+$'
+                            THEN TRIM(track_number)::integer ELSE 9999 END,
+                        title
+                """),
+                {"artist": artist, "album": album},
             )
-            return [dict(zip([c[0] for c in cursor.description], r)) for r in cursor.fetchall()]
+            return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
         logger.error(f"[get_album_queue_tracks] {e}")
         return []

@@ -8,7 +8,9 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request, Response, send_file
 
-from db.utils import get_db_connection, row_get
+from sqlalchemy import text
+
+from db.engine import db_session
 from helpers.config_helpers import get_config
 from helpers.response_helpers import _ok, _fail
 

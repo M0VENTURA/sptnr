@@ -16,7 +16,9 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
-from db.utils import get_db_connection, row_get
+from sqlalchemy import text
+
+from db.engine import db_session
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +91,10 @@ def beets_status():
             pass
 
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) AS c FROM tracks")
-        stats["total_tracks"] = row_get(cursor.fetchone(), "c", 0)
-        cursor.execute("SELECT COUNT(DISTINCT album) AS c FROM tracks")
-        stats["total_albums"] = row_get(cursor.fetchone(), "c", 0)
-        cursor.execute("SELECT COUNT(DISTINCT COALESCE(NULLIF(album_artist, ''), artist)) AS c FROM tracks")
-        stats["total_artists"] = row_get(cursor.fetchone(), "c", 0)
-        conn.close()
+        with db_session() as session:
+            stats["total_tracks"] = session.execute(text("SELECT COUNT(*) AS c FROM tracks")).scalar()
+            stats["total_albums"] = session.execute(text("SELECT COUNT(DISTINCT album) AS c FROM tracks")).scalar()
+            stats["total_artists"] = session.execute(text("SELECT COUNT(DISTINCT COALESCE(NULLIF(album_artist, ''), artist)) AS c FROM tracks")).scalar()
     except Exception:
         pass
 

@@ -109,20 +109,20 @@ def cleanup_copied_sources() -> dict:
         return False
 
     try:
-        with db_cursor(commit=True) as (conn, cursor):
-            cursor.execute("""
+        with db_session() as session:
+            result = session.execute(text("""
                 SELECT id, file_path, found_filename
                 FROM download_queue
                 WHERE status = 'imported'
                   AND (file_path IS NOT NULL OR found_filename IS NOT NULL)
-            """)
-            items = cursor.fetchall()
+            """))
+            items = result.fetchall()
 
             for row in items:
                 scanned_count += 1
-                queue_id = row_get(row, "id", 0)
-                file_path = row_get(row, "file_path", 1)
-                found_filename = row_get(row, "found_filename", 2)
+                queue_id = row[0]
+                file_path = row[1]
+                found_filename = row[2]
                 downloads_root = os.path.abspath(resolve_downloads_dir())
                 deleted = False
 
@@ -141,9 +141,9 @@ def cleanup_copied_sources() -> dict:
 
                 if deleted:
                     deleted_count += 1
-                    cursor.execute(
-                        "UPDATE download_queue SET updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                        (queue_id,)
+                    session.execute(
+                        text("UPDATE download_queue SET updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
+                        {"id": queue_id}
                     )
 
             return {

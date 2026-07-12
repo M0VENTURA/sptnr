@@ -11,7 +11,9 @@ import logging
 import time
 from typing import Any
 
-from db.utils import get_db_connection, row_get
+from sqlalchemy import text
+
+from db.engine import db_session
 from services.metadata.tag_constants import ALBUM_LEVEL_FIELDS, EDITABLE_FIELDS, JSON_ARRAY_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -46,58 +48,52 @@ def _encode_updates(tag_updates: dict[str, Any]) -> dict[str, Any]:
 
 def get_track_tags(track_id: str) -> dict[str, Any]:
     fields = sorted(EDITABLE_FIELDS)
-    conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT {', '.join(fields)} FROM tracks WHERE id = %s", (track_id,))
-        row = cursor.fetchone()
-        if not row:
-            return {}
-        return {field: _decode_field(field, row_get(row, field, idx)) for idx, field in enumerate(fields)}
+        with db_session() as session:
+            result = session.execute(
+                text(f"SELECT {', '.join(fields)} FROM tracks WHERE id = :id"),
+                {"id": track_id},
+            )
+            row = result.fetchone()
+            if not row:
+                return {}
+            return {field: _decode_field(field, row[idx]) for idx, field in enumerate(fields)}
     except Exception as exc:
         logger.error("Failed to get tags for track %s: %s", track_id, exc)
         return {}
-    finally:
-        if conn:
-            conn.close()
 
 
 def get_album_tags(album: str, artist: str) -> dict[str, Any]:
     fields = sorted(ALBUM_LEVEL_FIELDS)
-    conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            f"SELECT COUNT(*) AS track_count, {', '.join(fields)} FROM tracks WHERE album = %s AND artist = %s GROUP BY {', '.join(fields)} LIMIT 1",
-            (album, artist),
-        )
-        row = cursor.fetchone()
-        if not row:
-            return {}
-        tags = {"track_count": row_get(row, "track_count", 0)}
-        for idx, field in enumerate(fields, start=1):
-            tags[field] = _decode_field(field, row_get(row, field, idx))
-        return tags
+        with db_session() as session:
+            result = session.execute(
+                text(f"SELECT COUNT(*) AS track_count, {', '.join(fields)} FROM tracks WHERE album = :album AND artist = :artist GROUP BY {', '.join(fields)} LIMIT 1"),
+                {"album": album, "artist": artist},
+            )
+            row = result.fetchone()
+            if not row:
+                return {}
+            tags = {"track_count": int(row[0])}
+            for idx, field in enumerate(fields):
+                tags[field] = _decode_field(field, row[idx + 1])
+            return tags
     except Exception as exc:
         logger.error("Failed to get album tags for %s - %s: %s", artist, album, exc)
         return {}
-    finally:
-        if conn:
-            conn.close()
 
 
 def check_field_conflicts(album: str, artist: str) -> dict[str, Any]:
-    conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        conflicts: dict[str, Any] = {}
-        cursor.execute("SELECT DISTINCT album_artist, albumartist FROM tracks WHERE album = %s AND artist = %s", (album, artist))
-        rows = cursor.fetchall() or []
-        album_artists = {row_get(row, "album_artist", 0) for row in rows if row_get(row, "album_artist", 0)}
-        albumartists = {row_get(row, "albumartist", 1) for row in rows if row_get(row, "albumartist", 1)}
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT DISTINCT album_artist, albumartist FROM tracks WHERE album = :album AND artist = :artist"),
+                {"album": album, "artist": artist},
+            )
+            rows = result.fetchall() or []
+            conflicts: dict[str, Any] = {}
+            album_artists = {str(row[0]) for row in rows if row[0]}
+            albumartists = {str(row[1]) for row in rows if row[1]}
         if len(album_artists) > 1:
             conflicts["album_artist"] = sorted(album_artists)
         if len(albumartists) > 1:
@@ -105,74 +101,58 @@ def check_field_conflicts(album: str, artist: str) -> dict[str, Any]:
         if album_artists and albumartists and album_artists != albumartists:
             conflicts["album_artist_vs_albumartist"] = {"album_artist": sorted(album_artists), "albumartist": sorted(albumartists)}
         for field in ["label", "releasecountry", "releasetype"]:
-            cursor.execute(f"SELECT DISTINCT {field} FROM tracks WHERE album = %s AND artist = %s AND {field} IS NOT NULL AND {field} <> ''", (album, artist))
-            values = [row_get(row, field, 0) for row in cursor.fetchall() or []]
+            result = session.execute(
+                text(f"SELECT DISTINCT {field} FROM tracks WHERE album = :album AND artist = :artist AND {field} IS NOT NULL AND {field} <> ''"),
+                {"album": album, "artist": artist},
+            )
+            values = [str(row[0]) for row in result.fetchall() or [] if row[0]]
             if len(values) > 1:
                 conflicts[field] = values
         return conflicts
     except Exception as exc:
         logger.error("Failed to check field conflicts for %s - %s: %s", artist, album, exc)
         return {}
-    finally:
-        if conn:
-            conn.close()
 
 
 def update_track_tags(track_id: str, tag_updates: dict[str, Any]) -> bool:
     validated = _encode_updates(tag_updates)
     if not validated:
         return False
-    conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        set_clause = ', '.join([f"{field} = %s" for field in validated])
-        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = %s", [*validated.values(), track_id])
-        conn.commit()
-        return True
+        with db_session() as session:
+            set_clause = ', '.join([f"{field} = :{field}" for field in validated])
+            params = {**validated, "id": track_id}
+            session.execute(text(f"UPDATE tracks SET {set_clause} WHERE id = :id"), params)
+            return True
     except Exception as exc:
         logger.error("Failed to update tags for track %s: %s", track_id, exc)
-        if conn:
-            conn.rollback()
         return False
-    finally:
-        if conn:
-            conn.close()
 
 
 def update_album_tags(album: str, artist: str, tag_updates: dict[str, Any], selected_tracks: list[str] | None = None) -> int:
     validated = _encode_updates(tag_updates)
     if not validated:
         return 0
-    set_clause = ', '.join([f"{field} = %s" for field in validated])
-    values = list(validated.values()) + [album, artist]
+    set_clause = ', '.join([f"{field} = :{field}" for field in validated])
+    params = {**validated, "album": album, "artist": artist}
     if selected_tracks:
-        track_placeholders = ', '.join(['%s'] * len(selected_tracks))
-        query = f"UPDATE tracks SET {set_clause} WHERE album = %s AND artist = %s AND id IN ({track_placeholders})"
-        values.extend(selected_tracks)
+        track_placeholders = ', '.join([f":tid_{i}" for i in range(len(selected_tracks))])
+        query = f"UPDATE tracks SET {set_clause} WHERE album = :album AND artist = :artist AND id IN ({track_placeholders})"
+        params.update({f"tid_{i}": tid for i, tid in enumerate(selected_tracks)})
     else:
-        query = f"UPDATE tracks SET {set_clause} WHERE album = %s AND artist = %s"
+        query = f"UPDATE tracks SET {set_clause} WHERE album = :album AND artist = :artist"
 
     delay = 0.5
     for attempt in range(3):
-        conn = None
         try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute(query, values)
-            count = cursor.rowcount
-            conn.commit()
-            return count
+            with db_session() as session:
+                result = session.execute(text(query), params)
+                return result.rowcount
         except Exception as exc:
-            if conn:
-                conn.rollback()
             if "database is locked" in str(exc).lower() and attempt < 2:
                 time.sleep(delay)
                 delay *= 2
                 continue
             logger.error("Failed to update album tags for %s - %s: %s", artist, album, exc)
             return 0
-        finally:
-            if conn:
-                conn.close()
     return 0

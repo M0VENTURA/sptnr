@@ -21,7 +21,9 @@ Architecture:
 
 from __future__ import annotations
 import logging
-from db.context import db_cursor
+from sqlalchemy import text
+from db.engine import db_session
+from db.context import db_cursor  # TODO: migrate to db_session
 
 
 from collections.abc import Callable

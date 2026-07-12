@@ -16,7 +16,9 @@ import logging
 from typing import Any, Dict, List
 
 
-from db.context import db_cursor
+from sqlalchemy import text
+from db.engine import db_session
+from db.context import db_cursor  # TODO: migrate to db_session
 
 from db.repositories.queue import (
     insert_queue_item,

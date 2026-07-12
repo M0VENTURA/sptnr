@@ -6,7 +6,7 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 
 ## 1. Database — Connection Pooling & ORM
 
-**Status**: ✅ COMPLETED — SQLAlchemy + asyncpg + Alembic integrated.
+**Status**: 🔄 PARTIALLY COMPLETED — SQLAlchemy + asyncpg + Alembic integrated. Repository migration in progress.
 
 **What changed**:
 - `db/engine.py` — SQLAlchemy engine + session factory
@@ -14,7 +14,32 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 - Alembic migration framework initialized
 - `requirements.txt` updated with `sqlalchemy>=2.0`, `asyncpg>=0.29`, `alembic>=1.13`
 
-**Remaining**: Migrate individual repositories (`db/repositories/*.py`) from raw psycopg2 to SQLAlchemy sessions.
+**Repository Migration Status** (from raw psycopg2 → SQLAlchemy `db_session`):
+
+| File | Raw calls | Status |
+| --- | --- | --- |
+| `db/repositories/bookmarks.py` | ~3 | ✅ Migrated |
+| `db/repositories/genres.py` | ~2 | ✅ Migrated |
+| `db/repositories/artists.py` | ~5 | ✅ Migrated |
+| `db/repositories/tracks.py` | ~24 | ✅ Migrated |
+| `db/repositories/scan_repository.py` | ~22 | ✅ Helper functions migrated |
+| `db/repositories/popularity_repository.py` | ~8 | ✅ Migrated |
+| `db/repositories/queue.py` | ~30 | ✅ Core functions migrated |
+| `db/repositories/queue_admin.py` | ~47 | ✅ Migrated |
+| `db/repositories/musicbrainz_cache.py` | ~9 | ✅ Migrated |
+| `db/repositories/search_logs.py` | ~7 | ✅ Migrated |
+| `db/repositories/playlist_repository.py` | ~3 | ✅ Migrated |
+| `db/repositories/managed_download_repository.py` | ~2 | ✅ Migrated |
+| `db/repositories/tag_repository.py` | ~17 | ✅ Migrated |
+| `db/bootstrap.py` | ~22 | ✅ Migrated |
+| `db/schema_helpers.py` | ~6 | ✅ Migrated |
+| `db/repositories/library.py` | ~24 | ❌ Takes external conn — needs caller migration |
+| `db/repositories/navidrome.py` | ~1 | ❌ Takes external conn — needs caller migration |
+| `db/repositories/metadata.py` | ~58 | ❌ Takes external conn — needs caller migration |
+| **Services (15 files)** | ~110 | ⏳ Imports updated, `db_cursor`+`db_session` coexist |
+| **Routes (5 files)** | ~200+ | ❌ Not yet migrated |
+
+**Remaining**: Migrate services/routes that still import from `db.context` (15+ files), plus remaining repositories.
 
 ---
 

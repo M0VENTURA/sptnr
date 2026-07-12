@@ -118,7 +118,7 @@ def api_auto_match_folder(folder_path):
 
 @downloads_bp.route("/api/downloads/release/<source>/<release_id>/tracks")
 def api_release_tracks(source, release_id):
-    return jsonify(get_release_tracks(source, release_id))
+    return jsonify(get_release_tracks(release_id=release_id, source=source))
 
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/duplicates", methods=["POST"])

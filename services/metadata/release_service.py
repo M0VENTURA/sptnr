@@ -10,7 +10,9 @@ All data comes from ``musicbrainz_releases`` / ``musicbrainz_release_tracks`` ta
 
 from __future__ import annotations
 import logging
-from db.context import db_cursor
+from sqlalchemy import text
+from db.engine import db_session
+from db.context import db_cursor  # TODO: migrate to db_session
 from db.repositories.musicbrainz_cache import get_active_musicbrainz_releases
 
 logger = logging.getLogger(__name__)

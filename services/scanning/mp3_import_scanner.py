@@ -25,7 +25,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from db.context import db_cursor
+from sqlalchemy import text
+from db.engine import db_session
+from db.context import db_cursor  # TODO: migrate to db_session
 from helpers.metadata_reader import read_mp3_metadata
 from services.scanning.scan_state import (
     get_scan_progress_path,

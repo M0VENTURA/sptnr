@@ -6,8 +6,9 @@ import logging
 from typing import Any
 
 from flask import Blueprint, jsonify, request, Response
+from sqlalchemy import text
 
-from db.utils import get_db_connection
+from db.engine import db_session
 from helpers.config_helpers import get_config
 
 logger = logging.getLogger(__name__)

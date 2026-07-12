@@ -7,7 +7,9 @@ import threading
 import time
 from typing import Any, Iterable
 
-from db.context import db_cursor
+from sqlalchemy import text
+
+from db.engine import db_session
 from db.schema import (
     COLUMN_REGISTRY,
     INDEXES_TO_ENSURE,
@@ -84,10 +86,10 @@ def ensure_musicbrainz_release_unique_constraint(cursor: Any) -> None:
 
 def ensure_album_artist_column_data() -> bool:
     try:
-        with db_cursor(commit=True) as (_conn, cursor):
-            if not table_exists(cursor, "tracks") or not _try_advisory_lock(cursor, _ALBUM_ART_DATA_LOCK_KEY, attempts=1): return True
-            cursor.execute("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL")
-            _release_advisory_lock(cursor, _ALBUM_ART_DATA_LOCK_KEY)
+        with db_session() as session:
+            if not table_exists(session, "tracks") or not _try_advisory_lock(session, _ALBUM_ART_DATA_LOCK_KEY, attempts=1): return True
+            session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
+            _release_advisory_lock(session, _ALBUM_ART_DATA_LOCK_KEY)
         return True
     except Exception as e:
         logging.error("Backfill failed: %s", e)
@@ -95,10 +97,10 @@ def ensure_album_artist_column_data() -> bool:
 
 def ensure_artists_name_unique_constraint() -> bool:
     try:
-        with db_cursor(commit=True) as (_conn, cursor):
-            if not table_exists(cursor, "artists"): return False
-            cursor.execute("DELETE FROM artists WHERE ctid NOT IN (SELECT DISTINCT ON (name) ctid FROM artists ORDER BY name, id ASC)")
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_name_unique ON artists (name)")
+        with db_session() as session:
+            if not table_exists(session, "artists"): return False
+            session.execute(text("DELETE FROM artists WHERE ctid NOT IN (SELECT DISTINCT ON (name) ctid FROM artists ORDER BY name, id ASC)"))
+            session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_name_unique ON artists (name)"))
         return True
     except Exception as e:
         logging.warning("Unique constraint error: %s", e)
@@ -106,11 +108,11 @@ def ensure_artists_name_unique_constraint() -> bool:
 
 def ensure_album_art_schema() -> bool:
     try:
-        with db_cursor(commit=True) as (conn, cursor):
-            if not _try_advisory_lock(cursor, _ALBUM_ART_SCHEMA_LOCK_KEY, attempts=5): return False
-            _ensure_table(cursor, "album_art", TABLES_TO_ENSURE["album_art"])
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_album_art_artist_album ON album_art (artist_name, album_name)")
-            _release_advisory_lock(cursor, _ALBUM_ART_SCHEMA_LOCK_KEY)
+        with db_session() as session:
+            if not _try_advisory_lock(session, _ALBUM_ART_SCHEMA_LOCK_KEY, attempts=5): return False
+            _ensure_table(session, "album_art", TABLES_TO_ENSURE["album_art"])
+            session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_album_art_artist_album ON album_art (artist_name, album_name)"))
+            _release_advisory_lock(session, _ALBUM_ART_SCHEMA_LOCK_KEY)
         return True
     except Exception as e:
         logging.error("Album art schema error: %s", e)
@@ -118,9 +120,9 @@ def ensure_album_art_schema() -> bool:
 
 def _ensure_subset(table: str, keys: Iterable[str], registry: dict[str, str]) -> bool:
     try:
-        with db_cursor(commit=True) as (_conn, cursor):
-            if table_exists(cursor, table):
-                _ensure_columns(cursor, table, {k: registry[k] for k in keys if k in registry})
+        with db_session() as session:
+            if table_exists(session, table):
+                _ensure_columns(session, table, {k: registry[k] for k in keys if k in registry})
         return True
     except Exception as e:
         logging.warning("Schema sync error for %s: %s", table, e)
@@ -147,15 +149,14 @@ def ensure_mb_ignored_fields_column() -> bool: return _ensure_subset("tracks", [
 def ensure_full_schema(_db_path: str | None = None) -> bool:
     lock_acquired = False
     try:
-        with db_cursor(commit=False) as (conn, cursor):
-            lock_acquired = _try_advisory_lock(cursor, _SCHEMA_BOOTSTRAP_LOCK_NAME)
+        with db_session() as session:
+            lock_acquired = _try_advisory_lock(session, _SCHEMA_BOOTSTRAP_LOCK_NAME)
             if not lock_acquired: return False
-            for table, ddl in TABLES_TO_ENSURE.items(): _ensure_table(cursor, table, ddl)
-            for table, cols in COLUMN_REGISTRY.items(): _ensure_columns(cursor, table, cols)
-            ensure_status_changed_trigger(cursor)
-            ensure_musicbrainz_release_unique_constraint(cursor)
-            for ddl in INDEXES_TO_ENSURE: _ensure_index(cursor, ddl)
-            conn.commit()
+            for table, ddl in TABLES_TO_ENSURE.items(): _ensure_table(session, table, ddl)
+            for table, cols in COLUMN_REGISTRY.items(): _ensure_columns(session, table, cols)
+            ensure_status_changed_trigger(session)
+            ensure_musicbrainz_release_unique_constraint(session)
+            for ddl in INDEXES_TO_ENSURE: _ensure_index(session, ddl)
         ensure_album_artist_column_data()
         ensure_artists_name_unique_constraint()
         ensure_album_art_schema()
@@ -166,12 +167,12 @@ def ensure_full_schema(_db_path: str | None = None) -> bool:
         raise
     finally:
         if lock_acquired:
-            with db_cursor(commit=True) as (_conn, cursor): _release_advisory_lock(cursor, _SCHEMA_BOOTSTRAP_LOCK_NAME)
+            with db_session() as session: _release_advisory_lock(session, _SCHEMA_BOOTSTRAP_LOCK_NAME)
 
 def verify_all_tables_exist() -> dict[str, Any]:
     expected = set(TABLES_TO_ENSURE.keys())
-    with db_cursor() as (_conn, cursor):
-        present = {t for t in expected if table_exists(cursor, t)}
+    with db_session() as session:
+        present = {t for t in expected if table_exists(session, t)}
     return {"ok": expected.issubset(present), "missing": list(expected - present)}
 
 def init_database_and_schema() -> bool:
