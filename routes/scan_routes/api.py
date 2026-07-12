@@ -233,8 +233,13 @@ def api_scan_progress():
 def api_popularity_run_compat():
     data = request.get_json(silent=True) or {}
 
-    mode = "popularity"
+    # Support both explicit mode field and legacy boolean flags
+    mode = str(data.get("mode", "popularity")).strip().lower()
 
+    if mode not in ("popularity", "metadata", "singles", "singles_detection", "all"):
+        mode = "popularity"
+
+    # Legacy boolean flag overrides
     if data.get("metadata_only"):
         mode = "metadata"
     elif data.get("singles_only"):
@@ -261,6 +266,75 @@ def api_popularity_run_compat():
     return jsonify({
         "success": True,
         "message": f"{mode.capitalize()} scan started",
+    })
+
+
+# -------------------------------------------------------------------------
+# API: Essentia mood scan
+# -------------------------------------------------------------------------
+
+@scans_bp.route("/api/essentia/run", methods=["POST"])
+def api_essentia_run():
+    """Start an Essentia mood/genre scan via JSON API."""
+    from services.scanning.pipelines.essentia_pipeline import run_essentia_pipeline
+
+    with scan_lock:
+        if is_runtime_running("essentia_mood"):
+            return jsonify({
+                "success": False,
+                "error": "An Essentia scan is already running",
+            }), 409
+
+        progress_file = get_scan_progress_path("essentia_mood_scan")
+
+        def _worker():
+            try:
+                run_essentia_pipeline(progress_file=progress_file)
+            finally:
+                clear_runtime("essentia_mood")
+
+        thread = run_async(_worker)
+        set_runtime("essentia_mood", {"thread": thread, "type": "essentia_mood"})
+
+    return jsonify({
+        "success": True,
+        "message": "Essentia mood/genre scan started",
+    })
+
+
+# -------------------------------------------------------------------------
+# API: Navidrome import pipeline
+# -------------------------------------------------------------------------
+
+@scans_bp.route("/api/navidrome/import", methods=["POST"])
+def api_navidrome_import():
+    """Start the local Navidrome import pipeline via JSON API."""
+    from services.scanning.pipelines.navidrome_pipeline import run_navidrome_import_scan
+
+    data = request.get_json(silent=True) or {}
+    mode = str(data.get("mode", "all")).strip().lower() or "all"
+
+    with scan_lock:
+        if is_runtime_running("navidrome"):
+            return jsonify({
+                "success": False,
+                "error": "A Navidrome import scan is already running",
+            }), 409
+
+        progress_file = get_scan_progress_path("navidrome_scan")
+
+        def _worker():
+            try:
+                run_navidrome_import_scan(mode=mode, progress_file=progress_file)
+            finally:
+                clear_runtime("navidrome")
+
+        thread = run_async(_worker)
+        set_runtime("navidrome", {"thread": thread, "type": "navidrome"})
+
+    return jsonify({
+        "success": True,
+        "message": f"Navidrome import scan started (mode={mode})",
     })
 
 

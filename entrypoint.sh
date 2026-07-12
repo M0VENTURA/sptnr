@@ -46,7 +46,7 @@ start_queue_processor() {
     local log_file="${SPTNR_QUEUE_PROCESSOR_LOG:-/config/queue_processor.log}"
     log "Starting download queue processor (interval: ${interval}s)..."
     export SPTNR_QUEUE_PROCESSOR_MANAGED_EXTERNALLY=1
-    python3 queue_processor.py "$interval" > "$log_file" 2>&1 &
+    python3 -m services.queue.queue_worker "$interval" > "$log_file" 2>&1 &
     QUEUE_PID=$!
     ok "Queue processor started (PID: $QUEUE_PID)"
 }
@@ -54,7 +54,7 @@ start_queue_processor() {
 preflight_python() {
     log "Running Python syntax checks..."
     python3 -m py_compile app.py
-    python3 -m py_compile queue_processor.py
+    python3 -m py_compile services/queue/queue_worker.py
     python3 -m py_compile db/utils.py
     python3 -m py_compile db/context.py
     python3 -m py_compile db/schema.py

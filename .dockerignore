@@ -1,0 +1,12 @@
+.git/
+.github/
+.gitignore
+.vscode/
+documentation/
+tests/
+__pycache__/
+*.pyc
+*.pyo
+*.md
+popularr.env
+popularr-queue-worker.service
