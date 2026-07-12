@@ -1,0 +1,14 @@
+{
+  // Disable CSS validation inside HTML/Jinja2 templates.
+  // The built-in CSS language service does not understand Jinja2
+  // template expressions like {{ variable }} or {% for %} in inline
+  // styles and <style> blocks, producing false-positive "at-rule or
+  // selector expected" / "property value expected" warnings.
+  // These are harmless — the rendered output is valid CSS.
+  "[html]": {
+    "css.validate": false
+  },
+  "[jinja-html]": {
+    "css.validate": false
+  }
+}
