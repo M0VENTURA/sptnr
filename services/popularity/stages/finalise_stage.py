@@ -1,24 +1,353 @@
-"""Popularity scan finalisation stage."""
+"""Popularity scan finalisation stage.
+
+Migrated from the legacy ``popularity.py`` monolithic scan loop.
+
+Handles:
+- Star rating assignment (1–5★) using album/artist z-scores + percentiles
+- Navidrome rating sync via Subsonic API
+- Essential playlist creation (NSP files)
+- Summary logging
+"""
 
 from __future__ import annotations
 
+import json
 import logging
+import math
+import os
+from statistics import mean, median, stdev
 from typing import Any
+
+from db.utils import get_db_connection, row_get
+from services.popularity.popularity_math import calculate_track_zscore
+from services.popularity.standout_service import STANDOUT_CONFIG
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Star rating thresholds
+# ---------------------------------------------------------------------------
+
+STAR_5_ALBUM_Z = STANDOUT_CONFIG.get("star_5", {}).get("album_z", 1.0)
+STAR_5_ARTIST_Z = STANDOUT_CONFIG.get("star_5", {}).get("artist_z", 1.2)
+STAR_5_ARTIST_PCT = STANDOUT_CONFIG.get("star_5", {}).get("artist_pct", 0.10)
+STAR_4_ALBUM_Z = STANDOUT_CONFIG.get("star_4", {}).get("album_z", 0.8)
+STAR_4_ARTIST_Z = STANDOUT_CONFIG.get("star_4", {}).get("artist_z", 1.0)
+STAR_4_ARTIST_PCT = STANDOUT_CONFIG.get("star_4", {}).get("artist_pct", 0.20)
+STAR_3_ALBUM_Z = STANDOUT_CONFIG.get("star_3", {}).get("album_z", 0.0)
+POPULARITY_5STAR_Z = STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
+LB_UNRELIABLE_5STAR = STANDOUT_CONFIG.get("lb_unreliable_5star_threshold", 0.50)
+UNDERPERFORMING_THRESHOLD = 0.6
+
+
+# ---------------------------------------------------------------------------
+# Standout detection helpers
+# ---------------------------------------------------------------------------
+
+def _compute_album_z(score: float, scores: list[float]) -> float:
+    if len(scores) < 3 or not any(scores):
+        return 0.0
+    mu = mean(scores)
+    sigma = stdev(scores) if len(scores) > 1 else 1.0
+    return calculate_track_zscore(score, mu, sigma)
+
+
+def _compute_artist_z(score: float, artist_scores: list[float]) -> float:
+    if len(artist_scores) < 5 or not any(artist_scores):
+        return 0.0
+    mu = mean(artist_scores)
+    sigma = stdev(artist_scores) if len(artist_scores) > 1 else 1.0
+    return calculate_track_zscore(score, mu, sigma)
+
+
+def _is_top_artist_percentile(score: float, artist_scores: list[float], pct: float) -> bool:
+    if not artist_scores or score <= 0:
+        return False
+    above = sum(1 for s in artist_scores if s > score)
+    total = len(artist_scores)
+    return total > 0 and (above / total) <= pct
+
+
+def _is_lastfm_unreliable(lastfm_listeners: float, lb_listens: float) -> bool:
+    return int(lastfm_listeners) <= 20 and int(lb_listens) >= 75
+
+
+# ---------------------------------------------------------------------------
+# Star rating assignment
+# ---------------------------------------------------------------------------
+
+def _assign_stars(
+    track: dict[str, Any],
+    album_scores: list[float],
+    artist_scores: list[float],
+) -> int:
+    """Assign 1–5 star rating to a single track."""
+    score = float(track.get("popularity_score") or 0)
+    is_single = bool(track.get("is_single"))
+    single_confidence = str(track.get("single_confidence") or "low")
+    is_live = bool(track.get("is_live")) or bool(track.get("album_context_live"))
+    lb_listens = float(track.get("listenbrainz_listens") or 0)
+    lf_listeners = float(track.get("lastfm_listeners") or 0)
+
+    # User override
+    if single_confidence == "user":
+        return 5
+
+    album_z = _compute_album_z(score, album_scores)
+    artist_z = _compute_artist_z(score, artist_scores)
+    is_elite = _is_top_artist_percentile(score, artist_scores, STAR_5_ARTIST_PCT)
+    is_top_catalog = _is_top_artist_percentile(score, artist_scores, 0.25)
+
+    # 5★: elite catalogue track (top 10%) or confirmed high-confidence single
+    if is_elite and not is_live:
+        return 5
+    if is_single and single_confidence == "high":
+        if artist_z >= STAR_5_ARTIST_Z or album_z >= STAR_5_ALBUM_Z or is_top_catalog:
+            return 5
+
+    # 4★: medium-confidence single or top 20%
+    if is_single and single_confidence in ("high", "medium"):
+        if artist_z >= STAR_4_ARTIST_Z or album_z >= STAR_4_ALBUM_Z:
+            return 4
+    if _is_top_artist_percentile(score, artist_scores, STAR_4_ARTIST_PCT):
+        return 4
+
+    # Popularity-only 5★ (very high z-score, not live)
+    if album_z >= POPULARITY_5STAR_Z and not is_live:
+        return 5
+
+    # LB override: when Last.fm is unreliable but LB percentile is strong
+    if not is_live and _is_lastfm_unreliable(lf_listeners, lb_listens):
+        if is_top_catalog or album_z >= STAR_4_ALBUM_Z:
+            return 5
+
+    # 3★: above album average
+    if album_z >= STAR_3_ALBUM_Z and score > 0:
+        return 3
+
+    # 2★: has a score but not above average
+    if score > 0:
+        return 2
+
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# Navidrome sync
+# ---------------------------------------------------------------------------
+
+def _load_navidrome_users() -> list[dict]:
+    """Load Navidrome credentials from config."""
+    users: list[dict] = []
+    try:
+        from helpers.config_helpers import get_config
+        cfg = get_config()
+        nav_users = cfg.get("navidrome_users", [])
+        for u in nav_users:
+            base_url = (u.get("base_url") or "").strip().rstrip("/")
+            user = (u.get("user") or "").strip()
+            pw = (u.get("pass") or "").strip()
+            if base_url and user and pw:
+                users.append({"base_url": base_url, "user": user, "pass": pw})
+
+        if not users:
+            nav = cfg.get("navidrome", {})
+            base_url = (nav.get("base_url") or "").strip().rstrip("/")
+            user = (nav.get("user") or "").strip()
+            pw = (nav.get("pass") or "").strip()
+            if base_url and user and pw:
+                users.append({"base_url": base_url, "user": user, "pass": pw})
+    except Exception:
+        for key in ("NAV_BASE_URL", "NAV_USER", "NAV_PASS"):
+            if not all(os.environ.get(k) for k in ("NAV_BASE_URL", "NAV_USER", "NAV_PASS")):
+                break
+        else:
+            users.append({
+                "base_url": os.environ["NAV_BASE_URL"].strip("/"),
+                "user": os.environ["NAV_USER"],
+                "pass": os.environ["NAV_PASS"],
+            })
+    return users
+
+
+def _sync_rating_to_navidrome(track_id: str, stars: int) -> bool:
+    """Push a single track rating to all Navidrome users via Subsonic API."""
+    users = _load_navidrome_users()
+    if not users:
+        return False
+
+    from api_clients.http_utils import session
+    any_success = False
+    for creds in users:
+        params = {
+            "u": creds["user"],
+            "p": creds["pass"],
+            "v": "1.16.1",
+            "c": "sptnr",
+            "f": "json",
+            "id": track_id,
+            "rating": stars,
+        }
+        try:
+            resp = session.get(f"{creds['base_url']}/rest/setRating.view", params=params, timeout=10)
+            resp.raise_for_status()
+            result = resp.json()
+            if result.get("subsonic-response", {}).get("status") == "ok":
+                any_success = True
+        except Exception as exc:
+            logger.debug("[finalise_stage] Navidrome sync failed for track %s: %s", track_id, exc)
+    return any_success
+
+
+# ---------------------------------------------------------------------------
+# NSP playlist helpers
+# ---------------------------------------------------------------------------
+
+def _sanitize_name(name: str) -> str:
+    return "".join(c for c in name if c.isalnum() or c in ("-", "_", " ")).strip()
+
+
+def _create_nsp_playlist(artist: str, stars_data: list[dict]) -> None:
+    """Create or update an 'Essential {artist}' NSP playlist."""
+    total = len(stars_data)
+    five_star = [t for t in stars_data if t.get("stars") == 5]
+    music_folder = os.environ.get("MUSIC_ROOT", "/music")
+    playlists_dir = os.path.join(music_folder, "Playlists")
+    safe_name = _sanitize_name(f"Essential {artist}")
+    file_path = os.path.join(playlists_dir, f"{safe_name}.nsp")
+
+    # Case A: 10+ five-star tracks → pure 5-star essentials
+    if len(five_star) >= 10:
+        playlist = {
+            "name": f"Essential {artist}",
+            "comment": "Auto-generated by SPTNR",
+            "all": [{"is": {"artist": artist}}, {"is": {"rating": 5}}],
+            "sort": "random",
+        }
+    # Case B: 100+ total tracks → top 10% by rating
+    elif total >= 100:
+        limit = max(1, math.ceil(total * 0.10))
+        playlist = {
+            "name": f"Essential {artist}",
+            "comment": "Auto-generated by SPTNR",
+            "all": [{"is": {"artist": artist}}],
+            "sort": "-rating,random",
+            "limit": limit,
+        }
+    else:
+        # Delete existing playlist
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return
+
+    os.makedirs(playlists_dir, exist_ok=True)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(playlist, f, indent=2)
+    logger.info("[finalise_stage] NSP playlist created: %s", file_path)
+
+
+# ---------------------------------------------------------------------------
+# Main entrypoint
+# ---------------------------------------------------------------------------
 
 def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> None:
-    """Finalise scan.
+    """Finalise the scan: assign star ratings, sync to Navidrome, create playlists, log summary.
 
-    Move old finalisation logic here:
-    - final DB commits if buffered
-    - playlist refresh
-    - rating sync
-    - summary logging
-    - clearing progress files
+    ``results`` is a list of per-track result dicts produced by ``track_stage``.
+    Each dict should contain at minimum:
+        track_id, artist, album, title, popularity_score,
+        lastfm_listeners, listenbrainz_listens,
+        is_single, single_confidence, is_live, album_context_live
     """
     track_count = len(results) if results else 0
     logger.info("[FINALISE_STAGE] Finalising scan — %s tracks processed", track_count)
+    if not results:
+        return
+
+    # Group results by artist for per-artist stats
+    from collections import defaultdict
+    by_artist: dict[str, list[dict]] = defaultdict(list)
+    for r in results:
+        artist = str(r.get("artist") or r.get("canonical_artist") or "Unknown")
+        by_artist[artist].append(r)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    total_star_ratings = 0
+    navidrome_synced = 0
+
+    try:
+        for artist, artist_results in by_artist.items():
+            if artist.lower() in ("various artists", "various", "compilation", "soundtrack"):
+                continue
+
+            # Collect artist-wide scores
+            artist_scores = [float(r.get("popularity_score") or 0) for r in artist_results if float(r.get("popularity_score") or 0) > 0]
+
+            # Group by album for album-level z-scores
+            by_album: dict[str, list[dict]] = defaultdict(list)
+            for r in artist_results:
+                album = str(r.get("album") or "Unknown")
+                by_album[album].append(r)
+
+            for album, album_results in by_album.items():
+                album_scores = [float(r.get("popularity_score") or 0) for r in album_results if float(r.get("popularity_score") or 0) > 0]
+
+                for track in album_results:
+                    # Assign star rating
+                    stars = _assign_stars(track, album_scores, artist_scores)
+                    track["stars"] = stars
+                    total_star_ratings += 1
+
+                    # Persist to database
+                    track_id = str(track.get("track_id") or "")
+                    if track_id:
+                        try:
+                            cursor.execute(
+                                "UPDATE tracks SET stars = %s WHERE id = %s",
+                                (stars, track_id)
+                            )
+                        except Exception as exc:
+                            logger.debug("[finalise_stage] DB update failed for %s: %s", track_id, exc)
+
+                conn.commit()
+
+                # Sync to Navidrome
+                if options.get("sync_navidrome", True):
+                    for track in album_results:
+                        stars = track.get("stars", 0)
+                        if stars < 3:
+                            continue  # Only sync 3★+
+                        track_id = str(track.get("track_id") or "")
+                        if track_id and _sync_rating_to_navidrome(track_id, stars):
+                            navidrome_synced += 1
+
+            # Create essential playlist
+            if options.get("create_playlists", True):
+                _create_nsp_playlist(artist, artist_results)
+
+    except Exception as exc:
+        logger.error("[finalise_stage] Finalisation failed: %s", exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+    # Log summary
+    logger.info("[FINALISE_STAGE] Star ratings assigned: %d", total_star_ratings)
+    logger.info("[FINALISE_STAGE] Navidrome syncs: %d", navidrome_synced)
+
+    star_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    for r in results:
+        s = r.get("stars", 0) or 0
+        if 1 <= s <= 5:
+            star_counts[s] += 1
+    logger.info(
+        "[FINALISE_STAGE] Star distribution — 5★: %d, 4★: %d, 3★: %d, 2★: %d, 1★: %d",
+        star_counts[5], star_counts[4], star_counts[3], star_counts[2], star_counts[1],
+    )
+
     return None
 

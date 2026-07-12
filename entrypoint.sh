@@ -147,7 +147,8 @@ preflight_python() {
 
 start_web_app() {
     log "Starting Flask web application..."
-    exec gunicorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class gthread             --threads "${SPTNR_GUNICORN_THREADS:-4}"             --timeout "${SPTNR_GUNICORN_TIMEOUT:-300}"             --graceful-timeout "${SPTNR_GUNICORN_GRACEFUL_TIMEOUT:-60}"             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --worker-tmp-dir "${SPTNR_GUNICORN_WORKER_TMP_DIR:-/dev/shm}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile "${SPTNR_ERROR_LOG:-/config/error.log}"             --log-level "${SPTNR_LOG_LEVEL:-info}"             "app:app"
+    # Error logfile set to "-" (stdout) so gunicorn errors appear in docker logs
+    exec gunicorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class gthread             --threads "${SPTNR_GUNICORN_THREADS:-4}"             --timeout "${SPTNR_GUNICORN_TIMEOUT:-300}"             --graceful-timeout "${SPTNR_GUNICORN_GRACEFUL_TIMEOUT:-60}"             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --worker-tmp-dir "${SPTNR_GUNICORN_WORKER_TMP_DIR:-/dev/shm}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile -             --log-level "${SPTNR_LOG_LEVEL:-debug}"             "app:app"
 }
 
 main() {
