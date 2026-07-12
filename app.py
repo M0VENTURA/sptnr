@@ -35,20 +35,38 @@ from helpers.template_filters import register_filters
 from helpers.file_manager import ensure_default_log_files
 from helpers.task_manager import initialize_app_services
 
-# SQLAlchemy engine — initialises the connection pool on startup
-from db.engine import get_engine, run_migrations_on_startup
+# SQLAlchemy engine — initialises the connection pool on startup.
+# Gracefully degrades if sqlalchemy is not installed (e.g. older Docker image).
+try:
+    from db.engine import get_engine, run_migrations_on_startup
+    _sqlalchemy_available = True
+except Exception:
+    _sqlalchemy_available = False
+
+    def get_engine():
+        return None
+
+    def run_migrations_on_startup():
+        return False
 
 
 setup_logging("WebUI")
 
 # Initialise the SQLAlchemy engine early so the pool is ready before any
 # request or background worker needs it.
-get_engine()
+if _sqlalchemy_available:
+    try:
+        get_engine()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("SQLAlchemy engine init failed: %s", exc)
 
-# Apply any pending Alembic migrations.  Safe to call repeatedly —
-# Alembic tracks which migrations have already been applied in the
-# ``alembic_version`` table.  Set AUTO_MIGRATE=0 to skip.
-run_migrations_on_startup()
+    # Apply any pending Alembic migrations.
+    try:
+        run_migrations_on_startup()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Alembic migration failed: %s", exc)
 
 
 

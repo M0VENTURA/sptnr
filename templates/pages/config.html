@@ -36,23 +36,30 @@
   <div class="card mb-3 border-primary">
     <div class="card-body py-2">
       <div class="d-flex flex-wrap gap-2 align-items-center justify-content-center">
-        <span class="text-muted small me-2"><i class="bi bi-lightning-fill"></i> Quick Jump:</span>
+        <span class="text-muted small me-2"><i class="bi bi-lightning-fill"></i> Jump:</span>
+        <span class="text-muted small fw-semibold border-end pe-2 me-1">Connect</span>
         <a href="#users" class="btn btn-sm btn-outline-primary">Users</a>
         <a href="#api-integrations" class="btn btn-sm btn-outline-primary">APIs</a>
-        <a href="#downloads" class="btn btn-sm btn-outline-primary">Downloads</a>
-        <a href="#sources" class="btn btn-sm btn-outline-primary">Download Sources</a>
-        <a href="#watcher" class="btn btn-sm btn-outline-primary">Automation</a>
-        <a href="#essentia-mood-scan" class="btn btn-sm btn-outline-primary">Essentia</a>
-        <a href="#single-detection-zscore" class="btn btn-sm btn-outline-primary">Z-Score</a>
-        <a href="#popularity-weights" class="btn btn-sm btn-outline-primary">Weights</a>
+        <a href="#sources" class="btn btn-sm btn-outline-primary">Sources</a>
+        <span class="text-muted small fw-semibold border-end pe-2 me-1">Downloads</span>
+        <a href="#downloads" class="btn btn-sm btn-outline-primary">Files</a>
+        <a href="#download-matching" class="btn btn-sm btn-outline-primary">Match</a>
         <a href="#queue-matching" class="btn btn-sm btn-outline-primary">Queue</a>
-        <a href="#genre-weights" class="btn btn-sm btn-outline-primary">Genres</a>
-        <a href="#lastfm-advanced" class="btn btn-sm btn-outline-primary">Last.fm</a>
-        <a href="#matching-config" class="btn btn-sm btn-outline-primary">Matching</a>
-        <a href="#download-matching" class="btn btn-sm btn-outline-primary">DL Match</a>
         <a href="#slskd-timeouts" class="btn btn-sm btn-outline-primary">Timeouts</a>
+        <span class="text-muted small fw-semibold border-end pe-2 me-1">Scan</span>
+        <a href="#watcher" class="btn btn-sm btn-outline-primary">Auto</a>
+        <a href="#essentia-mood-scan" class="btn btn-sm btn-outline-primary">Essentia</a>
+        <a href="#popularity-weights" class="btn btn-sm btn-outline-primary">Weights</a>
+        <a href="#single-detection-zscore" class="btn btn-sm btn-outline-primary">Z-Score</a>
+        <span class="text-muted small fw-semibold border-end pe-2 me-1">Match</span>
+        <a href="#matching-config" class="btn btn-sm btn-outline-primary">Tracks</a>
+        <a href="#lastfm-advanced" class="btn btn-sm btn-outline-primary">Last.fm</a>
+        <a href="#genre-weights" class="btn btn-sm btn-outline-primary">Genres</a>
+        <a href="#wikidata" class="btn btn-sm btn-outline-primary">Bio</a>
+        <span class="text-muted small fw-semibold">System</span>
+        <a href="#search-filters" class="btn btn-sm btn-outline-primary">Filters</a>
+        <a href="#upcoming-releases-sources" class="btn btn-sm btn-outline-primary">Upcoming</a>
         <a href="#filesystem" class="btn btn-sm btn-outline-primary">FS</a>
-        <a href="#search-filters" class="btn btn-sm btn-outline-primary">Search Filters</a>
       </div>
     </div>
   </div>
@@ -80,7 +87,15 @@
   </div>
   {% endif %}
 
-  <!-- Multi-User Configuration Section -->
+  <!--
+    == MULTI-USER CONFIG ==
+    Config path: navidrome_users[]
+    Reads: get_navidrome_config(), get_config().get('navidrome_users', [])
+    Affects: Navidrome API connection, per-user Spotify/Last.fm/ListenBrainz identities
+    Used by: routes/navidrome/*, services/library/library_sync_service.py,
+             services/navidrome/rating_sync_service.py,
+             services/scanning/navidrome_scan_service.py
+  -->
   <div class="card shadow-sm mb-3" id="users">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
@@ -211,7 +226,15 @@
     </div>
   </div>
 
-  <!-- Shared API Integrations -->
+  <!--
+    == SHARED API INTEGRATIONS ==
+    Config path: api_integrations.{spotify,lastfm,listenbrainz,discogs,musicbrainz,audiodb,google,youtube}
+    Reads: get_config().get('api_integrations', {})
+    Affects: API client connectivity for all external services
+    Used by: api_clients/*, services/enrichment/*,
+             services/queue/queue_matching_service.py,
+             routes/social_routes.py
+  -->
   <div class="card shadow-sm mb-3" id="api-integrations">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-plug-fill"></i> Shared API Integrations</h5>
@@ -354,7 +377,15 @@
     </div>
   </div>
 
-  <!-- qBittorrent & slskd Section (Download Sources) -->
+  <!--
+    == DOWNLOAD SOURCES (qBittorrent + slskd) ==
+    Config path: qbittorrent.{enabled,web_url,username,password,downloads_folder}
+                 slskd.{enabled,web_url,api_key}
+    Reads: get_config().get('qbittorrent', {}), get_config().get('slskd', {})
+    Affects: Torrent (qBittorrent) and P2P (Soulseek/slskd) download clients
+    Used by: routes/download_search_routes.py, routes/downloads.py,
+             services/downloads/*, routes/ui_routes.py
+  -->
   <div class="card shadow-sm mb-3" id="sources">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-cloud-download"></i> Download Sources</h5>
@@ -412,7 +443,15 @@
     </div>
   </div>
 
-  <!-- Downloads Section -->
+  <!--
+    == DOWNLOADS (folder, naming, quality, conversion) ==
+    Config path: downloads.{folder,external_export_path,file_name_format,quality_filter,conversion}
+                 features.downloads_duplicate_cleanup
+    Reads: get_config().get('downloads', {}), get_config().get('features', {}).get('downloads_duplicate_cleanup', {})
+    Affects: Download folder monitoring, file naming/organization, quality filtering, FLAC→MP3 conversion
+    Used by: services/downloads/*, services/infrastructure/filesystem_service.py,
+             services/infrastructure/base.py, routes/downloads.py
+  -->
   <div class="card shadow-sm mb-3" id="downloads">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-folder-fill"></i> Downloads</h5>
@@ -536,7 +575,16 @@
     </div>
   </div>
 
-  <!-- Automation Services Section -->
+  <!-- Automation section stays here (after Downloads group) -->
+  <!--
+    == AUTOMATION / WATCHER SERVICES ==
+    Config path: watcher.{scan_interval,navidrome_sync_wait,auto_import_enabled,auto_popularity_scan,downloads_watcher_enabled}
+                 features.{retry_scheduler,download_queue_cleanup_scheduler,mature_track_min_age_years,
+                           daily_musicbrainz_release_*,live_musicbrainz_*}
+    Reads: get_watcher_settings(), get_config().get('features', {})
+    Affects: Background scan scheduling, auto-import, watcher service behaviour
+    Used by: services/scanning/*, helpers/task_manager.py
+  -->
   <div class="card shadow-sm mb-3" id="watcher">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-gear-fill"></i> Automation Services</h5>
@@ -699,7 +747,15 @@
   </div>
 
 
-  <!-- Essentia Mood Scan Section -->
+  <!--
+    == ESSENTIA MOOD & GENRE SCAN ==
+    Config path: essentia.{script_path,models_dir,mood_threshold,per_file_timeout,json_output_dir,
+                           tag_moods,parse_json_features,delete_json_after_import,tag_genres,
+                           num_genres,genre_threshold,genre_format}
+    Reads: get_config().get('essentia', {})
+    Affects: On-device ML mood/genre tagging via Essentia-to-Metadata
+    Used by: services/scanning/pipelines/essentia_pipeline.py
+  -->
   <div class="card shadow-sm mb-3" id="essentia-mood-scan">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-cpu"></i> Essentia Mood &amp; Genre Scan</h5>
@@ -805,7 +861,15 @@
     </div>
   </div>
 
-  <!-- Single Detection & Standout Thresholds Section (expanded) -->
+  <!--
+    == SINGLE DETECTION & STANDOUT THRESHOLDS ==
+    Config path: single_detection.{zscore_high_threshold,standout_gap_z,album_zscore_threshold,
+                                   artist_zscore_threshold,artist_top_percentile,artist_min_tracks,
+                                   star_5,star_4,star_3,star_2}
+    Reads: get_standout_config()
+    Affects: Detection of standout tracks, star rating assignment (1-5★)
+    Used by: services/popularity/standout_service.py, services/popularity/scoring.py
+  -->
   <div class="card shadow-sm mb-3" id="single-detection-zscore">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-sliders"></i> Single Detection &amp; Standout Thresholds</h5>
@@ -905,7 +969,14 @@
     </div>
   </div>
 
-  <!-- Popularity Weights Section -->
+  <!--
+    == POPULARITY WEIGHTS ==
+    Config path: weights.{lastfm,listenbrainz,age}
+                 popularity.weights.{lastfm,listenbrainz,age}
+    Reads: get_weights(), get_popularity_weights()
+    Affects: How Last.fm/LB/age scores are blended into final popularity scores
+    Used by: services/popularity/popularity_math.py, services/popularity/popularity_config.py
+  -->
   <div class="card shadow-sm mb-3" id="popularity-weights">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-gear-wide-connected"></i> Popularity Weights</h5>
@@ -957,7 +1028,13 @@
     </div>
   </div>
 
-  <!-- Wikidata / Artist Biography Section (NEW) -->
+  <!--
+    == ARTIST BIOGRAPHY (Wikidata) ==
+    Config path: wikidata.{musician_terms}
+    Reads: get_config().get('wikidata', {})
+    Affects: Wikidata/Wikipedia biography lookup disambiguation
+    Used by: api_clients/wikidata_http.py, services/enrichment/artist_bio_service.py
+  -->
   <div class="card shadow-sm mb-3" id="wikidata">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-person-badge"></i> Artist Biography</h5>
@@ -974,7 +1051,15 @@
     </div>
   </div>
 
-  <!-- Queue Matching Configuration Section -->
+  <!--
+    == QUEUE MATCHING ==
+    Config path: queue.matching.{threshold,partial_match,strict_duration_sec,tolerance_duration_sec,
+                                 soft_variants,hard_variants,detect_live_tracks,detect_remix_tracks,
+                                 detect_compilations,title_variant_tokens,compilation_artists}
+    Reads: get_queue_matching_config_v2(), get_queue_matching_config_legacy()
+    Affects: Download queue matching thresholds, variant/subtype detection
+    Used by: services/queue/queue_matching_service.py, services/queue/queue_matching_helpers.py
+  -->
   <div class="card shadow-sm mb-3" id="queue-matching">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-arrow-left-right"></i> Queue Matching</h5>
@@ -1020,7 +1105,14 @@
     </div>
   </div>
 
-  <!-- Genre Aggregation Weights Section (NEW) -->
+  <!--
+    == GENRE AGGREGATION ==
+    Config path: genres.weights.{musicbrainz,discogs,audiodb,lastfm,spotify}
+                 genres.synonyms
+    Reads: get_genre_weights(), get_genre_synonyms()
+    Affects: Genre source weighting for aggregation, synonym normalisation
+    Used by: services/enrichment/genre_aggregation_service.py
+  -->
   <div class="card shadow-sm mb-3" id="genre-weights">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-tags-fill"></i> Genre Aggregation</h5>
@@ -1061,7 +1153,15 @@
     </div>
   </div>
 
-  <!-- Last.fm Advanced Settings Section (NEW) -->
+  <!--
+    == LAST.FM ADVANCED ==
+    Config path: lastfm.{min_artist_plays,min_similarity_score,max_similar_per_artist,
+                         max_albums_per_artist,recent_months,cache_ttl_hours,max_retries,
+                         rate_limit_delay}
+    Reads: get_config().get('lastfm', {})
+    Affects: Last.fm API client rate limiting, caching, and filtering behaviour
+    Used by: api_clients/lastfm_http.py, services/enrichment/lastfm_service.py
+  -->
   <div class="card shadow-sm mb-3" id="lastfm-advanced">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-database-fill-gear"></i> Last.fm Advanced</h5>
@@ -1105,7 +1205,13 @@
     </div>
   </div>
 
-  <!-- Matching Configuration Section (NEW) -->
+  <!--
+    == TRACK MATCHING ==
+    Config path: matching.{min_accept_score,duration_tolerance_seconds,early_accept_length_tolerance,top_n_candidates}
+    Reads: get_matching_config()
+    Affects: Track matching thresholds when matching library tracks to external provider results
+    Used by: services/matching/track_matching.py, helpers/config_helpers.py
+  -->
   <div class="card shadow-sm mb-3" id="matching-config">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-union"></i> Track Matching</h5>
@@ -1133,7 +1239,13 @@
     </div>
   </div>
 
-  <!-- Download Matching Section (NEW) -->
+  <!--
+    == DOWNLOAD MATCHING ==
+    Config path: downloads.matching.{min_accept_score,duration_tolerance_seconds,early_accept_length_tolerance,top_n_candidates}
+    Reads: get_config().get('downloads', {}).get('matching', {})
+    Affects: Matching downloaded files against existing library tracks
+    Used by: services/downloads/download_matching_service.py
+  -->
   <div class="card shadow-sm mb-3" id="download-matching">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-file-earmark-check"></i> Download Matching</h5>
@@ -1161,7 +1273,15 @@
     </div>
   </div>
 
-  <!-- slskd Timeouts Section (NEW) -->
+  <!--
+    == SLSKD TRANSFER TIMEOUTS ==
+    Config path: slskd.timeouts.{min_retry_delay_minutes,long_retry_delay_minutes,
+                                 remotely_queued_timeout_minutes,active_state_timeout_minutes,
+                                 inter_item_delay_seconds,state_timeouts}
+    Reads: get_slskd_timeouts()
+    Affects: slskd/Soulseek download retry delays and state timeout behaviour
+    Used by: helpers/config_helpers.py, services/downloads/slskd_service.py
+  -->
   <div class="card shadow-sm mb-3" id="slskd-timeouts">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-hourglass-split"></i> slskd Transfer Timeouts</h5>
@@ -1193,7 +1313,13 @@
     </div>
   </div>
 
-  <!-- Filesystem Section (NEW) -->
+  <!--
+    == FILESYSTEM ==
+    Config path: filesystem.{audio_formats}
+    Reads: get_config().get('filesystem', {})
+    Affects: Which audio file extensions the system recognises
+    Used by: services/infrastructure/filesystem_service.py
+  -->
   <div class="card shadow-sm mb-3" id="filesystem">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-hdd-stack"></i> File System</h5>
@@ -1210,7 +1336,13 @@
     </div>
   </div>
 
-  <!-- Single Detection Z-Score Thresholds (expanded) -->
+  <!--
+    == SEARCH FILTERS (strip_parentheses) ==
+    Config path: strip_parentheses_filters
+    Reads: get_config().get('strip_parentheses_filters', [])
+    Affects: Parenthetical content removal during external API searches (e.g. "Song (Remastered)" → "Song")
+    Used by: services/scanning/filters.py
+  -->
   <div class="card shadow-sm mb-3" id="search-filters">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
@@ -1242,7 +1374,7 @@
       <div class="row g-3 mb-3">
         <div class="col-12">
           <label class="form-label"><strong>Strip Keywords</strong></label>
-          <div class="border rounded p-3" style="background-color: var(--bs-body-bg);"">
+          <div class="border rounded p-3" style="background-color: var(--secondary-bg);">
             <div id="stripKeywordsList" class="d-flex flex-wrap gap-2 mb-3">
               <!-- Keywords will be populated by JavaScript -->
             </div>
@@ -1268,7 +1400,13 @@
     </div>
   </div>
 
-  <!-- Upcoming Releases Sources Section -->
+  <!--
+    == UPCOMING RELEASES SOURCES ==
+    Config path: upcoming_releases.sources
+    Reads: get_config().get('upcoming_releases', {}).get('sources', [])
+    Affects: Wikipedia page scraping for upcoming album release data
+    Used by: routes/upcoming_releases_routes.py
+  -->
   <div class="card shadow-sm mb-3" id="upcoming-releases-sources">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
@@ -1303,7 +1441,7 @@
 
       <!-- Add new source form (hidden by default) -->
       <div id="addUpcomingSourceForm" class="card border-primary mt-3 d-none">
-        <div class="card-header bg-primary bg-opacity-10">
+        <div class="card-header" style="background-color: var(--tertiary-bg);"
           <strong><i class="bi bi-plus-circle"></i> New Wikipedia Source</strong>
         </div>
         <div class="card-body">
@@ -1600,6 +1738,12 @@ function buildConfigObject() {
       folder: getValue('downloads_folder', ''),
       external_export_path: getValue('external_export_path', ''),
       file_name_format: getValue('downloads_file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}'),
+      matching: {
+        min_accept_score: parseFloat(getValue('dl_match_min_accept', '0.45')) || 0.45,
+        duration_tolerance_seconds: parseInt(getValue('dl_match_duration_tolerance', '5')) || 5,
+        early_accept_length_tolerance: parseInt(getValue('dl_match_early_accept', '2')) || 2,
+        top_n_candidates: parseInt(getValue('dl_match_top_n', '50')) || 50
+      },
       quality_filter: (() => {
         const priorities = [];
         if (getChecked('downloads_quality_allow_mp3_320', true)) {
@@ -1661,13 +1805,41 @@ function buildConfigObject() {
     ),
     single_detection: {
       zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
-      standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75
+      standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75,
+      album_zscore_threshold: parseFloat(getValue('sd_album_zscore', '0.8')) || 0.8,
+      artist_zscore_threshold: parseFloat(getValue('sd_artist_zscore', '2.2')) || 2.2,
+      artist_top_percentile: parseFloat(getValue('sd_artist_pct', '0.10')) || 0.10,
+      artist_min_tracks: parseInt(getValue('sd_artist_min_tracks', '10')) || 10,
+      star_5: {
+        album_z: parseFloat(getValue('star5_album_z', '1.0')) || 1.0,
+        artist_z: parseFloat(getValue('star5_artist_z', '1.2')) || 1.2,
+        artist_pct: parseFloat(getValue('star5_pct', '0.10')) || 0.10
+      },
+      star_4: {
+        album_z: parseFloat(getValue('star4_album_z', '0.8')) || 0.8,
+        artist_z: parseFloat(getValue('star4_artist_z', '1.0')) || 1.0,
+        artist_pct: parseFloat(getValue('star4_pct', '0.20')) || 0.20
+      },
+      star_3: {
+        album_z: parseFloat(getValue('star3_album_z', '0.0')) || 0.0
+      }
     },
     weights: {
       lastfm: parseFloat(getValue('weight_lastfm', '0.55')) || 0.55,
       listenbrainz: parseFloat(getValue('weight_listenbrainz', '0.35')) || 0.35,
       age: parseFloat(getValue('weight_age', '0.10')) || 0.10
     },
+    popularity: Object.assign(
+      {},
+      (window.currentConfig && window.currentConfig.popularity) || {},
+      {
+        weights: {
+          lastfm: parseFloat(getValue('pop_weight_lastfm', '0.55')) || 0.55,
+          listenbrainz: parseFloat(getValue('pop_weight_listenbrainz', '0.35')) || 0.35,
+          age: parseFloat(getValue('pop_weight_age', '0.10')) || 0.10
+        }
+      }
+    ),
     api_integrations: {
       spotify: {
         enabled: getChecked('api_spotify_enabled', false),
@@ -1726,7 +1898,83 @@ function buildConfigObject() {
       num_genres: parseInt(getValue('essentia_num_genres', '3')) || 3,
       genre_threshold: parseFloat(getValue('essentia_genre_threshold', '15')) || 15.0,
       genre_format: getValue('essentia_genre_format', 'parent_child')
-    }
+    },
+    // --- Sections below were missing from buildConfigObject and are now included ---
+    queue: {
+      matching: {
+        threshold: parseFloat(getValue('queue_match_threshold', '0.65')) || 0.65,
+        partial_match: parseFloat(getValue('queue_match_partial', '0.7')) || 0.7,
+        strict_duration_sec: parseInt(getValue('queue_strict_duration', '2')) || 2,
+        tolerance_duration_sec: parseInt(getValue('queue_tolerance_duration', '5')) || 5,
+        detect_live_tracks: getChecked('queue_detect_live', true),
+        detect_remix_tracks: getChecked('queue_detect_remix', true),
+        detect_compilations: getChecked('queue_detect_compilations', true)
+      }
+    },
+    matching: {
+      min_accept_score: parseFloat(getValue('matching_min_accept', '0.45')) || 0.45,
+      duration_tolerance_seconds: parseInt(getValue('matching_duration_tolerance', '5')) || 5,
+      early_accept_length_tolerance: parseInt(getValue('matching_early_accept', '2')) || 2,
+      top_n_candidates: parseInt(getValue('matching_top_n', '50')) || 50
+    },
+    lastfm: {
+      min_artist_plays: parseInt(getValue('lastfm_min_artist_plays', '20')) || 20,
+      min_similarity_score: parseFloat(getValue('lastfm_min_similarity', '0.46')) || 0.46,
+      max_similar_per_artist: parseInt(getValue('lastfm_max_similar', '5')) || 5,
+      max_albums_per_artist: parseInt(getValue('lastfm_max_albums', '5')) || 5,
+      recent_months: parseInt(getValue('lastfm_recent_months', '3')) || 3,
+      cache_ttl_hours: parseInt(getValue('lastfm_cache_ttl', '24')) || 24,
+      max_retries: parseInt(getValue('lastfm_max_retries', '3')) || 3,
+      rate_limit_delay: parseFloat(getValue('lastfm_rate_limit', '0.5')) || 0.5
+    },
+    wikidata: {
+      musician_terms: getValue('wikidata_musician_terms', 'singer, musician, band, rapper, composer').split(',').map(s => s.trim()).filter(Boolean)
+    },
+    slskd: Object.assign(
+      {},
+      (window.currentConfig && window.currentConfig.slskd) || {},
+      {
+        enabled: getChecked('slskd_enabled', false),
+        web_url: getValue('slskd_web_url', ''),
+        api_key: getValue('slskd_api_key', ''),
+        timeouts: {
+          min_retry_delay_minutes: parseInt(getValue('slskd_min_retry_delay', '60')) || 60,
+          long_retry_delay_minutes: parseInt(getValue('slskd_long_retry_delay', '1440')) || 1440,
+          remotely_queued_timeout_minutes: parseInt(getValue('slskd_remotely_queued_timeout', '60')) || 60,
+          active_state_timeout_minutes: parseInt(getValue('slskd_active_timeout', '240')) || 240,
+          inter_item_delay_seconds: parseInt(getValue('slskd_inter_item_delay', '5')) || 5
+        }
+      }
+    ),
+    filesystem: {
+      audio_formats: getValue('filesystem_audio_formats', '.mp3, .flac, .m4a, .ogg, .wav, .aac, .wma').split(',').map(s => s.trim()).filter(Boolean)
+    },
+    genres: Object.assign(
+      {},
+      (window.currentConfig && window.currentConfig.genres) || {},
+      {
+        weights: {
+          musicbrainz: parseFloat(getValue('genre_weight_musicbrainz', '0.40')) || 0.40,
+          discogs: parseFloat(getValue('genre_weight_discogs', '0.25')) || 0.25,
+          audiodb: parseFloat(getValue('genre_weight_audiodb', '0.20')) || 0.20,
+          lastfm: parseFloat(getValue('genre_weight_lastfm', '0.10')) || 0.10,
+          spotify: parseFloat(getValue('genre_weight_spotify', '0.05')) || 0.05
+        },
+        synonyms: (() => {
+          const text = document.getElementById('genre_synonyms')?.value || '';
+          const synonyms = {};
+          text.split('\n').forEach(line => {
+            const idx = line.indexOf(':');
+            if (idx > 0) {
+              const key = line.substring(0, idx).trim();
+              const val = line.substring(idx + 1).trim();
+              if (key && val) synonyms[key] = val;
+            }
+          });
+          return synonyms;
+        })()
+      }
+    )
   };
 }
 
