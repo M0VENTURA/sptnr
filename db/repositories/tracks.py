@@ -15,8 +15,9 @@ from helpers.normalization_service import (
     normalize_album,
 )
 
-from db.context import db_cursor
-from db.utils import row_get
+from sqlalchemy import text
+
+from db.engine import db_session
 
 from services.metadata.tag_file_service import ( 
     update_file_tags
@@ -40,58 +41,66 @@ def insert_or_update_track(
     """Insert a track or update scoring fields if it already exists."""
     genres_str = ", ".join(genres) if genres else ""
     timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    with db_cursor(commit=True) as (_conn, cursor):
-        cursor.execute(
-            """
-            INSERT INTO tracks (
-                id, artist_id, album, title, genres, spotify_score, lastfm_score,
-                listenbrainz_score, age_score, final_score, stars, is_single,
-                single_confidence, last_scanned
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT(id) DO UPDATE SET
-                artist_id = EXCLUDED.artist_id,
-                album = EXCLUDED.album,
-                title = EXCLUDED.title,
-                genres = EXCLUDED.genres,
-                spotify_score = EXCLUDED.spotify_score,
-                lastfm_score = EXCLUDED.lastfm_score,
-                listenbrainz_score = EXCLUDED.listenbrainz_score,
-                age_score = EXCLUDED.age_score,
-                final_score = EXCLUDED.final_score,
-                stars = EXCLUDED.stars,
-                is_single = EXCLUDED.is_single,
-                single_confidence = EXCLUDED.single_confidence,
-                last_scanned = EXCLUDED.last_scanned
-            """,
-            (
-                track_id, artist_id, album, title, genres_str, spotify_score,
-                lastfm_score, listenbrainz_score, age_score, final_score, stars,
-                is_single, single_confidence, timestamp,
-            ),
+    with db_session() as session:
+        session.execute(
+            text("""
+                INSERT INTO tracks (
+                    id, artist_id, album, title, genres, spotify_score, lastfm_score,
+                    listenbrainz_score, age_score, final_score, stars, is_single,
+                    single_confidence, last_scanned
+                )
+                VALUES (:id, :artist_id, :album, :title, :genres, :spotify_score, :lastfm_score,
+                        :listenbrainz_score, :age_score, :final_score, :stars, :is_single,
+                        :single_confidence, :last_scanned)
+                ON CONFLICT(id) DO UPDATE SET
+                    artist_id = EXCLUDED.artist_id,
+                    album = EXCLUDED.album,
+                    title = EXCLUDED.title,
+                    genres = EXCLUDED.genres,
+                    spotify_score = EXCLUDED.spotify_score,
+                    lastfm_score = EXCLUDED.lastfm_score,
+                    listenbrainz_score = EXCLUDED.listenbrainz_score,
+                    age_score = EXCLUDED.age_score,
+                    final_score = EXCLUDED.final_score,
+                    stars = EXCLUDED.stars,
+                    is_single = EXCLUDED.is_single,
+                    single_confidence = EXCLUDED.single_confidence,
+                    last_scanned = EXCLUDED.last_scanned
+            """),
+            {
+                "id": track_id, "artist_id": artist_id, "album": album, "title": title,
+                "genres": genres_str, "spotify_score": spotify_score,
+                "lastfm_score": lastfm_score, "listenbrainz_score": listenbrainz_score,
+                "age_score": age_score, "final_score": final_score, "stars": stars,
+                "is_single": is_single, "single_confidence": single_confidence,
+                "last_scanned": timestamp,
+            },
         )
 
 
 def get_tracks_by_artist(artist_id: str) -> list[Any]:
     """Return all tracks for an artist_id."""
-    with db_cursor() as (_conn, cursor):
-        cursor.execute("SELECT * FROM tracks WHERE artist_id = %s", (artist_id,))
-        return cursor.fetchall() or []
+    with db_session() as session:
+        result = session.execute(
+            text("SELECT * FROM tracks WHERE artist_id = :artist_id"),
+            {"artist_id": artist_id},
+        )
+        return result.fetchall() or []
 
 
 def get_top_tracks(limit: int = 10) -> list[Any]:
     """Return top tracks ordered by final_score descending."""
-    with db_cursor() as (_conn, cursor):
-        cursor.execute(
-            """
-            SELECT title, final_score, stars
-            FROM tracks
-            ORDER BY final_score DESC NULLS LAST
-            LIMIT %s
-            """,
-            (limit,),
+    with db_session() as session:
+        result = session.execute(
+            text("""
+                SELECT title, final_score, stars
+                FROM tracks
+                ORDER BY final_score DESC NULLS LAST
+                LIMIT :limit
+            """),
+            {"limit": limit},
         )
-        return cursor.fetchall() or []
+        return result.fetchall() or []
 
 
 def get_existing_track_ids(conn: Any) -> set[str]:
@@ -110,10 +119,13 @@ def get_existing_track_ids(conn: Any) -> set[str]:
 def get_current_track_rating(track_id: str) -> int:
     """Return current track star rating, or 0 if unavailable."""
     try:
-        with db_cursor() as (_conn, cursor):
-            cursor.execute("SELECT stars FROM tracks WHERE id = %s", (track_id,))
-            row = cursor.fetchone()
-            return int(row_get(row, "stars", 0, 0) or 0)
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT stars FROM tracks WHERE id = :id"),
+                {"id": track_id},
+            )
+            row = result.fetchone()
+            return int(row[0] or 0) if row else 0
     except Exception as exc:
         logger.debug(
             "Failed to get current rating for track %s: %s",
@@ -152,42 +164,44 @@ def update_track_single_status(
     """[COMPLIANT] Persist single-detection results for a track."""
     if not track_id:
         return
-    with db_cursor(commit=True) as (_conn, cursor):
-        cursor.execute(
-            """
-            UPDATE tracks 
-            SET is_single = %s, single_confidence = %s 
-            WHERE id = %s
-            """,
-            (is_single, confidence, track_id),
+    with db_session() as session:
+        session.execute(
+            text("""
+                UPDATE tracks
+                SET is_single = :is_single, single_confidence = :confidence
+                WHERE id = :id
+            """),
+            {"is_single": is_single, "confidence": confidence, "id": track_id},
         )
 
 def clear_disc_number(artist, album, force_clear=False):
-        with db_cursor(commit=True) as (_conn, cursor):
+        with db_session() as session:
 
             # ------------------------------------------------------------------
             # Safety check (multi-disc detection)
             # ------------------------------------------------------------------
-            cursor.execute("""
-                SELECT
-                    COUNT(DISTINCT CASE
-                        WHEN disc_number IS NOT NULL
-                        AND TRIM(CAST(disc_number AS TEXT)) != ''
-                        AND CAST(disc_number AS TEXT) != '0'
-                        THEN CAST(disc_number AS TEXT)
-                    END),
-                    MAX(CASE
-                        WHEN disc_number IS NOT NULL
-                        AND TRIM(CAST(disc_number AS TEXT)) != ''
-                        AND CAST(disc_number AS TEXT) != '0'
-                        THEN CAST(disc_number AS TEXT)
-                    END)
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                AND album = %s
-            """, (artist, album))
-
-            row = cursor.fetchone() or (0, None)
+            result = session.execute(
+                text("""
+                    SELECT
+                        COUNT(DISTINCT CASE
+                            WHEN disc_number IS NOT NULL
+                            AND TRIM(CAST(disc_number AS TEXT)) != ''
+                            AND CAST(disc_number AS TEXT) != '0'
+                            THEN CAST(disc_number AS TEXT)
+                        END),
+                        MAX(CASE
+                            WHEN disc_number IS NOT NULL
+                            AND TRIM(CAST(disc_number AS TEXT)) != ''
+                            AND CAST(disc_number AS TEXT) != '0'
+                            THEN CAST(disc_number AS TEXT)
+                        END)
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                    AND album = :album
+                """),
+                {"artist": artist, "album": album},
+            )
+            row = result.fetchone() or (0, None)
 
             distinct_disc_values = int(row[0] or 0)
             max_disc_value = str(row[1] or "").strip()
@@ -208,17 +222,19 @@ def clear_disc_number(artist, album, force_clear=False):
             # ------------------------------------------------------------------
             # Fetch affected rows BEFORE update
             # ------------------------------------------------------------------
-            cursor.execute("""
-                SELECT id, file_path
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                AND album = %s
-                AND disc_number IS NOT NULL
-                AND TRIM(CAST(disc_number AS TEXT)) != ''
-                AND CAST(disc_number AS TEXT) != '0'
-            """, (artist, album))
-
-            rows = cursor.fetchall() or []
+            result = session.execute(
+                text("""
+                    SELECT id, file_path
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                    AND album = :album
+                    AND disc_number IS NOT NULL
+                    AND TRIM(CAST(disc_number AS TEXT)) != ''
+                    AND CAST(disc_number AS TEXT) != '0'
+                """),
+                {"artist": artist, "album": album},
+            )
+            rows = result.fetchall() or []
 
             if not rows:
                 return {
@@ -234,17 +250,19 @@ def clear_disc_number(artist, album, force_clear=False):
             # ------------------------------------------------------------------
             # Clear DB values
             # ------------------------------------------------------------------
-            cursor.execute("""
-                UPDATE tracks
-                SET disc_number = NULL
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                AND album = %s
-                AND disc_number IS NOT NULL
-                AND TRIM(CAST(disc_number AS TEXT)) != ''
-                AND CAST(disc_number AS TEXT) != '0'
-            """, (artist, album))
-
-            cleared_count = cursor.rowcount
+            result = session.execute(
+                text("""
+                    UPDATE tracks
+                    SET disc_number = NULL
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                    AND album = :album
+                    AND disc_number IS NOT NULL
+                    AND TRIM(CAST(disc_number AS TEXT)) != ''
+                    AND CAST(disc_number AS TEXT) != '0'
+                """),
+                {"artist": artist, "album": album},
+            )
+            cleared_count = result.rowcount
 
         # ✅ Outside DB context → handle file updates
         files_updated = 0
@@ -316,7 +334,7 @@ def find_library_track(
     )
 
     try:
-        with db_cursor() as (_conn, cursor):
+        with db_session() as session:
 
             # ---------------------------------------------------------
             # PASS 1
@@ -325,8 +343,43 @@ def find_library_track(
 
             if strict_album and album_norm:
 
-                cursor.execute(
-                    """
+                result = session.execute(
+                    text("""
+                        SELECT *
+                        FROM tracks
+                        WHERE LOWER(
+                            COALESCE(
+                                NULLIF(album_artist, ''),
+                                artist
+                            )
+                        ) = :artist
+                          AND LOWER(title) = :title
+                          AND LOWER(
+                                COALESCE(album, '')
+                          ) = :album
+                          AND file_path IS NOT NULL
+                          AND file_path NOT LIKE '__queued_for_download__%%'
+                        LIMIT 1
+                    """),
+                    {
+                        "artist": artist_norm,
+                        "title": title_norm,
+                        "album": album_norm,
+                    },
+                )
+
+                row = result.fetchone()
+
+                if row:
+                    return dict(row._mapping)
+
+            # ---------------------------------------------------------
+            # PASS 2
+            # Artist + Title fallback
+            # ---------------------------------------------------------
+
+            result = session.execute(
+                text("""
                     SELECT *
                     FROM tracks
                     WHERE LOWER(
@@ -334,82 +387,24 @@ def find_library_track(
                             NULLIF(album_artist, ''),
                             artist
                         )
-                    ) = %s
-                      AND LOWER(title) = %s
-                      AND LOWER(
-                            COALESCE(album, '')
-                      ) = %s
+                    ) = :artist
+                      AND LOWER(title) = :title
                       AND file_path IS NOT NULL
                       AND file_path NOT LIKE '__queued_for_download__%%'
                     LIMIT 1
-                    """,
-                    (
-                        artist_norm,
-                        title_norm,
-                        album_norm,
-                    ),
-                )
-
-                row = cursor.fetchone()
-
-                if row:
-
-                    if hasattr(row, "keys"):
-                        return dict(row)
-
-                    return dict(
-                        zip(
-                            [
-                                c[0]
-                                for c in cursor.description
-                            ],
-                            row,
-                        )
-                    )
-
-            # ---------------------------------------------------------
-            # PASS 2
-            # Artist + Title fallback
-            # ---------------------------------------------------------
-
-            cursor.execute(
-                """
-                SELECT *
-                FROM tracks
-                WHERE LOWER(
-                    COALESCE(
-                        NULLIF(album_artist, ''),
-                        artist
-                    )
-                ) = %s
-                  AND LOWER(title) = %s
-                  AND file_path IS NOT NULL
-                  AND file_path NOT LIKE '__queued_for_download__%%'
-                LIMIT 1
-                """,
-                (
-                    artist_norm,
-                    title_norm,
-                ),
+                """),
+                {
+                    "artist": artist_norm,
+                    "title": title_norm,
+                },
             )
 
-            row = cursor.fetchone()
+            row = result.fetchone()
 
             if not row:
                 return None
 
-            if hasattr(row, "keys"):
-                return dict(row)
-
-            return dict(
-                zip(
-                    [
-                        c[0]
-                        for c in cursor.description
-                    ],
-                    row,
-                )
-            )
+            return dict(row._mapping)
 
     except Exception as exc:
         logger.error(

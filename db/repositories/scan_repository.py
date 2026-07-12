@@ -14,7 +14,9 @@ import logging
 import os
 from typing import Any
 
-from db.context import db_cursor
+from sqlalchemy import text
+
+from db.engine import db_session
 from db.utils import get_db_connection, row_get
 from helpers.text_utils import (
     _normalize_artist_key,
@@ -32,19 +34,19 @@ def lookup_artist_id(artist_name: str) -> str | None:
         return None
 
     try:
-        with db_cursor() as (_conn, cursor):
-            cursor.execute(
-                """
-                SELECT artist_id
-                FROM artist_stats
-                WHERE artist_name = %s
-                LIMIT 1
-                """,
-                (artist_name,),
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT artist_id
+                    FROM artist_stats
+                    WHERE artist_name = :artist_name
+                    LIMIT 1
+                """),
+                {"artist_name": artist_name},
             )
-            row = cursor.fetchone()
+            row = result.fetchone()
 
-        return row_get(row, "artist_id", 0)
+        return row[0] if row else None
 
     except Exception as exc:
         logging.debug("[SCAN_DB] Artist ID lookup failed for '%s': %s", artist_name, exc)
@@ -57,18 +59,18 @@ def lookup_track_artist_count(artist_name: str) -> int:
         return 0
 
     try:
-        with db_cursor() as (_conn, cursor):
-            cursor.execute(
-                """
-                SELECT COUNT(*) AS cnt
-                FROM tracks
-                WHERE artist = %s
-                """,
-                (artist_name,),
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT COUNT(*) AS cnt
+                    FROM tracks
+                    WHERE artist = :artist_name
+                """),
+                {"artist_name": artist_name},
             )
-            row = cursor.fetchone()
+            row = result.fetchone()
 
-        return int(row_get(row, "cnt", 0, 0) or 0)
+        return int(row[0] or 0) if row else 0
 
     except Exception as exc:
         logging.debug("[SCAN_DB] Track artist count failed for '%s': %s", artist_name, exc)
@@ -78,20 +80,20 @@ def lookup_track_artist_count(artist_name: str) -> int:
 def get_database_library_stats() -> dict[str, int]:
     """Return total album + track counts."""
     try:
-        with db_cursor() as (_conn, cursor):
-            cursor.execute(
-                """
-                SELECT COUNT(DISTINCT album) AS cnt
-                FROM tracks
-                WHERE album IS NOT NULL AND album != ''
-                """
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT COUNT(DISTINCT album) AS cnt
+                    FROM tracks
+                    WHERE album IS NOT NULL AND album != ''
+                """),
             )
-            album_row = cursor.fetchone()
-            total_albums = int(row_get(album_row, "cnt", 0, 0) or 0)
+            total_albums = int(result.scalar() or 0)
 
-            cursor.execute("SELECT COUNT(*) AS cnt FROM tracks")
-            track_row = cursor.fetchone()
-            total_tracks = int(row_get(track_row, "cnt", 0, 0) or 0)
+            result = session.execute(
+                text("SELECT COUNT(*) AS cnt FROM tracks"),
+            )
+            total_tracks = int(result.scalar() or 0)
 
         return {
             "total_albums": total_albums,
@@ -106,14 +108,14 @@ def get_database_library_stats() -> dict[str, int]:
 def get_existing_track_ids() -> set[str]:
     """Return all known track IDs."""
     try:
-        with db_cursor() as (_conn, cursor):
-            cursor.execute("SELECT id FROM tracks")
-            rows = cursor.fetchall() or []
+        with db_session() as session:
+            result = session.execute(text("SELECT id FROM tracks"))
+            rows = result.fetchall() or []
 
         return {
-            str(row_get(row, "id", 0))
+            str(row[0])
             for row in rows
-            if row_get(row, "id", 0)
+            if row[0]
         }
 
     except Exception as exc:
@@ -124,27 +126,27 @@ def get_existing_track_ids() -> set[str]:
 def get_existing_artist_track_counts() -> dict[str, int]:
     """Return track counts grouped by artist."""
     try:
-        with db_cursor() as (_conn, cursor):
-            cursor.execute(
-                """
-                SELECT artist, COUNT(*) AS track_count
-                FROM tracks
-                WHERE artist IS NOT NULL AND artist != ''
-                GROUP BY artist
-                """
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT artist, COUNT(*) AS track_count
+                    FROM tracks
+                    WHERE artist IS NOT NULL AND artist != ''
+                    GROUP BY artist
+                """),
             )
-            rows = cursor.fetchall() or []
+            rows = result.fetchall() or []
 
-        result: dict[str, int] = {}
+        result_dict: dict[str, int] = {}
 
         for row in rows:
-            artist = row_get(row, "artist", 0)
-            count = row_get(row, "track_count", 1, 0)
+            artist = str(row[0]) if row[0] else None
+            count = int(row[1] or 0) if len(row) > 1 else 0
 
             if artist:
-                result[str(artist)] = int(count or 0)
+                result_dict[artist] = count
 
-        return result
+        return result_dict
 
     except Exception as exc:
         logging.debug("[SCAN_DB] Failed to fetch artist counts: %s", exc, exc_info=True)
@@ -160,26 +162,21 @@ def has_valid_local_track_paths_for_mp3_import(
     sample_size: int = 120,
 ) -> tuple[bool, str]:
     """Validate that DB file paths exist on this host."""
-    conn = None
-
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT file_path
-            FROM tracks
-            WHERE file_path IS NOT NULL
-              AND file_path <> ''
-              AND file_path NOT LIKE '__queued_for_download__%%'
-            ORDER BY id DESC
-            LIMIT %s
-            """,
-            (sample_size,),
-        )
-
-        rows = cursor.fetchall() or []
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT file_path
+                    FROM tracks
+                    WHERE file_path IS NOT NULL
+                      AND file_path <> ''
+                      AND file_path NOT LIKE '__queued_for_download__%%'
+                    ORDER BY id DESC
+                    LIMIT :sample_size
+                """),
+                {"sample_size": sample_size},
+            )
+            rows = result.fetchall() or []
 
         if not rows:
             return False, "No track file paths available"
@@ -188,7 +185,7 @@ def has_valid_local_track_paths_for_mp3_import(
         existing = 0
 
         for row in rows:
-            file_path = str(row_get(row, "file_path", 0, "") or "").strip()
+            file_path = str(row[0] or "").strip() if row else ""
 
             if not file_path:
                 continue
@@ -208,13 +205,6 @@ def has_valid_local_track_paths_for_mp3_import(
 
     except Exception as exc:
         return False, f"Validation error: {exc}"
-
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 # =============================================================================

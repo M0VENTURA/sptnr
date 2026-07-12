@@ -12,7 +12,9 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 from datetime import datetime
-from db.context import db_cursor
+from sqlalchemy import text
+
+from db.engine import db_session
 from db.utils import row_get
 
 from helpers.config_helpers import get_config
@@ -41,10 +43,13 @@ def _row_to_dict(
 
 def get_queue_item(queue_id: int) -> Optional[Dict[str, Any]]:
     try:
-        with db_cursor() as (conn, cursor):
-            cursor.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
-            row = cursor.fetchone()
-            return _row_to_dict(row, cursor) if row else None
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT * FROM download_queue WHERE id = :id"),
+                {"id": queue_id},
+            )
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
     except Exception as e:
         logger.error(f"Failed to fetch queue item {queue_id}: {e}")
         return None
@@ -52,18 +57,18 @@ def get_queue_item(queue_id: int) -> Optional[Dict[str, Any]]:
 
 def get_completed_group_queue_items(import_group: str) -> List[Dict[str, Any]]:
     try:
-        with db_cursor() as (_conn, cursor):
-            cursor.execute(
-                """
-                SELECT id, file_path, artist, album, title, track_number, disc_number, album_artist, year
-                FROM download_queue
-                WHERE import_group = %s AND status = 'completed'
-                ORDER BY id
-                """,
-                (import_group,),
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT id, file_path, artist, album, title, track_number, disc_number, album_artist, year
+                    FROM download_queue
+                    WHERE import_group = :group AND status = 'completed'
+                    ORDER BY id
+                """),
+                {"group": import_group},
             )
-            rows = cursor.fetchall()
-            return [_row_to_dict(row, cursor) for row in rows]
+            rows = result.fetchall()
+            return [dict(r._mapping) for r in rows]
     except Exception as exc:
         logger.error(f"[get_completed_group_queue_items] {exc}")
         return []
@@ -71,10 +76,13 @@ def get_completed_group_queue_items(import_group: str) -> List[Dict[str, Any]]:
 
 def item_has_status(queue_id: int, expected_status: str) -> bool:
     try:
-        with db_cursor() as (conn, cursor):
-            cursor.execute("SELECT status FROM download_queue WHERE id = %s", (queue_id,))
-            row = cursor.fetchone()
-            return str(row_get(row, "status", 0)).lower() == str(expected_status).lower() if row else False
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT status FROM download_queue WHERE id = :id"),
+                {"id": queue_id},
+            )
+            row = result.fetchone()
+            return str(row[0]).lower() == str(expected_status).lower() if row else False
     except Exception as e:
         logger.error(f"Failed to check status for queue item {queue_id}: {e}")
         return False
@@ -82,10 +90,13 @@ def item_has_status(queue_id: int, expected_status: str) -> bool:
 
 def get_queue_file_path(queue_id: int) -> Optional[str]:
     try:
-        with db_cursor() as (conn, cursor):
-            cursor.execute("SELECT file_path FROM download_queue WHERE id=%s", (queue_id,))
-            row = cursor.fetchone()
-            return row_get(row, "file_path", 0) if row else None
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT file_path FROM download_queue WHERE id=:id"),
+                {"id": queue_id},
+            )
+            row = result.fetchone()
+            return row[0] if row else None
     except Exception as e:
         logger.error(f"[get_queue_file_path] {e}")
         return None

@@ -8,23 +8,29 @@ Responsibilities:
 - ``update_download_status`` – Update a download's status and optional method.
 """
 
-from db.context import db_cursor
+from sqlalchemy import text
+
+from db.engine import db_session
 
 
 def get_managed_download(download_id: int):
-    with db_cursor() as (_conn, cursor):
-        cursor.execute("SELECT release_id, ... FROM managed_downloads WHERE id = %s", (download_id,))
-        return cursor.fetchone()
+    with db_session() as session:
+        result = session.execute(
+            text("SELECT release_id, ... FROM managed_downloads WHERE id = :id"),
+            {"id": download_id},
+        )
+        return result.fetchone()
+
 
 def update_download_status(download_id: int, status: str, method: str | None = None):
-    with db_cursor(commit=True) as (_conn, cursor):
+    with db_session() as session:
         if method:
-            cursor.execute(
-                "UPDATE managed_downloads SET status = %s, method = %s WHERE id = %s",
-                (status, method, download_id)
+            session.execute(
+                text("UPDATE managed_downloads SET status = :status, method = :method WHERE id = :id"),
+                {"status": status, "method": method, "id": download_id},
             )
         else:
-            cursor.execute(
-                "UPDATE managed_downloads SET status = %s WHERE id = %s",
-                (status, download_id)
+            session.execute(
+                text("UPDATE managed_downloads SET status = :status WHERE id = :id"),
+                {"status": status, "id": download_id},
             )

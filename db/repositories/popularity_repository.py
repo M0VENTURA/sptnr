@@ -5,8 +5,9 @@ import logging
 import time
 from typing import Dict
 
-from db.utils import get_db_connection, row_get
-from db.context import db_cursor
+from sqlalchemy import text
+
+from db.engine import db_session
 
 logger = logging.getLogger(__name__)
 
@@ -21,51 +22,61 @@ DB_LOCK_MAX_RETRIES = 5
 DB_LOCK_BASE_DELAY_SECONDS = 0.25
 
 
-@contextmanager
-def get_db_connection_context(conn=None):
-    db_conn = conn or get_db_connection()
-    try:
-        yield db_conn
-    finally:
-        if conn is None:
-            db_conn.close()
-
-
-def get_tracks_table_columns(cursor) -> set[str]:
+def get_tracks_table_columns(session=None) -> set[str]:
     global _TRACKS_COLUMN_CACHE
     if _TRACKS_COLUMN_CACHE:
         return _TRACKS_COLUMN_CACHE
 
-    cursor.execute("""
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = 'tracks'
-    """)
+    own_session = session is None
+    if own_session:
+        from db.engine import db_session as _db_session
+        with _db_session() as s:
+            return _do_get_tracks_table_columns(s)
+    return _do_get_tracks_table_columns(session)
 
+
+def _do_get_tracks_table_columns(session) -> set[str]:
+    global _TRACKS_COLUMN_CACHE
+    result = session.execute(
+        text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'tracks'
+        """)
+    )
     _TRACKS_COLUMN_CACHE = {
-        row_get(row, "column_name", 0)
-        for row in cursor.fetchall() or []
+        str(row[0])
+        for row in result.fetchall() or []
     }
-
     return _TRACKS_COLUMN_CACHE
 
 
-def get_tracks_table_column_types(cursor) -> Dict[str, str]:
+def get_tracks_table_column_types(session=None) -> Dict[str, str]:
     global _TRACKS_COLUMN_TYPES_CACHE
     if _TRACKS_COLUMN_TYPES_CACHE:
         return _TRACKS_COLUMN_TYPES_CACHE
 
-    cursor.execute("""
-        SELECT column_name, data_type
-        FROM information_schema.columns
-        WHERE table_name = 'tracks'
-    """)
+    own_session = session is None
+    if own_session:
+        from db.engine import db_session as _db_session
+        with _db_session() as s:
+            return _do_get_tracks_table_column_types(s)
+    return _do_get_tracks_table_column_types(session)
 
+
+def _do_get_tracks_table_column_types(session) -> Dict[str, str]:
+    global _TRACKS_COLUMN_TYPES_CACHE
+    result = session.execute(
+        text("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_name = 'tracks'
+        """)
+    )
     _TRACKS_COLUMN_TYPES_CACHE = {
-        row_get(row, "column_name", 0): row_get(row, "data_type", 1)
-        for row in cursor.fetchall() or []
+        str(row[0]): str(row[1])
+        for row in result.fetchall() or []
     }
-
     return _TRACKS_COLUMN_TYPES_CACHE
 
 
@@ -98,13 +109,13 @@ def run_with_db_lock_retry(operation):
 
 def save_to_db(track_data: dict, conn=None) -> bool:
     """Save or update a track in the database.
-    
-    Uses db_cursor context manager for safe connection handling.
-    
+
+    Uses db_session for safe connection handling.
+
     Args:
         track_data: Dictionary of track data to save
-        conn: Optional existing connection (if provided, won't be closed)
-        
+        conn: Optional existing connection (deprecated, kept for compatibility)
+
     Returns:
         True if successfully saved, False otherwise
     """
@@ -112,24 +123,16 @@ def save_to_db(track_data: dict, conn=None) -> bool:
         return False
 
     def operation():
-        # Use provided connection or create new one via context manager
-        if conn is not None:
-            cursor = conn.cursor()
-            try:
-                return _execute_save(cursor, track_data, conn)
-            finally:
-                cursor.close()
-        else:
-            with db_cursor(commit=True) as (db_conn, cursor):
-                return _execute_save(cursor, track_data, db_conn)
-    
+        with db_session() as session:
+            return _execute_save(session, track_data)
+
     return run_with_db_lock_retry(operation)
 
 
-def _execute_save(cursor, track_data: dict, conn) -> bool:
+def _execute_save(session, track_data: dict) -> bool:
     """Execute the actual save operation with schema validation."""
-    columns = get_tracks_table_columns(cursor)
-    types = get_tracks_table_column_types(cursor)
+    columns = get_tracks_table_columns(session)
+    types = get_tracks_table_column_types(session)
 
     data = {
         k: coerce_track_value_for_pg_type(k, v, types.get(k, ""))
@@ -142,22 +145,19 @@ def _execute_save(cursor, track_data: dict, conn) -> bool:
 
     keys = list(data.keys())
 
-    placeholders = ", ".join(["%s"] * len(keys))
-    updates = ", ".join(
+    named_placeholders = ", ".join([f":{k}" for k in keys])
+    update_set = ", ".join(
         [f"{k}=EXCLUDED.{k}" for k in keys if k != "id"]
     )
 
-    query = f"""
+    query = text(f"""
         INSERT INTO tracks ({', '.join(keys)})
-        VALUES ({placeholders})
+        VALUES ({named_placeholders})
         ON CONFLICT (id)
-        DO UPDATE SET {updates}
-    """
+        DO UPDATE SET {update_set}
+    """)
 
-    cursor.execute(query, [data[k] for k in keys])
-    
-    # Only commit if not using external connection
-    if conn and hasattr(conn, 'commit'):
-        conn.commit()
+    params = {k: data[k] for k in keys}
+    session.execute(query, params)
 
     return True

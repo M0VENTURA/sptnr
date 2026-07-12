@@ -813,3 +813,53 @@ def get_release_tracks_with_status(
         },
         "tracks": tracks_with_status,
     }
+
+
+def apply_musicbrainz_match(data: dict[str, Any]) -> dict[str, Any]:
+    """Apply a MusicBrainz release group match to all queue items for an artist/album.
+
+    Called from ``/api/downloads/albums/apply-match`` when a user confirms
+    a selected MusicBrainz release match.
+
+    Expects ``data`` keys:
+        artist (str)        — Artist name.
+        album (str)         — Album name.
+        release_group_id (str) — MusicBrainz release group ID.
+
+    Returns:
+        dict with ``success``, ``processed``, ``total``.
+    """
+    artist = (data or {}).get("artist", "").strip()
+    album = (data or {}).get("album", "").strip()
+    release_group_id = (data or {}).get("release_group_id", "").strip()
+
+    if not artist or not album or not release_group_id:
+        return {"success": False, "error": "artist, album, and release_group_id are required"}
+
+    try:
+        from db.repositories.queue import get_album_queue_tracks
+        from services.downloads.match_orchestrator import apply_mbid_match_batch
+
+        queue_items = get_album_queue_tracks(artist, album)
+        if not queue_items:
+            return {"success": False, "error": "No queue items found for this artist/album"}
+
+        queue_ids = [int(item["id"]) for item in queue_items if item.get("id")]
+
+        result = apply_mbid_match_batch(
+            queue_ids=queue_ids,
+            new_mbid=release_group_id,
+            new_artist=artist,
+            new_album=album,
+            expand_tracks=False,
+        )
+
+        return {
+            "success": result.get("success", False),
+            "processed": len(queue_ids),
+            "total": len(queue_ids),
+            "error": result.get("error"),
+        }
+    except Exception as exc:
+        logger.error("apply_musicbrainz_match failed: %s", exc, exc_info=True)
+        return {"success": False, "error": str(exc)}

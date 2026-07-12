@@ -11,7 +11,7 @@ Contains:
 - Folder-level operations
 - Diagnostics
 
-✅ All database access uses ``db_cursor`` from ``db.context``.
+✅ All database access uses ``db_session`` from ``db.engine``.
 """
 
 from __future__ import annotations
@@ -21,8 +21,9 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from db.context import db_cursor
-from db.utils import row_get
+from sqlalchemy import text
+
+from db.engine import db_session
 from helpers.config_helpers import get_config
 from services.downloads.download_scan_service import resolve_downloads_dir
 from helpers.normalization_service import normalize_match_text
@@ -37,13 +38,13 @@ logger = logging.getLogger(__name__)
 
 def clear_queue(filters: Optional[dict] = None) -> dict:
     try:
-        with db_cursor(commit=True) as (conn, cursor):
+        with db_session() as session:
             if filters and "status" in filters:
-                cursor.execute("DELETE FROM download_queue WHERE status = %s", (filters["status"],))
-                return {"success": True, "queue_items_deleted": cursor.rowcount}
-            cursor.execute("DELETE FROM folder_track_matches")
-            cursor.execute("DELETE FROM folder_album_matches")
-            cursor.execute("DELETE FROM download_queue")
+                result = session.execute(text("DELETE FROM download_queue WHERE status = :status"), {"status": filters["status"]})
+                return {"success": True, "queue_items_deleted": result.rowcount}
+            session.execute(text("DELETE FROM folder_track_matches"))
+            session.execute(text("DELETE FROM folder_album_matches"))
+            session.execute(text("DELETE FROM download_queue"))
             return {"success": True}
     except Exception as e:
         logger.error(f"[clear_queue] {e}", exc_info=True)
@@ -52,9 +53,9 @@ def clear_queue(filters: Optional[dict] = None) -> dict:
 
 def purge_all() -> dict:
     try:
-        with db_cursor(commit=True) as (conn, cursor):
-            cursor.execute("DELETE FROM download_queue")
-            cursor.execute("DELETE FROM slskd_search_logs")
+        with db_session() as session:
+            session.execute(text("DELETE FROM download_queue"))
+            session.execute(text("DELETE FROM slskd_search_logs"))
             return {"success": True}
     except Exception as e:
         logger.error(f"[purge_all] {e}")
@@ -63,17 +64,17 @@ def purge_all() -> dict:
 
 def get_imported(limit: int = 50) -> List[Dict[str, Any]]:
     try:
-        with db_cursor() as (conn, cursor):
-            cursor.execute(
-                """SELECT *
-                   FROM download_queue
-                   WHERE status = 'imported'
-                   ORDER BY updated_at DESC
-                   LIMIT %s""",
-                (limit,)
+        with db_session() as session:
+            result = session.execute(
+                text("""SELECT *
+                       FROM download_queue
+                       WHERE status = 'imported'
+                       ORDER BY updated_at DESC
+                       LIMIT :limit"""),
+                {"limit": limit},
             )
-            rows = cursor.fetchall()
-            return [dict(zip([c[0] for c in cursor.description], r)) for r in rows]
+            rows = result.fetchall()
+            return [dict(r._mapping) for r in rows]
     except Exception as e:
         logger.error(f"[get_imported] {e}")
         return []
@@ -81,13 +82,13 @@ def get_imported(limit: int = 50) -> List[Dict[str, Any]]:
 
 def cleanup() -> dict:
     try:
-        with db_cursor(commit=True) as (conn, cursor):
-            cursor.execute("""
+        with db_session() as session:
+            result = session.execute(text("""
                 DELETE FROM download_queue
                 WHERE status = 'failed'
                   AND updated_at < NOW() - INTERVAL '7 days'
-            """)
-            return {"success": True, "deleted": cursor.rowcount}
+            """))
+            return {"success": True, "deleted": result.rowcount}
     except Exception as e:
         logger.error(f"[cleanup] {e}")
         return {"success": False, "error": str(e)}
@@ -218,17 +219,17 @@ def cleanup_orphaned(data: dict) -> dict:
 
 
 def count_pending_by_release(release_mbid: str) -> int:
-    with db_cursor() as (_, cursor):
-        cursor.execute("""
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT COUNT(*)
             FROM download_queue
-            WHERE (release_mbid = %s OR release_id = %s)
+            WHERE (release_mbid = :mbid OR release_id = :mbid)
               AND status NOT IN (
                   'completed', 'imported', 'in_collection',
                   'removed', 'cancelled', 'deleted'
               )
-        """, (release_mbid, release_mbid))
-        return cursor.fetchone()[0] or 0
+        """), {"mbid": release_mbid})
+        return result.scalar() or 0
 
 
 def verify_and_prune(data: dict) -> dict:
@@ -296,7 +297,7 @@ def verify_and_prune(data: dict) -> dict:
 
 def find_existing_discovered_file(*, file_path: str, filename: str, rel_path: str) -> Optional[Dict[str, Any]]:
     try:
-        with db_cursor() as (_, cursor):
+        with db_session() as session:
             cursor.execute(
                 """
                 SELECT * FROM download_queue

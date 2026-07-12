@@ -6,8 +6,9 @@ import json
 import logging
 import re
 
-from db.context import db_cursor
-from db.utils import row_get
+from sqlalchemy import text
+
+from db.engine import db_session
 
 
 def aggregate_genres_from_tracks(artist_name: str) -> list[str]:
@@ -17,17 +18,17 @@ def aggregate_genres_from_tracks(artist_name: str) -> list[str]:
         return []
     genres: set[str] = set()
     try:
-        with db_cursor() as (_conn, cursor):
-            cursor.execute(
-                """
-                SELECT navidrome_genres
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                """,
-                (artist_name,),
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT navidrome_genres
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                """),
+                {"artist": artist_name},
             )
-            for row in cursor.fetchall() or []:
-                genre_value = row_get(row, "navidrome_genres", 0)
+            for row in result.fetchall() or []:
+                genre_value = row[0]
                 if not genre_value or not isinstance(genre_value, str):
                     continue
                 try:
@@ -80,19 +81,22 @@ def log_genre_update(
 ) -> None:
     """Insert a genre update audit row."""
     try:
-        with db_cursor(commit=True) as (_conn, cursor):
-            cursor.execute(
-                """
-                INSERT INTO genre_updates (
-                    artist_name, album_name, track_id, genres_before, genres_after,
-                    action_type, affected_track_count, change_summary, created_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                """,
-                (
-                    artist_name, album_name, track_id, genres_before, genres_after,
-                    action_type, affected_count, change_summary,
-                ),
+        with db_session() as session:
+            session.execute(
+                text("""
+                    INSERT INTO genre_updates (
+                        artist_name, album_name, track_id, genres_before, genres_after,
+                        action_type, affected_track_count, change_summary, created_at
+                    )
+                    VALUES (:artist_name, :album_name, :track_id, :genres_before, :genres_after,
+                            :action_type, :affected_count, :change_summary, CURRENT_TIMESTAMP)
+                """),
+                {
+                    "artist_name": artist_name, "album_name": album_name,
+                    "track_id": track_id, "genres_before": genres_before,
+                    "genres_after": genres_after, "action_type": action_type,
+                    "affected_count": affected_count, "change_summary": change_summary,
+                },
             )
     except Exception as exc:
         logging.error("Failed to log genre update: %s", exc)

@@ -5,20 +5,21 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from db.context import db_cursor
-from db.utils import row_get
+from sqlalchemy import text
+
+from db.engine import db_session
 
 
 def insert_artist(artist_id: str, name: str) -> None:
     """Insert an artist if it does not already exist."""
-    with db_cursor(commit=True) as (_conn, cursor):
-        cursor.execute(
-            """
-            INSERT INTO artists (id, name)
-            VALUES (%s, %s)
-            ON CONFLICT (id) DO NOTHING
-            """,
-            (artist_id, name),
+    with db_session() as session:
+        session.execute(
+            text("""
+                INSERT INTO artists (id, name)
+                VALUES (:id, :name)
+                ON CONFLICT (id) DO NOTHING
+            """),
+            {"id": artist_id, "name": name},
         )
 
 
@@ -27,17 +28,17 @@ def is_album_artist_in_collection(artist: str) -> bool:
     if not artist:
         return False
     try:
-        with db_cursor() as (_conn, cursor):
-            cursor.execute(
-                """
-                SELECT 1
-                FROM tracks
-                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-                LIMIT 1
-                """,
-                (artist,),
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT 1
+                    FROM tracks
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                    LIMIT 1
+                """),
+                {"artist": artist},
             )
-            return cursor.fetchone() is not None
+            return result.fetchone() is not None
     except Exception as exc:
         logging.debug("[AUTO-QUEUE] Could not verify album artist '%s': %s", artist, exc)
         return False
