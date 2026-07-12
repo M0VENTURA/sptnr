@@ -81,6 +81,15 @@ run_alembic_migrations() {
     fi
 }
 
+run_schema_bootstrap() {
+    log "Running database schema bootstrap..."
+    if python3 db/bootstrap.py 2>&1; then
+        ok "Database schema bootstrap complete"
+    else
+        warn "Database schema bootstrap failed (non-fatal — app will retry on startup)"
+    fi
+}
+
 check_ffmpeg() {
     log "Checking ffmpeg availability..."
     if command -v ffmpeg >/dev/null 2>&1; then
@@ -165,6 +174,8 @@ main() {
     if wait_for_db; then ok "Database ready"; else warn "Database wait failed"; fi
 
     if run_queue_startup_schema; then :; fi
+    if run_alembic_migrations; then :; fi
+    if run_schema_bootstrap; then :; fi
     if check_ffmpeg; then :; fi
     if start_queue_processor; then :; fi
     if preflight_python; then :; fi

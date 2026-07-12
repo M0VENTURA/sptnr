@@ -13,10 +13,10 @@ analytics_bp = Blueprint("analytics", __name__)
 
 
 @analytics_bp.route("/analytics/genres-moods")
-def analytics_genres_moods_page():
+async def analytics_genres_moods_page():
     genres, moods, combos = get_genre_mood_analytics(top_n=50)
 
-    return render_template(
+    return await render_template(
         "pages/analytics.html",
         top_genres=genres,
         top_moods=moods,

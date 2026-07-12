@@ -61,13 +61,6 @@ if _sqlalchemy_available:
         import logging
         logging.getLogger(__name__).warning("SQLAlchemy engine init failed: %s", exc)
 
-    # Apply any pending Alembic migrations.
-    try:
-        run_migrations_on_startup()
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("Alembic migration failed: %s", exc)
-
 
 
 setup_logging("WebUI")
@@ -86,7 +79,10 @@ register_filters(app)
 register_all_blueprints(app)
 register_app_hooks(app)
 
-init_database_and_schema()
+# NOTE: Database schema initialisation and Alembic migrations are handled
+# by entrypoint.sh BEFORE Hypercorn workers are spawned.  This avoids
+# race conditions when multiple workers import this module simultaneously.
+# Do NOT add init_database_and_schema() or run_migrations_on_startup() here.
 
 # Pass the Flask app into background service bootstrap so workers that need
 # an application context can create one safely without importing app.py.

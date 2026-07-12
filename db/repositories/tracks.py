@@ -130,6 +130,23 @@ def get_existing_track_ids(conn: Any) -> set[str]:
             pass
 
 
+def get_all_ratings() -> list[dict[str, Any]]:
+    """Return all tracks with a non-null star rating > 0.
+
+    Returns:
+        List of dicts with ``id`` and ``stars`` keys.
+    """
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT id, stars FROM tracks WHERE stars IS NOT NULL AND stars > 0")
+            )
+            return [dict(row._mapping) for row in result.fetchall() or []]
+    except Exception as exc:
+        logger.error("Failed to fetch rated tracks: %s", exc, exc_info=True)
+        return []
+
+
 def get_current_track_rating(track_id: str) -> int:
     """Return current track star rating, or 0 if unavailable."""
     try:

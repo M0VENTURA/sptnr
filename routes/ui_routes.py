@@ -57,7 +57,7 @@ def login_required(f):
 # ===========================================================================
 
 @ui_bp.route("/login", methods=["GET", "POST"])
-def login():
+async def login():
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "").strip()
@@ -85,8 +85,8 @@ def login():
                     return redirect(url_for("ui.dashboard"))
 
         flash("Invalid credentials", "error")
-        return render_template("auth/login.html")
-    return render_template("auth/login.html")
+        return await render_template("auth/login.html")
+    return await render_template("auth/login.html")
 
 
 @ui_bp.route("/logout")
@@ -101,7 +101,7 @@ def logout():
 # ===========================================================================
 
 @ui_bp.route("/setup", methods=["GET", "POST"])
-def setup():
+async def setup():
     # Pass PG env vars so the wizard can pre-fill them
     pg_defaults = {
         "host": os.environ.get("PG_HOST", ""),
@@ -111,8 +111,8 @@ def setup():
         "database": os.environ.get("PG_DATABASE", "popularr"),
     }
     if request.method == "POST":
-        return render_template("auth/setup.html", message="Setup not yet implemented", pg=pg_defaults)
-    return render_template("auth/setup.html", pg=pg_defaults)
+        return await render_template("auth/setup.html", message="Setup not yet implemented", pg=pg_defaults)
+    return await render_template("auth/setup.html", pg=pg_defaults)
 
 
 # ===========================================================================
@@ -185,7 +185,7 @@ def index():
 
 
 @ui_bp.route("/dashboard")
-def dashboard():
+async def dashboard():
     try:
         recent_scans = get_recent_album_scans(limit=10) or []
         cfg = get_config()
@@ -202,7 +202,7 @@ def dashboard():
         except Exception:
             stats = {"tc": 0, "ac": 0, "artists_c": 0, "avg_stars": None}
 
-        return render_template(
+        return await render_template(
             "pages/dashboard.html",
             recent_scans=recent_scans,
             nav_users=nav_users,
@@ -215,11 +215,11 @@ def dashboard():
         )
     except Exception as exc:
         logger.error("Dashboard error: %s", exc)
-        return render_template("pages/dashboard.html", recent_scans=[], nav_users=[], error=str(exc))
+        return await render_template("pages/dashboard.html", recent_scans=[], nav_users=[], error=str(exc))
 
 
 @ui_bp.route("/artists")
-def artists():
+async def artists():
     with db_session() as session:
         result = session.execute(text("""
             SELECT COALESCE(NULLIF(album_artist, ''), artist) as display_name,
@@ -231,11 +231,11 @@ def artists():
         artists_data = [dict(r._mapping) for r in result.fetchall()]
         result = session.execute(text("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac FROM tracks"))
         total_stats = dict(result.fetchone()._mapping)
-        return render_template("pages/artist_list.html", artists=artists_data, total_stats=total_stats)
+        return await render_template("pages/artist_list.html", artists=artists_data, total_stats=total_stats)
 
 
 @ui_bp.route("/artist/<path:name>")
-def artist_detail(name):
+async def artist_detail(name):
     name = unquote(name)
     with db_session() as session:
         result = session.execute(text("""
@@ -261,13 +261,13 @@ def artist_detail(name):
         """), {"name": name})
         top_tracks = [dict(r._mapping) for r in result.fetchall()]
 
-    return render_template(
+    return await render_template(
         "pages/artist_detail.html", artist_name=name, albums=albums, stats=stats, top_tracks=top_tracks,
     )
 
 
 @ui_bp.route("/album/<path:artist>/<path:album>")
-def album_detail(artist, album):
+async def album_detail(artist, album):
     artist = unquote(artist)
     album = unquote(album)
     with db_session() as session:
@@ -276,27 +276,27 @@ def album_detail(artist, album):
             {"artist": artist, "album": album},
         )
         tracks = [dict(r._mapping) for r in result.fetchall()]
-        return render_template("pages/album_detail.html", artist=artist, album=album, tracks=tracks)
+        return await render_template("pages/album_detail.html", artist=artist, album=album, tracks=tracks)
 
 
 @ui_bp.route("/track/<track_id>")
-def track_detail(track_id):
+async def track_detail(track_id):
     with db_session() as session:
         result = session.execute(text("SELECT * FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
         row = result.fetchone()
         if not row:
-            return render_template("pages/track_detail.html", track=None, error="Track not found")
-        return render_template("pages/track_detail.html", track=dict(row._mapping))
+            return await render_template("pages/track_detail.html", track=None, error="Track not found")
+        return await render_template("pages/track_detail.html", track=dict(row._mapping))
 
 
 @ui_bp.route("/search")
-def search():
+async def search():
     query = request.args.get("q", "").strip()
-    return render_template("pages/search.html", initial_query=query)
+    return await render_template("pages/search.html", initial_query=query)
 
 
 @ui_bp.route("/config", methods=["GET", "POST"])
-def config_editor():
+async def config_editor():
     from helpers.config_helpers import get_config
     import yaml
     config, raw = {}, ""
@@ -310,7 +310,7 @@ def config_editor():
         pass
     if request.method == "POST":
         return redirect(url_for("ui.config_editor"))
-    return render_template(
+    return await render_template(
         "pages/config.html",
         config=config,
         config_raw=raw,
@@ -344,7 +344,7 @@ def config_migrate_postgres():
 
 
 @ui_bp.route("/logs")
-def logs():
+async def logs():
     config_dir = os.path.dirname(os.environ.get("CONFIG_PATH", "/config/config.yaml"))
     log_path = os.environ.get("LOG_PATH", "/config/app.log")
     log_files = {
@@ -353,12 +353,12 @@ def logs():
         "popularity": os.path.join(config_dir, "popularity.log"),
         "downloads": os.path.join(config_dir, "downloads.log"),
     }
-    return render_template("pages/logs.html", log_path=log_path, log_files=log_files)
+    return await render_template("pages/logs.html", log_path=log_path, log_files=log_files)
 
 
 @ui_bp.route("/help")
 @ui_bp.route("/help/<path:doc_name>")
-def help_page(doc_name=None):
+async def help_page(doc_name=None):
     doc_path = os.path.join(os.path.dirname(__file__), "..", "documentation")
     doc_files = []
     try:
@@ -374,37 +374,37 @@ def help_page(doc_name=None):
             with open(full_path) as f:
                 content = f.read()
         doc_title = doc_name.replace(".md", "").replace("_", " ").title()
-    return render_template(
+    return await render_template(
         "pages/help.html", content=content, doc_title=doc_title,
         doc_files=doc_files, current_doc=doc_name,
     )
 
 
 @ui_bp.route("/bookmarks")
-def bookmarks():
-    return render_template("pages/bookmarks.html")
+async def bookmarks():
+    return await render_template("pages/bookmarks.html")
 
 
 @ui_bp.route("/correcting")
-def correcting():
-    return render_template("pages/corrections.html")
+async def correcting():
+    return await render_template("pages/corrections.html")
 
 
 @ui_bp.route("/missing")
-def missing_page():
+async def missing_page():
     cfg = get_config()
-    return render_template("pages/missing_releases.html", qbit_config=cfg.get("qbittorrent", {}), slskd_config=cfg.get("slskd", {}))
+    return await render_template("pages/missing_releases.html", qbit_config=cfg.get("qbittorrent", {}), slskd_config=cfg.get("slskd", {}))
 
 
 @ui_bp.route("/discover")
-def discover():
-    return render_template("pages/discover.html")
+async def discover():
+    return await render_template("pages/discover.html")
 
 
 @ui_bp.route("/downloads/monitor")
-def downloads_monitor():
+async def downloads_monitor():
     cfg = get_config()
-    return render_template(
+    return await render_template(
         "pages/downloads/monitor.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
@@ -412,14 +412,14 @@ def downloads_monitor():
 
 
 @ui_bp.route("/downloads/banned-words")
-def banned_words_page():
-    return render_template("pages/banned_words.html")
+async def banned_words_page():
+    return await render_template("pages/banned_words.html")
 
 
 @ui_bp.route("/downloads")
-def downloads_page():
+async def downloads_page():
     cfg = get_config()
-    return render_template(
+    return await render_template(
         "pages/downloads/queue.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
@@ -427,9 +427,9 @@ def downloads_page():
 
 
 @ui_bp.route("/downloads/search/soulseek")
-def downloads_search_soulseek():
+async def downloads_search_soulseek():
     cfg = get_config()
-    return render_template(
+    return await render_template(
         "pages/downloads/search_soulseek.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
@@ -437,9 +437,9 @@ def downloads_search_soulseek():
 
 
 @ui_bp.route("/downloads/search/musicbrainz")
-def downloads_search_musicbrainz():
+async def downloads_search_musicbrainz():
     cfg = get_config()
-    return render_template(
+    return await render_template(
         "pages/downloads/search_musicbrainz.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
@@ -447,9 +447,9 @@ def downloads_search_musicbrainz():
 
 
 @ui_bp.route("/downloads/search/qbittorrent")
-def downloads_search_qbittorrent():
+async def downloads_search_qbittorrent():
     cfg = get_config()
-    return render_template(
+    return await render_template(
         "pages/downloads/search_qbittorrent.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
@@ -457,9 +457,9 @@ def downloads_search_qbittorrent():
 
 
 @ui_bp.route("/downloads/search/playlists")
-def downloads_search_playlists():
+async def downloads_search_playlists():
     cfg = get_config()
-    return render_template(
+    return await render_template(
         "pages/downloads/search_playlists.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
@@ -467,9 +467,9 @@ def downloads_search_playlists():
 
 
 @ui_bp.route("/downloads/manager")
-def downloads_manager():
+async def downloads_manager():
     cfg = get_config()
-    return render_template(
+    return await render_template(
         "pages/downloads/manager.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
@@ -477,27 +477,27 @@ def downloads_manager():
 
 
 @ui_bp.route("/downloads/discover/similar-artists")
-def downloads_discover_similar_artists():
-    return render_template("pages/downloads/similar_artists.html")
+async def downloads_discover_similar_artists():
+    return await render_template("pages/downloads/similar_artists.html")
 
 
 @ui_bp.route("/downloads/discover/upcoming")
-def downloads_discover_upcoming():
-    return render_template("pages/downloads/upcoming.html")
+async def downloads_discover_upcoming():
+    return await render_template("pages/downloads/upcoming.html")
 
 
 @ui_bp.route("/artist/<path:name>/corrections")
-def artist_corrections(name):
-    return render_template("pages/artist_corrections.html", artist_name=name)
+async def artist_corrections(name):
+    return await render_template("pages/artist_corrections.html", artist_name=name)
 
 
 @ui_bp.route("/artist/<path:name>/genre-management")
-def artist_genre_management(name):
-    return render_template("pages/artist_genres.html", artist_name=name)
+async def artist_genre_management(name):
+    return await render_template("pages/artist_genres.html", artist_name=name)
 
 
 @ui_bp.route("/metadata-compare")
-def metadata_compare():
+async def metadata_compare():
     """Metadata comparison page — compare Navidrome vs Beets album data."""
     try:
         with db_session() as session:
@@ -537,7 +537,7 @@ def metadata_compare():
                     },
                 })
 
-        return render_template("pages/metadata_compare.html", album_comparisons=album_comparisons)
+        return await render_template("pages/metadata_compare.html", album_comparisons=album_comparisons)
     except Exception as exc:
         logger.error("metadata-compare: %s", exc)
         flash(f"Error loading metadata comparison: {exc}", "danger")
@@ -609,18 +609,18 @@ def metadata_compare_apply_mb():
 
 
 @ui_bp.route("/beets")
-def beets():
-    return render_template("pages/beets_integration.html")
+async def beets():
+    return await render_template("pages/beets_integration.html")
 
 
 @ui_bp.route("/smart-playlists")
-def smart_playlists():
-    return render_template("pages/smart_playlists.html")
+async def smart_playlists():
+    return await render_template("pages/smart_playlists.html")
 
 
 @ui_bp.route("/analytics/genres-moods")
-def analytics_genres_moods_page():
-    return render_template("pages/analytics.html")
+async def analytics_genres_moods_page():
+    return await render_template("pages/analytics.html")
 
 
 @ui_bp.route("/debug/static")
