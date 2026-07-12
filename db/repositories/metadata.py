@@ -255,6 +255,18 @@ def delete_track_row(conn: Any = None, track_id: str = "") -> int:
         return result.rowcount or 0
 
 
+def fetch_track_for_delete(conn: Any = None, track_id: str = "") -> tuple | None:
+    """Fetch track data by ID for deletion processing."""
+    with db_session() as session:
+        result = session.execute(text("""
+            SELECT id, file_path, artist, album, title
+            FROM tracks
+            WHERE CAST(id AS TEXT) = :id
+            LIMIT 1
+        """), {"id": track_id})
+        return result.fetchone()
+
+
 def merge_album_names(conn: Any = None, artist: str = "", source_albums: list[str] | None = None, canonical_name: str = "") -> int:
     if not source_albums:
         return 0

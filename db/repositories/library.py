@@ -138,14 +138,6 @@ def fetch_genre_mood_analytics(conn: Any = None, top_n: int = 50):
 
         return genres, moods, combos
 
-    finally:
-        try:
-            cursor.close()
-        except Exception:
-            pass
-
-        # db/repositories/library.py
-
 
 def get_tracks_for_album(artist: str, album: str) -> List[Dict[str, Any]]:
     """Return all tracks for a given artist/album."""
