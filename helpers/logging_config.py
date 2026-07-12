@@ -68,12 +68,27 @@ class SafePrefixFormatter(logging.Formatter):
 
 
 def setup_logging(service_name: str = "popularr") -> None:
-    """Configures centralized logging system via dictConfig."""
+    """Configures centralized logging system.
+
+    When ``STRUCTLOG=1`` env var is set, uses ``structlog`` for JSON output
+    on stderr (parsable by Loki/Datadog/Splunk). File logging still uses
+    standard log format for readability.
+    """
     log_dir = resolve_log_dir()
-    
+
+    use_structlog = os.environ.get("STRUCTLOG", "").strip() in ("1", "true", "yes")
+
+    if use_structlog:
+        _setup_structlog(service_name, log_dir)
+    else:
+        _setup_standard_logging(service_name, log_dir)
+
+
+def _setup_standard_logging(service_name: str, log_dir: str) -> None:
+    """Configure standard dictConfig-based logging."""
     fmt = "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s"
     date_fmt = "%Y-%m-%d %H:%M:%S"
-    
+
     config = {
         "version": 1,
         "disable_existing_loggers": False,
@@ -125,15 +140,43 @@ def setup_logging(service_name: str = "popularr") -> None:
             },
         },
         "loggers": {
-            # Root logger routes all logs appropriately
             "": {
                 "handlers": ["unified_file", "info_file", "debug_file"],
                 "level": "DEBUG",
             },
-            # Silence noisy external libraries
             "urllib3": {"level": "ERROR"},
-            "requests": {"level": "ERROR"},
+            "httpx": {"level": "ERROR"},
         },
     }
 
     logging.config.dictConfig(config)
+
+
+def _setup_structlog(service_name: str, log_dir: str) -> None:
+    """Configure structlog for JSON output on stderr."""
+    import structlog
+
+    # Standard library logging still goes to files
+    _setup_standard_logging(service_name, log_dir)
+
+    # Override root logger to also emit JSON via structlog
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            structlog.dev.ConsoleRenderer() if os.environ.get("STRUCTLOG_CONSOLE") else structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+    # Redirect standard logging to structlog for unified output
+    structlog.stdlib.recreate_defaults(log_level=logging.DEBUG)

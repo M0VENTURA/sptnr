@@ -7,6 +7,7 @@ mutagen>=1.47,<2.0
 beautifulsoup4>=4.12,<5.0
 apscheduler>=3.10,<4.0
 pydantic-settings>=2.0,<3.0
+structlog>=24.0,<25.0
 
 # Database — SQLAlchemy ORM + async driver + migrations
 sqlalchemy>=2.0,<3.0
