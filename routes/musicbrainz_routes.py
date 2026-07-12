@@ -17,7 +17,7 @@ from helpers.response_helpers import _ok, _fail
 logger = logging.getLogger(__name__)
 
 mb_bp = Blueprint("musicbrainz", __name__, url_prefix="/api/musicbrainz")
-MUSICBRAINZ_USER_AGENT = "Popularr/1.0 +https://github.com/M0VENTURA/sptnr"
+MUSICBRAINZ_USER_AGENT = "Popularr/1.0 +https://github.com/M0VENTURA/popularr"
 
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ from api_clients.http_utils import create_retry_client
 logger = logging.getLogger(__name__)
 
 DISCOGS_BASE_URL = "https://api.discogs.com"
-DEFAULT_USER_AGENT = "sptnr-cli/1.0 +https://github.com/M0VENTURA/sptnr"
+DEFAULT_USER_AGENT = "Popularr/1.0 +https://github.com/M0VENTURA/Popularr"
 
 _DISCOGS_LAST_REQUEST_TIME = 0.0
 _DISCOGS_MIN_INTERVAL = 0.35

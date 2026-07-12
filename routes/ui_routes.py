@@ -61,11 +61,27 @@ def login():
         password = (request.form.get("password") or "").strip()
         cfg = get_config()
         nav_users = cfg.get("navidrome_users", [])
+
+        # Try verifying against Navidrome first (live check)
+        from api_clients.navidrome import NavidromeClient
         for user in nav_users:
-            if user.get("user") == username and user.get("pass") == password:
-                session["username"] = username
-                flash(f"Welcome back, {username}!", "success")
-                return redirect(url_for("ui.dashboard"))
+            if user.get("user") == username:
+                base_url = str(user.get("base_url", "")).rstrip("/")
+                if base_url:
+                    try:
+                        client = NavidromeClient(base_url=base_url, username=username, password=password)
+                        if client.ping():
+                            session["username"] = username
+                            flash(f"Welcome back, {username}!", "success")
+                            return redirect(url_for("ui.dashboard"))
+                    except Exception:
+                        pass
+                # Fallback: check against stored password
+                if user.get("pass") == password:
+                    session["username"] = username
+                    flash(f"Welcome back, {username}!", "success")
+                    return redirect(url_for("ui.dashboard"))
+
         flash("Invalid credentials", "error")
         return render_template("auth/login.html")
     return render_template("auth/login.html")
@@ -84,9 +100,77 @@ def logout():
 
 @ui_bp.route("/setup", methods=["GET", "POST"])
 def setup():
+    # Pass PG env vars so the wizard can pre-fill them
+    pg_defaults = {
+        "host": os.environ.get("PG_HOST", ""),
+        "port": os.environ.get("PG_PORT", "5432"),
+        "user": os.environ.get("PG_USER", "popularr"),
+        "password": os.environ.get("PG_PASSWORD", ""),
+        "database": os.environ.get("PG_DATABASE", "popularr"),
+    }
     if request.method == "POST":
-        return render_template("auth/setup.html", message="Setup not yet implemented")
-    return render_template("auth/setup.html")
+        return render_template("auth/setup.html", message="Setup not yet implemented", pg=pg_defaults)
+    return render_template("auth/setup.html", pg=pg_defaults)
+
+
+# ===========================================================================
+# SETUP & TEST API
+# ===========================================================================
+
+@ui_bp.route("/api/test-navidrome-connection", methods=["POST"])
+def api_test_navidrome_connection():
+    """Test Navidrome connectivity with provided credentials before saving."""
+    from api_clients.navidrome import NavidromeClient
+
+    data = request.json or {}
+    base_url = str(data.get("base_url", "")).rstrip("/")
+    username = str(data.get("username", ""))
+    password = str(data.get("password", ""))
+
+    if not base_url or not username:
+        return jsonify({"success": False, "error": "URL and username are required"}), 400
+
+    client = NavidromeClient(base_url=base_url, username=username, password=password)
+    ok = client.ping()
+
+    if ok:
+        return jsonify({"success": True, "message": "✅ Connected successfully"})
+    return jsonify({"success": False, "error": "❌ Could not connect — check URL and credentials"})
+
+@ui_bp.route("/api/setup/save", methods=["POST"])
+def api_setup_save():
+    """Save the first-run setup wizard configuration."""
+    from helpers.config_helpers import save_config, clear_config_cache
+
+    data = request.json or {}
+    if not data:
+        return jsonify({"success": False, "error": "No configuration data received"}), 400
+
+    # Validate required Navidrome config
+    nav_users = data.get("navidrome_users", [])
+    if not nav_users or not nav_users[0].get("base_url") or not nav_users[0].get("user"):
+        return jsonify({"success": False, "error": "Navidrome URL and username are required"}), 400
+
+    # Extract PG fields from the setup payload and persist to config + env
+    pg_host = (data.pop("PG_HOST", "") or "").strip()
+    if pg_host:
+        data.setdefault("database", {})
+        data["database"]["host"] = pg_host
+        data["database"]["port"] = (data.pop("PG_PORT", "") or "5432").strip()
+        data["database"]["user"] = (data.pop("PG_USER", "") or "popularr").strip()
+        data["database"]["password"] = data.pop("PG_PASSWORD", "")
+        data["database"]["name"] = (data.pop("PG_DATABASE", "") or "popularr").strip()
+        os.environ["PG_HOST"] = data["database"]["host"]
+        os.environ["PG_PORT"] = data["database"]["port"]
+        os.environ["PG_USER"] = data["database"]["user"]
+        os.environ["PG_PASSWORD"] = data["database"]["password"]
+        os.environ["PG_DATABASE"] = data["database"]["name"]
+
+    success = save_config(data)
+    if success:
+        session["username"] = nav_users[0].get("user", "")
+        return jsonify({"success": True, "message": "Configuration saved"})
+    return jsonify({"success": False, "error": "Failed to save config file"}), 500
 
 
 # ===========================================================================

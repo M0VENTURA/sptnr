@@ -33,7 +33,7 @@ def _get_version() -> str:
         return "2.0.0-alpha"
 
 
-DEFAULT_USER_AGENT = f"sptnr/{_get_version()} ( https://github.com/M0VENTURA/sptnr )"
+DEFAULT_USER_AGENT = f"Popularr/{_get_version()} ( https://github.com/M0VENTURA/Popularr )"
 
 
 class ListenBrainzError(Exception):

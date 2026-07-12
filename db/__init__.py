@@ -1,4 +1,4 @@
-"""Database package for Popularr/SPTNR.
+"""Database package for Popularr.
 
 This package is the single home for database connection helpers, schema
 bootstrap, table/schema inspection helpers, cleanup routines, repository

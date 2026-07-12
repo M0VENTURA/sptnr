@@ -1,55 +1,207 @@
-{% extends "base.html" %}
-{% block title %}Setup Wizard · Popularr{% endblock %}
-{% block content %}
-<div class="py-5" style="background: radial-gradient(circle at 20% 20%, #101820 0, #0d1117 35%, #0b0f14 75%); min-height: calc(100vh - 4rem);">
-  <div class="container">
-    <div class="row g-4 align-items-stretch">
-      <div class="col-lg-4">
-        <div class="card h-100 shadow-sm border-0 bg-dark text-white">
-          <div class="card-body d-flex flex-column">
-            <div class="d-flex align-items-center mb-3">
-              <div class="me-3 text-primary fs-3"><i class="bi bi-magic"></i></div>
-              <div>
-                <h1 class="h4 mb-1">First-Run Setup</h1>
-                <p class="mb-0 text-secondary">Get started in 3 quick steps</p>
-              </div>
-            </div>
-            <ol class="ps-3 small text-secondary mb-0">
-              <li class="mb-2"><strong>Connect Navidrome:</strong> Your music server (required)</li>
-              <li class="mb-2"><strong>Add API Keys:</strong> For scoring and recommendations (optional)</li>
-              <li><strong>Start Scanning:</strong> From the dashboard</li>
-            </ol>
-            <div class="mt-auto pt-3 small text-secondary border-top">
-              You can change these settings anytime from <strong>Config</strong> page.
-            </div>
-          </div>
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Setup · Popularr</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+  <style>
+    :root { --primary-bg: #121212; --secondary-bg: #1e1e1e; --tertiary-bg: #282828; --text-primary: #e0e0e0; --text-secondary: #b0b0b0; --border-color: #333; --spotify-green: #1db954; }
+    body { background: var(--primary-bg); color: var(--text-primary); min-height: 100vh; }
+    .setup-container { max-width: 720px; margin: 0 auto; padding: 2rem 1rem; }
+    .step-card { background: var(--secondary-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; margin-bottom: 1.5rem; }
+    .step-indicator { display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 2rem; }
+    .step-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--tertiary-bg); transition: all 0.3s; }
+    .step-dot.active { background: var(--spotify-green); box-shadow: 0 0 8px rgba(29,185,84,0.5); }
+    .step-dot.done { background: var(--spotify-green); }
+    .form-control, .form-select { background: var(--primary-bg); border: 1px solid var(--border-color); color: var(--text-primary); }
+    .form-control:focus, .form-select:focus { border-color: var(--spotify-green); box-shadow: 0 0 0 0.2rem rgba(29,185,84,0.25); }
+    .btn-primary { background: var(--spotify-green); border: none; color: #000; font-weight: 600; }
+    .btn-primary:hover { background: #1ed760; }
+  </style>
+</head>
+<body>
+<div class="setup-container">
+  <div class="text-center mb-4">
+    <i class="bi bi-music-note-beamed" style="font-size: 2.5rem; color: var(--spotify-green);"></i>
+    <h1 class="h3 mt-2">Welcome to Popularr</h1>
+    <p class="text-muted">Let's get you set up in a few steps</p>
+  </div>
+  <div class="step-indicator" id="stepIndicator">
+    <div class="step-dot active" data-step="1"></div>
+    <div class="step-dot" data-step="2"></div>
+    <div class="step-dot" data-step="3"></div>
+    <div class="step-dot" data-step="4"></div>
+  </div>
+
+  <!-- Step 1: Navidrome + Database -->
+  <div class="step-card" id="step1">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="badge bg-success rounded-pill">1</span>
+      <h5 class="mb-0">Connect to Navidrome</h5>
+      <span class="text-muted small">(required)</span>
+    </div>
+    <p class="text-muted small mb-3">Popularr reads your library from Navidrome and sends star ratings back. Your password is stored in <code>config.yaml</code> only.</p>
+    <div class="mb-3">
+      <label class="form-label">Navidrome URL</label>
+      <input type="url" class="form-control" id="navUrl" placeholder="http://navidrome:4533" value="http://navidrome:4533">
+    </div>
+    <div class="row g-3 mb-3">
+      <div class="col-sm-6"><label class="form-label">Username</label><input type="text" class="form-control" id="navUser" placeholder="admin"></div>
+      <div class="col-sm-6"><label class="form-label">Password</label><input type="password" class="form-control" id="navPass" placeholder="••••••••"></div>
+    </div>
+
+    <!-- Database (pre-filled from env if available) -->
+    <details class="mb-3" {{ 'open' if pg.get('host') else '' }}>
+      <summary class="fw-semibold small mb-2"><i class="bi bi-database"></i> PostgreSQL Database <span class="text-muted fw-normal">(pre-filled from environment)</span></summary>
+      <div class="border rounded p-3 mt-2">
+        <div class="row g-2">
+          <div class="col-sm-6"><label class="form-label form-label-sm">Host</label><input type="text" class="form-control form-control-sm" id="pgHost" value="{{ pg.get('host', '') }}"></div>
+          <div class="col-sm-3"><label class="form-label form-label-sm">Port</label><input type="text" class="form-control form-control-sm" id="pgPort" value="{{ pg.get('port', '5432') }}"></div>
+          <div class="col-sm-3"><label class="form-label form-label-sm">Database</label><input type="text" class="form-control form-control-sm" id="pgDb" value="{{ pg.get('database', 'popularr') }}"></div>
+          <div class="col-sm-6"><label class="form-label form-label-sm">User</label><input type="text" class="form-control form-control-sm" id="pgUser" value="{{ pg.get('user', 'popularr') }}"></div>
+          <div class="col-sm-6"><label class="form-label form-label-sm">Password</label><input type="password" class="form-control form-control-sm" id="pgPass" value="{{ pg.get('password', '') }}"></div>
         </div>
       </div>
-      <div class="col-lg-8">
-        <div class="card h-100 shadow-sm border-0 bg-dark text-white">
-          <div class="card-body">
-            {% if message %}
-              <div class="alert alert-info">{{ message }}</div>
-            {% endif %}
-            <form method="POST" action="{{ url_for('setup') }}">
-              <div class="mb-3">
-                <label class="form-label">Navidrome Base URL</label>
-                <input type="url" class="form-control" name="base_url" placeholder="http://navidrome:4533" required>
-              </div>
-              <div class="mb-3">
-                <label class="form-label">Navidrome Username</label>
-                <input type="text" class="form-control" name="username" required>
-              </div>
-              <div class="mb-3">
-                <label class="form-label">Navidrome Password</label>
-                <input type="password" class="form-control" name="password" required>
-              </div>
-              <button type="submit" class="btn btn-primary">Save & Continue</button>
-            </form>
-          </div>
+    </details>
+
+    <div class="d-flex justify-content-between align-items-center">
+      <div>
+        <button class="btn btn-outline-primary btn-sm" onclick="testConnection()"><i class="bi bi-plug"></i> Test Connection</button>
+        <span id="connectionStatus" class="ms-2 small"></span>
+      </div>
+      <button class="btn btn-primary" onclick="goToStep(2)">Continue <i class="bi bi-arrow-right"></i></button>
+    </div>
+  </div>
+
+  <!-- Step 2: API Keys (optional) -->
+  <div class="step-card d-none" id="step2">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="badge bg-secondary rounded-pill">2</span>
+      <h5 class="mb-0">API Keys</h5>
+      <span class="text-muted small">(optional — skip if unsure)</span>
+    </div>
+    <p class="text-muted small mb-3">Enable popularity scoring and recommendations. You can add these later from Config.</p>
+    <div class="border rounded p-3 mb-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0"><i class="bi bi-spotify text-success"></i> Spotify</h6>
+        <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="spEnabled"><label class="form-check-label small" for="spEnabled">Enable</label></div>
+      </div>
+      <div class="row g-2">
+        <div class="col-sm-6"><input type="text" class="form-control form-control-sm" id="spClientId" placeholder="Client ID"></div>
+        <div class="col-sm-6"><input type="password" class="form-control form-control-sm" id="spClientSecret" placeholder="Client Secret"></div>
+      </div>
+    </div>
+    <div class="border rounded p-3 mb-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0"><i class="bi bi-database-fill text-info"></i> Last.fm</h6>
+        <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="lfmEnabled"><label class="form-check-label small" for="lfmEnabled">Enable</label></div>
+      </div>
+      <input type="text" class="form-control form-control-sm" id="lfmApiKey" placeholder="API Key">
+    </div>
+    <div class="border rounded p-3 mb-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0"><i class="bi bi-vinyl"></i> Discogs</h6>
+        <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="dgEnabled"><label class="form-check-label small" for="dgEnabled">Enable</label></div>
+      </div>
+      <input type="text" class="form-control form-control-sm" id="dgToken" placeholder="Personal Access Token">
+    </div>
+    <div class="d-flex justify-content-between">
+      <button class="btn btn-outline-secondary" onclick="goToStep(1)"><i class="bi bi-arrow-left"></i> Back</button>
+      <button class="btn btn-primary" onclick="goToStep(3)">Skip & Continue <i class="bi bi-arrow-right"></i></button>
+    </div>
+  </div>
+
+  <!-- Step 3: Essentia (opt-in) -->
+  <div class="step-card d-none" id="step3">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="badge bg-secondary rounded-pill">3</span>
+      <h5 class="mb-0">Mood & Genre Analysis</h5>
+      <span class="text-muted small">(optional — off by default)</span>
+    </div>
+    <p class="text-muted small mb-3">Essentia runs ML models locally to detect <strong>mood</strong> and <strong>genre</strong> tags. Downloads ~87 MB of model files.</p>
+    <div class="border rounded p-3 mb-3">
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" id="essentiaEnabled" onchange="toggleEssentiaOptions()">
+        <label class="form-check-label" for="essentiaEnabled"><strong>Enable Essentia Analysis</strong></label>
+      </div>
+      <div id="essentiaOptions" class="d-none mt-3">
+        <button class="btn btn-sm btn-outline-primary mb-2" onclick="downloadEssentiaModels()"><i class="bi bi-cloud-download"></i> Download Models (~87 MB)</button>
+        <span id="essentiaDownloadStatus" class="ms-2 small text-muted"></span>
+        <div class="progress mb-2 d-none" id="essentiaProgress" style="height:6px"><div class="progress-bar" id="essentiaProgressBar" style="width:0%"></div></div>
+        <div class="row g-2">
+          <div class="col-6"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="essentiaMoods" checked><label class="form-check-label small" for="essentiaMoods">Detect Moods</label></div></div>
+          <div class="col-6"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="essentiaGenres"><label class="form-check-label small" for="essentiaGenres">Detect Genres</label></div></div>
         </div>
       </div>
     </div>
+    <div class="d-flex justify-content-between">
+      <button class="btn btn-outline-secondary" onclick="goToStep(2)"><i class="bi bi-arrow-left"></i> Back</button>
+      <button class="btn btn-primary" onclick="goToStep(4)">Skip & Finish <i class="bi bi-arrow-right"></i></button>
+    </div>
+  </div>
+
+  <!-- Step 4: Summary & Save -->
+  <div class="step-card d-none" id="step4">
+    <div class="text-center mb-4">
+      <i class="bi bi-check-circle" style="font-size:3rem;color:var(--spotify-green);"></i>
+      <h4 class="mt-2">You're All Set!</h4>
+    </div>
+    <div class="border rounded p-3 mb-2"><h6><i class="bi bi-server"></i> Navidrome</h6><p class="mb-0 small" id="summaryNavidrome">-</p></div>
+    <div class="border rounded p-3 mb-2"><h6><i class="bi bi-database"></i> Database</h6><p class="mb-0 small text-muted" id="summaryDatabase">SQLite (first-run mode)</p></div>
+    <div class="border rounded p-3 mb-2"><h6><i class="bi bi-plug"></i> APIs</h6><p class="mb-0 small text-muted" id="summaryApis">None enabled</p></div>
+    <div class="border rounded p-3 mb-3"><h6><i class="bi bi-cpu"></i> Essentia</h6><p class="mb-0 small text-muted" id="summaryEssentia">Not enabled</p></div>
+    <div class="d-flex justify-content-between">
+      <button class="btn btn-outline-secondary" onclick="goToStep(3)"><i class="bi bi-arrow-left"></i> Back</button>
+      <button class="btn btn-primary btn-lg" onclick="saveSetup()"><i class="bi bi-check-circle"></i> Save & Go to Dashboard</button>
+    </div>
   </div>
 </div>
-{% endblock %}
+
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index:11"><div id="setupToast" class="toast"><div class="toast-header"><strong class="me-auto" id="toastTitle">Status</strong><button type="button" class="btn-close" data-bs-dismiss="toast"></button></div><div class="toast-body" id="toastMessage"></div></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+async function testConnection() {
+  const btn=event.target, status=document.getElementById('connectionStatus');
+  btn.disabled=true; status.textContent='Testing...'; status.className='ms-2 small text-muted';
+  try {
+    const r=await fetch('/api/test-navidrome-connection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:document.getElementById('navUrl').value,username:document.getElementById('navUser').value,password:document.getElementById('navPass').value})});
+    const d=await r.json();
+    if(d.success){status.textContent=d.message;status.className='ms-2 small text-success';}else{status.textContent=d.error;status.className='ms-2 small text-danger';}
+  }catch(e){status.textContent='Network error: '+e.message;status.className='ms-2 small text-danger';}
+  btn.disabled=false;
+}
+function goToStep(n) { for(let i=1;i<=4;i++) document.getElementById('step'+i).classList.toggle('d-none',i!==n); document.querySelectorAll('.step-dot').forEach(d=>{const s=parseInt(d.dataset.step);d.classList.toggle('active',s===n);d.classList.toggle('done',s<n);}); if(n===4) updateSummary(); }
+function toggleEssentiaOptions() { const e=document.getElementById('essentiaEnabled').checked; document.getElementById('essentiaOptions').classList.toggle('d-none',!e); }
+async function downloadEssentiaModels() {
+  const btn=event.target, status=document.getElementById('essentiaDownloadStatus'), prog=document.getElementById('essentiaProgress'), bar=document.getElementById('essentiaProgressBar');
+  btn.disabled=true; status.textContent='Starting...'; prog.classList.remove('d-none'); bar.style.width='10%';
+  try {
+    await fetch('/essentia/download-models',{method:'POST'});
+    status.textContent='Downloading...'; bar.style.width='50%';
+    for(let i=0;i<60;i++){await new Promise(r=>setTimeout(r,5000));try{const r=await(await fetch('/essentia/download-status')).json();if(r.status==='idle'||r.status==='complete'){status.textContent='✅ Ready';bar.style.width='100%';bar.classList.add('bg-success');return;}}catch(e){}}
+    status.textContent='Timed out — may continue in background.';
+  } catch(e) { status.textContent='Failed: '+e.message; bar.classList.add('bg-danger'); }
+}
+function updateSummary() {
+  document.getElementById('summaryNavidrome').innerHTML='<strong>'+(document.getElementById('navUser').value||'username')+'</strong> @ '+(document.getElementById('navUrl').value||'not set');
+  const pgHost=document.getElementById('pgHost').value.trim();
+  document.getElementById('summaryDatabase').innerHTML=pgHost?'<strong>PostgreSQL</strong> @ '+pgHost+'/'+(document.getElementById('pgDb').value||'popularr'):'<span class="text-muted">SQLite (first-run mode)</span>';
+  const apis=[]; if(document.getElementById('spEnabled').checked) apis.push('Spotify'); if(document.getElementById('lfmEnabled').checked) apis.push('Last.fm'); if(document.getElementById('dgEnabled').checked) apis.push('Discogs');
+  document.getElementById('summaryApis').textContent=apis.length?apis.join(', '):'None enabled';
+  document.getElementById('summaryEssentia').textContent=document.getElementById('essentiaEnabled').checked?'Will be enabled':'Not enabled';
+}
+async function saveSetup() {
+  const btn=document.querySelector('#step4 .btn-primary'); btn.disabled=true; btn.innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+  const pgHost=document.getElementById('pgHost').value.trim();
+  const config={navidrome_users:[{user:document.getElementById('navUser').value,display_name:document.getElementById('navUser').value,base_url:document.getElementById('navUrl').value,pass:document.getElementById('navPass').value}],api_integrations:{spotify:{enabled:document.getElementById('spEnabled').checked,client_id:document.getElementById('spClientId').value,client_secret:document.getElementById('spClientSecret').value},lastfm:{enabled:document.getElementById('lfmEnabled').checked,api_key:document.getElementById('lfmApiKey').value},discogs:{enabled:document.getElementById('dgEnabled').checked,token:document.getElementById('dgToken').value},musicbrainz:{enabled:true},listenbrainz:{enabled:false},audiodb:{enabled:false},google:{enabled:false},youtube:{enabled:false}}};
+  if(pgHost){config.PG_HOST=pgHost;config.PG_PORT=document.getElementById('pgPort').value.trim()||'5432';config.PG_USER=document.getElementById('pgUser').value.trim()||'popularr';config.PG_PASSWORD=document.getElementById('pgPass').value;config.PG_DATABASE=document.getElementById('pgDb').value.trim()||'popularr';}
+  if(document.getElementById('essentiaEnabled').checked) config.essentia={script_path:'/opt/Essentia-to-Metadata/tag_music.py',models_dir:'/opt/essentia_models',mood_threshold:0.005,per_file_timeout:300,tag_moods:document.getElementById('essentiaMoods').checked,tag_genres:document.getElementById('essentiaGenres').checked,parse_json_features:true,delete_json_after_import:true};
+  try{const r=await fetch('/api/setup/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});const d=await r.json();if(d.success){showToast('Redirecting...','success');setTimeout(()=>window.location.href='/',1000);}else{showToast(d.error||'Failed','error');btn.disabled=false;btn.innerHTML='<i class="bi bi-check-circle"></i> Save & Go to Dashboard';}}catch(e){showToast('Network error: '+e.message,'error');btn.disabled=false;btn.innerHTML='<i class="bi bi-check-circle"></i> Save & Go to Dashboard';}
+}
+function showToast(msg,type){const t=new bootstrap.Toast(document.getElementById('setupToast'));document.getElementById('toastMessage').textContent=msg;const e=document.getElementById('setupToast');e.classList.remove('bg-success','bg-danger','text-white');if(type==='success')e.classList.add('bg-success','text-white');else if(type==='error')e.classList.add('bg-danger','text-white');t.show();}
+</script>
+</body>
+</html>

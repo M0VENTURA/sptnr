@@ -13,7 +13,7 @@ WIKIPEDIA_SUMMARY_API = "https://en.wikipedia.org/api/rest_v1/page/summary/{titl
 class WikidataHttpClient:
     def __init__(self, http_session=None):
         self.session = http_session or create_retry_client(
-            user_agent="sptnr/2.0 ( https://github.com/M0VENTURA/sptnr )",
+            user_agent="Popularr/2.0 ( https://github.com/M0VENTURA/Popularr )",
             retries=2,
             backoff=1.0,
         )

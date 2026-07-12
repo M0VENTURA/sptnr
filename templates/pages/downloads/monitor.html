@@ -7469,7 +7469,7 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Listen for queue updates from other tabs/windows (e.g., downloads.html)
   window.addEventListener('storage', function(e) {
-    if (e.key === 'popularr_queue_updated' || e.key === 'sptnr_queue_updated') {
+    if (e.key === 'popularr_queue_updated') {
       console.log('Queue updated from another tab, refreshing immediately...');
       loadQueueStatus();
       loadFolderGroups({ keepVisibleOnEmpty: true });

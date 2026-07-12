@@ -1,4 +1,4 @@
-"""Shared PostgreSQL schema definitions for Popularr/SPTNR."""
+"""Shared PostgreSQL schema definitions for Popularr."""
 
 from __future__ import annotations
 

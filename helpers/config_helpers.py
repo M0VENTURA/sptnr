@@ -1039,12 +1039,12 @@ def get_musicbrainz_user_agent() -> str:
         MusicBrainz requires a unique UA for API access.
 
     Default:
-        "Popularr/1.0 +https://github.com/M0VENTURA/sptnr"
+        "Popularr/1.0 +https://github.com/M0VENTURA/Popularr"
     """
     cfg = get_config()
     return str(
         cfg.get("musicbrainz", {})
-        .get("user_agent", "Popularr/1.0 +https://github.com/M0VENTURA/sptnr")
+        .get("user_agent", "Popularr/1.0 +https://github.com/M0VENTURA/Popularr")
     )
 
 

@@ -353,6 +353,27 @@ class NavidromeClient:
             return {"success": False, "error": str(exc)}
 
     # ------------------------------------------------------------------
+    # Connection test
+    # ------------------------------------------------------------------
+
+    def ping(self) -> bool:
+        """Test the connection to Navidrome.
+
+        Calls Subsonic ``ping`` endpoint which returns
+        ``{"subsonic-response": {"status": "ok"}}`` on success.
+
+        Returns:
+            True when the server responds and credentials are valid.
+        """
+        try:
+            data = self._get_subsonic_response("ping", timeout=10)
+            status = data.get("subsonic-response", {}).get("status")
+            return status == "ok"
+        except Exception as exc:
+            logger.debug("Navidrome ping failed: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
     # Rating endpoint
     # ------------------------------------------------------------------
 

@@ -29,7 +29,7 @@ class AppleMusicClient:
         self.session = http_session or session
         self.enabled = enabled
         self.base_url = "https://itunes.apple.com/search"
-        self.headers = {"User-Agent": "sptnr-cli/1.0"}
+        self.headers = {"User-Agent": "Popularr/1.0"}
 
     def _search(self, term: str, entity: str, limit: int, timeout: float = 10.0) -> list[dict[str, Any]]:
         if not self.enabled or not term:

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Popularr/SPTNR container entrypoint.
+# Popularr container entrypoint.
 # Orchestration only; database logic lives in db/ and migrations/.
 
 set -Eeuo pipefail

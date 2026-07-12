@@ -32,7 +32,7 @@ def get_version() -> str:
         return "2.0.0-alpha"
 
 
-USER_AGENT = f"sptnr/{get_version()} ( https://github.com/M0VENTURA/sptnr )"
+USER_AGENT = f"Popularr/{get_version()} ( https://github.com/M0VENTURA/Popularr )"
 MUSICBRAINZ_UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,

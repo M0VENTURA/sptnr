@@ -1,5 +1,5 @@
 """
-Centralized logging configuration for Popularr (SPTNR).
+Centralized logging configuration for Popularr.
 Config-driven, thread-safe logging configuration.
 """
 
@@ -67,7 +67,7 @@ class SafePrefixFormatter(logging.Formatter):
         return result
 
 
-def setup_logging(service_name: str = "sptnr") -> None:
+def setup_logging(service_name: str = "popularr") -> None:
     """Configures centralized logging system via dictConfig."""
     log_dir = resolve_log_dir()
     

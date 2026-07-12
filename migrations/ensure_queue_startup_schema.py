@@ -11,7 +11,9 @@ Purpose:
 import os
 import sys
 import logging
+import socket
 import threading
+import time
 
 # Ensure the project root is on sys.path so ``from db import ...`` works
 # regardless of which directory the script is invoked from.
@@ -62,7 +64,6 @@ def get_connection(retries: int = 5, delay: float = 2.0):
         port = os.environ.get("PG_PORT", "5432")
         db_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
 
-    import time
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
@@ -78,7 +79,7 @@ def get_connection(retries: int = 5, delay: float = 2.0):
                 print(f"  ⏳ DB connection attempt {attempt}/{retries} failed, retrying in {wait:.0f}s: {exc}")
                 time.sleep(wait)
             else:
-                raise last_error  # type: ignore[misc]
+                raise last_error
 
 
 def ensure_schema(cursor):
@@ -126,10 +127,16 @@ def ensure_schema(cursor):
 
 def _is_pg_configured() -> bool:
     """Return True when the environment has PostgreSQL configuration."""
-    if os.environ.get("DATABASE_URL", "").strip():
+    db_url = os.environ.get("DATABASE_URL", "").strip()
+    if db_url and db_url.startswith("postgres"):
         return True
-    if os.environ.get("PG_HOST", "").strip():
-        return True
+    pg_host = os.environ.get("PG_HOST", "").strip()
+    if pg_host:
+        try:
+            socket.getaddrinfo(pg_host, 5432, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            return True
+        except socket.gaierror:
+            print(f"  ⚠ Hostname '{pg_host}' could not be resolved — treating as not configured")
     return False
 
 
@@ -140,8 +147,8 @@ def main():
         return 0
 
     try:
-        conn = get_connection(retries=5, delay=2.0)
-        with conn:  # auto-commit/rollback on exit
+        conn = get_connection(retries=2, delay=2.0)
+        with conn:
             with conn.cursor() as cursor:
                 ensure_schema(cursor)
         conn.close()

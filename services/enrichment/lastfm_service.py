@@ -67,9 +67,9 @@ class RecommendationCache:
         
         Args:
             cache_dir: Optional custom directory for cache storage.
-                Defaults to ~/.cache/sptnr if not provided.
+                Defaults to ~/.cache/popularr if not provided.
         """
-        self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "sptnr"
+        self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "popularr"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_file = self.cache_dir / "lastfm_recommendations.json"
 

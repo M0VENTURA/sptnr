@@ -22,7 +22,7 @@ except ImportError:  # pragma: no cover - depends on runtime image
     execute_values = None
 
 
-DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
+DB_PATH = os.environ.get("DB_PATH", "/database/popularr.db")
 
 _PG_LAST_FAILURE_MONOTONIC = 0.0
 _PG_FAILURE_BACKOFF_SECONDS = float(os.environ.get("PG_FAILURE_BACKOFF_SECONDS", "30"))
@@ -167,7 +167,7 @@ def get_db_connection() -> AutoRollbackPGConnection:
     pg_port = int(os.environ.get("PG_PORT") or os.environ.get("PGPORT") or "5432")
     pg_user = os.environ.get("PG_USER") or os.environ.get("PGUSER") or ""
     pg_password = os.environ.get("PG_PASSWORD") or os.environ.get("PGPASSWORD") or ""
-    pg_database = os.environ.get("PG_DATABASE") or os.environ.get("PGDATABASE") or "sptnr"
+    pg_database = os.environ.get("PG_DATABASE") or os.environ.get("PGDATABASE") or "popularr"
     options = _build_pg_options()
 
     last_exc: Exception = RuntimeError("PostgreSQL connection failed: no attempts made")

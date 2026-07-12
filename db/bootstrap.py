@@ -1,4 +1,4 @@
-"""Full PostgreSQL schema bootstrap for Popularr/SPTNR."""
+"""Full PostgreSQL schema bootstrap for Popularr."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from db.schema import (
 from db.schema_helpers import table_exists, get_table_columns
 from db.utils import get_db_connection, is_transient_pg_startup_error
 
-_SCHEMA_BOOTSTRAP_LOCK_NAME = "sptnr_schema_bootstrap"
+_SCHEMA_BOOTSTRAP_LOCK_NAME = "popularr_schema_bootstrap"
 _ALBUM_ART_DATA_LOCK_KEY = 915317411
 _ALBUM_ART_SCHEMA_LOCK_KEY = 1986627450
 
@@ -27,14 +27,14 @@ _ALBUM_ART_SCHEMA_LOCK_KEY = 1986627450
 # =============================================================================
 
 def _ensure_table(cursor: Any, table_name: str, ddl: str) -> None:
-    cursor.execute("SAVEPOINT sptnr_schema_table_create")
+    cursor.execute("SAVEPOINT popularr_schema_table_create")
     try:
         cursor.execute(ddl)
     except Exception as exc:
-        cursor.execute("ROLLBACK TO SAVEPOINT sptnr_schema_table_create")
+        cursor.execute("ROLLBACK TO SAVEPOINT popularr_schema_table_create")
         if "already exists" not in str(exc).lower() and "duplicate" not in str(exc).lower(): raise
     finally:
-        try: cursor.execute("RELEASE SAVEPOINT sptnr_schema_table_create")
+        try: cursor.execute("RELEASE SAVEPOINT popularr_schema_table_create")
         except Exception: pass
 
 def _ensure_columns(cursor: Any, table_name: str, columns: dict[str, str]) -> None:

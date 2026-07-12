@@ -25,7 +25,7 @@ Environment variables:
     PG_USER       – PostgreSQL user (default: popularr)
     PG_PASSWORD   – PostgreSQL password
     PG_DATABASE   – PostgreSQL database name (default: popularr)
-    DB_PATH       – SQLite fallback path (default: /database/sptnr.db)
+    DB_PATH       – SQLite fallback path (default: /database/popularr.db)
 """
 
 from __future__ import annotations
@@ -58,8 +58,10 @@ class Base(DeclarativeBase):
 def _resolve_database_url() -> str:
     """Build the database connection string from environment variables.
 
-    Returns a PostgreSQL URL if PG_* vars are set, otherwise falls back to
-    an embedded SQLite database (matching the legacy behaviour).
+    Returns a PostgreSQL URL if PG_* vars are set.
+    Falls back to SQLite ONLY when no PostgreSQL configuration exists at
+    all — this covers the first-run / setup-wizard scenario.  If PG_HOST
+    is set but unreachable the error propagates (fail fast).
     """
     explicit = os.environ.get("DATABASE_URL", "").strip()
     if explicit:
@@ -72,7 +74,6 @@ def _resolve_database_url() -> str:
         pg_pass = os.environ.get("PG_PASSWORD", "").strip()
         pg_db = os.environ.get("PG_DATABASE", "popularr").strip()
 
-        # URL-encode the password to handle special characters
         from urllib.parse import quote_plus
         encoded_pass = quote_plus(pg_pass) if pg_pass else ""
 
@@ -80,9 +81,10 @@ def _resolve_database_url() -> str:
             return f"postgresql+psycopg2://{pg_user}:{encoded_pass}@{pg_host}:{pg_port}/{pg_db}"
         return f"postgresql+psycopg2://{pg_user}@{pg_host}:{pg_port}/{pg_db}"
 
-    # SQLite fallback (legacy behaviour)
-    db_path = os.environ.get("DB_PATH", "/database/sptnr.db")
-    logger.info("No PG_* vars set — falling back to SQLite at %s", db_path)
+    # SQLite fallback — only reached when no PostgreSQL is configured at all,
+    # meaning the app is running in first-run / setup-wizard mode.
+    db_path = os.environ.get("DB_PATH", "/database/popularr.db")
+    logger.info("No PG_HOST/DATABASE_URL set — using SQLite at %s (first-run mode)", db_path)
     return f"sqlite:///{db_path}"
 
 
