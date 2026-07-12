@@ -3,6 +3,7 @@
 {% block title %}{{ album_name }} - {{ artist_name }} - Popularr{% endblock %}
 
 {% block content %}
+<script id="page-data" type="application/json">{{ {"artistName": artist_name, "albumName": album_name} | tojson | safe }}</script>
 <div class="container-fluid mt-4">
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
@@ -1560,6 +1561,9 @@
 </div>
 
 <script>
+    // Load page data from JSON script tag
+    var _pd = JSON.parse(document.getElementById('page-data').textContent);
+
     // Global variables for album page
     let currentEditTrackId = null;
     let currentEditTrackTitle = null;
@@ -1603,8 +1607,8 @@
     }
 
     function lookupAlbumMusicBrainz() {
-        const album = {{ album_name|tojson }};
-        const artist = {{ artist_name|tojson }};
+        const album = _pd.albumName;
+        const artist = _pd.artistName;
         // Pass the existing stored MBID (release MBID) so the API can do a direct
         // lookup for it and include it in results for comparison.
         const existingMbid = (document.getElementById('album_mbid') || {}).value || '';
@@ -1668,8 +1672,8 @@
     }
 
     function lookupAlbumDiscogs() {
-        const album = {{ album_name|tojson }};
-        const artist = {{ artist_name|tojson }};
+        const album = _pd.albumName;
+        const artist = _pd.artistName;
         
         const resultsDiv = document.getElementById('albumLookupResults');
         resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching Discogs...';
@@ -1856,8 +1860,8 @@
 
     // ── Auto-pick release from a release group ──────────────────────────────
     async function autoPickRelease(rgMbid, title, year, albumType, coverArtUrl) {
-        const artist = {{ artist_name|tojson }};
-        const album = {{ album_name|tojson }};
+        const artist = _pd.artistName;
+        const album = _pd.albumName;
 
         try {
             const resp = await fetch('/api/album/musicbrainz/best-release', {
@@ -2408,8 +2412,8 @@
     }
 
     function ignoreMissingTrack(btn) {
-        const albumArtist = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
+        const albumArtist = _pd.artistName;
+        const albumName = _pd.albumName;
         const missingId = btn.dataset.missingId || '';
         const title = btn.dataset.title || '';
         const discNumber = parseInt(btn.dataset.discNumber || '1', 10);
@@ -2739,8 +2743,8 @@
     let mbComparisonData = null;
 
     async function compareMBTracksWithLibrary(releaseGroupMbid) {
-        const artist = {{ artist_name|tojson }};
-        const album = {{ album_name|tojson }};
+        const artist = _pd.artistName;
+        const album = _pd.albumName;
 
         _showMBCompareBanner(
             '<span class="spinner-border spinner-border-sm me-2" role="status"></span> Comparing tracks with MusicBrainz…',
@@ -2799,8 +2803,8 @@
     }
 
     function _injectMissingTrackRows(missingTracks, data) {
-        const albumArtist = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
+        const albumArtist = _pd.artistName;
+        const albumName = _pd.albumName;
         const mbYear = escapeHtml(String(data.mb_year || ''));
         const releaseId = escapeHtml(String(data.release_group_mbid || ''));
 
@@ -4548,7 +4552,7 @@
     // External source fetching only happens during the popularity/singles detection scan.
 
     document.addEventListener('DOMContentLoaded', function() {
-        const artist = {{ artist_name|tojson }};
+        const artist = _pd.artistName;
         if (artist && artist.length > 0) {
             loadSimilarArtistsForAlbum(artist);
         }
@@ -5171,8 +5175,8 @@ function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
 // full page reload.
 // ---------------------------------------------------------------------------
 (function () {
-    const _albumArtist = {{ artist_name | tojson }};
-    const _albumName   = {{ album_name  | tojson }};
+    const _albumArtist = _pd.artistName;
+    const _albumName   = _pd.albumName;
 
     // Collect all queue-status badge spans on the page at startup.
     // Each queued track row has data-track-id on the <tr> and badge spans

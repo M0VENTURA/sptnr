@@ -113,6 +113,14 @@
       </div>
       <input type="text" class="form-control form-control-sm" id="dgToken" placeholder="Personal Access Token">
     </div>
+    <div class="border rounded p-3 mb-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0"><i class="bi bi-headphones text-secondary"></i> ListenBrainz</h6>
+        <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="lbEnabled" checked><label class="form-check-label small" for="lbEnabled">Enable</label></div>
+      </div>
+      <input type="text" class="form-control form-control-sm" id="lbToken" placeholder="User Token">
+      <small class="form-text text-muted">Get your token from <a href="https://listenbrainz.org/settings/" target="_blank" rel="noopener">listenbrainz.org/settings</a></small>
+    </div>
     <div class="d-flex justify-content-between">
       <button class="btn btn-outline-secondary" onclick="goToStep(1)"><i class="bi bi-arrow-left"></i> Back</button>
       <button class="btn btn-primary" onclick="goToStep(3)">Skip & Continue <i class="bi bi-arrow-right"></i></button>
@@ -189,9 +197,9 @@ async function downloadEssentiaModels() {
   const btn=event.target, status=document.getElementById('essentiaDownloadStatus'), prog=document.getElementById('essentiaProgress'), bar=document.getElementById('essentiaProgressBar');
   btn.disabled=true; status.textContent='Starting...'; prog.classList.remove('d-none'); bar.style.width='10%';
   try {
-    await fetch('/essentia/download-models',{method:'POST'});
+    await fetch('/api/essentia/download-models',{method:'POST'});
     status.textContent='Downloading...'; bar.style.width='50%';
-    for(let i=0;i<60;i++){await new Promise(r=>setTimeout(r,5000));try{const r=await(await fetch('/essentia/download-status')).json();if(r.status==='idle'||r.status==='complete'){status.textContent='✅ Ready';bar.style.width='100%';bar.classList.add('bg-success');return;}}catch(e){}}
+    for(let i=0;i<60;i++){await new Promise(r=>setTimeout(r,5000));try{const r=await(await fetch('/api/essentia/download-status')).json();if(r.status==='idle'||r.status==='complete'){status.textContent='✅ Ready';bar.style.width='100%';bar.classList.add('bg-success');return;}}catch(e){}}
     status.textContent='Timed out — may continue in background.';
   } catch(e) { status.textContent='Failed: '+e.message; bar.classList.add('bg-danger'); }
 }
@@ -199,14 +207,15 @@ function updateSummary() {
   document.getElementById('summaryNavidrome').innerHTML='<strong>'+(document.getElementById('navUser').value||'username')+'</strong> @ '+(document.getElementById('navUrl').value||'not set');
   const pgHost=document.getElementById('pgHost').value.trim();
   document.getElementById('summaryDatabase').innerHTML=pgHost?'<strong>PostgreSQL</strong> @ '+pgHost+'/'+(document.getElementById('pgDb').value||'popularr'):'<span class="text-muted">SQLite (first-run mode)</span>';
-  const apis=[]; if(document.getElementById('spEnabled').checked) apis.push('Spotify'); if(document.getElementById('lfmEnabled').checked) apis.push('Last.fm'); if(document.getElementById('dgEnabled').checked) apis.push('Discogs');
+  const apis=[]; if(document.getElementById('spEnabled').checked) apis.push('Spotify'); if(document.getElementById('lfmEnabled').checked) apis.push('Last.fm'); if(document.getElementById('dgEnabled').checked) apis.push('Discogs'); if(document.getElementById('lbEnabled').checked) apis.push('ListenBrainz');
   document.getElementById('summaryApis').textContent=apis.length?apis.join(', '):'None enabled';
   document.getElementById('summaryEssentia').textContent=document.getElementById('essentiaEnabled').checked?'Will be enabled':'Not enabled';
 }
 async function saveSetup() {
   const btn=document.querySelector('#step4 .btn-primary'); btn.disabled=true; btn.innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
   const pgHost=document.getElementById('pgHost').value.trim();
-  const config={navidrome_users:[{user:document.getElementById('navUser').value,display_name:document.getElementById('navUser').value,base_url:document.getElementById('navUrl').value,pass:document.getElementById('navPass').value}],api_integrations:{spotify:{enabled:document.getElementById('spEnabled').checked,client_id:document.getElementById('spClientId').value,client_secret:document.getElementById('spClientSecret').value},lastfm:{enabled:document.getElementById('lfmEnabled').checked,api_key:document.getElementById('lfmApiKey').value},discogs:{enabled:document.getElementById('dgEnabled').checked,token:document.getElementById('dgToken').value},musicbrainz:{enabled:true},listenbrainz:{enabled:false},audiodb:{enabled:false},google:{enabled:false},youtube:{enabled:false}}};
+  const lbToken=document.getElementById('lbToken').value.trim();
+  const config={navidrome_users:[{user:document.getElementById('navUser').value,display_name:document.getElementById('navUser').value,base_url:document.getElementById('navUrl').value,pass:document.getElementById('navPass').value,listenbrainz_user_token:lbToken}],api_integrations:{spotify:{enabled:document.getElementById('spEnabled').checked,client_id:document.getElementById('spClientId').value,client_secret:document.getElementById('spClientSecret').value},lastfm:{enabled:document.getElementById('lfmEnabled').checked,api_key:document.getElementById('lfmApiKey').value},discogs:{enabled:document.getElementById('dgEnabled').checked,token:document.getElementById('dgToken').value},musicbrainz:{enabled:true},listenbrainz:{enabled:document.getElementById('lbEnabled').checked},audiodb:{enabled:false},google:{enabled:false},youtube:{enabled:false}}};
   if(pgHost){config.PG_HOST=pgHost;config.PG_PORT=document.getElementById('pgPort').value.trim()||'5432';config.PG_USER=document.getElementById('pgUser').value.trim()||'popularr';config.PG_PASSWORD=document.getElementById('pgPass').value;config.PG_DATABASE=document.getElementById('pgDb').value.trim()||'popularr';}
   if(document.getElementById('essentiaEnabled').checked) config.essentia={script_path:'/opt/Essentia-to-Metadata/tag_music.py',models_dir:'/opt/essentia_models',mood_threshold:0.005,per_file_timeout:300,tag_moods:document.getElementById('essentiaMoods').checked,tag_genres:document.getElementById('essentiaGenres').checked,parse_json_features:true,delete_json_after_import:true};
   try{const r=await fetch('/api/setup/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});const d=await r.json();if(d.success){showToast('Redirecting...','success');setTimeout(()=>window.location.href='/',1000);}else{showToast(d.error||'Failed','error');btn.disabled=false;btn.innerHTML='<i class="bi bi-check-circle"></i> Save & Go to Dashboard';}}catch(e){showToast('Network error: '+e.message,'error');btn.disabled=false;btn.innerHTML='<i class="bi bi-check-circle"></i> Save & Go to Dashboard';}

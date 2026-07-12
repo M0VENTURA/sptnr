@@ -249,13 +249,8 @@ def queue_clear(
                     {"status": "imported"},
                 )
 
-            cursor.execute(
-                query,
-                params,
-            )
-
             deleted = int(
-                cursor.rowcount or 0
+                result.rowcount or 0
             )
 
         return {
