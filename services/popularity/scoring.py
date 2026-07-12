@@ -10,11 +10,7 @@ Combines:
 - Z-score calculations
 """
 
-from services.popularity.popularity_math import (
-    calculate_lastfm_popularity_score,
-    calculate_listenbrainz_popularity_score,
-    calculate_combined_popularity_score,
-)
+from services.popularity.popularity_math import calculate_combined_popularity_score
 
 
 def calculate_track_score(track):
@@ -33,7 +29,7 @@ def calculate_track_score(track):
     )
 
     return {
-        "lastfm_score": combined["lastfm"],
-        "listenbrainz_score": combined["listenbrainz"],
-        "final_score": combined["combined"],
+        "lastfm_score": combined.get("lastfm_score", 0),
+        "listenbrainz_score": combined.get("listenbrainz_score", 0),
+        "final_score": combined.get("combined_score", 0),
     }

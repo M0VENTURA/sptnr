@@ -579,8 +579,29 @@ def api_essentia_download_models():
 
 @misc_api_bp.route("/essentia/download-status")
 def api_essentia_download_status():
-    """Return download status for Essentia models."""
-    return jsonify({"status": "idle"}), 200
+    """Return download status for Essentia models.
+
+    Checks whether the configured models directory exists and contains
+    model files (``.pb`` / ``.json``).  Returns ``"installed"`` when
+    at least one model file is found, so the UI can hide the download
+    button.
+    """
+    from helpers.config_helpers import get_config
+    import os
+
+    cfg = get_config()
+    models_dir = (
+        (cfg.get("essentia", {}) or {}).get("models_dir")
+        or os.environ.get("ESSENTIA_MODELS_DIR")
+        or "/opt/essentia_models"
+    )
+
+    if os.path.isdir(models_dir):
+        model_files = [f for f in os.listdir(models_dir) if f.endswith((".pb", ".json"))]
+        if model_files:
+            return jsonify({"status": "installed", "models_dir": models_dir, "file_count": len(model_files)}), 200
+
+    return jsonify({"status": "idle", "models_dir": models_dir}), 200
 
 
 # ===========================================================================

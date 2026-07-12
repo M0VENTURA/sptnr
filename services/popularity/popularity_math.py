@@ -108,6 +108,10 @@ def calculate_combined_popularity_score(
 
     age_score = 0.0
     if release_date and age_source_value:
+        # Decay raw count by age, then normalise to 0-100.
+        # Decay-then-normalise (vs normalise-then-decay) retains better
+        # discrimination: a recent smash still scores ~73, while a 5-year-old
+        # hit with the same raw count scores ~65.
         aged, _days = score_by_age(age_source_value, release_date)
         age_score = calculate_listenbrainz_popularity_score(int(aged or 0))
 
@@ -115,6 +119,10 @@ def calculate_combined_popularity_score(
     has_mismatch = is_source_mismatch(lastfm_listeners, listenbrainz_listens)
     is_unreliable = is_lastfm_unreliable(lastfm_listeners, listenbrainz_listens)
     
+    # Build active score/weight pairs so missing sources don't dilute the blend
+    active_scores: list[float] = []
+    active_weights: list[float] = []
+
     if has_mismatch or is_unreliable:
         # Use dynamic weights when sources conflict
         lf_weight, lb_weight = adjust_weights(
@@ -123,14 +131,30 @@ def calculate_combined_popularity_score(
             is_featured_track=False,
             metadata_confirmed=False
         )
-        combined = (lastfm_score * lf_weight) + (lb_score * lb_weight) + (age_score * AGE_WEIGHT)
+        if lastfm_score > 0:
+            active_scores.append(lastfm_score)
+            active_weights.append(lf_weight)
+        if lb_score > 0:
+            active_scores.append(lb_score)
+            active_weights.append(lb_weight)
     else:
         # Use default weights when sources agree
-        combined = (
-            (lastfm_score * LASTFM_WEIGHT)
-            + (lb_score * LISTENBRAINZ_WEIGHT)
-            + (age_score * AGE_WEIGHT)
-        )
+        if lastfm_score > 0:
+            active_scores.append(lastfm_score)
+            active_weights.append(LASTFM_WEIGHT)
+        if lb_score > 0:
+            active_scores.append(lb_score)
+            active_weights.append(LISTENBRAINZ_WEIGHT)
+
+    if age_score > 0:
+        active_scores.append(age_score)
+        active_weights.append(AGE_WEIGHT)
+
+    if active_scores and active_weights:
+        total_weight = sum(active_weights)
+        combined = sum(s * w for s, w in zip(active_scores, active_weights)) / total_weight
+    else:
+        combined = 0.0
     
     return {
         "combined_score": round(min(100.0, max(0.0, combined)), 3),

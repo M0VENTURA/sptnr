@@ -102,7 +102,39 @@ def logout():
 
 @ui_bp.route("/setup", methods=["GET", "POST"])
 async def setup():
-    # Pass PG env vars so the wizard can pre-fill them
+    from helpers.config_helpers import get_config
+
+    # Read existing config so the wizard can pre-fill previously saved values
+    cfg = get_config()
+    nav_users = cfg.get("navidrome_users", [])
+    nav_first = nav_users[0] if nav_users else {}
+    api = cfg.get("api_integrations", {})
+
+    setup_defaults = {
+        # Navidrome
+        "nav_url": nav_first.get("base_url", ""),
+        "nav_user": nav_first.get("user", ""),
+        "nav_pass": nav_first.get("pass", ""),
+        # Spotify
+        "sp_enabled": api.get("spotify", {}).get("enabled", False),
+        "sp_client_id": api.get("spotify", {}).get("client_id", ""),
+        "sp_client_secret": api.get("spotify", {}).get("client_secret", ""),
+        # Last.fm
+        "lfm_enabled": api.get("lastfm", {}).get("enabled", False),
+        "lfm_api_key": api.get("lastfm", {}).get("api_key", ""),
+        # Discogs
+        "dg_enabled": api.get("discogs", {}).get("enabled", False),
+        "dg_token": api.get("discogs", {}).get("token", ""),
+        # ListenBrainz
+        "lb_enabled": api.get("listenbrainz", {}).get("enabled", True),
+        "lb_token": nav_first.get("listenbrainz_user_token", ""),
+        # Essentia
+        "essentia_enabled": bool(cfg.get("essentia", {}).get("script_path")),
+        "essentia_tag_moods": cfg.get("essentia", {}).get("tag_moods", True),
+        "essentia_tag_genres": cfg.get("essentia", {}).get("tag_genres", False),
+    }
+
+    # PG env vars
     pg_defaults = {
         "host": os.environ.get("PG_HOST", ""),
         "port": os.environ.get("PG_PORT", "5432"),
@@ -110,9 +142,10 @@ async def setup():
         "password": os.environ.get("PG_PASSWORD", ""),
         "database": os.environ.get("PG_DATABASE", "popularr"),
     }
+
     if request.method == "POST":
-        return await render_template("auth/setup.html", message="Setup not yet implemented", pg=pg_defaults)
-    return await render_template("auth/setup.html", pg=pg_defaults)
+        return await render_template("auth/setup.html", message="Setup not yet implemented", pg=pg_defaults, defaults=setup_defaults)
+    return await render_template("auth/setup.html", pg=pg_defaults, defaults=setup_defaults)
 
 
 # ===========================================================================
