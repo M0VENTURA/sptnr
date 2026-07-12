@@ -1,0 +1,224 @@
+"""Low-level MusicBrainz HTTP client.
+
+Owns only MusicBrainz request mechanics:
+- User-Agent
+- throttling (1 request/sec per MusicBrainz policy)
+- Lucene escaping
+- raw endpoint wrappers
+- lookup, search, browse, and non-MBID lookups
+
+Business rules and DB writes belong in services/repositories.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import time
+from typing import Any
+
+from api_clients import session
+from services.infrastructure.api_rate_limiter import get_rate_limiter
+logger = logging.getLogger(__name__)
+
+
+def get_version() -> str:
+    try:
+        version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")
+        with open(version_file, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except Exception:
+        return "2.0.0-alpha"
+
+
+USER_AGENT = f"sptnr/{get_version()} ( https://github.com/M0VENTURA/sptnr )"
+MUSICBRAINZ_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+try:
+
+    _rate_limiter = get_rate_limiter()
+except Exception:
+    try:
+        _rate_limiter = get_rate_limiter()
+    except Exception:
+        _rate_limiter = None
+
+def escape_lucene_special_chars(text: str) -> str:
+    """Escape Lucene special chars for MusicBrainz search queries."""
+    special_chars = ['+', '-', '!', '(', ')', '{', '}', '[', ']', '^', '"', '~', '*', '?', ':', '\\', '/']
+    escaped = (text or "").replace('\\', '\\\\')
+    for char in special_chars:
+        if char != '\\':
+            escaped = escaped.replace(char, '\\' + char)
+    return escaped
+
+
+class MusicBrainzHttpClient:
+    """Raw MusicBrainz API wrapper."""
+
+    def __init__(self, http_session=None, enabled: bool = True):
+        self.session = http_session or session
+        self.enabled = enabled
+        self.base_url = "https://musicbrainz.org/ws/2/"
+        self.headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+
+    def throttle(self) -> None:
+        if _rate_limiter:
+            try:
+                _rate_limiter.throttle_musicbrainz()
+                return
+            except Exception:
+                pass
+        time.sleep(1.0)
+
+    def get(self, endpoint: str, *, params: dict[str, Any] | None = None, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+        if not self.enabled:
+            return {}
+        self.throttle()
+        response = self.session.get(
+            f"{self.base_url}{endpoint.lstrip('/')}",
+            params=params or {},
+            headers=self.headers,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    def search_release_groups(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        payload = self.get("release-group/", params={"query": query, "fmt": "json", "limit": max(1, min(limit, 25))})
+        return payload.get("release-groups", []) if isinstance(payload.get("release-groups"), list) else []
+
+    def search_releases(self, query: str, limit: int = 10, inc: str = "") -> list[dict[str, Any]]:
+        params = {"query": query, "fmt": "json", "limit": max(1, min(limit, 25))}
+        if inc:
+            params["inc"] = inc
+        payload = self.get("release/", params=params)
+        return payload.get("releases", []) if isinstance(payload.get("releases"), list) else []
+
+    def search_recordings(self, query: str, limit: int = 10, inc: str = "") -> list[dict[str, Any]]:
+        params = {"query": query, "fmt": "json", "limit": max(1, min(limit, 100))}
+        if inc:
+            params["inc"] = inc
+        payload = self.get("recording/", params=params)
+        return payload.get("recordings", []) if isinstance(payload.get("recordings"), list) else []
+
+    def search_artists(self, query: str, limit: int = 10, inc: str = "") -> list[dict[str, Any]]:
+        params = {"query": query, "fmt": "json", "limit": max(1, min(limit, 25))}
+        if inc:
+            params["inc"] = inc
+        payload = self.get("artist/", params=params)
+        return payload.get("artists", []) if isinstance(payload.get("artists"), list) else []
+
+    def get_release(self, release_mbid: str, inc: str = "", timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+        if not release_mbid:
+            return {}
+        params = {"fmt": "json"}
+        if inc:
+            params["inc"] = inc
+        return self.get(f"release/{release_mbid}", params=params, timeout=timeout)
+
+    def get_release_group(self, release_group_mbid: str, timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+        if not release_group_mbid:
+            return {}
+        return self.get(f"release-group/{release_group_mbid}", params={"fmt": "json"}, timeout=timeout)
+
+    def get_recording(self, recording_mbid: str, inc: str = "", timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+        if not recording_mbid:
+            return {}
+        params = {"fmt": "json"}
+        if inc:
+            params["inc"] = inc
+        return self.get(f"recording/{recording_mbid}", params=params, timeout=timeout)
+
+    def get_artist(self, artist_mbid: str, inc: str = "", timeout: tuple[int, int] | int = (5, 10)) -> dict[str, Any]:
+        if not artist_mbid:
+            return {}
+        params = {"fmt": "json"}
+        if inc:
+            params["inc"] = inc
+        return self.get(f"artist/{artist_mbid}", params=params, timeout=timeout)
+
+    def browse_releases_for_group(self, release_group_mbid: str, inc: str = "media", limit: int = 50) -> list[dict[str, Any]]:
+        payload = self.get("release", params={"fmt": "json", "release-group": release_group_mbid, "inc": inc, "limit": limit})
+        return payload.get("releases", []) if isinstance(payload.get("releases"), list) else []
+
+    # ------------------------------------------------------------------
+    # Browse endpoints (efficient lookups by linked entity)
+    # ------------------------------------------------------------------
+
+    def browse_artist_releases(self, artist_mbid: str, inc: str = "", limit: int = 25, offset: int = 0) -> dict[str, Any]:
+        """Browse releases for an artist MBID. Supports paging via offset."""
+        params = {"fmt": "json", "artist": artist_mbid, "limit": min(limit, 100), "offset": offset}
+        if inc:
+            params["inc"] = inc
+        payload = self.get("release", params=params)
+        return {
+            "releases": payload.get("releases", []) or [],
+            "release_count": payload.get("release-count", 0) or 0,
+            "release_offset": payload.get("release-offset", offset) or offset,
+        }
+
+    def browse_artist_release_groups(self, artist_mbid: str, inc: str = "", limit: int = 25, offset: int = 0) -> dict[str, Any]:
+        """Browse release-groups for an artist MBID."""
+        params = {"fmt": "json", "artist": artist_mbid, "limit": min(limit, 100), "offset": offset}
+        if inc:
+            params["inc"] = inc
+        payload = self.get("release-group", params=params)
+        return {
+            "release_groups": payload.get("release-groups", []) or [],
+            "release_group_count": payload.get("release-group-count", 0) or 0,
+            "release_group_offset": payload.get("release-group-offset", offset) or offset,
+        }
+
+    def browse_recording_by_release(self, release_mbid: str, inc: str = "", limit: int = 25, offset: int = 0) -> dict[str, Any]:
+        """Browse recordings directly linked to a release MBID."""
+        params = {"fmt": "json", "release": release_mbid, "limit": min(limit, 100), "offset": offset}
+        if inc:
+            params["inc"] = inc
+        payload = self.get("recording", params=params)
+        return {
+            "recordings": payload.get("recordings", []) or [],
+            "recording_count": payload.get("recording-count", 0) or 0,
+            "recording_offset": payload.get("recording-offset", offset) or offset,
+        }
+
+    # ------------------------------------------------------------------
+    # Non-MBID lookups (ISRC, discid, ISWC)
+    # ------------------------------------------------------------------
+
+    def lookup_by_isrc(self, isrc: str, inc: str = "") -> list[dict[str, Any]]:
+        """Lookup recordings by ISRC code."""
+        if not isrc:
+            return []
+        params = {"fmt": "json"}
+        if inc:
+            params["inc"] = inc
+        payload = self.get(f"isrc/{isrc}", params=params)
+        return payload.get("recordings", []) if isinstance(payload.get("recordings"), list) else []
+
+    # ------------------------------------------------------------------
+    # Genre-aware lookups (inc=genres)
+    # ------------------------------------------------------------------
+
+    def search_recordings_with_genres(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
+        """Search recordings including MusicBrainz genre data."""
+        return self.search_recordings(query, limit=limit, inc="genres")
+
+    def search_release_groups_with_genres(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
+        """Search release-groups including MusicBrainz genre data."""
+        params = {"query": query, "fmt": "json", "limit": max(1, min(limit, 25)), "inc": "genres"}
+        payload = self.get("release-group/", params=params)
+        return payload.get("release-groups", []) if isinstance(payload.get("release-groups"), list) else []
+
+    def get_artist_with_genres(self, artist_mbid: str) -> dict[str, Any]:
+        """Fetch artist details including genres and tags."""
+        return self.get_artist(artist_mbid, inc="genres+tags")
+
+    def get_recording_with_genres(self, recording_mbid: str) -> dict[str, Any]:
+        """Fetch recording details including genres."""
+        return self.get_recording(recording_mbid, inc="genres")

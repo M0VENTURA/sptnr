@@ -1,0 +1,83 @@
+File Path,Status,Architectural Role / Responsibility,Migration Action / Notes
+LAYER 1,,,
+entrypoint.sh,✅ STABLE,"Container startup, validation   DOCX",
+app.py,✅ STABLE,Flask WebUI entrypoint   DOCX,
+popularity.py,❌ LEGACY HAZARD,Root legacy popularity scan engine   DOCX,Refactor/Migrate
+popularity_helpers.py,❌ LEGACY HAZARD,Legacy SQLite-era utilities   DOCX,Refactor/Migrate
+LAYER 2,,,
+migrations/ensure_queue_startup_schema.py,✅ STABLE,PostgreSQL table verification   DOCX,
+db/bootstrap.py,✅ STABLE,Schema initialization   DOCX,
+db/cleanup.py,✅ STABLE,Library import cleanup   DOCX,
+db/context.py,✅ STABLE,Transaction-isolated cursor handling   DOCX,
+db/database.py,🧩 COMPATIBILITY,Legacy database import facade   DOCX,
+db/schema.py,✅ STABLE,PostgreSQL DDL schema owner   DOCX,
+db/schema_helpers.py,✅ STABLE,SQL dialect formatting   DOCX,
+db/utils.py,✅ STABLE,Connection pooling/row extraction   DOCX,
+db/repositories/artists.py,✅ STABLE,Artist insertion/lookups   DOCX,
+db/repositories/bookmarks.py,✅ STABLE,Favorite flags toggling   DOCX,
+db/repositories/genres.py,✅ STABLE,Genre aggregation/audit logging   DOCX,
+db/repositories/library.py,✅ STABLE,Statistical aggregations   DOCX,
+db/repositories/navidrome.py,✅ STABLE,Subsonic/Navidrome upsert helpers   DOCX,
+db/repositories/popularity_repository.py,✅ STABLE,Popularity scoring persistence   DOCX,
+db/repositories/scan_repository.py,✅ STABLE,Scan state/history cleanup   DOCX,
+db/repositories/tag_repository.py,✅ STABLE,Persistent track tag updates   DOCX,
+db/repositories/tracks.py,✅ STABLE,Core local track metadata owner   DOCX,
+db/repositories/tracks_scan_additions.py,✅ STABLE,Auxiliary scan queries   DOCX,
+"db/__init__.py, db/repositories/__init__.py",✅ STABLE,Package initializers   DOCX,
+LAYER 3,,,
+services/library/library_sync_service.py,✅ STABLE,Incremental sync engine   DOCX,
+services/scanning/album_scanner.py,✅ STABLE,Album-level scanning   DOCX,
+services/scanning/artist_scanner.py,✅ STABLE,Artist-level scanning   DOCX,
+services/scanning/bootstrap.py,✅ STABLE,Scanner dependency injection   DOCX,
+services/scanning/cleanup.py,✅ STABLE,Directory/orphan cleanup   DOCX,
+services/scanning/filters.py,✅ STABLE,Skip-filters for albums   DOCX,
+services/scanning/library_sync.py,⚠️ MIGRATING,UI-visible status integration   DOCX,Monitor
+services/scanning/metadata_extractor.py,✅ STABLE,Local audio metadata extraction   DOCX,
+services/scanning/navidrome_import.py,✅ STABLE,Core ingestion/diff comparisons   DOCX,
+services/scanning/navidrome_scan_service.py,✅ STABLE,Subsonic configuration loading   DOCX,
+services/scanning/navidrome_service.py,✅ STABLE,Album-first indexing helpers   DOCX,
+services/scanning/payload_builder.py,💥 BUG SOURCE,Resets popularity scores   DOCX,High Priority Fix
+services/scanning/pipeline.py,⚠️ ORCHESTRATOR,High-level scan workflow   DOCX,Refactor
+services/scanning/progress.py,❌ LEGACY HAZARD,Legacy state tracker   DOCX,Remove
+services/scanning/runtime_state.py,⚠️ MIGRATING,Thread-safe scan references   DOCX,Stabilize
+services/scanning/scanner.py,❌ LEGACY HAZARD,Bridge for legacy scans   DOCX,Remove
+services/scanning/scan_resume_service.py,✅ STABLE,Checkpoint evaluation   DOCX,
+services/scanning/scan_state.py,🟡 MIGRATING,Modern progress JSON writer   DOCX,Add read logic
+services/scanning/track_scanner.py,✅ STABLE,Track-level metadata   DOCX,
+services/scanning/pipelines/popularity_pipeline.py,❌ ACTIVE BRIDGE,"""Split Brain"" trigger   DOCX",Immediate Fix
+services/scanning/pipelines/*,✅ STABLE,Standard orchestration   DOCX,
+LAYER 4,,,
+services/popularity/pipeline.py,✅ STABLE,Modern popularity orchestrator   DOCX,
+services/popularity/scan_stage_runner.py,⚠️ TARGET ENGINE,Sequential stage execution   DOCX,Develop
+services/popularity/stages/load_stage.py,⚠️ TARGET,Database selection stage   DOCX,Develop
+services/popularity/stages/album_stage.py,⚠️ TARGET,Album stat prep stage   DOCX,Develop
+services/popularity/stages/track_stage.py,⚠️ TARGET,Provider scoring math   DOCX,Develop
+services/popularity/stages/finalise_stage.py,⚠️ TARGET,DB batch commits stage   DOCX,Develop
+services/popularity/enrichment.py...,✅ STABLE,Supporting service domain logic   DOCX,
+services/popularity/scanner.py...,❌ LEGACY HAZARD,Legacy wrappers   DOCX,Remove
+"services/popularity/* (2).py, single_detection.ps1",🗑️ PRUNE,Duplicates/rogue scripts   DOCX,DELETE
+LAYER 5,,,
+services/enrichment/discogs_service.py,✅ COMPLIANT,Read-only Discogs layer   DOCX,
+services/enrichment/lastfm_service.py,✅ COMPLIANT,Read-only Last.fm service   DOCX,
+services/enrichment/musicbrainz_service.py,✅ COMPLIANT,Read-only MusicBrainz service   DOCX,
+services/enrichment/spotify_service.py,✅ COMPLIANT,Read-only Spotify fetcher   DOCX,
+services/enrichment/single_detection_service.py,💥 VIOLATION,Executes raw SQL UPDATEs   DOCX,Fix Architecture
+services/enrichment/ (Others),✅ STABLE,General enrichment logic   DOCX,
+services/catalog/downloads/matching/etc.,✅ STABLE,Specialized system boundaries   DOCX,
+services/infrastructure/timeout_executor.py,✅ STABLE,Safe thread pooling   DOCX,
+services/infrastructure/api_rate_limiter.py,✅ STABLE,Global API rate limiting   DOCX,
+services/navidrome/rating_sync_service.py,✅ STABLE,Remote rating synchronization   DOCX,
+services/music/*,🗑️ PRUNE,Deprecated facade shims   DOCX,DELETE
+"LAYER 6, 7, 8, 9, 10",,,
+api_clients/*,✅ STABLE,Pure HTTP networking (20 files)   DOCX,
+helpers/task_manager.py,⚠️ CORE INFRASTRUCTURE,Heartbeat/Thread management   DOCX,Migrate to services/
+helpers/*,🧩 COMPATIBILITY,Legacy module facades   DOCX,
+cli/popularity_cli.py,🗑️ PRUNE,Terminal CLI runner   DOCX,DELETE
+routes/blueprint_bootstrap.py,⚠️ MIGRATING,Blueprint registration   DOCX,
+routes/navidrome/ratings.py,💥 VIOLATION,Bypasses repository/Raw SQL   DOCX,Move to Repository
+routes/scan_routes/control.py,✅ GOLD STANDARD,Master scan controller   DOCX,
+routes/*,✅ STABLE,Standard REST handlers   DOCX,
+routes/popularity_routes.py,❌ LEGACY HAZARD,Legacy endpoints   DOCX,Replace/Remove
+templates/*,✅ STABLE,Jinja2 shells/AJAX logic   DOCX,
+_toBeMigrated/*,✅ BACKUP,Raw text backups   DOCX,
+__pycache__/*,⚙️ BYTECODE,Compiled Python artifacts   DOCX,

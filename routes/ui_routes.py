@@ -1,0 +1,472 @@
+"""UI page routes, auth, config — migrated from old app.py."""
+
+from __future__ import annotations
+
+import logging
+import os
+from functools import wraps
+from pathlib import Path
+from typing import Any
+from urllib.parse import unquote
+
+import re
+
+from flask import (
+    Blueprint, flash, jsonify, redirect, render_template, request,
+    Response, session, url_for,
+)
+
+from db.utils import get_db_connection, row_get
+from helpers.config_helpers import get_config
+from services.scanning.scan_history_service import get_recent_album_scans
+
+logger = logging.getLogger(__name__)
+
+ui_bp = Blueprint("ui", __name__)
+
+
+# ===========================================================================
+# AUTH HELPERS
+# ===========================================================================
+
+def _needs_setup(cfg=None):
+    cfg = cfg or get_config()
+    nav_users = cfg.get("navidrome_users", [])
+    if isinstance(nav_users, list) and nav_users:
+        first = nav_users[0]
+        return not all([first.get("base_url"), first.get("user"), first.get("pass")])
+    nav = cfg.get("navidrome", {}) or {}
+    return not all([nav.get("base_url"), nav.get("user"), nav.get("pass")])
+
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if _needs_setup():
+            return redirect(url_for("ui.setup"))
+        if "username" not in session:
+            return redirect(url_for("ui.login"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+# ===========================================================================
+# LOGIN / LOGOUT
+# ===========================================================================
+
+@ui_bp.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = (request.form.get("password") or "").strip()
+        cfg = get_config()
+        nav_users = cfg.get("navidrome_users", [])
+        for user in nav_users:
+            if user.get("user") == username and user.get("pass") == password:
+                session["username"] = username
+                flash(f"Welcome back, {username}!", "success")
+                return redirect(url_for("ui.dashboard"))
+        flash("Invalid credentials", "error")
+        return render_template("login.html")
+    return render_template("login.html")
+
+
+@ui_bp.route("/logout")
+def logout():
+    username = session.pop("username", None)
+    flash(f"Goodbye, {username}!", "info")
+    return redirect(url_for("ui.login"))
+
+
+# ===========================================================================
+# SETUP
+# ===========================================================================
+
+@ui_bp.route("/setup", methods=["GET", "POST"])
+def setup():
+    if request.method == "POST":
+        return render_template("setup.html", message="Setup not yet implemented")
+    return render_template("setup.html")
+
+
+# ===========================================================================
+# STATIC PAGES
+# ===========================================================================
+
+@ui_bp.route("/")
+def index():
+    return redirect(url_for("ui.dashboard"))
+
+
+@ui_bp.route("/dashboard")
+def dashboard():
+    try:
+        recent_scans = get_recent_album_scans(limit=10) or []
+        cfg = get_config()
+        nav_users = cfg.get("navidrome_users", [])
+        if not nav_users and cfg.get("navidrome"):
+            nav_users = [cfg["navidrome"]]
+        features = cfg.get("features", {})
+        return render_template(
+            "dashboard.html",
+            recent_scans=recent_scans,
+            nav_users=nav_users,
+            scan_running=False,
+            perpetual=bool(features.get("perpetual", False)),
+            forced=bool(features.get("force", False)),
+            launch_on_startup=bool(features.get("launch_on_startup", False)),
+            first_full_scan_done=True,
+        )
+    except Exception as exc:
+        logger.error("Dashboard error: %s", exc)
+        return render_template("dashboard.html", recent_scans=[], nav_users=[], error=str(exc))
+
+
+@ui_bp.route("/artists")
+def artists():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT COALESCE(NULLIF(album_artist, ''), artist) as display_name,
+                   COUNT(DISTINCT album) as album_count,
+                   COUNT(*) as track_count,
+                   COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count
+            FROM tracks GROUP BY display_name HAVING album_count > 0 ORDER BY display_name
+        """)
+        artists_data = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac FROM tracks")
+        total_stats = dict(cursor.fetchone())
+        return render_template("artists.html", artists=artists_data, total_stats=total_stats)
+    finally:
+        conn.close()
+
+
+@ui_bp.route("/artist/<path:name>")
+def artist_detail(name):
+    name = unquote(name)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT album, COUNT(*) as track_count, AVG(stars) as avg_stars,
+                   MIN(year) as album_year
+            FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+            GROUP BY LOWER(TRIM(COALESCE(album, '')))
+            ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST
+        """, (name,))
+        albums = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT COUNT(*) as track_count, COUNT(DISTINCT album) as album_count,
+                   AVG(stars) as avg_stars, MIN(year) as earliest_year, MAX(year) as latest_year
+            FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+        """, (name,))
+        stats = dict(cursor.fetchone())
+
+        cursor.execute("""
+            SELECT id, title, album, stars, final_score FROM tracks
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+            ORDER BY stars DESC NULLS LAST LIMIT 20
+        """, (name,))
+        top_tracks = [dict(r) for r in cursor.fetchall()]
+
+        return render_template(
+            "artist.html", artist_name=name, albums=albums, stats=stats, top_tracks=top_tracks,
+        )
+    finally:
+        conn.close()
+
+
+@ui_bp.route("/album/<path:artist>/<path:album>")
+def album_detail(artist, album):
+    artist = unquote(artist)
+    album = unquote(album)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT * FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s ORDER BY disc_number, track_number",
+            (artist, album),
+        )
+        tracks = [dict(r) for r in cursor.fetchall()]
+        return render_template("album.html", artist=artist, album=album, tracks=tracks)
+    finally:
+        conn.close()
+
+
+@ui_bp.route("/track/<track_id>")
+def track_detail(track_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM tracks WHERE CAST(id AS TEXT) = %s", (track_id,))
+        row = cursor.fetchone()
+        if not row:
+            return render_template("track.html", track=None, error="Track not found")
+        return render_template("track.html", track=dict(row))
+    finally:
+        conn.close()
+
+
+@ui_bp.route("/search")
+def search():
+    query = request.args.get("q", "").strip()
+    return render_template("search.html", initial_query=query)
+
+
+@ui_bp.route("/config", methods=["GET", "POST"])
+def config_editor():
+    from helpers.config_helpers import get_config
+    import yaml
+    config, raw = {}, ""
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                raw = f.read()
+            config = yaml.safe_load(raw) or {}
+    except Exception:
+        pass
+    if request.method == "POST":
+        return redirect(url_for("ui.config_editor"))
+    return render_template(
+        "config.html",
+        config=config,
+        config_raw=raw,
+    )
+
+
+@ui_bp.route("/config/env", methods=["GET"])
+def config_env_vars():
+    return jsonify({})
+
+
+@ui_bp.route("/config/env", methods=["POST"])
+def config_env_vars_post():
+    return redirect(url_for("ui.config_editor"))
+
+
+@ui_bp.route("/config/save-json", methods=["POST"])
+def config_save_json():
+    """Save the full config dict from the WebUI editor back to config.yaml."""
+    from helpers.config_helpers import save_config
+    data = request.json or {}
+    success = save_config(data)
+    if success:
+        return jsonify({"success": True})
+    return jsonify({"error": "Failed to save config"}), 500
+
+
+@ui_bp.route("/config/migrate_postgres", methods=["POST"])
+def config_migrate_postgres():
+    return jsonify({"success": True})
+
+
+@ui_bp.route("/logs")
+def logs():
+    config_dir = os.path.dirname(os.environ.get("CONFIG_PATH", "/config/config.yaml"))
+    log_path = os.environ.get("LOG_PATH", "/config/app.log")
+    log_files = {
+        "main": log_path,
+        "webui": os.path.join(config_dir, "webui.log"),
+        "popularity": os.path.join(config_dir, "popularity.log"),
+        "downloads": os.path.join(config_dir, "downloads.log"),
+    }
+    return render_template("logs.html", log_path=log_path, log_files=log_files)
+
+
+@ui_bp.route("/help")
+@ui_bp.route("/help/<path:doc_name>")
+def help_page(doc_name=None):
+    doc_path = os.path.join(os.path.dirname(__file__), "..", "documentation")
+    doc_files = []
+    try:
+        doc_files = sorted(f for f in os.listdir(doc_path) if f.endswith(".md"))
+    except Exception:
+        pass
+    content = ""
+    doc_title = "Help"
+    if doc_name:
+        doc_name = os.path.basename(doc_name)
+        full_path = os.path.join(doc_path, doc_name)
+        if os.path.exists(full_path):
+            with open(full_path) as f:
+                content = f.read()
+        doc_title = doc_name.replace(".md", "").replace("_", " ").title()
+    return render_template(
+        "help.html", content=content, doc_title=doc_title,
+        doc_files=doc_files, current_doc=doc_name,
+    )
+
+
+@ui_bp.route("/bookmarks")
+def bookmarks():
+    return render_template("bookmarks.html")
+
+
+@ui_bp.route("/correcting")
+def correcting():
+    return render_template("correcting.html")
+
+
+@ui_bp.route("/missing")
+def missing_page():
+    cfg = get_config()
+    return render_template("missing.html", qbit_config=cfg.get("qbittorrent", {}), slskd_config=cfg.get("slskd", {}))
+
+
+@ui_bp.route("/discover")
+def discover():
+    return render_template("discover.html")
+
+
+@ui_bp.route("/downloads/monitor")
+def downloads_monitor():
+    cfg = get_config()
+    return render_template(
+        "downloads_monitor.html",
+        qbit_config=cfg.get("qbittorrent", {}),
+        slskd_config=cfg.get("slskd", {}),
+    )
+
+
+@ui_bp.route("/downloads/banned-words")
+def banned_words_page():
+    return render_template("banned_words.html")
+
+
+@ui_bp.route("/downloads")
+def downloads_page():
+    cfg = get_config()
+    return render_template(
+        "downloads.html",
+        qbit_config=cfg.get("qbittorrent", {}),
+        slskd_config=cfg.get("slskd", {}),
+    )
+
+
+@ui_bp.route("/downloads/search/soulseek")
+def downloads_search_soulseek():
+    cfg = get_config()
+    return render_template(
+        "downloads_search_soulseek.html",
+        qbit_config=cfg.get("qbittorrent", {}),
+        slskd_config=cfg.get("slskd", {}),
+    )
+
+
+@ui_bp.route("/downloads/search/musicbrainz")
+def downloads_search_musicbrainz():
+    cfg = get_config()
+    return render_template(
+        "downloads_search_musicbrainz.html",
+        qbit_config=cfg.get("qbittorrent", {}),
+        slskd_config=cfg.get("slskd", {}),
+    )
+
+
+@ui_bp.route("/downloads/search/qbittorrent")
+def downloads_search_qbittorrent():
+    cfg = get_config()
+    return render_template(
+        "downloads_search_qbittorrent.html",
+        qbit_config=cfg.get("qbittorrent", {}),
+        slskd_config=cfg.get("slskd", {}),
+    )
+
+
+@ui_bp.route("/downloads/search/playlists")
+def downloads_search_playlists():
+    cfg = get_config()
+    return render_template(
+        "downloads_search_playlists.html",
+        qbit_config=cfg.get("qbittorrent", {}),
+        slskd_config=cfg.get("slskd", {}),
+    )
+
+
+@ui_bp.route("/downloads/manager")
+def downloads_manager():
+    cfg = get_config()
+    return render_template(
+        "downloads_manager.html",
+        qbit_config=cfg.get("qbittorrent", {}),
+        slskd_config=cfg.get("slskd", {}),
+    )
+
+
+@ui_bp.route("/downloads/discover/similar-artists")
+def downloads_discover_similar_artists():
+    return render_template("downloads_discover_similar_artists.html")
+
+
+@ui_bp.route("/downloads/discover/upcoming")
+def downloads_discover_upcoming():
+    return render_template("downloads_discover_upcoming.html")
+
+
+@ui_bp.route("/artist/<path:name>/corrections")
+def artist_corrections(name):
+    return render_template("artist_corrections.html", artist_name=name)
+
+
+@ui_bp.route("/artist/<path:name>/genre-management")
+def artist_genre_management(name):
+    return render_template("artist_genre_management.html", artist_name=name)
+
+
+@ui_bp.route("/metadata-compare")
+def metadata_compare():
+    return render_template("metadata_compare.html")
+
+
+@ui_bp.route("/beets")
+def beets():
+    return render_template("beets.html")
+
+
+@ui_bp.route("/smart-playlists")
+def smart_playlists():
+    return render_template("smart_playlists.html")
+
+
+@ui_bp.route("/dashboard-external")
+def dashboard_external():
+    return render_template("dashboard_external.html")
+
+
+@ui_bp.route("/analytics/genres-moods")
+def analytics_genres_moods_page():
+    return render_template("genres_moods_analytics.html")
+
+
+@ui_bp.route("/debug/static")
+def debug_static():
+    return jsonify({"static_folder": ""})
+
+
+# ===========================================================================
+# TEMPLATE FILTERS
+# ===========================================================================
+
+@ui_bp.app_template_filter("split_genres")
+def split_genres(s):
+    if not s:
+        return []
+    return [g.strip() for g in re.split(r"[\\,]+", str(s)) if g.strip()]
+
+
+@ui_bp.app_template_filter("format_datetime")
+def format_datetime(value):
+    if not value:
+        return ""
+    try:
+        from datetime import datetime
+        if "T" in str(value):
+            dt = datetime.fromisoformat(str(value).split(".")[0])
+        else:
+            dt = datetime.fromisoformat(str(value))
+        return dt.strftime("%d-%m-%y at %I:%M %p")
+    except Exception:
+        return str(value)
