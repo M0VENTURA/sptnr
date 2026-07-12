@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+
+    <h2>Dashboard</h2>
+
+    <!-- ✅ Popularity Scan Card -->
+    <div class="card mt-3">
+        <div class="card-header">
+            Popularity Scan
+        </div>
+        <div class="card-body">
+
+            <button onclick="startPopularityScan()" class="btn btn-primary">
+                Run Scan
+            </button>
+
+            <div class="mt-3">
+                <div id="pop-status">Idle</div>
+
+                <div class="progress mt-2" style="height: 20px;">
+                    <div id="pop-progress-bar"
+                         class="progress-bar"
+                         role="progressbar"
+                         style="width: 0%;">
+                    </div>
+                </div>
+
+                <div id="pop-progress-text" class="mt-1 small"></div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ✅ Library Sync Card -->
+    <div class="card mt-3">
+        <div class="card-header">
+            Library Sync
+        </div>
+        <div class="card-body">
+
+            <button onclick="startLibrarySync()" class="btn btn-secondary">
+                Run Sync
+            </button>
+
+            <div class="mt-3">
+                <div id="lib-status">Idle</div>
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+<script>
+// ----------------------------
+// Popularity Scan
+// ----------------------------
+async function startPopularityScan() {
+    await fetch("/api/popularity/run", { method: "POST" });
+}
+
+async function pollPopularityStatus() {
+    const res = await fetch("/api/popularity/status");
+    const data = await res.json();
+
+    if (!data.success) return;
+
+    const bar = document.getElementById("pop-progress-bar");
+
+    if (data.running) {
+        document.getElementById("pop-status").innerText = data.message || "Running...";
+
+        bar.style.width = data.progress + "%";
+        document.getElementById("pop-progress-text").innerText =
+            `${data.progress}% (${data.processed_items || 0}/${data.total_items || "?"})`;
+    } else {
+        bar.style.width = "0%";
+    }
+}
+
+// ----------------------------
+// Library Sync
+// ----------------------------
+async function startLibrarySync() {
+    await fetch("/api/library/sync", { method: "POST" });
+}
+
+async function pollLibraryStatus() {
+    const res = await fetch("/api/library/status");
+    const data = await res.json();
+
+    if (!data.success) return;
+
+    document.getElementById("lib-status").innerText =
+        data.running ? "Sync running..." : "Idle";
+}
+
+// ----------------------------
+// Poll Loop
+// ----------------------------
+setInterval(() => {
+    pollPopularityStatus();
+    pollLibraryStatus();
+}, 2000);
+
+</script>
+{% endblock %}

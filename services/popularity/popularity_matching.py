@@ -1,0 +1,108 @@
+"""Artist/title matching helpers for popularity provider lookups."""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+
+FEATURE_SPLIT_RE = re.compile(
+    r"""
+    \s+
+    (?:feat\.?|ft\.?|featuring|with|w/)
+    \s+
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+ARTIST_JOIN_RE = re.compile(
+    r"""
+    \s+
+    (?:&|and|x|×|\+)
+    \s+
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def clean_artist_spacing(value: str) -> str:
+    """Clean whitespace while preserving casing for provider lookups."""
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def get_primary_artist_preserve_case(artist: str) -> str:
+    """Return likely primary artist while preserving original casing."""
+    if not artist:
+        return ""
+    return clean_artist_spacing(FEATURE_SPLIT_RE.split(artist, maxsplit=1)[0])
+
+
+def get_artist_lookup_candidates(artist: str, album_artist: str | None = None) -> list[str]:
+    """Build provider lookup candidates in preferred order."""
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str | None):
+        value = clean_artist_spacing(value or "")
+        key = value.casefold()
+        if value and key not in seen:
+            candidates.append(value)
+            seen.add(key)
+
+    add(artist)
+    add(get_primary_artist_preserve_case(artist))
+    add(album_artist)
+    add(get_primary_artist_preserve_case(album_artist or ""))
+    return candidates
+
+
+def make_artist_match_key(artist: str) -> str:
+    """Internal-only canonical artist key for matching/cache grouping."""
+    artist = get_primary_artist_preserve_case(artist)
+    artist = unicodedata.normalize("NFKC", artist)
+    artist = artist.casefold()
+    return re.sub(r"\s+", " ", artist).strip()
+
+
+def make_track_match_key(artist: str, title: str) -> str:
+    """Canonical key for combining variants of the same song."""
+    artist_key = make_artist_match_key(artist)
+    title_key = unicodedata.normalize("NFKC", title or "").casefold()
+    title_key = re.sub(r"\s+", " ", title_key).strip()
+    return f"{artist_key}::{title_key}"
+
+
+def normalize_title_for_lookup(title: str, extra_strip_patterns: list[str] | None = None) -> str:
+    """Normalize a track title for external API lookups."""
+    if not title:
+        return ""
+    value = title.strip()
+    patterns = [
+        r"\s*\((?:official\s+)?(?:music\s+)?video\)\s*$",
+        r"\s*\[(?:official\s+)?(?:music\s+)?video\]\s*$",
+    ]
+    patterns.extend(extra_strip_patterns or [])
+    for pattern in patterns:
+        value = re.sub(pattern, "", value, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def normalize_for_aggregation(title: str) -> str:
+    """Aggressively normalise title for local provider-count aggregation."""
+    value = str(title or "").lower()
+    value = re.sub(r"\s*[\(\[].*?(feat\.|featuring|ft\.|remaster|remastered|radio edit|single version).*?[\)\]]", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*-\s*(remaster(?:ed)?|radio edit|single version|album version).*$", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def choose_best_provider_counts(results: list[dict]) -> dict:
+    """Pick strongest provider result across artist/title variants."""
+    if not results:
+        return {}
+    def score(item: dict):
+        return (
+            int(item.get("listeners", 0) or 0),
+            int(item.get("playcount", item.get("track_play", 0)) or 0),
+            int(item.get("listen_count", item.get("total_listen_count", 0)) or 0),
+        )
+    return sorted(results, key=score, reverse=True)[0]

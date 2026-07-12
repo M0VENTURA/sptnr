@@ -1,0 +1,42 @@
+[Unit]
+Description=Popularr Queue Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ✅ Update to your actual runtime user
+User=popularr
+Group=popularr
+
+# ✅ CRITICAL: THIS MUST MATCH YOUR REAL INSTALL PATH
+WorkingDirectory=/opt/popularr
+
+# ✅ Python module resolution
+Environment="PYTHONPATH=/opt/popularr"
+
+# ✅ Your existing config system
+Environment="CONFIG_PATH=/config/config.yaml"
+Environment="DOWNLOADS_DIR=/music/downloads"
+Environment="MUSIC_ROOT=/music"
+
+# ✅ Postgres config (preferred via env file)
+EnvironmentFile=-/etc/popularr/popularr.env
+
+# ✅ NEW ENTRYPOINT (NOT queue_processor.py anymore)
+ExecStart=/usr/bin/python3 -m services.queue.queue_worker 30
+
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=popularr-queue-worker
+
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

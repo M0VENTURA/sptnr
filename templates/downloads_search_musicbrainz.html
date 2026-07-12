@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block title %}MusicBrainz Search · Popularr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <div class="mb-4">
+    <h1 class="h2 mb-2">
+      <i class="bi bi-download"></i> Music Downloads
+      <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2" title="Help for Downloads">
+          <i class="bi bi-question-circle"></i>
+      </a>
+    </h1>
+    <p class="text-muted mb-0">Search and download music from MusicBrainz releases</p>
+  </div>
+<!-- MusicBrainz Search Card -->
+  <div class="row g-4 mb-4">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-disc"></i> MusicBrainz Release Search
+          </h5>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small mb-3">
+            Search for releases on MusicBrainz and download them via Soulseek or qBittorrent
+          </p>
+          <div class="mb-3">
+            <div class="input-group">
+              <input type="text" class="form-control" id="mbSearchInput" placeholder="Search artist or release...">
+              <button class="btn btn-info" type="button" id="mbSearchBtn">
+                <i class="bi bi-search"></i> Search
+              </button>
+            </div>
+          </div>
+
+          <!-- Download Options -->
+          <div class="mb-3">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="persistentSearchCheck" checked>
+              <label class="form-check-label" for="persistentSearchCheck">
+                <small><i class="bi bi-arrow-repeat"></i> Keep searching until found (with auto-retry)</small>
+              </label>
+            </div>
+            <small class="text-muted d-block mt-1">
+              If enabled, failed downloads will automatically retry every 5 minutes until the track is verified in Navidrome.
+            </small>
+          </div>
+
+          <!-- Add to Session (Optional) -->
+          <div class="mb-3">
+            <label for="mbSessionSelector" class="form-label">
+              <small><i class="bi bi-collection-play"></i> Add to Playlist Session (Optional)</small>
+            </label>
+            <select class="form-select form-select-sm" id="mbSessionSelector">
+              <option value="">— None (standalone download)</option>
+              <option value="create">+ Create new session...</option>
+            </select>
+            <small class="text-muted d-block mt-1">
+              Group related downloads together and track their progress as a session.
+            </small>
+          </div>
+
+          <div id="mbLoading" class="text-center py-4" style="display: none;">
+            <div class="spinner-border text-info" role="status">
+              <span class="visually-hidden">Searching...</span>
+            </div>
+            <p class="mt-2">Searching MusicBrainz...</p>
+          </div>
+
+          <div id="mbResults"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Managed Downloads Card -->
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-list-check"></i> Managed Downloads
+      </h5>
+      <div class="d-flex align-items-center gap-2">
+        <span class="badge bg-info" id="mbDownloadCount" style="display:none"></span>
+        <button class="btn btn-sm btn-outline-info" type="button" id="mbRefreshBtn">
+          <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div id="mbDownloadsLoading" class="text-center py-4">
+        <div class="spinner-border text-info" role="status">
+          <span class="visually-hidden">Loading...</span>
+        </div>
+        <p class="mt-2">Loading downloads...</p>
+      </div>
+      <div id="mbDownloadsError" class="alert alert-danger" style="display:none"></div>
+      <div id="mbDownloadsResults" style="display:none">
+        <div id="mbDownloadsEmpty" class="alert alert-info" style="display:none">
+          <i class="bi bi-info-circle"></i> No active downloads. Search for releases above to get started.
+        </div>
+        <div id="mbDownloadsTable" style="display:none">
+          <div class="table-responsive">
+            <table class="table table-hover mb-0">
+              <thead>
+                <tr>
+                  <th>Release</th>
+                  <th>Artist</th>
+                  <th class="text-center">Method</th>
+                  <th class="text-center">Status</th>
+                  <th class="text-center">Added</th>
+                  <th class="text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="mbDownloadsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Include JavaScript -->
+<script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+<script>
+  document.getElementById('mbSearchBtn').addEventListener('click', performMbSearch);
+  document.getElementById('mbRefreshBtn').addEventListener('click', refreshMbDownloads);
+</script>
+{% endblock %}

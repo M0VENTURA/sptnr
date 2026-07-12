@@ -1,0 +1,124 @@
+"""Cross-provider API rate limiter.
+
+This used to live in helpers/api_rate_limiter.py. It is infrastructure, not a
+generic helper and not an API client.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+import time
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+SPOTIFY_RATE_LIMIT_PER_30S = 250
+SPOTIFY_DAILY_LIMIT = 500000
+LASTFM_RATE_LIMIT_PER_SECOND = 1
+LASTFM_DAILY_LIMIT = 50000
+MUSICBRAINZ_MIN_INTERVAL = 1.0
+
+
+class APIRateLimiter:
+    _STATE_SAVE_INTERVAL_SECONDS = 30
+
+    def __init__(self, state_file: str | None = None):
+        if state_file is None:
+            from helpers.config_helpers import get_api_rate_limiter_state_file
+            state_file = get_api_rate_limiter_state_file()
+        self.state_file = state_file
+        self.state = self._load_state()
+        self._last_save_time = 0.0
+        self._mb_lock = threading.Lock()
+
+    def _load_state(self) -> dict:
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as handle:
+                    state = json.load(handle)
+                last_reset = state.get("last_reset", "")
+                if last_reset and datetime.fromisoformat(last_reset).date() < datetime.now().date():
+                    state["spotify_daily_count"] = 0
+                    state["lastfm_daily_count"] = 0
+                    state["musicbrainz_daily_count"] = 0
+                    state["last_reset"] = datetime.now().isoformat()
+                    self.state = state
+                    self._save_state(force=True)
+                return state
+            except Exception as exc:
+                logger.debug("Could not load API rate limiter state: %s", exc)
+        return {
+            "spotify_daily_count": 0,
+            "lastfm_daily_count": 0,
+            "musicbrainz_daily_count": 0,
+            "spotify_recent_requests": [],
+            "lastfm_last_request": 0,
+            "musicbrainz_last_request": 0,
+            "last_reset": datetime.now().isoformat(),
+        }
+
+    def _save_state(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and now - self._last_save_time < self._STATE_SAVE_INTERVAL_SECONDS:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            with open(self.state_file, "w", encoding="utf-8") as handle:
+                json.dump(self.state, handle, indent=2)
+            self._last_save_time = now
+        except Exception as exc:
+            logger.debug("Could not save API rate limiter state: %s", exc)
+
+    def throttle_musicbrainz(self) -> None:
+        with self._mb_lock:
+            now = time.time()
+            last_request = self.state.get("musicbrainz_last_request", 0)
+            wait_time = MUSICBRAINZ_MIN_INTERVAL - (now - last_request)
+            if wait_time > 0:
+                time.sleep(wait_time)
+            self.state["musicbrainz_last_request"] = time.time()
+            self.state["musicbrainz_daily_count"] = self.state.get("musicbrainz_daily_count", 0) + 1
+            self._save_state()
+
+    def wait_if_needed_lastfm(self, max_wait_seconds: float = 2.0) -> bool:
+        now = time.time()
+        wait_time = LASTFM_RATE_LIMIT_PER_SECOND - (now - self.state.get("lastfm_last_request", 0))
+        if wait_time <= 0:
+            self.state["lastfm_last_request"] = now
+            self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
+            self._save_state()
+            return True
+        if wait_time <= max_wait_seconds:
+            time.sleep(wait_time + 0.1)
+            self.state["lastfm_last_request"] = time.time()
+            self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
+            self._save_state()
+            return True
+        return False
+
+    def get_stats(self) -> dict:
+        now = time.time()
+        recent_spotify = [ts for ts in self.state.get("spotify_recent_requests", []) if now - ts < 30]
+        return {
+            "spotify_daily_count": self.state.get("spotify_daily_count", 0),
+            "spotify_daily_limit": SPOTIFY_DAILY_LIMIT,
+            "spotify_recent_30s": len(recent_spotify),
+            "spotify_30s_limit": SPOTIFY_RATE_LIMIT_PER_30S,
+            "lastfm_daily_count": self.state.get("lastfm_daily_count", 0),
+            "lastfm_daily_limit": LASTFM_DAILY_LIMIT,
+            "musicbrainz_daily_count": self.state.get("musicbrainz_daily_count", 0),
+            "last_reset": self.state.get("last_reset", ""),
+        }
+
+
+_rate_limiter: APIRateLimiter | None = None
+
+
+def get_rate_limiter() -> APIRateLimiter:
+    global _rate_limiter
+    if _rate_limiter is None:
+        _rate_limiter = APIRateLimiter()
+    return _rate_limiter

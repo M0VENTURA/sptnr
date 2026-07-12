@@ -1,0 +1,87 @@
+"""
+Targeted Navidrome import pipelines.
+
+These functions are used by UI routes that trigger Navidrome-only scans for a
+single artist or album.
+
+Routes should call these functions asynchronously and avoid direct DB lookups
+or direct scan_artist_to_db calls.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from db.repositories.scan_repository import lookup_artist_id
+from helpers.logging_config import log_unified
+from services.scanning.navidrome_import import scan_artist_to_db
+
+
+def run_navidrome_artist_pipeline(
+    artist: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """
+    Run Navidrome import for a single artist.
+    """
+    artist_id = lookup_artist_id(artist)
+
+    if not artist_id:
+        log_unified(f"Artist not found for Navidrome import: {artist}")
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "artist not found",
+            "artist": artist,
+        }
+
+    scan_artist_to_db(
+        artist,
+        artist_id,
+        verbose=True,
+        force=force,
+    )
+
+    log_unified(f"Navidrome import completed for artist: {artist}")
+
+    return {
+        "success": True,
+        "artist": artist,
+    }
+
+
+def run_navidrome_album_pipeline(
+    artist: str,
+    album: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """
+    Run Navidrome import for a specific album.
+    """
+    artist_id = lookup_artist_id(artist)
+
+    if not artist_id:
+        log_unified(f"Artist not found for Navidrome album import: {artist}")
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "artist not found",
+            "artist": artist,
+            "album": album,
+        }
+
+    scan_artist_to_db(
+        artist,
+        artist_id,
+        verbose=True,
+        force=force,
+        album_filter=album,
+    )
+
+    log_unified(f"Navidrome import completed for album: {artist} - {album}")
+
+    return {
+        "success": True,
+        "artist": artist,
+        "album": album,
+    }

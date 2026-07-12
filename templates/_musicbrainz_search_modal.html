@@ -1,0 +1,48 @@
+{# Shared MusicBrainz Release Search Modal #}
+{# Used across artist, album, track, and downloads pages for unified release searching #}
+<div class="modal fade" id="musicBrainzModal" tabindex="-1" aria-labelledby="musicBrainzModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="musicBrainzModalLabel">
+          <i class="bi bi-music-note-list"></i> MusicBrainz Release Search
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="mbSearchInfo" class="alert alert-info mb-3" style="display:none;">
+          Searching <strong id="mbSearchArtist"></strong> - <strong id="mbSearchAlbum"></strong>
+        </div>
+        
+        <div id="mbSearchStatus" class="text-center py-4" style="display:none;">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <p class="mt-2 text-muted">Searching MusicBrainz...</p>
+        </div>
+        
+        <div id="mbSearchError" class="alert alert-danger" style="display:none;"></div>
+
+        <div id="mbSearchRetry" class="mt-2" style="display:none;">
+          <div class="d-flex gap-2 align-items-end flex-wrap">
+            <div class="flex-fill">
+              <label for="mbRetryArtist" class="form-label form-label-sm mb-1">Artist</label>
+              <input type="text" class="form-control form-control-sm" id="mbRetryArtist" placeholder="Artist name">
+            </div>
+            <div class="flex-fill">
+              <label for="mbRetryAlbum" class="form-label form-label-sm mb-1">Album</label>
+              <input type="text" class="form-control form-control-sm" id="mbRetryAlbum" placeholder="Album name">
+            </div>
+            <div class="flex-shrink-0">
+              <button class="btn btn-sm btn-primary" onclick="mbRetrySearch()">
+                <i class="bi bi-search"></i> Retry
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="mbSearchResults"></div>
+      </div>
+    </div>
+  </div>
+</div>

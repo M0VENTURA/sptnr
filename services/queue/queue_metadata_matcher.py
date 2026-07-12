@@ -1,0 +1,192 @@
+"""Queue Metadata Matcher.
+
+Performs metadata-based matching between queue items and downloaded files.
+Uses a tiered matching strategy: metadata comparison, variant detection,
+and duration-based fallback matching.
+
+Matching Strategy:
+    1. Metadata Match (highest confidence) - artist, title, album comparison.
+    2. Variant Detection - soft variants (edit, radio) vs hard (live, remix).
+    3. Duration Matching (fallback) - strict (±2s) and lenient (±5s) tolerances.
+
+Configuration: All thresholds configurable via config.yaml under queue.matching.
+"""
+
+from __future__ import annotations
+from helpers.types_queue import QueueItem
+from helpers.metadata_reader import read_mp3_metadata
+from helpers.normalization_service import (
+    normalize_string,
+    normalize_artist,
+    normalize_core_title,
+    extract_version_info,
+)
+
+# Import centralized configuration
+from helpers.config_helpers import get_queue_matching_config_v2
+
+# Load configuration at module initialization
+_config = get_queue_matching_config_v2()
+THRESHOLD = _config["threshold"]
+PARTIAL_MATCH = _config["partial_match"]
+STRICT_DURATION_SEC = _config["strict_duration_sec"]
+TOLERANCE_DURATION_SEC = _config["tolerance_duration_sec"]
+SOFT_VARIANTS = _config["soft_variants"]
+HARD_VARIANTS = _config["hard_variants"]
+
+
+# =============================================================================
+# ✅ SIMILARITY
+# =============================================================================
+
+def _simple_similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+
+    if a == b:
+        return 1.0
+
+    if a in b or b in a:
+        return PARTIAL_MATCH
+
+    return 0.0
+
+
+# =============================================================================
+# ✅ VARIANT HANDLING
+# =============================================================================
+
+def _variant_conflict(queue_v: set[str], file_v: set[str]) -> bool:
+    if queue_v and file_v:
+        return queue_v.isdisjoint(file_v)
+
+    if file_v and not queue_v:
+        return not file_v.issubset(SOFT_VARIANTS)
+
+    if queue_v and not file_v:
+        return not queue_v.issubset(SOFT_VARIANTS)
+
+    return False
+
+
+# =============================================================================
+# ✅ MATCHER
+# =============================================================================
+
+def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshold: float = THRESHOLD):
+
+    try:
+        metadata = read_mp3_metadata(file_path) or {}
+    except Exception:
+        return None
+
+    # ------------------------------------------------------------------
+    # Extract fields
+    # ------------------------------------------------------------------
+
+    file_artist = (metadata.get("artist") or "").strip()
+    file_album_artist = (metadata.get("album_artist") or "").strip()
+    file_title = (metadata.get("title") or "").strip()
+    file_duration = metadata.get("duration_ms")
+
+    queue_artist = (queue_item.get("artist") or "").strip()
+    queue_album_artist = (queue_item.get("album_artist") or "").strip()
+    queue_title = (queue_item.get("title") or "").strip()
+    queue_duration = queue_item.get("duration")
+
+    # ------------------------------------------------------------------
+    # Missing data → defer
+    # ------------------------------------------------------------------
+
+    if not file_title:
+        return None
+
+    if not queue_title:
+        return None
+
+    # ------------------------------------------------------------------
+    # Normalize
+    # ------------------------------------------------------------------
+
+    file_artist_norm = normalize_artist(file_artist)
+    file_album_artist_norm = normalize_artist(file_album_artist)
+
+    queue_artist_norm = normalize_artist(queue_artist)
+    queue_album_artist_norm = normalize_artist(queue_album_artist)
+
+    file_title_norm = normalize_core_title(file_title)
+    queue_title_norm = normalize_core_title(queue_title)
+
+    # ------------------------------------------------------------------
+    # Variant logic
+    # ------------------------------------------------------------------
+
+    _, queue_variants = extract_version_info(queue_title)
+    _, file_variants = extract_version_info(file_title)
+
+    if _variant_conflict(queue_variants, file_variants):
+        return False
+
+    # ------------------------------------------------------------------
+    # Artist match (multi-source)
+    # ------------------------------------------------------------------
+
+    artist_scores = []
+
+    for candidate in [queue_artist_norm, queue_album_artist_norm]:
+        if not candidate:
+            continue
+
+        artist_scores.append(_simple_similarity(file_artist_norm, candidate))
+        artist_scores.append(_simple_similarity(file_album_artist_norm, candidate))
+
+    artist_score = max(artist_scores) if artist_scores else 0.0
+
+    # ------------------------------------------------------------------
+    # Title match
+    # ------------------------------------------------------------------
+
+    title_score = _simple_similarity(file_title_norm, queue_title_norm)
+
+    # ------------------------------------------------------------------
+    # Early hard rejection (restored from original logic)
+    # ------------------------------------------------------------------
+
+    if title_score == 0.0:
+        return False
+
+    if artist_score == 0.0 and title_score < 1.0:
+        return False
+
+    # ------------------------------------------------------------------
+    # Duration logic
+    # ------------------------------------------------------------------
+
+    if queue_duration and file_duration:
+        file_sec = file_duration / 1000 if file_duration > 1000 else file_duration
+        diff = abs(file_sec - queue_duration)
+
+        if diff > 30:
+            return False  # strong reject
+
+        if diff <= STRICT_DURATION_SEC:
+            return True  # very strong evidence
+
+    # ------------------------------------------------------------------
+    # Combined score (original behaviour preserved)
+    # ------------------------------------------------------------------
+
+    combined = (artist_score + title_score) / 2
+
+    if combined >= threshold:
+        return True
+
+    # ------------------------------------------------------------------
+    # Soft fallback vs hard mismatch
+    # ------------------------------------------------------------------
+
+    if artist_score == 0.0:
+        return False
+
+    # unclear → let filename/scoring decide
+    return None
