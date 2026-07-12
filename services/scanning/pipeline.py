@@ -120,6 +120,50 @@ def run_artist_scan_pipeline(artist_name: str, force: bool = False):
 # ✅ Full library scan (UI-driven)
 # -------------------------------------------------------------------------
 
+def start_library_scan(
+    artist_filter: str | None = None,
+    resume: bool = True,
+    force: bool = False,
+) -> dict:
+    """Start a full library scan with optional filtering and resume.
+
+    This is the route-facing entry point called by ``control.py``.
+    It wraps ``run_full_library_scan`` and accepts the same parameters
+    that the old monolithic ``start_library_scan`` expected.
+
+    Args:
+        artist_filter: If set, scan only this artist (not yet implemented).
+        resume: If True, resume from the last checkpoint; if False, start fresh.
+        force: If True, force re-scan even if data hasn't changed.
+
+    Returns:
+        A dict with ``success`` and ``message`` keys.
+    """
+    if not resume:
+        from services.scanning.scan_state import clear_scan_checkpoint
+        clear_scan_checkpoint()
+
+    if artist_filter:
+        # Single-artist scan.
+        try:
+            run_artist_scan_pipeline(artist_filter, force=force)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error("Artist scan failed for %s: %s", artist_filter, exc)
+            return {"success": False, "message": f"Artist scan failed: {exc}"}
+        return {"success": True, "message": f"Scan started for artist: {artist_filter}"}
+
+    # Full library scan.
+    try:
+        run_full_library_scan(force=force)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("Full library scan failed: %s", exc)
+        return {"success": False, "message": f"Full scan failed: {exc}"}
+
+    return {"success": True, "message": "Full library scan started"}
+
+
 def run_full_library_scan(force: bool = False):
     progress = get_library_progress_path()
     checkpoint_path = get_library_checkpoint_path()
