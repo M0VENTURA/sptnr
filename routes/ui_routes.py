@@ -387,7 +387,42 @@ async def bookmarks():
 
 @ui_bp.route("/correcting")
 async def correcting():
-    return await render_template("pages/corrections.html")
+    try:
+        from services.metadata.correction_service import get_album_tag_inconsistencies
+        from services.metadata.conflict_service import get_conflict_stats
+
+        page = max(request.args.get("page", 1, type=int), 1)
+        per_page = 20
+
+        inconsistencies = get_album_tag_inconsistencies(artist_filter=None)
+        total = len(inconsistencies)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+
+        # Paginate
+        start = (page - 1) * per_page
+        page_items = inconsistencies[start:start + per_page]
+
+        conflict_stats = get_conflict_stats()
+
+        return await render_template(
+            "pages/corrections.html",
+            inconsistencies=page_items,
+            total=total,
+            page=page,
+            total_pages=total_pages,
+            conflict_stats=conflict_stats,
+        )
+    except Exception as exc:
+        logger.error("Corrections page error: %s", exc, exc_info=True)
+        return await render_template(
+            "pages/corrections.html",
+            inconsistencies=[],
+            total=0,
+            page=1,
+            total_pages=1,
+            conflict_stats={"total_pending": 0, "by_provider": [], "by_field": []},
+            error=str(exc),
+        )
 
 
 @ui_bp.route("/missing")

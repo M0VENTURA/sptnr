@@ -83,7 +83,7 @@ run_alembic_migrations() {
 
 run_schema_bootstrap() {
     log "Running database schema bootstrap..."
-    if python3 db/bootstrap.py 2>&1; then
+    if python3 -m db.bootstrap 2>&1; then
         ok "Database schema bootstrap complete"
     else
         warn "Database schema bootstrap failed (non-fatal — app will retry on startup)"

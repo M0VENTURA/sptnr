@@ -49,6 +49,16 @@ class UnifiedLogFilter(logging.Filter):
         return True
 
 
+def log_unified(message: str) -> None:
+    """Write a progress message to the unified scan log (``unified_scan.log``).
+
+    Used extensively by scanning pipelines to record human-readable progress
+    that operators can tail in real time.  Logs at INFO level so the
+    ``UnifiedLogFilter`` on the ``unified_file`` handler lets it through.
+    """
+    logging.getLogger("popularr.unified").info(message)
+
+
 class SafePrefixFormatter(logging.Formatter):
     """Appends a service prefix safely without mutating the shared LogRecord."""
     

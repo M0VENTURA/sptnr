@@ -93,6 +93,24 @@ TABLES_TO_ENSURE: dict[str, str] = {
             CONSTRAINT unique_artist_album UNIQUE (artist_name, album_name)
         )
     """,
+    "metadata_conflicts": """
+        CREATE TABLE IF NOT EXISTS metadata_conflicts (
+            id BIGSERIAL PRIMARY KEY,
+            track_id VARCHAR(255) NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            provider VARCHAR(50) NOT NULL,
+            field_name VARCHAR(50) NOT NULL,
+            local_value TEXT,
+            remote_value TEXT,
+            artist_name TEXT,
+            album_name TEXT,
+            track_title TEXT,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMP,
+            resolved_by TEXT,
+            CONSTRAINT uq_track_provider_field UNIQUE (track_id, provider, field_name)
+        )
+    """,
 }
 
 # =============================================================================
