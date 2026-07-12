@@ -29,6 +29,28 @@ def clean_artist_spacing(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip())
 
 
+def build_artist_variants(artist: str) -> list[str]:
+    """Generate artist name variants (main artist, featured artists, combinations)."""
+    variants: set[str] = set()
+    value = clean_artist_spacing(artist)
+    if not value:
+        return []
+    variants.add(value)
+
+    for pattern in [r"\s+feat\.\s+", r"\s+ft\.\s+", r"\s+featuring\s+"]:
+        if re.search(pattern, value, flags=re.I):
+            parts = re.split(pattern, value, maxsplit=1, flags=re.I)
+            main, featured = parts[0].strip(), parts[1].strip() if len(parts) > 1 else ""
+            if main:
+                variants.add(main)
+            if featured:
+                variants.add(featured)
+            if main and featured:
+                variants.add(f"{main} & {featured}")
+
+    return sorted(v for v in variants if v)
+
+
 def get_primary_artist_preserve_case(artist: str) -> str:
     """Return likely primary artist while preserving original casing."""
     if not artist:

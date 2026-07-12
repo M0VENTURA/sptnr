@@ -11,4 +11,4 @@ from quart import Blueprint
 api_v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 
 # Import sub-modules to register their routes
-from . import tracks, artists, albums, scans, queue
+from . import tracks, artists

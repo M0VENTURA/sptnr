@@ -79,56 +79,22 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 
 ## 2. HTTP Clients — Switch to `httpx`
 
-<<<<<<< HEAD
-**Status**: ✅ COMPLETED
-=======
 **Status**: ✅ COMPLETED — All `api_clients/*.py` already use `httpx`. `http_utils.py` has a custom `_RetryTransport` with exponential backoff. No `requests` usage remains in API client layer.
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
-<<<<<<< HEAD
 **What changed**:
 - All `api_clients/*.py` already use `httpx`
 - `http_utils.py` has custom `_RetryTransport` with exponential backoff
 - Remaining `requests` calls in routes/services migrated to `httpx`
 - `requests` and `urllib3` removed from `requirements.txt`
-=======
-**What changed** (already in codebase):
-- `api_clients/__init__.py` — shared `httpx.Client` session
-- `api_clients/lastfm_http.py` — `httpx` with `retry_with_backoff`
-- `api_clients/musicbrainz_http.py` — `httpx`
-- `api_clients/spotify_http.py` — `httpx`
-- `api_clients/slskd_http.py` — `httpx`
-- `api_clients/navidrome.py` — `httpx`
-- `api_clients/discogs_http.py` — `httpx`
-- `api_clients/coverartarchive.py` — `httpx`
-- `api_clients/audiodb.py` — `httpx`
-- `http_utils.py` — custom `_RetryTransport` replacing old `urllib3.Retry` + `SSLAdapter`
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
-
-<<<<<<< HEAD
-=======
-**Remaining `requests` usage** (lower priority — in routes and services, not API clients):
-- `routes/misc_routes.py` — `requests.get()` for MusicBrainz API
-- `routes/musicbrainz_routes.py` — `requests` for MB lookups
-- `routes/track_routes.py` — `requests` for MB lookups
-- `routes/upcoming_releases_routes.py` — `requests` for Wikipedia
-- `services/enrichment/album_art_service.py` — `requests`
-- `services/enrichment/musicbrainz_service.py` — `requests`
-- `services/metadata/*.py` — various `requests` calls
-- `services/playlists/*.py` — `requests` for external APIs
-
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 ---
 
 ## 3. Async I/O — Quart
 
-<<<<<<< HEAD
-**Status**: ✅ COMPLETED
+**Status**: ✅ COMPLETED — Migrated from Flask (WSGI) to Quart (ASGI). All 37 files with `from flask import` converted to `from quart import`.
 =======
 **Status**: ✅ COMPLETED — Migrated from Flask (WSGI) to Quart (ASGI). All 37 files with `from flask import` converted to `from quart import`.
 >>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
-<<<<<<< HEAD
 **What changed**:
 - `app.py` — `Flask(__name__)` → `Quart(__name__)`
 - 37 files — `from flask import` → `from quart import` (identical API)
@@ -190,7 +156,6 @@ SPTNR_LOG_LEVEL: "debug"
 **Status**: ✅ COMPLETED — APScheduler integrated. Replaces ad-hoc `threading.Thread` for periodic tasks.
 >>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
-<<<<<<< HEAD
 **What changed**:
 - `apscheduler>=3.10` in `requirements.txt`
 - `services/scheduler/scheduler_service.py` — `BackgroundScheduler` singleton
@@ -242,7 +207,6 @@ scheduler:
 **Status**: ✅ COMPLETED — esbuild bundling setup created. Templates updated to support local vendor assets.
 >>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
-<<<<<<< HEAD
 **What changed**:
 - `package.json` + esbuild config for JS bundling
 - Templates support conditional CDN vs local assets via `features.use_local_assets`
