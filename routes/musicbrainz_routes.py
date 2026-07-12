@@ -105,9 +105,9 @@ def api_musicbrainz_import_artist():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/tag/update", methods=["POST"])
-def api_musicbrainz_tag_update():
+async def api_musicbrainz_tag_update():
     """Update a MusicBrainz tag in the database and optionally write to MP3."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     artist = data.get("artist", "").strip()
     album = data.get("album", "").strip()
     title = data.get("title", "").strip()
@@ -142,9 +142,9 @@ def api_musicbrainz_tag_write_mp3():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/tags/batch-update", methods=["POST"])
-def api_musicbrainz_batch_update():
+async def api_musicbrainz_batch_update():
     """Update multiple MusicBrainz tags at once."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     artist = data.get("artist", "").strip()
     album = data.get("album", "").strip()
     title = data.get("title", "").strip()
@@ -169,9 +169,9 @@ def api_musicbrainz_batch_update():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/search", methods=["POST"])
-def api_musicbrainz_search():
+async def api_musicbrainz_search():
     """Search MusicBrainz for releases + local cached missing releases."""
-    payload = request.get_json(silent=True) or {}
+    payload = (await request.get_json(silent=True)) or {}
     query = str(payload.get("query", "")).strip()
     artist_only = bool(payload.get("artist_only", False))
     if not query:

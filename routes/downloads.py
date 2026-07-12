@@ -107,13 +107,13 @@ def api_downloads_verify_moved():
 # =============================================================================
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/match-musicbrainz", methods=["POST"])
-def api_match_folder(folder_path):
-    return jsonify(match_folder(folder_path, request.json))
+async def api_match_folder(folder_path):
+    return jsonify(match_folder(folder_path, await request.get_json()))
 
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/auto-match", methods=["POST"])
-def api_auto_match_folder(folder_path):
-    return jsonify(auto_match_folder(folder_path, request.json))
+async def api_auto_match_folder(folder_path):
+    return jsonify(auto_match_folder(folder_path, await request.get_json()))
 
 
 @downloads_bp.route("/api/downloads/release/<source>/<release_id>/tracks")
@@ -122,15 +122,15 @@ def api_release_tracks(source, release_id):
 
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/duplicates", methods=["POST"])
-def api_check_duplicates(folder_path):
-    return jsonify(check_folder_duplicates(folder_path, request.json))
+async def api_check_duplicates(folder_path):
+    return jsonify(check_folder_duplicates(folder_path, await request.get_json()))
 from services.downloads.match_orchestrator import apply_mbid_match_batch
 
 
 @downloads_bp.route("/api/queue/apply-mbid-match-batch", methods=["POST"])
-def api_queue_apply_mbid_match_batch():
+async def api_queue_apply_mbid_match_batch():
     try:
-        data = request.get_json(force=True, silent=True) or {}
+        data = (await request.get_json(force=True, silent=True)) or {}
 
         queue_ids = [
             int(x)
@@ -163,20 +163,20 @@ def api_queue_apply_mbid_match_batch():
 # =============================================================================
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/organize", methods=["POST"])
-def api_organize_folder(folder_path):
-    return jsonify(organize_folder(folder_path, request.json))
+async def api_organize_folder(folder_path):
+    return jsonify(organize_folder(folder_path, await request.get_json()))
 
 
 
 @downloads_bp.route("/api/downloads/track/<int:track_index>/move", methods=["POST"])
-def api_move_track(track_index):
-    return jsonify(organize_track(track_index, request.json))
+async def api_move_track(track_index):
+    return jsonify(organize_track(track_index, await request.get_json()))
 
 
 
 @downloads_bp.route("/api/downloads/merge-folders", methods=["POST"])
-def api_merge_folders():
-    return jsonify(merge_folders(request.json))
+async def api_merge_folders():
+    return jsonify(merge_folders(await request.get_json()))
 
 
 # =============================================================================
@@ -191,8 +191,8 @@ def api_process():
 
 
 @downloads_bp.route("/api/downloads/process-one", methods=["POST"])
-def api_process_one():
-    return jsonify(process_single_file(request.json))
+async def api_process_one():
+    return jsonify(process_single_file(await request.get_json()))
 
 
 @downloads_bp.route("/api/downloads/process-retry", methods=["POST"])
@@ -206,18 +206,18 @@ def api_process_albums():
 
 
 @downloads_bp.route("/api/downloads/albums/use-existing", methods=["POST"])
-def api_use_existing():
-    return jsonify(process_album_existing(request.json))
+async def api_use_existing():
+    return jsonify(process_album_existing(await request.get_json()))
 
 
 @downloads_bp.route("/api/downloads/albums/apply-match", methods=["POST"])
-def api_apply_match():
-    return jsonify(apply_musicbrainz_match(request.json))
+async def api_apply_match():
+    return jsonify(apply_musicbrainz_match(await request.get_json()))
 
 
 @downloads_bp.route("/api/downloads/release-tracks", methods=["POST"])
-def api_release_status():
-    return jsonify(get_release_status(request.json))
+async def api_release_status():
+    return jsonify(get_release_status(await request.get_json()))
 
 
 # =============================================================================
@@ -250,8 +250,9 @@ def api_batch_group():
 
 
 @downloads_bp.route("/api/downloads/queue/<int:queue_id>", methods=["POST"])
-def api_manage_queue(queue_id):
-    return jsonify(update_queue_item(queue_id, **(request.json or {})) or {"success": False})
+async def api_manage_queue(queue_id):
+    _data = (await request.get_json()) or {}
+    return jsonify(update_queue_item(queue_id, **_data) or {"success": False})
 
 
 # =============================================================================

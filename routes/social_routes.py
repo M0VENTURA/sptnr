@@ -30,9 +30,9 @@ weekly_bp = Blueprint("weekly_sync", __name__, url_prefix="/api/weekly-sync")
 
 
 @listenbrainz_bp.route("/rss/sync", methods=["POST"])
-def api_listenbrainz_rss_sync():
+async def api_listenbrainz_rss_sync():
     """Sync ListenBrainz RSS feeds into playlists."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     app_username = session.get("username", "default_user")
     lb_username = (data.get("listenbrainz_username") or app_username or "").strip()
     result = sync_rss_playlists_for_user(app_username, lb_username)
@@ -85,9 +85,9 @@ def api_listenbrainz_create_playlist():
 
 
 @lastfm_bp.route("/sync/now", methods=["POST"])
-def api_lastfm_sync_now():
+async def api_lastfm_sync_now():
     """Manually trigger Last.fm recommendations sync."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     cfg = get_config()
     lastfm_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
     api_key = lastfm_cfg.get("api_key", "")

@@ -137,7 +137,15 @@ class RecommendationCache:
 class LastFmService:
     """Application-level Last.fm behaviour."""
 
-    _FEATURE_RE = re.compile(r"\s+(?:feat\.?|featuring|ft\.?)\s+", re.IGNORECASE)
+    # Matches feat/ft/featuring both with plain whitespace and inside brackets:
+    #   "Artist feat. Guest"
+    #   "Artist [feat. Guest]"
+    #   "Artist (ft. Guest)"
+    #   "Artist [feat. Guest] (some text)"
+    _FEATURE_RE = re.compile(
+        r"\s+(?:\[|\()?\s*(?:feat\.?|ft\.?|featuring|with|w/)\s+[^\]\)\[]*(?:\]|\))?",
+        re.IGNORECASE,
+    )
 
     def __init__(self, api_key: str, username: str | None = None, http_client: LastFmHttpClient | None = None, db_connection=None):
         self.api_key = api_key or ""
@@ -187,6 +195,11 @@ class LastFmService:
         return cls.clean_spaces(value)
 
     @classmethod
+    def _strip_bracketed_content(cls, value: str) -> str:
+        """Remove bracketed/parenthesized content from an artist string."""
+        return re.sub(r"\s*[\[\(][^\]\)]*[\]\)]", "", value or "").strip()
+
+    @classmethod
     def build_artist_lookup_candidates(cls, artist: str) -> list[str]:
         """Build conservative Last.fm artist lookup candidates."""
         candidates: list[str] = []
@@ -204,6 +217,16 @@ class LastFmService:
         add(original)
         add(primary)
         add(re.sub(r"\s*(?:\+|&|/|×|\bx\b|\bvs\b|\bwith\b)\s*", " & ", primary, flags=re.IGNORECASE))
+
+        # Also try with ALL bracketed content stripped — Last.fm often returns
+        # artist names like "D'artagnan [feat. Melissa Bonny]" or similar.
+        no_brackets = cls._strip_bracketed_content(artist)
+        if no_brackets:
+            add(no_brackets)
+            no_brackets_primary = cls.strip_featured_artist(no_brackets)
+            if no_brackets_primary:
+                add(no_brackets_primary)
+
         return candidates
 
     @classmethod
@@ -266,7 +289,12 @@ class LastFmService:
         return {"track_play": 0, "listeners": 0, "toptags": {}, "lookup_artist": artist, "returned_artist": "", "track_name": title, "url": "", "album": ""}
 
     def get_track_info(self, artist: str, title: str, track_mbid: str | None = None) -> dict[str, Any]:
-        """Fetch track listeners/playcount with safer multi-artist handling."""
+        """Fetch track listeners/playcount with safer multi-artist handling.
+
+        Tries multiple artist name variants (including bracket-stripped versions)
+        and falls back to ``track.search`` when direct ``track.getInfo`` returns
+        no useful data.
+        """
         if not self.api_key:
             return self._empty_track_info(artist, title)
 
@@ -280,12 +308,40 @@ class LastFmService:
             if best_tuple[0] >= 90 and (best_tuple[1] > 0 or best_tuple[2] > 0):
                 return self._normalise_track_result(best_result, artist)
 
+        # Try all artist candidate variants with the given (normalised) title
         for candidate_artist in self.build_artist_lookup_candidates(artist):
             candidate = self._get_track_info_once(candidate_artist, title)
             candidate_tuple = (self.artist_match_score(artist, candidate.get("returned_artist", "")), int(candidate.get("listeners", 0) or 0), int(candidate.get("track_play", 0) or 0))
             if candidate_tuple > best_tuple:
                 best_tuple = candidate_tuple
                 best_result = candidate
+
+        # If all direct lookups returned empty, fall back to track.search
+        # which does broader matching (handles cases where Last.fm has the
+        # feat. in the title, e.g. "Herzblut (feat. Melissa Bonny)").
+        if best_result is None or (best_result.get("listeners", 0) == 0 and best_result.get("track_play", 0) == 0):
+            search_results = self.search_track(artist, title, limit=10)
+            if search_results:
+                best_search: dict[str, Any] | None = None
+                best_search_score = -1
+                for track in search_results:
+                    track_name = track.get("name", "")
+                    track_listeners = int(track.get("listeners", 0) or 0)
+                    track_url = track.get("url", "")
+                    if track_listeners > best_search_score:
+                        best_search_score = track_listeners
+                        best_search = {
+                            "track_play": track_listeners,
+                            "listeners": track_listeners,
+                            "toptags": {},
+                            "lookup_artist": artist,
+                            "returned_artist": track.get("artist", ""),
+                            "track_name": track_name,
+                            "url": track_url,
+                            "album": "",
+                        }
+                if best_search and best_search_score > 0:
+                    best_result = best_search
 
         return self._normalise_track_result(best_result or self._empty_track_info(artist, title), artist)
 

@@ -59,9 +59,9 @@ def api_upcoming_releases():
 
 
 @upcoming_bp.route("/<int:release_id>/match", methods=["POST"])
-def api_match_upcoming_release(release_id):
+async def api_match_upcoming_release(release_id):
     """Match an upcoming release to a MusicBrainz release-group."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     rg_mbid = (data.get("release_group_mbid") or "").strip()
     source = (data.get("source") or "manual_selection").strip()
 
@@ -192,9 +192,9 @@ def api_clear_upcoming_releases():
 
 
 @upcoming_bp.route("/search-musicbrainz", methods=["POST"])
-def api_search_musicbrainz_release():
+async def api_search_musicbrainz_release():
     """Search MusicBrainz for a release (artist, album, or track)."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     artist = data.get("artist", "").strip()
     album = data.get("album", "").strip()
     track = data.get("track", "").strip()
@@ -232,9 +232,9 @@ def api_get_release_group_tracks():
 
 
 @upcoming_bp.route("/search-discogs", methods=["POST"])
-def api_search_discogs_release():
+async def api_search_discogs_release():
     """Search Discogs for a release."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     artist = (data.get("artist") or "").strip()
     album = (data.get("album") or "").strip()
     if not artist or not album:

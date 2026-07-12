@@ -53,13 +53,13 @@ def _coerce_optional_int(value, allow_prefix=False):
 
 
 @slskd_bp.route("/search", methods=["POST"])
-def slskd_search():
+async def slskd_search():
     """Proxy endpoint for slskd search API."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd not enabled"}), 400
-    query = _normalize_slskd_query((request.json or {}).get("query", ""))
+    query = _normalize_slskd_query(((await request.get_json()) or {}).get("query", ""))
     if not query:
         return jsonify({"error": "query required"}), 400
     web_url = slskd_config.get("web_url", "http://localhost:5030")
@@ -118,13 +118,13 @@ def slskd_search_results(search_id):
 
 
 @slskd_bp.route("/download", methods=["POST"])
-def slskd_download():
+async def slskd_download():
     """Proxy endpoint to download from slskd."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd not enabled"}), 400
-    payload = request.json or {}
+    payload = (await request.get_json()) or {}
     username = payload.get("username", "")
     filename = payload.get("filename", "")
     if not username or not filename:
@@ -139,13 +139,13 @@ def slskd_download():
 
 
 @slskd_bp.route("/cancel", methods=["POST"])
-def slskd_cancel():
+async def slskd_cancel():
     """Cancel a Soulseek download."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd not enabled"}), 400
-    payload = request.json or {}
+    payload = (await request.get_json()) or {}
     username = payload.get("username", "")
     filename = payload.get("filename", "")
     transfer_id = payload.get("transfer_id")
@@ -177,13 +177,13 @@ def slskd_status():
 
 
 @slskd_bp.route("/retry", methods=["POST"])
-def slskd_retry():
+async def slskd_retry():
     """Retry a failed Soulseek download."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd not enabled"}), 400
-    payload = request.json or {}
+    payload = (await request.get_json()) or {}
     username = payload.get("username", "")
     filename = payload.get("filename", "")
     if not username or not filename:
@@ -198,13 +198,13 @@ def slskd_retry():
 
 
 @slskd_bp.route("/queue-download", methods=["POST"])
-def slskd_queue_download():
+async def slskd_queue_download():
     """Initiate a Soulseek download linked to a specific queue item."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd not enabled"}), 400
-    payload = request.json or {}
+    payload = (await request.get_json()) or {}
     queue_id = payload.get("queue_id")
     username = payload.get("username", "")
     filename = payload.get("filename", "")
@@ -250,9 +250,9 @@ def api_get_banned_words():
 
 
 @slsk_bp.route("/banned-words", methods=["POST"])
-def api_add_banned_word():
+async def api_add_banned_word():
     """Add or update a banned word."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     word = str(data.get("word") or "").strip().lower()
     if not word:
         return jsonify({"error": "word required"}), 400
@@ -282,13 +282,13 @@ def api_dismiss_all_suggested_words():
 
 
 @qbit_bp.route("/search", methods=["POST"])
-def qbit_search():
+async def qbit_search():
     """Proxy endpoint for qBittorrent search API."""
     cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {})
     if not qbit_config.get("enabled"):
         return jsonify({"error": "qBittorrent not enabled"}), 400
-    query = (request.json or {}).get("query", "")
+    query = ((await request.get_json()) or {}).get("query", "")
     if not query:
         return jsonify({"error": "query required"}), 400
     try:
@@ -305,13 +305,13 @@ def qbit_search():
 
 
 @qbit_bp.route("/add", methods=["POST"])
-def qbit_add_torrent():
+async def qbit_add_torrent():
     """Proxy endpoint to add torrent to qBittorrent."""
     cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {})
     if not qbit_config.get("enabled"):
         return jsonify({"error": "qBittorrent not enabled"}), 400
-    torrent_url = (request.json or {}).get("url", "")
+    torrent_url = ((await request.get_json()) or {}).get("url", "")
     if not torrent_url:
         return jsonify({"error": "url required"}), 400
     try:
@@ -348,13 +348,13 @@ def qbit_status():
 
 
 @qbit_bp.route("/force-start", methods=["POST"])
-def qbit_force_start():
+async def qbit_force_start():
     """Force-start or resume a stalled qBittorrent torrent."""
     cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {})
     if not qbit_config.get("enabled"):
         return jsonify({"error": "qBittorrent not enabled"}), 400
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     torrent_hash = str(data.get("hash") or "").strip()
     if not torrent_hash:
         return jsonify({"error": "hash required"}), 400
@@ -372,13 +372,13 @@ def qbit_force_start():
 
 
 @qbit_bp.route("/stop", methods=["POST"])
-def qbit_stop():
+async def qbit_stop():
     """Pause/stop a qBittorrent torrent."""
     cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {})
     if not qbit_config.get("enabled"):
         return jsonify({"error": "qBittorrent not enabled"}), 400
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     torrent_hash = str(data.get("hash") or "").strip()
     if not torrent_hash:
         return jsonify({"error": "hash required"}), 400

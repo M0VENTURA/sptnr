@@ -22,9 +22,9 @@ misc_api_bp = Blueprint("misc_api", __name__, url_prefix="/api")
 # ===========================================================================
 
 @misc_api_bp.route("/search", methods=["POST"])
-def api_search():
+async def api_search():
     """Search the library for artists, albums, and tracks."""
-    data = request.get_json() or {}
+    data = (await request.get_json()) or {}
     query = str(data.get("query", "")).strip().lower()
     if not query or len(query) < 2:
         return jsonify({"error": "Query too short"}), 400
@@ -139,9 +139,9 @@ def api_features_update():
 # ===========================================================================
 
 @misc_api_bp.route("/artist/country", methods=["POST"])
-def api_fetch_artist_country():
+async def api_fetch_artist_country():
     """Fetch artist country from MusicBrainz and update database."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     artist = str(data.get("artist_name") or "").strip()
     if not artist:
         return jsonify({"error": "artist_name required"}), 400
@@ -165,9 +165,9 @@ def api_fetch_artist_country():
 
 
 @misc_api_bp.route("/artist/country/update", methods=["POST"])
-def api_update_artist_country():
+async def api_update_artist_country():
     """Manually update artist country."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     artist = str(data.get("artist_name") or "").strip()
     country = str(data.get("country") or "").strip()
     if not artist or not country:
@@ -182,9 +182,9 @@ def api_update_artist_country():
 
 
 @misc_api_bp.route("/artist/country/apply-as-genre", methods=["POST"])
-def api_apply_country_as_genre():
+async def api_apply_country_as_genre():
     """Apply artist country as genre tag to all tracks."""
-    data = request.json or {}
+    data = (await request.get_json()) or {}
     artist = str(data.get("artist_name") or "").strip()
     if not artist:
         return jsonify({"error": "artist_name required"}), 400
@@ -533,7 +533,7 @@ def api_correcting_list_ignores():
 # ===========================================================================
 
 @misc_api_bp.route("/bookmarks", methods=["GET", "POST"])
-def api_bookmarks():
+async def api_bookmarks():
     """Get all bookmarks or add a new bookmark."""
     if request.method == "GET":
         with db_session() as session:
@@ -541,7 +541,7 @@ def api_bookmarks():
             rows = result.fetchall()
         return jsonify({"success": True, "bookmarks": [dict(r._mapping) for r in rows]})
     elif request.method == "POST":
-        data = request.json or {}
+        data = (await request.get_json()) or {}
         btype = str(data.get("type") or "custom").strip()
         name = str(data.get("name") or "").strip()
         url = str(data.get("url") or "").strip()

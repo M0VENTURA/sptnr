@@ -153,11 +153,14 @@ async def setup():
 # ===========================================================================
 
 @ui_bp.route("/api/test-navidrome-connection", methods=["POST"])
-def api_test_navidrome_connection():
+async def api_test_navidrome_connection():
     """Test Navidrome connectivity with provided credentials before saving."""
     from api_clients.navidrome import NavidromeClient
 
-    data = request.json or {}
+    try:
+        data = (await request.get_json()) or {}
+    except Exception:
+        return jsonify({"success": False, "error": "Invalid JSON body"}), 400
     base_url = str(data.get("base_url", "")).rstrip("/")
     username = str(data.get("username", ""))
     password = str(data.get("password", ""))
@@ -173,11 +176,14 @@ def api_test_navidrome_connection():
     return jsonify({"success": False, "error": "❌ Could not connect — check URL and credentials"})
 
 @ui_bp.route("/api/setup/save", methods=["POST"])
-def api_setup_save():
+async def api_setup_save():
     """Save the first-run setup wizard configuration."""
     from helpers.config_helpers import save_config, clear_config_cache
 
-    data = request.json or {}
+    try:
+        data = (await request.get_json()) or {}
+    except Exception:
+        return jsonify({"success": False, "error": "Invalid JSON body"}), 400
     if not data:
         return jsonify({"success": False, "error": "No configuration data received"}), 400
 
@@ -209,7 +215,7 @@ def api_setup_save():
 
 
 @ui_bp.route("/api/setup/save-partial", methods=["POST"])
-def api_setup_save_partial():
+async def api_setup_save_partial():
     """Save partial wizard configuration — merges into existing config.
 
     Unlike :func:`api_setup_save`, this endpoint does **not** require the
@@ -219,7 +225,10 @@ def api_setup_save_partial():
     """
     from helpers.config_helpers import save_partial_config
 
-    data = request.json or {}
+    try:
+        data = (await request.get_json()) or {}
+    except Exception:
+        return jsonify({"success": False, "error": "Invalid JSON body"}), 400
     if not data:
         return jsonify({"success": False, "error": "No data received"}), 400
 
@@ -444,10 +453,13 @@ def config_env_vars_post():
 
 
 @ui_bp.route("/config/save-json", methods=["POST"])
-def config_save_json():
+async def config_save_json():
     """Save the full config dict from the WebUI editor back to config.yaml."""
     from helpers.config_helpers import save_config
-    data = request.json or {}
+    try:
+        data = (await request.get_json()) or {}
+    except Exception:
+        return jsonify({"success": False, "error": "Invalid JSON body"}), 400
     success = save_config(data)
     if success:
         return jsonify({"success": True})
@@ -696,9 +708,9 @@ async def metadata_compare():
 
 
 @ui_bp.route("/api/metadata-compare/search-musicbrainz", methods=["POST"])
-def metadata_compare_search_mb():
+async def metadata_compare_search_mb():
     """Search MusicBrainz for an album match to resolve metadata conflicts."""
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = str(data.get("artist", "")).strip()
     album = str(data.get("album", "")).strip()
     if not artist or not album:
@@ -714,9 +726,9 @@ def metadata_compare_search_mb():
 
 
 @ui_bp.route("/api/metadata-compare/accept-navidrome", methods=["POST"])
-def metadata_compare_accept_navidrome():
+async def metadata_compare_accept_navidrome():
     """Mark an album as locked to prevent Beets from overwriting it."""
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = str(data.get("artist", "")).strip()
     album = str(data.get("album", "")).strip()
     if not artist or not album:
@@ -731,9 +743,9 @@ def metadata_compare_accept_navidrome():
 
 
 @ui_bp.route("/api/metadata-compare/apply-musicbrainz", methods=["POST"])
-def metadata_compare_apply_mb():
+async def metadata_compare_apply_mb():
     """Apply MusicBrainz metadata to an album — updates both DB and audio files."""
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = str(data.get("artist", "")).strip()
     album = str(data.get("album", "")).strip()
     mb_data = data.get("mb_data", {})

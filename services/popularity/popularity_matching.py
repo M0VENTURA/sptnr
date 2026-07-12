@@ -8,8 +8,11 @@ import unicodedata
 FEATURE_SPLIT_RE = re.compile(
     r"""
     \s+
+    (?:\[|\()?\s*
     (?:feat\.?|ft\.?|featuring|with|w/)
     \s+
+    [^\]\)\[]*
+    (?:\]|\))?
     """,
     re.IGNORECASE | re.VERBOSE,
 )

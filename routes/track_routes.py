@@ -152,7 +152,7 @@ def api_toggle_manual_single(track_id):
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/favourite", methods=["GET", "POST", "DELETE"])
-def api_track_favourite():
+async def api_track_favourite():
     """Check, add, or remove a track from favourites."""
     if request.method == "GET":
         track_id = request.args.get("track_id", "").strip()
@@ -166,7 +166,7 @@ def api_track_favourite():
             return jsonify({"success": True, "is_favourite": result.fetchone() is not None}), 200
 
     if request.method == "POST":
-        data = request.json or {}
+        data = (await request.get_json()) or {}
         track_id = str(data.get("track_id") or "").strip()
         if not track_id:
             return jsonify({"error": "track_id required"}), 400
@@ -196,10 +196,10 @@ def api_track_favourite():
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/update-metadata", methods=["POST"])
-def api_track_update_metadata():
+async def api_track_update_metadata():
     """Update track metadata comprehensively."""
     try:
-        data = request.json or {}
+        data = (await request.get_json()) or {}
         track_id = str(data.get("track_id") or "").strip()
         if not track_id:
             return jsonify({"error": "track_id required"}), 400
@@ -285,10 +285,10 @@ def api_rescan_single_track(track_id):
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/apply-mb-release", methods=["POST"])
-def api_track_apply_mb_release(track_id):
+async def api_track_apply_mb_release(track_id):
     """Apply a chosen MusicBrainz release MBID to a track."""
     try:
-        data = request.json or {}
+        data = (await request.get_json()) or {}
         release_mbid = str(data.get("release_mbid") or "").strip()
         if not release_mbid:
             return jsonify({"error": "release_mbid required"}), 400
@@ -335,10 +335,10 @@ def api_track_mb_releases(track_id):
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/match-missing", methods=["POST"])
-def api_track_match_missing():
+async def api_track_match_missing():
     """Match a MusicBrainz 'missing' track to an existing track."""
     try:
-        data = request.json or {}
+        data = (await request.get_json()) or {}
         track_id = str(data.get("track_id") or "").strip()
         mb_title = str(data.get("mb_title") or "").strip()
         if not track_id or not mb_title:
@@ -355,10 +355,10 @@ def api_track_match_missing():
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/ignore-mb-field", methods=["POST"])
-def api_track_ignore_mb_field():
+async def api_track_ignore_mb_field():
     """Permanently ignore a specific MusicBrainz diff field for a track."""
     try:
-        data = request.json or {}
+        data = (await request.get_json()) or {}
         track_id = str(data.get("track_id") or "").strip()
         field = str(data.get("field") or "").strip()
         if not track_id or not field:

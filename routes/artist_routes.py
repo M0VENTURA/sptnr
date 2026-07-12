@@ -26,8 +26,8 @@ artist_bp = Blueprint("artist", __name__)
 # =============================
 
 @artist_bp.route("/api/artist/corrections/delete-track", methods=["POST"])
-def api_artist_corrections_delete_track():
-    payload = request.get_json(silent=True) or {}
+async def api_artist_corrections_delete_track():
+    payload = (await request.get_json(silent=True)) or {}
 
     return _json_response(
         corrections.delete_track(
@@ -38,8 +38,8 @@ def api_artist_corrections_delete_track():
 
 
 @artist_bp.route("/api/artist/corrections/clear-disc-number", methods=["POST"])
-def api_artist_corrections_clear_disc_number():
-    payload = request.get_json(silent=True) or {}
+async def api_artist_corrections_clear_disc_number():
+    payload = (await request.get_json(silent=True)) or {}
     data, code = corrections.clear_disc_number(
         artist=payload.get("artist", ""),
         album=payload.get("album", ""),
@@ -49,8 +49,8 @@ def api_artist_corrections_clear_disc_number():
 
 
 @artist_bp.route("/api/artist/corrections/apply-album-mbid", methods=["POST"])
-def api_artist_corrections_apply_album_mbid():
-    payload = request.get_json(silent=True) or {}
+async def api_artist_corrections_apply_album_mbid():
+    payload = (await request.get_json(silent=True)) or {}
     data, code = corrections.apply_album_mbid(
         payload
     )
@@ -58,8 +58,8 @@ def api_artist_corrections_apply_album_mbid():
 
 
 @artist_bp.route("/api/artist/corrections/merge-albums", methods=["POST"])
-def api_artist_corrections_merge_albums():
-    payload = request.get_json(silent=True) or {}
+async def api_artist_corrections_merge_albums():
+    payload = (await request.get_json(silent=True)) or {}
     data, code = corrections.merge_albums(
         artist=payload.get("artist", ""),
         source_albums=payload.get("source_albums", []),
@@ -150,8 +150,8 @@ def api_cached_missing_releases():
 
 
 @artist_bp.route("/api/artist/cleanup-false-positive-missing", methods=["POST"])
-def api_cleanup_false_positive_missing():
-    payload = request.get_json() or {}
+async def api_cleanup_false_positive_missing():
+    payload = (await request.get_json()) or {}
     data, code = metadata.cleanup_false_positive_missing(payload.get("artist", ""))
     return jsonify(data), code
 
@@ -198,22 +198,22 @@ def api_artist_search_images():
 
 
 @artist_bp.route("/api/artist/set-image", methods=["POST"])
-def api_artist_set_image():
-    payload = request.json or {}
+async def api_artist_set_image():
+    payload = (await request.get_json()) or {}
     data, code = metadata.set_image(payload)
     return jsonify(data), code
 
 
 @artist_bp.route("/api/artist/update-ids", methods=["POST"])
-def api_artist_update_ids():
-    payload = request.get_json(silent=True) or {}
+async def api_artist_update_ids():
+    payload = (await request.get_json(silent=True)) or {}
     data, code = metadata.update_ids(payload)
     return jsonify(data), code
 
 
 @artist_bp.route("/api/artist/lookup-ids", methods=["POST"])
-def api_artist_lookup_ids():
-    payload = request.get_json(silent=True) or {}
+async def api_artist_lookup_ids():
+    payload = (await request.get_json(silent=True)) or {}
     data, code = metadata.lookup_ids(payload)
     return jsonify(data), code
 
@@ -246,8 +246,8 @@ def api_artist_stats():
 
 
 @artist_bp.route("/api/artist/apply-genres", methods=["POST"])
-def api_artist_apply_genres():
-    payload = request.get_json()
+async def api_artist_apply_genres():
+    payload = await request.get_json()
     data, code = metadata.apply_genres(payload)
     return jsonify(data), code
 
@@ -260,8 +260,8 @@ def api_artist_genre_recommendations():
 
 
 @artist_bp.route("/api/artist/genre-management/save", methods=["POST"])
-def api_artist_genre_management_save():
-    payload = request.get_json(silent=True) or {}
+async def api_artist_genre_management_save():
+    payload = (await request.get_json(silent=True)) or {}
     data, code = metadata.genre_management(payload)
     return jsonify(data), code
 
@@ -279,8 +279,8 @@ def api_artist_missing_releases():
 
 
 @artist_bp.route("/api/artist/import-release", methods=["POST"])
-def api_import_release():
-    payload = request.json or {}
+async def api_import_release():
+    payload = (await request.get_json()) or {}
     artist = (payload.get("artist") or "").strip()
     release_id = (payload.get("release_id") or "").strip()
     title = (payload.get("title") or "").strip()
@@ -295,8 +295,8 @@ def api_scan_all_missing_releases():
 
 
 @artist_bp.route("/api/artist/add", methods=["POST"])
-def api_add_artist():
-    payload = request.json or {}
+async def api_add_artist():
+    payload = (await request.get_json()) or {}
     artist = (payload.get("artist") or "").strip()
     data, code = scan_add_artist(artist)
     return _json_response(data)

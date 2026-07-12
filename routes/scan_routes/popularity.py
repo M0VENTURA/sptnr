@@ -175,7 +175,7 @@ def scan_singles():
 
 
 @scans_bp.route("/api/scan/from-artist", methods=["POST"])
-def api_scan_from_artist():
+async def api_scan_from_artist():
     """API endpoint to start a popularity scan from a specific artist or letter.
 
     Expected JSON payload:
@@ -189,7 +189,7 @@ def api_scan_from_artist():
     the local library and starts from that artist.
     """
     try:
-        data = request.json or {}
+        data = (await request.get_json()) or {}
 
         artist = str(data.get("artist", "") or "").strip()
         letter = str(data.get("letter", "") or "").strip()

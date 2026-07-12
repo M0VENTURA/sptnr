@@ -17,7 +17,7 @@ from typing import Any
 
 # API clients (updated versions)
 from api_clients.musicbrainz_http import MusicBrainzHttpClient
-from api_clients.lastfm_http import LastFmHttpClient
+from api_clients.lastfm import LastFmClient
 from api_clients.listenbrainz import ListenBrainzClient
 
 # Enrichment services (better metadata than raw API clients)
@@ -188,11 +188,17 @@ def process_track(
                 or effective_track.get("musicbrainz_trackid")
             )
 
-            # Use Last.fm HTTP client for track info
+            # Use Last.fm client for track info (with multi-artist candidate handling)
             try:
-                lf = LastFmHttpClient()
-                lf_result = lf.get_track_info(artist, title)
-                lastfm_listeners = _as_int(lf_result.get("listeners") if isinstance(lf_result, dict) else 0)
+                from helpers.config_helpers import get_config
+                _lf_cfg = get_config().get("api_integrations", {}).get("lastfm", {})
+                _lf_api_key = _lf_cfg.get("api_key", "")
+                if _lf_api_key:
+                    lf = LastFmClient(_lf_api_key)
+                    lf_result = lf.get_track_info(artist, title)
+                    lastfm_listeners = _as_int(lf_result.get("listeners") if isinstance(lf_result, dict) else 0)
+                else:
+                    lastfm_listeners = 0
             except Exception:
                 lastfm_listeners = 0
 
