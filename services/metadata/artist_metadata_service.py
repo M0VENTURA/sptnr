@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sqlalchemy import text
+from db.engine import db_session
 from db.utils import get_db_connection
 from services.enrichment.artist_bio_service import get_artist_biography
 

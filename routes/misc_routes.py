@@ -28,53 +28,51 @@ def api_search():
     if not query or len(query) < 2:
         return jsonify({"error": "Query too short"}), 400
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        exact_p = query
-        starts_p = f"{query}%"
-        contains_p = f"%{query}%"
+        with db_session() as session:
+            exact_p = query
+            starts_p = f"{query}%"
+            contains_p = f"%{query}%"
 
-        # Artists
-        cursor.execute(
-            """SELECT COALESCE(NULLIF(album_artist, ''), artist) as name,
-                      COUNT(DISTINCT album) as album_count, COUNT(*) as track_count,
-                      CASE WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = %s THEN 0
-                           WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) LIKE %s THEN 1 ELSE 2 END as match_rank
-               FROM tracks
-               WHERE LOWER(artist) LIKE %s OR LOWER(album_artist) LIKE %s
-               GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
-               ORDER BY match_rank ASC, track_count DESC LIMIT 20""",
-            (exact_p, starts_p, contains_p, contains_p),
-        )
-        artists = [dict(r) for r in cursor.fetchall()]
+            # Artists
+            result = session.execute(
+                text("""SELECT COALESCE(NULLIF(album_artist, ''), artist) as name,
+                          COUNT(DISTINCT album) as album_count, COUNT(*) as track_count,
+                          CASE WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = :exact THEN 0
+                               WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) LIKE :starts THEN 1 ELSE 2 END as match_rank
+                   FROM tracks
+                   WHERE LOWER(artist) LIKE :contains OR LOWER(album_artist) LIKE :contains2
+                   GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+                   ORDER BY match_rank ASC, track_count DESC LIMIT 20"""),
+                {"exact": exact_p, "starts": starts_p, "contains": contains_p, "contains2": contains_p},
+            )
+            artists = [dict(r._mapping) for r in result.fetchall()]
 
-        # Albums
-        cursor.execute(
-            """SELECT COALESCE(NULLIF(album_artist, ''), artist) as artist, album,
-                      COUNT(*) as track_count, AVG(stars) as avg_stars,
-                      CASE WHEN LOWER(album) = %s THEN 0
-                           WHEN LOWER(album) LIKE %s THEN 1 ELSE 2 END as match_rank
-               FROM tracks WHERE LOWER(album) LIKE %s
-               GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
-               ORDER BY match_rank ASC, track_count DESC LIMIT 20""",
-            (exact_p, starts_p, contains_p),
-        )
-        albums = [dict(r) for r in cursor.fetchall()]
+            # Albums
+            result = session.execute(
+                text("""SELECT COALESCE(NULLIF(album_artist, ''), artist) as artist, album,
+                          COUNT(*) as track_count, AVG(stars) as avg_stars,
+                          CASE WHEN LOWER(album) = :exact THEN 0
+                               WHEN LOWER(album) LIKE :starts THEN 1 ELSE 2 END as match_rank
+                   FROM tracks WHERE LOWER(album) LIKE :contains
+                   GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+                   ORDER BY match_rank ASC, track_count DESC LIMIT 20"""),
+                {"exact": exact_p, "starts": starts_p, "contains": contains_p},
+            )
+            albums = [dict(r._mapping) for r in result.fetchall()]
 
-        # Tracks
-        cursor.execute(
-            """SELECT id, title, COALESCE(NULLIF(album_artist, ''), artist) as artist, album, stars,
-                      CASE WHEN LOWER(title) = %s THEN 0
-                           WHEN LOWER(title) LIKE %s THEN 1
-                           WHEN LOWER(title) LIKE %s THEN 2 ELSE 3 END as match_rank
-               FROM tracks
-               WHERE LOWER(title) LIKE %s OR LOWER(artist) LIKE %s OR LOWER(album_artist) LIKE %s
-               ORDER BY match_rank ASC, stars DESC LIMIT 50""",
-            (exact_p, starts_p, contains_p, contains_p, contains_p, contains_p),
-        )
-        tracks = [dict(r) for r in cursor.fetchall()]
+            # Tracks
+            result = session.execute(
+                text("""SELECT id, title, COALESCE(NULLIF(album_artist, ''), artist) as artist, album, stars,
+                          CASE WHEN LOWER(title) = :exact THEN 0
+                               WHEN LOWER(title) LIKE :starts THEN 1
+                               WHEN LOWER(title) LIKE :contains THEN 2 ELSE 3 END as match_rank
+                   FROM tracks
+                   WHERE LOWER(title) LIKE :contains OR LOWER(artist) LIKE :contains2 OR LOWER(album_artist) LIKE :contains3
+                   ORDER BY match_rank ASC, stars DESC LIMIT 50"""),
+                {"exact": exact_p, "starts": starts_p, "contains": contains_p, "contains2": contains_p, "contains3": contains_p},
+            )
+            tracks = [dict(r._mapping) for r in result.fetchall()]
 
-        conn.close()
         return jsonify({"artists": artists, "albums": albums, "tracks": tracks})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -88,13 +86,11 @@ def api_search():
 def api_stats():
     """Get library statistics."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) as track_count, COUNT(DISTINCT album) as album_count, "
+        with db_session() as session:
+            result = session.execute(text("SELECT COUNT(*) as track_count, COUNT(DISTINCT album) as album_count, "
                        "COUNT(DISTINCT COALESCE(NULLIF(album_artist, ''), artist)) as artist_count, "
-                       "AVG(stars) as avg_stars, SUM(duration) as total_duration FROM tracks")
-        stats = dict(cursor.fetchone())
-        conn.close()
+                       "AVG(stars) as avg_stars, SUM(duration) as total_duration FROM tracks"))
+            stats = dict(result.fetchone()._mapping)
         return jsonify({"success": True, **stats})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -108,12 +104,9 @@ def api_stats():
 def api_track_count():
     """Get total track count for progress calculation."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) as count FROM tracks")
-        row = cursor.fetchone()
-        conn.close()
-        return jsonify({"count": row.get("count", 0) if hasattr(row, "get") else (row[0] if row else 0)})
+        with db_session() as session:
+            count = session.execute(text("SELECT COUNT(*) as count FROM tracks")).scalar()
+        return jsonify({"count": count or 0})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -162,12 +155,9 @@ def api_fetch_artist_country():
         artists = data.get("artists", [])
         country = artists[0].get("country", "") if artists else ""
         if country:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO artists (name, country) VALUES (%s, %s) ON CONFLICT (name) DO UPDATE SET country = EXCLUDED.country", (artist, country))
-            cursor.execute("UPDATE tracks SET artist_country = %s WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s", (country, artist))
-            conn.commit()
-            conn.close()
+            with db_session() as session:
+                session.execute(text("INSERT INTO artists (name, country) VALUES (:artist, :country) ON CONFLICT (name) DO UPDATE SET country = EXCLUDED.country"), {"artist": artist, "country": country})
+                session.execute(text("UPDATE tracks SET artist_country = :country WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"), {"country": country, "artist": artist})
         return jsonify({"success": True, "country": country})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -182,12 +172,9 @@ def api_update_artist_country():
     if not artist or not country:
         return jsonify({"error": "artist_name and country required"}), 400
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO artists (name, country) VALUES (%s, %s) ON CONFLICT (name) DO UPDATE SET country = EXCLUDED.country", (artist, country))
-        cursor.execute("UPDATE tracks SET artist_country = %s WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s", (country, artist))
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            session.execute(text("INSERT INTO artists (name, country) VALUES (:artist, :country) ON CONFLICT (name) DO UPDATE SET country = EXCLUDED.country"), {"artist": artist, "country": country})
+            session.execute(text("UPDATE tracks SET artist_country = :country WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"), {"country": country, "artist": artist})
         return jsonify({"success": True, "country": country})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -201,19 +188,16 @@ def api_apply_country_as_genre():
     if not artist:
         return jsonify({"error": "artist_name required"}), 400
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT country FROM artists WHERE name = %s", (artist,))
-        row = cursor.fetchone()
-        if not row:
-            return jsonify({"error": "Artist not found or no country"}), 404
-        country = row.get("country") if hasattr(row, "get") else row[0]
-        cursor.execute(
-            "UPDATE tracks SET genres = CONCAT_WS(' \\ ', COALESCE(NULLIF(genres, ''), ''), %s) WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s",
-            (country, artist),
-        )
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            result = session.execute(text("""SELECT country FROM artists WHERE name = :artist """), {"artist": artist})
+            row = result.fetchone()
+            if not row:
+                return jsonify({"error": "Artist not found or no country"}), 404
+            country = row[0]
+            session.execute(
+                text("""UPDATE tracks SET genres = CONCAT_WS(' \\ ', COALESCE(NULLIF(genres, ''), ''), :country) WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"""),
+                {"country": country, "artist": artist},
+            )
         return jsonify({"success": True, "country": country})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -229,16 +213,14 @@ def api_get_duplicate_artists(artist):
     from urllib.parse import unquote
     artist = unquote(artist)
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT musicbrainz_artist_id, COUNT(DISTINCT artist) as names FROM tracks "
-            "WHERE musicbrainz_artist_id IS NOT NULL AND musicbrainz_artist_id != '' "
-            "GROUP BY musicbrainz_artist_id HAVING COUNT(DISTINCT artist) > 1"
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        return jsonify({"success": True, "duplicates": [dict(r) for r in rows]})
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT musicbrainz_artist_id, COUNT(DISTINCT artist) as names FROM tracks "
+                "WHERE musicbrainz_artist_id IS NOT NULL AND musicbrainz_artist_id != '' "
+                "GROUP BY musicbrainz_artist_id HAVING COUNT(DISTINCT artist) > 1")
+            )
+            rows = result.fetchall()
+        return jsonify({"success": True, "duplicates": [dict(r._mapping) for r in rows]})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -257,31 +239,24 @@ def api_merge_duplicate_artists():
 def api_genres_track(track_id: str):
     """Get all genre sources for a single track."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres,
-                   essentia_genres, mood, listenbrainz_genres
-            FROM tracks WHERE CAST(id AS TEXT) = %s
-        """, (track_id,))
-        row = cursor.fetchone()
-        conn.close()
+        with db_session() as session:
+            result = session.execute(text("""
+                SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres,
+                       essentia_genres, mood, listenbrainz_genres
+                FROM tracks WHERE CAST(id AS TEXT) = :id
+            """), {"id": track_id})
+            row = result.fetchone()
         if not row:
             return jsonify({"error": "Track not found"}), 404
 
         import json as _json
         genres: dict[str, list[dict[str, str | int]]] = {}
         source_keys = [
-            ("discogs_genres", "discogs_genres"),
-            ("mood", "mood"),
-            ("essentia_genres", "essentia_genres"),
-            ("musicbrainz_genres", "musicbrainz_genres"),
-            ("lastfm_tags", "lastfm_tags"),
-            ("listenbrainz_genres", "listenbrainz_genres"),
-            ("spotify_genres", "spotify_genres"),
+            "discogs_genres", "mood", "essentia_genres",
+            "musicbrainz_genres", "lastfm_tags", "listenbrainz_genres", "spotify_genres",
         ]
-        for db_key, output_key in source_keys:
-            raw = row.get(db_key) if hasattr(row, "get") else None
+        for idx, output_key in enumerate(source_keys):
+            raw = row[idx]
             if not raw:
                 genres[output_key] = []
                 continue
@@ -302,16 +277,14 @@ def api_genres_track(track_id: str):
 def api_genres_album(album: str, artist: str):
     """Get aggregated genres across all tracks in an album."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres,
-                   essentia_genres, mood, listenbrainz_genres
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
-        """, (artist, album))
-        rows = cursor.fetchall()
-        conn.close()
+        with db_session() as session:
+            result = session.execute(text("""
+                SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres,
+                       essentia_genres, mood, listenbrainz_genres
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album
+            """), {"artist": artist, "album": album})
+            rows = result.fetchall()
 
         from collections import Counter
         source_keys = [
@@ -322,8 +295,8 @@ def api_genres_album(album: str, artist: str):
 
         import json as _json
         for row in rows:
-            for key in source_keys:
-                raw = row.get(key) if hasattr(row, "get") else None
+            for idx, key in enumerate(source_keys):
+                raw = row[idx]
                 if not raw:
                     continue
                 try:
@@ -348,16 +321,14 @@ def api_genres_album(album: str, artist: str):
 def api_genres_artist(artist: str):
     """Get aggregated genres across all tracks by an artist."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres,
-                   essentia_genres, mood, listenbrainz_genres
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-        """, (artist,))
-        rows = cursor.fetchall()
-        conn.close()
+        with db_session() as session:
+            result = session.execute(text("""
+                SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres,
+                       essentia_genres, mood, listenbrainz_genres
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+            """), {"artist": artist})
+            rows = result.fetchall()
 
         from collections import Counter
         source_keys = [
@@ -368,8 +339,8 @@ def api_genres_artist(artist: str):
 
         import json as _json
         for row in rows:
-            for key in source_keys:
-                raw = row.get(key) if hasattr(row, "get") else None
+            for idx, key in enumerate(source_keys):
+                raw = row[idx] if idx < len(row) else None
                 if not raw:
                     continue
                 try:
@@ -399,12 +370,10 @@ def api_remove_genres():
 def api_recent_genre_updates():
     """Get recent genre updates for the logs page."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM genre_updates ORDER BY created_at DESC LIMIT 50")
-        rows = cursor.fetchall()
-        conn.close()
-        return jsonify({"success": True, "updates": [dict(r) for r in rows]})
+        with db_session() as session:
+            result = session.execute(text("SELECT * FROM genre_updates ORDER BY created_at DESC LIMIT 50"))
+            rows = result.fetchall()
+        return jsonify({"success": True, "updates": [dict(r._mapping) for r in rows]})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -438,20 +407,17 @@ def api_correcting_mb_suggestions():
     album = request.args.get("album", "").strip()
     if not album:
         return jsonify({"error": "album required"}), 400
-    conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT musicbrainz_albumid FROM tracks WHERE COALESCE(NULLIF(album_artist,''), artist) = %s AND album = %s "
-            "AND musicbrainz_albumid IS NOT NULL AND TRIM(musicbrainz_albumid) != '' GROUP BY musicbrainz_albumid ORDER BY COUNT(*) DESC LIMIT 1",
-            (album_artist, album),
-        )
-        row = cursor.fetchone()
-        conn.close()
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT musicbrainz_albumid FROM tracks WHERE COALESCE(NULLIF(album_artist,''), artist) = :artist AND album = :album "
+                "AND musicbrainz_albumid IS NOT NULL AND TRIM(musicbrainz_albumid) != '' GROUP BY musicbrainz_albumid ORDER BY COUNT(*) DESC LIMIT 1"),
+                {"artist": album_artist, "album": album},
+            )
+            row = result.fetchone()
         if not row:
             return jsonify({"success": True, "suggestions": {}, "mbid": None}), 200
-        mbid = row[0] if not hasattr(row, "get") else row.get("musicbrainz_albumid")
+        mbid = str(row[0])
         import requests, time
         headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
         time.sleep(1.0)
@@ -499,9 +465,6 @@ def api_correcting_mb_suggestions():
         return jsonify({"success": True, "suggestions": suggestions, "mbid": mbid})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    finally:
-        if conn:
-            conn.close()
 
 
 @misc_api_bp.route("/correcting/ignore", methods=["POST"])
@@ -514,19 +477,16 @@ def api_correcting_ignore():
         field = (payload.get("field") or "").strip()
         if not album or not field:
             return jsonify({"error": "album and field required"}), 400
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "CREATE TABLE IF NOT EXISTS correction_ignores (id SERIAL PRIMARY KEY, "
-            "album_artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL, field TEXT NOT NULL, "
-            "ignored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE (album_artist, album, field))"
-        )
-        cursor.execute(
-            "INSERT INTO correction_ignores (album_artist, album, field) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-            (album_artist, album, field),
-        )
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            session.execute(
+                text("CREATE TABLE IF NOT EXISTS correction_ignores (id SERIAL PRIMARY KEY, "
+                "album_artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL, field TEXT NOT NULL, "
+                "ignored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE (album_artist, album, field))")
+            )
+            session.execute(
+                text("INSERT INTO correction_ignores (album_artist, album, field) VALUES (:artist, :album, :field) ON CONFLICT DO NOTHING"),
+                {"artist": album_artist, "album": album, "field": field},
+            )
         return jsonify({"success": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -542,14 +502,11 @@ def api_correcting_unignore():
         field = (payload.get("field") or "").strip()
         if not album or not field:
             return jsonify({"error": "album and field required"}), 400
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM correction_ignores WHERE album = %s AND field = %s AND COALESCE(album_artist, '') = %s",
-            (album, field, album_artist),
-        )
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            session.execute(
+                text("DELETE FROM correction_ignores WHERE album = :album AND field = :field AND COALESCE(album_artist, '') = :artist"),
+                {"album": album, "field": field, "artist": album_artist},
+            )
         return jsonify({"success": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -558,19 +515,16 @@ def api_correcting_unignore():
 @misc_api_bp.route("/correcting/ignores")
 def api_correcting_list_ignores():
     """Return all active ignore rules."""
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT album_artist, album, field, ignored_at FROM correction_ignores")
-        rows = cursor.fetchall()
-        ignores = [{"album_artist": r.get("album_artist") or "", "album": r.get("album") or "",
-                     "field": r.get("field") or "", "ignored_at": str(r.get("ignored_at") or "")}
+        with db_session() as session:
+            result = session.execute(text("SELECT album_artist, album, field, ignored_at FROM correction_ignores"))
+            rows = result.fetchall()
+        ignores = [{"album_artist": str(r[0] or ""), "album": str(r[1] or ""),
+                     "field": str(r[2] or ""), "ignored_at": str(r[3] or "")}
                     for r in rows]
         return jsonify({"success": True, "ignores": ignores})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    finally:
-        conn.close()
 
 
 # ===========================================================================
@@ -580,42 +534,33 @@ def api_correcting_list_ignores():
 @misc_api_bp.route("/bookmarks", methods=["GET", "POST"])
 def api_bookmarks():
     """Get all bookmarks or add a new bookmark."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        if request.method == "GET":
-            cursor.execute("SELECT * FROM bookmarks ORDER BY created_at DESC LIMIT 100")
-            rows = cursor.fetchall()
-            return jsonify({"success": True, "bookmarks": [dict(r) for r in rows]})
-        elif request.method == "POST":
-            data = request.json or {}
-            btype = str(data.get("type") or "custom").strip()
-            name = str(data.get("name") or "").strip()
-            url = str(data.get("url") or "").strip()
-            if not name:
-                return jsonify({"error": "name required"}), 400
-            cursor.execute(
-                "INSERT INTO bookmarks (type, name, url) VALUES (%s, %s, %s) RETURNING id",
-                (btype, name, url),
+    if request.method == "GET":
+        with db_session() as session:
+            result = session.execute(text("SELECT * FROM bookmarks ORDER BY created_at DESC LIMIT 100"))
+            rows = result.fetchall()
+        return jsonify({"success": True, "bookmarks": [dict(r._mapping) for r in rows]})
+    elif request.method == "POST":
+        data = request.json or {}
+        btype = str(data.get("type") or "custom").strip()
+        name = str(data.get("name") or "").strip()
+        url = str(data.get("url") or "").strip()
+        if not name:
+            return jsonify({"error": "name required"}), 400
+        with db_session() as session:
+            result = session.execute(
+                text("INSERT INTO bookmarks (type, name, url) VALUES (:type, :name, :url) RETURNING id"),
+                {"type": btype, "name": name, "url": url},
             )
-            conn.commit()
-            return jsonify({"success": True, "id": cursor.fetchone()[0]}), 201
-        return jsonify({"error": "Unsupported method"}), 405
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-    finally:
-        conn.close()
+            return jsonify({"success": True, "id": result.scalar()}), 201
+    return jsonify({"error": "Unsupported method"}), 405
 
 
 @misc_api_bp.route("/bookmarks/<int:bookmark_id>", methods=["DELETE"])
 def api_delete_bookmark(bookmark_id):
     """Delete a bookmark."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM bookmarks WHERE id = %s", (bookmark_id,))
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            session.execute(text("DELETE FROM bookmarks WHERE id = :id"), {"id": bookmark_id})
         return jsonify({"success": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

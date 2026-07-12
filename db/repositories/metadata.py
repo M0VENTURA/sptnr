@@ -1,253 +1,204 @@
 """Metadata repository.
 
 SQL-only helper functions for services.metadata.
-These functions intentionally accept an existing connection to match the repo
-style you already use in db/repositories/library.py.
+All functions now use SQLAlchemy ``db_session()`` internally.
 """
 
 from __future__ import annotations
 
 from typing import Any
-from db.utils import row_get
+from sqlalchemy import text
+from db.engine import db_session
 
 
 # -----------------------------------------------------------------------------
 # Album favourites / art / tracklists
 # -----------------------------------------------------------------------------
 
-def album_is_favourite(conn: Any, artist: str, album: str) -> bool:
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            """
-            SELECT id FROM bookmarks
-            WHERE type = %s
-              AND LOWER(artist) = LOWER(%s)
-              AND LOWER(album) = LOWER(%s)
-            """,
-            ("album_favourite", artist, album),
+def album_is_favourite(conn: Any = None, artist: str = "", album: str = "") -> bool:
+    with db_session() as session:
+        result = session.execute(
+            text("""
+                SELECT id FROM bookmarks
+                WHERE type = :t
+                  AND LOWER(artist) = LOWER(:artist)
+                  AND LOWER(album) = LOWER(:album)
+                LIMIT 1
+            """),
+            {"t": "album_favourite", "artist": artist, "album": album},
         )
-        return cursor.fetchone() is not None
-    finally:
-        cursor.close()
+        return result.fetchone() is not None
 
 
-def set_album_favourite_db(conn: Any, artist: str, album: str, is_favourite: bool) -> None:
-    cursor = conn.cursor()
-    try:
+def set_album_favourite_db(conn: Any = None, artist: str = "", album: str = "", is_favourite: bool = False) -> None:
+    with db_session() as session:
         if is_favourite:
-            cursor.execute(
-                """
-                INSERT INTO bookmarks (type, artist, album)
-                VALUES (%s, %s, %s)
-                ON CONFLICT DO NOTHING
-                """,
-                ("album_favourite", artist, album),
+            session.execute(
+                text("""
+                    INSERT INTO bookmarks (type, artist, album)
+                    VALUES (:t, :artist, :album)
+                    ON CONFLICT DO NOTHING
+                """),
+                {"t": "album_favourite", "artist": artist, "album": album},
             )
         else:
-            cursor.execute(
-                """
-                DELETE FROM bookmarks
-                WHERE type = %s
-                  AND LOWER(artist) = LOWER(%s)
-                  AND LOWER(album) = LOWER(%s)
-                """,
-                ("album_favourite", artist, album),
+            session.execute(
+                text("""
+                    DELETE FROM bookmarks
+                    WHERE type = :t
+                      AND LOWER(artist) = LOWER(:artist)
+                      AND LOWER(album) = LOWER(:album)
+                """),
+                {"t": "album_favourite", "artist": artist, "album": album},
             )
-    finally:
-        cursor.close()
 
 
-
-def fetch_album_art_blob(conn: Any, artist: str, album: str):
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def fetch_album_art_blob(conn: Any = None, artist: str = "", album: str = ""):
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT image_data, image_mime_type
             FROM album_art
-            WHERE LOWER(COALESCE(artist_name, '')) = LOWER(%s)
-              AND LOWER(COALESCE(album_name, '')) = LOWER(%s)
+            WHERE LOWER(COALESCE(artist_name, '')) = LOWER(:artist)
+              AND LOWER(COALESCE(album_name, '')) = LOWER(:album)
             LIMIT 1
-        """, (artist, album))
+        """), {"artist": artist, "album": album})
 
-        row = cursor.fetchone()
-
+        row = result.fetchone()
         if not row:
             return None, None
-
-        return (
-            row_get(row, "image_data", 0),
-            row_get(row, "image_mime_type", 1) or "image/jpeg",
-        )
-
-    finally:
-        cursor.close()
+        return (row[0], row[1] or "image/jpeg")
 
 
-
-def fetch_album_art_urls(conn: Any, artist: str, album: str) -> list[str]:
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def fetch_album_art_urls(conn: Any = None, artist: str = "", album: str = "") -> list[str]:
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT url
             FROM album_art_urls
-            WHERE LOWER(artist_name) = LOWER(%s)
-              AND LOWER(album_name) = LOWER(%s)
-        """, (artist, album))
+            WHERE LOWER(artist_name) = LOWER(:artist)
+              AND LOWER(album_name) = LOWER(:album)
+        """), {"artist": artist, "album": album})
+        return [str(row[0]) for row in result.fetchall() or []]
 
-        return [row[0] for row in cursor.fetchall() or []]
 
-    finally:
-        cursor.close()
-
-def save_album_art_db(conn: Any, artist: str, album: str, image_data: bytes, mime: str, source: str) -> None:
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def save_album_art_db(conn: Any = None, artist: str = "", album: str = "",
+                      image_data: bytes | None = None, mime: str = "", source: str = "") -> None:
+    with db_session() as session:
+        session.execute(text("""
             INSERT INTO album_art (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
-            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            VALUES (:artist, :album, :data, :mime, :source, CURRENT_TIMESTAMP)
             ON CONFLICT (artist_name, album_name)
             DO UPDATE SET
                 image_data = EXCLUDED.image_data,
                 image_mime_type = EXCLUDED.image_mime_type,
                 source = EXCLUDED.source,
                 downloaded_at = CURRENT_TIMESTAMP
-        """, (artist, album, image_data, mime, source))
-        conn.commit()
-    finally:
-        cursor.close()
+        """), {"artist": artist, "album": album, "data": image_data, "mime": mime, "source": source})
 
-def fetch_album_tracklist(conn: Any, artist: str, album: str):
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+
+def fetch_album_tracklist(conn: Any = None, artist: str = "", album: str = ""):
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT id, title, track_number, duration, artist
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND album = %s
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+              AND album = :album
             ORDER BY COALESCE(disc_number, 1),
                      COALESCE(track_number, 999),
                      title
-        """, (artist, album))
-
-        return cursor.fetchall() or []
-    finally:
-        cursor.close()
+        """), {"artist": artist, "album": album})
+        return result.fetchall() or []
 
 
-
-def fetch_album_queue_track_stubs(conn: Any, artist: str, album: str):
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def fetch_album_queue_track_stubs(conn: Any = None, artist: str = "", album: str = ""):
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT id, file_path
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND album = %s
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+              AND album = :album
               AND file_path LIKE '__queued_for_download__%%'
-        """, (artist, album))
-
-        return cursor.fetchall() or []
-    finally:
-        cursor.close()
+        """), {"artist": artist, "album": album})
+        return result.fetchall() or []
 
 
-def fetch_queue_status(conn: Any, queue_id: int) -> str:
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "SELECT status FROM download_queue WHERE id = %s",
-            (queue_id,),
+def fetch_queue_status(conn: Any = None, queue_id: int = 0) -> str:
+    with db_session() as session:
+        result = session.execute(
+            text("SELECT status FROM download_queue WHERE id = :id"),
+            {"id": queue_id},
         )
-
-        row = cursor.fetchone()
-        return row_get(row, "status", 0, "queued") if row else "queued"
-
-    finally:
-        cursor.close()
+        row = result.fetchone()
+        return str(row[0]) if row else "queued"
 
 
-def fetch_album_tracks_for_tag_update(conn: Any, artist: str, album: str):
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def fetch_album_tracks_for_tag_update(conn: Any = None, artist: str = "", album: str = ""):
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT id, title, file_path
             FROM tracks
-            WHERE artist = %s AND album = %s
-        """, (artist, album))
-
-        return cursor.fetchall() or []
-    finally:
-        cursor.close()
+            WHERE artist = :artist AND album = :album
+        """), {"artist": artist, "album": album})
+        return result.fetchall() or []
 
 
-def update_track_genres(conn: Any, track_id: Any, genres_str: str) -> int:
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def update_track_genres(conn: Any = None, track_id: Any = None, genres_str: str = "") -> int:
+    with db_session() as session:
+        result = session.execute(text("""
             UPDATE tracks
-            SET genres = %s,
-                manual_genres = %s
-            WHERE id = %s
-        """, (genres_str, genres_str, track_id))
-
-        return cursor.rowcount or 0
-    finally:
-        cursor.close()
+            SET genres = :genres,
+                manual_genres = :genres
+            WHERE id = :id
+        """), {"genres": genres_str, "id": track_id})
+        return result.rowcount or 0
 
 
-def update_album_mbid_fields(conn: Any, artist: str, album: str, mbid: str | None, rg_mbid: str | None, cover_url: str | None) -> int:
-    cursor = conn.cursor()
-    try:
+def update_album_mbid_fields(conn: Any = None, artist: str = "", album: str = "",
+                              mbid: str | None = None, rg_mbid: str | None = None,
+                              cover_url: str | None = None) -> int:
+    with db_session() as session:
         updates = []
-        params = []
+        params: dict[str, Any] = {"artist": artist, "album": album}
 
         if mbid:
-            updates.append("musicbrainz_album_mbid = %s")
-            params.append(mbid)
+            updates.append("musicbrainz_album_mbid = :mbid")
+            params["mbid"] = mbid
 
         if rg_mbid:
-            updates.append("musicbrainz_releasegroupid = %s")
-            params.append(rg_mbid)
+            updates.append("musicbrainz_releasegroupid = :rg_mbid")
+            params["rg_mbid"] = rg_mbid
 
         if cover_url:
-            updates.append("cover_art_url = %s")
-            params.append(cover_url)
+            updates.append("cover_art_url = :cover_url")
+            params["cover_url"] = cover_url
 
         if not updates:
             return 0
 
-        params.extend([artist, album])
-
-        cursor.execute(f"""
+        result = session.execute(text(f"""
             UPDATE tracks
             SET {', '.join(updates)}
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND album = %s
-        """, params)
-
-        return cursor.rowcount or 0
-
-    finally:
-        cursor.close()
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+              AND album = :album
+        """), params)
+        return result.rowcount or 0
 
 
-def update_album_discogs_fields(conn: Any, artist: str, album: str, discogs_id: str, is_single: bool) -> int:
-    cursor = conn.cursor()
-    try:
+def update_album_discogs_fields(conn: Any = None, artist: str = "", album: str = "",
+                                 discogs_id: str = "", is_single: bool = False) -> int:
+    with db_session() as session:
         if is_single:
-            cursor.execute("""
+            result = session.execute(text("""
                 UPDATE tracks
-                SET discogs_album_id = %s,
+                SET discogs_album_id = :did,
                     is_single = TRUE,
                     single_confidence = 'high',
                     stars = 5
-                WHERE artist = %s AND album = %s
-            """, (discogs_id, artist, album))
+                WHERE artist = :artist AND album = :album
+            """), {"did": discogs_id, "artist": artist, "album": album})
         else:
-            cursor.execute("""
+            result = session.execute(text("""
                 UPDATE tracks
-                SET discogs_album_id = %s
+                SET discogs_album_id = :did
                 WHERE artist = %s AND album = %s
             """, (discogs_id, artist, album))
 
@@ -257,146 +208,112 @@ def update_album_discogs_fields(conn: Any, artist: str, album: str, discogs_id: 
 
 
 def ignore_missing_track_db(
-    conn: Any,
-    missing_id: str | None,
-    artist: str,
-    album: str,
-    title: str,
-    disc_number: int | None
+    conn: Any = None,
+    missing_id: str | None = None,
+    artist: str = "",
+    album: str = "",
+    title: str = "",
+    disc_number: int | None = None
 ) -> int:
-    cursor = conn.cursor()
-    try:
+    with db_session() as session:
         if missing_id:
-            cursor.execute(
-                "UPDATE missing_album_tracks SET ignored = TRUE WHERE id = %s",
-                (missing_id,)
+            result = session.execute(
+                text("UPDATE missing_album_tracks SET ignored = TRUE WHERE id = :id"),
+                {"id": missing_id},
             )
         else:
-            cursor.execute("""
+            result = session.execute(text("""
                 UPDATE missing_album_tracks
                 SET ignored = TRUE
-                WHERE artist_name = %s
-                  AND album_name = %s
-                  AND title = %s
-                  AND disc_number = %s
-            """, (artist, album, title, disc_number))
+                WHERE artist_name = :artist
+                  AND album_name = :album
+                  AND title = :title
+                  AND disc_number = :disc
+            """), {"artist": artist, "album": album, "title": title, "disc": disc_number})
 
-        return cursor.rowcount or 0
-    finally:
-        cursor.close()
+        return result.rowcount or 0
 
 
 # -----------------------------------------------------------------------------
 # Artist corrections / metadata
 # -----------------------------------------------------------------------------
 
-def fetch_track_for_delete(conn: Any, track_id: str):
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def find_track_row(conn: Any = None, track_id: str = ""):
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT id, file_path, artist, album, title
             FROM tracks
-            WHERE CAST(id AS TEXT) = %s
+            WHERE CAST(id AS TEXT) = :id
             LIMIT 1
-        """, (track_id,))
-
-        return cursor.fetchone()
-    finally:
-        cursor.close()
+        """), {"id": track_id})
+        return result.fetchone()
 
 
-def delete_track_row(conn: Any, track_id: str) -> int:
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "DELETE FROM tracks WHERE CAST(id AS TEXT) = %s",
-            (track_id,),
+def delete_track_row(conn: Any = None, track_id: str = "") -> int:
+    with db_session() as session:
+        result = session.execute(
+            text("DELETE FROM tracks WHERE CAST(id AS TEXT) = :id"),
+            {"id": track_id},
         )
-        return cursor.rowcount or 0
-    finally:
-        cursor.close()
+        return result.rowcount or 0
 
 
-def merge_album_names(conn: Any, artist: str, source_albums: list[str], canonical_name: str) -> int:
-    cursor = conn.cursor()
-
-    placeholders = ", ".join(["%s"] * len(source_albums))
-
-    try:
-        cursor.execute(f"""
+def merge_album_names(conn: Any = None, artist: str = "", source_albums: list[str] | None = None, canonical_name: str = "") -> int:
+    if not source_albums:
+        return 0
+    with db_session() as session:
+        placeholders = ", ".join([f":s{i}" for i in range(len(source_albums))])
+        params: dict[str, Any] = {"canonical": canonical_name, "artist": artist}
+        params.update({f"s{i}": s for i, s in enumerate(source_albums)})
+        result = session.execute(text(f"""
             UPDATE tracks
-            SET album = %s
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+            SET album = :canonical
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
               AND album IN ({placeholders})
-        """, [canonical_name, artist] + list(source_albums))
-
-        return cursor.rowcount or 0
-
-    finally:
-        cursor.close()
+        """), params)
+        return result.rowcount or 0
 
 
 
-def count_album_disc_numbers(conn: Any, artist: str, album: str) -> int:
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def count_album_disc_numbers(conn: Any = None, artist: str = "", album: str = "") -> int:
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT COUNT(DISTINCT disc_number)
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND album = %s
-        """, (artist, album))
-
-        row = cursor.fetchone()
-        return int(row_get(row, "count", 0, 0) or 0)
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+              AND album = :album
+        """), {"artist": artist, "album": album})
+        return int(result.scalar() or 0)
 
 
-    finally:
-        cursor.close()
-
-
-def clear_album_disc_numbers(conn: Any, artist: str, album: str) -> int:
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def clear_album_disc_numbers(conn: Any = None, artist: str = "", album: str = "") -> int:
+    with db_session() as session:
+        result = session.execute(text("""
             UPDATE tracks
             SET disc_number = NULL
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND album = %s
-        """, (artist, album))
-
-        return cursor.rowcount or 0
-
-    finally:
-        cursor.close()
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+              AND album = :album
+        """), {"artist": artist, "album": album})
+        return result.rowcount or 0
 
 
-def artist_track_count(conn: Any, artist: str) -> int:
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def artist_track_count(conn: Any = None, artist: str = "") -> int:
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT COUNT(*)
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-        """, (artist,))
-
-        row = cursor.fetchone()
-        return int(row_get(row, "count", 0, 0) or 0)
-
-    finally:
-        cursor.close()
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+        """), {"artist": artist})
+        return int(result.scalar() or 0)
 
 
-def fetch_cached_missing_releases(conn: Any, artist: str):
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "SELECT title, release_id FROM missing_releases WHERE artist = %s",
-            (artist,),
+def fetch_cached_missing_releases(conn: Any = None, artist: str = ""):
+    with db_session() as session:
+        result = session.execute(
+            text("SELECT title, release_id FROM missing_releases WHERE artist = :artist"),
+            {"artist": artist},
         )
-        return cursor.fetchall() or []
-    finally:
-        cursor.close()
+        return result.fetchall() or []
 
 
 
@@ -404,48 +321,29 @@ def fetch_cached_missing_releases(conn: Any, artist: str):
 # Artist scan support
 # -----------------------------------------------------------------------------
 
-def fetch_artist_albums(conn: Any, artist: str) -> list[str]:
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def fetch_artist_albums(conn: Any = None, artist: str = "") -> list[str]:
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT DISTINCT album
             FROM tracks
-            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-        """, (artist,))
-
-        return [
-            r[0] if not hasattr(r, "get") else r.get("album")
-            for r in cursor.fetchall()
-        ]
-
-    finally:
-        cursor.close()
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+        """), {"artist": artist})
+        return [str(r[0]) for r in result.fetchall()]
 
 
-from db.utils import row_get
-
-def fetch_artist_mbid(conn: Any, artist: str) -> str | None:
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
+def fetch_artist_mbid(conn: Any = None, artist: str = "") -> str | None:
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT musicbrainz_albumartistid
             FROM tracks
-            WHERE album_artist = %s
+            WHERE album_artist = :artist
             LIMIT 1
-        """, (artist,))
-
-        row = cursor.fetchone()
-        return row_get(row, "musicbrainz_albumartistid", 0)
-
-    finally:
-        cursor.close()
+        """), {"artist": artist})
+        row = result.fetchone()
+        return str(row[0]) if row else None
 
 
-
-def fetch_all_distinct_artists(conn: Any) -> list[str]:
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL AND TRIM(artist) != ''")
-        return [r[0] if not hasattr(r, "get") else r.get("artist") for r in cursor.fetchall()]
-    finally:
-        cursor.close()
+def fetch_all_distinct_artists(conn: Any = None) -> list[str]:
+    with db_session() as session:
+        result = session.execute(text("SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL AND TRIM(artist) != ''"))
+        return [str(r[0]) for r in result.fetchall()]

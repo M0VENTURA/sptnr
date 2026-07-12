@@ -15,7 +15,9 @@ Architecture:
         - routes/analytics.py (dashboard endpoints)
 """
 
-from db.utils import get_db_connection
+from sqlalchemy import text
+from db.engine import db_session
+from db.utils import get_db_connection  # TODO: migrate
 from db.repositories.library import fetch_genre_mood_analytics
 
 

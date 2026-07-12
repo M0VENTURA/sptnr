@@ -24,7 +24,6 @@ from typing import Any
 
 from api_clients.navidrome import NavidromeClient
 from db.repositories.tracks import bulk_upsert_navidrome_tracks
-from db.utils import get_db_connection, row_get
 from helpers.logging_config import log_debug, log_error, log_unified
 from helpers.config_helpers import get_scan_pipeline_config
 from services.scanning.navidrome_import import scan_artist_to_db

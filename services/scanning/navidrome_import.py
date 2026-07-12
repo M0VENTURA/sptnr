@@ -23,6 +23,8 @@ from typing import Any
 
 from api_clients.navidrome import NavidromeClient
 from db.repositories.tracks import upsert_track_payload
+from sqlalchemy import text
+from db.engine import db_session
 from db.utils import get_db_connection, row_get
 from helpers.logging_config import log_unified
 from helpers.text_utils import _clean_artist_name_for_storage
@@ -128,24 +130,23 @@ def artist_album_name_diff(
     db_counts: dict[str, int] = {}
 
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT album, COUNT(*) as track_count
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND album IS NOT NULL AND TRIM(album) <> ''
-            GROUP BY album
-            """,
-            (artist_name,),
-        )
-        for row in cursor.fetchall() or []:
-            album_name = row_get(row, "album", 0)
-            count = row_get(row, "track_count", 1, 0)
-            if album_name:
-                db_names.add(str(album_name))
-                db_counts[str(album_name)] = int(count or 0)
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT album, COUNT(*) as track_count
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND album IS NOT NULL AND TRIM(album) <> ''
+                    GROUP BY album
+                """),
+                {"artist": artist_name},
+            )
+            for row in result.fetchall() or []:
+                album_name = str(row[0])
+                count = int(row[1] or 0)
+                if album_name:
+                    db_names.add(album_name)
+                    db_counts[album_name] = count
     except Exception as exc:
         logging.debug("[NAVIDROME_SCAN] Could not query DB albums for '%s': %s", artist_name, exc)
         return False, set()

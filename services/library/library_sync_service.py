@@ -7,6 +7,8 @@ from typing import Dict, Any
 
 from api_clients.navidrome import NavidromeClient
 from db.repositories.navidrome import bulk_upsert_navidrome_tracks
+from sqlalchemy import text
+from db.engine import db_session
 from db.utils import get_db_connection, row_get
 from helpers.config_helpers import get_scan_pipeline_config
 from services.scanning.navidrome_import import scan_artist_to_db
@@ -209,13 +211,11 @@ def sync_artist_with_diff(artist_name: str, artist_id: str) -> dict[str, Any]:
 def run_bulk_commit(tracks: list[dict[str, Any]]) -> int:
     if not tracks:
         return 0
-    conn = get_db_connection()
     try:
-        bulk_upsert_navidrome_tracks(conn, tracks)
+        bulk_upsert_navidrome_tracks(tracks=tracks)
         return len(tracks)
     except Exception as exc:
         logger.error("Bulk commit failed: %s", exc)
-        try:
             conn.rollback()
         except Exception:
             pass

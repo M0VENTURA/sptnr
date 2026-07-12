@@ -12,7 +12,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from db.utils import get_db_connection, row_get, get_table_columns
+from sqlalchemy import text
+from db.engine import db_session
+from db.utils import get_db_connection, row_get, get_table_columns  # TODO: migrate
 
 logger = logging.getLogger(__name__)
 

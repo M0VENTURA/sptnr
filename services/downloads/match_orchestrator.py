@@ -11,6 +11,8 @@ Called by the UI routes when a user confirms a MusicBrainz match.
 import logging
 import threading
 from typing import Any, Dict, List
+from sqlalchemy import text
+from db.engine import db_session
 from db.utils import get_db_connection
 from services.downloads.download_matching_service import _expand_release_tracks, _prefetch_mbid_metadata_batch, _row_get
 from db.repositories.queue import get_album_queue_tracks

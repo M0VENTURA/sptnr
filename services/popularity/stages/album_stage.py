@@ -18,6 +18,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import text
+from db.engine import db_session
 from db.utils import get_db_connection, row_get
 
 # ── Existing enrichment/metadata services (not duplicated) ─────────────────

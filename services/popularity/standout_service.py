@@ -49,6 +49,8 @@ from __future__ import annotations
 import logging
 from statistics import mean, stdev
 
+from sqlalchemy import text
+from db.engine import db_session
 from db.utils import get_db_connection, row_get
 from services.popularity.popularity_math import calculate_track_zscore
 from helpers.config_helpers import get_standout_config

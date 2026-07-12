@@ -11,7 +11,9 @@ import re
 import time
 from typing import Any
 
-from db.utils import get_db_connection, row_get
+from sqlalchemy import text
+from db.engine import db_session
+from db.utils import get_db_connection, row_get  # TODO: migrate
 from helpers.config_helpers import get_musicbrainz_user_agent
 
 logger = logging.getLogger(__name__)

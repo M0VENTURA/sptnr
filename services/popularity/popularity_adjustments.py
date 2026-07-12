@@ -10,6 +10,8 @@ import logging
 from statistics import median, mean, stdev
 from typing import Optional
 
+from sqlalchemy import text
+from db.engine import db_session
 from db.utils import get_db_connection, row_get
 from services.popularity.popularity_math import calculate_track_zscore, zscore_to_popularity
 

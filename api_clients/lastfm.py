@@ -9,19 +9,13 @@ from __future__ import annotations
 from typing import Any
 
 from api_clients.lastfm_http import LastFmHttpClient, retry_with_backoff
-from services.enrichment.lastfm_service import (
-    LASTFM_CONFIG,
-    LastFmService,
-    RecommendationCache,
-    get_lastfm_recommendations,
-    get_lastfm_track_info,
-)
 
 
 class LastFmClient:
     """Backward-compatible Last.fm facade."""
 
     def __init__(self, api_key: str, username: str = None, http_session=None, db_connection=None):
+        from services.enrichment.lastfm_service import LastFmService
         self.api_key = api_key
         self.username = username
         self.http = LastFmHttpClient(api_key=api_key, http_session=http_session)

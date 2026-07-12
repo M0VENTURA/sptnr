@@ -15,7 +15,8 @@ Architecture:
 from __future__ import annotations
 
 from api_clients.navidrome import NavidromeClient
-from db.utils import get_db_connection, row_get
+from sqlalchemy import text
+from db.engine import db_session
 from helpers.config_helpers import get_config
 
 _nav_client_cache: NavidromeClient | None = None
@@ -23,8 +24,6 @@ _nav_client_cache: NavidromeClient | None = None
 
 def get_navidrome_config() -> dict | None:
     try:
-        
-
         cfg = get_config() or {}
 
         users = cfg.get("navidrome_users") or []
@@ -80,23 +79,18 @@ def build_artist_index():
 
 
 def load_artist_map():
-    conn = get_db_connection()
-
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute("""
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT artist_id, artist_name, album_count, track_count
             FROM artist_stats
-        """)
-
+        """))
         return {
-            row_get(row, "artist_name", 1): {
-                "id": row_get(row, "artist_id", 0),
-                "album_count": row_get(row, "album_count", 2),
-                "track_count": row_get(row, "track_count", 3),
+            str(row[1]): {
+                "id": str(row[0]),
+                "album_count": int(row[2]) if row[2] else 0,
+                "track_count": int(row[3]) if row[3] else 0,
             }
-            for row in cursor.fetchall() or []
+            for row in result.fetchall() or []
         }
 
     finally:

@@ -18,6 +18,8 @@ import requests
 from sqlalchemy import text
 from db.engine import db_session
 from db.context import db_cursor  # TODO: migrate to db_session
+from sqlalchemy import text
+from db.engine import db_session
 from db.utils import get_db_connection
 from db.repositories.metadata import (
     album_is_favourite,

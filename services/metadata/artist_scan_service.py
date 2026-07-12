@@ -13,6 +13,8 @@ from typing import Any
 
 import requests
 
+from sqlalchemy import text
+from db.engine import db_session
 from db.utils import get_db_connection
 from db.repositories.metadata import (
     fetch_artist_albums,

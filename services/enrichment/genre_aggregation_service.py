@@ -156,26 +156,21 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
 
 def get_track_recommendations(artist: str, album: str) -> dict:
     """Get genre recommendations for all tracks in an album by aggregating DB sources."""
-    from db.utils import get_db_connection
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres
-               FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s""",
-            (artist, album),
+    with db_session() as session:
+        result = session.execute(
+            text("""SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres
+               FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"""),
+            {"artist": artist, "album": album},
         )
-        rows = cursor.fetchall()
-    finally:
-        conn.close()
+        rows = result.fetchall()
 
     source_map: dict[str, list[str]] = {}
     for row in rows:
-        for src_key, col in [
+        for idx, (src_key, col) in enumerate([
             ("spotify", "spotify_genres"), ("lastfm", "lastfm_tags"),
             ("musicbrainz", "musicbrainz_genres"), ("discogs", "discogs_genres"),
-        ]:
-            val = row[col] if hasattr(row, "get") else row[list({"spotify_genres":0,"lastfm_tags":1,"musicbrainz_genres":2,"discogs_genres":3}.keys()).index(src_key)]
+        ]):
+            val = row[idx]
             if val:
                 source_map.setdefault(src_key, []).extend(val if isinstance(val, list) else [val])
 
@@ -234,7 +229,8 @@ def enrich_genres_aggressively(artist_name: str, conn=None, verbose: bool = Fals
     Returns:
         Set of collected genre names (lowercased).
     """
-    from db.utils import get_db_connection
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
 
     genres_collected: set[str] = set()
 

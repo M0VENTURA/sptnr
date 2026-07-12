@@ -3,35 +3,26 @@
 
 from __future__ import annotations
 from typing import Any, List, Dict
-from db.utils import get_db_connection, row_get
-from db.context import db_cursor
+from sqlalchemy import text
+from db.engine import db_session
 import logging 
 
-def fetch_artist_library_stats(conn: Any) -> tuple | None:
-    """Fetch total library album/track/five-star counts using an existing connection."""
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            """
+def fetch_artist_library_stats(conn: Any = None) -> tuple | None:
+    """Fetch total library album/track/five-star counts."""
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT
                 COUNT(DISTINCT album) AS album_count,
                 COUNT(*) AS track_count,
                 COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) AS five_star_count
             FROM tracks
-            """
-        )
-        return cursor.fetchone()
-    finally:
-        try:
-            cursor.close()
-        except Exception:
-            pass
+        """))
+        return result.fetchone()
 
 
-def fetch_all_artists_with_stats(conn: Any, has_album_artist: bool) -> list[Any]:
+def fetch_all_artists_with_stats(conn: Any = None, has_album_artist: bool = False) -> list[Any]:
     """Fetch artists with album, track, five-star, and last-updated counts."""
-    cursor = conn.cursor()
-    try:
+    with db_session() as session:
         if has_album_artist:
             query = """
                 WITH normalized_tracks AS (
@@ -110,23 +101,13 @@ def fetch_all_artists_with_stats(conn: Any, has_album_artist: bool) -> list[Any]
                 HAVING COUNT(DISTINCT album) > 0
                 ORDER BY display_name
             """
-        cursor.execute(query)
-        return cursor.fetchall() or []
-    finally:
-        try:
-            cursor.close()
-        except Exception:
-            pass
+        result = session.execute(text(query))
+        return result.fetchall() or []
 
-def fetch_genre_mood_analytics(conn: Any, top_n: int = 50):
+
+def fetch_genre_mood_analytics(conn: Any = None, top_n: int = 50):
     """Fetch top genres, moods, and genre+mood combinations."""
-    cursor = conn.cursor()
-
-    try:
-        # ---- Top Genres ----
-        cursor.execute(
-            """
-            SELECT genre, COUNT(*) AS count
+    with db_session() as session:
             FROM tracks
             WHERE genre IS NOT NULL AND TRIM(genre) != ''
             GROUP BY genre
@@ -178,90 +159,41 @@ def fetch_genre_mood_analytics(conn: Any, top_n: int = 50):
 
 
 def get_tracks_for_album(artist: str, album: str) -> List[Dict[str, Any]]:
-    """
-    Return all tracks for a given artist/album.
-
-    Uses album_artist fallback logic:
-        COALESCE(NULLIF(album_artist, ''), artist)
-    """
-
-    conn = get_db_connection()
-
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
+    """Return all tracks for a given artist/album."""
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT *
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND album = %s
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+              AND album = :album
             ORDER BY disc_number NULLS FIRST, track_number NULLS FIRST
-            """,
-            (artist, album),
-        )
-
-        columns = [col[0] for col in cursor.description]
-
-        return [
-            {columns[i]: value for i, value in enumerate(row)}
-            for row in cursor.fetchall() or []
-        ]
-
-    finally:
-        conn.close()
+        """), {"artist": artist, "album": album})
+        return [dict(r._mapping) for r in result.fetchall() or []]
 
 def get_all_artists() -> list[str]:
-    """
-    Return all distinct artists based on album_artist fallback logic.
-    """
-
-    conn = get_db_connection()
-
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
+    """Return all distinct artists based on album_artist fallback logic."""
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT DISTINCT
                 COALESCE(NULLIF(TRIM(album_artist), ''), TRIM(artist)) AS artist_name
             FROM tracks
             WHERE artist IS NOT NULL AND TRIM(artist) != ''
             ORDER BY artist_name
-            """
-        )
-
-        return [row[0] for row in cursor.fetchall() or [] if row[0]]
-
-    finally:
-        conn.close()
+        """))
+        return [str(row[0]) for row in result.fetchall() or [] if row[0]]
 
 def get_albums_for_artist(artist: str) -> list[str]:
-    """
-    Return all albums for a given artist using album_artist fallback logic.
-    """
-
-    conn = get_db_connection()
-
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
+    """Return all albums for a given artist using album_artist fallback logic."""
+    with db_session() as session:
+        result = session.execute(text("""
             SELECT DISTINCT album
             FROM tracks
-            WHERE COALESCE(NULLIF(TRIM(album_artist), ''), TRIM(artist)) = %s
+            WHERE COALESCE(NULLIF(TRIM(album_artist), ''), TRIM(artist)) = :artist
               AND album IS NOT NULL
               AND TRIM(album) != ''
             ORDER BY album
-            """,
-            (artist,),
-        )
-
-        return [row[0] for row in cursor.fetchall() or [] if row[0]]
-
-    finally:
-        conn.close()
+        """), {"artist": artist})
+        return [str(row[0]) for row in result.fetchall() or [] if row[0]]
 
 
 
@@ -280,30 +212,29 @@ def upsert_musicbrainz_release(
     """Create or update release entry in database."""
 
     try:
-        with db_cursor(commit=True) as (_, cursor):
+        with db_session() as session:
 
-            # ✅ Check existing
-            cursor.execute("""
+            result = session.execute(text("""
                 SELECT id FROM musicbrainz_releases
-                WHERE release_id = %s
-            """, (release_id,))
-            existing = cursor.fetchone()
+                WHERE release_id = :rid
+            """), {"rid": release_id})
+            existing = result.fetchone()
 
             if existing:
                 release_db_id = existing[0]
 
-                cursor.execute("""
+                session.execute(text("""
                     UPDATE musicbrainz_releases
                     SET status = 'active',
-                        album_artist = COALESCE(NULLIF(%s, ''), album_artist),
-                        release_source = COALESCE(NULLIF(%s, ''), release_source),
+                        album_artist = COALESCE(NULLIF(:aa, ''), album_artist),
+                        release_source = COALESCE(NULLIF(:rs, ''), release_source),
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                """, (
-                    album_artist,
-                    release_source or "musicbrainz",
-                    release_db_id,
-                ))
+                    WHERE id = :id
+                """), {
+                    "aa": album_artist,
+                    "rs": release_source or "musicbrainz",
+                    "id": release_db_id,
+                })
 
                 logging.info(f"[RELEASE_ENTRY] Updated {release_db_id}")
 

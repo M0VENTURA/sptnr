@@ -18,6 +18,8 @@ import os
 from statistics import mean, median, stdev
 from typing import Any
 
+from sqlalchemy import text
+from db.engine import db_session
 from db.utils import get_db_connection, row_get
 from services.popularity.popularity_math import calculate_track_zscore
 from services.popularity.standout_service import STANDOUT_CONFIG
