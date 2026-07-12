@@ -187,7 +187,11 @@ async function testConnection() {
   try {
     const r=await fetch('/api/test-navidrome-connection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:document.getElementById('navUrl').value,username:document.getElementById('navUser').value,password:document.getElementById('navPass').value})});
     const d=await r.json();
-    if(d.success){status.textContent=d.message;status.className='ms-2 small text-success';}else{status.textContent=d.error;status.className='ms-2 small text-danger';}
+    if(d.success){status.textContent=d.message;status.className='ms-2 small text-success';}else{
+      let msg=d.error;
+      if(d.detail) msg+=' ('+d.detail+')';
+      status.textContent=msg;status.className='ms-2 small text-danger';
+    }
   }catch(e){status.textContent='Network error: '+e.message;status.className='ms-2 small text-danger';}
   btn.disabled=false;
 }

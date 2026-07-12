@@ -168,12 +168,36 @@ async def api_test_navidrome_connection():
     if not base_url or not username:
         return jsonify({"success": False, "error": "URL and username are required"}), 400
 
-    client = NavidromeClient(base_url=base_url, username=username, password=password)
-    ok = client.ping()
+    # Auto-prepend http:// if no protocol is given
+    if "://" not in base_url:
+        base_url = f"http://{base_url}"
+
+    # Quick URL sanity check before making the HTTP call
+    from urllib.parse import urlparse
+    parsed = urlparse(base_url)
+    if not parsed.hostname:
+        return jsonify({"success": False, "error": "Invalid URL format — expected something like http://navidrome:4533"}), 400
+
+    try:
+        client = NavidromeClient(base_url=base_url, username=username, password=password)
+        ok = client.ping()
+    except Exception as exc:
+        err_msg = str(exc)
+        if "ConnectError" in type(exc).__name__ or "NewConnectionError" in type(exc).__name__:
+            return jsonify({
+                "success": False,
+                "error": "❌ Cannot reach the server — check that Navidrome is running and that this container can reach it",
+                "detail": err_msg,
+            }), 200
+        return jsonify({
+            "success": False,
+            "error": "❌ Connection failed",
+            "detail": err_msg,
+        }), 200
 
     if ok:
         return jsonify({"success": True, "message": "✅ Connected successfully"})
-    return jsonify({"success": False, "error": "❌ Could not connect — check URL and credentials"})
+    return jsonify({"success": False, "error": "❌ Credentials rejected — check username and password"})
 
 @ui_bp.route("/api/setup/save", methods=["POST"])
 async def api_setup_save():
