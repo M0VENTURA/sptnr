@@ -13,47 +13,82 @@
     </h1>
     <p class="text-muted mb-0">Search and download music from Soulseek</p>
   </div>
-<!-- Soulseek Search -->
+
+  <!-- Soulseek Search -->
   <div class="card mb-4">
     <div class="card-header">
       <h5 class="card-title mb-0">
-        <i class="bi bi-music-note-list"></i> Soulseek Search
+        <i class="bi bi-search"></i> Soulseek Search
       </h5>
     </div>
     <div class="card-body">
-      <form id="slskdSearchForm" onsubmit="searchSoulseek(event)">
-        <div class="row g-3 mb-3">
-          <div class="col-md-6">
-            <label for="slskdSearchQuery" class="form-label">Search Query *</label>
-            <input type="text" id="slskdSearchQuery" class="form-control" placeholder="e.g., Daft Punk - Get Lucky" required>
-          </div>
-          <div class="col-md-3">
-            <label for="slskdSearchLimit" class="form-label">Results Limit</label>
-            <input type="number" id="slskdSearchLimit" class="form-control" value="30" min="1" max="100">
-          </div>
-          <div class="col-md-3 d-flex align-items-end">
-            <button type="submit" class="btn btn-primary w-100">
-              <i class="bi bi-search"></i> Search
-            </button>
-          </div>
+      <div class="row g-3 align-items-end">
+        <div class="col-md-8">
+          <label for="slskdSearchQuery" class="form-label">Search Query</label>
+          <input type="text" id="slskdSearchQuery" class="form-control"
+                 placeholder="e.g., Radiohead - Kid A, or Daft Punk Discovery"
+                 onkeypress="if(event.key==='Enter'){event.preventDefault();performSlskdSearch();}">
+          <small class="text-muted">Tip: use "Artist - Title" for single tracks, or "Artist Album" for full albums</small>
         </div>
-      </form>
+        <div class="col-md-2">
+          <button type="button" class="btn btn-primary w-100" onclick="performSlskdSearch()" id="slskdSearchBtn">
+            <i class="bi bi-search"></i> Search
+          </button>
+        </div>
+        <div class="col-md-2">
+          <button type="button" class="btn btn-outline-danger w-100" onclick="resetSlskdState();document.getElementById('slskdResults').innerHTML='';document.getElementById('slskdEmpty').style.display='block';document.getElementById('slskdStatus').style.display='none';">
+            <i class="bi bi-x-circle"></i> Clear
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- Search Results -->
-  <div class="card">
-    <div class="card-header">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-list-ul"></i> Results
-      </h5>
-    </div>
-    <div class="card-body p-0">
-      <div id="slskdSearchEmpty" class="alert alert-info alert-sm mb-0">
-        <i class="bi bi-info-circle"></i> No search performed yet. Enter a query above!
+  <!-- Status Bar -->
+  <div id="slskdStatus" class="card mb-4" style="display:none;">
+    <div class="card-body py-3">
+      <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div class="d-flex align-items-center gap-3">
+          <div class="spinner-border spinner-border-sm text-primary" role="status" id="slskdSpinner">
+            <span class="visually-hidden">Searching...</span>
+          </div>
+          <div>
+            <span id="slskdStatusText" class="fw-semibold">Searching...</span>
+            <small class="text-muted ms-2" id="slskdSearchQueryDisplay"></small>
+          </div>
+        </div>
+        <div class="d-flex gap-3">
+          <span class="badge bg-info" id="slskdResponseCount">0 responses</span>
+          <span class="badge bg-success" id="slskdResultCount">0 results</span>
+        </div>
       </div>
-      <div id="slskdSearchResults" style="display:none">
-        <!-- Results rendered here -->
+    </div>
+  </div>
+
+  <!-- Empty State -->
+  <div id="slskdEmpty" class="card mb-4">
+    <div class="card-body text-center py-5">
+      <i class="bi bi-music-note-beamed text-muted" style="font-size: 3rem;"></i>
+      <p class="text-muted mt-3 mb-0">Enter a search query above to find music on Soulseek</p>
+      <small class="text-muted">Results are grouped by user and album for easy browsing</small>
+    </div>
+  </div>
+
+  <!-- Error State -->
+  <div id="slskdError" class="alert alert-danger" style="display:none;"></div>
+
+  <!-- Search Results -->
+  <div id="slskdResults"></div>
+
+  <!-- Bulk Download Bar -->
+  <div id="slskdBulkBar" class="card sticky-bottom mb-3" style="display:none; border-color: var(--spotify-green);">
+    <div class="card-body py-2 d-flex align-items-center justify-content-between">
+      <span id="slskdSelectedSummary" class="text-success fw-semibold"></span>
+      <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-secondary" onclick="slskdSelected.clear();updateSlskdSelectedButton();document.querySelectorAll('.slskd-file-select').forEach(i=>i.checked=false);">Deselect All</button>
+        <button class="btn btn-sm btn-success" id="slskdDownloadSelected" onclick="downloadSlskdSelected()">
+          <i class="bi bi-download"></i> Download selected
+        </button>
       </div>
     </div>
   </div>
@@ -62,28 +97,274 @@
 <!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
 
-<!-- Initialize Soulseek search from URL parameters -->
 <script>
+// ── Soulseek search for this standalone page ──
+let _slskdPagePoll = null;
+let _slskdPageSearchId = null;
+let _slskdPageData = {};
+let _slskdPageSelected = new Map();
+
+function normalizeSoulseekQuery(value) {
+  return String(value || '')
+    .replace(/\u0026/g, ' ')
+    .replace(/&amp;/g, ' ')
+    .replace(/&/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function performSlskdSearch() {
+  const input = document.getElementById('slskdSearchQuery');
+  const query = normalizeSoulseekQuery(input?.value || '');
+  if (!query) { input?.focus(); return; }
+
+  // Reset state
+  _slskdPageData = {};
+  _slskdPageSelected.clear();
+  _slskdPageSearchId = null;
+  if (_slskdPagePoll) clearInterval(_slskdPagePoll);
+
+  document.getElementById('slskdEmpty').style.display = 'none';
+  document.getElementById('slskdError').style.display = 'none';
+  document.getElementById('slskdResults').innerHTML = '';
+  document.getElementById('slskdStatus').style.display = 'block';
+  document.getElementById('slskdStatusText').textContent = 'Searching...';
+  document.getElementById('slskdSearchQueryDisplay').textContent = `"${query}"`;
+  document.getElementById('slskdResponseCount').textContent = '0 responses';
+  document.getElementById('slskdResultCount').textContent = '0 results';
+  document.getElementById('slskdSpinner').style.display = '';
+
+  fetch('/api/slskd/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) throw new Error(data.error);
+    _slskdPageSearchId = data.search_id;
+    setTimeout(() => pollSlskdPageResults(), 1500);
+  })
+  .catch(err => {
+    document.getElementById('slskdSpinner').style.display = 'none';
+    document.getElementById('slskdStatusText').textContent = 'Search failed';
+    document.getElementById('slskdError').style.display = 'block';
+    document.getElementById('slskdError').textContent = '❌ ' + err.message;
+  });
+}
+
+function pollSlskdPageResults() {
+  if (!_slskdPageSearchId) return;
+  fetch(`/api/slskd/search/${_slskdPageSearchId}`)
+    .then(r => r.json())
+    .then(data => {
+      if (!data.success) throw new Error(data.error || 'Search failed');
+
+      const results = data.results || [];
+      const responseCount = results.length;
+      const fileCount = results.reduce((s, r) => s + (r.files?.length || 0), 0);
+
+      document.getElementById('slskdResponseCount').textContent = `${responseCount} responses`;
+      document.getElementById('slskdResultCount').textContent = `${fileCount} files`;
+
+      if (data.isComplete) {
+        document.getElementById('slskdSpinner').style.display = 'none';
+        document.getElementById('slskdStatusText').textContent = `Search complete — ${responseCount} users, ${fileCount} files`;
+        _slskdPageData = results;
+        renderSlskdPageResults(results);
+      } else {
+        document.getElementById('slskdStatusText').textContent = `Searching... (${responseCount} responses so far)`;
+        _slskdPageData = results;
+        renderSlskdPageResults(results);
+        _slskdPagePoll = setTimeout(pollSlskdPageResults, 2000);
+      }
+    })
+    .catch(err => {
+      document.getElementById('slskdSpinner').style.display = 'none';
+      document.getElementById('slskdStatusText').textContent = 'Error polling results';
+      document.getElementById('slskdError').style.display = 'block';
+      document.getElementById('slskdError').textContent = '❌ ' + err.message;
+    });
+}
+
+function renderSlskdPageResults(results) {
+  const container = document.getElementById('slskdResults');
+  if (!results || results.length === 0) {
+    container.innerHTML = '<div class="alert alert-info">No results found.</div>';
+    return;
+  }
+
+  // Group by user
+  const byUser = {};
+  results.forEach(r => {
+    const u = r.username || 'unknown';
+    if (!byUser[u]) byUser[u] = { totalFiles: 0, files: [] };
+    (r.files || []).forEach(f => {
+      byUser[u].files.push({ ...f, username: u, speed: r.speed, queueLength: r.queueLength });
+      byUser[u].totalFiles++;
+    });
+  });
+
+  const sorted = Object.entries(byUser).sort((a, b) => b[1].totalFiles - a[1].totalFiles);
+
+  let html = '';
+  sorted.forEach(([username, data]) => {
+    const uid = 'user_' + username.replace(/[^a-zA-Z0-9]/g, '_');
+    // Try to group files by album (directory)
+    const byDir = {};
+    data.files.forEach(f => {
+      const parts = (f.filename || '').split('/');
+      const dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '(root)';
+      if (!byDir[dir]) byDir[dir] = [];
+      byDir[dir].push(f);
+    });
+
+    const dirKeys = Object.keys(byDir);
+    const showAccordion = dirKeys.length > 1 || data.totalFiles > 5;
+
+    html += `<div class="mb-3 border rounded overflow-hidden">
+      <div class="d-flex align-items-center justify-content-between px-3 py-2 bg-body-secondary cursor-pointer"
+           onclick="document.getElementById('${uid}').classList.toggle('d-none');this.querySelector('.bi').classList.toggle('bi-chevron-down');this.querySelector('.bi').classList.toggle('bi-chevron-right');">
+        <div>
+          <i class="bi bi-chevron-down me-2"></i>
+          <strong>${escapeHtml(username)}</strong>
+          <span class="badge bg-primary ms-2">${data.totalFiles} file${data.totalFiles !== 1 ? 's' : ''}</span>
+          ${data.files[0]?.speed ? `<small class="text-muted ms-2">${data.files[0].speed}</small>` : ''}
+        </div>
+        <div class="d-flex gap-1">
+          <button class="btn btn-sm btn-success" onclick="event.stopPropagation();_slskdDownloadAllUser('${escapeHtml(username)}');" title="Download all files from this user">
+            <i class="bi bi-download"></i> All
+          </button>
+        </div>
+      </div>
+      <div id="${uid}">`;
+
+    dirKeys.forEach(dir => {
+      if (showAccordion && dirKeys.length > 1) {
+        html += `<div class="px-3 pt-2 pb-1"><small class="text-muted fw-semibold">${escapeHtml(dir)}</small></div>`;
+      }
+      byDir[dir].forEach(f => {
+        const sizeMB = f.size ? (f.size / (1024 * 1024)).toFixed(1) : '?';
+        const ext = (f.filename || '').split('.').pop()?.toLowerCase() || '';
+        const isAudio = ['mp3','flac','ogg','m4a','aac','wma','opus'].includes(ext);
+        const fid = `_slskd_${username.replace(/[^a-zA-Z0-9]/g,'_')}_${f.filename?.replace(/[^a-zA-Z0-9]/g,'_')}`;
+        html += `<div class="d-flex align-items-center px-3 py-2 border-top gap-2">
+          <input type="checkbox" class="form-check-input flex-shrink-0" id="${fid}"
+                 onchange="_slskdPageToggle('${escapeHtml(username)}','${escapeHtml(f.filename)}',${f.size||0},this.checked)">
+          <div class="flex-grow-1 min-width-0">
+            <div class="text-truncate small fw-medium" title="${escapeHtml(f.filename)}">
+              <i class="bi ${isAudio?'bi-music-note-file text-success':'bi-file-earmark text-muted'} me-1"></i>
+              ${escapeHtml(f.filename?.split('/').pop() || f.filename)}
+            </div>
+            ${f.filename?.includes('/') ? `<div class="text-muted" style="font-size:0.75rem;">${escapeHtml(f.filename)}</div>` : ''}
+          </div>
+          <div class="text-end flex-shrink-0" style="min-width:60px;">
+            <div class="small fw-semibold">${sizeMB} MB</div>
+          </div>
+          <button class="btn btn-sm btn-outline-success flex-shrink-0" onclick="_slskdDownloadOne('${escapeHtml(username)}','${escapeHtml(f.filename)}',${f.size||0})" title="Download this file">
+            <i class="bi bi-download"></i>
+          </button>
+        </div>`;
+      });
+    });
+    html += `</div></div>`;
+  });
+
+  container.innerHTML = html;
+  _slskdUpdateBulkBar();
+}
+
+function _slskdPageToggle(username, filename, size, checked) {
+  const key = `${username}||${filename}`;
+  if (checked) _slskdPageSelected.set(key, { username, filename, size });
+  else _slskdPageSelected.delete(key);
+  _slskdUpdateBulkBar();
+}
+
+function _slskdUpdateBulkBar() {
+  const bar = document.getElementById('slskdBulkBar');
+  const count = _slskdPageSelected.size;
+  if (count > 0) {
+    bar.style.display = '';
+    document.getElementById('slskdSelectedSummary').textContent = `${count} file${count!==1?'s':''} selected`;
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+function _slskdDownloadOne(username, filename, size) {
+  if (!confirm(`Download from ${username}?\n${filename}`)) return;
+  fetch('/api/slskd/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files: [{ username, filename, size }] })
+  })
+  .then(r => r.json())
+  .then(d => { if (d.error) throw new Error(d.error); alert('✅ Download started!'); })
+  .catch(e => alert('❌ ' + e.message));
+}
+
+function _slskdDownloadAllUser(username) {
+  const files = [];
+  Object.values(_slskdPageData).flat?.(0);
+  // Collect all files from the raw data for this user
+  const allResults = Array.isArray(_slskdPageData) ? _slskdPageData :
+    Object.values(_slskdPageData);
+  allResults.forEach(r => {
+    if (r.username === username || (r.files && r.files[0]?.username === username)) {
+      (r.files || []).forEach(f => files.push({ username, filename: f.filename, size: f.size || 0 }));
+    }
+  });
+  if (files.length === 0) return;
+  if (!confirm(`Download all ${files.length} file(s) from ${username}?`)) return;
+  fetch('/api/slskd/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files })
+  })
+  .then(r => r.json())
+  .then(d => { if (d.error) throw new Error(d.error); alert(`✅ Downloading ${files.length} file(s)!`); })
+  .catch(e => alert('❌ ' + e.message));
+}
+
+function downloadSlskdSelected() {
+  const files = Array.from(_slskdPageSelected.values());
+  if (files.length === 0) return;
+  if (!confirm(`Download ${files.length} selected file(s)?`)) return;
+  fetch('/api/slskd/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files })
+  })
+  .then(r => r.json())
+  .then(d => { if (d.error) throw new Error(d.error); alert(`✅ Downloading ${files.length} file(s)!`); _slskdPageSelected.clear(); _slskdUpdateBulkBar(); document.querySelectorAll('.slskd-file-select').forEach(i=>i.checked=false); })
+  .catch(e => alert('❌ ' + e.message));
+}
+
+function escapeHtml(t) {
+  const d = document.createElement('div');
+  d.textContent = String(t ?? '');
+  return d.innerHTML;
+}
+
+// Auto-search from URL ?q= param
 document.addEventListener('DOMContentLoaded', function() {
-  // Check if there's a 'q' parameter in the URL (from queue search redirect)
   const params = new URLSearchParams(window.location.search);
-  const queryParam = params.get('q');
-  
-  if (queryParam) {
-    const searchInput = document.getElementById('slskdSearchQuery');
-    if (searchInput) {
-      searchInput.value = typeof normalizeSoulseekQuery === 'function'
-        ? normalizeSoulseekQuery(queryParam)
-        : queryParam;
-      // Auto-submit the search form with the parameter
-      setTimeout(() => {
-        const form = document.getElementById('slskdSearchForm');
-        if (form) {
-          form.dispatchEvent(new Event('submit'));
-        }
-      }, 100);
+  const q = params.get('q');
+  if (q) {
+    const input = document.getElementById('slskdSearchQuery');
+    if (input) {
+      input.value = normalizeSoulseekQuery(q);
+      setTimeout(performSlskdSearch, 200);
     }
   }
+  // Update bulk bar when checkboxes change
+  document.getElementById('slskdResults').addEventListener('change', _slskdUpdateBulkBar);
 });
 </script>
+
+<style>
+.cursor-pointer { cursor: pointer; }
+.min-width-0 { min-width: 0; }
+</style>
 {% endblock %}

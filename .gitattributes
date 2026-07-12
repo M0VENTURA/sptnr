@@ -1,0 +1,9 @@
+# Force LF line endings for shell scripts and Docker files
+# Prevents CRLF issues when building Docker images on Windows
+*.sh    text eol=lf
+*.bash  text eol=lf
+Dockerfile* text eol=lf
+docker-compose*.yml text eol=lf
+
+# Auto detect text files and perform LF normalization
+* text=auto

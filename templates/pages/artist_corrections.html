@@ -411,63 +411,6 @@
     </div>
     {% endif %}
 
-    {% if mbid_inconsistent_albums %}
-    <div class="card mb-4" id="mbid-inconsistent-section">
-        <div class="card-header">
-            <h5 class="mb-0">
-                <i class="bi bi-diagram-3"></i> Album MBID Conflicts
-                <small class="text-muted ms-2 fw-normal">Tracks in the same album have conflicting MusicBrainz album MBIDs</small>
-            </h5>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-hover mb-0 artist-corrections-table">
-                    <thead>
-                        <tr>
-                            <th>Album</th>
-                            <th class="text-center">Tracks</th>
-                            <th class="text-center">Distinct MBIDs</th>
-                            <th>Current MBIDs</th>
-                            <th>Apply Canonical MBID</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for row in mbid_inconsistent_albums %}
-                        <tr id="mbid-row-{{ loop.index }}">
-                            <td>
-                                <a href="{{ url_for('album_detail', artist=artist_name, album=row.album) }}">{{ row.album }}</a>
-                            </td>
-                            <td class="text-center">{{ row.track_count }}</td>
-                            <td class="text-center">
-                                <span class="badge bg-danger">{{ row.distinct_mbid_count }}</span>
-                            </td>
-                            <td class="small">
-                                {% for mbid in row.mbids %}
-                                    <div><code>{{ mbid }}</code></div>
-                                {% endfor %}
-                            </td>
-                            <td>
-                                <div class="input-group input-group-sm mb-2">
-                                    <input type="text" class="form-control" id="mbid-input-{{ loop.index }}" placeholder="Enter canonical album MBID">
-                                    <button class="btn btn-outline-primary" type="button"
-                                            onclick="applyAlbumMbidCorrection('{{ artist_name|e }}', '{{ row.album|e }}', {{ loop.index }})">
-                                        Apply
-                                    </button>
-                                </div>
-                                <button class="btn btn-sm btn-outline-secondary"
-                                        onclick="searchAndApplyAlbumMbid('{{ artist_name|e }}', '{{ row.album|e }}', {{ loop.index }})">
-                                    <i class="bi bi-search"></i> Search MusicBrainz
-                                </button>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
     <!-- Track Title Mismatches Section (loaded async) -->
     {% if mb_albums %}
     <div class="card mb-4" id="title-mismatches-section">

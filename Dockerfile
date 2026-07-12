@@ -52,8 +52,10 @@ RUN mkdir -p /opt/essentia_models && \
 # App files — .dockerignore prevents .git, documentation/, tests/ etc. from being copied
 COPY . /app
 
-# Make entrypoint executable
-RUN chmod +x /app/entrypoint.sh
+# Sanitize line endings (Windows → Unix) and make entrypoint executable.
+# Without this, git on Windows converts LF→CRLF which breaks bash on Linux.
+RUN find /app -name "*.sh" -exec sed -i 's/\r$//' {} + \
+    && chmod +x /app/entrypoint.sh
 
 RUN mkdir -p /config /database
 
