@@ -27,7 +27,6 @@ from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.context import db_cursor  # TODO: migrate to db_session
 from helpers.metadata_reader import read_mp3_metadata
 from services.scanning.scan_state import (
     get_scan_progress_path,
@@ -196,16 +195,16 @@ class MP3ImportScanner:
         suffix_patterns = " OR ".join(
             f"file_path LIKE '%%{ext}'" for ext in SUPPORTED_FORMATS
         )
-        with db_cursor() as (_conn, cursor):
-            cursor.execute(f"""
+        with db_session() as session:
+            result = session.execute(text(f"""
                 SELECT id, file_path, artist, title, album
                 FROM tracks
                 WHERE file_path IS NOT NULL
                   AND file_path != ''
                   AND ({suffix_patterns})
                 ORDER BY artist, album
-            """)
-            return cursor.fetchall() or []
+            """))
+            return result.fetchall() or []
 
     # ------------------------------------------------------------------
     # Mode: directory — walk filesystem for audio files
@@ -307,17 +306,16 @@ class MP3ImportScanner:
 
     def _find_existing_track(self, title: str, artist: str, album: str) -> str | None:
         """Return a track id when a matching row already exists."""
-        with db_cursor() as (_conn, cursor):
-            # Exact match on artist + title + album
-            cursor.execute(
-                """
-                SELECT id FROM tracks
-                WHERE LOWER(title) = LOWER(%s)
-                  AND LOWER(artist) = LOWER(%s)
-                  AND LOWER(COALESCE(album, '')) = LOWER(%s)
-                LIMIT 1
-                """,
-                (title, artist, album),
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT id FROM tracks
+                    WHERE LOWER(title) = LOWER(:title)
+                      AND LOWER(artist) = LOWER(:artist)
+                      AND LOWER(COALESCE(album, '')) = LOWER(:album)
+                    LIMIT 1
+                """),
+                {"title": title, "artist": artist, "album": album},
             )
             row = cursor.fetchone()
             if row:
@@ -338,66 +336,66 @@ class MP3ImportScanner:
 
     def _update_track_row(self, track_id: str, file_path: str, meta: dict[str, Any]) -> None:
         """Update an existing track with fresh metadata from the file."""
-        with db_cursor(commit=True) as (_conn, cursor):
-            cursor.execute(
-                """
-                UPDATE tracks
-                   SET file_path        = COALESCE(%s, file_path),
-                       album_artist     = COALESCE(%s, album_artist),
-                       track_number     = COALESCE(%s, track_number),
-                       disc_number      = COALESCE(%s, disc_number),
-                       year             = COALESCE(%s, year),
-                       genres           = COALESCE(%s, genres),
-                       comment          = COALESCE(%s, comment),
-                       bpm              = COALESCE(%s, bpm),
-                       composer         = COALESCE(%s, composer),
-                       isrc             = COALESCE(%s, isrc),
-                       last_scanned     = CURRENT_TIMESTAMP
-                 WHERE id = %s
-                """,
-                (
-                    file_path,
-                    meta.get("album_artist"),
-                    meta.get("track_number"),
-                    meta.get("disc_number"),
-                    meta.get("date"),
-                    meta.get("genre", ""),
-                    meta.get("comment", ""),
-                    meta.get("bpm"),
-                    meta.get("composer"),
-                    meta.get("isrc"),
-                    track_id,
-                ),
+        with db_session() as session:
+            session.execute(
+                text("""
+                    UPDATE tracks
+                       SET file_path        = COALESCE(:file_path, file_path),
+                           album_artist     = COALESCE(:album_artist, album_artist),
+                           track_number     = COALESCE(:track_number, track_number),
+                           disc_number      = COALESCE(:disc_number, disc_number),
+                           year             = COALESCE(:year, year),
+                           genres           = COALESCE(:genres, genres),
+                           comment          = COALESCE(:comment, comment),
+                           bpm              = COALESCE(:bpm, bpm),
+                           composer         = COALESCE(:composer, composer),
+                           isrc             = COALESCE(:isrc, isrc),
+                           last_scanned     = CURRENT_TIMESTAMP
+                     WHERE id = :id
+                    """),
+                {
+                    "file_path": file_path,
+                    "album_artist": meta.get("album_artist"),
+                    "track_number": meta.get("track_number"),
+                    "disc_number": meta.get("disc_number"),
+                    "year": meta.get("date"),
+                    "genres": meta.get("genre", ""),
+                    "comment": meta.get("comment", ""),
+                    "bpm": meta.get("bpm"),
+                    "composer": meta.get("composer"),
+                    "isrc": meta.get("isrc"),
+                    "id": track_id,
+                },
             )
 
     def _insert_track_row(self, file_path: str, meta: dict[str, Any]) -> None:
         """Insert a new track from file metadata."""
-        with db_cursor(commit=True) as (_conn, cursor):
-            cursor.execute(
-                """
-                INSERT INTO tracks
-                    (artist, title, album, album_artist, file_path,
-                     track_number, disc_number, year, genres, bpm,
-                     composer, isrc, comment, last_scanned)
-                VALUES (%s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s,
-                        %s, %s, %s, CURRENT_TIMESTAMP)
-                """,
-                (
-                    meta.get("artist", "Unknown Artist"),
-                    meta.get("title", "Unknown Title"),
-                    meta.get("album", "Unknown Album"),
-                    meta.get("album_artist"),
-                    file_path,
-                    meta.get("track_number"),
-                    meta.get("disc_number"),
-                    meta.get("date"),
-                    meta.get("genre", ""),
-                    meta.get("bpm"),
-                    meta.get("composer"),
-                    meta.get("isrc"),
-                    meta.get("comment", ""),
-                ),
+        with db_session() as session:
+            session.execute(
+                text("""
+                    INSERT INTO tracks
+                        (artist, title, album, album_artist, file_path,
+                         track_number, disc_number, year, genres, bpm,
+                         composer, isrc, comment, last_scanned)
+                    VALUES (:artist, :title, :album, :album_artist, :file_path,
+                            :track_number, :disc_number, :year, :genres, :bpm,
+                            :composer, :isrc, :comment, CURRENT_TIMESTAMP)
+                """),
+                {
+                    "artist": meta.get("artist", "Unknown Artist"),
+                    "title": meta.get("title", "Unknown Title"),
+                    "album": meta.get("album", "Unknown Album"),
+                    "album_artist": meta.get("album_artist"),
+                    "file_path": file_path,
+                    "track_number": meta.get("track_number"),
+                    "disc_number": meta.get("disc_number"),
+                    "year": meta.get("date"),
+                    "genres": meta.get("genre", ""),
+                    "bpm": meta.get("bpm"),
+                    "composer": meta.get("composer"),
+                    "isrc": meta.get("isrc"),
+                    "comment": meta.get("comment", ""),
+                },
             )
 
     # ------------------------------------------------------------------

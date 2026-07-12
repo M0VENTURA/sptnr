@@ -164,31 +164,31 @@ def api_track_favourite():
                 {"id": track_id},
             )
             return jsonify({"success": True, "is_favourite": result.fetchone() is not None}), 200
-    elif request.method == "POST":
-            data = request.json or {}
-            track_id = str(data.get("track_id") or "").strip()
-            if not track_id:
-                return jsonify({"error": "track_id required"}), 400
-            cursor.execute(
-                "INSERT INTO bookmarks (type, name) VALUES ('track_favourite', %s) ON CONFLICT DO NOTHING",
-                (track_id,),
+
+    if request.method == "POST":
+        data = request.json or {}
+        track_id = str(data.get("track_id") or "").strip()
+        if not track_id:
+            return jsonify({"error": "track_id required"}), 400
+        with db_session() as session:
+            session.execute(
+                text("INSERT INTO bookmarks (type, name) VALUES ('track_favourite', :id) ON CONFLICT DO NOTHING"),
+                {"id": track_id},
             )
-            conn.commit()
-            return jsonify({"success": True, "is_favourite": True}), 200
-        elif request.method == "DELETE":
-            track_id = request.args.get("track_id", "").strip()
-            if not track_id:
-                return jsonify({"error": "track_id required"}), 400
-            cursor.execute(
-                "DELETE FROM bookmarks WHERE type = 'track_favourite' AND LOWER(name) = LOWER(%s)", (track_id,),
+        return jsonify({"success": True, "is_favourite": True}), 200
+
+    if request.method == "DELETE":
+        track_id = request.args.get("track_id", "").strip()
+        if not track_id:
+            return jsonify({"error": "track_id required"}), 400
+        with db_session() as session:
+            session.execute(
+                text("DELETE FROM bookmarks WHERE type = 'track_favourite' AND LOWER(name) = LOWER(:id)"),
+                {"id": track_id},
             )
-            conn.commit()
-            return jsonify({"success": True, "is_favourite": False}), 200
-        return jsonify({"error": "Unsupported method"}), 405
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-    finally:
-        conn.close()
+        return jsonify({"success": True, "is_favourite": False}), 200
+
+    return jsonify({"error": "Unsupported method"}), 405
 
 
 # ---------------------------------------------------------------------------

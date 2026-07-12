@@ -10,70 +10,43 @@ All data comes from ``musicbrainz_releases`` / ``musicbrainz_release_tracks`` ta
 
 from __future__ import annotations
 import logging
+from typing import Any
 from sqlalchemy import text
 from db.engine import db_session
-from db.context import db_cursor  # TODO: migrate to db_session
 from db.repositories.musicbrainz_cache import get_active_musicbrainz_releases
 
 logger = logging.getLogger(__name__)
 
 
-from typing import Any
-
-
-def _row_to_dict(
-    cursor,
-    row,
-) -> dict[str, Any] | None:
-    if row is None:
-        return None
-
-    colnames = [
-        desc[0]
-        for desc in cursor.description
-    ]
-
-    return dict(
-        zip(
-            colnames,
-            row,
-        )
-    )
-
-
 def get_release_details(release_id: str):
-    with db_cursor() as (_, cursor):
-        cursor.execute("SELECT * FROM musicbrainz_releases WHERE release_id = %s", (release_id,))
-        release = _row_to_dict(cursor, cursor.fetchone())
-
-        if not release:
+    with db_session() as session:
+        result = session.execute(text("SELECT * FROM musicbrainz_releases WHERE release_id = :id"), {"id": release_id})
+        release_row = result.fetchone()
+        if not release_row:
             return None
+        release = dict(release_row._mapping)
 
-        cursor.execute("SELECT * FROM musicbrainz_release_tracks WHERE release_id = %s", (release_id,))
-        # Map all tracks to dicts
-        tracks = [_row_to_dict(cursor, row) for row in cursor.fetchall()]
+        result = session.execute(text("SELECT * FROM musicbrainz_release_tracks WHERE release_id = :id"), {"id": release_id})
+        tracks = [dict(r._mapping) for r in result.fetchall()]
 
     return {"release": release, "tracks": tracks}
+
 
 def get_cached_missing_releases(artist: str):
     if not artist:
         return {"success": False, "error": "Artist is required"}, 400
 
     try:
-        with db_cursor() as (_, cursor):
-            cursor.execute("""
-                SELECT release_id, title, primary_type, first_release_date, 
+        with db_session() as session:
+            result = session.execute(text("""
+                SELECT release_id, title, primary_type, first_release_date,
                        cover_art_url, category, last_checked
                 FROM missing_releases
-                WHERE artist = %s
+                WHERE artist = :artist
                 ORDER BY first_release_date DESC
-            """, (artist,))
-            
-            rows = [
-                    r
-                    for row in (cursor.fetchall() or [])
-                    if (r := _row_to_dict(cursor, row)) is not None
-                ]
+            """), {"artist": artist})
+
+            rows = [dict(r._mapping) for r in result.fetchall()]
 
         return {
             "artist": artist,

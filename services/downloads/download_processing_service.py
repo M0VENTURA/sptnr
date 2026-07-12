@@ -18,7 +18,6 @@ from typing import Any, Dict, List
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.context import db_cursor  # TODO: migrate to db_session
 
 from db.repositories.queue import (
     insert_queue_item,
@@ -171,18 +170,18 @@ def queue_requeue(queue_id: int) -> Dict[str, Any]:
 
 def queue_requeue_all_unmatched() -> Dict[str, Any]:
     try:
-        with db_cursor(commit=True) as (_conn, cursor):
+        with db_session() as session:
 
-            cursor.execute(
-                """
-                UPDATE download_queue
-                SET status = 'queued',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE status = 'unmatched'
-                """
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = 'queued',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = 'unmatched'
+                """)
             )
 
-            count = int(cursor.rowcount or 0)
+            count = int(result.rowcount or 0)
 
         return {
             "success": True,
@@ -198,18 +197,18 @@ def queue_requeue_all_unmatched() -> Dict[str, Any]:
 
 def queue_retry_all_failed() -> Dict[str, Any]:
     try:
-        with db_cursor(commit=True) as (_conn, cursor):
+        with db_session() as session:
 
-            cursor.execute(
-                """
-                UPDATE download_queue
-                SET status = 'queued',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE status = 'failed'
-                """
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = 'queued',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = 'failed'
+                """)
             )
 
-            count = int(cursor.rowcount or 0)
+            count = int(result.rowcount or 0)
 
         return {
             "success": True,
@@ -229,24 +228,18 @@ def queue_clear(
     try:
         filters = data.get("filters", {}) or {}
 
-        with db_cursor(commit=True) as (_conn, cursor):
-
-            query = """
-                DELETE FROM download_queue
-                WHERE status != %s
-            """
-
-            params = ["imported"]
+        with db_session() as session:
 
             if filters.get("status"):
-                query = """
-                    DELETE FROM download_queue
-                    WHERE status = %s
-                """
-
-                params = [
-                    filters["status"]
-                ]
+                result = session.execute(
+                    text("DELETE FROM download_queue WHERE status = :status"),
+                    {"status": filters["status"]},
+                )
+            else:
+                result = session.execute(
+                    text("DELETE FROM download_queue WHERE status != :status"),
+                    {"status": "imported"},
+                )
 
             cursor.execute(
                 query,

@@ -16,7 +16,6 @@ from datetime import datetime
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.context import db_cursor  # TODO: migrate to db_session
 from services.infrastructure.filesystem_service import _get_files_in_folder, get_folder_group_details
 from services.metadata.release_service import get_active_releases_with_progress
 
@@ -104,15 +103,15 @@ def retry_matching_for_release(release_id: str):
     """
 
     try:
-        with db_cursor() as (_conn, cursor):
+        with db_session() as session:
 
-            cursor.execute("""
+            result = session.execute(text("""
                 SELECT id, monitoring_folder_path, total_tracks, discovered_count
                 FROM musicbrainz_releases
-                WHERE release_id = %s
-            """, (release_id,))
+                WHERE release_id = :release_id
+            """), {"release_id": release_id})
 
-            row = cursor.fetchone()
+            row = result.fetchone()
 
             if not row:
                 return {"success": False, "error": "Release not found"}
@@ -122,14 +121,14 @@ def retry_matching_for_release(release_id: str):
             total_tracks = row[2]
             discovered = row[3]
 
-            cursor.execute("""
+            result = session.execute(text("""
                 SELECT track_number, track_title, track_artist
                 FROM musicbrainz_release_tracks
-                WHERE release_id = %s
+                WHERE release_id = :release_id
                   AND status NOT IN ('discovered', 'finalized')
-            """, (release_id,))
+            """), {"release_id": release_id})
 
-            unmatched = cursor.fetchall()
+            unmatched = result.fetchall()
 
         return {
             "success": True,
@@ -160,15 +159,15 @@ def cancel_folder_downloads(folder_path: str):
     """
 
     try:
-        with db_cursor(commit=True) as (_conn, cursor):
+        with db_session() as session:
 
-            cursor.execute("""
+            result = session.execute(text("""
                 SELECT id, release_id
                 FROM musicbrainz_releases
-                WHERE monitoring_folder_path = %s
-            """, (folder_path,))
+                WHERE monitoring_folder_path = :folder
+            """), {"folder": folder_path})
 
-            row = cursor.fetchone()
+            row = result.fetchone()
 
             if not row:
                 return {"success": False, "error": "Folder not recognized"}
@@ -176,17 +175,17 @@ def cancel_folder_downloads(folder_path: str):
             release_db_id = row[0]
             release_id = row[1]
 
-            cursor.execute("""
+            session.execute(text("""
                 DELETE FROM download_queue
-                WHERE mb_release_download_id = %s
-            """, (release_db_id,))
+                WHERE mb_release_download_id = :id
+            """), {"id": release_db_id})
 
-            cursor.execute("""
+            session.execute(text("""
                 UPDATE musicbrainz_releases
                 SET status = 'cancelled',
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-            """, (release_db_id,))
+                WHERE id = :id
+            """), {"id": release_db_id})
 
         return {
             "success": True,

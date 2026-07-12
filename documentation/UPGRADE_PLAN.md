@@ -45,9 +45,18 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 | `routes/navidrome/ratings.py` | 2 | ✅ Migrated |
 | `routes/scan_routes/api.py` | 0 | ✅ Clean (import only) |
 | `routes/upcoming_releases_routes.py` | 6 | ✅ Migrated |
-| `routes/social_routes.py` | 1 | ❌ 1 remaining call |
-| `routes/scan_routes/popularity.py` | 1 | ❌ 1 remaining call |
-| **Services (15 files)** | ~110 | ⏳ Imports updated, `db_cursor`+`db_session` coexist |
+| `routes/social_routes.py` | 1 | ✅ Migrated |
+| `routes/scan_routes/popularity.py` | 1 | ✅ Migrated |
+| `services/scanning/mp3_import_scanner.py` | 4 | ✅ Migrated |
+| `services/downloads/download_queue_normalizer.py` | 3 | ✅ Migrated |
+| `services/downloads/download_folder_service.py` | 2 | ✅ Migrated |
+| `services/downloads/download_processing_service.py` | 3 | ✅ Migrated |
+| `services/downloads/download_queue_service.py` | 0 | ✅ Already clean |
+| `services/metadata/release_service.py` | 2 | ✅ Migrated |
+| `services/playlists/playlist_matching_service.py` | 1 | ⏳ Import updated |
+| `services/queue/queue_processing_service.py` | 2 | ⏳ Import updated |
+| `services/metadata/album_service.py` | 10 | ❌ Complex — passes conn to repo |
+| **Services (remaining ~10 files)** | ~90 | ⏳ Imports updated, coexistence mode |
 
 **Remaining**: Migrate services/routes that still import from `db.context` (15+ files), plus remaining repositories.
 

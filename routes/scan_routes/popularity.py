@@ -54,51 +54,40 @@ def _resolve_first_artist_for_letter(letter: str) -> str:
     This keeps artist-page scans independent from Navidrome availability/state.
     """
     letter_upper = letter.upper()
-    conn = _get_db_connection()
-    cursor = conn.cursor()
-
     artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
 
-    try:
+    with db_session() as session:
         if letter_upper == "#":
-            cursor.execute(
-                f"""
-                SELECT DISTINCT {artist_expr} AS artist_name
-                FROM tracks
-                WHERE {artist_expr} IS NOT NULL
-                  AND {artist_expr} <> ''
-                  AND UPPER(SUBSTR({artist_expr}, 1, 1)) NOT BETWEEN 'A' AND 'Z'
-                ORDER BY LOWER({artist_expr})
-                LIMIT 1
-                """
+            result = session.execute(
+                text(f"""
+                    SELECT DISTINCT {artist_expr} AS artist_name
+                    FROM tracks
+                    WHERE {artist_expr} IS NOT NULL
+                      AND {artist_expr} <> ''
+                      AND UPPER(SUBSTR({artist_expr}, 1, 1)) NOT BETWEEN 'A' AND 'Z'
+                    ORDER BY LOWER({artist_expr})
+                    LIMIT 1
+                """)
             )
         else:
-            cursor.execute(
-                f"""
-                SELECT DISTINCT {artist_expr} AS artist_name
-                FROM tracks
-                WHERE {artist_expr} IS NOT NULL
-                  AND {artist_expr} <> ''
-                  AND UPPER({artist_expr}) LIKE %s
-                ORDER BY LOWER({artist_expr})
-                LIMIT 1
-                """,
-                (f"{letter_upper}%",),
+            result = session.execute(
+                text(f"""
+                    SELECT DISTINCT {artist_expr} AS artist_name
+                    FROM tracks
+                    WHERE {artist_expr} IS NOT NULL
+                      AND {artist_expr} <> ''
+                      AND UPPER({artist_expr}) LIKE :prefix
+                    ORDER BY LOWER({artist_expr})
+                    LIMIT 1
+                """),
+                {"prefix": f"{letter_upper}%"},
             )
 
-        row = cursor.fetchone()
-        artist_name = _row_value(row, "artist_name")
-
-        if not artist_name:
+        row = result.fetchone()
+        if not row or not row[0]:
             raise ValueError(f"No artists found in library starting with '{letter}'")
 
-        return str(artist_name)
-
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        return str(row[0])
 
 
 @scans_bp.route("/scan/popularity", methods=["POST"])
