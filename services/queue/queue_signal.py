@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Singleton event
 # ---------------------------------------------------------------------------
 
- newItem_event: Final[threading.Event] = threading.Event()
+newItem_event: Final[threading.Event] = threading.Event()
 
 # How many items were signalled since last processed (for batching)
 _signal_count: int = 0

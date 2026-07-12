@@ -1485,8 +1485,8 @@
 
   <!-- Save Button -->
   <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
-    <button type="button" class="btn btn-outline-secondary" id="cancelBtn">Cancel</button>
-    <button type="button" class="btn btn-primary btn-lg" id="saveBtn" onclick="saveConfig()">
+    <button type="button" class="btn btn-outline-secondary" id="cancelBtn" data-dashboard-url="{{ url_for('dashboard') }}">Cancel</button>
+    <button type="button" class="btn btn-primary btn-lg" id="saveBtn" data-save-url="{{ url_for('config_save_json') }}" onclick="saveConfig()">
       <i class="bi bi-check-circle"></i> Save Configuration
     </button>
   </div>
@@ -1520,7 +1520,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-primary" onclick="saveRawYaml()">Save</button>
+        <button type="button" class="btn btn-primary" id="rawYamlSaveBtn" data-editor-url="{{ url_for('config_editor') }}" onclick="saveRawYaml()">Save</button>
       </div>
     </div>
   </div>
@@ -1555,7 +1555,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var cancelBtn = document.getElementById('cancelBtn');
   if (cancelBtn) {
     cancelBtn.addEventListener('click', function(e) {
-      window.location.href = "{{ url_for('dashboard') }}";
+      window.location.href = cancelBtn.dataset.dashboardUrl;
       e.preventDefault();
       return false;
     });
@@ -1988,7 +1988,7 @@ function saveConfig() {
   
   const config = buildConfigObject();
   
-  fetch('{{ url_for("config_save_json") }}', {
+  fetch(saveBtn.dataset.saveUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -2118,7 +2118,7 @@ function saveRawYaml() {
   const formData = new FormData();
   formData.append('config_content', configContent);
   
-  fetch('{{ url_for("config_editor") }}', {
+  fetch(document.getElementById('rawYamlSaveBtn').dataset.editorUrl, {
     method: 'POST',
     body: formData
   })
