@@ -429,8 +429,10 @@
   });
 
   // Pre-fill and auto-execute search from URL query parameter
+<script id="page-data" type="application/json">{{ {"initialQuery": initial_query} | tojson | safe }}</script>
   (function() {
-    const initialQuery = {{ initial_query | tojson }};
+    var _pd = JSON.parse(document.getElementById('page-data').textContent);
+    const initialQuery = _pd.initialQuery;
     if (initialQuery) {
       const input = document.getElementById('searchQuery');
       input.value = initialQuery;

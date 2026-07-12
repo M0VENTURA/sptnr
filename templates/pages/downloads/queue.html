@@ -2758,7 +2758,9 @@ function refreshMbDownloads() {
 // Queue status display config — injected from queue_status_constants.STATUS_DISPLAY_CONFIG
 // by Flask context processor.  Use this single source of truth instead of
 // hardcoded if/else chains scattered across the JS.
-const queueStatusConfig = {{ queue_status_config | tojson }};
+<script id="page-data" type="application/json">{{ {"queueStatusConfig": queue_status_config} | tojson | safe }}</script>
+var _pd = JSON.parse(document.getElementById('page-data').textContent);
+const queueStatusConfig = _pd.queueStatusConfig;
 
 /**
  * Return a Bootstrap badge HTML string for the given queue status.

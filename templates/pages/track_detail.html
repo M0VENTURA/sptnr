@@ -1314,8 +1314,23 @@
     </form>
 </div>
 
+<script id="page-data" type="application/json">{{ {
+    "trackId": track.id,
+    "beetsMbid": track.beets_mbid,
+    "mbid": track.mbid,
+    "suggestedMbid": track.suggested_mbid,
+    "beetsAlbumArtist": track.beets_album_artist,
+    "albumArtist": track.album_artist,
+    "beetsYear": track.beets_year,
+    "year": track.year,
+    "lastfmTags": track.lastfm_tags,
+    "listenbrainzGenres": track.listenbrainz_genres,
+    "discogsGenres": track.discogs_genres,
+    "musicbrainzGenres": track.musicbrainz_genres
+} | tojson | safe }}</script>
 <script>
-    const CURRENT_TRACK_ID = {{ track.id|tojson }};
+    var _pd = JSON.parse(document.getElementById('page-data').textContent);
+    const CURRENT_TRACK_ID = _pd.trackId;
 
     function setButtonLoading(button, text) {
         if (!button) return null;
@@ -2422,25 +2437,25 @@ function displaySimilarArtists(data) {
 }
 const mergeFieldCandidates = {
     mbid: [
-        { source: 'Beets MBID', value: {{ track.beets_mbid|tojson }} },
-        { source: 'Current MBID', value: {{ track.mbid|tojson }} },
-        { source: 'Suggested MBID', value: {{ track.suggested_mbid|tojson }} }
+        { source: 'Beets MBID', value: _pd.beetsMbid },
+        { source: 'Current MBID', value: _pd.mbid },
+        { source: 'Suggested MBID', value: _pd.suggestedMbid }
     ],
     album_artist: [
-        { source: 'Beets Album Artist', value: {{ track.beets_album_artist|tojson }} },
-        { source: 'Track Album Artist', value: {{ track.album_artist|tojson }} }
+        { source: 'Beets Album Artist', value: _pd.beetsAlbumArtist },
+        { source: 'Track Album Artist', value: _pd.albumArtist }
     ],
     year: [
-        { source: 'Beets Year', value: {{ track.beets_year|tojson }} },
-        { source: 'Track Year', value: {{ track.year|tojson }} }
+        { source: 'Beets Year', value: _pd.beetsYear },
+        { source: 'Track Year', value: _pd.year }
     ]
 };
 
 const mergeGenreCandidates = [
-    { source: 'Last.fm', value: {{ track.lastfm_tags|tojson }} },
-    { source: 'ListenBrainz', value: {{ track.listenbrainz_genres|tojson }} },
-    { source: 'Discogs', value: {{ track.discogs_genres|tojson }} },
-    { source: 'MusicBrainz', value: {{ track.musicbrainz_genres|tojson }} }
+    { source: 'Last.fm', value: _pd.lastfmTags },
+    { source: 'ListenBrainz', value: _pd.listenbrainzGenres },
+    { source: 'Discogs', value: _pd.discogsGenres },
+    { source: 'MusicBrainz', value: _pd.musicbrainzGenres }
 ];
 
 let mergeCompareEntries = [];

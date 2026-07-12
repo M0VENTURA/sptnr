@@ -3,7 +3,7 @@
 {% block title %}{{ album_name }} - {{ artist_name }} - Popularr{% endblock %}
 
 {% block content %}
-<script id="page-data" type="application/json">{{ {"artistName": artist_name, "albumName": album_name} | tojson | safe }}</script>
+<script id="page-data" type="application/json">{{ {"artistName": artist_name, "albumName": album_name, "albumGenres": album_genres} | tojson | safe }}</script>
 <div class="container-fluid mt-4">
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
@@ -1724,8 +1724,8 @@
         if (!results || results.length === 0) {
             if (source === 'musicbrainz') {
                 // Offer to submit to MusicBrainz if no results found
-                const album = "{{ album_name }}";
-                const artist = "{{ artist_name }}";
+                const album = _pd.albumName;
+                const artist = _pd.artistName;
                 resultsDiv.innerHTML = `
                     <div class="alert alert-warning">
                         <p><strong>No MusicBrainz matches found for "${album}" by ${artist}</strong></p>
@@ -2038,8 +2038,8 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
-                artist: "{{ artist_name }}", 
-                album: "{{ album_name }}",
+                artist: _pd.artistName, 
+                album: _pd.albumName,
                 mbid: mbid,
                 cover_art_url: coverArtUrl
             })
@@ -2064,8 +2064,8 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
-                artist: "{{ artist_name }}", 
-                album: "{{ album_name }}",
+                artist: _pd.artistName, 
+                album: _pd.albumName,
                 discogs_id: discogsID
             })
         })
@@ -2180,8 +2180,8 @@
     }
 
     function openAlbumArtModal() {
-        const artistName = "{{ artist_name|escapejs }}";
-        const albumName = "{{ album_name|escapejs }}";
+        const artistName = _pd.artistName;
+        const albumName = _pd.albumName;
         
         const modalHtml = `
             <div class="modal fade" id="albumArtModal" tabindex="-1">
@@ -2450,8 +2450,8 @@
     let selectedGenres = new Set();
 
     function fetchGenreRecommendations() {
-        const artistName = "{{ artist_name|escapejs }}";
-        const albumName = "{{ album_name|escapejs }}";
+        const artistName = _pd.artistName;
+        const albumName = _pd.albumName;
         const btn = document.getElementById('fetchGenresBtn');
         const container = document.getElementById('recommendedGenres');
         const section = document.getElementById('recommendedGenresSection');
@@ -2557,15 +2557,15 @@
 
     // Remove single genre from all album tracks (uses shared utilities)
     function removeGenreFromAlbum(genre) {
-        const artistName = "{{ artist_name|escapejs }}";
-        const albumName = "{{ album_name|escapejs }}";
+        const artistName = _pd.artistName;
+        const albumName = _pd.albumName;
         handleGenreRemoval(artistName, albumName, [genre], 'album');
     }
 
     // Remove selected genres from all album tracks (batch removal)
     function removeSelectedAlbumGenres() {
-        const artistName = "{{ artist_name|escapejs }}";
-        const albumName = "{{ album_name|escapejs }}";
+        const artistName = _pd.artistName;
+        const albumName = _pd.albumName;
         const selectedGenres = getSelectedGenres('albumGenresForRemoval');
         
         if (selectedGenres.length === 0) {
@@ -2578,8 +2578,8 @@
     
     // Load track-level recommendations when page loads
     async function loadTrackRecommendations() {
-        const artistName = "{{ artist_name|escapejs }}";
-        const albumName = "{{ album_name|escapejs }}";
+        const artistName = _pd.artistName;
+        const albumName = _pd.albumName;
         
         try {
             const response = await fetch(`/api/album/${encodeURIComponent(artistName)}/${encodeURIComponent(albumName)}/track-recommendations`);
@@ -3352,8 +3352,8 @@
 
 
     function populateMajorityArtist() {
-        const album = "{{ album_name }}";
-        const artist = "{{ artist_name }}";
+        const album = _pd.albumName;
+        const artist = _pd.artistName;
         const trackArtistInput = document.getElementById('track_artist');
         
         // Show loading state
@@ -3553,8 +3553,8 @@
     }
 
     function openEditAlbumIdsModal() {
-        const artistName = "{{ artist_name|escapejs }}";
-        const albumName = "{{ album_name|escapejs }}";
+        const artistName = _pd.artistName;
+        const albumName = _pd.albumName;
         const spotifyId = (document.getElementById('spotifyAlbumId') || {}).value || '';
         const musicbrainzId = (document.getElementById('musicbrainzReleaseId') || {}).value || '';
         const discogsId = (document.getElementById('discogsReleaseId') || {}).value || '';
@@ -3611,8 +3611,8 @@
     }
 
     function saveAlbumIds() {
-        const artistName = "{{ artist_name|escapejs }}";
-        const albumName = "{{ album_name|escapejs }}";
+        const artistName = _pd.artistName;
+        const albumName = _pd.albumName;
         const spotifyId = document.getElementById('editSpotifyAlbumId').value.trim();
         const musicbrainzId = document.getElementById('editMusicbrainzReleaseId').value.trim();
         const discogsId = document.getElementById('editDiscogsReleaseId').value.trim();
@@ -3736,8 +3736,8 @@
             body: JSON.stringify({
                 track_ids: trackIds,
                 genres: genres,
-                artist: '{{ artist_name }}',
-                album: '{{ album_name }}'
+                artist: _pd.artistName,
+                album: _pd.albumName
             })
         })
         .then(r => r.json())
@@ -3981,7 +3981,7 @@
         });
         
         // Build genre options from album genres
-        const albumGenresArray = "{{ album_genres|join('|') }}".split('|').filter(g => g.trim());
+        const albumGenresArray = (_pd.albumGenres || []).map(function(g){ return g.name || g; });
         let genreHtml = '';
         
         albumGenresArray.forEach(genre => {
@@ -4715,8 +4715,8 @@
             alert('Please enter a new artist name.');
             return;
         }
-        const album = "{{ album_name|escapejs }}";
-        const artist = "{{ artist_name|escapejs }}";
+        const album = _pd.albumName;
+        const artist = _pd.artistName;
         fetch(`/api/tags/album/${encodeURIComponent(album)}/${encodeURIComponent(artist)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -4931,8 +4931,8 @@
 
         // Fetch library tracks for this album
         try {
-            const artistName = "{{ artist_name|escapejs }}";
-            const albumName = "{{ album_name|escapejs }}";
+            const artistName = _pd.artistName;
+            const albumName = _pd.albumName;
             const resp = await fetch(`/api/album/library-tracks?artist=${encodeURIComponent(artistName)}&album=${encodeURIComponent(albumName)}`);
             const data = await resp.json();
             const tracks = data.tracks || [];

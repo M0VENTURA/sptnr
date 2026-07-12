@@ -163,7 +163,9 @@
                                                     <td class="text-center">
                                                         <button
                                                             class="btn btn-sm {% if track.recommend_delete %}btn-danger{% else %}btn-outline-danger{% endif %}"
-                                                            onclick="deleteDuplicateTrack('{{ track.id }}', {{ 'true' if track.recommend_delete else 'false' }})"
+                                                            data-track-id="{{ track.id }}"
+                                                            data-recommended="{{ 'true' if track.recommend_delete else 'false' }}"
+                                                            onclick="deleteDuplicateTrack(this.dataset.trackId, this.dataset.recommended === 'true')"
                                                             title="Delete this duplicate track (and file if present)">
                                                             <i class="bi bi-trash"></i> Delete
                                                         </button>
@@ -570,9 +572,11 @@
     </div>
 </div>
 
+<script id="page-data" type="application/json">{{ {"artistName": artist_name, "mbAlbums": mb_albums} | tojson | safe }}</script>
 <script>
-const artistName = "{{ artist_name }}";
-const mbAlbums = {{ mb_albums | tojson | safe }};
+var _pd = JSON.parse(document.getElementById('page-data').textContent);
+const artistName = _pd.artistName;
+const mbAlbums = _pd.mbAlbums;
 
 // ── Duplicate Artists ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function() {

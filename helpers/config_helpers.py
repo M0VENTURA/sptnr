@@ -345,6 +345,32 @@ def save_config(config_data: dict) -> bool:
         return False
 
 
+def save_partial_config(partial_data: dict) -> bool:
+    """Merge partial configuration into the existing config and persist.
+
+    Reads the current config from the YAML file (bypassing the in-memory
+    cache), deep-merges *partial_data* into it, writes the result back,
+    and clears the cache so the next ``get_config()`` call picks it up.
+
+    Args:
+        partial_data: A subset of configuration keys to merge in.
+
+    Returns:
+        True on success, False on failure.
+    """
+    try:
+        # Read the current on-disk config (or start with an empty dict)
+        existing, _ = _read_yaml(_CONFIG_PATH)
+        _deep_merge(existing, partial_data)
+        os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
+        with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+            yaml.safe_dump(existing, f, default_flow_style=False, sort_keys=False)
+        clear_config_cache()
+        return True
+    except Exception:
+        return False
+
+
 # Minimum candidate score for a Soulseek result to be accepted as a valid match.
 # Scores below this threshold trigger fallback queries (e.g. using album_artist).
 _SLSKD_MIN_ACCEPT_SCORE = 0.45

@@ -175,6 +175,47 @@ def api_setup_save():
     return jsonify({"success": False, "error": "Failed to save config file"}), 500
 
 
+@ui_bp.route("/api/setup/save-partial", methods=["POST"])
+def api_setup_save_partial():
+    """Save partial wizard configuration — merges into existing config.
+
+    Unlike :func:`api_setup_save`, this endpoint does **not** require the
+    full Navidrome config.  It deep-merges whatever keys are provided into
+    the current on-disk config, making it safe to call after every wizard
+    step.  This lets interrupted setups resume where they left off.
+    """
+    from helpers.config_helpers import save_partial_config
+
+    data = request.json or {}
+    if not data:
+        return jsonify({"success": False, "error": "No data received"}), 400
+
+    # If Navidrome users are present, set the session username
+    nav_users = data.get("navidrome_users", [])
+    if nav_users and nav_users[0].get("user"):
+        session["username"] = nav_users[0]["user"]
+
+    # Extract PG fields like the full save endpoint does
+    pg_host = (data.pop("PG_HOST", "") or "").strip()
+    if pg_host:
+        data.setdefault("database", {})
+        data["database"]["host"] = pg_host
+        data["database"]["port"] = (data.pop("PG_PORT", "") or "5432").strip()
+        data["database"]["user"] = (data.pop("PG_USER", "") or "popularr").strip()
+        data["database"]["password"] = data.pop("PG_PASSWORD", "")
+        data["database"]["name"] = (data.pop("PG_DATABASE", "") or "popularr").strip()
+        os.environ["PG_HOST"] = data["database"]["host"]
+        os.environ["PG_PORT"] = data["database"]["port"]
+        os.environ["PG_USER"] = data["database"]["user"]
+        os.environ["PG_PASSWORD"] = data["database"]["password"]
+        os.environ["PG_DATABASE"] = data["database"]["name"]
+
+    success = save_partial_config(data)
+    if success:
+        return jsonify({"success": True, "message": "Progress saved"})
+    return jsonify({"success": False, "error": "Failed to save config file"}), 500
+
+
 # ===========================================================================
 # STATIC PAGES
 # ===========================================================================

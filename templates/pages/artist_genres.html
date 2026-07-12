@@ -253,11 +253,12 @@
     </div>
 </div>
 
+<script id="page-data" type="application/json">{{ {"artistName": artist_name} | tojson | safe }}</script>
 <script>
 (function () {
     "use strict";
 
-    var ARTIST_NAME = {{ artist_name | tojson }};
+    var ARTIST_NAME = JSON.parse(document.getElementById('page-data').textContent).artistName;
 
     // Wire up save buttons via event listeners (not inline handlers)
     document.addEventListener("DOMContentLoaded", function () {

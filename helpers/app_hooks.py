@@ -37,6 +37,10 @@ def register_app_hooks(app):
         if request.endpoint and not request.endpoint.startswith("ui."):
             return
 
+        # Also skip API routes that happen to live under the ui blueprint
+        if request.path.startswith("/api/"):
+            return
+
         try:
             from helpers.config_helpers import get_config
             cfg = get_config()

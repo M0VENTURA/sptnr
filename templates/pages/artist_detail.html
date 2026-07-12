@@ -63,11 +63,11 @@
     </div>
     <div class="d-flex gap-2 flex-row flex-wrap">
       {% if (qbit_config.enabled and qbit_config.web_url) or slskd_config.enabled %}
-      <button class="btn btn-outline-info" onclick='openDownloadSearch({{ artist_name|tojson }})' title="Download {{ artist_name }} releases">
+      <button class="btn btn-outline-info" onclick='openDownloadSearch(_pd.artistName)' title="Download {{ artist_name }} releases">
         <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
       </button>
       {% endif %}
-      <button id="artistFavouriteBtn" class="btn btn-outline-danger" onclick='toggleArtistFavourite({{ artist_name|tojson }})' title="Favourite this artist — new albums will be auto-queued for download" aria-label="Favourite this artist to auto-queue new albums for download">
+      <button id="artistFavouriteBtn" class="btn btn-outline-danger" onclick='toggleArtistFavourite(_pd.artistName)' title="Favourite this artist — new albums will be auto-queued for download" aria-label="Favourite this artist to auto-queue new albums for download">
         <i class="bi bi-heart" id="artistFavouriteIcon"></i> <span class="d-none d-sm-inline" id="artistFavouriteLabel">Favourite</span>
       </button>
       <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
@@ -134,7 +134,7 @@
                    alt="{{ artist_name }}" 
                    style="width: 100%; height: 100%; object-fit: cover;"
                    onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
-              <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick='openArtistImageModal({{ artist_name|tojson }})' title="Change artist image">
+              <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick='openArtistImageModal(_pd.artistName)' title="Change artist image">
                 <i class="bi bi-pencil"></i> Change Image
               </button>
             </div>
@@ -576,10 +576,10 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases(_pd.artistName)' title="Search MusicBrainz for all artist releases to download">
           <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
         </button>
-        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases(_pd.artistName)' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
@@ -679,10 +679,10 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases(_pd.artistName)' title="Search MusicBrainz for all artist releases to download">
           <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
         </button>
-        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases(_pd.artistName)' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
@@ -733,10 +733,10 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases(_pd.artistName)' title="Search MusicBrainz for all artist releases to download">
           <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
         </button>
-        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases(_pd.artistName)' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
@@ -787,10 +787,10 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases(_pd.artistName)' title="Search MusicBrainz for all artist releases to download">
           <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
         </button>
-        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases(_pd.artistName)' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
@@ -841,10 +841,10 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases(_pd.artistName)' title="Search MusicBrainz for all artist releases to download">
           <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
         </button>
-        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases(_pd.artistName)' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
@@ -1233,7 +1233,11 @@
     </div>
 </div>
 
+<script id="page-data" type="application/json">{{ {"artistName": artist_name} | tojson | safe }}</script>
 <script>
+// Load page data
+var _pd = JSON.parse(document.getElementById('page-data').textContent);
+
 // Constants for slskd search polling
 const SLSKD_MAX_POLL_ATTEMPTS = 60;
 const SLSKD_POLL_INTERVAL_MS = 2000;
@@ -1285,7 +1289,7 @@ if (typeof handleGenreRemoval === 'undefined') {
 
 // ===== Artist IDs Modal Functions (defined early for onclick handlers) =====
 function openEditArtistIdsModal() {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const musicbrainzId = document.getElementById('musicbrainzArtistId').value;
   const discogsId = (function() { const el = document.getElementById('discogsArtistId'); return el ? el.value : ''; })();
   
@@ -1337,7 +1341,7 @@ function openEditArtistIdsModal() {
 }
 
 function saveArtistIds() {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const musicbrainzId = document.getElementById('editMusicbrainzArtistId').value.trim();
   const discogsId = document.getElementById('editDiscogsArtistId').value.trim();
   const saveBtn = document.querySelector('#editArtistIdsModal .btn.btn-primary');
@@ -1387,7 +1391,7 @@ function saveArtistIds() {
 }
 
 function lookupAndSaveArtistIds(button) {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const originalHtml = button.innerHTML;
   button.disabled = true;
   button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" style="width:0.8rem;height:0.8rem;"></span> Looking up...';
@@ -2762,7 +2766,7 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
 
 // Load artist bio on page load
 document.addEventListener('DOMContentLoaded', () => {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const bioContainer = document.getElementById('artistBio');
   const hasInitialBio = bioContainer && bioContainer.dataset && bioContainer.dataset.hasInitialBio === '1';
   if (!hasInitialBio) {
@@ -2963,7 +2967,7 @@ function openSlskdSearch(query, artistName) {
 }
 
 function fetchArtistGenreRecommendations() {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const btn = document.getElementById('fetchArtistGenresBtn');
   const container = document.getElementById('recommendedArtistGenres');
   const section = document.getElementById('recommendedArtistGenresSection');
@@ -3048,7 +3052,7 @@ function applySelectedArtistGenres() {
     return;
   }
   
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const genresArray = Array.from(selectedArtistGenres);
   
   if (!confirm(`Apply genres [${genresArray.join(', ')}] to ALL tracks by ${artistName}?\n\nThis will update the MP3 files for all albums by this artist.`)) {
@@ -3087,7 +3091,7 @@ function applySelectedArtistGenres() {
 }
 
 function fetchArtistCountry() {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const btn = document.getElementById('fetchArtistCountryBtn');
   const container = document.getElementById('artistCountryDisplay');
   
@@ -3134,7 +3138,7 @@ function fetchArtistCountry() {
 }
 
 function editArtistCountry() {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   // Extract country text by getting text nodes (skipping the icon element)
   const badgeEl = document.querySelector('#artistCountryDisplay .badge');
   const currentCountry = badgeEl ? Array.from(badgeEl.childNodes)
@@ -3177,7 +3181,7 @@ function editArtistCountry() {
 }
 
 function saveArtistCountry() {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const country = document.getElementById('countryInput').value.trim();
   
   if (!country) {
@@ -3213,7 +3217,7 @@ function saveArtistCountry() {
 }
 
 function applyCountryAsGenre() {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const countryBadge = document.querySelector('#artistCountryDisplay .badge');
   if (!countryBadge) {
     alert('No country information available');
@@ -3248,13 +3252,13 @@ function applyCountryAsGenre() {
 
 // Remove single genre from all artist tracks (uses shared utilities)
 function removeGenreFromArtist(genre) {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   handleGenreRemoval(artistName, null, [genre], 'artist');
 }
 
 // Remove selected genres from all artist tracks (batch removal)
 function removeSelectedArtistGenres() {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const selectedGenres = getSelectedGenres('currentArtistGenres');
   
   if (selectedGenres.length === 0) {
@@ -3278,7 +3282,7 @@ document.addEventListener('change', function(e) {
 });
 
 function applySelectedArtistSourceTags() {
-  const artistName = {{ artist_name|tojson }};
+  const artistName = _pd.artistName;
   const checked = document.querySelectorAll('.artist-source-tag-check:checked');
   const selected = Array.from(checked).map(cb => cb.value).filter(Boolean);
   if (selected.length === 0) {
@@ -4328,7 +4332,7 @@ async function loadArtistCoveredBy(artistName) {
   }
 
   document.addEventListener('DOMContentLoaded', function() {
-    const artistName = {{ artist_name|tojson }};
+    const artistName = _pd.artistName;
     if (artistName && artistName.length > 0) {
       loadSimilarArtists(artistName);
       loadArtistFavouriteState(artistName);
