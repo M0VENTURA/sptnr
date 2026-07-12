@@ -79,8 +79,19 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 
 ## 2. HTTP Clients — Switch to `httpx`
 
+<<<<<<< HEAD
+**Status**: ✅ COMPLETED
+=======
 **Status**: ✅ COMPLETED — All `api_clients/*.py` already use `httpx`. `http_utils.py` has a custom `_RetryTransport` with exponential backoff. No `requests` usage remains in API client layer.
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
+<<<<<<< HEAD
+**What changed**:
+- All `api_clients/*.py` already use `httpx`
+- `http_utils.py` has custom `_RetryTransport` with exponential backoff
+- Remaining `requests` calls in routes/services migrated to `httpx`
+- `requests` and `urllib3` removed from `requirements.txt`
+=======
 **What changed** (already in codebase):
 - `api_clients/__init__.py` — shared `httpx.Client` session
 - `api_clients/lastfm_http.py` — `httpx` with `retry_with_backoff`
@@ -92,7 +103,10 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 - `api_clients/coverartarchive.py` — `httpx`
 - `api_clients/audiodb.py` — `httpx`
 - `http_utils.py` — custom `_RetryTransport` replacing old `urllib3.Retry` + `SSLAdapter`
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
+<<<<<<< HEAD
+=======
 **Remaining `requests` usage** (lower priority — in routes and services, not API clients):
 - `routes/misc_routes.py` — `requests.get()` for MusicBrainz API
 - `routes/musicbrainz_routes.py` — `requests` for MB lookups
@@ -103,19 +117,34 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 - `services/metadata/*.py` — various `requests` calls
 - `services/playlists/*.py` — `requests` for external APIs
 
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 ---
 
 ## 3. Async I/O — Quart
 
+<<<<<<< HEAD
+**Status**: ✅ COMPLETED
+=======
 **Status**: ✅ COMPLETED — Migrated from Flask (WSGI) to Quart (ASGI). All 37 files with `from flask import` converted to `from quart import`.
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
+<<<<<<< HEAD
+**What changed**:
+- `app.py` — `Flask(__name__)` → `Quart(__name__)`
+- 37 files — `from flask import` → `from quart import` (identical API)
+- `requirements.txt` — `Flask`/`gunicorn` → `quart`/`hypercorn`
+- `entrypoint.sh` — `gunicorn` → `hypercorn`
+=======
 **What changed**:
 - `app.py` — replaced `Flask(__name__)` with `Quart(__name__)`
 - All 36 route/helper files — `from flask import` → `from quart import` (identical API)
 - `requirements.txt` — replaced `Flask`/`gunicorn` with `quart`/`hypercorn`
 - `entrypoint.sh` — replaced `gunicorn` with `hypercorn` (native ASGI server)
 - `Dockerfile` — no change needed (uses `pip install -r requirements.txt`)
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
+<<<<<<< HEAD
+=======
 **Why Quart over FastAPI**:
 - Drop-in replacement — same API as Flask (Blueprints, routes, templates)
 - Same `jsonify`, `request`, `render_template`, `session` etc.
@@ -136,29 +165,47 @@ SPTNR_LOG_LEVEL: "debug"
 - Migrate scan pipelines to `asyncio` tasks
 - Evaluate `async_session_factory` for truly async DB access
 
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 ---
 
 ## 4. API Consistency — Versioning + Validation
 
-**Target**: Standardize API surface.
+**Status**: ✅ PARTIALLY COMPLETED
 
-- Migrate all form-based endpoints (`/scan/*` redirects) to JSON API
-- Add `/api/v1/` prefix
-- Use **Pydantic** (if FastAPI) or **Marshmallow** for request validation
-- Use `api_ok`/`api_fail` helpers exclusively (remove raw `jsonify` from routes)
+**What changed**:
+- Created `routes/api_v1/` — `/api/v1/` blueprint
+- `_ok()` / `_fail()` helpers in use across most routes
+
+**Remaining**:
+- Migrate form-based `/scan/*` redirects to JSON API
+- Add Pydantic request validation models
 
 ---
 
 ## 5. Background Tasks — APScheduler
 
+<<<<<<< HEAD
+**Status**: ✅ COMPLETED
+=======
 **Status**: ✅ COMPLETED — APScheduler integrated. Replaces ad-hoc `threading.Thread` for periodic tasks.
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
+<<<<<<< HEAD
+**What changed**:
+- `apscheduler>=3.10` in `requirements.txt`
+- `services/scheduler/scheduler_service.py` — `BackgroundScheduler` singleton
+- 3 registered jobs: library_sync (6h), popularity_scan (24h), queue_processor (30s)
+- `helpers/task_manager.py` auto-starts scheduler
+=======
 **What changed**:
 - Added `apscheduler>=3.10,<4.0` to `requirements.txt`
 - Created `services/scheduler/scheduler_service.py` — `BackgroundScheduler` singleton with SQLAlchemy job store
 - Updated `helpers/task_manager.py` — `initialize_app_services()` now starts the scheduler automatically
 - Removed `requests` and `urllib3` from `requirements.txt` (fully replaced by httpx)
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
+<<<<<<< HEAD
+=======
 **Registered jobs** (configurable via `config.yaml` → `scheduler.jobs`):
 | Job | Default interval | Function |
 |-----|-----------------|----------|
@@ -184,12 +231,22 @@ scheduler:
 
 **Note**: The old `services/tasks/task_manager.py` (ad-hoc threading) still exists for one-shot async tasks. The APScheduler replaces it for recurring scheduled work.
 
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 ---
 
 ## 6. Frontend — Asset Bundling
 
+<<<<<<< HEAD
+**Status**: ✅ COMPLETED
+=======
 **Status**: ✅ COMPLETED — esbuild bundling setup created. Templates updated to support local vendor assets.
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
+<<<<<<< HEAD
+**What changed**:
+- `package.json` + esbuild config for JS bundling
+- Templates support conditional CDN vs local assets via `features.use_local_assets`
+=======
 **What changed**:
 - Created `package.json` with `esbuild` as dev dependency
 - Created `esbuild.config.mjs` — bundles all JS modules into `static/dist/main.js`
@@ -197,6 +254,7 @@ scheduler:
 - Created `static/README.md` — frontend build documentation
 - Updated `templates/base.html` — conditional CDN vs local vendor assets via `features.use_local_assets`
 - Updated `templates/auth/login.html` and `templates/auth/setup.html` — same conditional support
+>>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
 **To enable local assets**:
 ```bash
@@ -211,54 +269,33 @@ features:
 
 ## 7. Testing — pytest
 
-**Target**: Add test coverage for core pipelines.
-
-- Add `pytest`, `pytest-cov`, `testing.postgresql` to dev deps
-- Create test fixtures for DB + Flask app + mock HTTP responses
-- Target: scan pipelines, API endpoints, queue processing
+**Target**: Add `pytest`, `pytest-cov`, `testing.postgresql` to dev deps. Create test fixtures for DB + Quart app + mock HTTP responses.
 
 ---
 
 ## 8. Docker Compose
 
-**Status**: ✅ COMPLETED — `docker-compose.yml` + `.env.example` created.
-
-**What changed**:
-- `docker-compose.yml` — PostgreSQL 16 + app service with health checks, volumes, env vars
-- `.env.example` — documented all configurable environment variables
-- `entrypoint.sh` — added `wait_for_db()` to wait for PostgreSQL readiness, `run_alembic_migrations()` for auto-migration
-- Obsoletes `popularr.env` — config now lives in `.env` / `docker-compose.yml`
-
-**Usage**:
-```bash
-cp .env.example .env
-# Edit .env to set MUSIC_ROOT and DOWNLOADS_DIR
-docker compose up -d
-```
+**Status**: ✅ COMPLETED
 
 ---
 
 ## 9. Configuration — Pydantic Settings
 
-**Target**: Replace `config_helpers.py` + YAML with type-safe `pydantic-settings`.
+**Status**: ✅ COMPLETED
 
-```python
-class Settings(BaseSettings):
-    pg_host: str = "localhost"
-    pg_port: int = 5432
-    navidrome_base_url: str = ""
-    ...
-```
-
-Benefits: IDE autocomplete, env var auto-loading, no YAML dependency, ~100 LOC saved.
+**What changed**:
+- Created `helpers/settings.py` — `Settings(BaseSettings)` with 40+ typed fields
+- `get_config()` in `config_helpers.py` merges 3 layers:
+  1. Pydantic Settings (env vars + defaults)
+  2. `config.yaml` file overrides
+  3. Legacy `POPULARLR_*` env vars
+- `pydantic-settings>=2.0` in `requirements.txt`
 
 ---
 
 ## 10. Logging — Structured Logging
 
-**Target**: JSON logs for better observability.
-
-**Add**: `structlog` — produces JSON logs parsable by Loki/Datadog/Splunk.
+**Target**: Add `structlog` — produces JSON logs parsable by Loki/Datadog/Splunk.
 
 ---
 
