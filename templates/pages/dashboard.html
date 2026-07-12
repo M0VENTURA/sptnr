@@ -1,18 +1,165 @@
 {% extends "base.html" %}
-
 {% block content %}
 <div class="container">
-
-    <h2>Dashboard</h2>
-
-    <!-- ================================================================ -->
-    <!-- Popularity Scan Card -->
-    <!-- ================================================================ -->
-    <div class="card mt-3">
+    <!-- Library Stats Header -->
+    <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
+        <h2 class="mb-0">Dashboard</h2>
+        <div class="d-flex flex-wrap gap-2 ms-auto">
+            <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-music-note"></i> {{ stats.tc if stats else '?' }} tracks</span>
+            <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-disc"></i> {{ stats.ac if stats else '?' }} albums</span>
+            <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-people"></i> {{ stats.artists_c if stats else '?' }} artists</span>
+            {% if stats and stats.avg_stars is not none %}
+            <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-star-fill text-warning"></i> {{ stats.avg_stars }}</span>
+            {% endif %}
+        </div>
+    </div>
+    <!-- Scan Cards — 2-column grid -->
+    <div class="row g-3">
+        <!-- Popularity -->
+        <div class="col-12 col-lg-6">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-graph-up"></i> Popularity Scan</span>
+                    <div class="d-flex gap-1">
+                        <a href="/config#popularity-weights" class="btn btn-outline-light btn-sm py-0 px-1"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopPopularityScan()" class="btn btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-stop-fill"></i></button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="d-flex gap-1 flex-wrap mb-2">
+                        <button onclick="startPopularityScan('popularity')" class="btn btn-primary btn-sm py-1 px-2"><i class="bi bi-play-fill"></i> Popularity</button>
+                        <button onclick="startPopularityScan('singles')" class="btn btn-outline-primary btn-sm py-1 px-2"><i class="bi bi-play-fill"></i> Singles</button>
+                        <button onclick="startPopularityScan('metadata')" class="btn btn-outline-primary btn-sm py-1 px-2"><i class="bi bi-play-fill"></i> Metadata</button>
+                        <button onclick="startPopularityScan('all')" class="btn btn-outline-primary btn-sm py-1 px-2"><i class="bi bi-play-fill"></i> All</button>
+                    </div>
+                    <div><div id="pop-status" class="text-muted small">Idle</div>
+                        <div class="progress mt-1" style="height:8px"><div id="pop-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:0%"></div></div>
+                        <div id="pop-progress-text" class="mt-1 small text-muted"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Navidrome -->
+        <div class="col-12 col-lg-6">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-cloud-arrow-down"></i> Navidrome <span id="nav-connectivity" class="badge bg-secondary ms-1">?</span></span>
+                    <div class="d-flex gap-1">
+                        <a href="/config#users" class="btn btn-outline-light btn-sm py-0 px-1"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopNavidromeSync()" class="btn btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-stop-fill"></i></button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="d-flex gap-1 flex-wrap mb-2">
+                        <button onclick="startNavidromeImport()" class="btn btn-secondary btn-sm py-1 px-2"><i class="bi bi-play-fill"></i> Import</button>
+                        <button onclick="startNavidromeServerScan()" class="btn btn-outline-secondary btn-sm py-1 px-2"><i class="bi bi-arrow-repeat"></i> Server Rescan</button>
+                    </div>
+                    <div><div id="nav-status" class="text-muted small">Idle</div>
+                        <div class="progress mt-1" style="height:8px"><div id="nav-progress-bar" class="progress-bar progress-bar-striped" style="width:0%"></div></div>
+                        <div id="nav-progress-text" class="mt-1 small text-muted"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Library Sync -->
+        <div class="col-12 col-lg-6">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-server"></i> Library Sync (Diff)</span>
+                    <div class="d-flex gap-1">
+                        <a href="/config#sources" class="btn btn-outline-light btn-sm py-0 px-1"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopLibrarySync()" class="btn btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-stop-fill"></i></button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <button onclick="startLibrarySync()" class="btn btn-secondary btn-sm py-1 px-2 mb-2"><i class="bi bi-play-fill"></i> Run Sync</button>
+                    <div><div id="lib-status" class="text-muted small">Idle</div>
+                        <div class="progress mt-1" style="height:8px"><div id="lib-progress-bar" class="progress-bar progress-bar-striped" style="width:0%"></div></div>
+                        <div id="lib-progress-text" class="mt-1 small text-muted"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Essentia -->
+        <div class="col-12 col-lg-6">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-music-note-list"></i> Essentia</span>
+                    <div class="d-flex gap-1">
+                        <a href="/config#essentia-mood-scan" class="btn btn-outline-light btn-sm py-0 px-1"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopEssentiaScan()" class="btn btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-stop-fill"></i></button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <button onclick="startEssentiaScan()" class="btn btn-info btn-sm py-1 px-2 mb-2"><i class="bi bi-play-fill"></i> Run Essentia</button>
+                    <div><div id="ess-status" class="text-muted small">Idle</div>
+                        <div class="progress mt-1" style="height:8px"><div id="ess-progress-bar" class="progress-bar progress-bar-striped" style="width:0%"></div></div>
+                        <div id="ess-progress-text" class="mt-1 small text-muted"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Floating Stop All -->
+    <div class="position-fixed bottom-0 end-0 p-3" style="z-index:10">
+        <button onclick="stopAllScans()" class="btn btn-outline-danger shadow rounded-pill"><i class="bi bi-stop-circle"></i> Stop All</button>
+    </div>
+    <!-- Scan History -->
+    <div class="card mt-4">
         <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="bi bi-graph-up"></i> Popularity Scan</span>
-            <div>
-                <button onclick="stopPopularityScan()" class="btn btn-outline-danger btn-sm" title="Stop popularity scan">
+            <span><i class="bi bi-clock-history"></i> Scan History</span>
+            <small class="text-muted">{{ recent_scans|length if recent_scans else 0 }} recent</small>
+        </div>
+        <div class="card-body p-0">
+            {% if recent_scans %}
+            <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light"><tr><th>Type</th><th>Artist</th><th>Album</th><th>Status</th><th>Started</th><th>Duration</th><th>Changes</th></tr></thead>
+                    <tbody>
+                        {% for scan in recent_scans %}
+                        <tr>
+                            <td><span class="badge bg-dark">{{ scan.scan_type or '—' }}</span></td>
+                            <td>{% if scan.artist %}<a href="{{ url_for('artist_detail', name=scan.artist) }}" class="text-decoration-none">{{ scan.artist }}</a>{% else %}—{% endif %}</td>
+                            <td>{% if scan.album %}<a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}" class="text-decoration-none">{{ scan.album }}</a>{% endif %}</td>
+                            <td><span class="badge bg-{{ 'success' if scan.status == 'complete' else 'danger' if scan.status == 'failed' else 'warning text-dark' if scan.status == 'stopped' else 'secondary' if scan.status == 'skipped' else 'info' }}">{{ scan.status or '—' }}</span></td>
+                            <td class="small">{{ scan.started_at[:19] if scan.started_at else '' }}</td>
+                            <td class="small">{% if scan.duration_seconds is not none %}{{ '%.1f'|format(scan.duration_seconds) }}s{% endif %}</td>
+                            <td class="small">{% if scan.changed_albums is not none %}{{ scan.changed_albums }} album(s){% endif %}{% if scan.tracks_added is not none and scan.tracks_added > 0 %}, +{{ scan.tracks_added }} tracks{% endif %}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="text-center text-muted py-4">
+                <i class="bi bi-inbox" style="font-size:2rem"></i>
+                <p class="mt-2 mb-0">No scans yet. Run a scan from the cards above.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+<script>
+async function postJSON(u,b){const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{})});return r.json().catch(()=>({}))}
+function fE(s){if(!s)return"";return` — ${Math.floor(s/60)}m ${Math.floor(s%60)}s`}
+(async()=>{try{const r=await fetch("/api/navidrome/scan/status"),d=await r.json(),e=document.getElementById("nav-connectivity");if(d.success!==false){e.className="badge bg-success ms-1";e.title="OK";e.textContent="✓"}else{e.className="badge bg-danger ms-1";e.title="Unreachable";e.textContent="✗"}}catch{}})();
+async function startPopularityScan(m){await postJSON("/api/popularity/run",{mode:m||"popularity"})}
+async function stopPopularityScan(){await fetch("/scan/stop-popularity",{method:"POST"})}
+async function pollPopularityStatus(){const r=await fetch("/api/popularity/status"),d=await r.json();if(!d.success)return;const e=document.getElementById("pop-status"),b=document.getElementById("pop-progress-bar"),t=document.getElementById("pop-progress-text");if(d.running){e.innerText=(d.message||"Running...")+fE(d.elapsed_seconds);e.className="text-primary small";const p=Math.min(d.progress||0,100);b.style.width=p+"%";t.innerText=(d.mode||"popularity")+` — ${p}% (${d.processed_items||0}/${d.total_items||"?"})`}else{e.innerText=d.message||"Idle";e.className="text-muted small";b.style.width="0%";t.innerText=""}}
+async function startNavidromeImport(){const d=await postJSON("/api/navidrome/import",{mode:"all"}),e=document.getElementById("nav-status");e.innerText=d.success?(d.message||"Started"):(d.error||"Failed");e.className=d.success?"text-success small":"text-danger small"}
+async function startNavidromeServerScan(){const d=await postJSON("/api/navidrome/scan/start"),e=document.getElementById("nav-status");e.innerText=d.success?"Server scan triggered":"Failed";e.className=d.success?"text-success small":"text-danger small"}
+async function stopNavidromeSync(){await fetch("/scan/stop-navidrome",{method:"POST"})}
+async function pollNavidromeStatus(){const e=document.getElementById("nav-status"),b=document.getElementById("nav-progress-bar"),t=document.getElementById("nav-progress-text"),pd=await(await fetch("/api/scan-progress")).json().catch(()=>({})),ns=(pd.active_scans||[]).find(s=>s.scan_type==="navidrome_scan");if(ns&&ns.is_running){e.innerText=(ns.message||"Importing...")+fE(ns.elapsed_seconds);e.className="text-primary small";const p=Math.min(ns.percent_complete||0,100);b.style.width=p+"%";t.innerText=(ns.mode||"import")+` — ${p}%`;return}const sd=await(await fetch("/api/navidrome/scan/status")).json().catch(()=>({}));if(sd.scanning){e.innerText="Server scanning...";e.className="text-warning small";b.style.width="100%";t.innerText=`Count: ${sd.count||0}`}else{e.innerText="Idle";e.className="text-muted small";b.style.width="0%";t.innerText=""}}
+async function startLibrarySync(){await fetch("/api/library/sync",{method:"POST"})}
+async function stopLibrarySync(){await fetch("/scan/stop-all",{method:"POST"})}
+async function pollLibraryStatus(){const r=await fetch("/api/library/status"),d=await r.json();if(!d.success)return;const e=document.getElementById("lib-status"),b=document.getElementById("lib-progress-bar"),t=document.getElementById("lib-progress-text");if(d.running){const es=d.started_at?` — ${Math.floor((Date.now()/1000-d.started_at)/60)}m`:"";e.innerText=(d.message||"Sync...")+es;e.className="text-primary small";const tot=d.artists_total||0,pro=d.artists_processed||0,pct=tot>0?Math.min(Math.round((pro/tot)*100),100):0;b.style.width=pct+"%";t.innerText=`diff — ${pct}% (${pro}/${tot} artists, ${d.tracks_attempted||0} tracks)`}else{e.innerText=d.message||"Idle";e.className="text-muted small";b.style.width="0%";t.innerText=""}}
+async function startEssentiaScan(){await fetch("/api/essentia/run",{method:"POST"})}
+async function stopEssentiaScan(){await fetch("/scan/stop-essentia-mood",{method:"POST"})}
+async function pollEssentiaStatus(){const e=document.getElementById("ess-status"),b=document.getElementById("ess-progress-bar"),t=document.getElementById("ess-progress-text"),pd=await(await fetch("/api/scan-progress")).json().catch(()=>({})),es=(pd.active_scans||[]).find(s=>s.scan_type==="essentia_mood_scan");if(es&&es.is_running){e.innerText=(es.message||"Running...")+fE(es.elapsed_seconds);e.className="text-primary small";const p=Math.min(es.percent_complete||0,100);b.style.width=p+"%";t.innerText=`essentia — ${p}%`}else{e.innerText="Idle";e.className="text-muted small";b.style.width="0%";t.innerText=""}}
+async function stopAllScans(){await fetch("/scan/stop-all",{method:"POST"})}
+let _pi=null;async function _poll(){await Promise.all([pollPopularityStatus(),pollNavidromeStatus(),pollLibraryStatus(),pollEssentiaStatus()]);const pd=await(await fetch("/api/scan-progress").catch(()=>null))?.json().catch(()=>({}))||{},a=(pd.active_scans||[]).length,n=a>0?2000:30000;if(_pi&&_pi._d!==n){clearInterval(_pi);_pi=setInterval(_poll,n);_pi._d=n}};_pi=setInterval(_poll,2000);_pi._d=2000;
+</script>
+{% endblock %}
                     <i class="bi bi-stop-fill"></i>
                 </button>
             </div>

@@ -191,10 +191,24 @@ def dashboard():
         if not nav_users and cfg.get("navidrome"):
             nav_users = [cfg["navidrome"]]
         features = cfg.get("features", {})
+
+        # Library stats for the header
+        from db.utils import get_db_connection
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac, COUNT(DISTINCT COALESCE(NULLIF(album_artist, ''), artist)) as artists_c, ROUND(AVG(stars), 1) as avg_stars FROM tracks")
+            stats = dict(cursor.fetchone())
+        except Exception:
+            stats = {"tc": 0, "ac": 0, "artists_c": 0, "avg_stars": None}
+        finally:
+            conn.close()
+
         return render_template(
             "pages/dashboard.html",
             recent_scans=recent_scans,
             nav_users=nav_users,
+            stats=stats,
             scan_running=False,
             perpetual=bool(features.get("perpetual", False)),
             forced=bool(features.get("force", False)),
@@ -513,11 +527,6 @@ def beets():
 @ui_bp.route("/smart-playlists")
 def smart_playlists():
     return render_template("pages/smart_playlists.html")
-
-
-@ui_bp.route("/dashboard-external")
-def dashboard_external():
-    return render_template("pages/dashboard_external.html")
 
 
 @ui_bp.route("/analytics/genres-moods")
