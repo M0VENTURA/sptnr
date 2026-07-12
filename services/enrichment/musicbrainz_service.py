@@ -540,8 +540,18 @@ def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -
     return {"success": True, "candidates": matches, "existing_mbid": existing_mbid}
 
 
-def get_release_group_releases(rg_mbid: str) -> dict:
-    """Fetch all releases within a release group."""
+def get_release_group_releases(rg_mbid: str, include_track_counts: bool = False) -> dict:
+    """Fetch all releases within a release group.
+
+    Args:
+        rg_mbid: MusicBrainz release-group MBID.
+        include_track_counts: If True, also fetches track counts for each
+            release via the releases browse endpoint (one extra API call).
+
+    Returns:
+        Dict with ``success`` and ``releases`` list.  Each release dict will
+        include a ``track_count`` key when *include_track_counts* is True.
+    """
     try:
         headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
         resp = httpx.get(
@@ -552,9 +562,66 @@ def get_release_group_releases(rg_mbid: str) -> dict:
         )
         resp.raise_for_status()
         data = resp.json()
-        return {"success": True, "releases": data.get("releases", [])}
+        releases = data.get("releases", [])
+
+        if include_track_counts and releases:
+            _enrich_releases_with_track_counts(releases)
+
+        return {"success": True, "releases": releases}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
+
+
+def _enrich_releases_with_track_counts(releases: list[dict]) -> None:
+    """Mutate releases in-place, adding ``track_count`` from MusicBrainz.
+
+    Uses the browse endpoint to fetch all releases for the first release's
+    release-group with media info, then maps back by release MBID.
+    """
+    if not releases:
+        return
+    # Get the release-group MBID from the first release's release-group
+    # (all releases in the list share the same release-group).
+    rg_mbid = None
+    first_rg = releases[0].get("release-group")
+    if isinstance(first_rg, dict):
+        rg_mbid = first_rg.get("id")
+    if not rg_mbid:
+        return
+
+    try:
+        headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
+        resp = httpx.get(
+            f"https://musicbrainz.org/ws/2/release/",
+            params={
+                "fmt": "json",
+                "inc": "media",
+                "release-group": rg_mbid,
+                "limit": 100,
+            },
+            headers=headers,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        browse_data = resp.json()
+        # Build a lookup: release MBID → total track count
+        tc_lookup: dict[str, int] = {}
+        for rel in browse_data.get("releases", []):
+            rel_id = rel.get("id")
+            if not rel_id:
+                continue
+            total = 0
+            for medium in rel.get("media", []):
+                total += int(medium.get("track-count", 0) or 0)
+            if total > 0:
+                tc_lookup[rel_id] = total
+
+        for rel in releases:
+            rel_id = rel.get("id")
+            if rel_id and rel_id in tc_lookup:
+                rel["track_count"] = tc_lookup[rel_id]
+    except Exception as exc:
+        logger.debug("Failed to fetch track counts for release-group %s: %s", rg_mbid, exc)
 
 
 def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
@@ -565,22 +632,67 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
     return {"success": True, "artist": artist, "album": album, "releases": result.get("releases", [])}
 
 
+def _get_local_track_count(artist: str, album: str) -> int:
+    """Query the local database for the number of tracks in an album."""
+    try:
+        from db.engine import db_session
+        from sqlalchemy import text
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT COUNT(*) AS cnt FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"),
+                {"artist": artist, "album": album},
+            )
+            row = result.fetchone()
+            return row[0] if row else 0
+    except Exception:
+        return 0
+
+
 def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict:
-    """Find the best matching release inside a release group."""
-    result = get_release_group_releases(rg_mbid)
+    """Find the best matching release inside a release group.
+
+    Uses a combined score based on:
+    - Title similarity to the local album name
+    - Track-count proximity (when both local and MusicBrainz counts are known)
+    - Official/Promotional status
+    """
+    result = get_release_group_releases(rg_mbid, include_track_counts=True)
     if not result.get("success"):
         return result
     releases = result.get("releases", [])
     if not releases:
         return {"success": False, "error": "No releases found"}
+
+    local_tc = _get_local_track_count(artist, album)
+
     from difflib import SequenceMatcher
     scored = []
     for rel in releases:
         title = rel.get("title", "")
-        score = SequenceMatcher(None, album.lower(), title.lower()).ratio()
-        if rel.get("status") == "Official":
-            score += 0.1
-        scored.append({"release": rel, "score": round(score, 3)})
+        title_score = SequenceMatcher(None, album.lower(), title.lower()).ratio()
+
+        # Official releases get a bonus
+        status_bonus = 0.1 if rel.get("status") == "Official" else 0.0
+
+        # Track-count proximity: score 0.0–0.15 based on how close the
+        # candidate's track count is to the local album's track count.
+        tc_score = 0.0
+        if local_tc > 0:
+            candidate_tc = rel.get("track_count", 0) or 0
+            if candidate_tc > 0:
+                # Ratio of min to max -> 1.0 when equal, lower when mismatched
+                ratio = min(local_tc, candidate_tc) / max(local_tc, candidate_tc)
+                # Scale to at most 0.15 so it nudges rather than overrules
+                tc_score = ratio * 0.15
+
+        combined = title_score + status_bonus + tc_score
+        scored.append({
+            "release": rel,
+            "score": round(combined, 3),
+            "title_score": round(title_score, 3),
+            "tc_score": round(tc_score, 3),
+        })
+
     scored.sort(key=lambda x: x["score"], reverse=True)
     return {"success": True, "best": scored[0]["release"], "candidates": scored}
 

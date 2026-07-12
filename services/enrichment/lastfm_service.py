@@ -21,6 +21,7 @@ from typing import Any
 
 from api_clients.lastfm_http import LastFmHttpClient, retry_with_backoff
 from helpers.config_helpers import get_lastfm_config
+from helpers.normalization_service import FEAT_SUFFIX_RE
 from services.popularity.popularity_sources import (
     get_aggregated_lastfm_popularity,
 )
@@ -137,15 +138,8 @@ class RecommendationCache:
 class LastFmService:
     """Application-level Last.fm behaviour."""
 
-    # Matches feat/ft/featuring both with plain whitespace and inside brackets:
-    #   "Artist feat. Guest"
-    #   "Artist [feat. Guest]"
-    #   "Artist (ft. Guest)"
-    #   "Artist [feat. Guest] (some text)"
-    _FEATURE_RE = re.compile(
-        r"\s+(?:\[|\()?\s*(?:feat\.?|ft\.?|featuring|with|w/)\s+[^\]\)\[]*(?:\]|\))?",
-        re.IGNORECASE,
-    )
+    # Uses the canonical FEAT_SUFFIX_RE from helpers.normalization_service
+    # (handles both plain "feat. Guest" and bracket "[feat. Guest]" notation).
 
     def __init__(self, api_key: str, username: str | None = None, http_client: LastFmHttpClient | None = None, db_connection=None):
         self.api_key = api_key or ""
@@ -182,7 +176,7 @@ class LastFmService:
         """Remove featured-artist suffix (feat., ft., featuring) from an artist string."""
         if not artist:
             return ""
-        return cls.clean_spaces(cls._FEATURE_RE.split(artist, maxsplit=1)[0])
+        return cls.clean_spaces(FEAT_SUFFIX_RE.split(artist, maxsplit=1)[0])
 
     @classmethod
     def normalize_artist_for_compare(cls, artist: str) -> str:
@@ -190,7 +184,7 @@ class LastFmService:
         if not artist:
             return ""
         value = cls.clean_spaces(artist).lower()
-        value = cls._FEATURE_RE.split(value, maxsplit=1)[0]
+        value = FEAT_SUFFIX_RE.split(value, maxsplit=1)[0]
         value = re.sub(r"\s*(?:\+|&|/|×|\bx\b|\bvs\b|\bwith\b)\s*", " & ", value, flags=re.IGNORECASE)
         return cls.clean_spaces(value)
 

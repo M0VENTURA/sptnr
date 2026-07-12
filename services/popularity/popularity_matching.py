@@ -5,17 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-FEATURE_SPLIT_RE = re.compile(
-    r"""
-    \s+
-    (?:\[|\()?\s*
-    (?:feat\.?|ft\.?|featuring|with|w/)
-    \s+
-    [^\]\)\[]*
-    (?:\]|\))?
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
+from helpers.normalization_service import FEAT_SUFFIX_RE
 
 ARTIST_JOIN_RE = re.compile(
     r"""
@@ -58,7 +48,7 @@ def get_primary_artist_preserve_case(artist: str) -> str:
     """Return likely primary artist while preserving original casing."""
     if not artist:
         return ""
-    return clean_artist_spacing(FEATURE_SPLIT_RE.split(artist, maxsplit=1)[0])
+    return clean_artist_spacing(FEAT_SUFFIX_RE.split(artist, maxsplit=1)[0])
 
 
 def get_artist_lookup_candidates(artist: str, album_artist: str | None = None) -> list[str]:

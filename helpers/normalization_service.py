@@ -121,9 +121,19 @@ def strip_brackets(value: str) -> str:
     return re.sub(r"(\(.*?\)|\[.*?\])", "", value or "").strip()
 
 
+# Canonical feat/ft/featuring suffix pattern — single source of truth used
+# by all modules that need to strip featured-artist suffixes from artist names.
+# Handles both plain "feat. Guest" and bracket notation "[feat. Guest]".
 FEAT_SUFFIX_RE = re.compile(
-    r"\s+(?:feat\.?|ft\.?|featuring|with|&|and)\s+.*$",
-    re.IGNORECASE,
+    r"""
+    \s+
+    (?:\[|\()?\s*
+    (?:feat\.?|ft\.?|featuring|with|w/|&|and)
+    \s+
+    [^\]\)\[]*
+    (?:\]|\)|$)
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 def strip_featured_artist(

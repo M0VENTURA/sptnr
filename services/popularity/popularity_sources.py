@@ -90,6 +90,68 @@ def get_lastfm_track_info(
 import logging
 logger = logging.getLogger(__name__)
 
+# Module-level cache: artist_key (casefold) → max listener count from top tracks.
+_lastfm_artist_max_cache: dict[str, int] = {}
+
+
+def get_lastfm_artist_max_listeners(
+    artist: str,
+    api_key: str | None = None,
+) -> int:
+    """Fetch the peak listener count across an artist's top tracks on Last.fm.
+
+    Results are cached in-memory so repeated calls for the same artist
+    (across multiple albums) cost at most one API request.
+
+    Returns 0 if Last.fm is not configured or the artist has no data.
+    """
+    if not api_key:
+        from helpers.config_helpers import get_config
+        cfg = get_config()
+        api_key = cfg.get("api_integrations", {}).get("lastfm", {}).get("api_key", "")
+    if not api_key:
+        return 0
+
+    artist_key = artist.casefold().strip()
+    cached = _lastfm_artist_max_cache.get(artist_key)
+    if cached is not None:
+        return cached
+
+    from api_clients.lastfm_http import LastFmHttpClient
+    client = LastFmHttpClient(api_key=api_key)
+
+    try:
+        data = client.get_json(
+            "artist.getTopTracks",
+            timeout=(5, 10),
+            artist=artist,
+            limit=100,
+        )
+        if not data or "error" in data:
+            _lastfm_artist_max_cache[artist_key] = 0
+            return 0
+
+        tracks = data.get("toptracks", {}).get("track", [])
+        if isinstance(tracks, dict):
+            tracks = [tracks]
+
+        max_listeners = 0
+        for track in tracks:
+            if isinstance(track, dict):
+                try:
+                    listeners = int(track.get("listeners", 0) or 0)
+                    if listeners > max_listeners:
+                        max_listeners = listeners
+                except (ValueError, TypeError):
+                    continue
+
+        _lastfm_artist_max_cache[artist_key] = max_listeners
+        return max_listeners
+    except Exception as exc:
+        logger.debug("Failed to get Last.fm top tracks for '%s': %s", artist, exc)
+        _lastfm_artist_max_cache[artist_key] = 0
+        return 0
+
 
 def get_aggregated_lastfm_popularity(artist: str, track_title: str, lastfm_client=None) -> dict:
     """Aggregate Last.fm counts across locally matched title variants."""

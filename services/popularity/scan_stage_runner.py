@@ -11,6 +11,10 @@ from services.popularity.scan_hooks import (
     get_stat_eligible_tracks,
     prepare_tracks_for_album,
 )
+from services.popularity.popularity_sources import (
+    get_listenbrainz_batch_for_tracks,
+    get_lastfm_artist_max_listeners,
+)
 from services.popularity.stages.album_stage import enrich_album
 from services.popularity.stages.finalise_stage import finalise_scan
 from services.popularity.stages.load_stage import load_candidates
@@ -113,6 +117,29 @@ def run_scan(
             options=options,
         )
 
+        # ── Pre-fetch ListenBrainz data for ALL tracks in this album ──────
+        # This lets us compute album-level LB percentiles and avoid N+1
+        # per-track API calls.
+        album_lb_data: dict[str, dict[str, int | None]] = {}
+        try:
+            track_dicts = [tc["track"] for tc in track_contexts if tc.get("track")]
+            album_lb_data = get_listenbrainz_batch_for_tracks(track_dicts) or {}
+        except Exception as exc:
+            logger.debug("[scan_runner] Album LB batch fetch failed: %s", exc)
+
+        # Build album-level LB listen-count list for percentile scoring.
+        album_lb_listens: list[int] = []
+        for mbid_key, lb_stats in album_lb_data.items():
+            tc = int(lb_stats.get("total_listen_count") or 0) if lb_stats else 0
+            if tc > 0:
+                album_lb_listens.append(tc)
+
+        # ── Pre-fetch Last.fm artist peak listener count ──────────────────
+        # Used to normalise each track's LF score relative to the artist's
+        # most popular track.  Cached in-memory so repeated artist lookups
+        # across multiple albums cost at most one API call per artist.
+        artist_max_lf = get_lastfm_artist_max_listeners(artist)
+
         for track_context in track_contexts:
             prepared_track = apply_context_fields_to_track(track_context)
 
@@ -122,6 +149,9 @@ def run_scan(
                 album_context=album_context,
                 album_result=album_result,
                 options=options,
+                album_lb_data=album_lb_data,
+                album_lb_listens=album_lb_listens if album_lb_listens else None,
+                artist_max_lf_listeners=artist_max_lf,
             )
 
             if track_result is not None:

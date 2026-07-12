@@ -73,6 +73,9 @@ def process_track(
     album_context: dict[str, Any],
     album_result: dict[str, Any],
     options: dict[str, Any],
+    album_lb_data: dict[str, dict[str, int | None]] | None = None,
+    album_lb_listens: list[int] | None = None,
+    artist_max_lf_listeners: int = 0,
 ) -> dict[str, Any] | None:
 
     raw_track_id = track.get("id")
@@ -203,18 +206,26 @@ def process_track(
                 lastfm_listeners = 0
 
             # Use ListenBrainz client for recording score
-            try:
-                lb = ListenBrainzClient()
-                lb_result = lb.get_recording_popularity(recording_mbid) if recording_mbid else {}
-                listenbrainz_listens = _as_int(lb_result.get("listen_count") if isinstance(lb_result, dict) else 0)
-            except Exception:
-                listenbrainz_listens = 0
+            # Prefer pre-fetched album-level data from scan_stage_runner,
+            # fall back to a per-track fetch.
+            listenbrainz_listens = 0
+            if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
+                lb_entry = album_lb_data[recording_mbid]
+                if lb_entry:
+                    listenbrainz_listens = _as_int(lb_entry.get("total_listen_count") or 0)
+            if listenbrainz_listens == 0 and recording_mbid:
+                try:
+                    lb = ListenBrainzClient()
+                    lb_result = lb.get_recording_popularity(recording_mbid) if recording_mbid else {}
+                    listenbrainz_listens = _as_int(lb_result.get("listen_count") if isinstance(lb_result, dict) else 0)
+                except Exception:
+                    listenbrainz_listens = 0
 
             score_data = calculate_combined_popularity_score(
                 lastfm_listeners=lastfm_listeners,
-                lastfm_artist_max_listeners=0,
+                lastfm_artist_max_listeners=artist_max_lf_listeners,
                 listenbrainz_listens=listenbrainz_listens,
-                album_lb_listens=None,
+                album_lb_listens=album_lb_listens,
                 age_source_value=listenbrainz_listens,
                 release_date=release_date,
             )
