@@ -14,15 +14,19 @@ Responsibilities moved out:
 - Track metadata normalization -> services.scanning.metadata_extractor
 - DB writes -> db.repositories.tracks / db.repositories.scan_repository
 
-Compatibility:
-- ``NavidromeClient.extract_track_metadata`` remains as a thin forwarding
-  wrapper so existing callers do not immediately break, but new code should
-  import ``services.scanning.metadata_extractor.extract_track_metadata``.
+OpenSubsonic:
+  Navidrome supports the OpenSubsonic extensions (response fields and
+  endpoints).  This client strips the ``.view`` suffix from endpoints and
+  parses the extra fields (musicBrainzId, genres, isrc, bpm, moods, …)
+  where available.  Call ``supports_opensubsonic()`` to detect support.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import random
 import time
 from typing import Any
 
@@ -30,28 +34,36 @@ from api_clients import session
 
 logger = logging.getLogger(__name__)
 
-# Number of retries for transient HTTP failures
 _DEFAULT_RETRIES = 2
 _RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
 
 
-class NavidromeClient:
-    """Small HTTP client for Navidrome's Subsonic-compatible API."""
+def _md5_hex(value: str) -> str:
+    """Return the hex MD5 digest of a string."""
+    return hashlib.md5(value.encode("utf-8")).hexdigest()
 
-    def __init__(self, base_url: str, username: str, password: str, http_session=None):
+
+class NavidromeClient:
+    """HTTP client for Navidrome's Subsonic/OpenSubsonic API."""
+
+    def __init__(self, base_url: str, username: str, password: str, http_session=None, use_token_auth: bool = True):
         """Create a Navidrome client.
 
         Args:
             base_url: Base Navidrome URL, e.g. ``http://localhost:4533``.
             username: Navidrome user name.
-            password: Navidrome password or token depending on deployment.
-            http_session: Optional requests-like session. Defaults to the
-                shared API session.
+            password: Navidrome password.
+            http_session: Optional httpx session.
+            use_token_auth: When True (default), use token-based auth
+                (``t=`` + ``s=``) instead of plaintext password (``p=``).
+                Token auth sends ``md5(password + salt)`` instead of the
+                raw password over the wire.
         """
         self.base_url = str(base_url or "").rstrip("/")
         self.username = username or ""
         self.password = password or ""
         self.session = http_session or session
+        self.use_token_auth = use_token_auth
         self._stats_cache: dict[str, Any] | None = None
         self._last_stats_time = 0.0
 
@@ -60,28 +72,37 @@ class NavidromeClient:
     # ------------------------------------------------------------------
 
     def _build_params(self, **kwargs) -> dict[str, Any]:
-        """Build standard Subsonic API parameters for a request.
+        """Build standard Subsonic/OpenSubsonic API parameters.
 
-        Uses Subsonic API v1.16.1 (the latest supported by Navidrome).
-        Authentication can be either:
-        - Password-based (``p=``): clear-text password
-        - Token-based (``t=`` + ``s=``): hex-encoded MD5(token+salt)
+        Uses Subsonic API v1.16.1.
+        Authentication: token-based (``t=`` + ``s=``) when enabled,
+        otherwise password-based (``p=``).
         """
         params: dict[str, Any] = {
             "u": self.username,
-            "p": self.password,
             "v": "1.16.1",
             "c": "popularr",
             "f": "json",
         }
+
+        if self.use_token_auth and self.password:
+            salt = f"{random.getrandbits(64):016x}"
+            params["t"] = _md5_hex(self.password + salt)
+            params["s"] = salt
+        else:
+            params["p"] = self.password
+
         params.update(kwargs)
         return params
 
     def _get_subsonic_response(self, endpoint: str, *, timeout: int = 30, retries: int = _DEFAULT_RETRIES, **params) -> dict[str, Any]:
         """Call a Navidrome endpoint and return the ``subsonic-response`` dict.
 
+        Does NOT add a ``.view`` suffix — Navidrome supports both with and
+        without, and OpenSubsonic favours bare endpoint names.
+
         Args:
-            endpoint: API endpoint name (e.g. ``"getArtists.view"``).
+            endpoint: API endpoint name (e.g. ``"getArtists"``).
             timeout: Request timeout in seconds.
             retries: Number of retries for transient HTTP errors.
             **params: Additional query parameters.
@@ -97,8 +118,7 @@ class NavidromeClient:
                 response = self.session.get(url, params=self._build_params(**params), timeout=timeout)
                 if response.status_code in _RETRYABLE_STATUSES and attempt < retries:
                     wait = 0.5 * (attempt + 1)
-                    logger.debug("Navidrome %s returned HTTP %s, retrying in %.1fs (attempt %s/%s)",
-                                 endpoint, response.status_code, wait, attempt + 1, retries)
+                    logger.debug("Navidrome %s returned HTTP %s, retrying in %.1fs", endpoint, response.status_code, wait)
                     time.sleep(wait)
                     continue
                 response.raise_for_status()
@@ -110,8 +130,7 @@ class NavidromeClient:
                 last_error = exc
                 if attempt < retries:
                     wait = 0.5 * (attempt + 1)
-                    logger.debug("Navidrome %s failed, retrying in %.1fs (attempt %s/%s): %s",
-                                 endpoint, wait, attempt + 1, retries, exc)
+                    logger.debug("Navidrome %s failed, retrying in %.1fs: %s", endpoint, wait, exc)
                     time.sleep(wait)
                     continue
 
@@ -125,7 +144,7 @@ class NavidromeClient:
     def get_artists(self, artist_ids: list[str] | None = None) -> list[dict[str, Any]]:
         """Return flattened artists from getArtists, optionally filtered by IDs."""
         try:
-            data = self._get_subsonic_response("getArtists.view", timeout=60)
+            data = self._get_subsonic_response("getArtists", timeout=60)
             index_groups = data.get("artists", {}).get("index", []) or []
             filter_ids = set(artist_ids or [])
             artists: list[dict[str, Any]] = []
@@ -152,7 +171,7 @@ class NavidromeClient:
         while True:
             try:
                 data = self._get_subsonic_response(
-                    "getAlbumList2.view",
+                    "getAlbumList2",
                     timeout=90,
                     type="alphabeticalByName",
                     size=size,
@@ -174,7 +193,7 @@ class NavidromeClient:
     def fetch_artist_albums(self, artist_id: str) -> list[dict[str, Any]]:
         """Fetch all albums for a Navidrome artist ID."""
         try:
-            data = self._get_subsonic_response("getArtist.view", timeout=60, id=artist_id)
+            data = self._get_subsonic_response("getArtist", timeout=60, id=artist_id)
             return data.get("artist", {}).get("album", []) or []
         except Exception as exc:
             logger.error("Failed to fetch albums for artist %s: %s", artist_id, exc)
@@ -184,7 +203,7 @@ class NavidromeClient:
         """Fetch all tracks for an album plus album-level metadata."""
         empty = {"tracks": [], "artist": "", "artistId": "", "name": "", "id": ""}
         try:
-            data = self._get_subsonic_response("getAlbum.view", timeout=60, id=album_id)
+            data = self._get_subsonic_response("getAlbum", timeout=60, id=album_id)
             album = data.get("album", {}) or {}
             return {
                 "tracks": album.get("song", []) or [],
@@ -200,7 +219,7 @@ class NavidromeClient:
     def get_song(self, song_id: str) -> dict[str, Any]:
         """Fetch detailed metadata for one song via getSong."""
         try:
-            data = self._get_subsonic_response("getSong.view", timeout=10, id=song_id)
+            data = self._get_subsonic_response("getSong", timeout=10, id=song_id)
             return data.get("song", {}) or {}
         except Exception as exc:
             logger.debug("Failed to fetch extended song metadata for %s: %s", song_id, exc)
@@ -209,7 +228,7 @@ class NavidromeClient:
     def get_songs(self, offset: int = 0, size: int = 500) -> list[dict[str, Any]]:
         """Fetch a paged list of songs from Navidrome."""
         try:
-            data = self._get_subsonic_response("getSongs.view", timeout=60, offset=offset, size=size)
+            data = self._get_subsonic_response("getSongs", timeout=60, offset=offset, size=size)
             return data.get("songs", {}).get("song", []) or []
         except Exception as exc:
             logger.debug("Failed to fetch songs at offset %s: %s", offset, exc)
@@ -235,7 +254,7 @@ class NavidromeClient:
     def fetch_all_playlists(self) -> list[dict[str, Any]]:
         """Fetch all playlists and add a normalized ``type`` field."""
         try:
-            data = self._get_subsonic_response("getPlaylists.view", timeout=30)
+            data = self._get_subsonic_response("getPlaylists", timeout=30)
             playlists = data.get("playlists", {}).get("playlist", []) or []
             for playlist in playlists:
                 playlist["type"] = "smart" if self._is_smart_playlist(playlist) else "regular"
@@ -247,7 +266,7 @@ class NavidromeClient:
     def fetch_playlist(self, playlist_id: str) -> dict[str, Any]:
         """Fetch one playlist and normalize its track list to ``tracks``."""
         try:
-            data = self._get_subsonic_response("getPlaylist.view", timeout=30, id=playlist_id)
+            data = self._get_subsonic_response("getPlaylist", timeout=30, id=playlist_id)
             playlist = data.get("playlist", {}) or {}
             playlist["type"] = "smart" if self._is_smart_playlist(playlist) else "regular"
             playlist["tracks"] = playlist.pop("entry", []) or []
@@ -267,7 +286,7 @@ class NavidromeClient:
     def delete_playlist(self, playlist_id: str) -> bool:
         """Delete a playlist via deletePlaylist.view."""
         try:
-            data = self._get_subsonic_response("deletePlaylist.view", timeout=30, id=playlist_id)
+            data = self._get_subsonic_response("deletePlaylist", timeout=30, id=playlist_id)
             return data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to delete playlist %s: %s", playlist_id, exc)
@@ -277,7 +296,7 @@ class NavidromeClient:
         """Set a playlist public/shared flag."""
         try:
             data = self._get_subsonic_response(
-                "updatePlaylist.view",
+                "updatePlaylist",
                 timeout=30,
                 playlistId=playlist_id,
                 public="true" if public else "false",
@@ -288,13 +307,57 @@ class NavidromeClient:
             return False
 
     # ------------------------------------------------------------------
+    # Artist info (OpenSubsonic — requires external integration)
+    # ------------------------------------------------------------------
+
+    def get_artist_info(self, artist_id: str) -> dict[str, Any]:
+        """Fetch extended artist info (biography, similar artists, etc.).
+
+        Uses ``getArtistInfo2`` (OpenSubsonic) which may return ``biography``,
+        ``similarArtist``, ``musicBrainzId``, etc. if Navidrome has external
+        integration configured (Last.fm).
+
+        Returns:
+            Dict with keys like ``biography``, ``similarArtist``, ``lastFmUrl``.
+        """
+        empty = {"biography": "", "similarArtist": [], "musicBrainzId": ""}
+        try:
+            data = self._get_subsonic_response("getArtistInfo2", timeout=30, id=artist_id)
+            info = data.get("artistInfo2", {}) or {}
+            return {
+                "biography": info.get("biography", "") or "",
+                "similarArtist": info.get("similarArtist", []) or [],
+                "musicBrainzId": info.get("musicBrainzId", "") or "",
+                "lastFmUrl": info.get("lastFmUrl", "") or "",
+            }
+        except Exception as exc:
+            logger.debug("Failed to fetch artist info for %s: %s", artist_id, exc)
+            return empty
+
+    # ------------------------------------------------------------------
     # Star endpoints
     # ------------------------------------------------------------------
 
     def get_starred_items(self) -> dict[str, list[dict[str, Any]]]:
-        """Fetch starred tracks, albums, and artists for the current user."""
+        """Fetch starred tracks, albums, and artists for the current user.
+
+        Uses ``getStarred2`` (OpenSubsonic) for richer AlbumID3/ArtistID3
+        objects that include ``musicBrainzId``, ``genres``, etc.
+        Falls back to ``getStarred`` if the server doesn't support it.
+        """
         try:
-            data = self._get_subsonic_response("getStarred.view", timeout=60)
+            data = self._get_subsonic_response("getStarred2", timeout=60)
+            starred = data.get("starred2", {}) or {}
+            return {
+                "tracks": starred.get("song", []) or [],
+                "albums": starred.get("album", []) or [],
+                "artists": starred.get("artist", []) or [],
+            }
+        except Exception as exc:
+            logger.debug("getStarred2 failed, falling back to getStarred: %s", exc)
+        # Fallback
+        try:
+            data = self._get_subsonic_response("getStarred", timeout=60)
             starred = data.get("starred", {}) or {}
             return {
                 "tracks": starred.get("song", []) or [],
@@ -308,7 +371,7 @@ class NavidromeClient:
     def star_track(self, track_id: str) -> bool:
         """Star a track in Navidrome."""
         try:
-            data = self._get_subsonic_response("star.view", timeout=30, id=track_id)
+            data = self._get_subsonic_response("star", timeout=30, id=track_id)
             return data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to star track %s: %s", track_id, exc)
@@ -317,7 +380,7 @@ class NavidromeClient:
     def unstar_track(self, track_id: str) -> bool:
         """Unstar a track in Navidrome."""
         try:
-            data = self._get_subsonic_response("unstar.view", timeout=30, id=track_id)
+            data = self._get_subsonic_response("unstar", timeout=30, id=track_id)
             return data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to unstar track %s: %s", track_id, exc)
@@ -389,7 +452,7 @@ class NavidromeClient:
         """
         try:
             rating = max(0, min(5, int(rating)))
-            data = self._get_subsonic_response("setRating.view", timeout=15, id=track_id, rating=rating)
+            data = self._get_subsonic_response("setRating", timeout=15, id=track_id, rating=rating)
             return data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to set rating for track %s: %s", track_id, exc)
@@ -414,7 +477,7 @@ class NavidromeClient:
             params: dict[str, Any] = {"id": track_id, "submission": str(submission).lower()}
             if time_stamp is not None:
                 params["time"] = time_stamp
-            data = self._get_subsonic_response("scrobble.view", timeout=15, **params)
+            data = self._get_subsonic_response("scrobble", timeout=15, **params)
             return data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to scrobble track %s: %s", track_id, exc)
@@ -438,7 +501,7 @@ class NavidromeClient:
         """
         try:
             data = self._get_subsonic_response(
-                "search3.view",
+                "search3",
                 timeout=30,
                 query=query,
                 artistCount=artist_count,
@@ -462,7 +525,7 @@ class NavidromeClient:
     def get_genres(self) -> list[dict[str, Any]]:
         """Fetch all genres from Navidrome with song/album counts."""
         try:
-            data = self._get_subsonic_response("getGenres.view", timeout=15)
+            data = self._get_subsonic_response("getGenres", timeout=15)
             return data.get("genres", {}).get("genre", []) or []
         except Exception as exc:
             logger.error("Failed to fetch genres: %s", exc)
@@ -478,7 +541,7 @@ class NavidromeClient:
             params: dict[str, Any] = {"size": max(1, min(500, int(size)))}
             if genre:
                 params["genre"] = genre
-            data = self._get_subsonic_response("getRandomSongs.view", timeout=30, **params)
+            data = self._get_subsonic_response("getRandomSongs", timeout=30, **params)
             return data.get("randomSongs", {}).get("song", []) or []
         except Exception as exc:
             logger.error("Failed to fetch random songs: %s", exc)
@@ -500,7 +563,7 @@ class NavidromeClient:
         """
         params = self._build_params(id=track_or_album_id, size=size)
         qs = "&".join(f"{k}={v}" for k, v in params.items())
-        return f"{self.base_url}/rest/getCoverArt.view?{qs}"
+        return f"{self.base_url}/rest/getCoverArt?{qs}"
 
     def get_stream_url(self, song_id: str, max_bitrate: int | None = None) -> str:
         """Return a URL for streaming/downloading a song from Navidrome.
@@ -516,7 +579,7 @@ class NavidromeClient:
         if max_bitrate:
             params["maxBitRate"] = max_bitrate
         qs = "&".join(f"{k}={v}" for k, v in params.items())
-        return f"{self.base_url}/rest/stream.view?{qs}"
+        return f"{self.base_url}/rest/stream?{qs}"
 
     # ------------------------------------------------------------------
     # OpenSubsonic extension detection

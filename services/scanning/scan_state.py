@@ -276,19 +276,20 @@ def load_scan_checkpoint(path: str | None = None) -> dict[str, Any]:
 def save_artist_scan_checkpoint(
     artist_name: str,
     checkpoint_path: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     path = checkpoint_path or get_library_checkpoint_path()
     _ensure_parent_dir(path)
 
+    payload: dict[str, Any] = {
+        "last_scanned_artist": artist_name,
+        "updated_at": _now(),
+    }
+    if extra:
+        payload.update(extra)
+
     with open(path, "w", encoding="utf-8") as handle:
-        json.dump(
-            {
-                "last_scanned_artist": artist_name,
-                "updated_at": _now(),
-            },
-            handle,
-            indent=2,
-        )
+        json.dump(payload, handle, indent=2)
 
 
 def get_last_scanned_artist(path: str | None = None) -> str | None:
