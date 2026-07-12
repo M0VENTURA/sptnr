@@ -115,7 +115,7 @@
                         {% set ns.current_letter = letter_key %}
                         {% endif %}
                         
-                        <tr data-letter="{{ letter_key }}" data-artist="{{ artist.link_artist }}">
+                        <tr data-letter="{{ letter_key }}" data-artist="{{ artist.link_artist }}" class="artist-main-row">
                             <td class="d-none d-sm-table-cell">
                                 <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
                                     {{ artist.display_name }}
@@ -164,6 +164,17 @@
                                     <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="btn btn-outline-secondary" title="View artist details">
                                         <i class="bi bi-arrow-right"></i>
                                     </a>
+                                </div>
+                            </td>
+                        </tr>
+                        <!-- Expandable correction detail row -->
+                        <tr class="correction-detail-row d-none" data-artist="{{ artist.link_artist }}">
+                            <td colspan="7" class="p-0 border-0">
+                                <div class="correction-detail-content p-3" style="background:var(--tertiary-bg);">
+                                    <div class="correction-detail-loading text-center small py-2 d-none">
+                                        <span class="spinner-border spinner-border-sm me-2" role="status"></span>Loading…
+                                    </div>
+                                    <div class="correction-detail-body"></div>
                                 </div>
                             </td>
                         </tr>
@@ -408,32 +419,38 @@ async function loadArtistCorrections() {
                 if (info.missing_tracks_count > 0) parts.push(`${info.missing_tracks_count} album(s) with missing tracks`);
                 const titleText = parts.join(', ');
 
-                function makeBadgeLink(extraClass) {
-                    const a = document.createElement('a');
-                    a.href = correctionsUrl;
-                    a.className = `${extraClass} text-decoration-none`;
-                    a.title = titleText;
+                function makeBadgeToggle(extraClass) {
+                    const toggle = document.createElement('span');
+                    toggle.className = `${extraClass} correction-toggle text-decoration-none`;
+                    toggle.style.cursor = 'pointer';
+                    toggle.title = titleText + ' — click to expand';
                     const badge = document.createElement('span');
                     badge.className = 'badge bg-danger';
                     badge.textContent = 'Needs Correcting';
-                    a.appendChild(badge);
-                    return a;
+                    toggle.appendChild(badge);
+                    toggle.addEventListener('click', function (e) {
+                        e.preventDefault();
+                        toggleCorrectionDetail(row, artistName, info, toggle);
+                    });
+                    return toggle;
                 }
 
                 const desktopSpan = row.querySelector('.correction-badge-desktop');
-                if (desktopSpan) { desktopSpan.innerHTML = ''; desktopSpan.appendChild(makeBadgeLink('ms-2')); }
+                if (desktopSpan) { desktopSpan.innerHTML = ''; desktopSpan.appendChild(makeBadgeToggle('ms-2')); }
 
                 const mobileSpan = row.querySelector('.correction-badge-mobile');
-                if (mobileSpan) { mobileSpan.innerHTML = ''; mobileSpan.appendChild(makeBadgeLink('ms-1')); }
+                if (mobileSpan) { mobileSpan.innerHTML = ''; mobileSpan.appendChild(makeBadgeToggle('ms-1')); }
 
                 const actionSpan = row.querySelector('.correction-action-btns');
                 if (actionSpan) {
                     actionSpan.innerHTML = '';
-                    const toolBtn = document.createElement('a');
-                    toolBtn.href = correctionsUrl;
-                    toolBtn.className = 'btn btn-outline-danger';
-                    toolBtn.title = 'Review duplicate/missing track issues';
+                    const toolBtn = document.createElement('button');
+                    toolBtn.className = 'btn btn-outline-danger correction-toggle-btn';
+                    toolBtn.title = titleText + ' — click to expand';
                     toolBtn.innerHTML = '<i class="bi bi-tools"></i>';
+                    toolBtn.addEventListener('click', function () {
+                        toggleCorrectionDetail(row, artistName, info, toolBtn);
+                    });
                     actionSpan.appendChild(toolBtn);
                     if (info.duplicate_artist_count > 0) {
                         const mergeBtn = document.createElement('a');
@@ -460,6 +477,132 @@ async function loadArtistCorrections() {
     } catch (e) {
         // Corrections are non-critical; silently ignore errors
         console.debug('Could not load artist corrections:', e);
+    }
+}
+
+// ── Inline correction detail toggle ──
+async function toggleCorrectionDetail(row, artistName, info, triggerEl) {
+    const detailRow = row.nextElementSibling;
+    if (!detailRow || !detailRow.classList.contains('correction-detail-row')) return;
+
+    const isHidden = detailRow.classList.contains('d-none');
+    if (!isHidden) {
+        detailRow.classList.add('d-none');
+        return;
+    }
+
+    detailRow.classList.remove('d-none');
+    const body = detailRow.querySelector('.correction-detail-body');
+    const loading = detailRow.querySelector('.correction-detail-loading');
+
+    if (body.dataset.loaded) return;  // Already populated
+
+    loading.classList.remove('d-none');
+    body.innerHTML = '';
+
+    try {
+        // Fetch per-artist correction details
+        const resp = await fetch('/api/artist/corrections-albums?artist=' + encodeURIComponent(artistName));
+        const data = await resp.json();
+
+        loading.classList.add('d-none');
+
+        if (!data.success) {
+            body.innerHTML = `<div class="alert alert-warning py-2 small mb-0">${data.error || 'Failed to load'}</div>`;
+            return;
+        }
+
+        const albums = data.albums || data.data || [];
+        let html = '';
+
+        // ── Duplicate tracks ──
+        if (info.duplicate_track_count > 0) {
+            html += `
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span><i class="bi bi-exclamation-triangle text-warning me-2"></i><strong>${info.duplicate_track_count}</strong> duplicate track(s)</span>
+                    <a href="${info.corrections_url || '#'}" class="btn btn-sm btn-outline-warning"><i class="bi bi-merge me-1"></i>Review Duplicates</a>
+                </div>`;
+        }
+
+        // ── Disc number issues ──
+        if (info.disc_inconsistent_count > 0) {
+            html += `
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span><i class="bi bi-disc text-info me-2"></i><strong>${info.disc_inconsistent_count}</strong> album(s) with disc number issues</span>
+                    <button class="btn btn-sm btn-outline-info clear-disc-btn" data-artist="${artistName.replace(/"/g,'&quot;')}"><i class="bi bi-eraser me-1"></i>Clear Disc Numbers</button>
+                </div>`;
+        }
+
+        // ── MBID inconsistencies ──
+        if (info.mbid_inconsistent_count > 0) {
+            html += `
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span><i class="bi bi-music-note-list text-danger me-2"></i><strong>${info.mbid_inconsistent_count}</strong> album(s) with multiple MBIDs</span>
+                    <a href="${info.corrections_url || '#'}" class="btn btn-sm btn-outline-danger"><i class="bi bi-search me-1"></i>Review MBIDs</a>
+                </div>`;
+        }
+
+        // ── Missing tracks ──
+        if (info.missing_tracks_count > 0) {
+            html += `
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span><i class="bi bi-file-earmark-x text-secondary me-2"></i><strong>${info.missing_tracks_count}</strong> album(s) with missing tracks</span>
+                    <a href="${info.corrections_url || '#'}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-search me-1"></i>Review</a>
+                </div>`;
+        }
+
+        // ── Albums list for inline fixes ──
+        if (albums.length > 0) {
+            html += `<hr class="my-2 border-secondary opacity-25"><div class="small text-secondary mb-2"><i class="bi bi-disc me-1"></i>Albums needing attention:</div>`;
+            albums.forEach(function (a) {
+                html += `
+                    <div class="d-flex justify-content-between align-items-center py-1 border-bottom border-secondary border-opacity-10">
+                        <span class="small">${a.album || a.name || 'Unknown'}</span>
+                        <div class="d-flex gap-1">
+                            ${a.needs_disc_clear ? `<button class="btn btn-sm btn-outline-info clear-disc-btn" data-artist="${artistName.replace(/"/g,'&quot;')}" data-album="${(a.album || a.name || '').replace(/"/g,'&quot;')}"><i class="bi bi-eraser"></i> Clear Disc#</button>` : ''}
+                            ${a.needs_mbid ? `<a href="${info.corrections_url || '#'}" class="btn btn-sm btn-outline-danger"><i class="bi bi-search"></i> Fix MBID</a>` : ''}
+                        </div>
+                    </div>`;
+            });
+        }
+
+        if (!html) {
+            html = `<div class="text-secondary small py-2"><i class="bi bi-check-circle me-1"></i>No specific issues found for this artist.</div>`;
+        }
+
+        body.innerHTML = html;
+        body.dataset.loaded = '1';
+
+        // Wire clear-disc-number buttons
+        body.querySelectorAll('.clear-disc-btn').forEach(function (btn) {
+            btn.addEventListener('click', async function () {
+                const artist = btn.dataset.artist;
+                const album = btn.dataset.album || '';
+                const msg = album ? `Clear disc numbers for "${album}" by ${artist}?` : `Clear all disc numbers for ${artist}?`;
+                if (!confirm(msg)) return;
+                try {
+                    const resp = await fetch('/api/artist/corrections/clear-disc-number', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({artist: artist, album: album, force_clear: true}),
+                    });
+                    const result = await resp.json();
+                    if (result.success) {
+                        btn.closest('.d-flex').remove();
+                        // Reload corrections after a moment
+                        setTimeout(loadArtistCorrections, 2000);
+                    } else {
+                        alert('Error: ' + (result.error || 'Failed'));
+                    }
+                } catch (err) {
+                    alert('Request failed: ' + err);
+                }
+            });
+        });
+
+    } catch (err) {
+        loading.classList.add('d-none');
+        body.innerHTML = `<div class="alert alert-danger py-2 small mb-0">Failed to load: ${err.message}</div>`;
     }
 }
 </script>

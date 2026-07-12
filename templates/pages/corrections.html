@@ -47,7 +47,9 @@
             <h1 class="h3 mb-1">
                 <i class="bi bi-tools"></i> Tag Corrections
             </h1>
-            <p class="text-secondary mb-0 small">Albums with inconsistent album-level tags</p>
+            <p class="text-secondary mb-0 small">
+                Fix album-level tag inconsistencies &amp; review metadata conflicts detected during scans
+            </p>
         </div>
         <div class="d-flex gap-2 align-items-center flex-wrap">
             {% if conflict_stats and conflict_stats.total_pending > 0 %}
@@ -72,48 +74,62 @@
     {% endif %}
 
     {% if conflict_stats and conflict_stats.total_pending > 0 %}
-    <div class="card mb-4 border-danger">
+    <!-- ── Metadata Conflicts Section ── -->
+    <div class="card mb-4 border-danger" id="conflicts-section">
         <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
             <span><i class="bi bi-shield-exclamation me-2"></i>Pending Metadata Conflicts</span>
             <span class="badge bg-light text-danger fs-6">{{ conflict_stats.total_pending }} total</span>
         </div>
         <div class="card-body">
-            <p class="mb-2 small">
-                These metadata fields were blocked from auto-overwrite during scans.
-                Review and resolve them to apply the correct values.
+            <p class="mb-3 small">
+                These metadata fields were blocked from auto-overwrite during scans because they differ
+                from your curated local values.  Review each conflict below and choose <strong>Accept</strong>
+                to apply the provider's value, or <strong>Keep</strong> to preserve your local value.
             </p>
-            {% if conflict_stats.by_provider %}
-            <div class="mb-2">
-                <strong class="small">By source:</strong>
-                <div class="d-flex flex-wrap gap-2 mt-1">
-                    {% for item in conflict_stats.by_provider %}
-                    <span class="badge bg-secondary">{{ item.provider }}: {{ item.count }}</span>
-                    {% endfor %}
+
+            <!-- Conflict list (loaded via JS) -->
+            <div id="conflicts-loading" class="text-center py-3">
+                <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                Loading conflicts…
+            </div>
+            <div id="conflicts-error" class="alert alert-warning py-2 small d-none"></div>
+            <div id="conflicts-empty" class="text-secondary text-center py-3 small d-none">
+                <i class="bi bi-check-circle me-1"></i> No pending conflicts found.
+            </div>
+            <div id="conflicts-list" class="d-none">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0 correcting-table" id="conflicts-table">
+                        <thead>
+                            <tr>
+                                <th style="width:28%;">Track</th>
+                                <th style="width:14%;">Field</th>
+                                <th style="width:20%;">Current Value</th>
+                                <th style="width:20%;">Provider Value</th>
+                                <th class="text-end" style="width:18%;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="conflicts-tbody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <button class="btn btn-sm btn-outline-danger" id="conflicts-refresh-btn">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                    </button>
+                    <span id="conflicts-count" class="small text-secondary"></span>
                 </div>
             </div>
-            {% endif %}
-            {% if conflict_stats.by_field %}
-            <div class="mb-2">
-                <strong class="small">By field:</strong>
-                <div class="d-flex flex-wrap gap-2 mt-1">
-                    {% for item in conflict_stats.by_field %}
-                    <span class="badge bg-secondary">{{ item.field_name }}: {{ item.count }}</span>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endif %}
-            <a href="/metadata-compare" class="btn btn-sm btn-outline-danger mt-2">
-                <i class="bi bi-list-check me-1"></i>Review All Conflicts
-            </a>
         </div>
     </div>
     {% endif %}
+
+    <!-- ── Tag Inconsistencies Section ── -->
+    <hr class="my-4 border-secondary opacity-25">
 
     {% if not inconsistencies %}
     <div class="card">
         <div class="card-body text-center py-5">
             <i class="bi bi-check-circle-fill text-success" style="font-size: 3rem;"></i>
-            <h4 class="mt-3">No corrections needed</h4>
+            <h4 class="mt-3">No tag inconsistencies</h4>
             <p class="text-secondary">All album-level tags are consistent across tracks.</p>
         </div>
     </div>
@@ -609,6 +625,195 @@
             }
         });
     });
+
+    // ===================================================================
+    // Conflicts: load & inline resolve/ignore
+    // ===================================================================
+    const conflictsSection = document.getElementById('conflicts-section');
+    const conflictsLoading = document.getElementById('conflicts-loading');
+    const conflictsError   = document.getElementById('conflicts-error');
+    const conflictsEmpty   = document.getElementById('conflicts-empty');
+    const conflictsList    = document.getElementById('conflicts-list');
+    const conflictsTbody   = document.getElementById('conflicts-tbody');
+    const conflictsCount   = document.getElementById('conflicts-count');
+    const conflictsRefresh = document.getElementById('conflicts-refresh-btn');
+
+    async function loadConflicts() {
+        if (!conflictsSection) return;
+
+        conflictsLoading.classList.remove('d-none');
+        conflictsError.classList.add('d-none');
+        conflictsEmpty.classList.add('d-none');
+        conflictsList.classList.add('d-none');
+        conflictsTbody.innerHTML = '';
+
+        try {
+            const resp = await fetch('/api/conflicts/pending?limit=50');
+            const data = await resp.json();
+            conflictsLoading.classList.add('d-none');
+
+            if (!data.success) {
+                conflictsError.textContent = 'Failed to load conflicts: ' + (data.error || 'Unknown error');
+                conflictsError.classList.remove('d-none');
+                return;
+            }
+
+            const items = data.conflicts || [];
+
+            if (!items.length) {
+                conflictsEmpty.classList.remove('d-none');
+                return;
+            }
+
+            items.forEach(function (c) {
+                const tr = document.createElement('tr');
+
+                // Track info
+                const trackCell = document.createElement('td');
+                trackCell.className = 'align-middle small';
+                let trackParts = [];
+                if (c.track_title) trackParts.push(c.track_title);
+                if (c.artist_name) trackParts.push('by ' + c.artist_name);
+                if (c.album_name) trackParts.push('on ' + c.album_name);
+                trackCell.textContent = trackParts.join(' ') || c.track_id;
+                tr.appendChild(trackCell);
+
+                // Field name
+                const fieldCell = document.createElement('td');
+                fieldCell.className = 'align-middle fw-semibold small';
+                fieldCell.textContent = c.field_name;
+                tr.appendChild(fieldCell);
+
+                // Local value
+                const localCell = document.createElement('td');
+                localCell.className = 'align-middle small';
+                const localBadge = document.createElement('span');
+                localBadge.className = 'badge bg-info text-dark';
+                localBadge.textContent = c.local_value || '(empty)';
+                localCell.appendChild(localBadge);
+                tr.appendChild(localCell);
+
+                // Remote value
+                const remoteCell = document.createElement('td');
+                remoteCell.className = 'align-middle small';
+                const remoteBadge = document.createElement('span');
+                remoteBadge.className = 'badge bg-warning text-dark';
+                remoteBadge.textContent = c.remote_value || '(empty)';
+                remoteCell.appendChild(remoteBadge);
+                if (c.provider) {
+                    const src = document.createElement('br');
+                    remoteCell.appendChild(src);
+                    const srcLabel = document.createElement('small');
+                    srcLabel.className = 'text-secondary';
+                    srcLabel.textContent = 'source: ' + c.provider;
+                    remoteCell.appendChild(srcLabel);
+                }
+                tr.appendChild(remoteCell);
+
+                // Actions
+                const actionCell = document.createElement('td');
+                actionCell.className = 'text-end align-middle';
+
+                const acceptBtn = document.createElement('button');
+                acceptBtn.className = 'btn btn-sm btn-outline-success me-1';
+                acceptBtn.innerHTML = '<i class="bi bi-check-lg"></i> Accept';
+                acceptBtn.title = 'Apply the provider\'s value to this track';
+                acceptBtn.addEventListener('click', function () {
+                    resolveConflict(c.id, c.remote_value, tr);
+                });
+                actionCell.appendChild(acceptBtn);
+
+                const keepBtn = document.createElement('button');
+                keepBtn.className = 'btn btn-sm btn-outline-secondary';
+                keepBtn.innerHTML = '<i class="bi bi-x-lg"></i> Keep';
+                keepBtn.title = 'Keep the local value and ignore this conflict';
+                keepBtn.addEventListener('click', function () {
+                    ignoreConflict(c.id, tr);
+                });
+                actionCell.appendChild(keepBtn);
+
+                tr.appendChild(actionCell);
+                conflictsTbody.appendChild(tr);
+            });
+
+            conflictsCount.textContent = data.total + ' total';
+            conflictsList.classList.remove('d-none');
+        } catch (err) {
+            conflictsLoading.classList.add('d-none');
+            conflictsError.textContent = 'Request failed: ' + err;
+            conflictsError.classList.remove('d-none');
+        }
+    }
+
+    async function resolveConflict(conflictId, acceptedValue, rowEl) {
+        try {
+            const resp = await fetch('/api/conflicts/resolve', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({conflict_id: conflictId, accepted_value: acceptedValue}),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                rowEl.remove();
+                updateConflictCounts();
+            } else {
+                alert('Error: ' + (data.error || 'Failed to resolve'));
+            }
+        } catch (err) {
+            alert('Request failed: ' + err);
+        }
+    }
+
+    async function ignoreConflict(conflictId, rowEl) {
+        try {
+            const resp = await fetch('/api/conflicts/ignore', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({conflict_id: conflictId}),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                rowEl.remove();
+                updateConflictCounts();
+            } else {
+                alert('Error: ' + (data.error || 'Failed to ignore'));
+            }
+        } catch (err) {
+            alert('Request failed: ' + err);
+        }
+    }
+
+    async function updateConflictCounts() {
+        // Update the badge in the header
+        try {
+            const resp = await fetch('/api/conflicts/stats');
+            const data = await resp.json();
+            if (data.success) {
+                const headerBadge = document.querySelector('.badge.bg-danger.fs-6');
+                if (headerBadge) {
+                    if (data.total_pending > 0) {
+                        headerBadge.innerHTML =
+                            '<i class="bi bi-shield-exclamation me-1"></i> ' +
+                            data.total_pending + ' metadata conflict' +
+                            (data.total_pending !== 1 ? 's' : '') + ' pending';
+                    } else {
+                        // No more conflicts — remove the badge and conflicts section
+                        headerBadge.remove();
+                        const section = document.getElementById('conflicts-section');
+                        if (section) section.remove();
+                    }
+                }
+            }
+        } catch (_) {}
+    }
+
+    // Load on page load
+    if (conflictsSection) loadConflicts();
+
+    // Refresh button
+    if (conflictsRefresh) {
+        conflictsRefresh.addEventListener('click', loadConflicts);
+    }
 })();
 </script>
 {% endblock %}

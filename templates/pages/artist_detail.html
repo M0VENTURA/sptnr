@@ -235,6 +235,12 @@
     </div>
   </div>
 
+  <!-- Expand/Collapse All -->
+  <div class="d-flex justify-content-end mb-2 gap-2">
+    <button class="btn btn-sm btn-outline-secondary" type="button" id="artist-accordion-expand-all">Expand All</button>
+    <button class="btn btn-sm btn-outline-secondary" type="button" id="artist-accordion-collapse-all">Collapse All</button>
+  </div>
+
   <!-- Statistics Cards -->
   <div class="row g-2 g-md-3 mb-4" id="artist-stats-section">
     <div class="col-6 col-md-3">
@@ -5030,6 +5036,19 @@ async function loadArtistCoveredBy(artistName) {
 
 {% include 'components/_musicbrainz_search_modal.html' %}
 {% include 'components/_musicbrainz_search_functions.html' %}
+<script>
+// ── Accordion Expand/Collapse All ──
+document.getElementById('artist-accordion-expand-all')?.addEventListener('click', function () {
+    document.querySelectorAll('.artist-page .card .collapse').forEach(function (el) {
+        bootstrap.Collapse.getOrCreateInstance(el).show();
+    });
+});
+document.getElementById('artist-accordion-collapse-all')?.addEventListener('click', function () {
+    document.querySelectorAll('.artist-page .card .collapse.show').forEach(function (el) {
+        bootstrap.Collapse.getOrCreateInstance(el).hide();
+    });
+});
+</script>
 <script>
 // Override shared searchMusicBrainzRelease to redirect artist-only searches
 // to the dedicated artist-releases flow (MusicBrainz artist release search).

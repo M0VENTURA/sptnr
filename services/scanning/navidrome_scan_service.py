@@ -92,6 +92,3 @@ def load_artist_map():
             }
             for row in result.fetchall() or []
         }
-
-    finally:
-        conn.close()

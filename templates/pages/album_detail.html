@@ -178,6 +178,12 @@
         </div>
     </div>
 
+    <!-- Toggle all sections -->
+    <div class="d-flex justify-content-end mb-2 gap-2">
+        <button class="btn btn-sm btn-outline-secondary" type="button" id="album-accordion-expand-all">Expand All</button>
+        <button class="btn btn-sm btn-outline-secondary" type="button" id="album-accordion-collapse-all">Collapse All</button>
+    </div>
+
     <!-- Two-Column Layout for Edit & Overview -->
     <form method="POST" action="{{ url_for('album_edit', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
         <div class="row g-3 mb-4">
@@ -5272,6 +5278,18 @@ function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
         _pollTimer = setInterval(pollQueueStatus, POLL_INTERVAL_MS);
     }
 })();
+
+// ── Accordion Expand/Collapse All ──
+document.getElementById('album-accordion-expand-all')?.addEventListener('click', function () {
+    document.querySelectorAll('#album-details-section .collapse, #album-information-section .collapse, #album-genres-section .collapse, #album-similar-section .collapse').forEach(function (el) {
+        bootstrap.Collapse.getOrCreateInstance(el).show();
+    });
+});
+document.getElementById('album-accordion-collapse-all')?.addEventListener('click', function () {
+    document.querySelectorAll('#album-details-section .collapse.show, #album-information-section .collapse.show, #album-genres-section .collapse.show, #album-similar-section .collapse.show').forEach(function (el) {
+        bootstrap.Collapse.getOrCreateInstance(el).hide();
+    });
+});
 </script>
 
 {% endblock %}
