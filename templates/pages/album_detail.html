@@ -475,12 +475,12 @@
                               {% for key, label, bgcolor, textcolor, icon in sources %}
                                 {% if genre_sources and genre_sources.get(key) %}
                                   <li class="nav-item" role="presentation">
-                                    <button class="nav-link {{ 'active' if ns2.first else '' }}"
+                                    <button class="nav-link gt-{{ key }} {{ 'active' if ns2.first else '' }}"
                                             id="albumGenreTab{{ key }}-tab" data-bs-toggle="tab"
                                             data-bs-target="#albumGenreTab{{ key }}-content"
-                                            type="button" role="tab" style="color: #{{ bgcolor }};">
+                                            type="button" role="tab">
                                       <i class="bi {{ icon }}"></i> {{ label }}
-                                      <span class="badge ms-2" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
+                                      <span class="badge ms-2 gb-{{ key }}">{{ genre_sources[key]|length }}</span>
                                     </button>
                                   </li>
                                   {% set ns2.first = False %}
@@ -496,7 +496,7 @@
                                     <p class="text-muted small mb-2">Tags/moods from {{ label }} · sorted by frequency</p>
                                     <div class="d-flex flex-wrap gap-2 mb-3">
                                       {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
-                                        <label class="badge genre-source-selectable" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; cursor:pointer; user-select:none; font-size:0.85rem;" title="Click to select">
+                                        <label class="badge genre-source-selectable gb-{{ key }}" style="cursor:pointer; user-select:none; font-size:0.85rem;" title="Click to select">
                                           <input type="checkbox" class="album-source-tag-check" value="{{ genre.name }}" style="margin-right:0.3rem;cursor:pointer;">
                                           {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
                                         </label>
@@ -1173,6 +1173,26 @@
     background: #d4562a;
     color: #fff;
 }
+
+/* Genre source tab text colors */
+.gt-mood { color: #F59C00; }
+.gt-lastfm_tags { color: #D51007; }
+.gt-listenbrainz_genres { color: #0066FF; }
+.gt-discogs_genres { color: #6c757d; }
+.gt-essentia_genres { color: #6f42c1; }
+.gt-navidrome_genres { color: #17A589; }
+.gt-musicbrainz_genres { color: #EB743B; }
+.gt-spotify_genres { color: #1DB954; }
+
+/* Genre source badge background/text colors */
+.gb-mood { background-color: #F59C00; color: black; }
+.gb-lastfm_tags { background-color: #D51007; color: white; }
+.gb-listenbrainz_genres { background-color: #0066FF; color: white; }
+.gb-discogs_genres { background-color: #6c757d; color: white; }
+.gb-essentia_genres { background-color: #6f42c1; color: white; }
+.gb-navidrome_genres { background-color: #17A589; color: white; }
+.gb-musicbrainz_genres { background-color: #EB743B; color: white; }
+.gb-spotify_genres { background-color: #1DB954; color: white; }
 </style>
 
 <!-- Bulk Genre Tagger Modal -->

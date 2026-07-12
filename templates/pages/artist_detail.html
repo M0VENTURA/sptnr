@@ -321,7 +321,7 @@
           <p class="text-muted small mb-2">All genres detected from external sources (Last.fm, Discogs, MusicBrainz, Essentia, etc.) across all tracks. These are kept in the database for reference.</p>
           <div id="artistGenreSourcesContainer" class="text-muted small">
             {% set sources = [
-              ('mood', 'Mood Scan', 'F59C00', 'light'),
+              ('mood', 'Mood Scan', 'F59C00', 'black'),
               ('spotify_genres', 'Spotify', '1DB954', 'white'),
               ('lastfm_tags', 'Last.fm', 'D51007', 'black'),
               ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white'),
@@ -340,12 +340,12 @@
                 {% for key, label, bgcolor, textcolor in sources %}
                   {% if genre_sources and genre_sources.get(key) %}
                     <li class="nav-item" role="presentation">
-                      <button class="nav-link {{ 'active' if ns2.first else '' }}"
+                      <button class="nav-link at-{{ key }} {{ 'active' if ns2.first else '' }}"
                               id="artistGenreTab{{ key }}-tab" data-bs-toggle="tab"
                               data-bs-target="#artistGenreTab{{ key }}-content"
-                              type="button" role="tab" style="color: #{{ bgcolor }};">
+                              type="button" role="tab">
                         <i class="bi bi-tag"></i> {{ label }}
-                        <span class="badge ms-2" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
+                        <span class="badge ms-2 ab-{{ key }}">{{ genre_sources[key]|length }}</span>
                       </button>
                     </li>
                     {% set ns2.first = False %}
@@ -361,7 +361,7 @@
                       <p class="text-muted small mb-2">Tags/moods collected from {{ label }} during scan · sorted by frequency</p>
                       <div class="d-flex flex-wrap gap-2 mb-3" id="artistSourceTags_{{ key }}">
                         {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
-                          <label class="badge genre-source-selectable" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; cursor:pointer; user-select:none; font-size:0.85rem;" title="Click to select">
+                          <label class="badge genre-source-selectable ab-{{ key }}" style="cursor:pointer; user-select:none; font-size:0.85rem;" title="Click to select">
                             <input type="checkbox" class="artist-source-tag-check" value="{{ genre.name }}" style="margin-right:0.3rem;cursor:pointer;">
                             {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
                           </label>
@@ -2339,18 +2339,6 @@ function loadTracklistFromEncoded(artistEnc, albumEnc, buttonEl, releaseIdEnc) {
   );
 }
 
-function searchMusicBrainzReleaseFromEncoded(event, artistEnc, albumEnc) {
-  return searchMusicBrainzRelease(
-    event,
-    decodeInlineArtistArg(artistEnc, ''),
-    decodeInlineArtistArg(albumEnc, '')
-  );
-}
-    errorEl.style.display = 'block';
-    _showRetry(artist, album);
-  }
-}
-
 function mbRetrySearch() {
   const artist = (document.getElementById('mbRetryArtist')?.value || '').trim();
   const album  = (document.getElementById('mbRetryAlbum')?.value  || '').trim();
@@ -4255,6 +4243,26 @@ async function loadArtistCoveredBy(artistName) {
     padding: 0.5rem 0.25rem !important;
   }
 }
+
+/* Genre source tab text colors */
+.at-mood { color: #F59C00; }
+.at-spotify_genres { color: #1DB954; }
+.at-lastfm_tags { color: #D51007; }
+.at-listenbrainz_genres { color: #0066FF; }
+.at-discogs_genres { color: #6c757d; }
+.at-essentia_genres { color: #6f42c1; }
+.at-navidrome_genres { color: #17A589; }
+.at-musicbrainz_genres { color: #EB743B; }
+
+/* Genre source badge background/text colors */
+.ab-mood { background-color: #F59C00; color: black; }
+.ab-spotify_genres { background-color: #1DB954; color: white; }
+.ab-lastfm_tags { background-color: #D51007; color: black; }
+.ab-listenbrainz_genres { background-color: #0066FF; color: white; }
+.ab-discogs_genres { background-color: #6c757d; color: white; }
+.ab-essentia_genres { background-color: #6f42c1; color: white; }
+.ab-navidrome_genres { background-color: #17A589; color: white; }
+.ab-musicbrainz_genres { background-color: #EB743B; color: white; }
 </style>
 
 <!-- Track Editing Modal -->

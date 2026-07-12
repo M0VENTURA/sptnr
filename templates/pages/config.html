@@ -142,7 +142,7 @@
             <div class="d-flex justify-content-between align-items-center mb-3">
               <h6 class="mb-0">{{ user.get('display_name', user.get('username', 'User ' ~ loop.index)) }}</h6>
               {% if loop.length > 1 %}
-              <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUser({{ loop.index0 }})">
+              <button type="button" class="btn btn-sm btn-outline-danger" data-index="{{ loop.index0 }}" onclick="removeUser(this)">
                 <i class="bi bi-trash"></i> Remove
               </button>
               {% endif %}
@@ -2240,8 +2240,9 @@ function addNewUser() {
   container.appendChild(userCard);
 }
 
-function removeUser(idx) {
+function removeUser(btn) {
   // Remove the user card from the DOM
+  const idx = parseInt(btn.dataset.index);
   const userCards = document.querySelectorAll('.user-card');
   if (userCards[idx]) {
     userCards[idx].remove();
