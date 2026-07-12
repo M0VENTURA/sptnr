@@ -21,7 +21,7 @@ import logging
 import os
 from typing import Any, Dict, Set, Tuple
 
-from db.repositories.scan_cleanup_repository import normalize_existing_artist_rows, sanitize_artist_file_paths_and_duplicates
+from db.repositories.scan_repository import normalize_existing_artist_rows, sanitize_artist_file_paths_and_duplicates
 from db.repositories.tracks import delete_tracks_by_id
 from helpers.logging_config import log_unified
 
