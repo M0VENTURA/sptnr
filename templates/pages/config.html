@@ -2,9 +2,11 @@
 {% block title %}Config · Popularr{% endblock %}
 {% block content %}
 <div class="container-fluid py-3 py-md-4">
+  <!-- Config data as JSON for JavaScript -->
+  <script id="config-data" type="application/json">{{ config | tojson | safe }}</script>
   <script>
     // Make config data available to JavaScript
-    window.pageConfig = {{ config | tojson | safe }};
+    window.pageConfig = JSON.parse(document.getElementById('config-data').textContent);
   </script>
   <div class="row mb-3">
     <div class="col-12 col-md-auto">
@@ -2475,7 +2477,7 @@ function saveFeaturesWeights() {
 </script>
 <script>
 // On page load, render features/weights section
-window.currentConfig = {{ config|tojson | safe }};
+window.currentConfig = window.pageConfig;
 document.addEventListener('DOMContentLoaded', function() {
   // Render features/weights section
   if (window.currentConfig) {
