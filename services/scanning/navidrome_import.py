@@ -386,6 +386,7 @@ def scan_artist_to_db(
                     album_context=album_context,
                     canonical_artist_name=canonical_artist_name,
                     writer_json=writer_json,
+                    is_new_track=track.get("id") not in cached_ids_for_album,
                 )
 
                 album_mbid = str(payload.get("musicbrainz_album_mbid") or "").strip()

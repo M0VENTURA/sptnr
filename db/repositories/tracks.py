@@ -23,6 +23,20 @@ from services.metadata.tag_file_service import (
     update_file_tags
 )
 
+
+def upsert_track_payload(
+    track_payload: dict[str, Any],
+    conn: Any | None = None,
+) -> bool:
+    """Persist a Navidrome track payload via the popularity repository.
+
+    Delegates to ``popularity_repository.save_to_db`` which handles
+    schema-aware dynamic upserts and protects popularity/scoring columns
+    when ``_navidrome_sync`` is set in the payload.
+    """
+    from db.repositories.popularity_repository import save_to_db
+    return save_to_db(track_payload, conn=conn)
+
 def insert_or_update_track(
     track_id: str,
     artist_id: str,

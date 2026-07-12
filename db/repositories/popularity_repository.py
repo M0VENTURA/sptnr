@@ -112,6 +112,10 @@ def save_to_db(track_data: dict, conn=None) -> bool:
 
     Uses db_session for safe connection handling.
 
+    When the payload carries ``_navidrome_sync=True``, popularity/scoring
+    columns are excluded from the UPDATE clause so that an incremental
+    metadata sync never overwrites scores computed by the popularity pipeline.
+
     Args:
         track_data: Dictionary of track data to save
         conn: Optional existing connection (deprecated, kept for compatibility)
@@ -129,15 +133,44 @@ def save_to_db(track_data: dict, conn=None) -> bool:
     return run_with_db_lock_retry(operation)
 
 
+# ── Columns whose values are owned by the popularity pipeline and must
+#    NEVER be overwritten by a Navidrome metadata sync.  The UPSERT UPDATE
+#    clause skips these columns when ``_navidrome_sync`` is set.
+_POPULARITY_PROTECTED_COLUMNS: frozenset[str] = frozenset({
+    # Scoring
+    "popularity_score", "score", "final_score",
+    "spotify_score", "lastfm_score", "listenbrainz_score", "age_score",
+    "combined_score",
+    # Ratings
+    "stars", "star_rating",
+    # Single detection
+    "is_single", "single_confidence", "single_sources",
+    "single_detection_last_updated", "single_manual_override",
+    # Genres / tags (owned by the popularity pipeline's enrichment pass)
+    "spotify_genres", "lastfm_tags", "listenbrainz_genres",
+    "discogs_genres", "musicbrainz_genres", "audiodb_genres",
+    # Popularity meta
+    "spotify_popularity", "lastfm_ratio", "lastfm_track_playcount",
+    "popularity_frozen",
+})
+
+
 def _execute_save(session, track_data: dict) -> bool:
-    """Execute the actual save operation with schema validation."""
+    """Execute the actual save operation with schema validation.
+
+    When ``_navidrome_sync`` is True in the payload, popularity/scoring
+    columns are excluded from the UPDATE clause of the upsert so that
+    Navidrome metadata syncs never clobber the math engine's results.
+    """
     columns = get_tracks_table_columns(session)
     types = get_tracks_table_column_types(session)
+
+    is_navidrome_sync = bool(track_data.get("_navidrome_sync"))
 
     data = {
         k: coerce_track_value_for_pg_type(k, v, types.get(k, ""))
         for k, v in track_data.items()
-        if k in columns
+        if k in columns and k != "_navidrome_sync"
     }
 
     if "id" not in data:
@@ -146,9 +179,18 @@ def _execute_save(session, track_data: dict) -> bool:
     keys = list(data.keys())
 
     named_placeholders = ", ".join([f":{k}" for k in keys])
-    update_set = ", ".join(
-        [f"{k}=EXCLUDED.{k}" for k in keys if k != "id"]
-    )
+
+    # Build the UPDATE SET clause, skipping popularity-protected columns
+    # when this is a Navidrome metadata sync.
+    update_parts = []
+    for k in keys:
+        if k == "id":
+            continue
+        if is_navidrome_sync and k in _POPULARITY_PROTECTED_COLUMNS:
+            continue
+        update_parts.append(f"{k}=EXCLUDED.{k}")
+
+    update_set = ", ".join(update_parts)
 
     query = text(f"""
         INSERT INTO tracks ({', '.join(keys)})

@@ -97,6 +97,7 @@ def build_track_payload(
     album_context: dict[str, Any] | None = None,
     writer_json: str | None = None,
     get_song: Callable[[str], dict[str, Any]] | None = None,
+    is_new_track: bool = True,
 ) -> dict[str, Any]:
     """Return a DB-ready payload for a Navidrome track.
 
@@ -111,6 +112,10 @@ def build_track_payload(
         writer_json: Optional writer JSON override. Existing callers can keep
             passing this.
         get_song: Optional getSong callback for extractor fallback.
+        is_new_track: When True (default), applies NAVIDROME_SCORE_DEFAULTS
+            to populate fresh scoring columns. When False, skips the defaults
+            so that existing popularity scores, star ratings, and single
+            detection results are preserved during an incremental metadata sync.
     """
     album_context = album_context or {}
     extracted = extracted or extract_track_metadata(track, get_song=get_song)
@@ -146,7 +151,12 @@ def build_track_payload(
         "album_context_unplugged": 1 if album_context.get("is_unplugged") else 0,
     }
 
-    payload.update(NAVIDROME_SCORE_DEFAULTS)
+    # ── Ingestion Overwrite Trap fix ──────────────────────────────────────
+    # Only apply scoring defaults for brand-new tracks that have no prior
+    # popularity data.  For existing tracks, the popularity pipeline owns
+    # these columns — a Navidrome metadata sync must never clobber them.
+    if is_new_track:
+        payload.update(NAVIDROME_SCORE_DEFAULTS)
 
     for field in EXTRACTED_STRING_FIELDS:
         payload[field] = extracted.get(field, "") or ""
