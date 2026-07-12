@@ -2475,7 +2475,7 @@ function saveFeaturesWeights() {
 </script>
 <script>
 // On page load, render features/weights section
-window.currentConfig = JSON.parse('{{ config|tojson | safe }}');
+window.currentConfig = {{ config|tojson | safe }};
 document.addEventListener('DOMContentLoaded', function() {
   // Render features/weights section
   if (window.currentConfig) {

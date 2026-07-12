@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 from api_clients.navidrome import NavidromeClient
 from db.repositories.tracks import upsert_track_payload
 from sqlalchemy import text
