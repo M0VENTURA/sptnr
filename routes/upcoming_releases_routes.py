@@ -11,7 +11,8 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
-from db.utils import get_db_connection, row_get
+from sqlalchemy import text
+from db.engine import db_session
 from helpers.response_helpers import _ok, _fail
 from api_clients.musicbrainz_http import MusicBrainzHttpClient, escape_lucene_special_chars
 
@@ -48,14 +49,10 @@ def _search_musicbrainz_release_group(artist: str, album: str, track: str = "") 
 def api_upcoming_releases():
     """Get upcoming releases with collection/recommended artist annotations."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM upcoming_releases ORDER BY release_date ASC NULLS LAST LIMIT 100"
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        return jsonify({"success": True, "releases": [dict(r) for r in rows]})
+        with db_session() as session:
+            result = session.execute(text("SELECT * FROM upcoming_releases ORDER BY release_date ASC NULLS LAST LIMIT 100"))
+            rows = result.fetchall()
+        return jsonify({"success": True, "releases": [dict(r._mapping) for r in rows]})
     except Exception as exc:
         logger.error("Failed to fetch upcoming releases: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
@@ -72,14 +69,9 @@ def api_match_upcoming_release(release_id):
         return jsonify({"error": "release_group_mbid is required"}), 400
 
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE upcoming_releases SET release_group_mbid = %s, match_source = %s WHERE id = %s",
-            (rg_mbid, source, release_id),
-        )
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            session.execute(text("UPDATE upcoming_releases SET release_group_mbid = :mbid, match_source = :source WHERE id = :id"),
+                          {"mbid": rg_mbid, "source": source, "id": release_id})
         return jsonify({"success": True, "release_group_mbid": rg_mbid})
     except Exception as exc:
         logger.error("Failed to match upcoming release %s: %s", release_id, exc, exc_info=True)
@@ -114,10 +106,9 @@ def api_scrape_upcoming_releases():
         # Parse table rows — basic extraction of artist and album names
         import re
         rows_found = 0
-        conn = get_db_connection()
-        cursor = conn.cursor()
 
         # Match table rows with artist and album cells
+        to_insert = []
         for match in re.finditer(
             r'<tr>.*?<td>(.*?)</td>.*?<td><a[^>]*>(.*?)</a>.*?</tr>',
             text, re.DOTALL,
@@ -125,19 +116,21 @@ def api_scrape_upcoming_releases():
             artist_name = re.sub(r'<[^>]+>', '', match.group(1)).strip()
             album_title = re.sub(r'<[^>]+>', '', match.group(2)).strip()
             if artist_name and album_title and len(artist_name) < 200:
-                try:
-                    cursor.execute(
-                        """INSERT INTO upcoming_releases (artist_name, album_name, source, created_at)
-                           VALUES (%s, %s, 'wikipedia', CURRENT_TIMESTAMP)
-                           ON CONFLICT DO NOTHING""",
-                        (artist_name, album_title),
-                    )
-                    rows_found += 1
-                except Exception:
-                    pass
+                to_insert.append((artist_name, album_title))
+                rows_found += 1
 
-        conn.commit()
-        conn.close()
+        if to_insert:
+            with db_session() as session:
+                for artist_name, album_title in to_insert:
+                    try:
+                        session.execute(
+                            text("""INSERT INTO upcoming_releases (artist_name, album_name, source, created_at)
+                                   VALUES (:artist, :album, 'wikipedia', CURRENT_TIMESTAMP)
+                                   ON CONFLICT DO NOTHING"""),
+                            {"artist": artist_name, "album": album_title},
+                        )
+                    except Exception:
+                        pass
 
         logger.info("Scraped %s upcoming releases from Wikipedia", rows_found)
         return jsonify({"success": True, "message": f"Scraped {rows_found} releases"})
@@ -150,18 +143,15 @@ def api_scrape_upcoming_releases():
 def api_refresh_upcoming_releases_musicbrainz():
     """Refresh upcoming releases with MusicBrainz metadata."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, artist_name, album_name FROM upcoming_releases WHERE release_group_mbid IS NULL ORDER BY id"
-        )
-        rows = cursor.fetchall()
+        with db_session() as session:
+            result = session.execute(text("SELECT id, artist_name, album_name FROM upcoming_releases WHERE release_group_mbid IS NULL ORDER BY id"))
+            rows = result.fetchall()
 
         updated = 0
         for row in rows:
-            release_id = row_get(row, "id", 0)
-            artist = row_get(row, "artist_name", 1) or ""
-            album = row_get(row, "album_name", 2) or ""
+            release_id = row[0]
+            artist = row[1] or ""
+            album = row[2] or ""
             if not artist or not album:
                 continue
 
@@ -172,18 +162,16 @@ def api_refresh_upcoming_releases_musicbrainz():
                     rg_mbid = best.get("id")
                     release_date = (best.get("first-release-date") or "")[:10]
                     primary_type = (best.get("primary-type") or best.get("type") or "")
-                    cursor.execute(
-                        """UPDATE upcoming_releases
-                           SET release_group_mbid = %s, release_date = %s, primary_type = %s
-                           WHERE id = %s""",
-                        (rg_mbid, release_date or None, primary_type, release_id),
-                    )
+                    with db_session() as session:
+                        session.execute(
+                            text("""UPDATE upcoming_releases
+                                   SET release_group_mbid = :mbid, release_date = :date, primary_type = :ptype
+                                   WHERE id = :id"""),
+                            {"mbid": rg_mbid, "date": release_date or None, "ptype": primary_type, "id": release_id},
+                        )
                     updated += 1
             except Exception:
                 continue
-
-        conn.commit()
-        conn.close()
 
         logger.info("Refreshed %s upcoming releases from MusicBrainz", updated)
         return jsonify({"success": True, "message": f"Refreshed {updated} releases"})
@@ -196,11 +184,8 @@ def api_refresh_upcoming_releases_musicbrainz():
 def api_clear_upcoming_releases():
     """Clear all upcoming releases from the database."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM upcoming_releases")
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            session.execute(text("DELETE FROM upcoming_releases"))
         return jsonify({"success": True})
     except Exception as exc:
         logger.error("Failed to clear upcoming releases: %s", exc, exc_info=True)

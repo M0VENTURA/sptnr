@@ -6,7 +6,8 @@ import logging
 
 from flask import jsonify, session
 
-from db.utils import get_db_connection, row_get
+from sqlalchemy import text
+from db.engine import db_session
 from routes.navidrome import get_navidrome_client, navidrome_bp
 
 
@@ -20,19 +21,17 @@ def api_navidrome_sync_ratings_now():
     if not client:
         return jsonify({"success": False, "error": "Navidrome not configured"}), 400
 
-    conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, stars FROM tracks WHERE stars IS NOT NULL AND stars > 0")
-        rows = cursor.fetchall() or []
+        with db_session() as session:
+            result = session.execute(text("SELECT id, stars FROM tracks WHERE stars IS NOT NULL AND stars > 0"))
+            rows = result.fetchall() or []
 
         synced = 0
         failed = 0
 
         for row in rows:
-            track_id = row_get(row, "id", 0)
-            stars = row_get(row, "stars", 1)
+            track_id = str(row[0])
+            stars = int(row[1]) if row[1] else 0
             if not track_id:
                 continue
             try:
@@ -53,6 +52,3 @@ def api_navidrome_sync_ratings_now():
     except Exception as exc:
         logging.error("Rating sync failed: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
-    finally:
-        if conn:
-            conn.close()

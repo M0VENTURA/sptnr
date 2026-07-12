@@ -10,7 +10,8 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request, session
 
-from db.utils import get_db_connection
+from sqlalchemy import text
+from db.engine import db_session
 from helpers.config_helpers import get_config
 from helpers.response_helpers import _ok, _fail
 
@@ -58,15 +59,13 @@ def api_musicbrainz_tags_album():
     if not (artist and album):
         return jsonify({"error": "artist and album required"}), 400
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, artist, title FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
-            (artist, album),
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        return jsonify({"success": True, "tracks": [dict(r) for r in rows]})
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT id, artist, title FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"),
+                {"artist": artist, "album": album},
+            )
+            rows = result.fetchall()
+        return jsonify({"success": True, "tracks": [dict(r._mapping) for r in rows]})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -118,15 +117,12 @@ def api_musicbrainz_tag_update():
     if not (artist and album and title and field_name):
         return jsonify({"error": "Missing required fields"}), 400
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            f"UPDATE tracks SET {field_name} = %s WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND title = %s",
-            (field_value, artist, album, title),
-        )
-        conn.commit()
-        conn.close()
-        return jsonify({"success": True, "updated": cursor.rowcount})
+        with db_session() as session:
+            result = session.execute(
+                text(f"UPDATE tracks SET {field_name} = :value WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album AND title = :title"),
+                {"value": field_value, "artist": artist, "album": album, "title": title},
+            )
+        return jsonify({"success": True, "updated": result.rowcount})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -156,17 +152,14 @@ def api_musicbrainz_batch_update():
     if not (artist and album and title and tags):
         return jsonify({"error": "Missing required fields"}), 400
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        set_parts = [f"{k} = %s" for k in tags]
-        params = list(tags.values()) + [artist, album, title]
-        cursor.execute(
-            f"UPDATE tracks SET {', '.join(set_parts)} WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND title = %s",
-            params,
-        )
-        conn.commit()
-        conn.close()
-        return jsonify({"success": True, "updated": cursor.rowcount})
+        with db_session() as session:
+            set_parts = [f"{k} = :{k}" for k in tags]
+            params = {**tags, "artist": artist, "album": album, "title": title}
+            result = session.execute(
+                text(f"UPDATE tracks SET {', '.join(set_parts)} WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album AND title = :title"),
+                params,
+            )
+        return jsonify({"success": True, "updated": result.rowcount})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -236,13 +229,9 @@ def api_musicbrainz_search_releases():
 def api_get_active_releases():
     """Get all active MusicBrainz releases with download progress."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM musicbrainz_releases WHERE status != 'finalized' ORDER BY created_at DESC LIMIT 50"
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        return jsonify({"success": True, "releases": [dict(r) for r in rows]})
+        with db_session() as session:
+            result = session.execute(text("SELECT * FROM musicbrainz_releases WHERE status != 'finalized' ORDER BY created_at DESC LIMIT 50"))
+            rows = result.fetchall()
+        return jsonify({"success": True, "releases": [dict(r._mapping) for r in rows]})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

@@ -48,14 +48,12 @@ def _coerce_optional_int(value: Any, allow_prefix: bool = False) -> int | None:
 def api_get_track(track_id):
     """Get track metadata by ID."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM tracks WHERE CAST(id AS TEXT) = %s", (track_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return jsonify({"error": "Track not found"}), 404
-        return jsonify({"success": True, "track": dict(row)})
+        with db_session() as session:
+            result = session.execute(text("SELECT * FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
+            row = result.fetchone()
+            if not row:
+                return jsonify({"error": "Track not found"}), 404
+            return jsonify({"success": True, "track": dict(row._mapping)})
     except Exception as exc:
         logger.error("Error fetching track %s: %s", track_id, exc)
         return jsonify({"error": str(exc)}), 500
@@ -69,14 +67,12 @@ def api_get_track(track_id):
 def api_track_audio(track_id):
     """Stream an audio file for in-browser playback."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT file_path FROM tracks WHERE CAST(id AS TEXT) = %s", (track_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row or not row.get("file_path"):
-            return Response("", status=404)
-        file_path = row["file_path"]
+        with db_session() as session:
+            result = session.execute(text("SELECT file_path FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
+            row = result.fetchone()
+            if not row or not row[0]:
+                return Response("", status=404)
+            file_path = row[0]
         if "__queued_for_download__" in file_path:
             return Response("", status=404)
         resolved = os.path.realpath(file_path)
@@ -111,27 +107,20 @@ def api_track_rename_file(track_id):
     """Rename/move a single track's file using the configured naming format."""
     try:
         from services.infrastructure.filesystem_service import get_import_destination_path
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT file_path, artist, album, title, track_number FROM tracks WHERE CAST(id AS TEXT) = %s", (track_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return jsonify({"success": False, "error": "Track not found"}), 404
-        metadata = dict(row)
-        src = metadata.get("file_path", "")
+        with db_session() as session:
+            result = session.execute(text("SELECT file_path, artist, album, title, track_number FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
+            row = result.fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "Track not found"}), 404
+            metadata = {"file_path": row[0], "artist": row[1], "album": row[2], "title": row[3], "track_number": row[4]}
+            src = metadata.get("file_path", "")
         if not src or not os.path.exists(src):
             return jsonify({"success": False, "error": "File not found"}), 404
         dest = get_import_destination_path(src, "", {})
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         os.rename(src, dest)
-        conn2 = get_db_connection()
-        try:
-            c2 = conn2.cursor()
-            c2.execute("UPDATE tracks SET file_path = %s WHERE CAST(id AS TEXT) = %s", (dest, track_id))
-            conn2.commit()
-        finally:
-            conn2.close()
+        with db_session() as session:
+            session.execute(text("UPDATE tracks SET file_path = :path WHERE CAST(id AS TEXT) = :id"), {"path": dest, "id": track_id})
         return jsonify({"success": True, "old_path": src, "new_path": dest})
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -145,19 +134,15 @@ def api_track_rename_file(track_id):
 def api_toggle_manual_single(track_id):
     """Toggle single_manual_override flag for a track."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT single_manual_override FROM tracks WHERE CAST(id AS TEXT) = %s", (track_id,))
-        row = cursor.fetchone()
-        if not row:
-            conn.close()
-            return jsonify({"error": "Track not found"}), 404
-        current = bool(row.get("single_manual_override", False)) if hasattr(row, "get") else bool(row[0] if row else False)
-        new_val = 0 if current else 1
-        cursor.execute("UPDATE tracks SET single_manual_override = %s WHERE CAST(id AS TEXT) = %s", (new_val, track_id))
-        conn.commit()
-        conn.close()
-        return jsonify({"success": True, "single_manual_override": bool(new_val)})
+        with db_session() as session:
+            result = session.execute(text("SELECT single_manual_override FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
+            row = result.fetchone()
+            if not row:
+                return jsonify({"error": "Track not found"}), 404
+            current = bool(row[0])
+            new_val = 0 if current else 1
+            session.execute(text("UPDATE tracks SET single_manual_override = :val WHERE CAST(id AS TEXT) = :id"), {"val": new_val, "id": track_id})
+            return jsonify({"success": True, "single_manual_override": bool(new_val)})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -169,19 +154,17 @@ def api_toggle_manual_single(track_id):
 @track_bp.route("/favourite", methods=["GET", "POST", "DELETE"])
 def api_track_favourite():
     """Check, add, or remove a track from favourites."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        if request.method == "GET":
-            track_id = request.args.get("track_id", "").strip()
-            if not track_id:
-                return jsonify({"error": "track_id required"}), 400
-            cursor.execute(
-                "SELECT 1 FROM bookmarks WHERE type = 'track_favourite' AND LOWER(name) = LOWER(%s) LIMIT 1",
-                (track_id,),
+    if request.method == "GET":
+        track_id = request.args.get("track_id", "").strip()
+        if not track_id:
+            return jsonify({"error": "track_id required"}), 400
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT 1 FROM bookmarks WHERE type = 'track_favourite' AND LOWER(name) = LOWER(:id) LIMIT 1"),
+                {"id": track_id},
             )
-            return jsonify({"success": True, "is_favourite": cursor.fetchone() is not None}), 200
-        elif request.method == "POST":
+            return jsonify({"success": True, "is_favourite": result.fetchone() is not None}), 200
+    elif request.method == "POST":
             data = request.json or {}
             track_id = str(data.get("track_id") or "").strip()
             if not track_id:
@@ -220,27 +203,24 @@ def api_track_update_metadata():
         track_id = str(data.get("track_id") or "").strip()
         if not track_id:
             return jsonify({"error": "track_id required"}), 400
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        allowed_fields = {
-            "title", "artist", "album", "album_artist", "composer", "writer", "arranger",
-            "mixer", "producer", "work", "genres", "stars", "is_single", "single_confidence",
-            "year", "track_number", "disc_number", "comment", "mbid", "isrc", "bpm",
-            "bitrate", "sample_rate", "is_cover", "alternate_take", "is_compilation",
-            "is_live", "is_acoustic", "is_remix",
-        }
-        updates = {}
-        for field in allowed_fields:
-            if field in data:
-                updates[field] = data[field]
-        if not updates:
-            return jsonify({"error": "No fields to update"}), 400
-        set_clause = ", ".join(f"{k} = %s" for k in updates)
-        params = list(updates.values()) + [track_id]
-        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE CAST(id AS TEXT) = %s", params)
-        conn.commit()
-        conn.close()
-        return jsonify({"success": True, "updated": list(updates.keys())})
+        with db_session() as session:
+            allowed_fields = {
+                "title", "artist", "album", "album_artist", "composer", "writer", "arranger",
+                "mixer", "producer", "work", "genres", "stars", "is_single", "single_confidence",
+                "year", "track_number", "disc_number", "comment", "mbid", "isrc", "bpm",
+                "bitrate", "sample_rate", "is_cover", "alternate_take", "is_compilation",
+                "is_live", "is_acoustic", "is_remix",
+            }
+            updates = {}
+            for field in allowed_fields:
+                if field in data:
+                    updates[field] = data[field]
+            if not updates:
+                return jsonify({"error": "No fields to update"}), 400
+            set_clause = ", ".join(f"{k} = :{k}" for k in updates)
+            params = {**updates, "id": track_id}
+            session.execute(text(f"UPDATE tracks SET {set_clause} WHERE CAST(id AS TEXT) = :id"), params)
+            return jsonify({"success": True, "updated": list(updates.keys())})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -256,31 +236,30 @@ def track_genre_recommendations():
     if not track_id:
         return jsonify({"error": "track_id required"}), 400
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres FROM tracks WHERE CAST(id AS TEXT) = %s",
-            (track_id,),
-        )
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return jsonify({"error": "Track not found"}), 404
-        genres = {}
-        for key in ["spotify_genres", "lastfm_tags", "musicbrainz_genres", "discogs_genres"]:
-            val = row.get(key) if hasattr(row, "get") else None
-            if val:
-                if isinstance(val, str):
-                    try:
-                        import json
-                        parsed = json.loads(val) if val.startswith("[") else [val]
-                    except json.JSONDecodeError:
-                        parsed = [g.strip() for g in val.replace("\\", ",").split(",") if g.strip()]
-                elif isinstance(val, list):
-                    parsed = val
-                else:
-                    parsed = []
-                genres[key] = parsed if isinstance(parsed, list) else [str(parsed)]
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres FROM tracks WHERE CAST(id AS TEXT) = :id"),
+                {"id": track_id},
+            )
+            row = result.fetchone()
+            if not row:
+                return jsonify({"error": "Track not found"}), 404
+            genres = {}
+            keys = ["spotify_genres", "lastfm_tags", "musicbrainz_genres", "discogs_genres"]
+            for idx, key in enumerate(keys):
+                val = row[idx]
+                if val:
+                    if isinstance(val, str):
+                        try:
+                            import json
+                            parsed = json.loads(val) if val.startswith("[") else [val]
+                        except json.JSONDecodeError:
+                            parsed = [g.strip() for g in val.replace("\\", ",").split(",") if g.strip()]
+                    elif isinstance(val, list):
+                        parsed = val
+                    else:
+                        parsed = []
+                    genres[key] = parsed if isinstance(parsed, list) else [str(parsed)]
         return jsonify({"success": True, "genres": genres})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -294,11 +273,8 @@ def track_genre_recommendations():
 def api_rescan_single_track(track_id):
     """Force a fresh single detection scan for one track."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE tracks SET single_detection_last_updated = NULL WHERE CAST(id AS TEXT) = %s", (track_id,))
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            session.execute(text("UPDATE tracks SET single_detection_last_updated = NULL WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
         return jsonify({"success": True, "message": "Single detection cleared for re-scan"})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -316,14 +292,11 @@ def api_track_apply_mb_release(track_id):
         release_mbid = str(data.get("release_mbid") or "").strip()
         if not release_mbid:
             return jsonify({"error": "release_mbid required"}), 400
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE tracks SET musicbrainz_album_mbid = %s WHERE CAST(id AS TEXT) = %s",
-            (release_mbid, track_id),
-        )
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            session.execute(
+                text("UPDATE tracks SET musicbrainz_album_mbid = :mbid WHERE CAST(id AS TEXT) = :id"),
+                {"mbid": release_mbid, "id": track_id},
+            )
         return jsonify({"success": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -337,15 +310,13 @@ def api_track_apply_mb_release(track_id):
 def api_track_mb_releases(track_id):
     """Fetch all MusicBrainz releases containing this track's recording."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT artist, title, mbid FROM tracks WHERE CAST(id AS TEXT) = %s", (track_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return jsonify({"error": "Track not found"}), 404
-        artist = row.get("artist") if hasattr(row, "get") else row[1]
-        title = row.get("title") if hasattr(row, "get") else row[2]
+        with db_session() as session:
+            result = session.execute(text("SELECT artist, title, mbid FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
+            row = result.fetchone()
+            if not row:
+                return jsonify({"error": "Track not found"}), 404
+            artist = row[0]
+            title = row[1]
         import requests
         from urllib.parse import quote
         headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
@@ -372,11 +343,8 @@ def api_track_match_missing():
         mb_title = str(data.get("mb_title") or "").strip()
         if not track_id or not mb_title:
             return jsonify({"error": "track_id and mb_title required"}), 400
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE tracks SET title = %s WHERE CAST(id AS TEXT) = %s", (mb_title, track_id))
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            session.execute(text("UPDATE tracks SET title = :title WHERE CAST(id AS TEXT) = :id"), {"title": mb_title, "id": track_id})
         return jsonify({"success": True, "updated_title": mb_title})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -395,25 +363,22 @@ def api_track_ignore_mb_field():
         field = str(data.get("field") or "").strip()
         if not track_id or not field:
             return jsonify({"error": "track_id and field required"}), 400
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT mb_ignored_fields FROM tracks WHERE CAST(id AS TEXT) = %s", (track_id,))
-        row = cursor.fetchone()
-        import json as _json
-        ignored = []
-        if row:
-            raw = row.get("mb_ignored_fields") if hasattr(row, "get") else row[0]
-            if raw:
-                try:
-                    ignored = _json.loads(raw) if isinstance(raw, str) else list(raw) if isinstance(raw, (list, tuple)) else []
-                except (TypeError, _json.JSONDecodeError):
-                    ignored = []
-        if field not in ignored:
-            ignored.append(field)
-        cursor.execute("UPDATE tracks SET mb_ignored_fields = %s WHERE CAST(id AS TEXT) = %s",
-                       (_json.dumps(ignored), track_id))
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            result = session.execute(text("SELECT mb_ignored_fields FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
+            row = result.fetchone()
+            import json as _json
+            ignored = []
+            if row:
+                raw = row[0]
+                if raw:
+                    try:
+                        ignored = _json.loads(raw) if isinstance(raw, str) else list(raw) if isinstance(raw, (list, tuple)) else []
+                    except (TypeError, _json.JSONDecodeError):
+                        ignored = []
+            if field not in ignored:
+                ignored.append(field)
+            session.execute(text("UPDATE tracks SET mb_ignored_fields = :fields WHERE CAST(id AS TEXT) = :id"),
+                           {"fields": _json.dumps(ignored), "id": track_id})
         return jsonify({"success": True, "ignored_fields": ignored})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

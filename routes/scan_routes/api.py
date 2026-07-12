@@ -18,7 +18,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from flask import jsonify, request
-from db.utils import get_db_connection
+from sqlalchemy import text
+from db.engine import db_session
 from routes.scan_routes import scans_bp
 from routes.scan_routes._common import run_async
 from services.scanning.pipelines.popularity_pipeline import run_popularity_mode

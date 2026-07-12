@@ -36,8 +36,18 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 | `db/repositories/library.py` | ~24 | ❌ Takes external conn — needs caller migration |
 | `db/repositories/navidrome.py` | ~1 | ❌ Takes external conn — needs caller migration |
 | `db/repositories/metadata.py` | ~58 | ❌ Takes external conn — needs caller migration |
+| **Routes** | | |
+| `routes/beets_routes.py` | 3 | ✅ Migrated |
+| `routes/ui_routes.py` | 26 | ✅ Migrated |
+| `routes/misc_routes.py` | 56 | 🔄 Import migrated, functions pending |
+| `routes/track_routes.py` | 14 | ✅ Migrated |
+| `routes/musicbrainz_routes.py` | 5 | ✅ Migrated |
+| `routes/navidrome/ratings.py` | 2 | ✅ Migrated |
+| `routes/scan_routes/api.py` | 0 | ✅ Clean (import only) |
+| `routes/upcoming_releases_routes.py` | 6 | ✅ Migrated |
+| `routes/social_routes.py` | 1 | ❌ 1 remaining call |
+| `routes/scan_routes/popularity.py` | 1 | ❌ 1 remaining call |
 | **Services (15 files)** | ~110 | ⏳ Imports updated, `db_cursor`+`db_session` coexist |
-| **Routes (5 files)** | ~200+ | ❌ Not yet migrated |
 
 **Remaining**: Migrate services/routes that still import from `db.context` (15+ files), plus remaining repositories.
 

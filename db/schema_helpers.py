@@ -75,25 +75,6 @@ def get_postgres_column_types(conn_or_session: Any, table_name: str, column_name
             return {str(row[0]): str(row[1]) for row in cursor.fetchall()}
         finally:
             cursor.close()
-            FROM information_schema.columns
-            WHERE table_schema = current_schema()
-              AND table_name = %s
-              AND column_name = ANY(%s)
-            """,
-            (table_name, column_names),
-        )
-        result: dict[str, str] = {}
-        for row in cursor.fetchall() or []:
-            column_name = row_get(row, "column_name", 0)
-            data_type = row_get(row, "data_type", 1)
-            if column_name:
-                result[str(column_name)] = str(data_type or "").lower()
-        return result
-    finally:
-        try:
-            cursor.close()
-        except Exception:
-            pass
 
 
 def normalize_track_flag_payload(conn: Any, flag_values: dict[str, Any]) -> dict[str, Any]:
