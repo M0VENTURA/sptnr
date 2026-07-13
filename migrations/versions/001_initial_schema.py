@@ -63,6 +63,7 @@ def upgrade() -> None:
         sa.Column("listenbrainz_genres", sa.Text(), nullable=True),
         sa.Column("discogs_genres", sa.Text(), nullable=True),
         sa.Column("musicbrainz_genres", sa.Text(), nullable=True),
+        sa.Column("essentia_genres", sa.Text(), nullable=True),
         sa.Column("tags_last_updated", sa.Text(), nullable=True),
         sa.Column("file_path", sa.Text(), nullable=True),
         sa.Column("duration", sa.Float(), nullable=True),
