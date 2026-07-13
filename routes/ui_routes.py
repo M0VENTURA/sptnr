@@ -392,6 +392,8 @@ async def artists():
 @ui_bp.route("/artist/<path:name>")
 async def artist_detail(name):
     name = unquote(name)
+    cfg = get_config()
+
     with db_session() as session:
         result = session.execute(text("""
             SELECT MIN(album) as album, COUNT(*) as track_count, AVG(stars) as avg_stars,
@@ -442,6 +444,8 @@ async def artist_detail(name):
         "pages/artist_detail.html", artist_name=name, albums=albums, stats=stats,
         top_tracks=top_tracks, genre_sources=genre_sources,
         albums_by_category=albums_by_category,
+        qbit_config=cfg.get("qbittorrent", {}),
+        slskd_config=cfg.get("slskd", {}),
     )
 
 
@@ -449,6 +453,8 @@ async def artist_detail(name):
 async def album_detail(artist, album):
     artist = unquote(artist)
     album = unquote(album)
+    cfg = get_config()
+
     with db_session() as session:
         result = session.execute(
             text("SELECT * FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album ORDER BY disc_number, track_number"),
@@ -467,11 +473,15 @@ async def album_detail(artist, album):
         "pages/album_detail.html",
         artist=artist, album=album, tracks=tracks,
         genre_sources=genre_sources,
+        qbit_config=cfg.get("qbittorrent", {}),
+        slskd_config=cfg.get("slskd", {}),
     )
 
 
 @ui_bp.route("/track/<track_id>")
 async def track_detail(track_id):
+    cfg = get_config()
+
     with db_session() as session:
         result = session.execute(text("SELECT * FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
         row = result.fetchone()
@@ -489,6 +499,8 @@ async def track_detail(track_id):
 
     return await render_template(
         "pages/track_detail.html", track=track, genre_sources=genre_sources,
+        qbit_config=cfg.get("qbittorrent", {}),
+        slskd_config=cfg.get("slskd", {}),
     )
 
 
