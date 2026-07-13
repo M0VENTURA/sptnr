@@ -1321,12 +1321,13 @@ function _addMbDownloadToSession(releaseId, releaseTitle, artist, method, persis
 
 async function loadMbSessionSelector() {
   try {
-    const data = await fetchJsonOrThrow('/api/playlist-downloads');
+    const resp = await fetch('/api/playlist-downloads');
+    if (!resp.ok) return;
+    const data = await resp.json();
     if (!data.sessions) return;
     const selector = document.getElementById('mbSessionSelector');
     if (!selector) return;
     const createOption = selector.querySelector('option[value="create"]');
-    // Keep the first two static options: "None" (index 0) and "Create new" (index 1)
     Array.from(selector.options).forEach((opt, i) => { if (i > 1) opt.remove(); });
     data.sessions.filter(s => s.status !== 'completed' && s.status !== 'cancelled').forEach(s => {
       const opt = document.createElement('option');
@@ -1335,7 +1336,7 @@ async function loadMbSessionSelector() {
       selector.insertBefore(opt, createOption);
     });
   } catch (e) {
-    console.error('Error loading sessions:', e);
+    // Session selector is non-critical; silently ignore
   }
 }
 

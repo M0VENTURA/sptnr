@@ -1174,52 +1174,51 @@ async function refreshUpcomingReleasesMonitor() {
   }
 }
 
-async function searchMusicBrainzRelease(event, artist, album, track) {
+window.searchMusicBrainzRelease = function(event, artist, album, track) {
   if (event) { event.preventDefault(); event.stopPropagation(); }
   var modalEl = document.getElementById('musicBrainzModal');
-  if (!modalEl) { alert('Search UI not available on this page.'); return; }
+  if (!modalEl) { alert('Search modal element not found on the page.'); return; }
   try { new bootstrap.Modal(modalEl).show(); } catch(e) { alert('Could not open search modal: ' + e.message); return; }
   var resultsEl = document.getElementById('mbSearchResults');
   var inputEl = document.getElementById('mbSearchInput');
   var query = [artist, album, track].filter(Boolean).join(' ');
   if (inputEl) inputEl.value = query || '';
   if (resultsEl) resultsEl.innerHTML = '<div class="col-12 text-center py-4"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Searching...</span></div><p class="mt-2 text-muted">Searching MusicBrainz...</p></div>';
-  try {
-    var resp = await fetch('/api/upcoming-releases/search-musicbrainz', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({artist: artist || '', album: album || '', track: track || ''})
-    });
-    var data = await resp.json();
-    if (resultsEl) {
-      if (data.success && data.results && data.results.length > 0) {
-        resultsEl.innerHTML = data.results.map(function(r) {
-          var year = (r.date || r.year || '').split('-')[0] || '?';
-          var type = r.primary_type || r.type || 'Release';
-          var artistCredit = r.artist || r['artist-credit'] || '?';
-          return '<div class="col-12 col-md-6 col-lg-4 mb-2"><div class="card h-100"><div class="card-body p-2"><h6 class="card-title mb-1">' + (r.title || '').replace(/[<>&"']/g,'') + '</h6><p class="card-text small text-muted mb-1">' + (artistCredit || '').replace(/[<>&"']/g,'') + ' &middot; ' + year + ' &middot; ' + (type || '').replace(/[<>&"']/g,'') + '</p></div></div></div>';
-        }).join('');
-      } else {
-        resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-4"><p>No results found for "' + (query || '').replace(/[<>&"']/g,'') + '"</p></div>';
-      }
+  fetch('/api/upcoming-releases/search-musicbrainz', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({artist: artist || '', album: album || '', track: track || ''})
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (!resultsEl) return;
+    if (data.success && data.results && data.results.length > 0) {
+      resultsEl.innerHTML = data.results.map(function(r) {
+        var year = (r.date || r.year || '').split('-')[0] || '?';
+        var type = r.primary_type || r.type || 'Release';
+        var a = r.artist || r['artist-credit'] || '?';
+        return '<div class="col-12 col-md-6 col-lg-4 mb-2"><div class="card h-100"><div class="card-body p-2"><h6 class="card-title mb-1">' + (r.title||'').replace(/[<>&"']/g,'') + '</h6><p class="card-text small text-muted mb-1">' + (a||'').replace(/[<>&"']/g,'') + ' · ' + year + ' · ' + (type||'').replace(/[<>&"']/g,'') + '</p></div></div></div>';
+      }).join('');
+    } else {
+      resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-4"><p>No results found for "' + (query||'').replace(/[<>&"']/g,'') + '"</p></div>';
     }
-  } catch (err) {
-    if (resultsEl) resultsEl.innerHTML = '<div class="col-12 text-center py-4"><p class="text-danger">Search failed: ' + (err.message || '').replace(/[<>&"']/g,'') + '</p></div>';
-  }
-}
+  })
+  .catch(function(err) {
+    if (resultsEl) resultsEl.innerHTML = '<div class="col-12 text-center py-4"><p class="text-danger">Search failed: ' + (err.message||'').replace(/[<>&"']/g,'') + '</p></div>';
+  });
+};
 
-function searchMusicBrainzForQueue() {
-  const artist = document.getElementById('queueArtist').value.trim();
-  const album = document.getElementById('queueAlbum').value.trim();
-  const track = document.getElementById('queueTitle').value.trim();
-
+window.searchMusicBrainzForQueue = function() {
+  var artist = (document.getElementById('queueArtist') || {}).value || '';
+  var album = (document.getElementById('queueAlbum') || {}).value || '';
+  var track = (document.getElementById('queueTitle') || {}).value || '';
+  artist = artist.trim(); album = album.trim(); track = track.trim();
   if (!artist && !album && !track) {
     alert('Please enter at least one field (artist, album, or song title) before searching MusicBrainz.');
     return;
   }
-
-  searchMusicBrainzRelease(null, artist, album, track);
-}
+  window.searchMusicBrainzRelease(null, artist, album, track);
+};
 
 async function discoverFiles(clickEvent) {
   try {
@@ -2903,7 +2902,7 @@ function getTrackFinalLocation(track, group) {
   const year = track?.release_year || track?.year || group?.year || '';
   const trackNumber = track?.track_number || '';
   const trackArtist = track?.artist || '';
-  const ext = _getTrackFileExtension(track);
+  var ext = _getTrackFileExtension(track);
 
   if (albumArtist && album && title) {
     const tn = trackNumber ? String(trackNumber).padStart(2, '0') : '';
@@ -2928,8 +2927,8 @@ function getTrackFinalLocation(track, group) {
     trackNum = '00';
   }
 
-  // Extract file extension from available paths
-  let ext = '';
+  // Extract file extension from available paths (ext already declared above)
+  if (!ext) ext = '';
   const pathWithExt = track?.file_path || track?.found_filename || track?.source_file_path || '';
   if (pathWithExt) {
     const match = String(pathWithExt).match(/\.([a-zA-Z0-9]{2,5})$/);
@@ -2938,8 +2937,8 @@ function getTrackFinalLocation(track, group) {
     }
   }
 
-  const trackArtist = track?.artist || artist || 'Unknown Artist';
-  return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${trackNum}. ${trackArtist} - ${title}${ext}`;
+  var trackArtist2 = track?.artist || artist || 'Unknown Artist';
+  return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${trackNum}. ${trackArtist2} - ${title}${ext}`;
 }
 
 function isTrackInFinalLocation(track) {

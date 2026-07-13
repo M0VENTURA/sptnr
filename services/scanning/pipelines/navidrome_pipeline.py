@@ -87,16 +87,17 @@ def run_navidrome_import_scan(
                     last_marker = checkpoint.get("scan_marker")
                     if last_marker is not None and current_marker == last_marker:
                         # Double-check: if DB has no tracks, don't skip
+                        _db_has_tracks = True
                         try:
                             from db.engine import db_session
                             from sqlalchemy import text as sa_text
                             with db_session() as session:
-                                count = session.execute(sa_text("SELECT COUNT(*) FROM tracks")).scalar() or 0
-                                if count == 0:
-                                    logging.info("DB empty despite marker — forcing import")
-                                    break
+                                _count = session.execute(sa_text("SELECT COUNT(*) FROM tracks")).scalar() or 0
+                                _db_has_tracks = _count > 0
                         except Exception:
                             pass
+                        if not _db_has_tracks:
+                            logging.info("DB empty despite marker — forcing import")
                         else:
                             logging.info(
                                 "Navidrome scan marker unchanged (%s) — skipping, nothing to import",
