@@ -41,7 +41,7 @@ def start(total_items: int | None = None):
         })
 
 
-def update(stage=None, progress=None, message=None, current_item=None, processed=None):
+def update(stage=None, progress=None, message=None, current_item=None, processed=None, total_items=None):
     with _lock:
         if stage is not None:
             _state["current_stage"] = stage
@@ -53,6 +53,8 @@ def update(stage=None, progress=None, message=None, current_item=None, processed
             _state["current_item"] = current_item
         if processed is not None:
             _state["processed_items"] = processed
+        if total_items is not None:
+            _state["total_items"] = total_items
 
 
 def finish(success=True):
