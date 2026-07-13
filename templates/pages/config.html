@@ -19,7 +19,7 @@
       <p class="text-muted mb-0">Edit settings below or use the setup wizard for guided configuration.</p>
     </div>
     <div class="col-12 col-md-auto ms-md-auto d-flex gap-2 flex-wrap">
-      <a href="{{ url_for('setup') }}" class="btn btn-outline-primary btn-sm">
+      <a href="{{ url_for('ui.setup') }}" class="btn btn-outline-primary btn-sm">
         <i class="bi bi-stars"></i> <span class="d-none d-sm-inline">Setup Wizard</span>
       </a>
       <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#rawYamlModal">
@@ -1485,7 +1485,7 @@
 
   <!-- Save Button -->
   <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
-    <button type="button" class="btn btn-outline-secondary" id="cancelBtn" data-dashboard-url="{{ url_for('dashboard') }}">Cancel</button>
+    <button type="button" class="btn btn-outline-secondary" id="cancelBtn" data-dashboard-url="{{ url_for('ui.dashboard') }}">Cancel</button>
     <button type="button" class="btn btn-primary btn-lg" id="saveBtn" data-save-url="{{ url_for('config_save_json') }}" onclick="saveConfig()">
       <i class="bi bi-check-circle"></i> Save Configuration
     </button>

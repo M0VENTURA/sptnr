@@ -57,7 +57,7 @@
             {% with messages = get_flashed_messages(with_categories=true) %}
                 {% include 'layouts/_flash_messages.html' %}
             {% endwith %}
-            <form method="post" action="{{ url_for('login') }}">
+            <form method="post" action="{{ url_for('ui.login') }}">
                 <div class="form-floating">
                     <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autofocus>
                     <label for="username"><i class="bi bi-person"></i> Username</label>

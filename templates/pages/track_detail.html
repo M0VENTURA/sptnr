@@ -7,7 +7,7 @@
     {% set artist_parts = track.artist|split_artist_collabs %}
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
-            <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('ui.dashboard') }}">Dashboard</a></li>
             <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
             <li class="breadcrumb-item">
                 {% for artist_name in artist_parts %}
