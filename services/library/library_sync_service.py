@@ -216,12 +216,7 @@ def run_bulk_commit(tracks: list[dict[str, Any]]) -> int:
         return len(tracks)
     except Exception as exc:
         logger.error("Bulk commit failed: %s", exc)
-            conn.rollback()
-        except Exception:
-            pass
         return 0
-    finally:
-        conn.close()
 
 
 def get_candidate_artists(client: NavidromeClient) -> dict[str, str]:
