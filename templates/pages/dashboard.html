@@ -159,6 +159,9 @@
         <a href="/config" class="btn btn-outline-secondary flex-grow-1">
             <i class="bi bi-gear"></i> <span class="d-none d-sm-inline">Settings</span>
         </a>
+        <button onclick="showMusicBrainzModal()" class="btn btn-outline-info flex-grow-1">
+            <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Search MusicBrainz</span>
+        </button>
     </div>
 
     <!-- Upcoming & Recent Releases Banner -->
@@ -218,29 +221,36 @@
         </div>
     </div>
 
-    <!-- Recent Scans (Dynamic JS-rendered) -->
+    <!-- Upcoming Releases Table -->
     <div class="card mb-4">
-        <div class="card-header">
+        <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">
-                <i class="bi bi-clock-history"></i> Recent Scans (Scrollable 100-item View)
+                <i class="bi bi-calendar-event"></i> Upcoming Releases
             </h5>
+            <div class="d-flex gap-2 align-items-center">
+                <small class="text-muted" id="upcomingTableCount"></small>
+                <div class="btn-group btn-group-sm" role="group">
+                    <button type="button" class="btn btn-info" id="upcomingTableFilterAll" onclick="setUpcomingTableFilter('all')">All</button>
+                    <button type="button" class="btn btn-outline-info" id="upcomingTableFilterCollection" onclick="setUpcomingTableFilter('collection')">Collection</button>
+                    <button type="button" class="btn btn-outline-info" id="upcomingTableFilterRecommended" onclick="setUpcomingTableFilter('recommended')">Recommended</button>
+                </div>
+                <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-info">
+                    <i class="bi bi-arrow-right"></i> Manage
+                </a>
+            </div>
         </div>
         <div class="table-responsive" style="height: 400px; overflow-y: auto; position: relative;">
             <table class="table table-hover mb-0" style="margin-bottom: 0;">
                 <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
                     <tr>
-                        <th style="width: 25%; min-width: 120px;">
-                            <i class="bi bi-person"></i> Artist
-                        </th>
-                        <th style="width: 25%; min-width: 120px;">
-                            <i class="bi bi-disc"></i> Album
-                        </th>
-                        <th style="width: 25%; min-width: 140px;">Scan Types</th>
-                        <th style="width: 15%; text-align: right; min-width: 100px;">Last Scanned</th>
-                        <th style="width: 10%; text-align: center; min-width: 80px;">Actions</th>
+                        <th style="width: 28%; min-width: 120px;"><i class="bi bi-person"></i> Artist</th>
+                        <th style="width: 28%; min-width: 120px;"><i class="bi bi-disc"></i> Album</th>
+                        <th style="width: 15%; min-width: 100px;"><i class="bi bi-calendar"></i> Release Date</th>
+                        <th style="width: 12%; min-width: 80px;">Source</th>
+                        <th style="width: 17%; text-align: center; min-width: 120px;">Actions</th>
                     </tr>
                 </thead>
-                <tbody id="recent-scans-body">
+                <tbody id="upcoming-releases-body">
                 </tbody>
             </table>
         </div>
@@ -579,6 +589,7 @@ function _upcomingFilterEndpoint() {
     var params = new URLSearchParams();
     if (dashboardUpcomingFilter === 'collection') params.set('collection', 'true');
     else if (dashboardUpcomingFilter === 'recommended') params.set('recommended', 'true');
+    params.set('include_queue', 'true');
     return '/api/upcoming-releases?' + params.toString();
 }
 
@@ -689,6 +700,114 @@ async function addUpcomingReleaseToQueueDashboard(encodedArtist, encodedAlbum, e
     }
 }
 
+// ===== Upcoming Releases Table =====
+var dashboardTableFilter = 'all';
+
+function renderUpcomingReleasesTable(releases) {
+    var body = document.getElementById('upcoming-releases-body');
+    if (!body) return;
+
+    var countEl = document.getElementById('upcomingTableCount');
+    if (countEl) countEl.textContent = releases.length + ' release(s)';
+
+    if (!releases || releases.length === 0) {
+        body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No upcoming releases found.</td></tr>';
+        return;
+    }
+
+    var rows = releases.map(function(r) {
+        var releaseDate = r.release_date || 'TBA';
+        var sourceRaw = String(r.source || '').toLowerCase();
+        var sourceBadge = sourceRaw.indexOf('wiki') !== -1
+            ? '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>'
+            : '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>';
+
+        var isUpcoming = new Date(releaseDate) > new Date();
+        var dateBadge = isUpcoming
+            ? '<span class="badge bg-success">Upcoming</span>'
+            : '<span class="badge bg-primary">Recent</span>';
+
+        var colBadge = r.artist_in_collection ? '<span class="badge bg-success ms-1" title="Artist in collection"><i class="bi bi-check"></i></span>' : '';
+        var recBadge = r.artist_in_recommended ? '<span class="badge bg-warning text-dark ms-1" title="Recommended artist"><i class="bi bi-star"></i></span>' : '';
+        var inQueue = r.in_queue === true || r.queue_status === 'queued';
+
+        var eArtist = encodeURIComponent(r.artist_name || '');
+        var eAlbum = encodeURIComponent(r.album_name || '');
+        var eDate = encodeURIComponent(r.release_date || '');
+        var sArtist = JSON.stringify(String(r.artist_name || ''));
+        var sAlbum = JSON.stringify(String(r.album_name || ''));
+        var searchBtn = '<button class="btn btn-sm btn-outline-info" title="Search on MusicBrainz" onclick="showMusicBrainzModal();setTimeout(function(){populateMusicBrainzSearch(' + sArtist + ', ' + sAlbum + ')},300)"><i class="bi bi-search"></i></button>';
+        var queueBtn = inQueue
+            ? '<button class="btn btn-sm btn-outline-success" disabled title="Already in queue"><i class="bi bi-check2-circle"></i></button>'
+            : '<button class="btn btn-sm btn-outline-primary" title="Add to queue" onclick="addUpcomingReleaseToQueueDashboard(\'' + eArtist + '\', \'' + eAlbum + '\', \'' + eDate + '\', this)"><i class="bi bi-plus-circle"></i></button>';
+
+        return '<tr>' +
+            '<td>' + escapeHtml(r.artist_name) + colBadge + recBadge + '</td>' +
+            '<td>' + escapeHtml(r.album_name) + '</td>' +
+            '<td>' + escapeHtml(releaseDate) + ' ' + dateBadge + '</td>' +
+            '<td>' + sourceBadge + '</td>' +
+            '<td class="text-center"><div class="d-flex gap-1 justify-content-center">' + searchBtn + queueBtn + '</div></td>' +
+            '</tr>';
+    }).join('');
+
+    body.innerHTML = rows;
+}
+
+function _upcomingTableFilterEndpoint() {
+    var params = new URLSearchParams();
+    if (dashboardTableFilter === 'collection') params.set('collection', 'true');
+    else if (dashboardTableFilter === 'recommended') params.set('recommended', 'true');
+    params.set('include_queue', 'true');
+    return '/api/upcoming-releases?' + params.toString();
+}
+
+function _renderUpcomingTableFilterButtons() {
+    var ids = { all: 'upcomingTableFilterAll', collection: 'upcomingTableFilterCollection', recommended: 'upcomingTableFilterRecommended' };
+    Object.keys(ids).forEach(function(key) {
+        var btn = document.getElementById(ids[key]);
+        if (!btn) return;
+        var active = key === dashboardTableFilter;
+        btn.classList.toggle('btn-info', active);
+        btn.classList.toggle('btn-outline-info', !active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+}
+
+function setUpcomingTableFilter(filter) {
+    var allowed = ['all', 'collection', 'recommended'];
+    dashboardTableFilter = allowed.indexOf(filter) !== -1 ? filter : 'all';
+    _renderUpcomingTableFilterButtons();
+    try { sessionStorage.setItem('dashboardTableFilter', dashboardTableFilter); } catch(e) {}
+    loadUpcomingReleasesTable();
+}
+
+async function loadUpcomingReleasesTable() {
+    try {
+        var endpoint = _upcomingTableFilterEndpoint();
+        var resp = await fetch(endpoint);
+        var data = await resp.json();
+        var releases = data.releases || [];
+
+        // If filter is 'collection', show only releases where artist is in collection
+        if (dashboardTableFilter === 'collection' && releases.some(function(r) { return r.artist_in_collection !== undefined; })) {
+            releases = releases.filter(function(r) { return r.artist_in_collection; });
+        } else if (dashboardTableFilter === 'recommended' && releases.some(function(r) { return r.artist_in_recommended !== undefined; })) {
+            releases = releases.filter(function(r) { return r.artist_in_recommended; });
+        }
+
+        // Sort by release date (ascending)
+        releases.sort(function(a, b) {
+            return (a.release_date || '9999-12-31').localeCompare(b.release_date || '9999-12-31');
+        });
+
+        renderUpcomingReleasesTable(releases);
+    } catch (error) {
+        console.error('Error loading upcoming releases table:', error);
+        var body = document.getElementById('upcoming-releases-body');
+        if (body) body.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Error loading releases</td></tr>';
+    }
+}
+
 // ===== Unified Log =====
 var logPaused = false;
 document.addEventListener('DOMContentLoaded', function() {
@@ -744,6 +863,15 @@ document.addEventListener('DOMContentLoaded', function() {
     } catch(e) {}
     setTimeout(loadUpcomingReleasesBanner, 200);
     setInterval(loadUpcomingReleasesBanner, 30 * 60 * 1000);
+
+    // Upcoming releases table
+    try {
+        var storedTableFilter = sessionStorage.getItem('dashboardTableFilter');
+        if (storedTableFilter) dashboardTableFilter = storedTableFilter;
+    } catch(e) {}
+    _renderUpcomingTableFilterButtons();
+    setTimeout(loadUpcomingReleasesTable, 400);
+    setInterval(loadUpcomingReleasesTable, 30 * 60 * 1000);
 
     // Start polling
     updateAll();

@@ -47,12 +47,106 @@ def _search_musicbrainz_release_group(artist: str, album: str, track: str = "") 
 
 @upcoming_bp.route("", methods=["GET"])
 def api_upcoming_releases():
-    """Get upcoming releases with collection/recommended artist annotations."""
+    """Get upcoming releases with collection/recommended artist annotations.
+
+    Query params:
+        collection (str): If "true", only include releases where artist is in collection.
+        recommended (str): If "true", only include releases where artist is recommended.
+        include_queue (str): If "true", include in_queue flag per release.
+    """
     try:
+        filter_collection = request.args.get("collection", "").strip().lower() == "true"
+        filter_recommended = request.args.get("recommended", "").strip().lower() == "true"
+        include_queue = request.args.get("include_queue", "").strip().lower() == "true"
+
         with db_session() as session:
             result = session.execute(text("SELECT * FROM upcoming_releases ORDER BY release_date ASC NULLS LAST LIMIT 100"))
             rows = result.fetchall()
-        return jsonify({"success": True, "releases": [dict(r._mapping) for r in rows]})
+
+        releases = [dict(r._mapping) for r in rows]
+        artist_names = list({r.get("artist_name", "") or "" for r in releases if r.get("artist_name")})
+
+        # Batch: artists in collection
+        artists_in_collection: set[str] = set()
+        if artist_names:
+            try:
+                with db_session() as session:
+                    placeholders = ", ".join(f":a{i}" for i in range(len(artist_names)))
+                    params = {f"a{i}": name.lower() for i, name in enumerate(artist_names)}
+                    batch = session.execute(
+                        text(f"SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS aname FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) IN ({placeholders})"),
+                        params,
+                    )
+                    artists_in_collection = {row[0] for row in batch.fetchall()}
+            except Exception:
+                pass
+
+        # Batch: albums in collection (artist + album pairs)
+        album_pairs = [(r.get("artist_name", "") or "", r.get("album_name", "") or "")
+                       for r in releases if r.get("artist_name") and r.get("album_name")]
+        albums_in_collection: set[tuple[str, str]] = set()
+        if album_pairs:
+            try:
+                with db_session() as session:
+                    pair_conditions = " OR ".join(
+                        f"(LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = :a{i} AND LOWER(album) = :b{i})"
+                        for i in range(len(album_pairs))
+                    )
+                    pair_params = {}
+                    for i, (a, b) in enumerate(album_pairs):
+                        pair_params[f"a{i}"] = a.lower()
+                        pair_params[f"b{i}"] = b.lower()
+                    batch2 = session.execute(
+                        text(f"SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)), LOWER(album) FROM tracks WHERE {pair_conditions}"),
+                        pair_params,
+                    )
+                    albums_in_collection = {(row[0], row[1]) for row in batch2.fetchall()}
+            except Exception:
+                pass
+
+        # Batch: queue status
+        queued_pairs: set[tuple[str, str]] = set()
+        if include_queue and album_pairs:
+            try:
+                with db_session() as session:
+                    q_conditions = " OR ".join(
+                        f"(LOWER(artist) = :qa{i} AND LOWER(album) = :qb{i})"
+                        for i in range(len(album_pairs))
+                    )
+                    q_params = {}
+                    for i, (a, b) in enumerate(album_pairs):
+                        q_params[f"qa{i}"] = a.lower()
+                        q_params[f"qb{i}"] = b.lower()
+                    batch3 = session.execute(
+                        text(f"SELECT DISTINCT LOWER(artist), LOWER(album) FROM download_queue WHERE ({q_conditions}) AND status IN ('queued', 'downloading', 'processing')"),
+                        q_params,
+                    )
+                    queued_pairs = {(row[0], row[1]) for row in batch3.fetchall()}
+            except Exception:
+                pass
+
+        # Annotate each release using batch data
+        for release in releases:
+            artist_name = (release.get("artist_name") or "").lower()
+            album_name = (release.get("album_name") or "").lower()
+            release["artist_in_collection"] = artist_name in artists_in_collection
+            release["album_in_collection"] = (artist_name, album_name) in albums_in_collection
+            release["artist_in_recommended"] = False
+            if include_queue and artist_name and album_name:
+                in_queue = (artist_name, album_name) in queued_pairs
+                release["in_queue"] = in_queue
+                release["queue_status"] = "queued" if in_queue else None
+            else:
+                release["in_queue"] = False
+                release["queue_status"] = None
+
+        # Apply collection filter if requested
+        if filter_collection:
+            releases = [r for r in releases if r.get("artist_in_collection")]
+        elif filter_recommended:
+            releases = [r for r in releases if r.get("artist_in_recommended")]
+
+        return jsonify({"success": True, "releases": releases})
     except Exception as exc:
         logger.error("Failed to fetch upcoming releases: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
