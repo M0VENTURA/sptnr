@@ -66,6 +66,24 @@ def api_get_folder_groups():
     return jsonify(get_folder_groups_with_musicbrainz())
 
 
+@downloads_bp.route("/api/downloads/grouped-folders")
+def api_get_grouped_folders():
+    """Alias used by monitor JS — returns same data as folder-groups."""
+    return jsonify(get_folder_groups_with_musicbrainz())
+
+
+@downloads_bp.route("/api/downloads/folder-status")
+def api_get_folder_status():
+    """Return folder status summary (stub for now)."""
+    return jsonify({"success": True, "scanning": False, "folders": [], "total": 0})
+
+
+@downloads_bp.route("/api/downloads/folder-duplicates")
+def api_get_folder_duplicates():
+    """Return folder duplicate info (stub for now)."""
+    return jsonify({"success": True, "duplicates": [], "total": 0})
+
+
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>")
 def api_get_folder_details(folder_path):
     return jsonify(get_folder_details(folder_path))

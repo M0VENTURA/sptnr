@@ -4,20 +4,20 @@
 
 {% block content %}
 <div class="container-fluid">
-  <div class="row mb-4">
+  <div class="row mb-3">
     <div class="col">
-      <h1><i class="bi bi-music-note"></i> Metadata</h1>
-      <p class="text-secondary">Organize and tag your music library automatically</p>
+      <h4 class="mb-1"><i class="bi bi-music-note"></i> Metadata</h4>
+      <p class="text-secondary small mb-0">Organize and tag your music library automatically</p>
     </div>
     <div class="col-auto d-flex align-items-center">
-      <a href="{{ url_for('ui.metadata_compare') }}" class="btn btn-outline-info">
-        <i class="bi bi-diagram-3"></i> Compare Album Metadata
+      <a href="{{ url_for('ui.metadata_compare') }}" class="btn btn-outline-info btn-sm">
+        <i class="bi bi-diagram-3"></i> Compare
       </a>
     </div>
   </div>
 
   <!-- Status Section -->
-  <div class="row mb-4">
+  <div class="row mb-3">
     <div class="col-lg-6">
       <div class="card">
         <div class="card-header">

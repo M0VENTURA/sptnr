@@ -1250,24 +1250,7 @@
 </div>
 
 <script id="page-data" type="application/json">{{ {"artistName": artist_name} | tojson | safe }}</script>
-<script>
-// Load page data
-var _pd = JSON.parse(document.getElementById('page-data').textContent);
-
-// Constants for slskd search polling
-const SLSKD_MAX_POLL_ATTEMPTS = 60;
-const SLSKD_POLL_INTERVAL_MS = 2000;
-const BYTES_TO_MB = 1024 * 1024;
-
-// Event listener for Soulseek tab - show track queue option when tab is clicked
-document.addEventListener('DOMContentLoaded', function() {
-  const slskdTab = document.getElementById('slskd-tab');
-  if (slskdTab) {
-    slskdTab.addEventListener('shown.bs.tab', function() {
-      if (currentDownloadAlbum.album) {
-        showSlskdTrackQueueOption();
-      }
-    });
+<script src="{{ url_for('static', filename='js/artist_detail.js') }}"></script>
   }
 });
 

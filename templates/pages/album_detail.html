@@ -106,15 +106,15 @@
     </div>
     
     <!-- Album Title & Action Buttons -->
-    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-3 gap-2">
         <div class="flex-grow-1">
-            <h1 class="h2 mb-1">
+            <h4 class="mb-1">
                 <i class="bi bi-album"></i> {{ album_name }}
                 {% if is_album_favourite %}
                     <span class="badge bg-warning text-dark ms-2">Favourite</span>
                 {% endif %}
-            </h1>
-            <p class="text-muted mb-0">by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
+            </h4>
+            <p class="text-muted small mb-0">by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
         </div>
         <div class="d-flex gap-2 flex-wrap">
             <button class="btn btn-outline-success btn-sm" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites">
