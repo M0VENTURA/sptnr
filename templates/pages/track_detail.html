@@ -1902,68 +1902,7 @@ function applyMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
 }
 </script>
 
-<style>
-/* Dark theme improvements for track page */
-.card {
-    background-color: var(--secondary-bg) !important;
-    border-color: var(--border-color) !important;
-}
 
-.card-header {
-    background-color: var(--primary-bg) !important;
-    border-bottom-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
-
-.card-body {
-    background-color: var(--secondary-bg) !important;
-    color: var(--text-primary) !important;
-}
-
-.table-responsive {
-    background-color: var(--secondary-bg) !important;
-}
-
-.table {
-    color: var(--text-primary) !important;
-    background-color: transparent !important;
-}
-
-.table thead {
-    background-color: var(--primary-bg) !important;
-    color: var(--text-primary) !important;
-}
-
-.table thead th {
-    background-color: var(--primary-bg) !important;
-    color: var(--text-primary) !important;
-    border-color: var(--border-color) !important;
-}
-
-.table tbody {
-    background-color: transparent !important;
-}
-
-.table tbody tr {
-    background-color: transparent !important;
-    border-color: var(--border-color) !important;
-}
-
-.table tbody td {
-    background-color: transparent !important;
-    color: var(--text-primary) !important;
-    border-color: var(--border-color) !important;
-}
-
-.table-hover tbody tr:hover {
-    background-color: var(--primary-bg) !important;
-    color: var(--text-primary) !important;
-}
-
-.table-hover tbody tr:hover td {
-    background-color: var(--primary-bg) !important;
-}
-</style>
 
 <script>
 function openQbitSearchTrack(artist, title) {
@@ -2168,12 +2107,6 @@ function updateGenresDisplay() {
     
     container.innerHTML = html;
     hiddenInput.value = Array.from(currentGenres).join(', ');
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
 }
 
 // Initialize genre loading on page load

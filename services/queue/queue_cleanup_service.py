@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 # ✅ CLEANUP OPERATIONS
 # =============================================================================
 
+def cleanup_stuck_items() -> dict[str, int]:
+    """Clean up stuck queue items. Thin wrapper for queue_orchestrator."""
+    return queue_cleanup()
+
+
 def queue_cleanup():
     try:
         result = queue_repository.cleanup()

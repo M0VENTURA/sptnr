@@ -346,15 +346,6 @@
 
 <script>
 // ===== Shared helpers =====
-if (typeof escapeHtml === 'undefined') {
-    function escapeHtml(text) {
-        if (!text && text !== 0) return '';
-        var div = document.createElement('div');
-        div.appendChild(document.createTextNode(String(text)));
-        return div.innerHTML;
-    }
-}
-
 async function postJSON(u,b){const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{})});return r.json().catch(()=>({}))}
 function fE(s){if(!s)return"";return` — ${Math.floor(s/60)}m ${Math.floor(s%60)}s`}
 
@@ -363,10 +354,10 @@ function fE(s){if(!s)return"";return` — ${Math.floor(s/60)}m ${Math.floor(s%60
 async function startPopularityScan(m){await postJSON("/api/popularity/run",{mode:m||"popularity"})}
 async function stopPopularityScan(){await fetch("/scan/stop-popularity",{method:"POST"})}
 async function pollPopularityStatus(){const r=await fetch("/api/popularity/status"),d=await r.json();if(!d.success)return;const e=document.getElementById("pop-status"),b=document.getElementById("pop-progress-bar"),t=document.getElementById("pop-progress-text");if(d.running){e.innerText=(d.message||"Running...")+fE(d.elapsed_seconds);e.className="text-primary small";const p=Math.min(d.progress||0,100);b.style.width=p+"%";t.innerText=(d.mode||"popularity")+` — ${p}% (${d.processed_items||0}/${d.total_items||"?"})`}else{e.innerText=d.message||"Idle";e.className="text-muted small";b.style.width="0%";t.innerText=""}}
-async function startNavidromeImport(){const d=await postJSON("/api/navidrome/import",{mode:"all"}),e=document.getElementById("nav-status");e.innerText=d.success?(d.message||"Started"):(d.error||"Failed");e.className=d.success?"text-success small":"text-danger small"}
+async function startNavidromeImport(){const d=await postJSON("/api/navidrome/import",{mode:"all"}),e=document.getElementById("nav-status");if(d.success){e.innerText=d.message||"Started";e.className="text-success small";e.dataset.started=String(Date.now())}else{e.innerText=d.error||"Failed";e.className="text-danger small"}}
 async function startNavidromeServerScan(){const d=await postJSON("/api/navidrome/scan/start"),e=document.getElementById("nav-status");e.innerText=d.success?"Server scan triggered":"Failed";e.className=d.success?"text-success small":"text-danger small"}
 async function stopNavidromeSync(){await fetch("/scan/stop-navidrome",{method:"POST"})}
-async function pollNavidromeStatus(){const e=document.getElementById("nav-status"),b=document.getElementById("nav-progress-bar"),t=document.getElementById("nav-progress-text"),pd=await(await fetch("/api/scan-progress")).json().catch(()=>({})),ns=(pd.active_scans||[]).find(s=>s.scan_type==="navidrome_scan");if(ns&&ns.is_running){e.innerText=(ns.message||"Importing...")+fE(ns.elapsed_seconds);e.className="text-primary small";const p=Math.min(ns.percent_complete||0,100);b.style.width=p+"%";t.innerText=(ns.mode||"import")+` — ${p}%`;return}const sd=await(await fetch("/api/navidrome/scan/status")).json().catch(()=>({}));if(sd.scanning){e.innerText="Server scanning...";e.className="text-warning small";b.style.width="100%";t.innerText=`Count: ${sd.count||0}`}else{e.innerText="Idle";e.className="text-muted small";b.style.width="0%";t.innerText=""}}
+async function pollNavidromeStatus(){const e=document.getElementById("nav-status"),b=document.getElementById("nav-progress-bar"),t=document.getElementById("nav-progress-text"),pd=await(await fetch("/api/scan-progress")).json().catch(()=>({})),ns=(pd.active_scans||[]).find(s=>s.scan_type==="navidrome_scan");if(ns&&ns.is_running){e.innerText=(ns.message||"Importing...")+fE(ns.elapsed_seconds);e.className="text-primary small";var p=Math.min(ns.percent_complete||0,100);b.style.width=p+"%";t.innerText=(ns.mode||"import")+` — ${p}%`;if(e.dataset.started){delete e.dataset.started}return}var sd=await(await fetch("/api/navidrome/scan/status")).json().catch(()=>({}));if(sd.scanning){e.innerText="Server scanning...";e.className="text-warning small";b.style.width="100%";t.innerText=`Count: ${sd.count||0}`;if(e.dataset.started){delete e.dataset.started}}else if(e.dataset.started){var elapsed=Date.now()-parseInt(e.dataset.started,10);if(elapsed<120000){e.innerText="Importing...";e.className="text-primary small"}else{delete e.dataset.started;e.innerText="Idle";e.className="text-muted small";b.style.width="0%";t.innerText=""}}else{e.innerText="Idle";e.className="text-muted small";b.style.width="0%";t.innerText=""}}
 async function startLibrarySync(){await fetch("/api/library/sync",{method:"POST"})}
 async function stopLibrarySync(){await fetch("/scan/stop-all",{method:"POST"})}
 async function pollLibraryStatus(){const r=await fetch("/api/library/status"),d=await r.json();if(!d.success)return;const e=document.getElementById("lib-status"),b=document.getElementById("lib-progress-bar"),t=document.getElementById("lib-progress-text");if(d.running){const es=d.started_at?` — ${Math.floor((Date.now()/1000-d.started_at)/60)}m`:"";e.innerText=(d.message||"Sync...")+es;e.className="text-primary small";const tot=d.artists_total||0,pro=d.artists_processed||0,pct=tot>0?Math.min(Math.round((pro/tot)*100),100):0;b.style.width=pct+"%";t.innerText=`diff — ${pct}% (${pro}/${tot} artists, ${d.tracks_attempted||0} tracks)`}else{e.innerText=d.message||"Idle";e.className="text-muted small";b.style.width="0%";t.innerText=""}}

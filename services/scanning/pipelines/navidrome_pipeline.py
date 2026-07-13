@@ -229,12 +229,6 @@ def run_navidrome_import_scan(
 
         log_unified("Navidrome Import - Complete")
 
-        try:
-            from services.scanning.pipeline import run_post_navidrome_hooks
-            run_post_navidrome_hooks("manual_post_import")
-        except Exception as exc:
-            logging.debug("Post-Navidrome follow-up skipped: %s", exc)
-
     except Exception as exc:
         logging.error("Navidrome import scan failed: %s", exc, exc_info=True)
 

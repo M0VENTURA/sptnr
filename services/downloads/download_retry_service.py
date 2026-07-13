@@ -106,6 +106,11 @@ def _switch_method(queue_id: int, new_method: str) -> None:
         logger.error("Failed to switch method for queue %s: %s", queue_id, exc)
 
 
+def retry_due_items() -> dict[str, int]:
+    """Retry all due queue items. Thin wrapper for queue_orchestrator."""
+    return run_retry_manager()
+
+
 def run_retry_manager_with_navidrome_check(
     navidrome_url: str | None = None,
     navidrome_token: str | None = None,

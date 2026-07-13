@@ -100,5 +100,10 @@ def verify_moved_files(_minutes_old: int = 30) -> dict[str, object]:
     return {"success": True, "verified": 0}
 
 
+def check_completed_downloads() -> dict[str, object]:
+    """Check for newly completed downloads. Thin wrapper for queue_orchestrator."""
+    return scan_downloads()
+
+
 def discover_files() -> dict[str, object]:
     return {"success": True, "files": [file.full_path for file in discover_audio_files()]}

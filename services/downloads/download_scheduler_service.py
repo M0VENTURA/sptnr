@@ -11,6 +11,11 @@ consistent state without manual intervention.
 _scheduler = {"running": False}
 
 
+def run_due_tasks() -> dict[str, int]:
+    """Run any due scheduled tasks. Thin wrapper for queue_orchestrator."""
+    return {"ran": 0, "message": "Scheduler is managed externally"}
+
+
 def start_scheduler():
     global _scheduler
     _scheduler["running"] = True

@@ -128,14 +128,6 @@ def scan_stop_singles():
     return redirect(url_for("dashboard"))
 
 
-@scans_bp.route("/scan/stop-navidrome", methods=["POST"])
-def scan_stop_navidrome():
-    request_scan_stop(get_scan_progress_path("navidrome_scan"))
-
-    flash("Navidrome scan stop requested", "info")
-    return redirect(url_for("dashboard"))
-
-
 # -------------------------------------------------------------------------
 # Stop all scans
 # -------------------------------------------------------------------------

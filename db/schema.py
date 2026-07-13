@@ -111,6 +111,20 @@ TABLES_TO_ENSURE: dict[str, str] = {
             CONSTRAINT uq_track_provider_field UNIQUE (track_id, provider, field_name)
         )
     """,
+    "upcoming_releases": """
+        CREATE TABLE IF NOT EXISTS upcoming_releases (
+            id BIGSERIAL PRIMARY KEY,
+            artist_name TEXT NOT NULL,
+            album_name TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'wikipedia',
+            release_date TEXT,
+            release_group_mbid TEXT,
+            match_source TEXT,
+            primary_type TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_upcoming_artist_album_source UNIQUE (artist_name, album_name, source)
+        )
+    """,
 }
 
 # =============================================================================

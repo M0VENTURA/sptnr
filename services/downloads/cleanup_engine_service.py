@@ -49,6 +49,12 @@ _CLEANUP_SIBLING_MIN_AGE_SECONDS: int = 30
 # PUBLIC BUSINESS LOGIC
 # ==============================================================================
 
+def cleanup_stale_downloads() -> dict[str, int]:
+    """Clean up stale/orphaned download entries. Thin wrapper for queue_orchestrator."""
+    from services.downloads.download_verification_service import verify_moved_files
+    return verify_moved_files()
+
+
 def cleanup_sibling_downloads(
     queue_item: QueueItem,
     keep_path: str | None = None,
