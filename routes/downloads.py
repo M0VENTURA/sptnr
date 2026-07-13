@@ -244,7 +244,26 @@ async def api_release_status():
 
 @downloads_bp.route("/api/downloads/queue")
 def api_queue():
-    return jsonify(get_queue_status_counts())
+    limit = request.args.get("limit", 100, type=int)
+    offset = request.args.get("offset", 0, type=int)
+    try:
+        status_counts = get_queue_status_counts()
+        return jsonify({
+            "success": True,
+            "queue": [],
+            "status_counts": status_counts or {},
+            "total": sum(status_counts.values()) if status_counts else 0,
+            "limit": limit,
+            "offset": offset,
+        })
+    except Exception as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "queue": [],
+            "status_counts": {},
+            "total": 0,
+        })
 
 
 @downloads_bp.route("/api/downloads/clear-queue", methods=["POST"])

@@ -28,10 +28,15 @@ def api_start_navidrome_scan():
 @navidrome_bp.route("/api/navidrome/scan/status", methods=["GET"])
 def api_get_navidrome_scan_status():
     """Return Navidrome server-side library scan status."""
-    client = get_navidrome_client()
-    if not client:
-        return jsonify({"error": "Navidrome not configured"}), 400
-    return jsonify(client.get_scan_status())
+    try:
+        client = get_navidrome_client()
+        if not client:
+            return jsonify({"error": "Navidrome not configured"}), 400
+        return jsonify(client.get_scan_status())
+    except Exception as exc:
+        logger = __import__('logging').getLogger(__name__)
+        logger.error("Navidrome scan status failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
 
 
 @navidrome_bp.route("/scan/navidrome", methods=["POST"])
