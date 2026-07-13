@@ -531,15 +531,16 @@ def config_migrate_postgres():
 
 @ui_bp.route("/logs")
 async def logs():
-    config_dir = os.path.dirname(os.environ.get("CONFIG_PATH", "/config/config.yaml"))
-    log_path = os.environ.get("LOG_PATH", "/config/app.log")
-    log_files = {
-        "main": log_path,
-        "webui": os.path.join(config_dir, "webui.log"),
-        "popularity": os.path.join(config_dir, "popularity.log"),
-        "downloads": os.path.join(config_dir, "downloads.log"),
-    }
-    return await render_template("pages/logs.html", log_path=log_path, log_files=log_files)
+    from helpers.logging_config import resolve_log_dir
+    log_dir = resolve_log_dir()
+    log_files = []
+    if os.path.isdir(log_dir):
+        for f in sorted(os.listdir(log_dir)):
+            if f.endswith(".log"):
+                full = os.path.join(log_dir, f)
+                size = os.path.getsize(full) if os.path.isfile(full) else 0
+                log_files.append({"name": f, "path": full, "size": size})
+    return await render_template("pages/logs.html", log_dir=log_dir, log_files=log_files)
 
 
 @ui_bp.route("/help")

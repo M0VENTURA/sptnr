@@ -254,9 +254,15 @@ def clear_config_cache():
 
 
 def get_navidrome_config():
-    """Return Navidrome section"""
+    """Return Navidrome section (first user from navidrome_users, or legacy navidrome key)."""
     cfg = get_config()
-    return cfg.get("navidrome", {})
+    nav = cfg.get("navidrome", {})
+    if nav:
+        return nav
+    users = cfg.get("navidrome_users", [])
+    if users:
+        return users[0]
+    return {}
 
 
 # -----------------------------------------------------------------------------

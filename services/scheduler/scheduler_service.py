@@ -112,6 +112,7 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
                     id="popularity_scan",
                     name="Popularity recalculation",
                     replace_existing=True,
+                    kwargs={"mode": "popularity"},
                 )
                 logger.info("APScheduler: registered popularity_scan (every %s min)", interval_minutes)
             else:
