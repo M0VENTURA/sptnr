@@ -607,12 +607,13 @@ async function loadUpcomingReleasesBanner() {
         var endpoint = _upcomingFilterEndpoint();
         var resp = await fetch(endpoint);
         var data = await resp.json();
+        var container = document.getElementById('upcomingBannerContent');
+        if (!container) return;
         if (!data.releases || data.releases.length === 0) {
-            document.getElementById('upcomingBannerContent').innerHTML = '<p class="text-muted text-center"><i class="bi bi-info-circle"></i> No upcoming or recent releases found.</p>';
+            container.innerHTML = '<p class="text-muted text-center"><i class="bi bi-info-circle"></i> No upcoming or recent releases found.</p>';
             return;
         }
         var releases = data.releases.slice();
-        // Remove albums already in collection (if field exists)
         if (releases.some(function(r) { return r.album_in_collection !== undefined; })) {
             releases = releases.filter(function(r) { return !r.album_in_collection; });
         }
@@ -625,7 +626,7 @@ async function loadUpcomingReleasesBanner() {
             return !isNaN(d.getTime()) && d >= twoWeeksAgo && d <= oneMonthAhead;
         });
         if (releases.length === 0) {
-            document.getElementById('upcomingBannerContent').innerHTML = '<p class="text-muted text-center"><i class="bi bi-calendar-check"></i> No releases in the last 2 weeks or upcoming month.</p>';
+            container.innerHTML = '<p class="text-muted text-center"><i class="bi bi-calendar-check"></i> No releases in the last 2 weeks or upcoming month.</p>';
             return;
         }
         releases = releases.sort(function(a, b) {
@@ -654,11 +655,12 @@ async function loadUpcomingReleasesBanner() {
             html += '<div class="list-group-item d-flex justify-content-between align-items-start py-2"><div class="flex-grow-1"><h6 class="mb-1" style="font-size: 0.95rem;">' + releaseDate + ' ' + statusBadge + ' ' + collectionBadge + ' ' + recommendedBadge + ' ' + inQueueBadge + ' ' + sourceBadge + '</h6><small class="text-muted">' + escapeHtml(release.artist_name) + ' - ' + escapeHtml(release.album_name) + '</small></div><div class="d-flex align-items-center gap-2"><button class="btn btn-sm btn-outline-info" title="Search / Download" onclick="searchMusicBrainzRelease(event, ' + sArtist + ', ' + sAlbum + ')"><i class="bi bi-search"></i></button><button class="btn btn-sm btn-outline-primary" ' + (isInQueue ? 'disabled' : '') + ' title="' + addTitle + '" onclick="addUpcomingReleaseToQueueDashboard(\'' + eArtist + '\', \'' + eAlbum + '\', \'' + eDate + '\', this)">' + addIcon + '</button><a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-secondary" title="Open in downloads monitor"><i class="bi bi-arrow-right"></i></a></div></div>';
         });
         html += '</div>';
-        document.getElementById('upcomingBannerContent').innerHTML = html;
+        container.innerHTML = html;
         try { sessionStorage.setItem('dashboardUpcomingBannerHtml', html); } catch(e) {}
     } catch (error) {
         console.error('Error loading upcoming releases:', error);
-        document.getElementById('upcomingBannerContent').innerHTML = '<p class="text-muted text-center text-danger"><i class="bi bi-exclamation-triangle"></i> Error loading releases</p>';
+        var container = document.getElementById('upcomingBannerContent');
+        if (container) container.innerHTML = '<p class="text-muted text-center text-danger"><i class="bi bi-exclamation-triangle"></i> Error loading releases</p>';
     }
 }
 

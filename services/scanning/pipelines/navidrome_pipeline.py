@@ -86,22 +86,34 @@ def run_navidrome_import_scan(
                     checkpoint = load_scan_checkpoint(checkpoint_file)
                     last_marker = checkpoint.get("scan_marker")
                     if last_marker is not None and current_marker == last_marker:
-                        logging.info(
-                            "Navidrome scan marker unchanged (%s) — skipping, nothing to import",
-                            current_marker,
-                        )
-                        write_progress_with_current_artist(
-                            progress_file,
-                            "navidrome_scan",
-                            False,
-                            extra={
-                                "status": "skipped",
-                                "message": "No new tracks since last scan",
-                                "exit_code": 0,
-                            },
-                        )
-                        log_unified("Navidrome Import - Skipped (no changes)")
-                        return
+                        # Double-check: if DB has no tracks, don't skip
+                        try:
+                            from db.engine import db_session
+                            from sqlalchemy import text as sa_text
+                            with db_session() as session:
+                                count = session.execute(sa_text("SELECT COUNT(*) FROM tracks")).scalar() or 0
+                                if count == 0:
+                                    logging.info("DB empty despite marker — forcing import")
+                                    break
+                        except Exception:
+                            pass
+                        else:
+                            logging.info(
+                                "Navidrome scan marker unchanged (%s) — skipping, nothing to import",
+                                current_marker,
+                            )
+                            write_progress_with_current_artist(
+                                progress_file,
+                                "navidrome_scan",
+                                False,
+                                extra={
+                                    "status": "skipped",
+                                    "message": "No new tracks since last scan",
+                                    "exit_code": 0,
+                                },
+                            )
+                            log_unified("Navidrome Import - Skipped (no changes)")
+                            return
             except Exception as exc:
                 logging.debug("Could not check scan marker: %s", exc)
 

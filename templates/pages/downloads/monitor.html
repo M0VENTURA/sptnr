@@ -1177,14 +1177,13 @@ async function refreshUpcomingReleasesMonitor() {
 async function searchMusicBrainzRelease(event, artist, album, track) {
   if (event) { event.preventDefault(); event.stopPropagation(); }
   var modalEl = document.getElementById('musicBrainzModal');
+  if (!modalEl) { alert('Search UI not available on this page.'); return; }
+  try { new bootstrap.Modal(modalEl).show(); } catch(e) { alert('Could not open search modal: ' + e.message); return; }
   var resultsEl = document.getElementById('mbSearchResults');
   var inputEl = document.getElementById('mbSearchInput');
-  if (!modalEl || !resultsEl) { alert('Search UI not available on this page.'); return; }
-  var modal = new bootstrap.Modal(modalEl);
-  modal.show();
   var query = [artist, album, track].filter(Boolean).join(' ');
   if (inputEl) inputEl.value = query || '';
-  resultsEl.innerHTML = '<div class="col-12 text-center py-4"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Searching...</span></div><p class="mt-2 text-muted">Searching MusicBrainz...</p></div>';
+  if (resultsEl) resultsEl.innerHTML = '<div class="col-12 text-center py-4"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Searching...</span></div><p class="mt-2 text-muted">Searching MusicBrainz...</p></div>';
   try {
     var resp = await fetch('/api/upcoming-releases/search-musicbrainz', {
       method: 'POST',
@@ -1192,18 +1191,20 @@ async function searchMusicBrainzRelease(event, artist, album, track) {
       body: JSON.stringify({artist: artist || '', album: album || '', track: track || ''})
     });
     var data = await resp.json();
-    if (data.success && data.results && data.results.length > 0) {
-      resultsEl.innerHTML = data.results.map(function(r) {
-        var year = (r.date || r.year || '').split('-')[0] || '?';
-        var type = r.primary_type || r.type || 'Release';
-        var artistCredit = r.artist || r['artist-credit'] || '?';
-        return '<div class="col-12 col-md-6 col-lg-4 mb-2"><div class="card h-100"><div class="card-body p-2"><h6 class="card-title mb-1">' + escapeHtml(r.title) + '</h6><p class="card-text small text-muted mb-1">' + escapeHtml(artistCredit) + ' · ' + year + ' · ' + escapeHtml(type) + '</p></div></div></div>';
-      }).join('');
-    } else {
-      resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-4"><p>No results found for "' + escapeHtml(query) + '"</p></div>';
+    if (resultsEl) {
+      if (data.success && data.results && data.results.length > 0) {
+        resultsEl.innerHTML = data.results.map(function(r) {
+          var year = (r.date || r.year || '').split('-')[0] || '?';
+          var type = r.primary_type || r.type || 'Release';
+          var artistCredit = r.artist || r['artist-credit'] || '?';
+          return '<div class="col-12 col-md-6 col-lg-4 mb-2"><div class="card h-100"><div class="card-body p-2"><h6 class="card-title mb-1">' + (r.title || '').replace(/[<>&"']/g,'') + '</h6><p class="card-text small text-muted mb-1">' + (artistCredit || '').replace(/[<>&"']/g,'') + ' &middot; ' + year + ' &middot; ' + (type || '').replace(/[<>&"']/g,'') + '</p></div></div></div>';
+        }).join('');
+      } else {
+        resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-4"><p>No results found for "' + (query || '').replace(/[<>&"']/g,'') + '"</p></div>';
+      }
     }
   } catch (err) {
-    resultsEl.innerHTML = '<div class="col-12 text-center py-4"><p class="text-danger">Search failed: ' + escapeHtml(err.message) + '</p></div>';
+    if (resultsEl) resultsEl.innerHTML = '<div class="col-12 text-center py-4"><p class="text-danger">Search failed: ' + (err.message || '').replace(/[<>&"']/g,'') + '</p></div>';
   }
 }
 
