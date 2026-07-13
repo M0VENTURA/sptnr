@@ -3,78 +3,80 @@
 {% block title %}Import Spotify Playlist - Popularr{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-  <div class="col-12">
-    <h1>
-      <i class="bi bi-music-note-list"></i> Import Spotify Playlist
-      <a href="/help/FEATURES_PLAYLISTS" class="btn btn-sm btn-outline-success ms-2" title="Help for Playlist Import">
-          <i class="bi bi-question-circle"></i>
-      </a>
-    </h1>
-    <p class="text-secondary">Create a Navidrome playlist from a Spotify playlist URL</p>
+<div class="mb-3">
+  <div class="d-flex flex-wrap align-items-start gap-2 mb-2">
+    <div class="flex-grow-1">
+      <h4 class="mb-1">
+        <i class="bi bi-music-note-list"></i> Import Spotify Playlist
+        <a href="/help/FEATURES_PLAYLISTS" class="btn btn-sm btn-outline-success ms-2 py-0" title="Help">
+            <i class="bi bi-question-circle"></i>
+        </a>
+      </h4>
+      <p class="text-secondary small mb-0">Create a Navidrome playlist from a Spotify playlist URL</p>
+    </div>
+  </div>
     
     <!-- Tab-style Navigation -->
-    <ul class="nav nav-pills mb-4" role="tablist">
+    <ul class="nav nav-pills mb-3 nav-sm" role="tablist">
         <li class="nav-item">
             <a class="nav-link" href="/playlist-manager">
-                <i class="bi bi-folder2-open"></i> Browse & Manage
+                <i class="bi bi-folder2-open"></i> Browse
             </a>
         </li>
         <li class="nav-item">
             <span class="nav-link active" role="button" aria-current="page">
-                <i class="bi bi-spotify"></i> Import from Spotify
+                <i class="bi bi-spotify"></i> Spotify
             </span>
         </li>
         <li class="nav-item">
             <a class="nav-link" href="/playlists/import/csv">
-                <i class="bi bi-filetype-csv"></i> Import from CSV
+                <i class="bi bi-filetype-csv"></i> CSV
             </a>
         </li>
         <li class="nav-item">
             <a class="nav-link" href="/smart-playlists">
-                <i class="bi bi-sliders"></i> Smart Playlists
+                <i class="bi bi-sliders"></i> Smart
             </a>
         </li>
     </ul>
-  </div>
 </div>
 
 <!-- Input Section -->
-<div class="row mb-4">
+<div class="row mb-3">
   <div class="col-12">
     <div class="card">
-      <div class="card-header">
-        <h5 class="mb-0">Import Playlist</h5>
+      <div class="card-header py-2">
+        <small class="fw-semibold">Import Playlist</small>
       </div>
-      <div class="card-body">
+      <div class="card-body py-2">
         <form id="playlistForm" onsubmit="importPlaylist(event)">
-          <div class="row g-3">
+          <div class="row g-2">
             <div class="col-12">
-              <label for="spotifyUrl" class="form-label">Spotify Playlist URL</label>
+              <label for="spotifyUrl" class="form-label small mb-0">Spotify Playlist URL</label>
               <input 
                 type="text" 
                 id="spotifyUrl" 
-                class="form-control" 
+                class="form-control form-control-sm" 
                 placeholder="https://open.spotify.com/playlist/..."
                 required
               />
-              <small class="text-secondary">
+              <small class="text-secondary" style="font-size:11px;">
                 <i class="bi bi-info-circle"></i> 
                 Paste a Spotify playlist URL (any format: link, URI, or ID)
               </small>
             </div>
             <div class="col-12 col-md-6">
-              <label for="playlistName" class="form-label">Playlist Name</label>
+              <label for="playlistName" class="form-label small mb-0">Playlist Name</label>
               <input 
                 type="text" 
                 id="playlistName" 
-                class="form-control" 
+                class="form-control form-control-sm" 
                 placeholder="e.g., My Imported Playlist"
                 required
               />
             </div>
             <div class="col-12 col-md-6">
-              <label for="playlistDescription" class="form-label">Description (optional)</label>
+              <label for="playlistDescription" class="form-label small mb-0">Description</label>
               <input 
                 type="text" 
                 id="playlistDescription" 
@@ -1218,5 +1220,41 @@
     loadSpotifyPlaylists();
   });
 </script>
+
+<style>
+  .card {
+    background-color: var(--secondary-bg, #1e1e1e) !important;
+    border-color: var(--border-color, #333) !important;
+  }
+  .card-header {
+    background-color: var(--primary-bg, #121212) !important;
+    border-bottom-color: var(--border-color, #333) !important;
+  }
+  .nav-pills .nav-link {
+    color: var(--text-primary, #fff) !important;
+  }
+  .nav-pills .nav-link.active {
+    background-color: var(--bs-primary, #0d6efd) !important;
+  }
+  select.form-select, input.form-control, textarea.form-control {
+    background-color: var(--tertiary-bg, #282828) !important;
+    border-color: var(--border-color, #333) !important;
+    color: var(--text-primary, #fff) !important;
+  }
+  .progress {
+    background-color: var(--tertiary-bg, #282828) !important;
+  }
+  .modal-content {
+    background-color: var(--secondary-bg, #1e1e1e) !important;
+    border-color: var(--border-color, #333) !important;
+  }
+  .modal-header {
+    background-color: var(--primary-bg, #121212) !important;
+    border-bottom-color: var(--border-color, #333) !important;
+  }
+  .modal-footer {
+    border-top-color: var(--border-color, #333) !important;
+  }
+</style>
 
 {% endblock %}

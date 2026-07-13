@@ -4,53 +4,51 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <div class="mb-4">
-    <h1 class="h2 mb-2">
-      <i class="bi bi-music-note-list"></i> Browse & Manage Playlists
-      <a href="/help/FEATURES_PLAYLISTS" class="btn btn-sm btn-outline-success ms-2" title="Help for Playlists">
+  <div class="mb-3">
+    <h4 class="mb-1">
+      <i class="bi bi-music-note-list"></i> Browse &amp; Manage Playlists
+      <a href="/help/FEATURES_PLAYLISTS" class="btn btn-sm btn-outline-success ms-2 py-0" title="Help">
         <i class="bi bi-question-circle"></i>
       </a>
-    </h1>
-    <p class="text-muted mb-0">View, manage, and download playlists from your Navidrome library</p>
+    </h4>
+    <p class="text-muted small mb-0">View, manage, and download playlists from your Navidrome library</p>
   </div>
 
   <!-- Playlist Selection -->
-  <div class="row mb-4">
+  <div class="row mb-3">
     <div class="col-12">
       <div class="card">
-        <div class="card-header">
-          <h5 class="mb-0">
-            <i class="bi bi-folder2-open"></i> Browse Playlists
-          </h5>
+        <div class="card-header py-2">
+          <small class="fw-semibold"><i class="bi bi-folder2-open"></i> Browse Playlists</small>
         </div>
-        <div class="card-body">
-          <div class="row g-3">
+        <div class="card-body py-2">
+          <div class="row g-2">
             <div class="col-12 col-md-4">
-              <label for="essentialPlaylistSelect" class="form-label fw-semibold">
-                <i class="bi bi-star-fill text-warning"></i> Essential Playlists
+              <label for="essentialPlaylistSelect" class="form-label small mb-0">
+                <i class="bi bi-star-fill text-warning"></i> Essential
               </label>
-              <select id="essentialPlaylistSelect" class="form-select">
+              <select id="essentialPlaylistSelect" class="form-select form-select-sm">
                 <option value="">Select an Essential playlist...</option>
               </select>
-              <small class="text-muted">Playlists starting with "Essential"</small>
+              <small class="text-muted" style="font-size:11px;">Playlists starting with "Essential"</small>
             </div>
             <div class="col-12 col-md-4">
-              <label for="topPlaylistSelect" class="form-label fw-semibold">
-                <i class="bi bi-bar-chart-fill text-primary"></i> Top Genre Playlists
+              <label for="topPlaylistSelect" class="form-label small mb-0">
+                <i class="bi bi-bar-chart-fill text-primary"></i> Top Genre
               </label>
-              <select id="topPlaylistSelect" class="form-select">
+              <select id="topPlaylistSelect" class="form-select form-select-sm">
                 <option value="">Select a Top playlist...</option>
               </select>
-              <small class="text-muted">Playlists starting with "Top"</small>
+              <small class="text-muted" style="font-size:11px;">Playlists starting with "Top"</small>
             </div>
             <div class="col-12 col-md-4">
-              <label for="browsePlaylistSelect" class="form-label fw-semibold">
-                <i class="bi bi-music-note-list"></i> Other Playlists
+              <label for="browsePlaylistSelect" class="form-label small mb-0">
+                <i class="bi bi-music-note-list"></i> Other
               </label>
-              <select id="browsePlaylistSelect" class="form-select">
+              <select id="browsePlaylistSelect" class="form-select form-select-sm">
                 <option value="">Select a playlist...</option>
               </select>
-              <small class="text-muted">All other playlists</small>
+              <small class="text-muted" style="font-size:11px;">All other playlists</small>
             </div>
           </div>
         </div>
@@ -59,73 +57,67 @@
   </div>
 
   <!-- Playlist Details Section -->
-  <div id="playlistDetailsSection" style="display: none;" class="mb-4">
+  <div id="playlistDetailsSection" style="display: none;" class="mb-3">
     <div class="card">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">
-          <i class="bi bi-music-note-beamed"></i> <span id="playlistDetailName">Playlist Details</span>
-        </h5>
-        <div class="btn-group">
-          <button class="btn btn-sm btn-primary" onclick="editPlaylist()" id="editPlaylistBtn">
-            <i class="bi bi-pencil"></i> Edit in Navidrome
+      <div class="card-header py-2 d-flex justify-content-between align-items-center">
+        <small class="fw-semibold"><i class="bi bi-music-note-beamed"></i> <span id="playlistDetailName">Playlist Details</span></small>
+        <div class="btn-group btn-group-sm">
+          <button class="btn btn-sm btn-primary py-0" onclick="editPlaylist()" id="editPlaylistBtn">
+            <i class="bi bi-pencil"></i> Edit
           </button>
-          <button class="btn btn-sm btn-outline-secondary" onclick="refreshPlaylistDetails()" id="refreshPlaylistBtn">
-            <i class="bi bi-arrow-clockwise"></i> Refresh
+          <button class="btn btn-sm btn-outline-secondary py-0" onclick="refreshPlaylistDetails()" id="refreshPlaylistBtn">
+            <i class="bi bi-arrow-clockwise"></i>
           </button>
         </div>
       </div>
-      <div class="card-body">
-        <div id="playlistMetadata" class="mb-3 d-none">
-          <!-- Metadata will be inserted here -->
-        </div>
-        <div id="playlistTracks" class="d-none">
-          <!-- Track list will be inserted here -->
-        </div>
+      <div class="card-body py-2">
+        <div id="playlistMetadata" class="mb-2 d-none"></div>
+        <div id="playlistTracks" class="d-none"></div>
 
-        <hr class="my-4">
+        <hr class="my-2">
 
         <div>
-          <h6 class="mb-3">
+          <h6 class="mb-2" style="font-size:0.9rem;">
             <i class="bi bi-hdd-network"></i> Playlist Files In Database
           </h6>
 
           <div id="downloaderResults" style="display: none;">
-            <div class="row mb-4">
-              <div class="col-12 col-md-4">
-                <div class="card text-center bg-primary bg-opacity-10 border-primary">
-                  <div class="card-body">
-                    <h5 class="card-title">Playlist Tracks</h5>
-                    <h2 id="dlTotalCount" class="text-primary">0</h2>
+            <div class="row g-2 mb-3">
+              <div class="col-6 col-md-4">
+                <div class="card text-center bg-primary bg-opacity-10 border-primary h-100">
+                  <div class="card-body py-2">
+                    <div class="small text-muted">Tracks</div>
+                    <h5 class="mb-0 text-primary" id="dlTotalCount">0</h5>
                   </div>
                 </div>
               </div>
-              <div class="col-12 col-md-4">
-                <div class="card text-center bg-success bg-opacity-10 border-success">
-                  <div class="card-body">
-                    <h5 class="card-title">DB Paths Found</h5>
-                    <h2 id="dlMatchedCount" class="text-success">0</h2>
+              <div class="col-6 col-md-4">
+                <div class="card text-center bg-success bg-opacity-10 border-success h-100">
+                  <div class="card-body py-2">
+                    <div class="small text-muted">Matched</div>
+                    <h5 class="mb-0 text-success" id="dlMatchedCount">0</h5>
                   </div>
                 </div>
               </div>
-              <div class="col-12 col-md-4">
-                <div class="card text-center bg-warning bg-opacity-10 border-warning">
-                  <div class="card-body">
-                    <h5 class="card-title">Coverage</h5>
-                    <h2 id="dlCoverage" class="text-warning">0%</h2>
+              <div class="col-6 col-md-4">
+                <div class="card text-center bg-warning bg-opacity-10 border-warning h-100">
+                  <div class="card-body py-2">
+                    <div class="small text-muted">Coverage</div>
+                    <h5 class="mb-0 text-warning" id="dlCoverage">0%</h5>
                   </div>
                 </div>
               </div>
             </div>
 
-            <div class="row g-3">
+            <div class="row g-2">
               <div class="col-12 col-lg-6">
                 <div class="card h-100">
-                  <div class="card-header">
-                    <h6 class="mb-0">Playlist Tracks</h6>
+                  <div class="card-header py-1">
+                    <small class="fw-semibold">Playlist Tracks</small>
                   </div>
-                  <div class="card-body" style="max-height: 600px; overflow-y: auto;">
+                  <div class="card-body p-1" style="max-height: 400px; overflow-y: auto;">
                     <div id="dlOriginalSongs">
-                      <p class="text-center text-muted py-5">Select a playlist to view songs</p>
+                      <p class="text-center text-muted py-4" style="font-size:13px;">Select a playlist to view songs</p>
                     </div>
                   </div>
                 </div>
@@ -133,33 +125,33 @@
 
               <div class="col-12 col-lg-6">
                 <div class="card h-100">
-                  <div class="card-header">
-                    <h6 class="mb-0">Matched File Paths (Database)</h6>
+                  <div class="card-header py-1">
+                    <small class="fw-semibold">Matched File Paths</small>
                   </div>
-                  <div class="card-body" style="max-height: 600px; overflow-y: auto;">
+                  <div class="card-body p-1" style="max-height: 400px; overflow-y: auto;">
                     <div id="dlDetectedMatches">
-                      <p class="text-center text-muted py-5">Matched paths will appear here</p>
+                      <p class="text-center text-muted py-4" style="font-size:13px;">Matched paths will appear here</p>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
 
-            <div class="mt-4 d-flex gap-2 justify-content-end flex-wrap">
-              <button class="btn btn-info" onclick="exportToExternal()" id="dlExportBtn">
+            <div class="mt-2 d-flex gap-2 justify-content-end flex-wrap">
+              <button class="btn btn-info btn-sm" onclick="exportToExternal()" id="dlExportBtn">
                 <i class="bi bi-usb-drive-fill"></i> Copy to External
               </button>
             </div>
 
-            <div id="dlExportProgress" style="display: none;" class="mt-3">
+            <div id="dlExportProgress" style="display: none;" class="mt-2">
               <p id="dlExportProgressText" class="text-muted small mb-1">Preparing export...</p>
-              <div class="progress" style="height: 22px;">
+              <div class="progress" style="height: 18px;">
                 <div id="dlExportProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" role="progressbar" style="width: 0%">0%</div>
               </div>
             </div>
           </div>
 
-          <div id="downloaderEmpty" class="alert alert-info mb-0">
+          <div id="downloaderEmpty" class="alert alert-info mb-0 py-2" style="font-size:13px;">
             <i class="bi bi-info-circle"></i> Select a playlist above to load tracks and database file paths.
           </div>
         </div>
@@ -168,18 +160,16 @@
   </div>
 
   <!-- Playlist Creation Recommendations -->
-  <div class="mb-4">
+  <div class="mb-3">
     <div class="card">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">
-          <i class="bi bi-lightbulb"></i> Playlist Creation Recommendations
-        </h5>
-        <button class="btn btn-sm btn-outline-secondary" onclick="loadRecommendedPlaylists(true)" title="Refresh generators">
+      <div class="card-header py-2 d-flex justify-content-between align-items-center">
+        <small class="fw-semibold"><i class="bi bi-lightbulb"></i> Playlist Creation Recommendations</small>
+        <button class="btn btn-sm btn-outline-secondary py-0" onclick="loadRecommendedPlaylists(true)" title="Refresh">
           <i class="bi bi-arrow-clockwise"></i>
         </button>
       </div>
-      <div class="card-body">
-        <p class="text-muted mb-4">
+      <div class="card-body py-2">
+        <p class="text-muted small mb-2">
           Build playlists from recommendation generators and save them as M3U files in <code>/music/playlists</code>.
         </p>
 
@@ -1811,5 +1801,61 @@
     nspLoadFileList();
   });
 </script>
+
+<style>
+  .card {
+    background-color: var(--secondary-bg, #1e1e1e) !important;
+    border-color: var(--border-color, #333) !important;
+  }
+  .card-header {
+    background-color: var(--primary-bg, #121212) !important;
+    border-bottom-color: var(--border-color, #333) !important;
+  }
+  .table {
+    color: var(--text-primary, #fff) !important;
+    background-color: transparent !important;
+  }
+  .table thead th {
+    color: var(--text-primary, #fff) !important;
+    background-color: var(--primary-bg, #121212) !important;
+    border-color: var(--border-color, #333) !important;
+  }
+  .table tbody td {
+    color: var(--text-primary, #fff) !important;
+    background-color: transparent !important;
+    border-color: var(--border-color, #333) !important;
+  }
+  .table-hover tbody tr:hover {
+    background-color: var(--primary-bg, #121212) !important;
+  }
+  .list-group-item {
+    background-color: var(--secondary-bg, #1e1e1e) !important;
+    border-color: var(--border-color, #333) !important;
+    color: var(--text-primary, #fff) !important;
+  }
+  select.form-select, input.form-control, textarea.form-control {
+    background-color: var(--tertiary-bg, #282828) !important;
+    border-color: var(--border-color, #333) !important;
+    color: var(--text-primary, #fff) !important;
+  }
+  select.form-select:focus, input.form-control:focus, textarea.form-control:focus {
+    border-color: var(--bs-primary, #0d6efd) !important;
+    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25) !important;
+  }
+  .progress {
+    background-color: var(--tertiary-bg, #282828) !important;
+  }
+  .modal-content {
+    background-color: var(--secondary-bg, #1e1e1e) !important;
+    border-color: var(--border-color, #333) !important;
+  }
+  .modal-header {
+    background-color: var(--primary-bg, #121212) !important;
+    border-bottom-color: var(--border-color, #333) !important;
+  }
+  .modal-footer {
+    border-top-color: var(--border-color, #333) !important;
+  }
+</style>
 
 {% endblock %}

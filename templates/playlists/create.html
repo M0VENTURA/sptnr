@@ -4,14 +4,14 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <div class="mb-4">
-    <h1 class="h2 mb-2">
+  <div class="mb-3">
+    <h4 class="mb-1">
       <i class="bi bi-plus-circle"></i> Create Playlist
-      <a href="/help/FEATURES_PLAYLISTS" class="btn btn-sm btn-outline-success ms-2" title="Help for Creating Playlists">
+      <a href="/help/FEATURES_PLAYLISTS" class="btn btn-sm btn-outline-success ms-2 py-0" title="Help">
         <i class="bi bi-question-circle"></i>
       </a>
-    </h1>
-    <p class="text-muted mb-0">Create {% if playlist_type == 'smart' %}smart playlists with rules{% else %}custom playlists by selecting songs{% endif %}</p>
+    </h4>
+    <p class="text-muted small mb-0">Create {% if playlist_type == 'smart' %}smart playlists with rules{% else %}custom playlists by selecting songs{% endif %}</p>
   </div>
 
   {% if playlist_type == 'manual' %}
@@ -19,30 +19,27 @@
   <div class="row">
     <div class="col-12">
       <div class="card">
-        <div class="card-header">
-          <h5 class="card-title mb-0">
-            <i class="bi bi-pencil"></i> Create Manual Playlist
-          </h5>
+        <div class="card-header py-2">
+          <small class="fw-semibold"><i class="bi bi-pencil"></i> Create Manual Playlist</small>
         </div>
-        <div class="card-body">
+        <div class="card-body py-2">
           <form id="customPlaylistForm" onsubmit="createCustomPlaylist(event)">
-            <div class="row g-3 mb-4">
+            <div class="row g-2 mb-3">
               <!-- Playlist Name -->
               <div class="col-12">
-                <label for="customPlaylistName" class="form-label">Playlist Name *</label>
-                <input type="text" id="customPlaylistName" class="form-control" placeholder="e.g., My Favorite Songs" required>
+                <label for="customPlaylistName" class="form-label small mb-0">Playlist Name *</label>
+                <input type="text" id="customPlaylistName" class="form-control form-control-sm" placeholder="e.g., My Favorite Songs" required>
               </div>
 
               <!-- Description -->
               <div class="col-12">
-                <label for="customPlaylistDesc" class="form-label">Description (optional)</label>
-                <textarea id="customPlaylistDesc" class="form-control" rows="2" placeholder="Add a description for your playlist"></textarea>
+                <label for="customPlaylistDesc" class="form-label small mb-0">Description</label>
+                <textarea id="customPlaylistDesc" class="form-control form-control-sm" rows="1" placeholder="Add a description for your playlist"></textarea>
               </div>
 
-              <!-- Navidrome User Selection -->
               <div class="col-12 col-md-6">
-                <label for="customPlaylistUser" class="form-label">Assign to User *</label>
-                <select id="customPlaylistUser" class="form-select" required>
+                <label for="customPlaylistUser" class="form-label small mb-0">Assign to User *</label>
+                <select id="customPlaylistUser" class="form-select form-select-sm" required>
                   <option value="">Select a user...</option>
                   {% if navidrome_users %}
                     {% for user in navidrome_users %}
@@ -54,44 +51,42 @@
                 </select>
               </div>
 
-              <!-- Public Toggle -->
               <div class="col-12 col-md-6 d-flex align-items-end">
                 <div class="form-check form-switch w-100">
                   <input type="checkbox" id="customPlaylistPublic" class="form-check-input" checked>
-                  <label for="customPlaylistPublic" class="form-check-label">Make playlist public</label>
+                  <label for="customPlaylistPublic" class="form-check-label small">Make public</label>
                 </div>
               </div>
             </div>
-            <div class="mb-4">
-              <h6 class="mb-3">Add Songs</h6>
-              <div class="row g-2 mb-2">
+            <div class="mb-3">
+              <small class="fw-semibold">Add Songs</small>
+              <div class="row g-1 mt-1 mb-1">
                 <div class="col-md-4">
-                  <input type="text" id="searchTitleInput" class="form-control" placeholder="Song Title">
+                  <input type="text" id="searchTitleInput" class="form-control form-control-sm" placeholder="Title">
                 </div>
                 <div class="col-md-4">
-                  <input type="text" id="searchArtistInput" class="form-control" placeholder="Artist">
+                  <input type="text" id="searchArtistInput" class="form-control form-control-sm" placeholder="Artist">
                 </div>
                 <div class="col-md-4">
-                  <input type="text" id="searchAlbumInput" class="form-control" placeholder="Album">
+                  <input type="text" id="searchAlbumInput" class="form-control form-control-sm" placeholder="Album">
                 </div>
               </div>
-              <div class="input-group mb-3">
-                <input type="text" id="songSearchInput" class="form-control" placeholder="General Search (any field)">
+              <div class="input-group mb-2 input-group-sm">
+                <input type="text" id="songSearchInput" class="form-control" placeholder="General Search">
                 <button class="btn btn-primary" type="button" onclick="searchSongs()">
                   <i class="bi bi-search"></i> Search
                 </button>
               </div>
               <!-- Search Results -->
-              <div id="songSearchResults" style="display: none; max-height: 300px; overflow-y: auto;" class="border rounded p-3 bg-light mb-3">
-                <!-- Results will appear here -->
+              <div id="songSearchResults" style="display: none; max-height: 250px; overflow-y: auto;" class="border rounded p-2 mb-2">
               </div>
             </div>
 
             <!-- Selected Songs List -->
-            <div class="mb-4">
-              <h6 class="mb-2">Selected Songs <span id="selectedSongsCount" class="badge bg-secondary">0</span></h6>
-              <div id="selectedSongsList" style="max-height: 300px; overflow-y: auto;">
-                <p class="text-muted text-center py-5">No songs added yet</p>
+            <div class="mb-3">
+              <small class="fw-semibold">Selected Songs <span id="selectedSongsCount" class="badge bg-secondary">0</span></small>
+              <div id="selectedSongsList" style="max-height: 250px; overflow-y: auto;" class="mt-1">
+                <p class="text-muted text-center py-4" style="font-size:13px;">No songs added yet</p>
               </div>
             </div>
 

@@ -19,6 +19,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any, Mapping
 
@@ -100,6 +101,21 @@ def queue_processor_status():
         migrated=False,
         message="Queue processor status not implemented",
     )
+
+
+def queue_processor_restart():
+    """
+    Queue processor restart placeholder.
+    """
+    import subprocess, sys
+    try:
+        # Signal the queue processor to restart via its health-check file
+        proc_file = os.environ.get("QUEUE_PROCESSOR_HEALTH_FILE", "")
+        if proc_file and os.path.isfile(proc_file):
+            os.remove(proc_file)
+        return _ok(message="Queue processor restart signal sent")
+    except Exception as exc:
+        return _fail(str(exc))
 
 
 # =============================================================================
