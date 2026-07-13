@@ -89,9 +89,15 @@ def coerce_track_value_for_pg_type(column: str, value, pg_type: str):
     if pg_type in PG_BOOL_TYPES:
         return bool(value)
     if pg_type in PG_INT_TYPES:
-        return int(value) if value != "" else None
+        try:
+            return int(value) if value != "" else None
+        except (TypeError, ValueError):
+            return None
     if pg_type in PG_FLOAT_TYPES:
-        return float(value) if value != "" else None
+        try:
+            return float(value) if value != "" else None
+        except (TypeError, ValueError):
+            return None
 
     return value
 
