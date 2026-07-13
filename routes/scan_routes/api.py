@@ -21,6 +21,8 @@ from quart import jsonify, request
 from sqlalchemy import text
 from db.engine import db_session
 from routes.scan_routes import scans_bp
+from routes.schemas import ScanRequest
+from pydantic import ValidationError
 from routes.scan_routes._common import run_async
 from services.scanning.pipelines.popularity_pipeline import run_popularity_mode
 from services.scanning.runtime_state import (
@@ -232,18 +234,20 @@ def api_scan_progress():
 
 @scans_bp.route("/api/popularity/run", methods=["POST"])
 async def api_popularity_run_compat():
-    data = (await request.get_json(silent=True)) or {}
+    raw = (await request.get_json(silent=True)) or {}
 
-    # Support both explicit mode field and legacy boolean flags
-    mode = str(data.get("mode", "popularity")).strip().lower()
+    # Validate with Pydantic
+    try:
+        params = ScanRequest(**raw)
+    except ValidationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
 
-    if mode not in ("popularity", "metadata", "singles", "singles_detection", "all"):
-        mode = "popularity"
+    mode = params.mode
 
-    # Legacy boolean flag overrides
-    if data.get("metadata_only"):
+    # Legacy boolean flag overrides (still supported for backward compat)
+    if raw.get("metadata_only"):
         mode = "metadata"
-    elif data.get("singles_only"):
+    elif raw.get("singles_only"):
         mode = "singles"
 
     with scan_lock:

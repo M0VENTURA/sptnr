@@ -114,10 +114,11 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 **What changed**:
 - Created `routes/api_v1/` — `/api/v1/` blueprint
 - `_ok()` / `_fail()` helpers in use across most routes
+- Created `routes/schemas.py` — Pydantic models for request validation
 
 **Remaining**:
 - Migrate form-based `/scan/*` redirects to JSON API
-- Add Pydantic request validation models
+- Wire `routes/schemas.py` into individual route handlers
 
 ---
 
@@ -163,7 +164,18 @@ features:
 
 ## 7. Testing — pytest
 
-**Target**: Add `pytest`, `pytest-cov`, `testing.postgresql` to dev deps. Create test fixtures for DB + Quart app + mock HTTP responses.
+**Status**: ✅ BASE INFRASTRUCTURE COMPLETE
+
+**What changed**:
+- `pytest.ini` — configured with asyncio mode
+- `tests/conftest.py` — fixtures for app, client, db_session, sample_track
+- `tests/test_db.py` — basic database connectivity tests
+- `tests/test_routes.py` — API route tests
+
+**Remaining**:
+- Add mock HTTP responses for API client tests
+- Increase test coverage for routes, services, and repositories
+- Add `pytest-cov` to dev deps for coverage reporting
 
 ---
 
@@ -189,7 +201,39 @@ features:
 
 ## 10. Logging — Structured Logging
 
-**Target**: Add `structlog` — produces JSON logs parsable by Loki/Datadog/Splunk.
+**Status**: ✅ COMPLETED — `structlog` integrated. JSON output enabled via `STRUCTLOG=1` env var.
+
+**What changed**:
+- `structlog>=24.0` in `requirements.txt`
+- `helpers/logging_config.py` — `_setup_structlog()` function with JSON renderer
+- Logs go to both files (`/config/debug.log`, etc.) and stderr with optional JSON format
+
+---
+
+## 11. Popularity Pipeline — Album & Artist Context
+
+**Status**: ✅ COMPLETED
+
+**What changed**:
+- **Album LB percentile**: `scan_stage_runner.py` now batch-fetches ListenBrainz data for all tracks in an album before scoring. Each track gets a percentile rank within its album, blended into the combined score.
+- **Artist max listeners**: `popularity_sources.py` caches the artist's top tracks from Last.fm. Each track's LF score is normalized relative to the artist's peak track, not a raw log scale.
+- **Cache staleness**: DB columns added (`lastfm_last_updated`, `listenbrainz_last_updated`, etc.) with 24h TTL. Re-scans skip API calls for tracks with fresh data.
+- **Raw data persistence**: `lastfm_listeners`, `lastfm_playcount`, `listenbrainz_listens` now stored in DB alongside computed scores.
+
+**Impact**: Re-scans of a 10K-track library drop from ~50K API calls to ~5K.
+
+---
+
+## 12. Single Detection — MusicBrainz, ISRC & Duration
+
+**Status**: ✅ COMPLETED
+
+**What changed**:
+- **MusicBrainz `is_single()`**: New method on `MusicBrainzService` checks release-group `primary_type` — if MB classifies it as "Single" or "EP", it's treated as high-confidence.
+- **ISRC lookup**: When an ISRC is available, `lookup_by_isrc()` with `inc=releases` checks if the ISRC resolves to a single/EP release-group.
+- **Duration signal**: Tracks under 4:30 get a weak corroborating signal.
+- **`FEAT_SUFFIX_RE` centralized**: Canonical feat/ft regex moved to `helpers/normalization_service.py`, imported by all consumers.
+- **Last.fm bracket handling**: Regex now matches `[feat. Guest]` and `(feat. Guest)` in addition to plain `feat. Guest`.
 
 ---
 
@@ -198,10 +242,14 @@ features:
 | Priority | Change | Effort | Impact |
 | :------- | :----- | :----- | :----- |
 | 🔴 High | **Connection pooling** (SQLAlchemy) | ✅ Done | Eliminates DB connection churn |
-| 🔴 High | **Switch to httpx** | 1 day | Parallel API calls, faster scans |
-| 🟡 Medium | **docker-compose** | 2 hours | Reproducible environment |
-| 🟡 Medium | **Pydantic settings** | 4 hours | Type-safe config |
-| 🟡 Medium | **pytest + fixtures** | 1-2 days | Confidence for refactoring |
-| 🟢 Low | **APScheduler** | 1 day | Reliable scheduling |
-| 🟢 Low | **esbuild for JS** | 2 hours | Faster page loads |
-| 🟢 Low | **structlog** | 2 hours | Searchable logs |
+| 🔴 High | **Switch to httpx** | ✅ Done | Parallel API calls, faster scans |
+| 🔴 High | **Async I/O (Quart)** | ✅ Done | 100+ endpoints converted |
+| 🟡 Medium | **docker-compose** | ✅ Done | Reproducible environment |
+| 🟡 Medium | **Pydantic settings** | ✅ Done | Type-safe config |
+| 🟡 Medium | **Popularity pipeline** | ✅ Done | Album/artist context for scoring |
+| 🟡 Medium | **Single detection** | ✅ Done | MB, ISRC, duration signals |
+| 🟡 Medium | **pytest + fixtures** | ✅ Done | Base infrastructure complete |
+| 🟢 Low | **APScheduler** | ✅ Done | Reliable scheduling |
+| 🟢 Low | **esbuild for JS** | ✅ Done | Faster page loads |
+| 🟢 Low | **structlog** | ✅ Done | Searchable JSON logs |
+| 🟢 Low | **Pydantic request validation** | ✅ Started | `routes/schemas.py` created |
