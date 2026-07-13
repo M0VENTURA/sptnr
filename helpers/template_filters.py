@@ -11,3 +11,11 @@ def register_filters(app):
     @app.template_filter('format_duration')
     def format_duration(seconds):
         return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
+
+    @app.template_filter('regex_replace')
+    def regex_replace(value, pattern, replacement):
+        """Replace all occurrences of *pattern* with *replacement* in *value*."""
+        import re
+        if not value:
+            return ""
+        return re.sub(pattern, replacement, str(value))
