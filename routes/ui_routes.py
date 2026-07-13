@@ -419,9 +419,14 @@ async def artist_detail(name):
     except Exception as exc:
         logger.debug("Failed to aggregate artist genre sources: %s", exc)
 
+    albums_by_category = {
+        "album": [a for a in albums if not a.get("album", "").lower().startswith("(")],
+        "ep": [], "single": [], "compilation": [], "live_album": [], "remix_album": [],
+    }
     return await render_template(
         "pages/artist_detail.html", artist_name=name, albums=albums, stats=stats,
         top_tracks=top_tracks, genre_sources=genre_sources,
+        albums_by_category=albums_by_category,
     )
 
 
