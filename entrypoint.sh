@@ -2,12 +2,13 @@
 # Popularr container entrypoint.
 # Orchestration only; database logic lives in db/ and migrations/.
 
-echo "=== ENTRYPOINT STARTED ==="
-echo "Shell: $(readlink -f /proc/$$/exe 2>/dev/null || echo $0)"
-echo "Args: $@"
-echo "PWD: $(pwd)"
-
 set -Eeuo pipefail
+
+echo ""
+echo "╔══════════════════════════════════════════════════════════╗"
+echo "║              Popularr — Music Popularity Scanner         ║"
+echo "╚══════════════════════════════════════════════════════════╝"
+echo ""
 
 QUEUE_PID=""
 
@@ -160,39 +161,48 @@ preflight_python() {
 }
 
 start_web_app() {
-    log "Starting Quart web application with hypercorn..."
-    exec hypercorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class asyncio             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile -             --log-level "${SPTNR_LOG_LEVEL:-debug}"             "app:app"
+    log "Starting web server (hypercorn, ${SPTNR_GUNICORN_WORKERS:-4} workers)..."
+    echo ""
+    exec hypercorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class asyncio             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile -             --log-level "${SPTNR_LOG_LEVEL:-info}"             "app:app"
 }
 
 main() {
     trap cleanup SIGTERM SIGINT EXIT
-    trap 'warn "ERROR on line $LINENO (exit code $?): command was $BASH_COMMAND"' ERR
+    trap 'warn "Fatal error on line $LINENO — see above for details"' ERR
 
-    log "=== Popularr Starting ==="
+    log "── Startup ─────────────────────────────────────────────────"
 
-    # Wrap ALL function calls in if/else so set -e never kills PID 1
-    if wait_for_db; then ok "Database ready"; else warn "Database wait failed"; fi
+    wait_for_db
 
-    if run_queue_startup_schema; then :; fi
-    if run_alembic_migrations; then :; fi
-    if run_schema_bootstrap; then :; fi
-    if check_ffmpeg; then :; fi
-    if start_queue_processor; then :; fi
-    if preflight_python; then :; fi
+    run_queue_startup_schema || true
+    run_alembic_migrations || true
+    run_schema_bootstrap || true
+    check_ffmpeg || true
 
-    # Test Quart app import BEFORE hypercorn — catches import errors explicitly
-    log "Testing Quart app import..."
-    if python3 -c "import sys; sys.path.insert(0, '.'); from app import app; print('✓ Quart app loaded OK')" 2>&1; then
-        ok "Quart import test passed"
+    echo ""
+    log "── Background Services ──────────────────────────────────────"
+
+    start_queue_processor || true
+
+    echo ""
+    log "── Pre-flight Checks ───────────────────────────────────────"
+
+    preflight_python || true
+
+    # Test Quart app import BEFORE hypercorn
+    if python3 -c "import sys; sys.path.insert(0, '.'); from app import app" 2>&1; then
+        ok "App import OK"
     else
-        warn "Quart import FAILED — see error above. Continuing to hypercorn for full error trace."
+        warn "App import FAILED — see error above"
     fi
+
+    echo ""
+    log "── Launch ──────────────────────────────────────────────────"
 
     start_web_app
 
-    # If we reach here, hypercorn failed to start — pause so logs are visible
-    warn "Quart/hypercorn did not start. Container will exit in 60 seconds."
-    warn "Run 'docker logs popularr' to inspect the full output."
+    # If we reach here, hypercorn failed to start
+    warn "Web server did not start — check the error above"
     sleep 60
 }
 

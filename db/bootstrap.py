@@ -214,8 +214,20 @@ def _run_deferred_startup_migrations() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    print("Running PostgreSQL schema bootstrap...")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    print("")
+    print("── PostgreSQL Schema Bootstrap ──────────────────────────────")
     immediate = init_database_and_schema()
-    print(f"Immediate success: {immediate}")
-    print(verify_all_tables_exist())
+    if immediate:
+        print("  ✓ Schema tables created/verified")
+    else:
+        print("  ⚠ Partial schema bootstrap — some tables may be deferred")
+
+    result = verify_all_tables_exist()
+    if result.get("ok"):
+        print(f"  ✓ All {len(COLUMN_REGISTRY)} table groups verified")
+    else:
+        missing = result.get("missing", [])
+        print(f"  ⚠ Missing tables (will be created on first use): {', '.join(missing)}")
+    print("────────────────────────────────────────────────────────────")
+    print("")
