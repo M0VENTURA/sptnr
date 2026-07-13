@@ -86,14 +86,17 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         interval_minutes = jobs.get("library_sync", {}).get("interval_minutes", 360)
         try:
             from services.library.library_sync_service import request_library_sync
-            scheduler.add_job(
-                request_library_sync,
-                trigger=IntervalTrigger(minutes=interval_minutes),
-                id="library_sync",
-                name="Library sync with Navidrome",
-                replace_existing=True,
-            )
-            logger.info("APScheduler: registered library_sync (every %s min)", interval_minutes)
+            if scheduler.get_job("library_sync") is None:
+                scheduler.add_job(
+                    request_library_sync,
+                    trigger=IntervalTrigger(minutes=interval_minutes),
+                    id="library_sync",
+                    name="Library sync with Navidrome",
+                    replace_existing=True,
+                )
+                logger.info("APScheduler: registered library_sync (every %s min)", interval_minutes)
+            else:
+                logger.info("APScheduler: library_sync already registered")
         except Exception as exc:
             logger.warning("APScheduler: failed to register library_sync: %s", exc)
 
@@ -102,14 +105,17 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         interval_minutes = jobs.get("popularity_scan", {}).get("interval_minutes", 1440)  # daily
         try:
             from services.scanning.pipelines.popularity_pipeline import run_popularity_mode
-            scheduler.add_job(
-                run_popularity_mode,
-                trigger=IntervalTrigger(minutes=interval_minutes),
-                id="popularity_scan",
-                name="Popularity recalculation",
-                replace_existing=True,
-            )
-            logger.info("APScheduler: registered popularity_scan (every %s min)", interval_minutes)
+            if scheduler.get_job("popularity_scan") is None:
+                scheduler.add_job(
+                    run_popularity_mode,
+                    trigger=IntervalTrigger(minutes=interval_minutes),
+                    id="popularity_scan",
+                    name="Popularity recalculation",
+                    replace_existing=True,
+                )
+                logger.info("APScheduler: registered popularity_scan (every %s min)", interval_minutes)
+            else:
+                logger.info("APScheduler: popularity_scan already registered")
         except Exception as exc:
             logger.warning("APScheduler: failed to register popularity_scan: %s", exc)
 
@@ -118,14 +124,17 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         interval_seconds = jobs.get("download_queue_processor", {}).get("interval_seconds", 30)
         try:
             from services.queue.queue_orchestrator import process_next_batch
-            scheduler.add_job(
-                process_next_batch,
-                trigger=IntervalTrigger(seconds=interval_seconds),
-                id="download_queue_processor",
-                name="Process download queue",
-                replace_existing=True,
-            )
-            logger.info("APScheduler: registered download_queue_processor (every %s s)", interval_seconds)
+            if scheduler.get_job("download_queue_processor") is None:
+                scheduler.add_job(
+                    process_next_batch,
+                    trigger=IntervalTrigger(seconds=interval_seconds),
+                    id="download_queue_processor",
+                    name="Process download queue",
+                    replace_existing=True,
+                )
+                logger.info("APScheduler: registered download_queue_processor (every %s s)", interval_seconds)
+            else:
+                logger.info("APScheduler: download_queue_processor already registered")
         except Exception as exc:
             logger.warning("APScheduler: failed to register download_queue_processor: %s", exc)
 
