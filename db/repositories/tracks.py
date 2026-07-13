@@ -37,59 +37,15 @@ def upsert_track_payload(
     from db.repositories.popularity_repository import save_to_db
     return save_to_db(track_payload, conn=conn)
 
-def insert_or_update_track(
-    track_id: str,
-    artist_id: str,
-    album: str | None,
-    title: str,
-    genres: Iterable[str] | None,
-    spotify_score: float | None,
-    lastfm_score: float | None,
-    listenbrainz_score: float | None,
-    age_score: float | None,
-    final_score: float | None,
-    stars: int | None,
-    is_single: bool | None,
-    single_confidence: float | None,
-) -> None:
-    """Insert a track or update scoring fields if it already exists."""
-    genres_str = ", ".join(genres) if genres else ""
-    timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    with db_session() as session:
-        session.execute(
-            text("""
-                INSERT INTO tracks (
-                    id, artist_id, album, title, genres, spotify_score, lastfm_score,
-                    listenbrainz_score, age_score, final_score, stars, is_single,
-                    single_confidence, last_scanned
-                )
-                VALUES (:id, :artist_id, :album, :title, :genres, :spotify_score, :lastfm_score,
-                        :listenbrainz_score, :age_score, :final_score, :stars, :is_single,
-                        :single_confidence, :last_scanned)
-                ON CONFLICT(id) DO UPDATE SET
-                    artist_id = EXCLUDED.artist_id,
-                    album = EXCLUDED.album,
-                    title = EXCLUDED.title,
-                    genres = EXCLUDED.genres,
-                    spotify_score = EXCLUDED.spotify_score,
-                    lastfm_score = EXCLUDED.lastfm_score,
-                    listenbrainz_score = EXCLUDED.listenbrainz_score,
-                    age_score = EXCLUDED.age_score,
-                    final_score = EXCLUDED.final_score,
-                    stars = EXCLUDED.stars,
-                    is_single = EXCLUDED.is_single,
-                    single_confidence = EXCLUDED.single_confidence,
-                    last_scanned = EXCLUDED.last_scanned
-            """),
-            {
-                "id": track_id, "artist_id": artist_id, "album": album, "title": title,
-                "genres": genres_str, "spotify_score": spotify_score,
-                "lastfm_score": lastfm_score, "listenbrainz_score": listenbrainz_score,
-                "age_score": age_score, "final_score": final_score, "stars": stars,
-                "is_single": is_single, "single_confidence": single_confidence,
-                "last_scanned": timestamp,
-            },
-        )
+def insert_or_update_track(track_id: str, track_data: dict[str, Any]) -> None:
+    """Insert or update a track's popularity/enrichment data.
+
+    Delegates to ``popularity_repository.save_to_db`` which handles
+    schema-aware dynamic upserts for all known column names.
+    """
+    from db.repositories.popularity_repository import save_to_db
+    track_data["id"] = track_id
+    save_to_db(track_data)
 
 
 def get_tracks_by_artist(artist_id: str) -> list[Any]:

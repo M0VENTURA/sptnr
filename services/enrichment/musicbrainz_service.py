@@ -191,6 +191,42 @@ class MusicBrainzService:
             logger.debug("[MB LOOKUP] %s", e, exc_info=True)
             return {}
 
+    def is_single(self, title: str, artist: str, album_track_count: int | None = None) -> bool:
+        """Check if a track is a single using MusicBrainz release-group type.
+
+        Looks up the recording, checks its releases' release-group ``primary_type``.
+        Returns ``True`` if the type is ``"Single"`` or ``"EP"``.
+        """
+        if not self.enabled or not title or not artist:
+            return False
+        try:
+            mbid, _confidence = self.get_suggested_mbid(title, artist)
+            if not mbid:
+                return False
+
+            recording = self.http.get_recording(
+                mbid,
+                inc="releases+release-groups",
+                timeout=10.0,
+            )
+            if not recording:
+                return False
+
+            for release in recording.get("releases") or []:
+                rg = release.get("release-group") or {}
+                pt = (rg.get("primary-type") or rg.get("primary_type") or "").lower()
+                if pt in ("single", "ep"):
+                    return True
+                # Fall back to type if primary-type is absent
+                rt = (rg.get("type") or "").lower()
+                if rt in ("single", "ep"):
+                    return True
+
+            return False
+        except Exception as exc:
+            logger.debug("MusicBrainz is_single failed for %s / %s: %s", artist, title, exc)
+            return False
+
     # -----------------------------------------------------------------------------
     # SIMPLE LOOKUPS
     # -----------------------------------------------------------------------------

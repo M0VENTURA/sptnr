@@ -464,6 +464,36 @@ def detect_single_for_track(
             single_release_date_match = True
             reasons.append("release_date_match")
 
+    # ── ISRC-based MusicBrainz release lookup ──
+    # If the track has an ISRC, look it up on MusicBrainz to see if the
+    # associated release is a single or EP.
+    isrc_single_confirmed = False
+    if isrc and not musicbrainz_confirmed:
+        try:
+            if mb_client is None:
+                from api_clients.musicbrainz_http import MusicBrainzHttpClient
+                mb_client = MusicBrainzHttpClient()
+            recordings = mb_client.lookup_by_isrc(isrc, inc="releases")
+            for recording in recordings:
+                for release in recording.get("releases", []):
+                    rg = release.get("release-group") or {}
+                    pt = (rg.get("primary-type") or rg.get("primary_type") or "").lower()
+                    if pt in ("single", "ep"):
+                        isrc_single_confirmed = True
+                        reasons.append("isrc_single")
+                        break
+                if isrc_single_confirmed:
+                    break
+        except Exception as exc:
+            logger.debug("ISRC single lookup failed for %s: %s", isrc, exc)
+
+    # ── Duration-based signal (weak supporting evidence) ──
+    # Only used when other signals are absent. A typical single/radio-edit
+    # duration under 4:30 is a weak corroborating signal.
+    duration_support = False
+    if duration and duration > 0 and duration < 270:  # < 4:30 minutes
+        duration_support = True
+
     # ── Compilation check via MusicBrainz ──
     if musicbrainz_confirmed and mb_client and hasattr(mb_client, "appears_on_various_artists"):
         try:
@@ -478,14 +508,18 @@ def detect_single_for_track(
     has_meta = discogs_confirmed or musicbrainz_confirmed
     is_title = normalize_title_strict(title) == normalize_title_strict(album or "")
 
+    # ISRC confirmation counts as medium confidence
+    if isrc_single_confirmed:
+        musicbrainz_confirmed = True
+
     final = determine_final_status(
         discogs=discogs_confirmed, musicbrainz=musicbrainz_confirmed,
         album_z=album_z, artist_z=artist_z,
         discogs_video=discogs_video_confirmed, lastfm=lastfm_confirmed,
         mb_compilation=mb_compilation_confirmed,
-        radio_edit=radio_edit_found,
+        radio_edit=radio_edit_found or duration_support,
         popularity=popularity or 0,
-        album_mean=0, has_metadata=has_meta,
+        album_mean=0, has_metadata=has_meta or isrc_single_confirmed,
         is_remastered_only=is_remastered,
         date_match=single_release_date_match,
         is_title_track=is_title,

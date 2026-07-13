@@ -27,6 +27,7 @@ from routes.api_v1 import api_v1_bp
 from routes.beets_routes import beets_bp
 from routes.navidrome import navidrome_bp
 from routes.scan_routes import scans_bp
+from routes.scan_routes.library_routes import library_bp
 
 
 def register_all_blueprints(app):
@@ -52,3 +53,4 @@ def register_all_blueprints(app):
     app.register_blueprint(beets_bp)
     app.register_blueprint(navidrome_bp)
     app.register_blueprint(scans_bp)
+    app.register_blueprint(library_bp)

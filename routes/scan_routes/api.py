@@ -231,8 +231,8 @@ def api_scan_progress():
         }), 500
 
 @scans_bp.route("/api/popularity/run", methods=["POST"])
-def api_popularity_run_compat():
-    data = request.get_json(silent=True) or {}
+async def api_popularity_run_compat():
+    data = (await request.get_json(silent=True)) or {}
 
     # Support both explicit mode field and legacy boolean flags
     mode = str(data.get("mode", "popularity")).strip().lower()
@@ -275,7 +275,7 @@ def api_popularity_run_compat():
 # -------------------------------------------------------------------------
 
 @scans_bp.route("/api/essentia/run", methods=["POST"])
-def api_essentia_run():
+async def api_essentia_run():
     """Start an Essentia mood/genre scan via JSON API."""
     from services.scanning.pipelines.essentia_pipeline import run_essentia_pipeline
 
@@ -308,11 +308,11 @@ def api_essentia_run():
 # -------------------------------------------------------------------------
 
 @scans_bp.route("/api/navidrome/import", methods=["POST"])
-def api_navidrome_import():
+async def api_navidrome_import():
     """Start the local Navidrome import pipeline via JSON API."""
     from services.scanning.pipelines.navidrome_pipeline import run_navidrome_import_scan
 
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     mode = str(data.get("mode", "all")).strip().lower() or "all"
 
     with scan_lock:

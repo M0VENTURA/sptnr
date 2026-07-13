@@ -180,24 +180,54 @@ async def api_test_navidrome_connection():
 
     try:
         client = NavidromeClient(base_url=base_url, username=username, password=password)
-        ok = client.ping()
+        # Call _get_subsonic_response directly for diagnostic info.
+        # ping() swallows all errors and returns False for both connection
+        # failures and auth failures, so we need to inspect the response.
+        sub_data = client._get_subsonic_response("ping", timeout=10)
     except Exception as exc:
         err_msg = str(exc)
-        if "ConnectError" in type(exc).__name__ or "NewConnectionError" in type(exc).__name__:
-            return jsonify({
-                "success": False,
-                "error": "❌ Cannot reach the server — check that Navidrome is running and that this container can reach it",
-                "detail": err_msg,
-            }), 200
         return jsonify({
             "success": False,
-            "error": "❌ Connection failed",
+            "error": "❌ Cannot reach the server",
             "detail": err_msg,
         }), 200
 
-    if ok:
+    if not sub_data:
+        # Empty response means _get_subsonic_response caught an exception
+        # (connection refused, DNS failure, etc.)
+        return jsonify({
+            "success": False,
+            "error": "❌ Cannot reach the server",
+            "detail": "Connection refused or DNS failure — check that Navidrome is running and reachable from this container",
+        }), 200
+
+    status = sub_data.get("status")
+    if status == "ok":
         return jsonify({"success": True, "message": "✅ Connected successfully"})
-    return jsonify({"success": False, "error": "❌ Credentials rejected — check username and password"})
+
+    # status == "failed" — extract error details
+    error_code = sub_data.get("error", {}).get("code") if isinstance(sub_data.get("error"), dict) else None
+    error_msg = sub_data.get("error", {}).get("message", "") if isinstance(sub_data.get("error"), dict) else str(sub_data.get("error", ""))
+
+    if error_code == 10:
+        # Error 10 = Authentication failed (missing or wrong credentials)
+        return jsonify({
+            "success": False,
+            "error": "❌ Credentials rejected — wrong username or password, or token auth mismatch",
+            "detail": error_msg,
+        }), 200
+    if error_code:
+        return jsonify({
+            "success": False,
+            "error": f"❌ Server returned error {error_code}",
+            "detail": error_msg,
+        }), 200
+
+    return jsonify({
+        "success": False,
+        "error": "❌ Unknown error — check server logs",
+        "detail": str(sub_data),
+    }), 200
 
 @ui_bp.route("/api/setup/save", methods=["POST"])
 async def api_setup_save():
