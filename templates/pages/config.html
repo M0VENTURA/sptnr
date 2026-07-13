@@ -1486,7 +1486,7 @@
   <!-- Save Button -->
   <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
     <button type="button" class="btn btn-outline-secondary" id="cancelBtn" data-dashboard-url="{{ url_for('ui.dashboard') }}">Cancel</button>
-    <button type="button" class="btn btn-primary btn-lg" id="saveBtn" data-save-url="{{ url_for('config_save_json') }}" onclick="saveConfig()">
+    <button type="button" class="btn btn-primary btn-lg" id="saveBtn" data-save-url="{{ url_for('ui.config_save_json') }}" onclick="saveConfig()">
       <i class="bi bi-check-circle"></i> Save Configuration
     </button>
   </div>
@@ -1520,7 +1520,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-primary" id="rawYamlSaveBtn" data-editor-url="{{ url_for('config_editor') }}" onclick="saveRawYaml()">Save</button>
+        <button type="button" class="btn btn-primary" id="rawYamlSaveBtn" data-editor-url="{{ url_for('ui.config_editor') }}" onclick="saveRawYaml()">Save</button>
       </div>
     </div>
   </div>
