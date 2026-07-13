@@ -90,27 +90,14 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 
 ## 3. Async I/O — Quart
 
-**Status**: ✅ COMPLETED — Migrated from Flask (WSGI) to Quart (ASGI). All 37 files with `from flask import` converted to `from quart import`.
-=======
-**Status**: ✅ COMPLETED — Migrated from Flask (WSGI) to Quart (ASGI). All 37 files with `from flask import` converted to `from quart import`.
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
+**Status**: ✅ COMPLETED — Migrated from Flask (WSGI) to Quart (ASGI).
 
 **What changed**:
 - `app.py` — `Flask(__name__)` → `Quart(__name__)`
-- 37 files — `from flask import` → `from quart import` (identical API)
+- All route/helper files — `from flask import` → `from quart import` (identical API)
 - `requirements.txt` — `Flask`/`gunicorn` → `quart`/`hypercorn`
 - `entrypoint.sh` — `gunicorn` → `hypercorn`
-=======
-**What changed**:
-- `app.py` — replaced `Flask(__name__)` with `Quart(__name__)`
-- All 36 route/helper files — `from flask import` → `from quart import` (identical API)
-- `requirements.txt` — replaced `Flask`/`gunicorn` with `quart`/`hypercorn`
-- `entrypoint.sh` — replaced `gunicorn` with `hypercorn` (native ASGI server)
-- `Dockerfile` — no change needed (uses `pip install -r requirements.txt`)
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
-<<<<<<< HEAD
-=======
 **Why Quart over FastAPI**:
 - Drop-in replacement — same API as Flask (Blueprints, routes, templates)
 - Same `jsonify`, `request`, `render_template`, `session` etc.
@@ -118,20 +105,6 @@ Comprehensive improvement recommendations based on codebase audit (2026-07).
 - Gradual async migration — convert routes to `async def` one at a time
 - Enables parallel scan pipelines via `asyncio`
 
-**Configuration**:
-```yaml
-# hypercorn settings via environment variables:
-SPTNR_GUNICORN_BIND: "0.0.0.0:5000"    # Still uses GUNICORN_ prefix for compatibility
-SPTNR_GUNICORN_WORKERS: "4"
-SPTNR_LOG_LEVEL: "debug"
-```
-
-**Next steps**:
-- Convert hot-path routes (search, dashboard) to `async def` for parallelism
-- Migrate scan pipelines to `asyncio` tasks
-- Evaluate `async_session_factory` for truly async DB access
-
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 ---
 
 ## 4. API Consistency — Versioning + Validation
@@ -150,75 +123,32 @@ SPTNR_LOG_LEVEL: "debug"
 
 ## 5. Background Tasks — APScheduler
 
-<<<<<<< HEAD
-**Status**: ✅ COMPLETED
-=======
-**Status**: ✅ COMPLETED — APScheduler integrated. Replaces ad-hoc `threading.Thread` for periodic tasks.
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
+**Status**: ✅ COMPLETED — APScheduler integrated.
 
 **What changed**:
-- `apscheduler>=3.10` in `requirements.txt`
+- `apscheduler>=3.10,<4.0` in `requirements.txt`
 - `services/scheduler/scheduler_service.py` — `BackgroundScheduler` singleton
 - 3 registered jobs: library_sync (6h), popularity_scan (24h), queue_processor (30s)
 - `helpers/task_manager.py` auto-starts scheduler
-=======
-**What changed**:
-- Added `apscheduler>=3.10,<4.0` to `requirements.txt`
-- Created `services/scheduler/scheduler_service.py` — `BackgroundScheduler` singleton with SQLAlchemy job store
-- Updated `helpers/task_manager.py` — `initialize_app_services()` now starts the scheduler automatically
-- Removed `requests` and `urllib3` from `requirements.txt` (fully replaced by httpx)
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
-<<<<<<< HEAD
-=======
 **Registered jobs** (configurable via `config.yaml` → `scheduler.jobs`):
+
 | Job | Default interval | Function |
 |-----|-----------------|----------|
 | `library_sync` | 360 min (6h) | `request_library_sync()` |
 | `popularity_scan` | 1440 min (24h) | `run_popularity_mode()` |
 | `download_queue_processor` | 30 s | `process_next_batch()` |
 
-**Configuration**:
-```yaml
-scheduler:
-  timezone: "Australia/Melbourne"
-  jobs:
-    library_sync:
-      enabled: true
-      interval_minutes: 360
-    popularity_scan:
-      enabled: true
-      interval_minutes: 1440
-    download_queue_processor:
-      enabled: true
-      interval_seconds: 30
-```
-
-**Note**: The old `services/tasks/task_manager.py` (ad-hoc threading) still exists for one-shot async tasks. The APScheduler replaces it for recurring scheduled work.
-
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 ---
 
 ## 6. Frontend — Asset Bundling
 
-<<<<<<< HEAD
-**Status**: ✅ COMPLETED
-=======
-**Status**: ✅ COMPLETED — esbuild bundling setup created. Templates updated to support local vendor assets.
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
+**Status**: ✅ COMPLETED — esbuild bundling setup created.
 
 **What changed**:
 - `package.json` + esbuild config for JS bundling
 - Templates support conditional CDN vs local assets via `features.use_local_assets`
-=======
-**What changed**:
-- Created `package.json` with `esbuild` as dev dependency
-- Created `esbuild.config.mjs` — bundles all JS modules into `static/dist/main.js`
 - Created `static/js/main.js` — entry point importing all JS modules
-- Created `static/README.md` — frontend build documentation
-- Updated `templates/base.html` — conditional CDN vs local vendor assets via `features.use_local_assets`
-- Updated `templates/auth/login.html` and `templates/auth/setup.html` — same conditional support
->>>>>>> 6d74b20a0343f198f4615140dd46abf54dc243cd
 
 **To enable local assets**:
 ```bash
