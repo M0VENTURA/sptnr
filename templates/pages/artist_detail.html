@@ -49,7 +49,7 @@
   <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
       <li class="breadcrumb-item"><a href="{{ url_for('ui.dashboard') }}">Dashboard</a></li>
-      <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
+      <li class="breadcrumb-item"><a href="{{ url_for('ui.artists') }}">Artists</a></li>
       <li class="breadcrumb-item active" aria-current="page">{{ artist_name }}</li>
     </ol>
   </nav>
@@ -70,10 +70,10 @@
       <button id="artistFavouriteBtn" class="btn btn-outline-danger" onclick='toggleArtistFavourite(_pd.artistName)' title="Favourite this artist — new albums will be auto-queued for download" aria-label="Favourite this artist to auto-queue new albums for download">
         <i class="bi bi-heart" id="artistFavouriteIcon"></i> <span class="d-none d-sm-inline" id="artistFavouriteLabel">Favourite</span>
       </button>
-      <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
+      <a class="btn btn-outline-secondary" href="{{ url_for('ui.artists') }}">
         <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
       </a>
-      <form action="{{ url_for('scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
+      <form action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
         <input type="hidden" name="artist" value="{{ artist_name }}">
         <select name="scan_type" class="form-select form-select-sm" style="min-width: 160px; width: auto;" title="Select scan type">
           <option value="full">Full</option>
@@ -96,13 +96,13 @@
 
   <!-- Needs Correcting badge — always shown when corrections exist -->
   <div id="artist-corrections-banner" style="display:none;" class="mb-3">
-    <a href="{{ url_for('artist_corrections', name=artist_name) }}" class="btn btn-outline-danger btn-sm">
+    <a href="{{ url_for('ui.artist_corrections', name=artist_name) }}" class="btn btn-outline-danger btn-sm">
       <i class="bi bi-tools"></i> Needs Correcting
     </a>
     <span id="artist-missing-tracks-badge" class="badge bg-warning text-dark ms-2" style="display:none;"></span>
   </div>
   <div class="mb-3">
-    <a href="{{ url_for('artist_genre_management', name=artist_name) }}" class="btn btn-outline-info btn-sm">
+    <a href="{{ url_for('ui.artist_genre_management', name=artist_name) }}" class="btn btn-outline-info btn-sm">
       <i class="bi bi-tags"></i> Genre Management
     </a>
   </div>
@@ -130,7 +130,7 @@
           <!-- Artist Image -->
           <div class="col-12 col-md-3 d-flex flex-column align-items-center">
             <div class="artist-img-wrap position-relative mb-3" style="width: min(200px, 50vw); aspect-ratio: 1; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
-              <img id="artistImage" src="{{ url_for('api_artist_image', name=artist_name) }}" 
+              <img id="artistImage" src="{{ url_for('artist.api_artist_image', name=artist_name) }}" 
                    alt="{{ artist_name }}" 
                    style="width: 100%; height: 100%; object-fit: cover;"
                    onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
@@ -455,7 +455,7 @@
                       <span class="text-muted">{{ track.title }}</span>
                       <span class="badge bg-warning text-dark ms-2" title="This track is currently in the download queue">In Queue</span>
                     {% else %}
-                      <a href="{{ url_for('track_detail', artist=artist_name, album=track.album, track_id=track.id) }}" class="text-decoration-none">
+                      <a href="{{ url_for('ui.track_detail', artist=artist_name, album=track.album, track_id=track.id) }}" class="text-decoration-none">
                         {{ track.title }}
                       </a>
                     {% endif %}
@@ -464,7 +464,7 @@
                     {% endif %}
                   </td>
                   <td>
-                    <a href="{{ url_for('album_detail', artist=artist_name, album=track.album) }}" class="text-decoration-none">
+                    <a href="{{ url_for('ui.album_detail', artist=artist_name, album=track.album) }}" class="text-decoration-none">
                       {{ track.album }}
                     </a>
                   </td>
@@ -925,8 +925,8 @@
               <tr>
                 <td class="text-center" style="width: 100px; padding: 0.5rem;">
                   {% if entry.album and entry.album_artist %}
-                  <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}">
-                    <img src="{{ url_for('api_album_art', artist=entry.album_artist, album=entry.album) }}"
+                  <a href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}">
+                    <img src="{{ url_for('album_routes.api_album_art', artist=entry.album_artist, album=entry.album) }}"
                          alt="{{ entry.album }}"
                          class="img-thumbnail"
                          style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
@@ -942,14 +942,14 @@
                 <td>
                   <div class="d-flex flex-column justify-content-center" style="min-height: 80px;">
                     {% if entry.album and entry.album_artist %}
-                    <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}" class="text-decoration-none fw-semibold">
+                    <a href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}" class="text-decoration-none fw-semibold">
                       {{ entry.album }}
                     </a>
                     {% else %}
                     <span class="fw-semibold">{{ entry.album or '—' }}</span>
                     {% endif %}
                     {% if entry.album_artist %}
-                    <a href="{{ url_for('artist_detail', name=entry.album_artist) }}" class="text-decoration-none small text-muted mt-1">
+                    <a href="{{ url_for('ui.artist_detail', name=entry.album_artist) }}" class="text-decoration-none small text-muted mt-1">
                       {{ entry.album_artist }}
                     </a>
                     {% else %}
@@ -967,7 +967,7 @@
                   {% endif %}
                 </td>
                 <td class="text-center">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}" title="View album">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}" title="View album">
                     <i class="bi bi-arrow-right"></i>
                   </a>
                 </td>

@@ -81,8 +81,8 @@
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
             <li class="breadcrumb-item"><a href="{{ url_for('ui.dashboard') }}">Dashboard</a></li>
-            <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
-            <li class="breadcrumb-item"><a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('ui.artists') }}">Artists</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></li>
             <li class="breadcrumb-item active" aria-current="page">Genre Management</li>
         </ol>
     </nav>

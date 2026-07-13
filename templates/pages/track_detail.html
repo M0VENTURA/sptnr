@@ -8,13 +8,13 @@
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
             <li class="breadcrumb-item"><a href="{{ url_for('ui.dashboard') }}">Dashboard</a></li>
-            <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('ui.artists') }}">Artists</a></li>
             <li class="breadcrumb-item">
                 {% for artist_name in artist_parts %}
                     <a href="javascript:void(0)" onclick="navigateToArtist('{{ artist_name|escapejs }}', event)">{{ artist_name }}</a>{% if not loop.last %} / {% endif %}
                 {% endfor %}
             </li>
-            <li class="breadcrumb-item"><a href="{{ url_for('album_detail', artist=artist_parts[0] if artist_parts else track.artist, album=track.album) }}">{{ track.album }}</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('ui.album_detail', artist=artist_parts[0] if artist_parts else track.artist, album=track.album) }}">{{ track.album }}</a></li>
             <li class="breadcrumb-item active" aria-current="page">{{ track.title }}</li>
         </ol>
     </nav>
@@ -27,7 +27,7 @@
                     <!-- Album Art -->
                     <div class="col-12 col-md-3 d-flex flex-column align-items-center">
                         <div class="position-relative mb-3" style="width: min(200px, 50vw); aspect-ratio: 1; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
-                            <img id="trackAlbumArtImage" src="{{ url_for('api_album_art', artist=track.artist|urlencode, album=track.album|urlencode) }}" 
+                            <img id="trackAlbumArtImage" src="{{ url_for('album_routes.api_album_art', artist=track.artist|urlencode, album=track.album|urlencode) }}" 
                                  alt="{{ track.album }}" 
                                  style="width: 100%; height: 100%; object-fit: cover;"
                                  onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
@@ -47,7 +47,7 @@
                             </div>
                             <div class="col-6">
                                 <small class="text-muted d-block">Album</small>
-                                <strong><a href="{{ url_for('album_detail', artist=artist_parts[0] if artist_parts else track.artist, album=track.album) }}">{{ track.album }}</a></strong>
+                                <strong><a href="{{ url_for('ui.album_detail', artist=artist_parts[0] if artist_parts else track.artist, album=track.album) }}">{{ track.album }}</a></strong>
                             </div>
                             {% if track.year %}
                             <div class="col-6">
@@ -114,12 +114,12 @@
                     {% endif %}
                 </ul>
             </div>
-            <form method="POST" action="{{ url_for('scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" class="d-contents">
+            <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" class="d-contents">
                 <button class="btn btn-outline-info" type="submit" title="Rescan this track (Navidrome + Popularity + Singles)">
                     <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Track</span>
                 </button>
             </form>
-            <form method="POST" action="{{ url_for('scan_essentia_mood') }}" class="d-contents">
+            <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" class="d-contents">
                 <input type="hidden" name="track_id" value="{{ track.id }}">
                 <button class="btn" style="border-color:#6f42c1;color:#6f42c1;" type="submit" title="Run Essentia ML mood/genre scan for this track">
                     <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
@@ -158,7 +158,7 @@
         <button class="btn btn-sm btn-outline-secondary" type="button" id="accordion-collapse-all">Collapse All</button>
     </div>
 
-    <form method="POST" action="{{ url_for('track_edit', track_id=track.id) }}">
+    <form method="POST" action="{{ url_for('ui.track_detail', track_id=track.id) }}">
         <div class="row g-2 g-md-3">
             <!-- Left Column: Track Metadata & Editing -->
             <div class="col-12 col-lg-6">
@@ -1307,7 +1307,7 @@
             <button type="submit" class="btn btn-primary">
                 <i class="bi bi-check-circle"></i> Save Changes
             </button>
-            <a href="{{ url_for('album_detail', artist=track.artist, album=track.album) }}" class="btn btn-secondary">
+            <a href="{{ url_for('ui.album_detail', artist=track.artist, album=track.album) }}" class="btn btn-secondary">
                 <i class="bi bi-x-circle"></i> Cancel
             </a>
         </div>

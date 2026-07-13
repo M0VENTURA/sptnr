@@ -1,18 +1,58 @@
 {% extends "base.html" %}
+
+{% block title %}Dashboard - Popularr{% endblock %}
+
 {% block content %}
-<div class="container">
-    <!-- Library Stats Header -->
-    <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
-        <h2 class="mb-0">Dashboard</h2>
-        <div class="d-flex flex-wrap gap-2 ms-auto">
-            <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-music-note"></i> {{ stats.tc if stats else '?' }} tracks</span>
-            <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-disc"></i> {{ stats.ac if stats else '?' }} albums</span>
-            <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-people"></i> {{ stats.artists_c if stats else '?' }} artists</span>
-            {% if stats and stats.avg_stars is not none %}
-            <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-star-fill text-warning"></i> {{ stats.avg_stars }}</span>
-            {% endif %}
+<div class="container-fluid mt-4">
+    <div id="dashboardFlags"
+         data-launch-on-startup="{{ 'true' if launch_on_startup else 'false' }}"
+         data-first-full-scan-done="{{ 'true' if first_full_scan_done else 'false' }}"
+         hidden></div>
+
+    <!-- Header -->
+    <div class="mb-4">
+        <div>
+            <h1 class="h2 mb-1">
+                <i class="bi bi-speedometer2"></i> Dashboard
+            </h1>
+            <p class="text-muted mb-0">Music library overview and scan controls</p>
+            <form class="dashboard-mobile-search d-lg-none mt-2" onsubmit="navSearch(event)">
+                <div class="input-group">
+                    <input
+                        type="text"
+                        id="dashboardTopSearchInput"
+                        class="form-control"
+                        placeholder="Search library..."
+                        autocomplete="off"
+                        aria-label="Search library"
+                        style="font-size:16px;min-height:44px;"
+                    />
+                    <button class="btn btn-outline-secondary" type="submit" title="Search" style="min-height:44px;">
+                        <i class="bi bi-search"></i>
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
+
+    <!-- Library Stats Badges -->
+    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+        <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-music-note"></i> {{ stats.tc if stats else '?' }} tracks</span>
+        <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-disc"></i> {{ stats.ac if stats else '?' }} albums</span>
+        <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-people"></i> {{ stats.artists_c if stats else '?' }} artists</span>
+        {% if stats and stats.avg_stars is not none %}
+        <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-star-fill text-warning"></i> {{ stats.avg_stars }}</span>
+        {% endif %}
+    </div>
+
+    {% if error %}
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <i class="bi bi-exclamation-triangle-fill"></i>
+        <strong>Dashboard Error:</strong> {{ error }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+    {% endif %}
+
     <!-- Scan Cards — 2-column grid -->
     <div class="row g-3">
         <!-- Popularity -->
@@ -104,44 +144,221 @@
     <div class="position-fixed bottom-0 end-0 p-3" style="z-index:10">
         <button onclick="stopAllScans()" class="btn btn-outline-danger shadow rounded-pill"><i class="bi bi-stop-circle"></i> Stop All</button>
     </div>
-    <!-- Scan History -->
-    <div class="card mt-4">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="bi bi-clock-history"></i> Scan History</span>
-            <small class="text-muted">{{ recent_scans|length if recent_scans else 0 }} recent</small>
+
+    <!-- Navigation Buttons -->
+    <div class="d-flex flex-column flex-md-row gap-2 my-4">
+        <a href="/artists" class="btn btn-primary flex-grow-1">
+            <i class="bi bi-people"></i> <span class="d-none d-sm-inline">Browse Artists</span>
+        </a>
+        <a href="/missing" class="btn btn-outline-warning flex-grow-1">
+            <i class="bi bi-exclamation-circle"></i> <span class="d-none d-sm-inline">Albums Missing Tracks</span>
+        </a>
+        <a href="/analytics/genres-moods" class="btn btn-outline-info flex-grow-1">
+            <i class="bi bi-bar-chart-line"></i> <span class="d-none d-sm-inline">Genres &amp; Moods</span>
+        </a>
+        <a href="/config" class="btn btn-outline-secondary flex-grow-1">
+            <i class="bi bi-gear"></i> <span class="d-none d-sm-inline">Settings</span>
+        </a>
+    </div>
+
+    <!-- Upcoming & Recent Releases Banner -->
+    <div class="card mb-4 border-info">
+        <div class="card-header bg-info bg-opacity-10 border-info d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-calendar-event"></i> Recently Added &amp; Announced Releases
+            </h5>
+            <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Upcoming release filters" id="upcomingBannerFilterGroup">
+                    <button type="button" class="btn btn-info" id="upcomingFilterAll" onclick="setUpcomingBannerFilter('all')">All</button>
+                    <button type="button" class="btn btn-outline-info" id="upcomingFilterCollection" onclick="setUpcomingBannerFilter('collection')">Collection</button>
+                    <button type="button" class="btn btn-outline-info" id="upcomingFilterRecommended" onclick="setUpcomingBannerFilter('recommended')">Recommended</button>
+                </div>
+                <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-info">
+                    <i class="bi bi-arrow-right"></i> View All
+                </a>
+            </div>
         </div>
-        <div class="card-body p-0">
-            {% if recent_scans %}
-            <div class="table-responsive">
-                <table class="table table-sm table-hover mb-0">
-                    <thead class="table-light"><tr><th>Type</th><th>Artist</th><th>Album</th><th>Status</th><th>Started</th><th>Duration</th><th>Changes</th></tr></thead>
-                    <tbody>
-                        {% for scan in recent_scans %}
-                        <tr>
-                            <td><span class="badge bg-dark">{{ scan.scan_type or '—' }}</span></td>
-                            <td>{% if scan.artist %}<a href="{{ url_for('artist_detail', name=scan.artist) }}" class="text-decoration-none">{{ scan.artist }}</a>{% else %}—{% endif %}</td>
-                            <td>{% if scan.album %}<a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}" class="text-decoration-none">{{ scan.album }}</a>{% endif %}</td>
-                            <td><span class="badge bg-{{ 'success' if scan.status == 'complete' else 'danger' if scan.status == 'failed' else 'warning text-dark' if scan.status == 'stopped' else 'secondary' if scan.status == 'skipped' else 'info' }}">{{ scan.status or '—' }}</span></td>
-                            <td class="small">{{ scan.started_at[:19] if scan.started_at else '' }}</td>
-                            <td class="small">{% if scan.duration_seconds is not none %}{{ '%.1f'|format(scan.duration_seconds) }}s{% endif %}</td>
-                            <td class="small">{% if scan.changed_albums is not none %}{{ scan.changed_albums }} album(s){% endif %}{% if scan.tracks_added is not none and scan.tracks_added > 0 %}, +{{ scan.tracks_added }} tracks{% endif %}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+        <div class="card-body">
+            <div id="upcomingBannerContent" style="max-height: 300px; overflow-y: auto;">
+                <div class="text-center py-3">
+                    <div class="spinner-border spinner-border-sm" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <small class="d-block mt-2 text-muted">Loading releases...</small>
+                </div>
             </div>
-            {% else %}
-            <div class="text-center text-muted py-4">
-                <i class="bi bi-inbox" style="font-size:2rem"></i>
-                <p class="mt-2 mb-0">No scans yet. Run a scan from the cards above.</p>
+        </div>
+    </div>
+
+    <!-- Recent Scans (Dynamic JS-rendered) -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-clock-history"></i> Recent Scans (Scrollable 100-item View)
+            </h5>
+        </div>
+        <div class="table-responsive" style="height: 400px; overflow-y: auto; position: relative;">
+            <table class="table table-hover mb-0" style="margin-bottom: 0;">
+                <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
+                    <tr>
+                        <th style="width: 25%; min-width: 120px;">
+                            <i class="bi bi-person"></i> Artist
+                        </th>
+                        <th style="width: 25%; min-width: 120px;">
+                            <i class="bi bi-disc"></i> Album
+                        </th>
+                        <th style="width: 25%; min-width: 140px;">Scan Types</th>
+                        <th style="width: 15%; text-align: right; min-width: 100px;">Last Scanned</th>
+                        <th style="width: 10%; text-align: center; min-width: 80px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="recent-scans-body">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Unified Log Area -->
+    <div class="card mb-4">
+        <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
+            <span class="fw-semibold"><i class="bi bi-terminal"></i> Unified Log</span>
+            <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm ms-2"><i class="bi bi-pause"></i> Pause</button>
+        </div>
+        <div class="card-body p-2">
+            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-2" style="height: 400px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+            <div class="d-flex gap-2 justify-content-end mt-2">
+                <a href="/api/download-log/unified" class="btn btn-sm btn-outline-primary" download>
+                    <i class="bi bi-download"></i> Unified (1h)
+                </a>
+                <a href="/api/download-log/info" class="btn btn-sm btn-outline-info" download>
+                    <i class="bi bi-download"></i> Info (1h)
+                </a>
+                <a href="/api/download-log/debug" class="btn btn-sm btn-outline-warning" download>
+                    <i class="bi bi-download"></i> Debug (1h)
+                </a>
+                <a href="/api/download-log/queue" class="btn btn-sm btn-outline-success" download>
+                    <i class="bi bi-download"></i> Queue (1h)
+                </a>
             </div>
-            {% endif %}
         </div>
     </div>
 </div>
+
+<style>
+    .dashboard-mobile-search {
+        width: 100%;
+        max-width: 480px;
+    }
+
+    @media (max-width: 576px) {
+        .dashboard-mobile-search {
+            max-width: 100%;
+        }
+    }
+
+    /* Table and card dark theme fixes */
+    .card {
+        background-color: var(--secondary-bg, #1e1e1e) !important;
+        border-color: var(--border-color, #333) !important;
+    }
+
+    .card-header {
+        background-color: var(--primary-bg, #121212) !important;
+        border-bottom-color: var(--border-color, #333) !important;
+    }
+
+    .table-responsive {
+        background-color: var(--secondary-bg, #1e1e1e) !important;
+    }
+
+    .table {
+        color: var(--text-primary, #fff) !important;
+        background-color: transparent !important;
+    }
+
+    .table thead th {
+        color: var(--text-primary, #fff) !important;
+        background-color: var(--primary-bg, #121212) !important;
+        border-color: var(--border-color, #333) !important;
+    }
+
+    .table tbody td {
+        color: var(--text-primary, #fff) !important;
+        background-color: transparent !important;
+        border-color: var(--border-color, #333) !important;
+    }
+
+    .table-hover tbody tr:hover {
+        background-color: var(--primary-bg, #121212) !important;
+    }
+
+    .badge-musicbrainz {
+        background: #f06a34;
+        color: #fff;
+        border-radius: 999px;
+        font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+    }
+
+    .badge-musicbrainz::before {
+        content: '';
+        width: 0.65rem;
+        height: 0.65rem;
+        background: #d45aa3;
+        clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0% 50%);
+        display: inline-block;
+    }
+
+    .upcoming-source-chip {
+        font-size: 0.72rem;
+        padding: 0.2rem 0.45rem;
+        border-radius: 999px;
+        font-weight: 600;
+        margin-left: 0.35rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
+
+    .upcoming-source-musicbrainz {
+        background: rgba(240, 106, 52, 0.2);
+        color: #ff9e73;
+        border: 1px solid rgba(240, 106, 52, 0.45);
+    }
+
+    .upcoming-source-wikipedia {
+        background: rgba(120, 135, 160, 0.2);
+        color: #c7d2e6;
+        border: 1px solid rgba(120, 135, 160, 0.45);
+    }
+
+    .progress {
+        background-color: var(--tertiary-bg, #282828) !important;
+    }
+
+    .progress-bar {
+        position: relative;
+        overflow: hidden;
+    }
+</style>
+
 <script>
+// ===== Shared helpers =====
+if (typeof escapeHtml === 'undefined') {
+    function escapeHtml(text) {
+        if (!text && text !== 0) return '';
+        var div = document.createElement('div');
+        div.appendChild(document.createTextNode(String(text)));
+        return div.innerHTML;
+    }
+}
+
 async function postJSON(u,b){const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{})});return r.json().catch(()=>({}))}
 function fE(s){if(!s)return"";return` — ${Math.floor(s/60)}m ${Math.floor(s%60)}s`}
+
+// ===== Scan Card Polling =====
 (async()=>{try{const r=await fetch("/api/navidrome/scan/status"),d=await r.json(),e=document.getElementById("nav-connectivity");if(d.success!==false){e.className="badge bg-success ms-1";e.title="OK";e.textContent="✓"}else{e.className="badge bg-danger ms-1";e.title="Unreachable";e.textContent="✗"}}catch{}})();
 async function startPopularityScan(m){await postJSON("/api/popularity/run",{mode:m||"popularity"})}
 async function stopPopularityScan(){await fetch("/scan/stop-popularity",{method:"POST"})}
@@ -157,6 +374,366 @@ async function startEssentiaScan(){await fetch("/api/essentia/run",{method:"POST
 async function stopEssentiaScan(){await fetch("/scan/stop-essentia-mood",{method:"POST"})}
 async function pollEssentiaStatus(){const e=document.getElementById("ess-status"),b=document.getElementById("ess-progress-bar"),t=document.getElementById("ess-progress-text"),pd=await(await fetch("/api/scan-progress")).json().catch(()=>({})),es=(pd.active_scans||[]).find(s=>s.scan_type==="essentia_mood_scan");if(es&&es.is_running){e.innerText=(es.message||"Running...")+fE(es.elapsed_seconds);e.className="text-primary small";const p=Math.min(es.percent_complete||0,100);b.style.width=p+"%";t.innerText=`essentia — ${p}%`}else{e.innerText="Idle";e.className="text-muted small";b.style.width="0%";t.innerText=""}}
 async function stopAllScans(){await fetch("/scan/stop-all",{method:"POST"})}
-let _pi=null;async function _poll(){await Promise.all([pollPopularityStatus(),pollNavidromeStatus(),pollLibraryStatus(),pollEssentiaStatus()]);const pd=await(await fetch("/api/scan-progress").catch(()=>null))?.json().catch(()=>({}))||{},a=(pd.active_scans||[]).length,n=a>0?2000:30000;if(_pi&&_pi._d!==n){clearInterval(_pi);_pi=setInterval(_poll,n);_pi._d=n}};_pi=setInterval(_poll,2000);_pi._d=2000;
+
+// ===== Recent Scans (Dynamic) =====
+var SCAN_TYPE_DISPLAY_NAMES = {
+    'navidrome_scan': 'Navidrome Import',
+    'metadata_lookup_scan': 'Metadata Scan',
+    'popularity_scan': 'Popularity and Single Scan',
+    'singles_scan': 'Singles Detection',
+    'mood_scan': 'Mood Scan',
+    'essentia_mood_scan': 'Mood Scan (Essentia)',
+    'combined_scan': 'Combined Scan',
+    'missing_releases_scan': 'Missing Releases Scan'
+};
+
+var runningScans = new Set();
+var _lastRecentScansPayload = null;
+var _currentScanningAlbum = null;
+var previousScanStates = {};
+
+function parseScanTimestamp(ts) {
+    if (!ts && ts !== 0) return null;
+    if (ts instanceof Date) return isNaN(ts.getTime()) ? null : ts;
+    if (typeof ts === 'number') { var d = new Date(ts); return isNaN(d.getTime()) ? null : d; }
+    var text = String(ts).trim();
+    if (!text) return null;
+    if (/^\d+$/.test(text)) {
+        var n = Number(text);
+        if (!Number.isNaN(n)) { var e = new Date(text.length <= 10 ? n * 1000 : n); if (!isNaN(e.getTime())) return e; }
+    }
+    var norm = text.replace(' ', 'T').replace(/\.(\d{3})\d+/, '.$1').replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?$/.test(norm)) norm += 'Z';
+    var d2 = new Date(norm);
+    return isNaN(d2.getTime()) ? null : d2;
+}
+
+function formatScanTimestamp(ts) {
+    var d = parseScanTimestamp(ts);
+    if (!d) return '\u2014';
+    var now = Date.now();
+    var diffMs = now - d.getTime();
+    var diffSec = Math.floor(diffMs / 1000);
+    var diffMin = Math.floor(diffSec / 60);
+    var diffHr  = Math.floor(diffMin / 60);
+    var diffDay = Math.floor(diffHr  / 24);
+    var relative;
+    if (diffSec < 60)       relative = diffSec + 's ago';
+    else if (diffMin < 60)  relative = diffMin + 'm ago';
+    else if (diffHr  < 24)  relative = diffHr  + 'h ago';
+    else if (diffDay < 7)   relative = diffDay + 'd ago';
+    else                    relative = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    var full = d.toLocaleString();
+    return '<span title="' + escapeHtml(full) + '">' + escapeHtml(relative) + '</span>';
+}
+
+function renderRecentScans(scans) {
+    var body = document.getElementById('recent-scans-body');
+    if (!body) return;
+    if (!scans || scans.length === 0) {
+        body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No recent scans yet</td></tr>';
+        return;
+    }
+    var grouped = {};
+    var inProgress = [];
+    scans.forEach(function(scan) {
+        if (scan._inProgress) {
+            inProgress.push({
+                artist: scan.artist,
+                album: scan.album || '\u2026',
+                scan_types: [{ type: scan.scan_type, timestamp: scan.scan_timestamp, _inProgress: true }],
+                latest_timestamp_obj: new Date(),
+                _inProgress: true
+            });
+            return;
+        }
+        var key = scan.artist + '|' + scan.album;
+        if (!grouped[key]) {
+            grouped[key] = {
+                artist: scan.artist,
+                album: scan.album,
+                scan_types: [],
+                latest_timestamp_obj: parseScanTimestamp(scan.scan_timestamp)
+            };
+        }
+        if (!grouped[key].scan_types.find(function(s) { return s.type === scan.scan_type; })) {
+            grouped[key].scan_types.push({ type: scan.scan_type, timestamp: scan.scan_timestamp });
+        }
+        var scanTime = parseScanTimestamp(scan.scan_timestamp);
+        var currentLatest = grouped[key].latest_timestamp_obj;
+        if (scanTime && (!currentLatest || scanTime > currentLatest)) {
+            grouped[key].latest_timestamp = scan.scan_timestamp;
+            grouped[key].latest_timestamp_obj = scanTime;
+        }
+    });
+    var entries = inProgress.concat(Object.values(grouped).sort(function(a, b) {
+        var aTs = a.latest_timestamp_obj ? a.latest_timestamp_obj.getTime() : 0;
+        var bTs = b.latest_timestamp_obj ? b.latest_timestamp_obj.getTime() : 0;
+        return bTs - aTs;
+    }));
+    var rows = entries.map(function(group) {
+        if (group.artist === '_SCAN_SESSION_') {
+            var typeName = group.album === 'navidrome' ? 'Navidrome Import'
+                : group.album === 'popularity' ? 'Popularity Scan'
+                : group.album === 'singles' ? 'Singles Scan'
+                : group.album === 'mood' ? 'Mood Scan'
+                : group.album === 'essentia_mood' ? 'Mood Scan (Essentia)'
+                : group.album === 'combined' ? 'Combined Scan'
+                : escapeHtml(group.album);
+            var typeIcon = group.album === 'navidrome' ? 'bi-cloud'
+                : group.album === 'popularity' ? 'bi-graph-up'
+                : group.album === 'singles' ? 'bi-star'
+                : group.album === 'mood' ? 'bi-emoji-smile'
+                : group.album === 'essentia_mood' ? 'bi-cpu'
+                : 'bi-lightning-fill';
+            return '<tr class="table-success bg-opacity-10"><td colspan="4" class="py-1 ps-3"><small class="text-success"><i class="bi bi-check-circle-fill me-1"></i><strong>' + typeName + '</strong> completed \u2014 ' + formatScanTimestamp(group.latest_timestamp) + '<span class="badge bg-success ms-2"><i class="bi ' + typeIcon + '"></i></span></small></td><td></td></tr>';
+        }
+        var artistUrl = '/artist/' + encodeURIComponent(group.artist);
+        var albumUrl = group.album && group.album !== '\u2026'
+            ? '/album/' + encodeURIComponent(group.artist) + '/' + encodeURIComponent(group.album)
+            : artistUrl;
+        var badges = group.scan_types.filter(function(st) { return st.type !== 'covers'; }).map(function(st) {
+            var badgeHtml = '<span class="badge bg-secondary" title="' + escapeHtml(st.timestamp || '') + '">' + escapeHtml(st.type) + '</span>';
+            if (st._inProgress) {
+                badgeHtml = '<span class="badge bg-primary"><span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span> Scanning\u2026</span>';
+            } else if (st.type === 'navidrome') {
+                badgeHtml = '<span class="badge bg-primary" title="' + escapeHtml(st.timestamp || '') + '"><i class="bi bi-cloud"></i> Navidrome</span>';
+            } else if (st.type === 'popularity') {
+                badgeHtml = '<span class="badge bg-success" title="' + escapeHtml(st.timestamp || '') + '"><i class="bi bi-graph-up"></i> Popularity</span>';
+            } else if (st.type === 'singles' || st.type === 'singles_scan' || st.type === 'single_detection') {
+                badgeHtml = '<span class="badge bg-warning text-dark" title="' + escapeHtml(st.timestamp || '') + '"><i class="bi bi-star"></i> Singles</span>';
+            } else if (st.type === 'mood' || st.type === 'mood_scan') {
+                badgeHtml = '<span class="badge bg-secondary" title="' + escapeHtml(st.timestamp || '') + '"><i class="bi bi-emoji-smile"></i> Mood</span>';
+            } else if (st.type === 'essentia-mood' || st.type === 'essentia_mood_scan') {
+                badgeHtml = '<span class="badge" style="background-color:#6f42c1" title="' + escapeHtml(st.timestamp || '') + '"><i class="bi bi-cpu"></i> Essentia</span>';
+            } else if (st.type === 'combined') {
+                badgeHtml = '<span class="badge bg-info text-dark" title="' + escapeHtml(st.timestamp || '') + '"><i class="bi bi-lightning-fill"></i> Combined</span>';
+            } else if (st.type === 'unified') {
+                badgeHtml = '<span class="badge bg-secondary" title="' + escapeHtml(st.timestamp || '') + '"><i class="bi bi-layers"></i> Unified</span>';
+            } else if (st.type === 'metadata' || st.type === 'metadata_scan' || st.type === 'metadata_lookup_scan') {
+                badgeHtml = '<span class="badge badge-musicbrainz" title="' + escapeHtml(st.timestamp || '') + '">Metadata</span>';
+            }
+            return badgeHtml;
+        }).join(' ');
+        var rowClass = group._inProgress ? ' class="table-active"' : '';
+        return '<tr' + rowClass + '><td><a href="' + artistUrl + '">' + escapeHtml(group.artist) + '</a></td><td>' +
+            (group.album && group.album !== '\u2026' ? '<a href="' + albumUrl + '">' + escapeHtml(group.album) + '</a>' : '<span class="text-muted fst-italic">\u2026</span>') +
+            '</td><td><div class="d-flex flex-wrap gap-2">' + badges + '</div></td><td class="text-muted text-end"><small>' +
+            (group._inProgress ? 'now' : formatScanTimestamp(group.latest_timestamp)) + '</small></td><td class="text-center">' +
+            (!group._inProgress ? '<a href="' + albumUrl + '" class="btn btn-sm btn-outline-primary" title="View album"><i class="bi bi-arrow-right"></i></a>' : '') + '</td></tr>';
+    }).join('');
+    body.innerHTML = rows;
+}
+
+function buildRecentScansWithInProgress(scans) {
+    if (!_currentScanningAlbum) return scans;
+    return [_currentScanningAlbum].concat(scans);
+}
+
+function updateRecentScans() {
+    var endpoint = '/api/recent-scans';
+    fetch(endpoint + '?_ts=' + Date.now(), { cache: 'no-store' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var payload = data.scans || [];
+            if (payload.length > 0) {
+                _lastRecentScansPayload = payload;
+                renderRecentScans(buildRecentScansWithInProgress(payload));
+            } else if (_lastRecentScansPayload && _lastRecentScansPayload.length > 0) {
+                renderRecentScans(buildRecentScansWithInProgress(_lastRecentScansPayload));
+            } else {
+                renderRecentScans([]);
+            }
+        })
+        .catch(function(error) {
+            console.error('Error fetching recent scans:', error);
+            if (_lastRecentScansPayload) {
+                renderRecentScans(buildRecentScansWithInProgress(_lastRecentScansPayload));
+            }
+        });
+}
+
+// ===== Upcoming Releases Banner =====
+var dashboardUpcomingFilter = 'all';
+
+function _upcomingFilterEndpoint() {
+    var params = new URLSearchParams();
+    if (dashboardUpcomingFilter === 'collection') params.set('collection', 'true');
+    else if (dashboardUpcomingFilter === 'recommended') params.set('recommended', 'true');
+    return '/api/upcoming-releases?' + params.toString();
+}
+
+function _renderUpcomingFilterButtons() {
+    var ids = { all: 'upcomingFilterAll', collection: 'upcomingFilterCollection', recommended: 'upcomingFilterRecommended' };
+    Object.keys(ids).forEach(function(key) {
+        var btn = document.getElementById(ids[key]);
+        if (!btn) return;
+        var active = key === dashboardUpcomingFilter;
+        btn.classList.toggle('btn-info', active);
+        btn.classList.toggle('btn-outline-info', !active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+}
+
+function setUpcomingBannerFilter(filter) {
+    var allowed = ['all', 'collection', 'recommended'];
+    dashboardUpcomingFilter = allowed.indexOf(filter) !== -1 ? filter : 'all';
+    _renderUpcomingFilterButtons();
+    try { sessionStorage.setItem('dashboardUpcomingFilter', dashboardUpcomingFilter); } catch(e) {}
+    loadUpcomingReleasesBanner();
+}
+
+async function loadUpcomingReleasesBanner() {
+    try {
+        var endpoint = _upcomingFilterEndpoint();
+        var resp = await fetch(endpoint);
+        var data = await resp.json();
+        if (!data.releases || data.releases.length === 0) {
+            document.getElementById('upcomingBannerContent').innerHTML = '<p class="text-muted text-center"><i class="bi bi-info-circle"></i> No upcoming or recent releases found.</p>';
+            return;
+        }
+        var releases = data.releases.slice();
+        // Remove albums already in collection (if field exists)
+        if (releases.some(function(r) { return r.album_in_collection !== undefined; })) {
+            releases = releases.filter(function(r) { return !r.album_in_collection; });
+        }
+        var now = new Date();
+        var twoWeeksAgo = new Date(now); twoWeeksAgo.setDate(now.getDate() - 14);
+        var oneMonthAhead = new Date(now); oneMonthAhead.setMonth(oneMonthAhead.getMonth() + 1);
+        releases = releases.filter(function(r) {
+            if (!r.release_date || r.release_date === 'Unknown') return false;
+            var d = new Date(r.release_date);
+            return !isNaN(d.getTime()) && d >= twoWeeksAgo && d <= oneMonthAhead;
+        });
+        if (releases.length === 0) {
+            document.getElementById('upcomingBannerContent').innerHTML = '<p class="text-muted text-center"><i class="bi bi-calendar-check"></i> No releases in the last 2 weeks or upcoming month.</p>';
+            return;
+        }
+        releases = releases.sort(function(a, b) {
+            return new Date(a.release_date || '9999-12-31') - new Date(b.release_date || '9999-12-31');
+        }).slice(0, 25);
+        var html = '<div class="list-group list-group-flush">';
+        releases.forEach(function(release) {
+            var releaseDate = release.release_date || 'TBA';
+            var isUpcoming = new Date(releaseDate) > new Date();
+            var sourceRaw = String(release.source || '').toLowerCase();
+            var sourceBadge = sourceRaw.indexOf('wiki') !== -1
+                ? '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>'
+                : '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>';
+            var statusBadge = isUpcoming ? '<span class="badge bg-success ms-2">Upcoming</span>' : '<span class="badge bg-primary ms-2">Recent</span>';
+            var collectionBadge = release.artist_in_collection ? '<span class="badge bg-success ms-2">Artist in Collection</span>' : '';
+            var recommendedBadge = release.artist_in_recommended ? '<span class="badge bg-warning text-dark ms-2">Artist in Recommended</span>' : '';
+            var inQueueBadge = release.in_queue ? '<span class="badge bg-info text-dark ms-2">In Queue</span>' : '';
+            var isInQueue = release.in_queue === true || release.queue_status === 'queued';
+            var addIcon = isInQueue ? '<i class="bi bi-check2-circle"></i>' : '<i class="bi bi-plus-circle"></i>';
+            var addTitle = isInQueue ? 'Already in queue' : 'Add album to queue';
+            var eArtist = encodeURIComponent(release.artist_name || '');
+            var eAlbum = encodeURIComponent(release.album_name || '');
+            var eDate = encodeURIComponent(release.release_date || '');
+            var sArtist = JSON.stringify(String(release.artist_name || ''));
+            var sAlbum = JSON.stringify(String(release.album_name || ''));
+            html += '<div class="list-group-item d-flex justify-content-between align-items-start py-2"><div class="flex-grow-1"><h6 class="mb-1" style="font-size: 0.95rem;">' + releaseDate + ' ' + statusBadge + ' ' + collectionBadge + ' ' + recommendedBadge + ' ' + inQueueBadge + ' ' + sourceBadge + '</h6><small class="text-muted">' + escapeHtml(release.artist_name) + ' - ' + escapeHtml(release.album_name) + '</small></div><div class="d-flex align-items-center gap-2"><button class="btn btn-sm btn-outline-info" title="Search / Download" onclick="searchMusicBrainzRelease(event, ' + sArtist + ', ' + sAlbum + ')"><i class="bi bi-search"></i></button><button class="btn btn-sm btn-outline-primary" ' + (isInQueue ? 'disabled' : '') + ' title="' + addTitle + '" onclick="addUpcomingReleaseToQueueDashboard(\'' + eArtist + '\', \'' + eAlbum + '\', \'' + eDate + '\', this)">' + addIcon + '</button><a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-secondary" title="Open in downloads monitor"><i class="bi bi-arrow-right"></i></a></div></div>';
+        });
+        html += '</div>';
+        document.getElementById('upcomingBannerContent').innerHTML = html;
+        try { sessionStorage.setItem('dashboardUpcomingBannerHtml', html); } catch(e) {}
+    } catch (error) {
+        console.error('Error loading upcoming releases:', error);
+        document.getElementById('upcomingBannerContent').innerHTML = '<p class="text-muted text-center text-danger"><i class="bi bi-exclamation-triangle"></i> Error loading releases</p>';
+    }
+}
+
+async function addUpcomingReleaseToQueueDashboard(encodedArtist, encodedAlbum, encodedDate, buttonEl) {
+    try {
+        var artist = decodeURIComponent(encodedArtist || '').trim();
+        var album = decodeURIComponent(encodedAlbum || '').trim();
+        var dateText = decodeURIComponent(encodedDate || '').trim();
+        if (!artist || !album) return;
+        var year = /^\d{4}/.test(dateText) ? dateText.slice(0, 4) : '';
+        if (buttonEl) { buttonEl.disabled = true; buttonEl.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>'; }
+        var result = await postJSON('/api/queue/add', {
+            artist: artist, title: album, album: album, import_type: 'album', source: 'qbittorrent',
+            release_source: 'dashboard_upcoming', priority: 5, is_album: true, year: year || null
+        });
+        if (buttonEl) {
+            buttonEl.disabled = true;
+            buttonEl.classList.remove('btn-outline-primary');
+            buttonEl.classList.add('btn-outline-success');
+            buttonEl.innerHTML = '<i class="bi bi-check2"></i>';
+            buttonEl.title = (result && result.message) || 'Added to queue';
+        }
+    } catch (error) {
+        console.error('Error adding dashboard upcoming release to queue:', error);
+        if (buttonEl) { buttonEl.disabled = false; buttonEl.innerHTML = '<i class="bi bi-plus-circle"></i>'; buttonEl.title = 'Failed to add to queue'; }
+    }
+}
+
+// ===== Unified Log =====
+var logPaused = false;
+document.addEventListener('DOMContentLoaded', function() {
+    var pauseBtn = document.getElementById('pauseLogBtn');
+    if (pauseBtn) {
+        pauseBtn.addEventListener('click', function() {
+            logPaused = !logPaused;
+            pauseBtn.innerHTML = logPaused ? '<i class="bi bi-play"></i> Resume' : '<i class="bi bi-pause"></i> Pause';
+        });
+    }
+});
+
+function updateUnifiedLog() {
+    if (logPaused) return;
+    fetch('/api/unified-log?lines=150')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var logEl = document.getElementById('unifiedLog');
+            if (logEl && data && data.lines) {
+                logEl.textContent = data.lines.join('\n');
+                logEl.scrollTop = logEl.scrollHeight;
+            }
+        })
+        .catch(function(error) { /* silent */ });
+}
+
+// ===== Polling Orchestration =====
+function updateAll() {
+    // Existing scan card polling functions
+    pollPopularityStatus();
+    pollNavidromeStatus();
+    pollLibraryStatus();
+    pollEssentiaStatus();
+    updateRecentScans();
+}
+
+var _pi = null;
+document.addEventListener('DOMContentLoaded', function() {
+    // Render initial recent scans from server data
+    var initialRecentScans = JSON.parse('{{ recent_scans|default([])|tojson|safe }}');
+    renderRecentScans(initialRecentScans);
+
+    // Upcoming releases
+    try {
+        var storedFilter = sessionStorage.getItem('dashboardUpcomingFilter');
+        if (storedFilter) dashboardUpcomingFilter = storedFilter;
+    } catch(e) {}
+    _renderUpcomingFilterButtons();
+    try {
+        var cached = sessionStorage.getItem('dashboardUpcomingBannerHtml');
+        var bannerTarget = document.getElementById('upcomingBannerContent');
+        if (cached && bannerTarget) bannerTarget.innerHTML = cached;
+    } catch(e) {}
+    setTimeout(loadUpcomingReleasesBanner, 200);
+    setInterval(loadUpcomingReleasesBanner, 30 * 60 * 1000);
+
+    // Start polling
+    updateAll();
+    _pi = setInterval(updateAll, 5000);
+
+    // Unified log refreshes less frequently
+    updateUnifiedLog();
+    setInterval(updateUnifiedLog, 10000);
+});
 </script>
+
+{% include 'components/_musicbrainz_search_modal.html' %}
+{% include 'components/_musicbrainz_search_functions.html' %}
 {% endblock %}

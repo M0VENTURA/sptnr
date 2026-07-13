@@ -117,14 +117,14 @@
                         
                         <tr data-letter="{{ letter_key }}" data-artist="{{ artist.link_artist }}" class="artist-main-row">
                             <td class="d-none d-sm-table-cell">
-                                <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
+                                <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
                                     {{ artist.display_name }}
                                 </a>
                                 <span class="correction-badge-desktop"></span>
                             </td>
                             <td class="d-sm-none">
                                 <div class="text-truncate">
-                                    <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
+                                    <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
                                         <strong>{{ artist.display_name }}</strong>
                                     </a>
                                     <span class="correction-badge-mobile"></span>
@@ -161,7 +161,7 @@
                                     <button class="btn btn-outline-primary" type="button" onclick="lookupMetadata('artist', '{{ artist.link_artist }}')" title="Get artist metadata">
                                         <i class="bi bi-search"></i>
                                     </button>
-                                    <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="btn btn-outline-secondary" title="View artist details">
+                                    <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="btn btn-outline-secondary" title="View artist details">
                                         <i class="bi bi-arrow-right"></i>
                                     </a>
                                 </div>

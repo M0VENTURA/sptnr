@@ -29,8 +29,8 @@
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
             <li class="breadcrumb-item"><a href="{{ url_for('ui.dashboard') }}">Dashboard</a></li>
-            <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
-            <li class="breadcrumb-item"><a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('ui.artists') }}">Artists</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></li>
             <li class="breadcrumb-item active" aria-current="page">Corrections</li>
         </ol>
     </nav>
@@ -225,7 +225,7 @@
                                 </td>
                                 <td class="small text-muted">{{ row.file_path or '—' }}</td>
                                 <td class="text-center">
-                                    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('track_edit', track_id=row.id) }}" title="Open track editor to fix metadata">
+                                    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('ui.track_detail', track_id=row.id) }}" title="View track details">
                                         <i class="bi bi-pencil-square"></i> Fix
                                     </a>
                                 </td>
@@ -266,7 +266,7 @@
                         {% for row in mbid_inconsistent_albums %}
                         <tr id="mbid-row-{{ loop.index }}">
                             <td>
-                                <a href="{{ url_for('album_detail', artist=artist_name, album=row.album) }}">{{ row.album }}</a>
+                                <a href="{{ url_for('ui.album_detail', artist=artist_name, album=row.album) }}">{{ row.album }}</a>
                             </td>
                             <td class="text-center">{{ row.track_count }}</td>
                             <td class="text-center"><span class="badge bg-warning text-dark">{{ row.mbid_count }}</span></td>
@@ -321,7 +321,7 @@
                         {% for row in disc_inconsistent_albums %}
                         <tr id="disc-row-{{ loop.index }}">
                             <td>
-                                <a href="{{ url_for('album_detail', artist=artist_name, album=row.album) }}">{{ row.album }}</a>
+                                <a href="{{ url_for('ui.album_detail', artist=artist_name, album=row.album) }}">{{ row.album }}</a>
                             </td>
                             <td class="text-center">{{ row.track_count }}</td>
                             <td class="text-center">
@@ -376,7 +376,7 @@
                             <td>
                                 {% for alb in grp.albums %}
                                 <div>
-                                    <a href="{{ url_for('album_detail', artist=artist_name, album=alb.album) }}">{{ alb.album }}</a>
+                                    <a href="{{ url_for('ui.album_detail', artist=artist_name, album=alb.album) }}">{{ alb.album }}</a>
                                     <span class="badge bg-secondary ms-1">{{ alb.track_count }} track{{ 's' if alb.track_count != 1 else '' }}</span>
                                     {% if alb.album_year %}<span class="text-muted small ms-1">{{ alb.album_year }}</span>{% endif %}
                                     {% if alb.mb_mbid %}<code class="small ms-1 text-muted">{{ alb.mb_mbid[:8] }}…</code>{% endif %}
@@ -473,7 +473,7 @@
                         {% for alb in mb_albums %}
                         <tr id="mb-album-row-{{ loop.index }}">
                             <td>
-                                <a href="{{ url_for('album_detail', artist=artist_name, album=alb.album) }}">{{ alb.album }}</a>
+                                <a href="{{ url_for('ui.album_detail', artist=artist_name, album=alb.album) }}">{{ alb.album }}</a>
                             </td>
                             <td class="text-center">{{ alb.track_count }}</td>
                             <td class="text-center" id="mb-total-{{ loop.index }}">—</td>

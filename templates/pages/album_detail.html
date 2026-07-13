@@ -8,8 +8,8 @@
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
             <li class="breadcrumb-item"><a href="{{ url_for('ui.dashboard') }}">Dashboard</a></li>
-            <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
-            <li class="breadcrumb-item"><a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('ui.artists') }}">Artists</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></li>
             <li class="breadcrumb-item active" aria-current="page">{{ album_name }}</li>
         </ol>
     </nav>
@@ -22,7 +22,7 @@
                     <!-- Album Art -->
                     <div class="col-12 col-md-3 d-flex flex-column align-items-center">
                         <div class="album-art-wrap position-relative mb-3" style="width: min(200px, 50vw); aspect-ratio: 1; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
-                            <img id="albumArtImage" src="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}" 
+                            <img id="albumArtImage" src="{{ url_for('album_routes.api_album_art', artist=artist_name, album=album_name) }}" 
                                  alt="{{ album_name }}" 
                                  style="width: 100%; height: 100%; object-fit: cover;"
                                  onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Album Art%3C/text%3E%3C/svg%3E';">
@@ -37,7 +37,7 @@
                         <div class="row g-2">
                             <div class="col-6">
                                 <small class="text-muted d-block">Artist</small>
-                                <strong><a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></strong>
+                                <strong><a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></strong>
                             </div>
                             <div class="col-6">
                                 <small class="text-muted d-block">Album</small>
@@ -114,7 +114,7 @@
                     <span class="badge bg-warning text-dark ms-2">Favourite</span>
                 {% endif %}
             </h1>
-            <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
+            <p class="text-muted mb-0">by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
         </div>
         <div class="d-flex gap-2 flex-wrap">
             <button class="btn btn-outline-success btn-sm" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites">
@@ -140,7 +140,7 @@
                     {% endif %}
                 </ul>
             </div>
-            <form method="POST" action="{{ url_for('scan_album_custom') }}" class="d-flex align-items-center gap-2 flex-wrap">
+            <form method="POST" action="{{ url_for('scans.scan_album_custom') }}" class="d-flex align-items-center gap-2 flex-wrap">
                 <input type="hidden" name="artist" value="{{ artist_name }}">
                 <input type="hidden" name="album" value="{{ album_name }}">
                 <select name="scan_type" class="form-select form-select-sm" style="min-width: 140px; width: auto;" title="Select scan type">
@@ -186,7 +186,7 @@
     </div>
 
     <!-- Two-Column Layout for Edit & Overview -->
-    <form method="POST" action="{{ url_for('album_edit', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
+    <form method="POST" action="{{ url_for('scans.scan_album_custom', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
         <div class="row g-3 mb-4">
             <!-- EDIT FORM -->
             <div class="col-12 order-2">
@@ -659,7 +659,7 @@
                                             {% endif %}
                                             <span class="badge bg-warning text-dark ms-1" title="This track is currently in the download queue">In Queue</span>
                                             {% else %}
-                                            <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                            <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="text-reset">
                                                 {{ track.title }}
                                                 {% if track.artist and track.artist != artist_name %}
                                                 <small class="text-muted">— {{ track.artist }}</small>
@@ -685,7 +685,7 @@
                                         <span class="text-muted">{{ track.title }}</span>
                                         <span class="badge bg-warning text-dark ms-1" title="This track is currently in the download queue">In Queue</span>
                                         {% else %}
-                                        <a href="{{ url_for('track_detail', track_id=track.id) }}">
+                                        <a href="{{ url_for('ui.track_detail', track_id=track.id) }}">
                                             {{ track.title }}
                                         </a>
                                         {% if track._mb_is_extra %}
@@ -769,7 +769,7 @@
                                             data-track-id="{{ track.id }}"
                                             data-title="{{ track.title|escapejs }}"
                                             data-artist="{{ (track.artist or artist_name)|escapejs }}"
-                                            data-art="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}"
+                                            data-art="{{ url_for('album_routes.api_album_art', artist=artist_name, album=album_name) }}"
                                             onclick="playTrackFromAlbum(this)"
                                             title="Play this track">
                                         <i class="bi bi-play-fill"></i>
@@ -786,7 +786,7 @@
                                         <i class="bi bi-arrow-repeat"></i>
                                     </button>
                                     {% endif %}
-                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page">
+                                    <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page">
                                         <i class="bi bi-arrow-right"></i>
                                     </a>
                                     {% endif %}
@@ -840,7 +840,7 @@
                                         {% endif %}
                                         <span class="badge bg-warning text-dark ms-1" title="This track is currently in the download queue">In Queue</span>
                                         {% else %}
-                                        <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                        <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="text-reset">
                                             {{ track.title }}
                                             {% if track.artist and track.artist != artist_name %}
                                             <small class="text-muted">— {{ track.artist }}</small>
@@ -868,7 +868,7 @@
                                 </div>
                                 {% else %}
                                 <span onclick="editTrackTitle('{{ track.id }}', '{{ track.title|escapejs }}')" class="flex-grow-1" style="cursor: pointer;" title="Click to edit">
-                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline track-title-display-{{ track.id }}">
+                                    <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="d-none d-md-inline track-title-display-{{ track.id }}">
                                         {{ track.title }}
                                     </a>
                                     {% if track._mb_is_extra %}
@@ -955,7 +955,7 @@
                                         data-track-id="{{ track.id }}"
                                         data-title="{{ track.title|escapejs }}"
                                         data-artist="{{ (track.artist or artist_name)|escapejs }}"
-                                        data-art="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}"
+                                        data-art="{{ url_for('album_routes.api_album_art', artist=artist_name, album=album_name) }}"
                                         onclick="playTrackFromAlbum(this)"
                                         title="Play this track">
                                     <i class="bi bi-play-fill"></i>
@@ -972,7 +972,7 @@
                                     <i class="bi bi-arrow-repeat"></i>
                                 </button>
                                 {% endif %}
-                                <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page">
+                                <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page">
                                     <i class="bi bi-arrow-right"></i>
                                 </a>
                                 {% endif %}

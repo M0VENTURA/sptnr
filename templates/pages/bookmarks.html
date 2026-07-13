@@ -20,7 +20,7 @@
     </div>
     {% if filter_type %}
     <div class="col-12 col-md-auto ms-auto">
-      <a href="{{ url_for('bookmarks') }}" class="btn btn-outline-secondary">
+      <a href="{{ url_for('ui.bookmarks') }}" class="btn btn-outline-secondary">
         <i class="bi bi-star"></i> View All Favourites
       </a>
     </div>
@@ -31,10 +31,10 @@
     <div class="card-body py-2">
       <div class="d-flex flex-wrap gap-2 align-items-center">
         <span class="text-muted small">Filter:</span>
-        <a href="{{ url_for('bookmarks') }}" class="btn btn-sm {% if not filter_type %}btn-primary{% else %}btn-outline-primary{% endif %}">All</a>
-        <a href="{{ url_for('bookmarks', filter='artist') }}" class="btn btn-sm {% if filter_type == 'artist' %}btn-primary{% else %}btn-outline-primary{% endif %}">Artists</a>
-        <a href="{{ url_for('bookmarks', filter='album') }}" class="btn btn-sm {% if filter_type == 'album' %}btn-primary{% else %}btn-outline-primary{% endif %}">Albums</a>
-        <a href="{{ url_for('bookmarks', filter='track') }}" class="btn btn-sm {% if filter_type == 'track' %}btn-primary{% else %}btn-outline-primary{% endif %}">Tracks</a>
+        <a href="{{ url_for('ui.bookmarks') }}" class="btn btn-sm {% if not filter_type %}btn-primary{% else %}btn-outline-primary{% endif %}">All</a>
+        <a href="{{ url_for('ui.bookmarks', filter='artist') }}" class="btn btn-sm {% if filter_type == 'artist' %}btn-primary{% else %}btn-outline-primary{% endif %}">Artists</a>
+        <a href="{{ url_for('ui.bookmarks', filter='album') }}" class="btn btn-sm {% if filter_type == 'album' %}btn-primary{% else %}btn-outline-primary{% endif %}">Albums</a>
+        <a href="{{ url_for('ui.bookmarks', filter='track') }}" class="btn btn-sm {% if filter_type == 'track' %}btn-primary{% else %}btn-outline-primary{% endif %}">Tracks</a>
       </div>
     </div>
   </div>
@@ -54,7 +54,7 @@
             <div class="card h-100">
               <div class="card-body p-2">
                 <div class="d-flex justify-content-between align-items-center">
-                  <a href="{{ url_for('artist_detail', name=bookmark.artist) }}" class="text-decoration-none flex-grow-1">
+                  <a href="{{ url_for('ui.artist_detail', name=bookmark.artist) }}" class="text-decoration-none flex-grow-1">
                     <i class="bi bi-person-circle"></i> {{ bookmark.artist }}
                   </a>
                   <button class="btn btn-sm btn-outline-danger" onclick="removeBookmark({{ bookmark.id }})" title="Remove bookmark">
@@ -85,7 +85,7 @@
               <div class="card-body p-2">
                 <div class="d-flex justify-content-between align-items-start">
                   <div class="flex-grow-1">
-                    <a href="{{ url_for('album_detail', artist=bookmark.artist, album=bookmark.album) }}" class="text-decoration-none">
+                    <a href="{{ url_for('ui.album_detail', artist=bookmark.artist, album=bookmark.album) }}" class="text-decoration-none">
                       <div class="fw-bold text-truncate">{{ bookmark.album }}</div>
                       <div class="text-muted small">{{ bookmark.artist }}</div>
                     </a>
@@ -125,7 +125,7 @@
               {% for bookmark in track_bookmarks %}
               <tr>
                 <td>
-                  <a href="{{ url_for('track_detail', track_id=bookmark.track_id) }}" class="text-decoration-none">
+                  <a href="{{ url_for('ui.track_detail', track_id=bookmark.track_id) }}" class="text-decoration-none">
                     {{ bookmark.name }}
                   </a>
                 </td>

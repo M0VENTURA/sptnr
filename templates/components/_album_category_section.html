@@ -28,7 +28,7 @@
     {% if is_missing %}
       <span>{{ album.get('title', '') }}</span>
     {% else %}
-      <a href="{{ url_for('album_detail', artist=artist_name, album=album.get('album') or album.get('title') or '') }}" class="fw-semibold text-decoration-none">
+      <a href="{{ url_for('ui.album_detail', artist=artist_name, album=album.get('album') or album.get('title') or '') }}" class="fw-semibold text-decoration-none">
         {{ album.get('album') or album.get('title') }}
       </a>
     {% endif %}
@@ -77,7 +77,7 @@
           <i class="bi bi-music-note-list"></i>
         </button>
       </form>
-      <form method="POST" action="{{ url_for('scan_album_custom') }}" class="d-inline">
+      <form method="POST" action="{{ url_for('scans.scan_album_custom') }}" class="d-inline">
         <input type="hidden" name="artist" value="{{ artist_name }}">
         <input type="hidden" name="album" value="{{ album.get('album') or album.get('title') or '' }}">
         <input type="hidden" name="scan_type" value="popularity">
