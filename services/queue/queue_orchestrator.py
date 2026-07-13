@@ -28,6 +28,8 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional
+
+from helpers.normalization_service import normalise_result
 from db.repositories import queue as queue_repository
 from helpers.response_helpers import _ok, _fail
 
@@ -130,37 +132,6 @@ MAINTENANCE_CANDIDATES: tuple[MaintenanceCandidate, ...] = (
 # =============================================================================
 # RESPONSE HELPERS
 # =============================================================================
-
-def _normalise_result(result: Any) -> tuple[dict[str, Any], int]:
-    """
-    Normalise different internal service return shapes.
-
-    Supported shapes:
-    - (dict, int)
-    - dict
-    - bool
-    - None
-    - any object
-    """
-    if isinstance(result, tuple) and len(result) == 2:
-        payload, status = result
-        if isinstance(payload, dict) and isinstance(status, int):
-            payload.setdefault("success", status < 400)
-            return payload, status
-
-    if isinstance(result, dict):
-        status = 200 if result.get("success", True) else 500
-        result.setdefault("success", status < 400)
-        return result, status
-
-    if isinstance(result, bool):
-        return {"success": result}, 200 if result else 500
-
-    if result is None:
-        return {"success": True, "result": None}, 200
-
-    return {"success": True, "result": result}, 200
-
 
 # =============================================================================
 # DYNAMIC SERVICE RESOLUTION
@@ -409,7 +380,7 @@ def process_queue_item(
 
     try:
         result = resolved_processor(claimed)
-        payload, status = _normalise_result(result)
+        payload, status = normalise_result(result)
 
         payload.setdefault("queue_id", queue_id)
 
@@ -535,7 +506,7 @@ def run_maintenance() -> tuple[dict[str, Any], int]:
 
         try:
             result = hook()
-            payload, status = _normalise_result(result)
+            payload, status = normalise_result(result)
 
             results.append(
                 {

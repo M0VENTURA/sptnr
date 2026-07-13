@@ -425,6 +425,37 @@ def detect_cover_and_normalize_title(title: str) -> tuple[bool, str]:
     return is_cover, normalized
 
 
+def normalise_result(result: Any) -> tuple[dict[str, Any], int]:
+    """Normalise different service return shapes into (dict, int).
+
+    Used by the queue orchestrator to handle various processor return types.
+
+    Supported shapes:
+    - ``(dict, int)`` — payload + HTTP status
+    - ``dict`` — success/error payload
+    - ``bool`` — treated as success/failure
+    - ``None`` — treated as success with no result
+    """
+    if isinstance(result, tuple) and len(result) == 2:
+        payload, status = result
+        if isinstance(payload, dict) and isinstance(status, int):
+            payload.setdefault("success", status < 400)
+            return payload, status
+
+    if isinstance(result, dict):
+        status = 200 if result.get("success", True) else 500
+        result.setdefault("success", status < 400)
+        return result, status
+
+    if isinstance(result, bool):
+        return {"success": result}, 200 if result else 500
+
+    if result is None:
+        return {"success": True, "result": None}, 200
+
+    return {"success": True, "result": result}, 200
+
+
 def is_remastered_only_variant(title: str) -> bool:
     if not title:
         return False

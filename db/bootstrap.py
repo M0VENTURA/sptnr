@@ -183,9 +183,26 @@ def verify_all_tables_exist() -> dict[str, Any]:
     return {"ok": expected.issubset(present), "missing": list(expected - present)}
 
 def init_database_and_schema() -> bool:
-    if ensure_full_schema():
-        verify_all_tables_exist()
-        return True
+    # Retry a few times — Postgres may be restarting (schema bootstrap runs
+    # immediately after wait_for_db, but Postgres can still be in shutdown
+    # from a concurrent restart).
+    max_attempts = 4
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if ensure_full_schema():
+                verify_all_tables_exist()
+                return True
+        except Exception as exc:
+            msg = str(exc)
+            if attempt < max_attempts and ("shutting down" in msg or "database system is shutting down" in msg):
+                logging.warning("Postgres not ready yet (attempt %s/%s), retrying in 5s...", attempt, max_attempts)
+                time.sleep(5)
+                continue
+            logging.warning("Schema bootstrap failed (attempt %s/%s): %s", attempt, max_attempts, exc)
+            break
+        break
+
+    # Fall back to deferred background retry
     threading.Thread(target=_run_deferred_startup_migrations, daemon=True, name="deferred-startup-migrations").start()
     return False
 

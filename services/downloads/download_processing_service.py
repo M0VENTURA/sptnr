@@ -347,6 +347,48 @@ def process_pending_completed_items(limit: int = 10) -> Dict[str, Any]:
 
 
 
+def process_queue_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Process a single queue item — search, download, and import.
+
+    This is the main processor function called by the queue orchestrator.
+    Delegates to the pipeline service for the actual search/download work.
+
+    Args:
+        item: Queue item dict with at least ``id``, ``artist``, ``title``.
+
+    Returns:
+        Dict with ``success``, optionally ``error`` and ``queue_id``.
+    """
+    queue_id = item.get("id")
+    if not queue_id:
+        return {"success": False, "error": "missing_queue_id"}
+
+    try:
+        from services.downloads.download_pipeline_service import (
+            process_queue_item as _pipeline_process,
+        )
+        from api_clients.slskd_http import get_slskd_client
+
+        slskd = get_slskd_client()
+        result = _pipeline_process(item, slskd)
+        result.setdefault("queue_id", queue_id)
+        return result
+    except ImportError:
+        # Pipeline not available — minimal fallback
+        from db.repositories.queue import update_queue_item
+        artist = (item.get("artist") or "").strip()
+        title = (item.get("title") or "").strip()
+        logger.warning(
+            "Pipeline service not available — marking queue item %s (%s - %s) as unmatched",
+            queue_id, artist, title,
+        )
+        update_queue_item(queue_id, status="unmatched", notes="Pipeline unavailable")
+        return {"success": True, "skipped": True, "queue_id": queue_id, "reason": "pipeline_unavailable"}
+    except Exception as exc:
+        logger.error("Queue item %s processing failed: %s", queue_id, exc)
+        return {"success": False, "error": str(exc), "queue_id": queue_id}
+
+
 def get_completed_queue_items(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
