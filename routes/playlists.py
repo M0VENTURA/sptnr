@@ -306,3 +306,98 @@ def api_playlist_session():
     except Exception as e:
         logging.error(f"Session error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
+
+# --------------------------------------------------
+# RECOMMENDED PLAYLISTS
+# --------------------------------------------------
+
+@playlists_bp.route("/api/recommended-playlists", methods=["GET"])
+def api_recommended_playlists():
+    """Get recommended playlists from Last.fm / ListenBrainz.
+
+    Returns empty recommendations gracefully when APIs are unavailable.
+    """
+    try:
+        cfg = get_config()
+        lastfm_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
+        api_key = lastfm_cfg.get("api_key", "")
+
+        from services.playlists.recommendation_service import PlaylistRecommender
+        from db.utils import get_db_connection
+
+        lf_client = None
+        if api_key:
+            from api_clients.lastfm import LastFmClient
+            lf_client = LastFmClient(api_key)
+
+        conn = get_db_connection()
+        recommender = PlaylistRecommender(lastfm_client=lf_client, db_connection=conn)
+        recommendations = recommender.get_recommendations()
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        return jsonify({"success": True, "recommendations": recommendations})
+    except Exception as exc:
+        logging.error("Failed to fetch recommended playlists: %s", exc, exc_info=True)
+        return jsonify({"success": True, "recommendations": {}})
+
+
+@playlists_bp.route("/api/recommended-playlists/create", methods=["POST"])
+def api_recommended_playlists_create():
+    """Create a Navidrome playlist from a recommendation category/type."""
+    data = request.get_json(silent=True) or {}
+    category = data.get("category", "")
+    playlist_type = data.get("type", "")
+
+    if not category or not playlist_type:
+        return jsonify({"success": False, "error": "category and type required"}), 400
+
+    try:
+        cfg = get_config()
+        lastfm_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
+        api_key = lastfm_cfg.get("api_key", "")
+
+        from services.playlists.recommendation_service import PlaylistRecommender
+        from db.utils import get_db_connection
+
+        lf_client = None
+        if api_key:
+            from api_clients.lastfm import LastFmClient
+            lf_client = LastFmClient(api_key)
+
+        conn = get_db_connection()
+        recommender = PlaylistRecommender(lastfm_client=lf_client, db_connection=conn)
+
+        # Re-fetch recommendations and find matching playlist
+        recs = recommender.get_recommendations()
+        category_recs = recs.get(category, []) if isinstance(recs, dict) else []
+        target = None
+        for p in category_recs:
+            if isinstance(p, dict) and p.get("type") == playlist_type:
+                target = p
+                break
+
+        if not target:
+            return jsonify({"success": False, "error": f"No playlist found for {category}/{playlist_type}"}), 404
+
+        track_ids = target.get("track_ids", [])
+        playlist_name = target.get("name", f"{category} - {playlist_type}")
+
+        from services.playlists import create_playlist_file
+        file_path = create_playlist_file(playlist_name, target.get("description", ""), track_ids)
+
+        return jsonify({
+            "success": True,
+            "playlist": {
+                "name": playlist_name,
+                "file_path": file_path,
+                "track_count": len(track_ids),
+            }
+        })
+    except Exception as exc:
+        logging.error("Failed to create recommended playlist: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500

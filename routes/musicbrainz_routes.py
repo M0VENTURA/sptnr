@@ -15,10 +15,19 @@ from sqlalchemy import text
 from db.engine import db_session
 from helpers.config_helpers import get_config
 from helpers.response_helpers import _ok, _fail
+from api_clients.musicbrainz_http import MusicBrainzHttpClient
 
 logger = logging.getLogger(__name__)
 
 mb_bp = Blueprint("musicbrainz", __name__, url_prefix="/api/musicbrainz")
+_mb_client: MusicBrainzHttpClient | None = None
+
+
+def _get_mb_client() -> MusicBrainzHttpClient:
+    global _mb_client
+    if _mb_client is None:
+        _mb_client = MusicBrainzHttpClient(enabled=True)
+    return _mb_client
 MUSICBRAINZ_USER_AGENT = "Popularr/1.0 +https://github.com/M0VENTURA/popularr"
 
 
@@ -217,6 +226,109 @@ def api_musicbrainz_search_releases():
         return jsonify({"success": True, "releases": data.get("releases", [])})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# GET /api/musicbrainz/search-releases  (hyphen — used by the modal JS)
+# ---------------------------------------------------------------------------
+
+@mb_bp.route("/search-releases", methods=["GET"])
+def api_musicbrainz_search_releases_modal():
+    """Search MusicBrainz release-groups for the search modal.
+
+    Query params:
+        q (str): Free-text search query.
+        type (str, optional): Release type filter (album, single, ep, etc.).
+        limit (int, optional): Max results (default 25, max 50).
+    """
+    query = request.args.get("q", "").strip()
+    release_type = request.args.get("type", "").strip().lower()
+    limit = min(int(request.args.get("limit", 25)), 50)
+
+    if not query:
+        return jsonify({"releases": []})
+
+    try:
+        client = _get_mb_client()
+
+        # Build MusicBrainz query
+        mb_query_parts = [f'releasegroup:"{query.replace(chr(34), "")}"']
+        if release_type and release_type not in ("", "all"):
+            mb_query_parts.append(f'primarytype:{release_type}')
+        mb_query = " AND ".join(mb_query_parts)
+
+        # Search release-groups with genres and release data
+        payload = client.get("release-group/", params={
+            "query": mb_query,
+            "fmt": "json",
+            "limit": limit,
+            "inc": "genres+releases",
+        })
+        groups = payload.get("release-groups", []) if isinstance(payload.get("release-groups"), list) else []
+
+        releases = []
+        for rg in groups:
+            # Extract artist credit
+            artist_credit = rg.get("artist-credit", [])
+            artist_name = ""
+            if artist_credit and isinstance(artist_credit, list):
+                parts = []
+                for ac in artist_credit:
+                    if isinstance(ac, dict):
+                        name = ac.get("name", "") or (ac.get("artist", {}) or {}).get("name", "")
+                        join_phrase = ac.get("joinphrase", "")
+                        if name:
+                            parts.append(name)
+                        if join_phrase:
+                            parts.append(join_phrase)
+                    elif isinstance(ac, str):
+                        parts.append(ac)
+                artist_name = "".join(parts)
+
+            rg_mbid = rg.get("id", "") or ""
+            raw_date = rg.get("first-release-date")
+            first_release_date = str(raw_date) if raw_date else ""
+
+            # Build cover art URL from Cover Art Archive using release-group MBID
+            cover_art_url = ""
+            if rg_mbid:
+                cover_art_url = f"https://coverartarchive.org/release-group/{rg_mbid}/front-250"
+
+            release = {
+                "id": rg_mbid,
+                "title": rg.get("title", ""),
+                "primary_type": rg.get("primary-type", rg.get("type", "Other")),
+                "first_release_date": first_release_date,
+                "artist": artist_name,
+                "artist-credit": artist_credit,
+                "cover_art_url": cover_art_url,
+                "genres": [g.get("name", "") for g in (rg.get("genres", []) or []) if isinstance(g, dict)],
+                "tags": [t.get("name", "") for t in (rg.get("tags", []) or []) if isinstance(t, dict)],
+                "releases": [],
+            }
+
+            # Include contained releases for the "Choose Release" dropdown
+            contained = rg.get("releases", [])
+            if isinstance(contained, list):
+                for rel in contained:
+                    if isinstance(rel, dict):
+                        release["releases"].append({
+                            "id": rel.get("id", ""),
+                            "title": rel.get("title", rg.get("title", "")),
+                            "date": rel.get("date", ""),
+                            "release_date": rel.get("date", ""),
+                            "country": rel.get("country", ""),
+                            "label": "",
+                            "format": "",
+                        })
+
+            releases.append(release)
+
+        return jsonify({"releases": releases})
+
+    except Exception as exc:
+        logger.error("MusicBrainz search-releases failed: %s", exc, exc_info=True)
+        return jsonify({"releases": [], "error": str(exc)})
 
 
 # ---------------------------------------------------------------------------
