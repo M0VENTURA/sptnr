@@ -1196,7 +1196,7 @@ window.searchMusicBrainzRelease = function(event, artist, album, track) {
       resultsEl.innerHTML = data.results.map(function(r) {
         var year = (r.date || r.year || '').split('-')[0] || '?';
         var type = r.primary_type || r.type || 'Release';
-        var a = r.artist || r['artist-credit'] || '?';
+        var a = r.artist || (r['artist-credit'] && r['artist-credit'][0] && r['artist-credit'][0].name) || '?';
         return '<div class="col-12 col-md-6 col-lg-4 mb-2"><div class="card h-100"><div class="card-body p-2"><h6 class="card-title mb-1">' + (r.title||'').replace(/[<>&"']/g,'') + '</h6><p class="card-text small text-muted mb-1">' + (a||'').replace(/[<>&"']/g,'') + ' · ' + year + ' · ' + (type||'').replace(/[<>&"']/g,'') + '</p></div></div></div>';
       }).join('');
     } else {
