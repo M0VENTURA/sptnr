@@ -38,21 +38,11 @@ RUN if [ "$(uname -m)" = "x86_64" ]; then \
         echo "⚠ Skipping essentia-tensorflow (no wheel for $(uname -m))"; \
     fi
 
-# Download Essentia ML models (~87 MB) to the default ESSENTIA_MODELS_DIR.
-# The download is optional: if essentia.upf.edu is unreachable in the build
-# environment (e.g. CI) the container still builds successfully.  Users can
-# also mount a pre-downloaded model directory at runtime via ESSENTIA_MODELS_DIR.
-RUN mkdir -p /opt/essentia_models && \
-    wget -q --tries=3 --timeout=60 --retry-connrefused -P /opt/essentia_models \
-        https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bs64-1.pb || true && \
-    wget -q --tries=3 --timeout=60 --retry-connrefused -P /opt/essentia_models \
-        https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb || true && \
-    wget -q --tries=3 --timeout=60 --retry-connrefused -P /opt/essentia_models \
-        https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json || true && \
-    wget -q --tries=3 --timeout=60 --retry-connrefused -P /opt/essentia_models \
-        https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.pb || true && \
-    wget -q --tries=3 --timeout=60 --retry-connrefused -P /opt/essentia_models \
-        https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json || true
+# Essentia ML models are downloaded at runtime via the setup wizard or
+# can be mounted at /opt/essentia_models from a pre-downloaded directory.
+# Build-time downloads are skipped because essentia.upf.edu is often slow
+# and the models are optional (the app handles missing models gracefully).
+RUN mkdir -p /opt/essentia_models
 
 # App files — .dockerignore prevents .git, documentation/, tests/ etc. from being copied
 COPY . /app
