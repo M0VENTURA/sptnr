@@ -53,100 +53,96 @@
     </div>
     {% endif %}
 
-    <!-- Scan Cards — 2-column grid -->
-    <div class="row g-3">
+    <!-- Scan Cards — 4-column row on large screens -->
+    <div class="row g-2 mb-3">
         <!-- Popularity -->
-        <div class="col-12 col-lg-6">
-            <div class="card h-100">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-graph-up"></i> Popularity Scan</span>
+        <div class="col-12 col-md-6 col-xl-3">
+            <div class="card h-100 border-primary border-opacity-25">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                    <small class="fw-semibold"><i class="bi bi-graph-up"></i> Popularity</small>
                     <div class="d-flex gap-1">
-                        <a href="/config#popularity-weights" class="btn btn-outline-light btn-sm py-0 px-1"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopPopularityScan()" class="btn btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-stop-fill"></i></button>
+                        <a href="/config#popularity-weights" class="btn btn-outline-light btn-sm py-0 px-1" title="Settings"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopPopularityScan()" class="btn btn-outline-danger btn-sm py-0 px-1" title="Stop"><i class="bi bi-stop-fill"></i></button>
                     </div>
                 </div>
-                <div class="card-body">
-                    <div class="d-flex gap-1 flex-wrap mb-2">
-                        <button onclick="startPopularityScan('popularity')" class="btn btn-primary btn-sm py-1 px-2"><i class="bi bi-play-fill"></i> Popularity</button>
-                        <button onclick="startPopularityScan('singles')" class="btn btn-outline-primary btn-sm py-1 px-2"><i class="bi bi-play-fill"></i> Singles</button>
-                        <button onclick="startPopularityScan('metadata')" class="btn btn-outline-primary btn-sm py-1 px-2"><i class="bi bi-play-fill"></i> Metadata</button>
-                        <button onclick="startPopularityScan('all')" class="btn btn-outline-primary btn-sm py-1 px-2"><i class="bi bi-play-fill"></i> All</button>
+                <div class="card-body py-2">
+                    <div class="d-flex gap-1 flex-wrap mb-1">
+                        <button onclick="startPopularityScan('popularity')" class="btn btn-primary btn-sm py-0 px-2"><i class="bi bi-play-fill"></i> Run</button>
+                        <button onclick="startPopularityScan('singles')" class="btn btn-outline-primary btn-sm py-0 px-2">Singles</button>
+                        <button onclick="startPopularityScan('metadata')" class="btn btn-outline-primary btn-sm py-0 px-2">Metadata</button>
+                        <button onclick="startPopularityScan('all')" class="btn btn-outline-primary btn-sm py-0 px-2">All</button>
                     </div>
-                    <div><div id="pop-status" class="text-muted small">Idle</div>
-                        <div class="progress mt-1" style="height:8px"><div id="pop-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:0%"></div></div>
-                        <div id="pop-progress-text" class="mt-1 small text-muted"></div>
+                    <div><span id="pop-status" class="text-muted small">Idle</span>
+                        <div class="progress mt-1" style="height:6px"><div id="pop-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:0%"></div></div>
+                        <div id="pop-progress-text" class="mt-1 small text-muted" style="font-size:11px"></div>
                     </div>
                 </div>
             </div>
         </div>
         <!-- Navidrome -->
-        <div class="col-12 col-lg-6">
-            <div class="card h-100">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-cloud-arrow-down"></i> Navidrome <span id="nav-connectivity" class="badge bg-secondary ms-1">?</span></span>
+        <div class="col-12 col-md-6 col-xl-3">
+            <div class="card h-100 border-secondary border-opacity-25">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                    <small class="fw-semibold"><i class="bi bi-cloud-arrow-down"></i> Navidrome <span id="nav-connectivity" class="badge bg-secondary ms-1" style="font-size:9px">?</span></small>
                     <div class="d-flex gap-1">
-                        <a href="/config#users" class="btn btn-outline-light btn-sm py-0 px-1"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopNavidromeSync()" class="btn btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-stop-fill"></i></button>
+                        <a href="/config#users" class="btn btn-outline-light btn-sm py-0 px-1" title="Settings"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopNavidromeSync()" class="btn btn-outline-danger btn-sm py-0 px-1" title="Stop"><i class="bi bi-stop-fill"></i></button>
                     </div>
                 </div>
-                <div class="card-body">
-                    <div class="d-flex gap-1 flex-wrap mb-2">
-                        <button onclick="startNavidromeImport()" class="btn btn-secondary btn-sm py-1 px-2"><i class="bi bi-play-fill"></i> Import</button>
-                        <button onclick="startNavidromeServerScan()" class="btn btn-outline-secondary btn-sm py-1 px-2"><i class="bi bi-arrow-repeat"></i> Server Rescan</button>
+                <div class="card-body py-2">
+                    <div class="d-flex gap-1 flex-wrap mb-1">
+                        <button onclick="startNavidromeImport()" class="btn btn-secondary btn-sm py-0 px-2"><i class="bi bi-play-fill"></i> Import</button>
+                        <button onclick="startNavidromeServerScan()" class="btn btn-outline-secondary btn-sm py-0 px-2"><i class="bi bi-arrow-repeat"></i> Rescan</button>
                     </div>
-                    <div><div id="nav-status" class="text-muted small">Idle</div>
-                        <div class="progress mt-1" style="height:8px"><div id="nav-progress-bar" class="progress-bar progress-bar-striped" style="width:0%"></div></div>
-                        <div id="nav-progress-text" class="mt-1 small text-muted"></div>
+                    <div><span id="nav-status" class="text-muted small">Idle</span>
+                        <div class="progress mt-1" style="height:6px"><div id="nav-progress-bar" class="progress-bar progress-bar-striped" style="width:0%"></div></div>
+                        <div id="nav-progress-text" class="mt-1 small text-muted" style="font-size:11px"></div>
                     </div>
                 </div>
             </div>
         </div>
         <!-- Library Sync -->
-        <div class="col-12 col-lg-6">
-            <div class="card h-100">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-server"></i> Library Sync (Diff)</span>
+        <div class="col-12 col-md-6 col-xl-3">
+            <div class="card h-100 border-warning border-opacity-25">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                    <small class="fw-semibold"><i class="bi bi-server"></i> Library Sync</small>
                     <div class="d-flex gap-1">
-                        <a href="/config#sources" class="btn btn-outline-light btn-sm py-0 px-1"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopLibrarySync()" class="btn btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-stop-fill"></i></button>
+                        <a href="/config#sources" class="btn btn-outline-light btn-sm py-0 px-1" title="Settings"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopLibrarySync()" class="btn btn-outline-danger btn-sm py-0 px-1" title="Stop"><i class="bi bi-stop-fill"></i></button>
                     </div>
                 </div>
-                <div class="card-body">
-                    <button onclick="startLibrarySync()" class="btn btn-secondary btn-sm py-1 px-2 mb-2"><i class="bi bi-play-fill"></i> Run Sync</button>
-                    <div><div id="lib-status" class="text-muted small">Idle</div>
-                        <div class="progress mt-1" style="height:8px"><div id="lib-progress-bar" class="progress-bar progress-bar-striped" style="width:0%"></div></div>
-                        <div id="lib-progress-text" class="mt-1 small text-muted"></div>
+                <div class="card-body py-2">
+                    <button onclick="startLibrarySync()" class="btn btn-warning btn-sm py-0 px-2 mb-1"><i class="bi bi-play-fill"></i> Run Sync</button>
+                    <div><span id="lib-status" class="text-muted small">Idle</span>
+                        <div class="progress mt-1" style="height:6px"><div id="lib-progress-bar" class="progress-bar progress-bar-striped" style="width:0%"></div></div>
+                        <div id="lib-progress-text" class="mt-1 small text-muted" style="font-size:11px"></div>
                     </div>
                 </div>
             </div>
         </div>
         <!-- Essentia -->
-        <div class="col-12 col-lg-6">
-            <div class="card h-100">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-music-note-list"></i> Essentia</span>
+        <div class="col-12 col-md-6 col-xl-3">
+            <div class="card h-100 border-info border-opacity-25">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                    <small class="fw-semibold"><i class="bi bi-music-note-list"></i> Essentia</small>
                     <div class="d-flex gap-1">
-                        <a href="/config#essentia-mood-scan" class="btn btn-outline-light btn-sm py-0 px-1"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopEssentiaScan()" class="btn btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-stop-fill"></i></button>
+                        <a href="/config#essentia-mood-scan" class="btn btn-outline-light btn-sm py-0 px-1" title="Settings"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopEssentiaScan()" class="btn btn-outline-danger btn-sm py-0 px-1" title="Stop"><i class="bi bi-stop-fill"></i></button>
                     </div>
                 </div>
-                <div class="card-body">
-                    <button onclick="startEssentiaScan()" class="btn btn-info btn-sm py-1 px-2 mb-2"><i class="bi bi-play-fill"></i> Run Essentia</button>
-                    <div><div id="ess-status" class="text-muted small">Idle</div>
-                        <div class="progress mt-1" style="height:8px"><div id="ess-progress-bar" class="progress-bar progress-bar-striped" style="width:0%"></div></div>
-                        <div id="ess-progress-text" class="mt-1 small text-muted"></div>
+                <div class="card-body py-2">
+                    <button onclick="startEssentiaScan()" class="btn btn-info btn-sm py-0 px-2 mb-1"><i class="bi bi-play-fill"></i> Run</button>
+                    <div><span id="ess-status" class="text-muted small">Idle</span>
+                        <div class="progress mt-1" style="height:6px"><div id="ess-progress-bar" class="progress-bar progress-bar-striped" style="width:0%"></div></div>
+                        <div id="ess-progress-text" class="mt-1 small text-muted" style="font-size:11px"></div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
-    <!-- Floating Stop All -->
-    <div class="position-fixed bottom-0 end-0 p-3" style="z-index:10">
-        <button onclick="stopAllScans()" class="btn btn-outline-danger shadow rounded-pill"><i class="bi bi-stop-circle"></i> Stop All</button>
-    </div>
 
     <!-- Navigation Buttons -->
-    <div class="d-flex flex-column flex-md-row gap-2 my-4">
+    <div class="d-flex flex-column flex-md-row gap-2 mb-4">
         <a href="/artists" class="btn btn-primary flex-grow-1">
             <i class="bi bi-people"></i> <span class="d-none d-sm-inline">Browse Artists</span>
         </a>
@@ -162,112 +158,88 @@
         <button onclick="showMusicBrainzModal()" class="btn btn-outline-info flex-grow-1">
             <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Search MusicBrainz</span>
         </button>
+        <button onclick="stopAllScans()" class="btn btn-outline-danger flex-grow-1">
+            <i class="bi bi-stop-circle"></i> <span class="d-none d-sm-inline">Stop All</span>
+        </button>
     </div>
 
-    <!-- Upcoming & Recent Releases Banner -->
-    <div class="card mb-4 border-info">
-        <div class="card-header bg-info bg-opacity-10 border-info d-flex justify-content-between align-items-center">
-            <h5 class="card-title mb-0">
-                <i class="bi bi-calendar-event"></i> Recently Added &amp; Announced Releases
-            </h5>
-            <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
-                <div class="btn-group btn-group-sm" role="group" aria-label="Upcoming release filters" id="upcomingBannerFilterGroup">
-                    <button type="button" class="btn btn-info" id="upcomingFilterAll" onclick="setUpcomingBannerFilter('all')">All</button>
-                    <button type="button" class="btn btn-outline-info" id="upcomingFilterCollection" onclick="setUpcomingBannerFilter('collection')">Collection</button>
-                    <button type="button" class="btn btn-outline-info" id="upcomingFilterRecommended" onclick="setUpcomingBannerFilter('recommended')">Recommended</button>
+    <!-- Two-column tables: Recent Scans + Upcoming Releases -->
+    <div class="row g-3 mb-4">
+        <div class="col-12 col-xl-6">
+            <div class="card h-100">
+                <div class="card-header py-2">
+                    <h6 class="mb-0"><i class="bi bi-clock-history"></i> Recent Scans</h6>
                 </div>
-                <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-info">
-                    <i class="bi bi-arrow-right"></i> View All
-                </a>
+                <div class="table-responsive" style="height: 320px; overflow-y: auto;">
+                    <table class="table table-hover mb-0 table-sm">
+                        <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
+                            <tr>
+                                <th style="width: 28%"><i class="bi bi-person"></i> Artist</th>
+                                <th style="width: 28%"><i class="bi bi-disc"></i> Album</th>
+                                <th style="width: 24%">Scan Types</th>
+                                <th style="width: 20%; text-align: right;">Last Scanned</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recent-scans-body">
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
-        <div class="card-body">
-            <div id="upcomingBannerContent" style="max-height: 300px; overflow-y: auto;">
-                <div class="text-center py-3">
-                    <div class="spinner-border spinner-border-sm" role="status">
-                        <span class="visually-hidden">Loading...</span>
+        <div class="col-12 col-xl-6">
+            <div class="card h-100">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0"><i class="bi bi-calendar-event"></i> Upcoming Releases</h6>
+                    <div class="d-flex gap-2 align-items-center">
+                        <small class="text-muted" id="upcomingTableCount"></small>
+                        <div class="btn-group btn-group-sm" role="group">
+                            <button type="button" class="btn btn-info btn-sm py-0" id="upcomingTableFilterAll" onclick="setUpcomingTableFilter('all')">All</button>
+                            <button type="button" class="btn btn-outline-info btn-sm py-0" id="upcomingTableFilterCollection" onclick="setUpcomingTableFilter('collection')">Collection</button>
+                            <button type="button" class="btn btn-outline-info btn-sm py-0" id="upcomingTableFilterRecommended" onclick="setUpcomingTableFilter('recommended')">Rec.</button>
+                        </div>
+                        <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-info py-0">
+                            <i class="bi bi-arrow-right"></i>
+                        </a>
                     </div>
-                    <small class="d-block mt-2 text-muted">Loading releases...</small>
+                </div>
+                <div class="table-responsive" style="height: 320px; overflow-y: auto;">
+                    <table class="table table-hover mb-0 table-sm">
+                        <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
+                            <tr>
+                                <th style="width: 28%"><i class="bi bi-person"></i> Artist</th>
+                                <th style="width: 28%"><i class="bi bi-disc"></i> Album</th>
+                                <th style="width: 15%"><i class="bi bi-calendar"></i> Release</th>
+                                <th style="width: 12%">Source</th>
+                                <th style="width: 17%">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="upcoming-releases-body">
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Recent Scans (Dynamic JS-rendered) -->
-    <div class="card mb-4">
-        <div class="card-header">
-            <h5 class="card-title mb-0">
-                <i class="bi bi-clock-history"></i> Recent Scans (Scrollable 100-item View)
-            </h5>
-        </div>
-        <div class="table-responsive" style="height: 400px; overflow-y: auto; position: relative;">
-            <table class="table table-hover mb-0" style="margin-bottom: 0;">
-                <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
-                    <tr>
-                        <th style="width: 25%; min-width: 120px;">
-                            <i class="bi bi-person"></i> Artist
-                        </th>
-                        <th style="width: 25%; min-width: 120px;">
-                            <i class="bi bi-disc"></i> Album
-                        </th>
-                        <th style="width: 25%; min-width: 140px;">Scan Types</th>
-                        <th style="width: 15%; text-align: right; min-width: 100px;">Last Scanned</th>
-                        <th style="width: 10%; text-align: center; min-width: 80px;">Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="recent-scans-body">
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- Upcoming Releases Table -->
-    <div class="card mb-4">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <h5 class="card-title mb-0">
-                <i class="bi bi-calendar-event"></i> Upcoming Releases
-            </h5>
-            <div class="d-flex gap-2 align-items-center">
-                <small class="text-muted" id="upcomingTableCount"></small>
-                <div class="btn-group btn-group-sm" role="group">
-                    <button type="button" class="btn btn-info" id="upcomingTableFilterAll" onclick="setUpcomingTableFilter('all')">All</button>
-                    <button type="button" class="btn btn-outline-info" id="upcomingTableFilterCollection" onclick="setUpcomingTableFilter('collection')">Collection</button>
-                    <button type="button" class="btn btn-outline-info" id="upcomingTableFilterRecommended" onclick="setUpcomingTableFilter('recommended')">Recommended</button>
-                </div>
-                <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-info">
-                    <i class="bi bi-arrow-right"></i> Manage
-                </a>
-            </div>
-        </div>
-        <div class="table-responsive" style="height: 400px; overflow-y: auto; position: relative;">
-            <table class="table table-hover mb-0" style="margin-bottom: 0;">
-                <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
-                    <tr>
-                        <th style="width: 28%; min-width: 120px;"><i class="bi bi-person"></i> Artist</th>
-                        <th style="width: 28%; min-width: 120px;"><i class="bi bi-disc"></i> Album</th>
-                        <th style="width: 15%; min-width: 100px;"><i class="bi bi-calendar"></i> Release Date</th>
-                        <th style="width: 12%; min-width: 80px;">Source</th>
-                        <th style="width: 17%; text-align: center; min-width: 120px;">Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="upcoming-releases-body">
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- Unified Log Area -->
+    <!-- Unified Log Area (collapsible) -->
     <div class="card mb-4">
         <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
             <span class="fw-semibold"><i class="bi bi-terminal"></i> Unified Log</span>
-            <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm ms-2"><i class="bi bi-pause"></i> Pause</button>
+            <div class="d-flex gap-2 align-items-center">
+                <div class="d-flex gap-1">
+                    <a href="/api/download-log/unified" class="btn btn-sm btn-outline-primary py-0 px-1" download title="Download unified log"><i class="bi bi-download"></i></a>
+                    <a href="/api/download-log/info" class="btn btn-sm btn-outline-info py-0 px-1" download title="Download info log"><i class="bi bi-info-circle"></i></a>
+                    <a href="/api/download-log/debug" class="btn btn-sm btn-outline-warning py-0 px-1" download title="Download debug log"><i class="bi bi-bug"></i></a>
+                    <a href="/api/download-log/queue" class="btn btn-sm btn-outline-success py-0 px-1" download title="Download queue log"><i class="bi bi-list-ul"></i></a>
+                </div>
+                <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm py-0"><i class="bi bi-pause"></i> Pause</button>
+                <button id="toggleLogBtn" type="button" class="btn btn-outline-secondary btn-sm py-0" onclick="toggleLog()"><i class="bi bi-chevron-up"></i></button>
+            </div>
         </div>
-        <div class="card-body p-2">
-            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-2" style="height: 400px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
-            <div class="d-flex gap-2 justify-content-end mt-2">
-                <a href="/api/download-log/unified" class="btn btn-sm btn-outline-primary" download>
-                    <i class="bi bi-download"></i> Unified (1h)
-                </a>
+        <div class="card-body p-2" id="logBody">
+            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0" style="height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+        </div>
+    </div>
                 <a href="/api/download-log/info" class="btn btn-sm btn-outline-info" download>
                     <i class="bi bi-download"></i> Info (1h)
                 </a>
@@ -350,14 +322,13 @@
     }
 
     .upcoming-source-chip {
-        font-size: 0.72rem;
-        padding: 0.2rem 0.45rem;
+        font-size: 0.70rem;
+        padding: 0.15rem 0.4rem;
         border-radius: 999px;
         font-weight: 600;
-        margin-left: 0.35rem;
         display: inline-flex;
         align-items: center;
-        gap: 0.25rem;
+        gap: 0.2rem;
     }
 
     .upcoming-source-musicbrainz {
@@ -379,6 +350,17 @@
     .progress-bar {
         position: relative;
         overflow: hidden;
+    }
+
+    /* Log toggle animation */
+    #logBody {
+        transition: max-height 0.3s ease;
+        overflow: hidden;
+    }
+    #logBody.collapsed {
+        max-height: 0 !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
     }
 </style>
 
@@ -582,98 +564,7 @@ function updateRecentScans() {
         });
 }
 
-// ===== Upcoming Releases Banner =====
-var dashboardUpcomingFilter = 'all';
-
-function _upcomingFilterEndpoint() {
-    var params = new URLSearchParams();
-    if (dashboardUpcomingFilter === 'collection') params.set('collection', 'true');
-    else if (dashboardUpcomingFilter === 'recommended') params.set('recommended', 'true');
-    params.set('include_queue', 'true');
-    return '/api/upcoming-releases?' + params.toString();
-}
-
-function _renderUpcomingFilterButtons() {
-    var ids = { all: 'upcomingFilterAll', collection: 'upcomingFilterCollection', recommended: 'upcomingFilterRecommended' };
-    Object.keys(ids).forEach(function(key) {
-        var btn = document.getElementById(ids[key]);
-        if (!btn) return;
-        var active = key === dashboardUpcomingFilter;
-        btn.classList.toggle('btn-info', active);
-        btn.classList.toggle('btn-outline-info', !active);
-        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    });
-}
-
-function setUpcomingBannerFilter(filter) {
-    var allowed = ['all', 'collection', 'recommended'];
-    dashboardUpcomingFilter = allowed.indexOf(filter) !== -1 ? filter : 'all';
-    _renderUpcomingFilterButtons();
-    try { sessionStorage.setItem('dashboardUpcomingFilter', dashboardUpcomingFilter); } catch(e) {}
-    loadUpcomingReleasesBanner();
-}
-
-async function loadUpcomingReleasesBanner() {
-    try {
-        var endpoint = _upcomingFilterEndpoint();
-        var resp = await fetch(endpoint);
-        var data = await resp.json();
-        var container = document.getElementById('upcomingBannerContent');
-        if (!container) return;
-        if (!data.releases || data.releases.length === 0) {
-            container.innerHTML = '<p class="text-muted text-center"><i class="bi bi-info-circle"></i> No upcoming or recent releases found.</p>';
-            return;
-        }
-        var releases = data.releases.slice();
-        if (releases.some(function(r) { return r.album_in_collection !== undefined; })) {
-            releases = releases.filter(function(r) { return !r.album_in_collection; });
-        }
-        var now = new Date();
-        var twoWeeksAgo = new Date(now); twoWeeksAgo.setDate(now.getDate() - 14);
-        var oneMonthAhead = new Date(now); oneMonthAhead.setMonth(oneMonthAhead.getMonth() + 1);
-        releases = releases.filter(function(r) {
-            if (!r.release_date || r.release_date === 'Unknown') return false;
-            var d = new Date(r.release_date);
-            return !isNaN(d.getTime()) && d >= twoWeeksAgo && d <= oneMonthAhead;
-        });
-        if (releases.length === 0) {
-            container.innerHTML = '<p class="text-muted text-center"><i class="bi bi-calendar-check"></i> No releases in the last 2 weeks or upcoming month.</p>';
-            return;
-        }
-        releases = releases.sort(function(a, b) {
-            return new Date(a.release_date || '9999-12-31') - new Date(b.release_date || '9999-12-31');
-        }).slice(0, 25);
-        var html = '<div class="list-group list-group-flush">';
-        releases.forEach(function(release) {
-            var releaseDate = release.release_date || 'TBA';
-            var isUpcoming = new Date(releaseDate) > new Date();
-            var sourceRaw = String(release.source || '').toLowerCase();
-            var sourceBadge = sourceRaw.indexOf('wiki') !== -1
-                ? '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>'
-                : '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>';
-            var statusBadge = isUpcoming ? '<span class="badge bg-success ms-2">Upcoming</span>' : '<span class="badge bg-primary ms-2">Recent</span>';
-            var collectionBadge = release.artist_in_collection ? '<span class="badge bg-success ms-2">Artist in Collection</span>' : '';
-            var recommendedBadge = release.artist_in_recommended ? '<span class="badge bg-warning text-dark ms-2">Artist in Recommended</span>' : '';
-            var inQueueBadge = release.in_queue ? '<span class="badge bg-info text-dark ms-2">In Queue</span>' : '';
-            var isInQueue = release.in_queue === true || release.queue_status === 'queued';
-            var addIcon = isInQueue ? '<i class="bi bi-check2-circle"></i>' : '<i class="bi bi-plus-circle"></i>';
-            var addTitle = isInQueue ? 'Already in queue' : 'Add album to queue';
-            var eArtist = encodeURIComponent(release.artist_name || '');
-            var eAlbum = encodeURIComponent(release.album_name || '');
-            var eDate = encodeURIComponent(release.release_date || '');
-            var sArtist = JSON.stringify(String(release.artist_name || ''));
-            var sAlbum = JSON.stringify(String(release.album_name || ''));
-            html += '<div class="list-group-item d-flex justify-content-between align-items-start py-2"><div class="flex-grow-1"><h6 class="mb-1" style="font-size: 0.95rem;">' + releaseDate + ' ' + statusBadge + ' ' + collectionBadge + ' ' + recommendedBadge + ' ' + inQueueBadge + ' ' + sourceBadge + '</h6><small class="text-muted">' + escapeHtml(release.artist_name) + ' - ' + escapeHtml(release.album_name) + '</small></div><div class="d-flex align-items-center gap-2"><button class="btn btn-sm btn-outline-info" title="Search / Download" onclick="searchMusicBrainzRelease(event, ' + sArtist + ', ' + sAlbum + ')"><i class="bi bi-search"></i></button><button class="btn btn-sm btn-outline-primary" ' + (isInQueue ? 'disabled' : '') + ' title="' + addTitle + '" onclick="addUpcomingReleaseToQueueDashboard(\'' + eArtist + '\', \'' + eAlbum + '\', \'' + eDate + '\', this)">' + addIcon + '</button><a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-secondary" title="Open in downloads monitor"><i class="bi bi-arrow-right"></i></a></div></div>';
-        });
-        html += '</div>';
-        container.innerHTML = html;
-        try { sessionStorage.setItem('dashboardUpcomingBannerHtml', html); } catch(e) {}
-    } catch (error) {
-        console.error('Error loading upcoming releases:', error);
-        var container = document.getElementById('upcomingBannerContent');
-        if (container) container.innerHTML = '<p class="text-muted text-center text-danger"><i class="bi bi-exclamation-triangle"></i> Error loading releases</p>';
-    }
-}
+// ===== Upcoming Releases Table helpers =====
 
 async function addUpcomingReleaseToQueueDashboard(encodedArtist, encodedAlbum, encodedDate, buttonEl) {
     try {
@@ -820,6 +711,16 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
+function toggleLog() {
+    var body = document.getElementById('logBody');
+    var btn = document.getElementById('toggleLogBtn');
+    if (!body || !btn) return;
+    body.classList.toggle('collapsed');
+    btn.innerHTML = body.classList.contains('collapsed')
+        ? '<i class="bi bi-chevron-down"></i>'
+        : '<i class="bi bi-chevron-up"></i>';
+}
+
 function updateUnifiedLog() {
     if (logPaused) return;
     fetch('/api/unified-log?lines=150')
@@ -849,20 +750,6 @@ document.addEventListener('DOMContentLoaded', function() {
     // Render initial recent scans from server data
     var initialRecentScans = JSON.parse('{{ recent_scans|default([])|tojson|safe }}');
     renderRecentScans(initialRecentScans);
-
-    // Upcoming releases
-    try {
-        var storedFilter = sessionStorage.getItem('dashboardUpcomingFilter');
-        if (storedFilter) dashboardUpcomingFilter = storedFilter;
-    } catch(e) {}
-    _renderUpcomingFilterButtons();
-    try {
-        var cached = sessionStorage.getItem('dashboardUpcomingBannerHtml');
-        var bannerTarget = document.getElementById('upcomingBannerContent');
-        if (cached && bannerTarget) bannerTarget.innerHTML = cached;
-    } catch(e) {}
-    setTimeout(loadUpcomingReleasesBanner, 200);
-    setInterval(loadUpcomingReleasesBanner, 30 * 60 * 1000);
 
     // Upcoming releases table
     try {

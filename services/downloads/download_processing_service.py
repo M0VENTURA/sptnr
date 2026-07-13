@@ -264,6 +264,77 @@ def queue_clear(
             "error": str(exc),
         }
 
+def queue_status(args: Any = None) -> Dict[str, Any]:
+    """Get queue status counts (wraps DB repository)."""
+    try:
+        from db.repositories.queue import get_queue_status_counts
+        result = get_queue_status_counts()
+        return {"success": True, **result}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+def queue_update(queue_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Update a queue item's metadata (wraps DB repository)."""
+    try:
+        from db.repositories.queue import update_queue_item
+
+        # Convert incoming keys to DB column names
+        field_map = {
+            "status": "status",
+            "priority": "priority",
+            "artist": "artist",
+            "title": "title",
+            "album": "album",
+            "album_artist": "album_artist",
+            "year": "year",
+        }
+        kwargs = {}
+        for json_key, col_name in field_map.items():
+            if json_key in payload:
+                kwargs[col_name] = payload[json_key]
+
+        updated = update_queue_item(queue_id, **kwargs)
+        return {"success": updated is not None, "item": updated}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+def queue_imported(args: Any = None) -> Dict[str, Any]:
+    """Get list of imported/completed queue items (wraps DB repository)."""
+    try:
+        from db.repositories.queue import get_completed_queue
+        limit = 50
+        if args and hasattr(args, "get"):
+            try:
+                limit = min(int(args.get("limit", 50)), 200)
+            except (TypeError, ValueError):
+                pass
+        items = get_completed_queue(limit=limit)
+        return {"success": True, "items": items}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+def queue_delete(queue_id: int, delete_download_file: bool = False) -> Dict[str, Any]:
+    """Delete a queue item, optionally removing the downloaded file."""
+    try:
+        # Get queue item info to find its file path
+        from db.repositories.queue import get_queue_item, delete_queue_item as _delete_from_db
+        import os
+
+        if delete_download_file:
+            item = get_queue_item(queue_id)
+            if item:
+                file_path = item.get("file_path") or item.get("found_filename") or ""
+                if file_path and os.path.isfile(file_path):
+                    try:
+                        os.remove(file_path)
+                    except OSError as exc:
+                        pass
+
+        deleted = _delete_from_db(queue_id)
+        return {"success": bool(deleted), "deleted": deleted}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
 def queue_purge_all() -> Dict[str, Any]:
     return purge_all()
 
