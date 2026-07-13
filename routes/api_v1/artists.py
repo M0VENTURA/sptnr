@@ -18,7 +18,7 @@ async def get_artist(name: str):
     try:
         with db_session() as session:
             result = session.execute(
-                text("""SELECT album, COUNT(*) as track_count, AVG(stars) as avg_stars,
+                text("""SELECT MIN(album) as album, COUNT(*) as track_count, AVG(stars) as avg_stars,
                     MIN(year) as album_year
                     FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
                     GROUP BY LOWER(TRIM(COALESCE(album, '')))
