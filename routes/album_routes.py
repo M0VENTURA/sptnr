@@ -114,12 +114,13 @@ def api_album_art_placeholder():
 @album_bp.route("/<path:artist>/<path:album>/art")
 def api_album_art(artist, album):
     """Get album art. Uses service layer to abstract DB and API calls."""
-    artist, album = unquote(artist), unquote(album)
-    
-    img_data, mime_type = get_local_album_art(artist, album)
-    if img_data:
-        return send_file(io.BytesIO(img_data), mimetype=mime_type)
-        
+    try:
+        artist, album = unquote(artist), unquote(album)
+        img_data, mime_type = get_local_album_art(artist, album)
+        if img_data:
+            return send_file(io.BytesIO(img_data), mimetype=mime_type)
+    except Exception:
+        pass
     return get_album_art_placeholder_svg(size=300)
 
 

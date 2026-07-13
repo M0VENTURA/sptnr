@@ -85,15 +85,14 @@ def api_artists_corrections():
         cursor.execute("""
             SELECT
                 COALESCE(NULLIF(album_artist, ''), artist) AS artist_name,
-                COUNT(*) FILTER (WHERE duplicate_count > 0) AS duplicate_track_count,
+                0 AS duplicate_track_count,
                 COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') AS disc_inconsistent_count,
                 COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') AS mbid_inconsistent_count,
                 COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') AS missing_tracks_count
             FROM tracks
             GROUP BY artist_name
             HAVING
-                COUNT(*) FILTER (WHERE duplicate_count > 0) > 0
-                OR COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') > 0
+                COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') > 0
                 OR COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') > 0
                 OR COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') > 0
         """)

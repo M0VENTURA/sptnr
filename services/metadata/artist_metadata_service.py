@@ -164,17 +164,21 @@ def get_artist_image(artist: str):
     try:
         conn = get_db_connection()
     except Exception:
-        return {"success": False, "error": "DB connection failed"}, 500
+        return {"success": False, "error": "DB connection failed", "image_url": ""}, 200
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT image_url FROM artists WHERE name = %s", (artist,))
-        row = cursor.fetchone()
-        url = str(row[0] or "").strip() if row else ""
+        # Wrap column reference to handle missing columns gracefully
+        try:
+            cursor.execute("SELECT image_url FROM artists WHERE name = %s", (artist,))
+            row = cursor.fetchone()
+            url = str(row[0] or "").strip() if row else ""
+        except Exception:
+            url = ""
         if url and url.startswith(("http://", "https://")):
             return {"success": True, "image_url": url}, 200
-        return {"success": False, "error": "No image"}, 404
+        return {"success": False, "error": "No image", "image_url": ""}, 200
     except Exception as exc:
-        return {"success": False, "error": str(exc)}, 500
+        return {"success": False, "error": str(exc), "image_url": ""}, 200
     finally:
         try:
             conn.close()
