@@ -5,7 +5,6 @@ bootstrap, table/schema inspection helpers, cleanup routines, repository
 query modules, and the SQLAlchemy ORM layer.
 """
 
-from db.bootstrap import ensure_full_schema, init_database_and_schema, verify_all_tables_exist
 from db.context import db_cursor
 from db.utils import get_db_connection, is_postgres_connection
 

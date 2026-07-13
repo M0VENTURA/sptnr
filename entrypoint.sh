@@ -73,11 +73,19 @@ run_queue_startup_schema() {
 
 run_alembic_migrations() {
     if [ -f alembic.ini ] && [ -d migrations/versions ]; then
-        log "Running Alembic database migrations..."
-        if python3 -m alembic upgrade head 2>/dev/null; then
-            ok "Alembic migrations applied"
+        # Stamp the current head so Alembic knows the schema is up-to-date.
+        # This avoids DDL conflicts when db.bootstrap has already created the
+        # tables (which it always does at startup).
+        if python3 -m alembic stamp head 2>/dev/null; then
+            ok "Alembic schema stamped (head)"
         else
-            warn "Alembic migrations failed (non-fatal — legacy schema bootstrap covers it)"
+            # If stamping fails (e.g. first run, no alembic_version table yet),
+            # try a fresh upgrade instead.
+            if python3 -m alembic upgrade head 2>/dev/null; then
+                ok "Alembic migrations applied"
+            else
+                warn "Alembic skipped — schema bootstrap handles table creation"
+            fi
         fi
     fi
 }
@@ -161,9 +169,16 @@ preflight_python() {
 }
 
 start_web_app() {
+    local _error_log="${SPTNR_ERROR_LOG:-/config/error.log}"
     log "Starting web server (hypercorn, ${SPTNR_GUNICORN_WORKERS:-4} workers)..."
     echo ""
-    exec hypercorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class asyncio             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile -             --log-level "${SPTNR_LOG_LEVEL:-info}"             "app:app"
+    log "Log files (accessible via docker exec):"
+    log "  Access:  ${SPTNR_ACCESS_LOG:-/config/access.log}"
+    log "  Errors:  ${_error_log}"
+    log "  Debug:   /config/debug.log"
+    log "  Info:    /config/info.log"
+    log "  Scan:    /config/unified_scan.log"
+    exec hypercorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class asyncio             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile "${_error_log}"             --log-level "${SPTNR_LOG_LEVEL:-info}"             "app:app"
 }
 
 main() {
