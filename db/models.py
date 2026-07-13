@@ -103,6 +103,7 @@ class Track(Base):
     listenbrainz_genres = Column(Text, nullable=True)
     discogs_genres = Column(Text, nullable=True)
     musicbrainz_genres = Column(Text, nullable=True)
+    essentia_genres = Column(Text, nullable=True)
     tags_last_updated = Column(String, nullable=True)
 
     # File & tech metadata

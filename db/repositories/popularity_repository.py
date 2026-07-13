@@ -154,7 +154,7 @@ _POPULARITY_PROTECTED_COLUMNS: frozenset[str] = frozenset({
     "single_detection_last_updated", "single_manual_override",
     # Genres / tags (owned by the popularity pipeline's enrichment pass)
     "spotify_genres", "lastfm_tags", "listenbrainz_genres",
-    "discogs_genres", "musicbrainz_genres", "audiodb_genres",
+    "discogs_genres", "musicbrainz_genres", "audiodb_genres", "essentia_genres",
     # Popularity meta
     "spotify_popularity", "lastfm_ratio", "lastfm_track_playcount",
     "popularity_frozen",
