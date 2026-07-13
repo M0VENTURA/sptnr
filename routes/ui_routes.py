@@ -179,11 +179,15 @@ async def api_test_navidrome_connection():
         return jsonify({"success": False, "error": "Invalid URL format — expected something like http://navidrome:4533"}), 400
 
     try:
-        client = NavidromeClient(base_url=base_url, username=username, password=password)
-        # Call _get_subsonic_response directly for diagnostic info.
-        # ping() swallows all errors and returns False for both connection
-        # failures and auth failures, so we need to inspect the response.
+        # Try password-based auth first (some Navidrome setups reject token auth).
+        client = NavidromeClient(base_url=base_url, username=username, password=password, use_token_auth=False)
         sub_data = client._get_subsonic_response("ping", timeout=10)
+        # If password auth fails, retry with token auth as fallback
+        if not sub_data or sub_data.get("status") != "ok":
+            client2 = NavidromeClient(base_url=base_url, username=username, password=password, use_token_auth=True)
+            sub_data2 = client2._get_subsonic_response("ping", timeout=10)
+            if sub_data2 and sub_data2.get("status") == "ok":
+                sub_data = sub_data2
     except Exception as exc:
         err_msg = str(exc)
         return jsonify({
