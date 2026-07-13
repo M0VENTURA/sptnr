@@ -33,7 +33,8 @@ async def get_artist(name: str):
                     FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)"""),
                 {"name": name},
             )
-            stats = dict(result.fetchone()._mapping) if result.fetchone() else {}
+            row = result.fetchone()
+            stats = dict(row._mapping) if row else {}
             return jsonify(_ok(artist=name, albums=albums, stats=stats))
     except Exception as exc:
         return jsonify(_fail(str(exc), 500))
