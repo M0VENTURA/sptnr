@@ -46,17 +46,29 @@ def get_artist_bio(artist: str) -> tuple[dict, int]:
     """Get artist biography from DB cache or Wikidata fallback."""
     if not artist:
         return {"success": False, "error": "name required"}, 400
-    conn = get_db_connection()
+    try:
+        conn = get_db_connection()
+    except Exception as exc:
+        return {"success": False, "error": f"DB connection failed: {exc}"}, 500
+    bio = ""
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT bio FROM artists WHERE name = %s", (artist,))
         row = cursor.fetchone()
         bio = str(row[0] or "").strip() if row else ""
-        if bio:
-            return {"success": True, "bio": bio, "source": "database"}, 200
+    except Exception:
+        bio = ""
     finally:
-        conn.close()
-    bio = get_artist_biography(artist) or ""
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if bio:
+        return {"success": True, "bio": bio, "source": "database"}, 200
+    try:
+        bio = get_artist_biography(artist) or ""
+    except Exception:
+        bio = ""
     return {"success": True, "bio": bio, "source": "wikidata" if bio else "none"}, 200
 
 
@@ -64,18 +76,26 @@ def get_singles_count(artist: str) -> tuple[dict, int]:
     """Get count of singles for an artist."""
     if not artist:
         return {"success": False, "error": "name required"}, 400
-    conn = get_db_connection()
+    try:
+        conn = get_db_connection()
+    except Exception as exc:
+        return {"success": False, "error": f"DB connection failed: {exc}"}, 500
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT COUNT(*) FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND is_single = TRUE",
+            "SELECT COUNT(*) FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND COALESCE(is_single, FALSE) = TRUE",
             (artist,),
         )
         row = cursor.fetchone()
         count = int(row[0] or 0) if row else 0
         return {"success": True, "count": count}, 200
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}, 500
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def get_covered_by(artist: str) -> tuple[dict, int]:
@@ -139,10 +159,12 @@ def artist_favourite(request) -> tuple[dict, int]:
 
 def get_artist_image(artist: str):
     """Get artist image URL from database."""
-    from quart import Response
     if not artist:
-        return Response("", status=404)
-    conn = get_db_connection()
+        return {"success": False, "error": "name required"}, 400
+    try:
+        conn = get_db_connection()
+    except Exception:
+        return {"success": False, "error": "DB connection failed"}, 500
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT image_url FROM artists WHERE name = %s", (artist,))
@@ -151,8 +173,13 @@ def get_artist_image(artist: str):
         if url and url.startswith(("http://", "https://")):
             return {"success": True, "image_url": url}, 200
         return {"success": False, "error": "No image"}, 404
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}, 500
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def search_images(artist: str, source: str) -> tuple[dict, int]:
@@ -189,7 +216,38 @@ def lookup_ids(payload: dict) -> tuple[dict, int]:
 
 
 def get_similar_artists(artist: str, args) -> tuple[dict, int]:
-    return {"success": False, "error": "Not yet implemented", "similar_artists": []}, 501
+    """Get similar artists from DB cache (Last.fm / ListenBrainz)."""
+    if not artist:
+        return {"success": False, "error": "artist required"}, 400
+    sources = {"lastfm": [], "listenbrainz": []}
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated "
+            "FROM artists WHERE name = %s",
+            (artist,),
+        )
+        row = cursor.fetchone()
+        if row:
+            import json
+            lf_raw = str(row[0] or "") if len(row) > 0 else ""
+            lb_raw = str(row[1] or "") if len(row) > 1 else ""
+            if lf_raw:
+                try:
+                    sources["lastfm"] = json.loads(lf_raw) if isinstance(json.loads(lf_raw), list) else []
+                except Exception:
+                    pass
+            if lb_raw:
+                try:
+                    sources["listenbrainz"] = json.loads(lb_raw) if isinstance(json.loads(lb_raw), list) else []
+                except Exception:
+                    pass
+        return {"success": True, "similar_artists": sources}, 200
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}, 500
+    finally:
+        conn.close()
 
 
 def get_compilations(artist: str) -> tuple[dict, int]:

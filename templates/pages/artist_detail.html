@@ -2086,8 +2086,16 @@ function importMissingRelease(artistName, releaseId, releaseTitle) {
  * @param {boolean} [silent=false] - When true, suppress success/error alert
  *   popups (used for background auto-refresh on page load).
  */
-function checkMissingReleases(artistName, silent = false, background = false) {
-  const triggerBtn = window.event?.target?.closest('button');
+function checkMissingReleases(artistName, silent = false, background = false, triggerEl) {
+  var triggerBtn = triggerEl || (window.event ? window.event.target || window.event.srcElement : null);
+  if (triggerBtn && triggerBtn.nodeType === 1) {
+    // Ensure we have a button element if a child was clicked
+    if (triggerBtn.tagName !== 'BUTTON') {
+      triggerBtn = triggerBtn.closest ? triggerBtn.closest('button') : triggerBtn.parentElement;
+    }
+  } else {
+    triggerBtn = null;
+  }
   const originalBtnHtml = triggerBtn ? triggerBtn.innerHTML : null;
   if (triggerBtn) {
     triggerBtn.disabled = true;

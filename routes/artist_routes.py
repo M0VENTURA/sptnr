@@ -187,7 +187,8 @@ def api_artist_favourite():
 @artist_bp.route("/api/artist/image")
 def api_artist_image():
     artist = request.args.get("name", "")
-    return metadata.get_artist_image(artist)  # returns Response
+    data, code = metadata.get_artist_image(artist)
+    return jsonify(data), code
 
 
 @artist_bp.route("/api/artist/search-images")
