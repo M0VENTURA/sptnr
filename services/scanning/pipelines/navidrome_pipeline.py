@@ -152,6 +152,7 @@ def run_navidrome_import_scan(
                 force=force_rescan,
                 filter_missing=filter_missing,
                 diff_mode=not force_rescan,
+                client=nav_client,
             )
 
             with _progress_lock:
