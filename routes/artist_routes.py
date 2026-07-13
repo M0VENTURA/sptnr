@@ -302,3 +302,45 @@ async def api_add_artist():
     data, code = scan_add_artist(artist)
     return _json_response(data)
 
+
+@artist_bp.route("/api/missing/overview")
+def api_missing_overview():
+    """Return dashboard overview of gap-detected missing tracks and cached missing releases."""
+    from sqlalchemy import text as sa_text
+    from db.engine import db_session
+
+    gap_albums = []
+    missing_artists = []
+
+    try:
+        with db_session() as session:
+            result = session.execute(sa_text("""
+                SELECT COALESCE(NULLIF(album_artist, ''), artist) as artist, album,
+                       COUNT(*) as track_count
+                FROM tracks
+                WHERE musicbrainz_album_mbid IS NOT NULL
+                  AND (pending_mb_updates IS NOT NULL AND pending_mb_updates != '')
+                GROUP BY artist, album
+                ORDER BY artist, album
+            """))
+            for row in result.fetchall() or []:
+                gap_albums.append(dict(row._mapping))
+    except Exception as exc:
+        logger.error("Failed to fetch gap albums: %s", exc)
+
+    try:
+        with db_session() as session:
+            result = session.execute(sa_text("""
+                SELECT DISTINCT artist
+                FROM missing_releases
+                ORDER BY artist
+            """))
+            missing_artists = [dict(r._mapping) for r in result.fetchall() or []]
+    except Exception as exc:
+        logger.error("Failed to fetch missing releases: %s", exc)
+
+    return jsonify({
+        "gap_albums": gap_albums,
+        "artists_with_missing_releases": missing_artists,
+    })
+

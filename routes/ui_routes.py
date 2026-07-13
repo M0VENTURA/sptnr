@@ -363,11 +363,25 @@ async def dashboard():
 async def artists():
     with db_session() as session:
         result = session.execute(text("""
-            SELECT COALESCE(NULLIF(album_artist, ''), artist) as display_name,
-                   COUNT(DISTINCT album) as album_count,
-                   COUNT(*) as track_count,
-                   COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count
-            FROM tracks GROUP BY display_name HAVING COUNT(DISTINCT album) > 0 ORDER BY display_name
+            SELECT LOWER(canonical) as sort_key,
+                   (array_agg(canonical ORDER BY album_count DESC))[1] as display_name,
+                   (array_agg(canonical ORDER BY album_count DESC))[1] as link_artist,
+                   SUM(album_count) as album_count,
+                   SUM(track_count) as track_count,
+                   SUM(five_star_count) as five_star_count
+            FROM (
+                SELECT COALESCE(NULLIF(album_artist, ''), artist) as canonical,
+                       COUNT(DISTINCT album) as album_count,
+                       COUNT(*) as track_count,
+                       COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+                  AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                GROUP BY canonical
+                HAVING COUNT(DISTINCT album) > 0
+            ) sub
+            GROUP BY LOWER(canonical)
+            ORDER BY LOWER(canonical)
         """))
         artists_data = [dict(r._mapping) for r in result.fetchall()]
         result = session.execute(text("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac FROM tracks"))

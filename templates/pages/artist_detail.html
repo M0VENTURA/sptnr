@@ -21,6 +21,22 @@
   color: var(--text-primary, #e8e8e8) !important;
 }
 
+.artist-page .table-hover tbody tr:hover,
+.artist-page .table-hover tbody tr:hover td,
+.artist-page .table-hover tbody tr:hover th {
+  background-color: var(--primary-bg, #141414) !important;
+  color: var(--text-primary, #e8e8e8) !important;
+}
+
+/* Dark accordion inside artist page */
+.artist-page .accordion-item,
+.artist-page .accordion-button,
+.artist-page .accordion-body {
+  background-color: var(--secondary-bg, #1e1e1e) !important;
+  color: var(--text-primary, #e8e8e8) !important;
+  border-color: var(--border-color, #333) !important;
+}
+
 @media (max-width: 576px) {
   /* Artist image: shrink slightly, stay centered */
   .artist-img-wrap {
