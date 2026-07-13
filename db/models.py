@@ -49,6 +49,12 @@ class Artist(Base):
 
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
+    country = Column(String, nullable=True)
+    bio = Column(Text, nullable=True)
+    image_url = Column(String, nullable=True)
+    similar_artists_lastfm = Column(Text, nullable=True)
+    similar_artists_listenbrainz = Column(Text, nullable=True)
+    similar_artists_last_updated = Column(String, nullable=True)
 
     def __repr__(self) -> str:
         return f"<Artist(id={self.id!r}, name={self.name!r})>"

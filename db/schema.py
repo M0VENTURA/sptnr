@@ -161,6 +161,11 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "essentia_last_updated": "TIMESTAMP", "essentia_model_version": "TEXT",
         "verification_status": "TEXT", "verification_checked_at": "TIMESTAMP", "verification_error": "TEXT",
     },
+    "artists": {
+        "country": "TEXT", "bio": "TEXT", "image_url": "TEXT",
+        "similar_artists_lastfm": "TEXT", "similar_artists_listenbrainz": "TEXT",
+        "similar_artists_last_updated": "TEXT",
+    },
     "download_queue": {
         "album_artist": "TEXT", "track_number": "TEXT", "disc_number": "TEXT", "year": "TEXT",
         "release_year": "INTEGER", "release_id": "TEXT", "release_source": "TEXT", "release_mbid": "TEXT",
