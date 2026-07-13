@@ -367,7 +367,7 @@ async def artists():
                    COUNT(DISTINCT album) as album_count,
                    COUNT(*) as track_count,
                    COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count
-            FROM tracks GROUP BY display_name HAVING album_count > 0 ORDER BY display_name
+            FROM tracks GROUP BY display_name HAVING COUNT(DISTINCT album) > 0 ORDER BY display_name
         """))
         artists_data = [dict(r._mapping) for r in result.fetchall()]
         result = session.execute(text("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac FROM tracks"))
