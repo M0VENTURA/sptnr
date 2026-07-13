@@ -407,7 +407,8 @@ async def artist_detail(name):
                    AVG(stars) as avg_stars, MIN(year) as earliest_year, MAX(year) as latest_year
             FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
         """), {"name": name})
-        stats = dict(result.fetchone()._mapping) if result.fetchone() else {}
+        row = result.fetchone()
+        stats = dict(row._mapping) if row else {}
 
         result = session.execute(text("""
             SELECT id, title, album, stars, final_score FROM tracks
