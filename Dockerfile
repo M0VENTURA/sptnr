@@ -30,8 +30,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Clone the repo so tag_music.py is available at the default ESSENTIA_SCRIPT_PATH
 RUN git clone --depth=1 https://github.com/WB2024/Essentia-to-Metadata.git /opt/Essentia-to-Metadata
 
-# Install essentia-tensorflow and its dependencies (numpy is pulled in automatically)
-RUN pip install --no-cache-dir essentia-tensorflow
+# Install essentia-tensorflow and its dependencies.
+# Only available for linux/amd64 — skipped on arm64 where no wheel exists.
+RUN if [ "$(uname -m)" = "x86_64" ]; then \
+        pip install --no-cache-dir essentia-tensorflow; \
+    else \
+        echo "⚠ Skipping essentia-tensorflow (no wheel for $(uname -m))"; \
+    fi
 
 # Download Essentia ML models (~87 MB) to the default ESSENTIA_MODELS_DIR.
 # The download is optional: if essentia.upf.edu is unreachable in the build
