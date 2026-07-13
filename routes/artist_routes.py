@@ -17,6 +17,7 @@ from services.metadata.artist_scan_service import (
     add_artist as scan_add_artist,
 )
 from services.metadata import artist_metadata_service as metadata
+from db.utils import get_db_connection
 
 artist_bp = Blueprint("artist", __name__)
 

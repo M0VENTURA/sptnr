@@ -50,9 +50,10 @@ _CLEANUP_SIBLING_MIN_AGE_SECONDS: int = 30
 # ==============================================================================
 
 def cleanup_stale_downloads() -> dict[str, int]:
-    """Clean up stale/orphaned download entries. Thin wrapper for queue_orchestrator."""
-    from services.downloads.download_verification_service import verify_moved_files
-    return verify_moved_files()
+    """Clean up stale/orphaned download entries."""
+    from services.downloads.download_scan_service import discover_files
+    result = discover_files()
+    return {"scanned": len(result) if isinstance(result, (list, dict)) else 1}
 
 
 def cleanup_sibling_downloads(
