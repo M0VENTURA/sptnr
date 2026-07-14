@@ -317,21 +317,21 @@ class MP3ImportScanner:
                 """),
                 {"title": title, "artist": artist, "album": album},
             )
-            row = cursor.fetchone()
+            row = result.fetchone()
             if row:
                 return str(row[0])
 
             # Broader match on artist + title only
-            cursor.execute(
-                """
-                SELECT id FROM tracks
-                WHERE LOWER(title) = LOWER(%s)
-                  AND LOWER(artist) = LOWER(%s)
-                LIMIT 1
-                """,
-                (title, artist),
+            result = session.execute(
+                text("""
+                    SELECT id FROM tracks
+                    WHERE LOWER(title) = LOWER(:title)
+                      AND LOWER(artist) = LOWER(:artist)
+                    LIMIT 1
+                """),
+                {"title": title, "artist": artist},
             )
-            row = cursor.fetchone()
+            row = result.fetchone()
             return str(row[0]) if row else None
 
     def _update_track_row(self, track_id: str, file_path: str, meta: dict[str, Any]) -> None:

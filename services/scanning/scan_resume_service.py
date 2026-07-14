@@ -15,7 +15,9 @@ Key Functions:
 
 from __future__ import annotations
 
-from db.utils import get_db_connection, row_get
+from sqlalchemy import text
+
+from db.engine import db_session
 
 
 def get_resume_artist_from_db() -> str | None:
@@ -24,23 +26,17 @@ def get_resume_artist_from_db() -> str | None:
 
     Used ONLY as a fallback if file checkpoint is missing.
     """
-    conn = get_db_connection()
-
     try:
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT artist_name
-            FROM scan_history
-            ORDER BY scanned_at DESC
-            LIMIT 1
-        """)
-
-        row = cursor.fetchone()
-        return row_get(row, "artist_name", 0)
-
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT artist_name
+                    FROM scan_history
+                    ORDER BY scanned_at DESC
+                    LIMIT 1
+                """)
+            )
+            row = result.fetchone()
+            return str(row[0]) if row else None
     except Exception:
         return None
-
-    finally:
-        conn.close()

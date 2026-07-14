@@ -113,7 +113,7 @@ def run_with_db_lock_retry(operation):
             raise
 
 
-def save_to_db(track_data: dict, conn=None) -> bool:
+def save_to_db(track_data: dict) -> bool:
     """Save or update a track in the database.
 
     Uses db_session for safe connection handling.

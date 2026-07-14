@@ -27,7 +27,6 @@ from api_clients.navidrome import NavidromeClient
 from db.repositories.tracks import upsert_track_payload
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection, row_get
 from helpers.logging_config import log_unified
 from helpers.text_utils import _clean_artist_name_for_storage
 from services.scanning.cleanup import (
@@ -44,15 +43,6 @@ from services.scanning.payload_builder import build_track_payload
 VA_ALBUM_ARTIST_VARIANTS = frozenset({
     "various artists", "various", "v/a", "va", "compilation", "original soundtrack",
 })
-
-
-def close_conn(conn: Any) -> None:
-    """Safely close a DB connection."""
-    try:
-        if conn:
-            conn.close()
-    except Exception:
-        pass
 
 
 def _get_empty_client() -> NavidromeClient:
@@ -84,13 +74,13 @@ def fetch_album_tracks(album_id: str, client: NavidromeClient | None = None) -> 
         return _get_empty_client().fetch_album_tracks(album_id) or {}
 
 
-def save_to_db(track_payload: dict[str, Any], conn: Any | None = None) -> None:
+def save_to_db(track_payload: dict[str, Any]) -> None:
     """Persist a track payload through the PostgreSQL-safe tracks repository.
 
     This replaces the previous fallback to ``popularity_helpers.save_to_db`` so
     the import path stays PostgreSQL-only and avoids old SQLite-era behaviour.
     """
-    upsert_track_payload(track_payload, conn=conn)
+    upsert_track_payload(track_payload)
 
 
 def detect_live_album(album_name: str) -> dict[str, bool]:
@@ -127,7 +117,6 @@ def artist_album_name_diff(
             nav_names.add(name)
             nav_counts[name] = int(album.get("songCount", 0) or 0)
 
-    conn = None
     db_names: set[str] = set()
     db_counts: dict[str, int] = {}
 
@@ -152,8 +141,6 @@ def artist_album_name_diff(
     except Exception as exc:
         logging.debug("[NAVIDROME_SCAN] Could not query DB albums for '%s': %s", artist_name, exc)
         return False, set()
-    finally:
-        close_conn(conn)
 
     changed = nav_names.symmetric_difference(db_names)
     for album in nav_names & db_names:
@@ -217,33 +204,33 @@ def extract_and_backfill_track_metadata(
     return extracted, writer_json
 
 
-def prefetch_artist_state(conn: Any, *, canonical_artist_name: str) -> dict[str, Any]:
+def prefetch_artist_state(*, canonical_artist_name: str) -> dict[str, Any]:
     """Read existing DB state needed for one artist scan."""
-    cursor = conn.cursor()
     existing_track_ids: set[str] = set()
     existing_album_tracks: dict[str, set[str]] = {}
     existing_album_artists: dict[str, str] = {}
 
-    cursor.execute(
-        """
-        SELECT id, album, album_artist
-        FROM tracks
-        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-        """,
-        (canonical_artist_name,),
-    )
+    with db_session() as session:
+        result = session.execute(
+            text("""
+                SELECT id, album, album_artist
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+            """),
+            {"artist": canonical_artist_name},
+        )
 
-    for row in cursor.fetchall() or []:
-        track_id = row_get(row, "id", 0)
-        album = row_get(row, "album", 1)
-        album_artist = row_get(row, "album_artist", 2)
+        for row in result.fetchall() or []:
+            track_id = row[0]
+            album = row[1]
+            album_artist = row[2]
 
-        if track_id:
-            existing_track_ids.add(str(track_id))
-        if album and track_id:
-            existing_album_tracks.setdefault(str(album), set()).add(str(track_id))
-        if album and album_artist:
-            existing_album_artists[str(album)] = str(album_artist)
+            if track_id:
+                existing_track_ids.add(str(track_id))
+            if album and track_id:
+                existing_album_tracks.setdefault(str(album), set()).add(str(track_id))
+            if album and album_artist:
+                existing_album_artists[str(album)] = str(album_artist)
 
     return {
         "existing_track_ids": existing_track_ids,
@@ -277,12 +264,10 @@ def scan_artist_to_db(
         return None
 
     canonical_artist_name = _clean_artist_name_for_storage(artist_name) or artist_name
-    conn = None
     active_client = client
 
     try:
-        conn = get_db_connection()
-        state = prefetch_artist_state(conn, canonical_artist_name=canonical_artist_name)
+        state = prefetch_artist_state(canonical_artist_name=canonical_artist_name)
 
         existing_track_ids = state["existing_track_ids"]
         navidrome_track_ids = state["navidrome_track_ids"]
@@ -295,7 +280,6 @@ def scan_artist_to_db(
             canonical_artist_name=canonical_artist_name,
         )
         sanitize_artist_rows_safe(canonical_artist_name=canonical_artist_name)
-        conn.commit()
 
         changed_album_names: set[str] | None = None
 
@@ -394,9 +378,7 @@ def scan_artist_to_db(
                 if album_mbid:
                     album_mbids_seen.add(album_mbid)
 
-                save_to_db(payload, conn=conn)
-
-            conn.commit()
+                save_to_db(payload)
 
             if len(album_mbids_seen) > 1:
                 logging.warning(
@@ -431,16 +413,8 @@ def scan_artist_to_db(
         return None
 
     except Exception:
-        if conn:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
         logging.error("scan_artist_to_db failed for %s", artist_name, exc_info=True)
         raise
-
-    finally:
-        close_conn(conn)
 
 
 def pre_import_sync_album_artists(artist_id: str | None = None) -> dict[str, Any]:

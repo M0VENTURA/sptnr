@@ -26,7 +26,6 @@ from services.metadata.tag_file_service import (
 
 def upsert_track_payload(
     track_payload: dict[str, Any],
-    conn: Any | None = None,
 ) -> bool:
     """Persist a Navidrome track payload via the popularity repository.
 
@@ -35,7 +34,7 @@ def upsert_track_payload(
     when ``_navidrome_sync`` is set in the payload.
     """
     from db.repositories.popularity_repository import save_to_db
-    return save_to_db(track_payload, conn=conn)
+    return save_to_db(track_payload)
 
 def insert_or_update_track(track_id: str, track_data: dict[str, Any]) -> None:
     """Insert or update a track's popularity/enrichment data.

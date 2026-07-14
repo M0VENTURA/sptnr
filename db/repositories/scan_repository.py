@@ -17,7 +17,6 @@ from typing import Any
 from sqlalchemy import text
 
 from db.engine import db_session
-from db.utils import get_db_connection, row_get
 from helpers.text_utils import (
     _normalize_artist_key,
     _resolve_navidrome_file_path_for_storage,
