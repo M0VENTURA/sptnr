@@ -13,12 +13,10 @@
         </ol>
     </nav>
     
-    <!-- Album Art & Basic Info Combined Card -->
     <div class="mb-4" id="album-details-section">
         <div class="card">
             <div class="card-body">
                 <div class="row g-4">
-                    <!-- Album Art -->
                     <div class="col-12 col-md-3 d-flex flex-column align-items-center">
                         <div class="album-art-wrap position-relative mb-3" style="width: min(200px, 50vw); aspect-ratio: 1; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
                             <img id="albumArtImage" src="{{ url_for('album_routes.api_album_art', artist=artist_name, album=album_name) }}" 
@@ -30,7 +28,6 @@
                             </button>
                         </div>
                     </div>
-                    <!-- Album Info -->
                     <div class="col-12 col-md-9">
                         <h5 class="mb-3"><i class="bi bi-info-circle"></i> Album Details</h5>
                         <div class="row g-2">
@@ -104,7 +101,6 @@
         </div>
     </div>
     
-    <!-- Album Title & Action Buttons -->
     <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
         <div class="flex-grow-1">
             <h1 class="h2 mb-1">
@@ -116,7 +112,7 @@
             <p class="text-muted mb-0">by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
         </div>
         <div class="d-flex gap-2 flex-wrap">
-            <button class="btn btn-outline-success btn-sm" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites">
+            <button class="btn btn-outline-success btn-sm" onclick='addBookmark("album", {{ album_name|tojson }}, {{ artist_name|tojson }}, {{ album_name|tojson }}, null)' title="Add to favourites">
                 <i class="bi bi-star"></i> <span class="d-none d-sm-inline">Favourite</span>
             </button>
             <button class="btn btn-outline-info btn-sm" onclick="openAlbumLookupModal()">
@@ -128,12 +124,12 @@
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end">
                     {% if qbit_config is defined and qbit_config.enabled %}
-                    <li><a class="dropdown-item" onclick="openQbitSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
+                    <li><a class="dropdown-item" onclick='openQbitSearchAlbum({{ artist_name|tojson }}, {{ album_name|tojson }})' href="javascript:void(0)">
                         <i class="bi bi-cloud-download"></i> Search qBittorrent
                     </a></li>
                     {% endif %}
                     {% if slskd_config is defined and slskd_config.enabled %}
-                    <li><a class="dropdown-item" onclick="openSlskdSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
+                    <li><a class="dropdown-item" onclick='openSlskdSearchAlbum({{ artist_name|tojson }}, {{ album_name|tojson }})' href="javascript:void(0)">
                         <i class="bi bi-music-note-beamed"></i> Search Soulseek
                     </a></li>
                     {% endif %}
@@ -158,13 +154,12 @@
                     <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan</span>
                 </button>
             </form>
-            <button class="btn btn-secondary btn-sm" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" title="Rename all album files based on current metadata">
+            <button class="btn btn-secondary btn-sm" onclick='renameAlbumFiles({{ artist_name|tojson }}, {{ album_name|tojson }})' title="Rename all album files based on current metadata">
                 <i class="bi bi-files"></i> <span class="d-none d-sm-inline">Rename Files</span>
             </button>
         </div>
     </div>
 
-    <!-- Navigation Tabs -->
     <div class="card mb-4 sticky-top" style="top: 4rem; z-index: 1000;">
         <div class="card-body py-2 px-3">
             <ul class="nav nav-pills gap-2 small">
@@ -178,12 +173,9 @@
         </div>
     </div>
 
-    <!-- Two-Column Layout for Edit & Overview -->
     <form method="POST" action="{{ url_for('ui.album_detail', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
         <div class="row g-3 mb-4">
-            <!-- EDIT FORM -->
             <div class="col-12 order-2">
-                <!-- Album Edit Card -->
                 <div class="card" id="album-information-section">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">
@@ -293,7 +285,7 @@
                                     {% for genre in album_genres %}
                                     <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
                                         {{ genre }}
-                                        <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="stageRemoveAlbumGenre('{{ genre|escapejs }}')" aria-label="Remove"></button>
+                                        <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick='stageRemoveAlbumGenre({{ genre|tojson }})' aria-label="Remove"></button>
                                     </span>
                                     {% endfor %}
                                 {% else %}
@@ -315,9 +307,7 @@
                 </div>
             </div>
 
-            <!-- OVERVIEW -->
             <div class="col-12 order-1">
-                <!-- Album Overview Card -->
                 {% if album_data %}
                 <div class="card" id="album-overview-section">
                     <div class="card-header">
@@ -327,7 +317,6 @@
                     </div>
                     <div class="card-body">
                         <div class="row g-3">
-                            <!-- Release Information -->
                             {% if album_data.spotify_release_date %}
                             <div class="col-6">
                                 <div class="metadata-row">
@@ -337,7 +326,6 @@
                             </div>
                             {% endif %}
 
-                            <!-- Duration -->
                             <div class="col-6">
                                 <div class="metadata-row">
                                     <div class="metadata-label small">Duration</div>
@@ -357,7 +345,6 @@
                                 </div>
                             </div>
 
-                            <!-- Average Rating -->
                             <div class="col-6">
                                 <div class="metadata-row">
                                     <div class="metadata-label small">Avg Rating</div>
@@ -371,7 +358,6 @@
                                 </div>
                             </div>
 
-                            <!-- Track Count -->
                             <div class="col-6">
                                 <div class="metadata-row">
                                     <div class="metadata-label small">Track Count</div>
@@ -379,7 +365,6 @@
                                 </div>
                             </div>
 
-                            <!-- Discs (if multi-disc) -->
                             {% if album_data.total_discs and album_data.total_discs > 1 %}
                             <div class="col-6">
                                 <div class="metadata-row">
@@ -389,7 +374,6 @@
                             </div>
                             {% endif %}
 
-                            <!-- Detected Singles -->
                             {% if album_data.singles_count and album_data.singles_count > 0 %}
                             <div class="col-6">
                                 <div class="metadata-row">
@@ -401,7 +385,6 @@
                             </div>
                             {% endif %}
 
-                            <!-- Last Scanned -->
                             {% if album_data.last_scanned %}
                             <div class="col-12">
                                 <div class="metadata-row">
@@ -418,10 +401,6 @@
         </div>
     </form>
     
-    <!-- FULL-WIDTH SECTIONS BELOW FORM -->
-
-    
-    <!-- Genres & Tags Card -->
     <div class="card mb-4" id="album-genres-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
@@ -429,7 +408,6 @@
                         </h5>
                     </div>
                     <div class="card-body">
-                        <!-- Genre Recommendations -->
                         <h6 class="text-muted mb-2">Get Suggestions</h6>
                         <button type="button" class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
                             <i class="bi bi-cloud-download"></i> Recommendations
@@ -444,7 +422,6 @@
 
                         <hr class="my-3">
 
-                        <!-- Detected Genre Source Display -->
                         <h6 class="text-muted mb-2">Detected Genres</h6>
                         <p class="text-muted small mb-2">All genres detected from external sources (Last.fm, Discogs, MusicBrainz, Essentia, etc.) across all tracks on this album.</p>
                         <div id="albumGenreSourcesContainer">
@@ -496,7 +473,7 @@
                                       {% endfor %}
                                     </div>
                                     <button class="btn btn-sm btn-outline-success album-apply-source-tags-btn" style="display:none" onclick="applySelectedAlbumSourceTags()">
-                                                                            <i class="bi bi-check-circle"></i> Add Selected to Save List
+                                                                                        <i class="bi bi-check-circle"></i> Add Selected to Save List
                                     </button>
                                   </div>
                                   {% set ns3.first = False %}
@@ -513,7 +490,6 @@
                     </div>
                 </div>
 
-    <!-- Similar Artists Card -->
     <div class="card mb-4" id="album-similar-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
@@ -571,10 +547,10 @@
                     <div class="btn-group btn-group-sm">
                         <button class="btn btn-outline-success queue-missing-btn"
                             title="Add to download queue"
-                            data-artist="{{ track.artist|escapejs }}"
-                            data-album-artist="{{ track.album_artist|escapejs }}"
-                            data-title="{{ track.title|escapejs }}"
-                            data-album="{{ track.album|escapejs }}"
+                            data-artist="{{ track.artist|e }}"
+                            data-album-artist="{{ track.album_artist|e }}"
+                            data-title="{{ track.title|e }}"
+                            data-album="{{ track.album|e }}"
                             data-track-number="{{ track.track_number or '' }}"
                             data-disc-number="{{ track.disc_number or '' }}"
                             data-year="{{ track.year or '' }}"
@@ -586,18 +562,18 @@
                         </button>
                         <button class="btn btn-outline-primary"
                             title="Match to an existing song in the library"
-                            data-title="{{ track.title|escapejs }}"
+                            data-title="{{ track.title|e }}"
                             data-track-number="{{ track.track_number or '' }}"
                             data-release-id="{{ track.release_id or '' }}"
-                            data-artist="{{ track.artist|escapejs }}"
-                            data-album="{{ track.album|escapejs }}"
+                            data-artist="{{ track.artist|e }}"
+                            data-album="{{ track.album|e }}"
                             onclick="openAlbumMatchModal(this)">
                             <i class="bi bi-link-45deg"></i>
                         </button>
                         <button class="btn btn-outline-secondary"
                             title="Ignore – hide this track from the missing list"
                             data-missing-id="{{ track.missing_track_id or '' }}"
-                            data-title="{{ track.title|escapejs }}"
+                            data-title="{{ track.title|e }}"
                             data-disc-number="{{ track.disc_number or 1 }}"
                             onclick="ignoreMissingTrack(this)">
                             <i class="bi bi-x-lg"></i>
@@ -624,10 +600,8 @@
                 </thead>
                 <tbody>
                     {% if album_data.total_discs and album_data.total_discs > 1 %}
-                        <!-- Multi-disc album view -->
                         {% for disc_num in tracks_by_disc|dictsort %}
                             <tr class="table-secondary" data-disc="{{ disc_num[0] or 1 }}">
-                                <!-- Colspan = 9 columns: Checkbox, #, Title, Artist, Duration, Rating, Single, Genres, Actions -->
                                 <td colspan="9" style="padding: 0.75rem 0.5rem;">
                                     <strong style="font-size: 1.1rem;">
                                         <i class="bi bi-disc"></i> Disc {{ disc_num[0] or 1 }}
@@ -734,7 +708,7 @@
                                                 </span>
                                                 {% endfor %}
                                             {% endif %}
-                                            <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
+                                            <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick='openAddGenreModal({{ track.id|tojson }}, {{ track.title|tojson }})'>
                                                 <i class="bi bi-plus-circle"></i> Add  
                                             </button>
                                         </div>
@@ -760,22 +734,22 @@
                                     {% if track.file_path %}
                                     <button class="btn btn-sm btn-outline-success player-play-btn"
                                             data-track-id="{{ track.id }}"
-                                            data-title="{{ track.title|escapejs }}"
-                                            data-artist="{{ (track.artist or artist_name)|escapejs }}"
+                                            data-title="{{ track.title|e }}"
+                                            data-artist="{{ (track.artist or artist_name)|e }}"
                                             data-art="{{ url_for('album_routes.api_album_art', artist=artist_name, album=album_name) }}"
                                             onclick="playTrackFromAlbum(this)"
                                             title="Play this track">
                                         <i class="bi bi-play-fill"></i>
                                     </button>
                                     {% endif %}
-                                    <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
+                                    <button class="btn btn-sm btn-outline-primary" onclick='lookupMetadata("track", {{ track.id|tojson }})' title="View metadata">
                                         <i class="bi bi-search"></i>
                                     </button>
-                                    <button class="btn btn-sm btn-outline-info" onclick="openEditTrackFromAlbum('{{ track.id }}')" title="Edit track on this page">
+                                    <button class="btn btn-sm btn-outline-info" onclick='openEditTrackFromAlbum({{ track.id|tojson }})' title="Edit track on this page">
                                         <i class="bi bi-pencil"></i>
                                     </button>
                                     {% if track.musicbrainz_trackid or track.beets_mbid %}
-                                    <button class="btn btn-sm btn-outline-warning" onclick="openAlbumTrackMbReleaseModal('{{ track.id }}')" title="Match to a different MusicBrainz release">
+                                    <button class="btn btn-sm btn-outline-warning" onclick='openAlbumTrackMbReleaseModal({{ track.id|tojson }})' title="Match to a different MusicBrainz release">
                                         <i class="bi bi-arrow-repeat"></i>
                                     </button>
                                     {% endif %}
@@ -814,7 +788,6 @@
                             {% endfor %}
                         {% endfor %}
                     {% else %}
-                        <!-- Single-disc album view -->
                         {% for track in tracks %}
                         {% if track.is_missing %}
                         {{ missing_track_row(track) }}
@@ -860,7 +833,7 @@
                                     <span class="badge bg-warning text-dark ms-1" title="This track is currently in the download queue">In Queue</span>
                                 </div>
                                 {% else %}
-                                <span onclick="editTrackTitle('{{ track.id }}', '{{ track.title|escapejs }}')" class="flex-grow-1" style="cursor: pointer;" title="Click to edit">
+                                <span onclick='editTrackTitle({{ track.id|tojson }}, {{ track.title|tojson }})' class="flex-grow-1" style="cursor: pointer;" title="Click to edit">
                                     <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="d-none d-md-inline track-title-display-{{ track.id }}">
                                         {{ track.title }}
                                     </a>
@@ -875,7 +848,7 @@
                                 {% endif %}
                             </td>
                             <td class="d-none d-lg-table-cell">
-                                <span onclick="editTrackArtist('{{ track.id }}', '{{ track.artist|escapejs }}')" style="cursor: pointer;" title="Click to edit">
+                                <span onclick='editTrackArtist({{ track.id|tojson }}, {{ track.artist|tojson }})' style="cursor: pointer;" title="Click to edit">
                                     {% set display_artist = track.artist if track.artist else artist_name %}
                                     <span class="text-muted track-artist-display-{{ track.id }}" style="font-size: 0.85rem;">{{ display_artist }}</span>
                                 </span>
@@ -920,7 +893,7 @@
                                             </span>
                                             {% endfor %}
                                         {% endif %}
-                                        <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
+                                        <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick='openAddGenreModal({{ track.id|tojson }}, {{ track.title|tojson }})'>
                                             <i class="bi bi-plus-circle"></i> Add
                                         </button>
                                     </div>
@@ -946,22 +919,22 @@
                                 {% if track.file_path %}
                                 <button class="btn btn-sm btn-outline-success player-play-btn"
                                         data-track-id="{{ track.id }}"
-                                        data-title="{{ track.title|escapejs }}"
-                                        data-artist="{{ (track.artist or artist_name)|escapejs }}"
+                                        data-title="{{ track.title|e }}"
+                                        data-artist="{{ (track.artist or artist_name)|e }}"
                                         data-art="{{ url_for('album_routes.api_album_art', artist=artist_name, album=album_name) }}"
                                         onclick="playTrackFromAlbum(this)"
                                         title="Play this track">
                                     <i class="bi bi-play-fill"></i>
                                 </button>
                                 {% endif %}
-                                <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
+                                <button class="btn btn-sm btn-outline-primary" onclick='lookupMetadata("track", {{ track.id|tojson }})' title="View metadata">
                                     <i class="bi bi-search"></i>
                                 </button>
-                                <button class="btn btn-sm btn-outline-info" onclick="openEditTrackFromAlbum('{{ track.id }}')" title="Edit track on this page">
+                                <button class="btn btn-sm btn-outline-info" onclick='openEditTrackFromAlbum({{ track.id|tojson }})' title="Edit track on this page">
                                     <i class="bi bi-pencil"></i>
                                 </button>
                                 {% if track.musicbrainz_trackid or track.beets_mbid %}
-                                <button class="btn btn-sm btn-outline-warning" onclick="openAlbumTrackMbReleaseModal('{{ track.id }}')" title="Match to a different MusicBrainz release">
+                                <button class="btn btn-sm btn-outline-warning" onclick='openAlbumTrackMbReleaseModal({{ track.id|tojson }})' title="Match to a different MusicBrainz release">
                                     <i class="bi bi-arrow-repeat"></i>
                                 </button>
                                 {% endif %}
@@ -1168,7 +1141,6 @@
 }
 </style>
 
-<!-- Bulk Genre Tagger Modal -->
 <div class="modal fade" id="bulkGenreTaggerModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -1204,7 +1176,6 @@
     </div>
 </div>
 
-<!-- Bulk Delete Confirmation Modal -->
 <div class="modal fade" id="bulkDeleteModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -1235,7 +1206,6 @@
     </div>
 </div>
 
-<!-- Simple Track Edit Modal -->
 <div class="modal fade" id="simpleEditTrackModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -1261,7 +1231,6 @@
     </div>
 </div>
 
-<!-- Comprehensive Track Edit Modal -->
 <div class="modal fade" id="editTrackModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -1275,7 +1244,6 @@
                 <form id="editTrackForm">
                     <input type="hidden" id="editTrackId" name="track_id">
                     
-                    <!-- Basic Info -->
                     <div class="row g-3 mb-4">
                         <div class="col-md-12">
                             <label for="editTrackTitleField" class="form-label">Title</label>
@@ -1291,7 +1259,6 @@
                         </div>
                     </div>
                     
-                    <!-- Metadata -->
                     <div class="row g-3 mb-4">
                         <div class="col-md-3">
                             <label for="editTrackYearField" class="form-label">Year</label>
@@ -1325,7 +1292,6 @@
                         </div>
                     </div>
                     
-                    <!-- Recommended Genres Section -->
                     <div class="mb-4" id="recommendedGenresSection" style="display: none;">
                         <div class="alert alert-info" style="padding: 0.75rem; margin-bottom: 1rem;">
                             <h6 class="mb-2"><i class="bi bi-stars"></i> Recommended Genres from Last.fm & Discogs</h6>
@@ -1335,12 +1301,10 @@
                         </div>
                     </div>
                     
-                    <!-- Genres -->
                     <div class="mb-4">
                         <label for="editTrackGenresField" class="form-label">Genres</label>
                         <div id="editTrackGenresDisplay" class="mb-2">
-                            <!-- Genres badges will be inserted here -->
-                        </div>
+                            </div>
                         <div class="input-group mb-2">
                             <input type="text" class="form-control" id="editTrackGenreInput" placeholder="Add genre (e.g., Rock, Jazz)" list="editGenreDatalist">
                             <button class="btn btn-outline-success" type="button" onclick="addEditTrackGenre()">
@@ -1356,7 +1320,6 @@
                         <input type="hidden" id="editTrackGenresField" name="genres">
                     </div>
                     
-                    <!-- Additional Fields -->
                     <div class="row g-3 mb-4">
                         <div class="col-md-6">
                             <label for="editTrackAlbumArtistField" class="form-label">Album Artist</label>
@@ -1404,7 +1367,6 @@
                         </div>
                     </div>
                     
-                    <!-- Audio Details -->
                     <div class="row g-3 mb-4">
                         <div class="col-md-3">
                             <label for="editTrackBPMField" class="form-label">BPM</label>
@@ -1420,7 +1382,6 @@
                         </div>
                     </div>
 
-                    <!-- Advanced Navidrome Fields -->
                     <div class="accordion mb-4" id="editTrackAdvancedAccordion">
                         <div class="accordion-item">
                             <h2 class="accordion-header" id="editTrackAdvancedHeading">
@@ -1436,7 +1397,6 @@
                         </div>
                     </div>
                     
-                    <!-- Flags -->
                     <div class="mb-4">
                         <label class="form-label">Track Type Flags</label>
                         <div class="form-check">
@@ -1465,7 +1425,6 @@
                         </div>
                     </div>
                     
-                    <!-- Comment -->
                     <div class="mb-3">
                         <label for="editTrackCommentField" class="form-label">Comment</label>
                         <textarea class="form-control" id="editTrackCommentField" name="comment" rows="2" placeholder="Add notes or comments"></textarea>
@@ -1482,7 +1441,6 @@
     </div>
 </div>
 
-<!-- Album Metadata Lookup Modal -->
 <div class="modal fade" id="albumLookupModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -1529,7 +1487,6 @@
     </div>
 </div>
 
-<!-- Release Picker Modal (shown when auto-match is not confident) -->
 <div class="modal fade" id="releasePickerModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
@@ -1554,7 +1511,6 @@
 </div>
 
 
-<!-- Match Missing Track Modal (Album Page) -->
 <div class="modal fade" id="albumMatchTrackModal" tabindex="-1" aria-labelledby="albumMatchTrackModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -1595,7 +1551,6 @@
 {% include 'components/_musicbrainz_search_modal.html' %}
 {% include 'components/_musicbrainz_search_functions.html' %}
 
-<!-- MusicBrainz Release Match Modal (per-track) -->
 <div class="modal fade" id="albumTrackMbReleaseModal" tabindex="-1" aria-labelledby="albumTrackMbReleaseModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
