@@ -46,8 +46,8 @@ Architecture:
     Called by: Album/artist enrichment services, genre display routes
     Should use: helpers.config_helpers.get_genre_weights(), get_genre_synonyms()
 """
-import re
 from __future__ import annotations
+import re
 from db.engine import db_session
 from db.utils import get_db_connection
 from collections import defaultdict
