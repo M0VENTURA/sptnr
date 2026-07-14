@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 
 from db.engine import db_session
+from db.context import db_cursor
+from db.utils import row_get
 from helpers.config_helpers import get_config
 from services.downloads.download_scan_service import resolve_downloads_dir
 from helpers.normalization_service import normalize_match_text
@@ -485,7 +487,7 @@ def reset_moving(queue_ids: list[int] | None, stale_minutes: int) -> dict:
                     UPDATE download_queue
                     SET status = 'completed', updated_at = CURRENT_TIMESTAMP
                     WHERE status = 'moving'
-                      AND updated_at < NOW() - MAKE_INTERVAL(mins := %s)
+                      AND updated_at < NOW() - make_interval(mins => %s)
                     """,
                     (stale_minutes,),
                 )

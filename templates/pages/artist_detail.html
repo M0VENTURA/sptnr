@@ -539,7 +539,7 @@
   </div>
 
   <!-- Import Macro -->
-  {% from "_album_category_section.html" import render_album_row %}
+  {% from "components/_album_category_section.html" import render_album_row %}
 
   <!-- Albums Section -->
   {% set total_discovered_albums = albums_by_category.album|selectattr('is_missing', 'equalto', False)|list|length %}

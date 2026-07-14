@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import text
 
 from db.engine import db_session
+from db.utils import row_get
 
 
 def insert_artist(artist_id: str, name: str) -> None:

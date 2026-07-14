@@ -154,9 +154,12 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
             },
         },
         "loggers": {
-            # Root logger: only info + debug files, NOT unified
+            # Root logger: sends to unified + info + debug files.
+            # unified_file keeps the UnifiedLogFilter which blocks DEBUG and
+            # HTTP access noise, so the unified log stays clean even with all
+            # messages routed to it.
             "": {
-                "handlers": ["info_file", "debug_file"],
+                "handlers": ["unified_file", "info_file", "debug_file"],
                 "level": "DEBUG",
             },
             # Unified logger: only writes to unified_scan.log, does NOT propagate

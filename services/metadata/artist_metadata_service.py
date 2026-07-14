@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 from sqlalchemy import text
 from db.engine import db_session
 from db.utils import get_db_connection

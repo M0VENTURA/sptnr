@@ -110,6 +110,7 @@ async def setup():
     nav_first = nav_users[0] if nav_users else {}
     api = cfg.get("api_integrations", {})
 
+    slskd_cfg = cfg.get("slskd", {})
     setup_defaults = {
         # Navidrome
         "nav_url": nav_first.get("base_url", ""),
@@ -128,6 +129,10 @@ async def setup():
         # ListenBrainz
         "lb_enabled": api.get("listenbrainz", {}).get("enabled", True),
         "lb_token": nav_first.get("listenbrainz_user_token", ""),
+        # Soulseek / slskd
+        "slskd_enabled": bool(slskd_cfg.get("enabled", False)),
+        "slskd_url": slskd_cfg.get("web_url", ""),
+        "slskd_api_key": slskd_cfg.get("api_key", ""),
         # Essentia
         "essentia_enabled": bool(cfg.get("essentia", {}).get("script_path")),
         "essentia_tag_moods": cfg.get("essentia", {}).get("tag_moods", True),
@@ -361,32 +366,57 @@ async def dashboard():
 
 @ui_bp.route("/artists")
 async def artists():
+    from helpers.normalization_service import strip_featured_artist
+
     with db_session() as session:
+        # Fetch all canonical artist names with their stats
         result = session.execute(text("""
-            SELECT LOWER(canonical) as sort_key,
-                   (array_agg(canonical ORDER BY album_count DESC))[1] as display_name,
-                   (array_agg(canonical ORDER BY album_count DESC))[1] as link_artist,
-                   SUM(album_count) as album_count,
-                   SUM(track_count) as track_count,
-                   SUM(five_star_count) as five_star_count
-            FROM (
-                SELECT COALESCE(NULLIF(album_artist, ''), artist) as canonical,
-                       COUNT(DISTINCT album) as album_count,
-                       COUNT(*) as track_count,
-                       COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-                  AND COALESCE(NULLIF(album_artist, ''), artist) != ''
-                GROUP BY canonical
-                HAVING COUNT(DISTINCT album) > 0
-            ) sub
-            GROUP BY LOWER(canonical)
+            SELECT
+                COALESCE(NULLIF(album_artist, ''), artist) AS canonical,
+                COUNT(DISTINCT album) AS album_count,
+                COUNT(*) AS track_count,
+                COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) AS five_star_count
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+              AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+            GROUP BY canonical
+            HAVING COUNT(DISTINCT album) > 0
             ORDER BY LOWER(canonical)
         """))
-        artists_data = [dict(r._mapping) for r in result.fetchall()]
+        rows = [dict(r._mapping) for r in result.fetchall()]
+
+    # Group by feat-stripped name so "Apocalyptica" and
+    # "Apocalyptica feat. Ville Valo" merge into one row.
+    merged: dict[str, dict] = {}
+    for row in rows:
+        raw_name = row["canonical"]
+        clean = strip_featured_artist(raw_name).lower()
+
+        if clean not in merged:
+            merged[clean] = {
+                "sort_key": clean,
+                "display_name": raw_name,
+                "link_artist": raw_name,
+                "album_count": 0,
+                "track_count": 0,
+                "five_star_count": 0,
+            }
+        # Keep the most common spelling as display/link name
+        entry = merged[clean]
+        if row["album_count"] > entry["album_count"]:
+            entry["display_name"] = raw_name
+            entry["link_artist"] = raw_name
+        entry["album_count"] += row["album_count"]
+        entry["track_count"] += row["track_count"]
+        entry["five_star_count"] += row["five_star_count"]
+
+    artists_data = sorted(merged.values(), key=lambda a: a["sort_key"])
+
+    with db_session() as session:
         result = session.execute(text("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac FROM tracks"))
         total_stats = dict(result.fetchone()._mapping)
-        return await render_template("pages/artist_list.html", artists=artists_data, total_stats=total_stats)
+
+    return await render_template("pages/artist_list.html", artists=artists_data, total_stats=total_stats)
 
 
 @ui_bp.route("/artist/<path:name>")

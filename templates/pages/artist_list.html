@@ -355,7 +355,8 @@ async function loadArtistCorrections() {
 
         document.querySelectorAll('#artistsTable tbody tr[data-artist]').forEach(row => {
             const artistName = row.dataset.artist;
-            const info = corrections[artistName];
+            // Case-insensitive lookup — API keys are lowercased
+            const info = corrections[artistName.toLowerCase()] || corrections[artistName];
             if (!info) return;
 
             const correctionsUrl = info.corrections_url || '#';

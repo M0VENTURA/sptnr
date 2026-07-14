@@ -27,6 +27,25 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
       overflow-x: hidden;
     }
+    /* Critical: prevent white flash on cards and tables — the most visible elements */
+    .card,
+    .card-body,
+    .card-header,
+    .table,
+    .table-responsive,
+    .table tbody,
+    .table tbody tr,
+    .table tbody td,
+    .table thead,
+    .table thead th {
+      background-color: var(--secondary-bg, #1e1e1e) !important;
+      color: var(--text-primary, #e8e8e8) !important;
+      border-color: var(--border-color, #333) !important;
+    }
+    .card-header,
+    .table thead th {
+      background-color: var(--primary-bg, #141414) !important;
+    }
     * { color-scheme: dark; }
   </style>
 

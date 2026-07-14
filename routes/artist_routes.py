@@ -6,8 +6,11 @@ Handles:
 - Artist metadata display.
 """
 
+import logging
 from quart import Blueprint, request, jsonify
 from routes.utils import json_response as _json_response
+
+logger = logging.getLogger(__name__)
 from services.metadata import artist_service as corrections
 from services.metadata.release_service import get_cached_missing_releases
 from services.metadata.artist_scan_service import (
@@ -90,7 +93,12 @@ def api_artists_corrections():
                 COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') AS mbid_inconsistent_count,
                 COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') AS missing_tracks_count
             FROM tracks
-            GROUP BY artist_name
+            GROUP BY LOWER(REGEXP_REPLACE(
+                COALESCE(NULLIF(album_artist, ''), artist),
+                '(\s+[\[\(]?\s*(feat\.?|ft\.?|featuring)\s+.*?[\]\)]?$)',
+                '',
+                'i'
+            ))
             HAVING
                 COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') > 0
                 OR COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') > 0
@@ -107,12 +115,14 @@ def api_artists_corrections():
             missing_ic = row_get(row, "missing_tracks_count", 0) or 0
             if any([dup_count, disc_ic, mbid_ic, missing_ic]):
                 needs_correction = True
-            corrections_out[artist_name] = {
+            # Store keyed by lowercase for case-insensitive lookup from the frontend
+            corrections_out[artist_name.lower()] = {
                 "needs_correction": needs_correction,
                 "duplicate_track_count": dup_count,
                 "disc_inconsistent_count": disc_ic,
                 "mbid_inconsistent_count": mbid_ic,
                 "missing_tracks_count": missing_ic,
+                "_display_name": artist_name,
             }
         return jsonify({"success": True, "corrections": corrections_out})
     except Exception as exc:

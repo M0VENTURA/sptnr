@@ -18,6 +18,7 @@ from helpers.normalization_service import (
 from sqlalchemy import text
 
 from db.engine import db_session
+from db.utils import row_get
 
 from services.metadata.tag_file_service import ( 
     update_file_tags

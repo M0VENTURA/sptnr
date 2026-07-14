@@ -106,4 +106,56 @@ def check_completed_downloads() -> dict[str, object]:
 
 
 def discover_files() -> dict[str, object]:
-    return {"success": True, "files": [file.full_path for file in discover_audio_files()]}
+    """Scan for audio files and return statistics.
+
+    Returns:
+        {
+            "success": True,
+            "stats": {
+                "scanned": int,
+                "queued": int,
+                "already_in_queue": int,
+                "already_in_library": int,
+                "errors": list[str],
+            },
+            "files": list[str],
+        }
+    """
+    files = discover_audio_files()
+    file_paths = [f.full_path for f in files]
+    total = len(file_paths)
+
+    # Count how many are already in the download queue
+    already_in_queue = 0
+    already_in_library = 0
+    if total > 0:
+        try:
+            from db.utils import get_db_connection
+
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            # Count rows in download_queue whose file_path matches discovered files
+            for path in file_paths:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM download_queue WHERE file_path = %s",
+                    (path,),
+                )
+                row = cursor.fetchone()
+                count = int(row[0]) if row else 0
+                if count > 0:
+                    already_in_queue += 1
+            conn.close()
+        except Exception as exc:
+            logger.warning("[DISCOVER] Queue check failed: %s", exc)
+
+    return {
+        "success": True,
+        "stats": {
+            "scanned": total,
+            "queued": total - already_in_queue,
+            "already_in_queue": already_in_queue,
+            "already_in_library": already_in_library,
+            "errors": [],
+        },
+        "files": file_paths,
+    }

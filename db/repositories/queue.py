@@ -15,6 +15,7 @@ from datetime import datetime
 from sqlalchemy import text
 
 from db.engine import db_session
+from db.context import db_cursor
 from db.utils import row_get
 
 from helpers.config_helpers import get_config

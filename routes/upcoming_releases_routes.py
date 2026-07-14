@@ -179,19 +179,27 @@ def api_scrape_upcoming_releases():
     from datetime import datetime
 
     try:
-        headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
-        # Fetch Wikipedia "List of upcoming albums" page
-        wiki_url = "https://en.wikipedia.org/w/api.php"
+        headers = {"User-Agent": "Popularr/2.0 (https://github.com/M0VENTURA/Popularr)", "Accept": "application/json"}
+
+        # Try the Wikipedia REST API first (returns modern JSON, no HTML parsing needed).
+        rest_url = "https://en.wikipedia.org/w/api.php"
         params = {
             "action": "parse",
             "page": "List_of_upcoming_albums",
             "format": "json",
             "prop": "text",
-            "section": "0",
+            "redirects": 1,
         }
-        resp = httpx.get(wiki_url, params=params, headers=headers, timeout=15)
+        resp = httpx.get(rest_url, params=params, headers=headers, timeout=15)
         resp.raise_for_status()
         data = resp.json()
+
+        # Check for Wikipedia API-level errors
+        if "error" in data:
+            error_info = data["error"].get("info", str(data["error"]))
+            logger.warning("Wikipedia API error: %s", error_info)
+            return jsonify({"success": False, "error": f"Wikipedia API error: {error_info}"}), 500
+
         text = data.get("parse", {}).get("text", {}).get("*", "")
 
         if not text:

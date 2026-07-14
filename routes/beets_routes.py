@@ -19,6 +19,7 @@ from quart import Blueprint, jsonify, request
 from sqlalchemy import text
 
 from db.engine import db_session
+from db.utils import get_db_connection
 
 logger = logging.getLogger(__name__)
 

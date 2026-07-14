@@ -199,10 +199,18 @@ def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
                 COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') AS missing_track_count,
                 MAX(CASE WHEN musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != '' THEN 1 ELSE 0 END) AS has_mbid
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+            -- Match both exact canonical and feat-stripped variants so the
+            -- correction UI works regardless of which spelling is passed.
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+               OR LOWER(REGEXP_REPLACE(
+                      COALESCE(NULLIF(album_artist, ''), artist),
+                      '(\s+[\[\(]?\s*(feat\.?|ft\.?|featuring|with|w\/|&|and)\s+.*?[\]\)]?$)',
+                      '',
+                      'i'
+                  )) = LOWER(%s)
             GROUP BY album
             ORDER BY album
-        """, (artist_name,))
+        """, (artist_name, artist_name))
         rows = cursor.fetchall()
         albums = []
         for r in rows:
