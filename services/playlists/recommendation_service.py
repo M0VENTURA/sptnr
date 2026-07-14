@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from api_clients.lastfm import LastFmClient
 from api_clients.listenbrainz import ListenBrainzUserClient
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -102,9 +103,7 @@ class PlaylistRecommender:
             return playlists
 
         try:
-            conn = self.db() if callable(self.db) else self.db
-            cursor = conn.cursor()
-            cursor.execute("""
+            query = """
                 SELECT genres, COUNT(*) as cnt
                 FROM tracks
                 WHERE genres IS NOT NULL AND genres != ''
@@ -114,15 +113,13 @@ class PlaylistRecommender:
                 GROUP BY genres
                 ORDER BY cnt DESC
                 LIMIT 20
-            """)
-            rows = cursor.fetchall()
-            if callable(self.db):
-                conn.close()
+            """
+            rows = self._execute_query(query)
 
             genre_counter: Counter[str] = Counter()
             for row in rows:
-                raw = (row.get("genres") or row[0]) if isinstance(row, dict) else (row[0] or "")
-                count = int((row.get("cnt") or row[1]) if isinstance(row, dict) else (row[1] or 0))
+                raw = row.get("genres", "") or ""
+                count = int(row.get("cnt", 0) or 0)
                 import re
                 for token in re.split(r"[\\,;/]+", str(raw)):
                     token = token.strip()
@@ -233,30 +230,39 @@ class PlaylistRecommender:
         except (IndexError, TypeError):
             return default
 
-    def _conn_cursor(self):
-        conn = self.db() if callable(self.db) else self.db
-        return conn, conn.cursor()
-
-    def _close_conn(self, conn) -> None:
-        if callable(self.db):
-            try:
-                conn.close()
-            except Exception:
-                pass
+    def _execute_query(self, query: str, params: dict | None = None):
+        """Execute a query using db_session context manager.
+        
+        Args:
+            query: SQL query string
+            params: Query parameters as dict
+            
+        Returns:
+            List of rows (as dicts if possible)
+        """
+        if not self.db:
+            return []
+        
+        try:
+            # db is db_session context manager
+            with self.db() as session:
+                result = session.execute(text(query), params or {})
+                rows = result.fetchall()
+                # Convert to list of dicts for consistent access
+                return [dict(row._mapping) for row in rows]
+        except Exception as exc:
+            logger.debug("Query execution failed: %s", exc)
+            return []
 
     def _get_track_ids_for_artists(self, artists: list[str]) -> list[str]:
         if not self.db or not artists:
             return []
         try:
-            conn, cursor = self._conn_cursor()
-            ph = ",".join("%s" for _ in artists)
-            cursor.execute(
-                f"SELECT id FROM tracks WHERE LOWER(artist) IN ({ph}) LIMIT 200",
-                [a.lower() for a in artists],
-            )
-            ids = [str(r[0]) for r in cursor.fetchall()]
-            self._close_conn(conn)
-            return ids
+            ph = ",".join(":artist_%d" % i for i in range(len(artists)))
+            params = {"artist_%d" % i: a.lower() for i, a in enumerate(artists)}
+            query = f"SELECT id FROM tracks WHERE LOWER(artist) IN ({ph}) LIMIT 200"
+            rows = self._execute_query(query, params)
+            return [str(r["id"]) for r in rows]
         except Exception as exc:
             logger.debug("Failed to get track IDs for artists: %s", exc)
             return []
@@ -265,14 +271,9 @@ class PlaylistRecommender:
         if not self.db or not genre:
             return []
         try:
-            conn, cursor = self._conn_cursor()
-            cursor.execute(
-                "SELECT id FROM tracks WHERE genres ILIKE %s AND COALESCE(stars, 0) = 5 LIMIT 200",
-                (f"%{genre}%",),
-            )
-            ids = [str(r[0]) for r in cursor.fetchall()]
-            self._close_conn(conn)
-            return ids
+            query = "SELECT id FROM tracks WHERE genres ILIKE :genre AND COALESCE(stars, 0) = 5 LIMIT 200"
+            rows = self._execute_query(query, {"genre": f"%{genre}%"})
+            return [str(r["id"]) for r in rows]
         except Exception as exc:
             logger.debug("Failed to get track IDs for genre %s: %s", genre, exc)
             return []
@@ -281,14 +282,9 @@ class PlaylistRecommender:
         if not self.db:
             return []
         try:
-            conn, cursor = self._conn_cursor()
-            cursor.execute(
-                "SELECT id FROM tracks WHERE stars BETWEEN %s AND %s LIMIT 500",
-                (min_r, max_r),
-            )
-            ids = [str(r[0]) for r in cursor.fetchall()]
-            self._close_conn(conn)
-            return ids
+            query = "SELECT id FROM tracks WHERE stars BETWEEN :min_r AND :max_r LIMIT 500"
+            rows = self._execute_query(query, {"min_r": min_r, "max_r": max_r})
+            return [str(r["id"]) for r in rows]
         except Exception as exc:
             logger.debug("Failed to get track IDs for rating: %s", exc)
             return []
@@ -297,13 +293,9 @@ class PlaylistRecommender:
         if not self.db:
             return []
         try:
-            conn, cursor = self._conn_cursor()
-            cursor.execute(
-                "SELECT id FROM tracks WHERE stars IS NULL OR stars = 0 ORDER BY RANDOM() LIMIT 500",
-            )
-            ids = [str(r[0]) for r in cursor.fetchall()]
-            self._close_conn(conn)
-            return ids
+            query = "SELECT id FROM tracks WHERE stars IS NULL OR stars = 0 ORDER BY RANDOM() LIMIT 500"
+            rows = self._execute_query(query)
+            return [str(r["id"]) for r in rows]
         except Exception as exc:
             logger.debug("Failed to get unrated track IDs: %s", exc)
             return []
@@ -312,13 +304,9 @@ class PlaylistRecommender:
         if not self.db:
             return []
         try:
-            conn, cursor = self._conn_cursor()
-            cursor.execute(
-                "SELECT id FROM tracks WHERE last_scanned IS NOT NULL ORDER BY last_scanned DESC LIMIT 100",
-            )
-            ids = [str(r[0]) for r in cursor.fetchall()]
-            self._close_conn(conn)
-            return ids
+            query = "SELECT id FROM tracks WHERE last_scanned IS NOT NULL ORDER BY last_scanned DESC LIMIT 100"
+            rows = self._execute_query(query)
+            return [str(r["id"]) for r in rows]
         except Exception as exc:
             logger.debug("Failed to get recent track IDs: %s", exc)
             return []

@@ -19,7 +19,6 @@ from quart import Blueprint, jsonify, request
 from sqlalchemy import text
 
 from db.engine import db_session
-from db.utils import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -164,22 +163,22 @@ def beets_sync_metadata():
         return jsonify({"error": "beets query failed"}), 500
 
     updated = 0
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    for line in out.strip().split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            item = json.loads(line)
-            track_mbid = item.get("mbid", "")
-            if track_mbid:
-                cursor.execute("UPDATE tracks SET mbid = %s, beets_mbid = %s WHERE id = %s AND (mbid IS NULL OR mbid = '')", (track_mbid, track_mbid, item.get("id", "")))
-                updated += cursor.rowcount
-        except (json.JSONDecodeError, Exception):
-            continue
-    conn.commit()
-    conn.close()
+    with db_session() as session:
+        for line in out.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+                track_mbid = item.get("mbid", "")
+                if track_mbid:
+                    result = session.execute(
+                        text("UPDATE tracks SET mbid = :mbid, beets_mbid = :mbid WHERE id = :id AND (mbid IS NULL OR mbid = '')"),
+                        {"mbid": track_mbid, "id": item.get("id", "")},
+                    )
+                    updated += result.rowcount
+            except (json.JSONDecodeError, Exception):
+                continue
     return jsonify({"success": True, "message": f"Synced {updated} track(s)", "updated": updated})
 
 

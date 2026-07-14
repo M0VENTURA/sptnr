@@ -324,21 +324,15 @@ def api_recommended_playlists():
         api_key = lastfm_cfg.get("api_key", "")
 
         from services.playlists.recommendation_service import PlaylistRecommender
-        from db.utils import get_db_connection
+        from db.engine import db_session
 
         lf_client = None
         if api_key:
             from api_clients.lastfm import LastFmClient
             lf_client = LastFmClient(api_key)
 
-        conn = get_db_connection()
-        recommender = PlaylistRecommender(lastfm_client=lf_client, db_connection=conn)
+        recommender = PlaylistRecommender(lastfm_client=lf_client, db_connection=db_session)
         recommendations = recommender.get_recommendations()
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
         return jsonify({"success": True, "recommendations": recommendations})
     except Exception as exc:
@@ -362,15 +356,14 @@ def api_recommended_playlists_create():
         api_key = lastfm_cfg.get("api_key", "")
 
         from services.playlists.recommendation_service import PlaylistRecommender
-        from db.utils import get_db_connection
+        from db.engine import db_session
 
         lf_client = None
         if api_key:
             from api_clients.lastfm import LastFmClient
             lf_client = LastFmClient(api_key)
 
-        conn = get_db_connection()
-        recommender = PlaylistRecommender(lastfm_client=lf_client, db_connection=conn)
+        recommender = PlaylistRecommender(lastfm_client=lf_client, db_connection=db_session)
 
         # Re-fetch recommendations and find matching playlist
         recs = recommender.get_recommendations()

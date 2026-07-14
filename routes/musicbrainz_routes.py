@@ -10,7 +10,6 @@ from typing import Any
 
 from quart import Blueprint, jsonify, request, session
 
-import httpx
 from sqlalchemy import text
 from db.engine import db_session
 from helpers.config_helpers import get_config
@@ -28,7 +27,7 @@ def _get_mb_client() -> MusicBrainzHttpClient:
     if _mb_client is None:
         _mb_client = MusicBrainzHttpClient(enabled=True)
     return _mb_client
-MUSICBRAINZ_USER_AGENT = "Popularr/1.0 +https://github.com/M0VENTURA/popularr"
+
 
 
 # ---------------------------------------------------------------------------
@@ -39,19 +38,16 @@ MUSICBRAINZ_USER_AGENT = "Popularr/1.0 +https://github.com/M0VENTURA/popularr"
 def api_musicbrainz_tags_track():
     """Get MusicBrainz tags for a single track."""
     artist = request.args.get("artist", "").strip()
-    album = request.args.get("album", "").strip()
     title = request.args.get("title", "").strip()
-    if not (artist and album and title):
-        return jsonify({"error": "artist, album, and title required"}), 400
+    if not artist or not title:
+        return jsonify({"error": "artist and title required"}), 400
     try:
-        from urllib.parse import quote
-        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT, "Accept": "application/json"}
-        resp = httpx.get(
-            f"https://musicbrainz.org/ws/2/recording/?query=artist:{quote(artist)}+AND+recording:{quote(title)}&fmt=json&limit=5",
-            headers=headers, timeout=10,
+        client = _get_mb_client()
+        recordings = client.search_recordings(
+            f'artist:"{artist}" AND recording:"{title}"',
+            limit=5,
         )
-        data = resp.json()
-        return jsonify({"success": True, "recordings": data.get("recordings", [])})
+        return jsonify({"success": True, "recordings": recordings})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -186,20 +182,12 @@ async def api_musicbrainz_search():
     if not query:
         return jsonify({"error": "query required"}), 400
     try:
-        from urllib.parse import quote
-        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT, "Accept": "application/json"}
+        client = _get_mb_client()
         if artist_only:
-            resp = httpx.get(
-                f"https://musicbrainz.org/ws/2/artist/?query=artist:{quote(query)}&fmt=json&limit=10",
-                headers=headers, timeout=10,
-            )
+            results = client.get("artist/", params={"query": f"artist:{query}", "limit": 10})
         else:
-            resp = httpx.get(
-                f"https://musicbrainz.org/ws/2/release-group/?query=releasegroup:{quote(query)}&fmt=json&limit=20",
-                headers=headers, timeout=10,
-            )
-        data = resp.json()
-        return jsonify({"success": True, "results": data})
+            results = client.get("release-group/", params={"query": f"releasegroup:{query}", "limit": 20})
+        return jsonify({"success": True, "results": results})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -216,14 +204,12 @@ def api_musicbrainz_search_releases():
     if not artist or not album:
         return jsonify({"error": "artist and album required"}), 400
     try:
-        from urllib.parse import quote
-        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT, "Accept": "application/json"}
-        resp = httpx.get(
-            f"https://musicbrainz.org/ws/2/release/?query=artist:{quote(artist)}+AND+release:{quote(album)}&fmt=json&limit=10",
-            headers=headers, timeout=10,
+        client = _get_mb_client()
+        releases = client.search_releases(
+            f'artist:"{artist}" AND release:"{album}"',
+            limit=10,
         )
-        data = resp.json()
-        return jsonify({"success": True, "releases": data.get("releases", [])})
+        return jsonify({"success": True, "releases": releases})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

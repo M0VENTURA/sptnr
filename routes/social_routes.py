@@ -118,23 +118,19 @@ def api_lastfm_recommendations():
     api_key = lastfm_cfg.get("api_key", "")
     if not api_key:
         return jsonify({"error": "Last.fm API key not configured"}), 400
-    conn = None
     try:
-        from db.utils import get_db_connection
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        from sqlalchemy import text as sa_text
+        from db.engine import db_session
         current_user = session.get("username", "default_user")
-        cursor.execute(
-            "SELECT payload_json FROM lastfm_recommendations WHERE username = %s ORDER BY created_at DESC LIMIT 50",
-            (current_user,),
-        )
-        rows = cursor.fetchall()
+        with db_session() as session_db:
+            result = session_db.execute(
+                sa_text("SELECT payload_json FROM lastfm_recommendations WHERE username = :user ORDER BY created_at DESC LIMIT 50"),
+                {"user": current_user},
+            )
+            rows = result.fetchall()
         return jsonify({"success": True, "recommendations": [json.loads(r[0]) for r in rows if r[0]]})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    finally:
-        if conn:
-            conn.close()
 
 
 @lastfm_bp.route("/create-playlist", methods=["POST"])

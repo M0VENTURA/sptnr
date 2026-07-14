@@ -243,14 +243,9 @@ async def api_fetch_artist_country():
     if not artist:
         return jsonify({"error": "artist_name required"}), 400
     try:
-        from urllib.parse import quote
-        headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
-        resp = httpx.get(
-            f"https://musicbrainz.org/ws/2/artist/?query=artist:%22{quote(artist)}%22&fmt=json&limit=1",
-            headers=headers, timeout=10,
-        )
-        data = resp.json()
-        artists = data.get("artists", [])
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        client = MusicBrainzHttpClient(enabled=True)
+        artists = client.search_artists(f'artist:"{artist}"', limit=1)
         country = artists[0].get("country", "") if artists else ""
         if country:
             with db_session() as session:
@@ -516,18 +511,12 @@ def api_correcting_mb_suggestions():
         if not row:
             return jsonify({"success": True, "suggestions": {}, "mbid": None}), 200
         mbid = str(row[0])
-        import requests, time
-        headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        mb_client = MusicBrainzHttpClient()
         time.sleep(1.0)
-        resp = httpx.get(
-            f"https://musicbrainz.org/ws/2/release/{mbid}",
-            params={"fmt": "json", "inc": "release-groups+labels"},
-            headers=headers, timeout=12,
-        )
-        if resp.status_code == 404:
+        data = mb_client.get_release(mbid, inc="release-groups+labels", timeout=12.0)
+        if not data:
             return jsonify({"success": True, "suggestions": {}, "mbid": mbid}), 200
-        resp.raise_for_status()
-        data = resp.json()
         suggestions = {}
         rg = data.get("release-group") or {}
         raw_date = (rg.get("first-release-date") or data.get("date") or "").strip()

@@ -177,31 +177,16 @@ async def api_match_upcoming_release(release_id):
 def api_scrape_upcoming_releases():
     """Scrape Wikipedia for upcoming releases and store in DB."""
     from datetime import datetime
+    from api_clients.wikipedia import WikipediaClient
 
     try:
-        headers = {"User-Agent": "Popularr/2.0 (https://github.com/M0VENTURA/Popularr)", "Accept": "application/json"}
-
-        # Try the Wikipedia REST API first (returns modern JSON, no HTML parsing needed).
-        rest_url = "https://en.wikipedia.org/w/api.php"
-        params = {
-            "action": "parse",
-            "page": "List_of_upcoming_albums",
-            "format": "json",
-            "prop": "text",
-            "redirects": 1,
-        }
-        resp = httpx.get(rest_url, params=params, headers=headers, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-
-        # Check for Wikipedia API-level errors
-        if "error" in data:
-            error_info = data["error"].get("info", str(data["error"]))
-            logger.warning("Wikipedia API error: %s", error_info)
-            return jsonify({"success": False, "error": f"Wikipedia API error: {error_info}"}), 500
-
-        text = data.get("parse", {}).get("text", {}).get("*", "")
-
+        wiki_client = WikipediaClient()
+        parse_data = wiki_client.parse_page("List_of_upcoming_albums")
+        
+        if not parse_data:
+            return jsonify({"success": False, "error": "No content from Wikipedia"}), 500
+        
+        text = parse_data.get("text", {}).get("*", "")
         if not text:
             return jsonify({"success": False, "error": "No content from Wikipedia"}), 500
 

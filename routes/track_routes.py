@@ -317,15 +317,13 @@ def api_track_mb_releases(track_id):
                 return jsonify({"error": "Track not found"}), 404
             artist = row[0]
             title = row[1]
-        import httpx
-        from urllib.parse import quote
-        headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
-        resp = httpx.get(
-            f"https://musicbrainz.org/ws/2/recording/?query=artist:{quote(artist)}+AND+recording:{quote(title)}&fmt=json&limit=10",
-            headers=headers, timeout=10,
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        client = MusicBrainzHttpClient(enabled=True)
+        recordings = client.search_recordings(
+            f'artist:"{artist}" AND recording:"{title}"',
+            limit=10,
         )
-        data = resp.json()
-        return jsonify({"success": True, "recordings": data.get("recordings", [])})
+        return jsonify({"success": True, "recordings": recordings})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
