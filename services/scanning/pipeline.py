@@ -42,8 +42,10 @@ Thread Safety:
 """
 
 from __future__ import annotations
-
+import logging
 import threading
+
+logger = logging.getLogger(__name__)
 
 from typing import Any
 from services.popularity.pipeline import run_popularity_scan
@@ -60,6 +62,7 @@ from services.scanning.scan_state import (
     load_scan_checkpoint,
     clear_scan_checkpoint,
     mark_navidrome_first_full_import_complete,
+    get_library_checkpoint_path,
 )
 from services.scanning.navidrome_scan_service import build_artist_index
 from services.scanning.navidrome_import import (
