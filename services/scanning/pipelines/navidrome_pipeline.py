@@ -16,6 +16,7 @@ import threading
 from typing import Any
 
 from helpers.logging_config import log_unified
+from services.scanning.scan_history_service import record_scan
 from services.scanning.navidrome_import import scan_artist_to_db
 from services.scanning.scan_state import (
     clear_scan_checkpoint,
@@ -47,6 +48,8 @@ def run_navidrome_import_scan(
     force_rescan = mode in {"force", "resume_force"}
     filter_missing = mode == "missing"
     workers = _PARALLEL_WORKERS if not force_rescan else 1  # serial for force scans
+
+    record_scan("navidrome", "started", message=f"Navidrome import (mode={mode})")
 
     try:
         os.environ["SPTNR_SKIP_SINGLES"] = "1"
@@ -242,9 +245,11 @@ def run_navidrome_import_scan(
         )
 
         log_unified("Navidrome Import - Complete")
+        record_scan("navidrome", "completed", message="Navidrome import complete")
 
     except Exception as exc:
         logging.error("Navidrome import scan failed: %s", exc, exc_info=True)
+        record_scan("navidrome", "failed", message=f"Navidrome import failed: {exc}")
 
         write_progress_with_current_artist(
             progress_file,

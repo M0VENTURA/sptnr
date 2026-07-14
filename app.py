@@ -63,7 +63,6 @@ if _sqlalchemy_available:
 
 
 
-setup_logging("WebUI")
 
 app = Quart(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(16))

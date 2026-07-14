@@ -55,12 +55,12 @@ def is_process_alive(process_ref: Any) -> bool:
 def redirect_for_artist(artist: str):
     """Redirect to an artist page, falling back to the dashboard."""
     if artist:
-        return redirect(url_for("artist_detail", name=artist))
-    return redirect(url_for("dashboard"))
+        return redirect(url_for("ui.artist_detail", name=artist))
+    return redirect(url_for("ui.dashboard"))
 
 
 def redirect_for_album(artist: str, album: str):
     """Redirect to an album page, falling back to the artist/dashboard page."""
     if artist and album:
-        return redirect(url_for("album_detail", artist=artist, album=album))
+        return redirect(url_for("ui.album_detail", artist=artist, album=album))
     return redirect_for_artist(artist)

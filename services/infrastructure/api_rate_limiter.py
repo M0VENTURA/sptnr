@@ -33,6 +33,7 @@ class APIRateLimiter:
         self.state = self._load_state()
         self._last_save_time = 0.0
         self._mb_lock = threading.Lock()
+        self._lastfm_lock = threading.Lock()
 
     def _load_state(self) -> dict:
         if os.path.exists(self.state_file):
@@ -81,6 +82,22 @@ class APIRateLimiter:
                 time.sleep(wait_time)
             self.state["musicbrainz_last_request"] = time.time()
             self.state["musicbrainz_daily_count"] = self.state.get("musicbrainz_daily_count", 0) + 1
+            self._save_state()
+
+    def throttle_lastfm(self) -> None:
+        """Enforce a maximum of 1 Last.fm request per second across all threads.
+
+        Uses ``_lastfm_lock`` (threading lock) so that multiple concurrent scan
+        types (e.g. popularity + navidrome) do not hammer the Last.fm API.
+        """
+        with self._lastfm_lock:
+            now = time.time()
+            last_request = self.state.get("lastfm_last_request", 0)
+            wait_time = LASTFM_RATE_LIMIT_PER_SECOND - (now - last_request)
+            if wait_time > 0:
+                time.sleep(wait_time)
+            self.state["lastfm_last_request"] = time.time()
+            self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
             self._save_state()
 
     def wait_if_needed_lastfm(self, max_wait_seconds: float = 2.0) -> bool:

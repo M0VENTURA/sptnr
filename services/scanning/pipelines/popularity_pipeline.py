@@ -15,6 +15,7 @@ from typing import Any
 
 from services.popularity.pipeline import run_popularity_scan
 from helpers.logging_config import log_unified
+from services.scanning.scan_history_service import record_scan
 
 from services.scanning.scan_state import (
     get_scan_progress_path,
@@ -49,6 +50,7 @@ def run_popularity_mode(
     """
 
     progress_file = progress_file or get_scan_progress_path("popularity_scan")
+    record_scan(mode, "started", message=f"{mode} scan started")
 
     try:
         scan_type = "popularity_scan"
@@ -137,9 +139,11 @@ def run_popularity_mode(
         )
 
         log_unified(f"{scan_type} finished with status={status}")
+        record_scan(mode, status, message=f"{mode} scan {status}")
 
     except Exception as exc:
         logger.error("Popularity pipeline failed: %s", exc, exc_info=True)
+        record_scan(mode, "failed", message=f"{mode} scan failed: {exc}")
 
         write_progress_with_current_artist(
             progress_file or get_scan_progress_path("popularity_scan"),

@@ -118,6 +118,10 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
                 "format": fmt,
                 "datefmt": date_fmt,
             },
+            "verbose": {
+                "format": "%(asctime)s.%(msecs)03d [%(levelname)s] [%(name)s] %(message)s",
+                "datefmt": date_fmt,
+            },
         },
         "handlers": {
             "unified_file": {
@@ -136,7 +140,7 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
                 "when": "midnight",
                 "backupCount": 7,
                 "encoding": "utf-8",
-                "formatter": "prefixed",
+                "formatter": "verbose",
                 "level": "INFO",
             },
             "debug_file": {
@@ -145,14 +149,23 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
                 "when": "midnight",
                 "backupCount": 7,
                 "encoding": "utf-8",
-                "formatter": "prefixed",
+                "formatter": "verbose",
                 "level": "DEBUG",
             },
         },
         "loggers": {
+            # Root logger: only info + debug files, NOT unified
             "": {
-                "handlers": ["unified_file", "info_file", "debug_file"],
+                "handlers": ["info_file", "debug_file"],
                 "level": "DEBUG",
+            },
+            # Unified logger: only writes to unified_scan.log, does NOT propagate
+            # to root.  Use log_unified() or logging.getLogger("popularr.unified")
+            # for human-readable scan progress.
+            "popularr.unified": {
+                "handlers": ["unified_file"],
+                "level": "INFO",
+                "propagate": False,
             },
             "urllib3": {"level": "ERROR"},
             "httpx": {"level": "ERROR"},

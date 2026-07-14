@@ -150,7 +150,7 @@ def scan_popularity_route():
         runtime_state.scan_process_popularity = {"thread": thread, "type": "popularity"}
 
     flash("✅ Popularity-related scan started", "success")
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("ui.dashboard"))
 
 
 @scans_bp.route("/scan/singles", methods=["POST"])
@@ -159,7 +159,7 @@ def scan_singles():
     with runtime_state.scan_lock:
         if is_process_alive(runtime_state.scan_process_singles):
             flash("Single detection scan is already running", "warning")
-            return redirect(url_for("dashboard"))
+            return redirect(url_for("ui.dashboard"))
 
         progress_file = progress_path("singles_scan_progress.json")
         thread = run_async(
@@ -171,7 +171,7 @@ def scan_singles():
         runtime_state.scan_process_singles = {"thread": thread, "type": "singles"}
 
     flash("✅ Singles detection scan started", "success")
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("ui.dashboard"))
 
 
 @scans_bp.route("/api/scan/from-artist", methods=["POST"])

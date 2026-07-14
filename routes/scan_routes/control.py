@@ -48,7 +48,7 @@ def scan_start():
         run_async(run_artist_pipeline, artist, force)
 
         flash(f"Scan started for artist: {artist}", "success")
-        return redirect(url_for("artist_detail", name=artist))
+        return redirect(url_for("ui.artist_detail", name=artist))
 
     # -------------------------------------------------
     # Prevent duplicate scans

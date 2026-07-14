@@ -135,4 +135,4 @@ def scan_track_rescan(artist, album, track_id):
     run_async(run_artist_pipeline, artist, False)
 
     flash(f"Track rescan started for {artist}", "info")
-    return redirect(url_for("track_detail", track_id=track_id))
+    return redirect(url_for("ui.track_detail", track_id=track_id))

@@ -42,7 +42,7 @@ def scan_mp3_import():
     with scan_lock:
         if is_runtime_running("mp3_import"):
             flash("MP3 metadata import scan is already running", "warning")
-            return redirect(url_for("dashboard"))
+            return redirect(url_for("ui.dashboard"))
 
         clear_stop_request(progress_file)
 
@@ -59,7 +59,7 @@ def scan_mp3_import():
         set_runtime("mp3_import", {"thread": thread, "type": "mp3_import"})
 
     flash("MP3 metadata import scan started", "success")
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("ui.dashboard"))
 
 
 @scans_bp.route("/scan/stop-mp3-import", methods=["POST"])

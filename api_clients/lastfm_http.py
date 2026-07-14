@@ -21,6 +21,7 @@ from typing import Any, Callable
 import httpx
 
 from api_clients import session
+from services.infrastructure.api_rate_limiter import get_rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,13 @@ class LastFmHttpClient:
         if not self.enabled or not self.api_key:
             raise RuntimeError("Last.fm client disabled or API key missing")
 
+        # Enforce 1 request/second across all threads/scan types
+        try:
+            _limiter = get_rate_limiter()
+            _limiter.throttle_lastfm()
+        except Exception:
+            pass
+
         def _do_request():
             return self.session.get(self.base_url, params=self.build_params(method, **kwargs), timeout=timeout)
 
@@ -125,7 +133,11 @@ class LastFmHttpClient:
         if "error" in payload:
             error_code = payload["error"]
             error_msg = payload.get("message", "Unknown Last.fm error")
-            logger.warning("Last.fm API error %s for '%s': %s", error_code, method, error_msg)
+            # Error 6 = "Track not found" — common during scans, not worth a warning
+            if error_code == 6:
+                logger.debug("Last.fm API error %s for '%s': %s", error_code, method, error_msg)
+            else:
+                logger.warning("Last.fm API error %s for '%s': %s", error_code, method, error_msg)
             return {"error": True, "error_code": error_code, "message": error_msg, "original": payload}
         return payload
 

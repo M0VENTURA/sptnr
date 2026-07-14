@@ -4,6 +4,32 @@
   <meta charset="utf-8">
   <title>{% block title %}Popularr Dashboard{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Critical inline styles to prevent white flash — loaded before any external CSS -->
+  <style>
+    /* These must be here, before Bootstrap CDN, to prevent white flash on dark-themed pages */
+    :root {
+      --primary-bg: #121212;
+      --secondary-bg: #1e1e1e;
+      --tertiary-bg: #282828;
+      --spotify-green: #1db954;
+      --spotify-green-hover: #1ed760;
+      --text-primary: #ffffff;
+      --text-secondary: #d0d0d0;
+      --text-tertiary: #a0a0a0;
+      --border-color: #282828;
+    }
+    html { background-color: #121212 !important; }
+    body {
+      background: #121212 !important;
+      color: #ffffff !important;
+      padding-top: 4rem;
+      min-height: 100dvh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+      overflow-x: hidden;
+    }
+    * { color-scheme: dark; }
+  </style>
+
   <!-- Styles -->
   {% set dist = url_for('static', filename='dist') %}
   {% if config.get('features', {}).get('use_local_assets', False) %}
@@ -1178,7 +1204,7 @@
     
     /* Catch any remaining text that might be hard to read */
     * {
-      background-color-scheme: dark;
+      color-scheme: dark;
     }
   </style>
 </head>

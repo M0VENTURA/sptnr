@@ -352,11 +352,16 @@ class LastFmService:
         }
 
     def search_track(self, artist: str, title: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Search tracks and rank by artist match score."""
+        """Search tracks and rank by artist match score.
+
+        Passes both *artist* and *track* to the Last.fm API so results are
+        narrowed to the correct artist from the start, rather than searching
+        by title alone and then filtering client-side.
+        """
         if not self.api_key:
             return []
         try:
-            data = self.http.get_json("track.search", timeout=(5, 10), track=title, limit=limit)
+            data = self.http.get_json("track.search", timeout=(5, 10), artist=artist, track=title, limit=limit)
             tracks = data.get("results", {}).get("trackmatches", {}).get("track", [])
             if isinstance(tracks, dict):
                 tracks = [tracks]

@@ -174,7 +174,15 @@ def apply_album_mbid(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
 
 
 def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
-    """Return albums with MBIDs for an artist (for corrections UI)."""
+    """Return per-album correction data for an artist (for corrections UI).
+
+    Each album includes:
+      - disc_issues: True when tracks have missing/inconsistent disc numbers
+      - mbid_issues: True when tracks are missing MusicBrainz album MBIDs
+      - missing_tracks: True when tracks are missing file paths
+      - track_count: number of tracks in the album
+      - has_mbid: whether any track has an album MBID
+    """
     artist_name = str(artist_name or "").strip()
     if not artist_name:
         return {"success": False, "error": "artist required", "albums": []}, 400
@@ -183,19 +191,38 @@ def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT album, COUNT(*) AS track_count,
-                   MAX(musicbrainz_album_mbid) AS mb_mbid
+            SELECT
+                album,
+                COUNT(*) AS track_count,
+                COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') AS disc_issue_count,
+                COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') AS mbid_issue_count,
+                COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') AS missing_track_count,
+                MAX(CASE WHEN musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != '' THEN 1 ELSE 0 END) AS has_mbid
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND musicbrainz_album_mbid IS NOT NULL
-              AND musicbrainz_album_mbid != ''
             GROUP BY album
+            ORDER BY album
         """, (artist_name,))
         rows = cursor.fetchall()
-        albums = [
-            {"album": r[0], "track_count": int(r[1] or 0), "mb_mbid": r[2]}
-            for r in rows
-        ]
+        albums = []
+        for r in rows:
+            album = r[0]
+            track_count = int(r[1] or 0)
+            disc_issue_count = int(r[2] or 0)
+            mbid_issue_count = int(r[3] or 0)
+            missing_track_count = int(r[4] or 0)
+            has_mbid = bool(r[5])
+            albums.append({
+                "album": album,
+                "track_count": track_count,
+                "disc_issues": disc_issue_count > 0,
+                "disc_issue_count": disc_issue_count,
+                "mbid_issues": mbid_issue_count > 0,
+                "mbid_issue_count": mbid_issue_count,
+                "missing_tracks": missing_track_count > 0,
+                "missing_track_count": missing_track_count,
+                "has_mbid": has_mbid,
+            })
     except Exception:
         albums = []
     finally:

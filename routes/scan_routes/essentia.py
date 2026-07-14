@@ -69,18 +69,18 @@ def scan_essentia_mood():
         or bool(artist_filter or album_filter or track_id_filter)
     )
 
-    redirect_target = url_for("dashboard")
+    redirect_target = url_for("ui.dashboard")
 
     if track_id_filter:
-        redirect_target = url_for("track_detail", track_id=track_id_filter)
+        redirect_target = url_for("ui.track_detail", track_id=track_id_filter)
     elif artist_filter and album_filter:
         redirect_target = url_for(
-            "album_detail",
+            "ui.album_detail",
             artist=artist_filter,
             album=album_filter,
         )
     elif artist_filter:
-        redirect_target = url_for("artist_detail", name=artist_filter)
+        redirect_target = url_for("ui.artist_detail", name=artist_filter)
 
     progress_file = get_scan_progress_path("essentia_mood_scan")
 
@@ -127,4 +127,4 @@ def scan_stop_essentia_mood():
     clear_runtime("essentia_mood")
 
     flash("Essentia mood scan stop requested", "info")
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("ui.dashboard"))

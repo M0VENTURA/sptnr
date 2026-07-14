@@ -48,6 +48,7 @@ import threading
 from typing import Any
 from services.popularity.pipeline import run_popularity_scan
 from helpers.logging_config import log_unified
+from services.scanning.scan_history_service import record_scan
 
 from services.scanning.scan_state import (
     get_navidrome_progress_path,
@@ -80,6 +81,7 @@ scan_process_navidrome: dict[str, Any] | None = None
 
 def run_artist_scan_pipeline(artist_name: str, force: bool = False):
     logger.info("[SCAN_PIPELINE] Starting artist pipeline: %s (force=%s)", artist_name, force)
+    record_scan("artist", "started", message=f"Artist scan: {artist_name}", artist=artist_name)
     try:
         log_unified(f"Artist scan started: {artist_name}")
 
@@ -111,9 +113,11 @@ def run_artist_scan_pipeline(artist_name: str, force: bool = False):
         save_artist_scan_checkpoint(artist_name)
 
         log_unified(f"Artist scan complete: {artist_name}")
+        record_scan("artist", "completed", message=f"Artist scan complete: {artist_name}", artist=artist_name)
 
     except Exception as exc:
         log_unified(f"Artist scan failed: {exc}")
+        record_scan("artist", "failed", message=f"Artist scan failed: {exc}", artist=artist_name)
 
 
 # -------------------------------------------------------------------------
@@ -168,6 +172,7 @@ def run_full_library_scan(force: bool = False):
     progress = get_library_progress_path()
     checkpoint_path = get_library_checkpoint_path()
 
+    record_scan("full", "started", message="Full library scan")
     try:
         write_progress_with_current_artist(progress, "library_scan", True)
 
@@ -186,6 +191,7 @@ def run_full_library_scan(force: bool = False):
 
             if is_stop_requested(progress):
                 log_unified("Scan stopped by user")
+                record_scan("full", "failed", message="Scan stopped by user")
                 break
 
             write_progress_with_current_artist(
@@ -204,10 +210,12 @@ def run_full_library_scan(force: bool = False):
         write_progress_with_current_artist(progress, "library_scan", False)
 
         log_unified("Full library scan complete")
+        record_scan("full", "completed", message="Full library scan complete")
 
     except Exception as exc:
         log_unified(f"Full scan failed: {exc}")
         write_progress_with_current_artist(progress, "library_scan", False)
+        record_scan("full", "failed", message=f"Full scan failed: {exc}")
 
 
 # -------------------------------------------------------------------------
