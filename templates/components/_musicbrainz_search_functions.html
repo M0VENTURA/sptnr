@@ -13,16 +13,44 @@ if (typeof escapeHtml === 'undefined') {
   }
 }
 
+function escHtml(text) {
+  if (!text && text !== 0) return '';
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 // ===== Search Interface =====
 
 async function searchMusicBrainzReleases(query, releaseType = '', limit = 12) {
   if (!query || query.trim().length === 0) return { releases: [] };
-  const params = new URLSearchParams({ q: query, limit: limit.toString() });
-  if (releaseType) params.set('type', releaseType);
+  
   try {
-    const res = await fetch(`/api/musicbrainz/search-releases?${params}`);
+    let isArtistOnly = false;
+    let cleanQuery = query;
+    if (query.toLowerCase().startsWith('artist:')) {
+        isArtistOnly = true;
+        cleanQuery = query.substring(7).trim();
+    }
+
+    // Call the correct POST endpoint
+    const res = await fetch('/api/musicbrainz/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: cleanQuery, artist_only: isArtistOnly })
+    });
+    
     if (!res.ok) return { releases: [] };
-    return await res.json();
+    const data = await res.json();
+    let releases = data.releases || [];
+
+    // Filter by type locally since backend handles all types
+    if (releaseType) {
+        releases = releases.filter(r => 
+            (r.primary_type && r.primary_type.toLowerCase() === releaseType.toLowerCase()) || 
+            (r.category && r.category.toLowerCase() === releaseType.toLowerCase())
+        );
+    }
+    
+    return { releases: releases.slice(0, limit) };
   } catch (e) {
     console.error('MusicBrainz search failed:', e);
     return { releases: [] };
@@ -43,7 +71,6 @@ function hideMusicBrainzModal() {
 }
 
 function handleReleaseSelection(release) {
-  // Store selection and close modal
   window._selectedMusicBrainzRelease = release;
   hideMusicBrainzModal();
 }
@@ -62,6 +89,15 @@ function populateMusicBrainzSearch(artist, album) {
   }
 }
 
+// Added to handle the "Search All Releases" button on the Artist page
+function searchMusicBrainzForAllReleases(artistName) {
+  const input = document.getElementById('mbSearchInput');
+  if (input) input.value = artistName;
+  window._mbArtistOnlySearch = true; 
+  showMusicBrainzModal();
+  setTimeout(() => performMbSearch(), 200); // Give modal time to open
+}
+
 // ===== Perform Search (called by modal search button) =====
 
 async function performMbSearch() {
@@ -70,19 +106,40 @@ async function performMbSearch() {
   var typeFilter = document.getElementById('mbReleaseType');
   var limitEl = document.getElementById('mbResultLimit');
   if (!input || !resultsEl) return;
+  
   var query = input.value.trim();
   if (!query) return;
+  
   var releaseType = typeFilter ? typeFilter.value : '';
-  var limit = limitEl ? parseInt(limitEl.value, 10) || 25 : 25;
-
+  
   resultsEl.innerHTML = '<div class="col-12 text-center py-4"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div><p class="mt-2 text-muted">Searching MusicBrainz...</p></div>';
 
   try {
-    var params = new URLSearchParams({ q: query, limit: limit.toString() });
-    if (releaseType) params.set('type', releaseType);
-    var resp = await fetch('/api/musicbrainz/search-releases?' + params.toString());
+    let isArtistOnly = window._mbArtistOnlySearch === true;
+    window._mbArtistOnlySearch = false; // Reset for subsequent searches
+
+    if (query.toLowerCase().startsWith('artist:')) {
+        isArtistOnly = true;
+        query = query.substring(7).trim();
+    }
+
+    // Call the correct POST endpoint defined in Python
+    var resp = await fetch('/api/musicbrainz/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: query, artist_only: isArtistOnly })
+    });
+    
     var data = await resp.json();
     var releases = data.releases || [];
+
+    // Apply local type filtering if user selected a specific type from dropdown
+    if (releaseType) {
+        releases = releases.filter(r => 
+            (r.primary_type && r.primary_type.toLowerCase() === releaseType.toLowerCase()) || 
+            (r.category && r.category.toLowerCase() === releaseType.toLowerCase())
+        );
+    }
 
     if (!releases.length) {
       resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-4"><p>No results found for "' + escHtml(query) + '"</p></div>';
@@ -104,6 +161,7 @@ async function performMbSearch() {
       var items = groups[type];
       if (!items || !items.length) return;
       html += '<div class="col-12 mb-3"><h6 class="mb-2 border-bottom pb-1"><i class="bi bi-disc"></i> ' + type + 's <span class="badge bg-secondary ms-1">' + items.length + '</span></h6></div>';
+      
       items.forEach(function(r, idx) {
         var year = (r.first_release_date || r.date || r.year || '').split('-')[0] || '?';
         var artistName = r.artist || (r['artist-credit'] ? r['artist-credit'].map(function(a) { return typeof a === 'string' ? a : (a.name || a.artist || ''); }).join(', ') : '?');
@@ -116,12 +174,14 @@ async function performMbSearch() {
 
         html += '<div class="col-12 col-md-6 col-lg-4 mb-2"><div class="card h-100">';
         html += '<div class="row g-0 h-100"><div class="col-4 d-flex align-items-center p-2">';
+        
         if (coverUrl) {
           html += '<img src="' + escHtml(coverUrl) + '" class="rounded img-fluid" style="aspect-ratio:1;object-fit:cover;" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">';
           html += '<div class="rounded img-fluid d-none" style="aspect-ratio:1;background:var(--tertiary-bg);display:none;align-items:center;justify-content:center;color:var(--text-secondary);"><i class="bi bi-disc fs-1"></i></div>';
         } else {
           html += '<div class="rounded img-fluid d-flex" style="aspect-ratio:1;background:var(--tertiary-bg);align-items:center;justify-content:center;color:var(--text-secondary);"><i class="bi bi-disc fs-1"></i></div>';
         }
+        
         html += '</div><div class="col-8"><div class="card-body p-2">';
         html += '<h6 class="card-title mb-1 small text-truncate" title="' + escHtml(r.title) + '">' + escHtml(r.title) + '</h6>';
         html += '<p class="card-text small text-muted mb-1 text-truncate">' + escHtml(artistName) + '</p>';
@@ -135,7 +195,6 @@ async function performMbSearch() {
           r.releases.forEach(function(rel) {
             var relYear = (rel.date || rel.release_date || '').split('-')[0] || '?';
             var relCountry = rel.country || '';
-            var relLabel = rel.label || rel.record_label || '';
             html += '<button class="list-group-item list-group-item-action py-1 px-2 small" onclick="selectMbRelease(\'' + dataKey + '\', \'' + escHtml(rel.id) + '\', \'' + escHtml(rel.title || r.title) + '\')">';
             html += '<div class="d-flex justify-content-between"><span><strong>' + escHtml(rel.title || r.title) + '</strong> (' + relYear + ')</span>';
             if (relCountry) html += '<span class="text-muted ms-2">' + escHtml(relCountry) + '</span>';
@@ -156,11 +215,6 @@ async function performMbSearch() {
   } catch (e) {
     resultsEl.innerHTML = '<div class="col-12 text-center py-4"><p class="text-danger">Search failed: ' + escHtml(e.message) + '</p></div>';
   }
-}
-
-function escHtml(text) {
-  if (!text && text !== 0) return '';
-  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function toggleMbReleases(dataKey, btn) {
