@@ -20,62 +20,159 @@ misc_api_bp = Blueprint("misc_api", __name__, url_prefix="/api")
 # ===========================================================================
 # SEARCH
 # ===========================================================================
-
 @misc_api_bp.route("/search", methods=["POST"])
 async def api_search():
-    """Search the library for artists, albums, and tracks."""
-    data = (await request.get_json()) or {}
-    query = str(data.get("query", "")).strip().lower()
-    if not query or len(query) < 2:
-        return jsonify({"error": "Query too short"}), 400
+    """Search artists, albums and tracks with legacy ranking behaviour."""
     try:
+        data = (await request.get_json(silent=True)) or {}
+
+        query = str(data.get("query") or "").strip().lower()
+
+        if not query or len(query) < 2:
+            return jsonify({"error": "Search query must be at least 2 characters"}), 400
+
+        exact_pattern = query
+        starts_pattern = f"{query}%"
+        contains_pattern = f"%{query}%"
+
         with db_session() as session:
-            exact_p = query
-            starts_p = f"{query}%"
-            contains_p = f"%{query}%"
 
+            # ---------------------------------------------------------
             # Artists
-            result = session.execute(
-                text("""SELECT COALESCE(NULLIF(album_artist, ''), artist) as name,
-                          COUNT(DISTINCT album) as album_count, COUNT(*) as track_count,
-                          CASE WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = :exact THEN 0
-                               WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) LIKE :starts THEN 1 ELSE 2 END as match_rank
-                   FROM tracks
-                   WHERE LOWER(artist) LIKE :contains OR LOWER(album_artist) LIKE :contains2
-                   GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
-                   ORDER BY match_rank ASC, track_count DESC LIMIT 20"""),
-                {"exact": exact_p, "starts": starts_p, "contains": contains_p, "contains2": contains_p},
+            # ---------------------------------------------------------
+            artist_result = session.execute(
+                text("""
+                    SELECT
+                        COALESCE(NULLIF(album_artist, ''), artist) AS name,
+                        COUNT(DISTINCT album) AS album_count,
+                        COUNT(*) AS track_count,
+                        CASE
+                            WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = :exact THEN 0
+                            WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) LIKE :starts THEN 1
+                            ELSE 2
+                        END AS match_rank
+                    FROM tracks
+                    WHERE LOWER(COALESCE(artist, '')) LIKE :contains
+                       OR LOWER(COALESCE(album_artist, '')) LIKE :contains
+                    GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+                    ORDER BY
+                        match_rank ASC,
+                        track_count DESC
+                    LIMIT 20
+                """),
+                {
+                    "exact": exact_pattern,
+                    "starts": starts_pattern,
+                    "contains": contains_pattern,
+                },
             )
-            artists = [dict(r._mapping) for r in result.fetchall()]
 
+            artists = [
+                {
+                    "name": row._mapping["name"],
+                    "album_count": int(row._mapping["album_count"] or 0),
+                    "track_count": int(row._mapping["track_count"] or 0),
+                }
+                for row in artist_result.fetchall()
+            ]
+            # ---------------------------------------------------------
             # Albums
-            result = session.execute(
-                text("""SELECT COALESCE(NULLIF(album_artist, ''), artist) as artist, album,
-                          COUNT(*) as track_count, AVG(stars) as avg_stars,
-                          CASE WHEN LOWER(album) = :exact THEN 0
-                               WHEN LOWER(album) LIKE :starts THEN 1 ELSE 2 END as match_rank
-                   FROM tracks WHERE LOWER(album) LIKE :contains
-                   GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
-                   ORDER BY match_rank ASC, track_count DESC LIMIT 20"""),
-                {"exact": exact_p, "starts": starts_p, "contains": contains_p},
+            # ---------------------------------------------------------
+            album_result = session.execute(
+                text("""
+                    SELECT
+                        COALESCE(NULLIF(album_artist, ''), artist) AS artist,
+                        album,
+                        COUNT(*) AS track_count,
+                        AVG(stars) AS avg_stars,
+                        CASE
+                            WHEN LOWER(COALESCE(album, '')) = :exact THEN 0
+                            WHEN LOWER(COALESCE(album, '')) LIKE :starts THEN 1
+                            ELSE 2
+                        END AS match_rank
+                    FROM tracks
+                    WHERE LOWER(COALESCE(album, '')) LIKE :contains
+                    GROUP BY
+                        COALESCE(NULLIF(album_artist, ''), artist),
+                        album
+                    ORDER BY
+                        match_rank ASC,
+                        track_count DESC
+                    LIMIT 20
+                """),
+                {
+                    "exact": exact_pattern,
+                    "starts": starts_pattern,
+                    "contains": contains_pattern,
+                },
             )
-            albums = [dict(r._mapping) for r in result.fetchall()]
+            albums = [
+                {
+                    "artist": row._mapping["artist"],
+                    "album": row._mapping["album"],
+                    "track_count": int(row._mapping["track_count"] or 0),
+                    "avg_stars": (
+                        float(row._mapping["avg_stars"])
+                        if row._mapping["avg_stars"] is not None
+                        else None
+                    ),
+                }
+                for row in album_result.fetchall()
+            ]
 
+            # ---------------------------------------------------------
             # Tracks
-            result = session.execute(
-                text("""SELECT id, title, COALESCE(NULLIF(album_artist, ''), artist) as artist, album, stars,
-                          CASE WHEN LOWER(title) = :exact THEN 0
-                               WHEN LOWER(title) LIKE :starts THEN 1
-                               WHEN LOWER(title) LIKE :contains THEN 2 ELSE 3 END as match_rank
-                   FROM tracks
-                   WHERE LOWER(title) LIKE :contains OR LOWER(artist) LIKE :contains2 OR LOWER(album_artist) LIKE :contains3
-                   ORDER BY match_rank ASC, stars DESC LIMIT 50"""),
-                {"exact": exact_p, "starts": starts_p, "contains": contains_p, "contains2": contains_p, "contains3": contains_p},
+            # ---------------------------------------------------------
+            track_result = session.execute(
+                text("""
+                    SELECT
+                        id,
+                        title,
+                        COALESCE(NULLIF(album_artist, ''), artist) AS artist,
+                        album,
+                        stars,
+                        CASE
+                            WHEN LOWER(COALESCE(title, '')) = :exact THEN 0
+                            WHEN LOWER(COALESCE(title, '')) LIKE :starts THEN 1
+                            WHEN LOWER(COALESCE(title, '')) LIKE :contains THEN 2
+                            ELSE 3
+                        END AS match_rank
+                    FROM tracks
+                    WHERE LOWER(COALESCE(title, '')) LIKE :contains
+                       OR LOWER(COALESCE(artist, '')) LIKE :contains
+                       OR LOWER(COALESCE(album_artist, '')) LIKE :contains
+                    ORDER BY
+                        match_rank ASC,
+                        stars DESC NULLS LAST,
+                        LOWER(COALESCE(title, '')) ASC
+                    LIMIT 50
+                """),
+                {
+                    "exact": exact_pattern,
+                    "starts": starts_pattern,
+                    "contains": contains_pattern,
+                },
             )
-            tracks = [dict(r._mapping) for r in result.fetchall()]
 
-        return jsonify({"artists": artists, "albums": albums, "tracks": tracks})
+            tracks = [
+                {
+                    "id": row._mapping["id"],
+                    "title": row._mapping["title"],
+                    "artist": row._mapping["artist"],
+                    "album": row._mapping["album"],
+                    "stars": row._mapping["stars"],
+                }
+                for row in track_result.fetchall()
+            ]
+
+        return jsonify({
+            "artists": artists,
+            "albums": albums,
+            "tracks": tracks,
+        })
+
     except Exception as exc:
+        logger.exception("Search error")
         return jsonify({"error": str(exc)}), 500
 
 
