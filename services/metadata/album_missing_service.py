@@ -31,7 +31,7 @@ def get_library_tracks(artist: str, album: str) -> list[dict]:
         cursor.execute(
             "SELECT id, title, track_number, disc_number, file_path, duration FROM tracks "
             "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s "
-            "ORDER BY COALESCE(disc_number, 1), track_number",
+            "ORDER BY COALESCE(disc_number, '1'), track_number",
             (artist, album),
         )
         return [dict(r) for r in cursor.fetchall()]

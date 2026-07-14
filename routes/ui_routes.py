@@ -595,7 +595,7 @@ async def artist_detail(name: str):
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
                 ORDER BY
                     LOWER(COALESCE(album, '')),
-                    COALESCE(disc_number, 1),
+                    COALESCE(disc_number, '1'),
                     track_number,
                     title
             """),
@@ -612,7 +612,7 @@ async def artist_detail(name: str):
                 ORDER BY
                     LOWER(COALESCE(album_artist, '')),
                     LOWER(COALESCE(album, '')),
-                    COALESCE(disc_number, 1),
+                    COALESCE(disc_number, '1'),
                     track_number,
                     title
             """),
@@ -927,7 +927,7 @@ async def album_detail(artist: str, album: str):
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
                   AND LOWER(COALESCE(album, '')) = LOWER(:album)
                 ORDER BY
-                    COALESCE(disc_number, 1),
+                    COALESCE(disc_number, '1'),
                     NULLIF(regexp_replace(COALESCE(track_number::text, ''), '[^0-9].*$', ''), '')::int NULLS LAST,
                     track_number,
                     title

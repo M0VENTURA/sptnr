@@ -37,7 +37,7 @@ def get_cached_release_metadata(release_id: str) -> Optional[Dict[str, Any]]:
                            duration, isrc, recording_title, recording_mbid
                     FROM musicbrainz_release_tracks
                     WHERE release_id = :release_id
-                    ORDER BY COALESCE(disc_number, 1),
+                    ORDER BY COALESCE(disc_number, '1'),
                              COALESCE(track_number, 999999)
                 """),
                 {"release_id": release_id},
