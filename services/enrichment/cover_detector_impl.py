@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Cover song detection module for automatic identification and attribution.
+Cover song detection module — implementation class (moved from root).
 
 Detects cover songs by analyzing songwriter/composer data from MusicBrainz,
 then attributes the original artist and updates track metadata accordingly.
 
 Uses the existing ``MusicBrainzHttpClient`` from ``api_clients.musicbrainz_http``
 rather than building its own HTTP client.
+
+This module is the **implementation** — prefer using
+``services.enrichment.cover_detection_service`` for the public API.
 """
 
 from __future__ import annotations
@@ -14,12 +17,30 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from api_clients.musicbrainz_http import MusicBrainzHttpClient
-from db.utils import get_db_connection, row_get
+from db.repositories.cover_detection_repository import (
+    apply_cover_metadata_batch,
+    get_track_genres,
+    get_track_writers_from_db,
+    is_common_writer_for_artist,
+    track_has_original_by_artist,
+    writer_coverage_for_artist,
+)
+from helpers.musicbrainz_helpers import (
+    artist_from_credit,
+    extract_cover_work_ids,
+    extract_work_ids,
+    year_from_recording,
+)
+from helpers.normalization_service import (
+    canonical_track_title,
+    names_match,
+    normalize_name,
+    normalize_writer_credits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,130 +51,6 @@ _COVER_SUFFIX_RE = re.compile(r'\s*\([^)]+\s+cover\)\s*$', re.IGNORECASE)
 _COMPILATION_ARTIST_NAMES = frozenset({
     'various artists', 'various', 'v/a', 'va', 'compilation', 'soundtrack',
 })
-
-
-# ---------------------------------------------------------------------------
-# Title normalisation helpers
-# ---------------------------------------------------------------------------
-
-def _canonical_track_title(value: str) -> str:
-    """Normalize track titles so album/version variants still match canonical recordings."""
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = re.sub(r"\[[^\]]*\]", " ", text)
-    text = re.sub(r"\([^)]*\)", " ", text)
-    text = re.sub(r"\s+-\s+.*$", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip().lower()
-
-
-def _normalize_name(value: str) -> str:
-    """Normalize person/group names for robust matching."""
-    if not value:
-        return ""
-    normalized = value.lower().strip()
-    normalized = normalized.replace("'", "'")
-    normalized = re.sub(r"\b(the|and)\b", " ", normalized)
-    normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
-    normalized = re.sub(r"\s+", " ", normalized)
-    return normalized.strip()
-
-
-def _names_match(left: str, right: str) -> bool:
-    """Match names with token overlap to handle middle names and variants."""
-    left_norm = _normalize_name(left)
-    right_norm = _normalize_name(right)
-    if not left_norm or not right_norm:
-        return False
-    if left_norm == right_norm:
-        return True
-    left_tokens = {t for t in left_norm.split() if len(t) > 1}
-    right_tokens = {t for t in right_norm.split() if len(t) > 1}
-    if not left_tokens or not right_tokens:
-        return False
-    if left_tokens <= right_tokens or right_tokens <= left_tokens:
-        return True
-    intersection = left_tokens & right_tokens
-    return len(intersection) >= max(2, min(len(left_tokens), len(right_tokens)))
-
-
-# ---------------------------------------------------------------------------
-# Helpers for extracting data from MB JSON-API responses
-# ---------------------------------------------------------------------------
-
-def _artist_from_credit(artist_credit: List[Dict]) -> str:
-    for entry in artist_credit or []:
-        if isinstance(entry, dict):
-            name = (entry.get("artist") or {}).get("name")
-            if name:
-                return name
-    return ""
-
-
-def _year_from_recording(rec: Dict) -> Optional[int]:
-    date_str = str(rec.get("first-release-date") or "").strip()
-    if len(date_str) >= 4 and date_str[:4].isdigit():
-        try:
-            return int(date_str[:4])
-        except (ValueError, TypeError):
-            pass
-    for rel in rec.get("release-list") or []:
-        if isinstance(rel, dict):
-            rel_date = str(rel.get("date") or "").strip()
-            if len(rel_date) >= 4 and rel_date[:4].isdigit():
-                try:
-                    return int(rel_date[:4])
-                except (ValueError, TypeError):
-                    pass
-    return None
-
-
-def _extract_work_ids(recording: Dict) -> Set[str]:
-    """Extract all work IDs from a recording's work-relation-list."""
-    ids: Set[str] = set()
-    for rel in recording.get("work-relation-list", []) or []:
-        if not isinstance(rel, dict):
-            continue
-        wid = (rel.get("work") or {}).get("id")
-        if wid:
-            ids.add(wid)
-    return ids
-
-
-def _extract_cover_work_ids(recording: Dict) -> Set[str]:
-    """Extract work IDs linked by MB 'performance (cover)' relations."""
-    ids: Set[str] = set()
-    for rel in recording.get("work-relation-list", []) or []:
-        if not isinstance(rel, dict):
-            continue
-        if str(rel.get("type", "")).strip().lower() != "performance":
-            continue
-        attrs = rel.get("attributes") or rel.get("attribute-list") or []
-        if not any(str(a).lower() == "cover" for a in attrs):
-            continue
-        direction = str(rel.get("direction", "")).strip().lower()
-        if direction and direction != "forward":
-            continue
-        wid = (rel.get("work") or {}).get("id")
-        if wid:
-            ids.add(wid)
-    return ids
-
-
-def _normalize_writer_credits(writers: List[str]) -> List[str]:
-    """Split combined writer credits and dedupe names."""
-    normalized: List[str] = []
-    for writer in writers or []:
-        text = str(writer or "").strip()
-        if not text:
-            continue
-        parts = re.split(r"\s*[;/,&]|\s+and\s+", text, flags=re.IGNORECASE)
-        for part in parts:
-            name = re.sub(r"^\(+|\)+$", "", part.strip())
-            if name and name not in normalized:
-                normalized.append(name)
-    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +190,7 @@ class CoverDetector:
         # Pre-check writer coverage for non-compilations.
         writer_skip_all = False
         if not is_compilation and track_writers:
-            coverage = self._writer_coverage_for_artist(artist)
+            coverage = writer_coverage_for_artist(self.db_conn, artist)
             if coverage < 0.10:
                 logger.info("Writer coverage for '%s' is %.1f%% (<10%%) — skipping writer-based detection",
                             artist, coverage * 100)
@@ -310,17 +207,17 @@ class CoverDetector:
             if is_compilation:
                 ta = info.get("track_artist", "") or ""
                 if ta not in track_artist_coverage_cache:
-                    track_artist_coverage_cache[ta] = self._writer_coverage_for_artist(ta)
+                    track_artist_coverage_cache[ta] = writer_coverage_for_artist(self.db_conn, ta)
                 if track_artist_coverage_cache[ta] < 0.10:
                     continue
 
             for writer in info.get("writers", []):
                 if self._is_writer_same_as_artist(writer, artist):
                     continue
-                if self._artist_has_original(artist, info["title"]):
+                if track_has_original_by_artist(self.db_conn, artist, info["title"]):
                     break
-                if self._is_common_writer_for_artist(
-                    writer, artist, track_artist=info.get("track_artist")
+                if is_common_writer_for_artist(
+                    self.db_conn, writer, artist, track_artist=info.get("track_artist"),
                 ):
                     break
 
@@ -328,7 +225,7 @@ class CoverDetector:
                 original = self._find_original_recording(search_title, writer, album_artist=artist)
                 if not original:
                     continue
-                if _names_match(original.get("artist", ""), artist):
+                if names_match(original.get("artist", ""), artist):
                     break
 
                 result = {
@@ -357,7 +254,7 @@ class CoverDetector:
 
             # Avoid false positive when the artist already owns the original.
             base_title = _COVER_SUFFIX_RE.sub("", title).strip()
-            if base_title and base_title.lower() != title.lower() and self._artist_has_original(artist, base_title):
+            if base_title and base_title.lower() != title.lower() and track_has_original_by_artist(self.db_conn, artist, base_title):
                 continue
 
             # Try to resolve the hint via writer lookup for higher confidence.
@@ -371,7 +268,7 @@ class CoverDetector:
                     if self._is_writer_same_as_artist(wr, artist):
                         continue
                     mb_orig = self._find_original_recording(base_title, wr, album_artist=artist)
-                    if mb_orig and not _names_match(mb_orig.get("artist", ""), artist):
+                    if mb_orig and not names_match(mb_orig.get("artist", ""), artist):
                         resolved_artist = mb_orig["artist"]
                         resolved_year = mb_orig.get("year")
                         resolved_confidence = mb_orig.get("confidence", "medium")
@@ -424,7 +321,7 @@ class CoverDetector:
 
         # Persist updates.
         if pending_updates:
-            successful = set(self._apply_cover_metadata_batch(pending_updates))
+            successful = set(apply_cover_metadata_batch(self.db_conn, pending_updates))
             for update in pending_updates:
                 tid = update.get("track_id")
                 if tid not in successful:
@@ -455,7 +352,7 @@ class CoverDetector:
         if composer or writer:
             candidates = [c for c in [composer, writer] if c]
             for c in candidates:
-                if not _names_match(c, artist):
+                if not names_match(c, artist):
                     return True
         return False
 
@@ -467,7 +364,6 @@ class CoverDetector:
             if not recordings:
                 return None
 
-            # The ISRC lookup returns recordings; the earliest release is the original.
             earliest: Optional[Dict] = None
             earliest_year = 9999
 
@@ -475,12 +371,12 @@ class CoverDetector:
                 rec_id = rec.get("id")
                 if not rec_id:
                     continue
-                rec_artist = _artist_from_credit(rec.get("artist-credit", []))
+                rec_artist = artist_from_credit(rec.get("artist-credit", []))
                 if not rec_artist:
                     continue
-                if _names_match(rec_artist, album_artist):
+                if names_match(rec_artist, album_artist):
                     continue
-                year = _year_from_recording(rec)
+                year = year_from_recording(rec)
                 if year is not None and year < earliest_year:
                     earliest_year = year
                     earliest = {"artist": rec_artist, "year": year, "confidence": "high"}
@@ -527,20 +423,20 @@ class CoverDetector:
                 orig_id = orig_rec.get("id", "")
                 if not orig_id or orig_id == recording_mbid:
                     continue
-                orig_artist = _artist_from_credit(orig_rec.get("artist-credit", []))
-                orig_year = _year_from_recording(orig_rec)
+                orig_artist = artist_from_credit(orig_rec.get("artist-credit", []))
+                orig_year = year_from_recording(orig_rec)
                 if not orig_artist or orig_year is None:
                     try:
                         details = self.mb.get_recording(orig_id, inc="artist-credits+releases")
                         if not orig_artist:
-                            orig_artist = _artist_from_credit(details.get("artist-credit", []))
+                            orig_artist = artist_from_credit(details.get("artist-credit", []))
                         if orig_year is None:
-                            orig_year = _year_from_recording(details)
+                            orig_year = year_from_recording(details)
                     except Exception:
                         pass
                 if not orig_artist:
                     continue
-                if album_artist and _names_match(orig_artist, album_artist):
+                if album_artist and names_match(orig_artist, album_artist):
                     continue
                 logger.debug("Cover via recording relation: '%s' originally by '%s'",
                              title, orig_artist)
@@ -553,7 +449,7 @@ class CoverDetector:
             if fast_result and fast_orig_id:
                 try:
                     chain = self.mb.get_recording(fast_orig_id, inc="work-rels")
-                    chained_cover = _extract_cover_work_ids(chain)
+                    chained_cover = extract_cover_work_ids(chain)
                     if chained_cover:
                         cover_work_ids = chained_cover
                     else:
@@ -563,7 +459,7 @@ class CoverDetector:
 
             # Slow path: work-level cover relations.
             if not cover_work_ids:
-                cover_work_ids = _extract_cover_work_ids(seed)
+                cover_work_ids = extract_cover_work_ids(seed)
             if not cover_work_ids:
                 return fast_result
 
@@ -591,19 +487,19 @@ class CoverDetector:
                 except Exception:
                     continue
 
-                rec_work_ids = _extract_work_ids(details)
+                rec_work_ids = extract_work_ids(details)
                 if not (rec_work_ids & cover_work_ids):
                     continue
-                if _extract_cover_work_ids(details) & cover_work_ids:
+                if extract_cover_work_ids(details) & cover_work_ids:
                     continue
 
-                rec_artist = _artist_from_credit(details.get("artist-credit", []) or rec.get("artist-credit", []))
+                rec_artist = artist_from_credit(details.get("artist-credit", []) or rec.get("artist-credit", []))
                 if not rec_artist:
                     continue
-                if album_artist and _names_match(rec_artist, album_artist):
+                if album_artist and names_match(rec_artist, album_artist):
                     continue
 
-                year = _year_from_recording(details)
+                year = year_from_recording(details)
                 if year is not None and year < earliest_year:
                     earliest_year = year
                     earliest = {"artist": rec_artist, "year": year, "confidence": "high"}
@@ -635,12 +531,12 @@ class CoverDetector:
             except Exception:
                 return None
 
-        canonical_target = _canonical_track_title(track_title)
+        canonical_target = canonical_track_title(track_title)
         for medium in release.get("media", []) or []:
             for mb_track in medium.get("tracks", []) or []:
                 rec = mb_track.get("recording") or {}
                 candidate = rec.get("title") or mb_track.get("title") or ""
-                if _canonical_track_title(candidate) != canonical_target:
+                if canonical_track_title(candidate) != canonical_target:
                     continue
                 release_rec_id = str(rec.get("id") or "").strip()
                 if not release_rec_id or release_rec_id == (recording_mbid or "").strip():
@@ -675,7 +571,7 @@ class CoverDetector:
                                  album_artist: Optional[str] = None) -> Optional[Dict]:
         """Find earliest likely original recording for a title/writer pair."""
         try:
-            search_title = _canonical_track_title(title) or title
+            search_title = canonical_track_title(title) or title
             recordings = self.mb.search_recordings(search_title, limit=25) or []
             if not recordings:
                 return None
@@ -712,18 +608,18 @@ class CoverDetector:
                             if an:
                                 writer_names.append(an)
 
-                writer_names = _normalize_writer_credits(writer_names)
-                writer_match = any(_names_match(writer, c) for c in writer_names)
+                writer_names = normalize_writer_credits(writer_names)
+                writer_match = any(names_match(writer, c) for c in writer_names)
 
-                rec_artist = _artist_from_credit(
+                rec_artist = artist_from_credit(
                     details.get("artist-credit", []) or rec.get("artist-credit", [])
                 )
                 if not rec_artist:
                     continue
-                if album_artist and _names_match(rec_artist, album_artist):
+                if album_artist and names_match(rec_artist, album_artist):
                     continue
 
-                year = _year_from_recording(details)
+                year = year_from_recording(details)
                 if writer_match:
                     if year is not None and year < earliest_year:
                         earliest_year = year
@@ -763,7 +659,7 @@ class CoverDetector:
             if not work_ids:
                 return None
 
-            canonical = _canonical_track_title(title) or title
+            canonical = canonical_track_title(title) or title
             recordings = self.mb.search_recordings(canonical, limit=50) or []
             if not recordings:
                 return None
@@ -781,21 +677,21 @@ class CoverDetector:
                 except Exception:
                     continue
 
-                rec_work_ids = _extract_work_ids(details)
+                rec_work_ids = extract_work_ids(details)
                 if not (rec_work_ids & work_ids):
                     continue
-                if _extract_cover_work_ids(details) & work_ids:
+                if extract_cover_work_ids(details) & work_ids:
                     continue
 
-                rec_artist = _artist_from_credit(
+                rec_artist = artist_from_credit(
                     details.get("artist-credit", []) or rec.get("artist-credit", [])
                 )
                 if not rec_artist:
                     continue
-                if album_artist and _names_match(rec_artist, album_artist):
+                if album_artist and names_match(rec_artist, album_artist):
                     continue
 
-                year = _year_from_recording(details)
+                year = year_from_recording(details)
                 if year is not None and year < earliest_year:
                     earliest_year = year
                     earliest = {"artist": rec_artist, "year": year, "confidence": "medium"}
@@ -845,22 +741,7 @@ class CoverDetector:
 
         # Fallback: check DB if not in the track dict.
         if not writers and self.db_conn:
-            try:
-                cursor = self.db_conn.cursor()
-                cursor.execute(
-                    "SELECT writer FROM tracks WHERE id = %s",
-                    (track.get("id"),),
-                )
-                row = cursor.fetchone()
-                if row:
-                    raw = row_get(row, "writer", 0, "")
-                    if raw:
-                        try:
-                            writers = json.loads(raw) if isinstance(raw, str) else raw
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-            except Exception:
-                pass
+            writers = get_track_writers_from_db(self.db_conn, track.get("id", ""))
 
         if not writers:
             mbid = track.get("mbid") or self._resolve_recording_mbid(
@@ -872,7 +753,7 @@ class CoverDetector:
                 track["mbid"] = mbid
                 writers = self._fetch_writers_from_musicbrainz(mbid)
 
-        return _normalize_writer_credits(writers)
+        return normalize_writer_credits(writers)
 
     def _fetch_writers_from_musicbrainz(self, mbid: str) -> List[str]:
         """Fetch writer/composer credits from MusicBrainz recording."""
@@ -923,11 +804,11 @@ class CoverDetector:
 
         search_artist = str(track.get("artist") or album_artist or "").strip()
         release_mbid = str(track.get("musicbrainz_album_mbid") or "").strip()
-        target = _canonical_track_title(title)
+        target = canonical_track_title(title)
 
         def _titles_match(left: str, right: str) -> bool:
-            lt = _canonical_track_title(left)
-            rt = _canonical_track_title(right)
+            lt = canonical_track_title(left)
+            rt = canonical_track_title(right)
             if not lt or not rt:
                 return False
             return lt == rt or lt.startswith(rt) or rt.startswith(lt)
@@ -935,7 +816,7 @@ class CoverDetector:
         def _artist_matches(artist_credit: List[Dict]) -> bool:
             if not search_artist:
                 return True
-            return _names_match(_artist_from_credit(artist_credit), search_artist)
+            return names_match(artist_from_credit(artist_credit), search_artist)
 
         if release_mbid:
             try:
@@ -955,7 +836,7 @@ class CoverDetector:
                 pass
 
         try:
-            kwargs = {"recording": title, "limit": 10}
+            kwargs: Dict = {"recording": title, "limit": 10}
             if search_artist:
                 kwargs["artist"] = search_artist
             recordings = self.mb.search_recordings(**kwargs) or []
@@ -979,10 +860,9 @@ class CoverDetector:
 
         members: List[str] = []
         try:
-            # Search for the artist to get their MBID first.
             results = self.mb.search_artists(artist, limit=3) or []
             for result in results:
-                if _names_match(result.get("name", ""), artist):
+                if names_match(result.get("name", ""), artist):
                     artist_mbid = result.get("id")
                     if not artist_mbid:
                         continue
@@ -1001,99 +881,16 @@ class CoverDetector:
 
     def _is_writer_same_as_artist(self, writer: str, artist: str) -> bool:
         """Check if writer matches artist or is a known band member."""
-        if _names_match(writer, artist):
+        if names_match(writer, artist):
             return True
         for member in self._get_band_members(artist):
-            if _names_match(writer, member):
+            if names_match(writer, member):
                 return True
         return False
 
-    def _artist_has_original(self, artist: str, title: str) -> bool:
-        """Check if the artist already has a non-cover recording of *title* in the local DB."""
-        if not self.db_conn or not artist or not title:
-            return False
-        try:
-            cursor = self.db_conn.cursor()
-            cursor.execute(
-                """
-                SELECT 1 FROM tracks
-                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-                  AND LOWER(title) = LOWER(%s)
-                  AND COALESCE(is_cover, 0) = 0
-                LIMIT 1
-                """,
-                (artist, title),
-            )
-            return cursor.fetchone() is not None
-        except Exception:
-            return False
-
-    def _is_common_writer_for_artist(self, writer: str, artist: str,
-                                      track_artist: Optional[str] = None,
-                                      min_count: int = 2) -> bool:
-        """Check if a writer appears frequently on tracks by this artist."""
-        if not self.db_conn or not writer or not artist:
-            return False
-
-        lookup = track_artist if track_artist and not _names_match(track_artist, artist) else artist
-        try:
-            cursor = self.db_conn.cursor()
-            cursor.execute(
-                """
-                SELECT writer FROM tracks
-                WHERE (LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-                       OR LOWER(artist) = LOWER(%s))
-                  AND writer IS NOT NULL AND writer != '' AND writer != '[]'
-                """,
-                (lookup, lookup),
-            )
-            rows = cursor.fetchall() or []
-        except Exception:
-            return False
-
-        writer_norm = _normalize_name(writer)
-        count = 0
-        for row in rows:
-            raw = row_get(row, "writer", 0, "")
-            if not raw:
-                continue
-            try:
-                names = json.loads(raw) if isinstance(raw, str) else raw
-                if not isinstance(names, list):
-                    names = [str(names)]
-            except (json.JSONDecodeError, TypeError, ValueError):
-                continue
-            if any(_normalize_name(str(n)) == writer_norm for n in names):
-                count += 1
-                if count >= min_count:
-                    return True
-        return False
-
-    def _writer_coverage_for_artist(self, artist: str) -> float:
-        """Return fraction of tracks by *artist* that have a non-null writer field."""
-        if not self.db_conn or not artist:
-            return 1.0
-        try:
-            cursor = self.db_conn.cursor()
-            cursor.execute(
-                """
-                SELECT COUNT(*) AS total,
-                       SUM(CASE WHEN writer IS NOT NULL
-                             AND TRIM(CAST(writer AS TEXT)) NOT IN ('', '[]', 'null', 'None')
-                        THEN 1 ELSE 0 END) AS with_writer
-                FROM tracks
-                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-                """,
-                (artist,),
-            )
-            row = cursor.fetchone()
-            if row:
-                total = int(row_get(row, "total", 0, 0) or 0)
-                with_writer = int(row_get(row, "with_writer", 1, 0) or 0)
-                return float(with_writer) / float(total) if total else 1.0
-        except Exception:
-            pass
-        return 1.0
+    # ------------------------------------------------------------------
+    # Cover-status helpers
+    # ------------------------------------------------------------------
 
     def _is_already_confirmed_cover(self, track: Dict) -> bool:
         """Return True when a track has all three confirmation signals and can be skipped."""
@@ -1117,19 +914,10 @@ class CoverDetector:
         if _has_cover_genre(track.get("genres") or "") or _has_cover_genre(track.get("musicbrainz_genres") or ""):
             return True
         if self.db_conn:
-            try:
-                cursor = self.db_conn.cursor()
-                cursor.execute(
-                    "SELECT genres, musicbrainz_genres FROM tracks WHERE id = %s",
-                    (track.get("id"),),
-                )
-                row = cursor.fetchone()
-                if row:
-                    if _has_cover_genre(row_get(row, "genres", 0, "") or "") or \
-                       _has_cover_genre(row_get(row, "musicbrainz_genres", 1, "") or ""):
-                        return True
-            except Exception:
-                pass
+            db_genres = get_track_genres(self.db_conn, track.get("id", ""))
+            if _has_cover_genre(db_genres.get("genres") or "") or \
+               _has_cover_genre(db_genres.get("musicbrainz_genres") or ""):
+                return True
         return False
 
     def _is_cover_flagged(self, track: Dict) -> bool:
@@ -1179,73 +967,6 @@ class CoverDetector:
                                f"originally by {result.get('original_artist', 'unknown')}",
         }
 
-    def _apply_cover_metadata_batch(self, updates: List[Dict], max_retries: int = 5) -> List[str]:
-        """Persist cover metadata updates in a deterministic batch."""
-        if not self.db_conn or not updates:
-            return []
-
-        conn = self.db_conn
-        rows = sorted(
-            [dict(u) for u in updates if u.get("track_id")],
-            key=lambda x: str(x["track_id"]),
-        )
-        if not rows:
-            return []
-
-        delay = 0.15
-        for attempt in range(max_retries):
-            try:
-                cursor = conn.cursor()
-                successful: List[str] = []
-                for update in rows:
-                    tid = update["track_id"]
-                    title = update.get("title", "")
-                    orig = update.get("original_artist", "")
-                    reason = update.get("is_cover_reason") or f"Originally by {orig}" if orig else "Cover detection"
-                    new_title = self._build_cover_title(title, orig)
-
-                    # Add "Cover" to musicbrainz_genres.
-                    cursor.execute("SELECT musicbrainz_genres FROM tracks WHERE id = %s", (tid,))
-                    row = cursor.fetchone()
-                    mb_raw = row_get(row, "musicbrainz_genres", 0, "") or ""
-                    try:
-                        mb_list = json.loads(mb_raw) if mb_raw and mb_raw != "null" else []
-                        if not isinstance(mb_list, list):
-                            mb_list = []
-                    except (json.JSONDecodeError, TypeError):
-                        mb_list = []
-                    if "Cover" not in [str(g).strip() for g in mb_list]:
-                        mb_list.insert(0, "Cover")
-                        cursor.execute(
-                            "UPDATE tracks SET musicbrainz_genres = %s WHERE id = %s",
-                            (json.dumps(mb_list), tid),
-                        )
-
-                    if new_title != title:
-                        cursor.execute("UPDATE tracks SET title = %s WHERE id = %s", (new_title, tid))
-                    cursor.execute(
-                        "UPDATE tracks SET is_cover = 1, is_cover_reason = %s, "
-                        "original_cover_artist = %s WHERE id = %s",
-                        (reason, orig, tid),
-                    )
-                    successful.append(tid)
-
-                conn.commit()
-                return successful
-            except Exception as exc:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                if attempt < max_retries - 1:
-                    sleep_for = min(delay * (2 ** attempt), 2.0)
-                    logger.warning("Cover batch transient DB error, retry %d/%d in %.2fs: %s",
-                                   attempt + 1, max_retries, sleep_for, exc)
-                    time.sleep(sleep_for)
-                else:
-                    raise
-        return []
-
     # ------------------------------------------------------------------
     # File metadata helpers
     # ------------------------------------------------------------------
@@ -1260,34 +981,22 @@ class CoverDetector:
 
     @staticmethod
     def _update_file_metadata(file_path: str, title: str, additional_genres: List[str]) -> bool:
-        """Update audio file tags with cover attribution."""
-        try:
-            from mutagen.mp3 import MP3
-            from mutagen.flac import FLAC
-            from mutagen.id3 import ID3, TIT2, TCON
+        """Update audio file tags with cover attribution.
 
-            path = Path(file_path)
-            if path.suffix.lower() == ".mp3":
-                audio = MP3(file_path, ID3=ID3)
-                audio.tags["TIT2"] = TIT2(encoding=3, text=title)
-                current = list(audio.tags.get("TCON", TCON(encoding=3, text=[])).text)
-                for g in additional_genres:
-                    if g not in current:
-                        current.append(g)
-                audio.tags["TCON"] = TCON(encoding=3, text=current)
-                audio.save()
-            elif path.suffix.lower() == ".flac":
-                audio = FLAC(file_path)
-                audio["title"] = title
-                current = audio.get("genre", [])
-                if isinstance(current, str):
-                    current = [current]
-                for g in additional_genres:
-                    if g not in current:
-                        current.append(g)
-                audio["genre"] = current
-                audio.save()
-            return True
+        Uses the shared ``write_tags_to_file`` from the tag-file service
+        to avoid duplicating mutagen logic.
+        """
+        try:
+            from services.metadata.tag_file_service import write_tags_to_file
+
+            tags: Dict[str, Any] = {"title": title}
+
+            # Convert genre list to semicolon-separated string for tag service
+            current_genres = additional_genres or []
+            if current_genres:
+                tags["genre"] = "; ".join(current_genres)
+
+            return write_tags_to_file(file_path, tags)
         except Exception as exc:
             logger.error("Failed to update file metadata for %s: %s", file_path, exc)
             return False

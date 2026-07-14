@@ -514,6 +514,67 @@ def strip_cover_attribution(title: str) -> str:
 
 
 # =============================================================================
+# ✅ COVER-DETECTION HELPERS (migrated from legacy cover_detector.py)
+# =============================================================================
+
+def canonical_track_title(value: str) -> str:
+    """Normalize track titles so album/version variants still match canonical recordings."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\[[^\]]*\]", " ", text)
+    text = re.sub(r"\([^)]*\)", " ", text)
+    text = re.sub(r"\s+-\s+.*$", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip().lower()
+
+
+def normalize_name(value: str) -> str:
+    """Normalize person/group names for robust matching."""
+    if not value:
+        return ""
+    normalized = value.lower().strip()
+    normalized = normalized.replace("'", "'")
+    normalized = re.sub(r"\b(the|and)\b", " ", normalized)
+    normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
+
+
+def names_match(left: str, right: str) -> bool:
+    """Match names with token overlap to handle middle names and variants."""
+    left_norm = normalize_name(left)
+    right_norm = normalize_name(right)
+    if not left_norm or not right_norm:
+        return False
+    if left_norm == right_norm:
+        return True
+    left_tokens = {t for t in left_norm.split() if len(t) > 1}
+    right_tokens = {t for t in right_norm.split() if len(t) > 1}
+    if not left_tokens or not right_tokens:
+        return False
+    if left_tokens <= right_tokens or right_tokens <= left_tokens:
+        return True
+    intersection = left_tokens & right_tokens
+    return len(intersection) >= max(2, min(len(left_tokens), len(right_tokens)))
+
+
+def normalize_writer_credits(writers: list[str]) -> list[str]:
+    """Split combined writer credits and dedupe names."""
+    normalized: list[str] = []
+    for writer in writers or []:
+        text = str(writer or "").strip()
+        if not text:
+            continue
+        parts = re.split(r"\s*[;/,&]|\s+and\s+", text, flags=re.IGNORECASE)
+        for part in parts:
+            name = re.sub(r"^\(+|\)+$", "", part.strip())
+            if name and name not in normalized:
+                normalized.append(name)
+    return normalized
+
+
+# =============================================================================
 # ✅ DISCOGS CLEANUP
 # =============================================================================
 

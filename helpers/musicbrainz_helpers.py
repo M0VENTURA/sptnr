@@ -139,3 +139,71 @@ def _build_artist_credit_string(artist_credit):
         else:
             result += str(credit)
     return result.strip()
+
+
+# =============================================================================
+# ✅ MusicBrainz JSON response helpers (migrated from legacy cover_detector.py)
+# =============================================================================
+
+from typing import Dict, List, Optional, Set
+
+
+def artist_from_credit(artist_credit: List[Dict]) -> str:
+    """Extract the first artist name from a MusicBrainz artist-credit array."""
+    for entry in artist_credit or []:
+        if isinstance(entry, dict):
+            name = (entry.get("artist") or {}).get("name")
+            if name:
+                return name
+    return ""
+
+
+def year_from_recording(rec: Dict) -> Optional[int]:
+    """Extract the earliest release year from a MusicBrainz recording dict."""
+    date_str = str(rec.get("first-release-date") or "").strip()
+    if len(date_str) >= 4 and date_str[:4].isdigit():
+        try:
+            return int(date_str[:4])
+        except (ValueError, TypeError):
+            pass
+    for rel in rec.get("release-list") or []:
+        if isinstance(rel, dict):
+            rel_date = str(rel.get("date") or "").strip()
+            if len(rel_date) >= 4 and rel_date[:4].isdigit():
+                try:
+                    return int(rel_date[:4])
+                except (ValueError, TypeError):
+                    pass
+    return None
+
+
+def extract_work_ids(recording: Dict) -> Set[str]:
+    """Extract all work IDs from a recording's work-relation-list."""
+    ids: Set[str] = set()
+    for rel in recording.get("work-relation-list", []) or []:
+        if not isinstance(rel, dict):
+            continue
+        wid = (rel.get("work") or {}).get("id")
+        if wid:
+            ids.add(wid)
+    return ids
+
+
+def extract_cover_work_ids(recording: Dict) -> Set[str]:
+    """Extract work IDs linked by MB 'performance (cover)' relations."""
+    ids: Set[str] = set()
+    for rel in recording.get("work-relation-list", []) or []:
+        if not isinstance(rel, dict):
+            continue
+        if str(rel.get("type", "")).strip().lower() != "performance":
+            continue
+        attrs = rel.get("attributes") or rel.get("attribute-list") or []
+        if not any(str(a).lower() == "cover" for a in attrs):
+            continue
+        direction = str(rel.get("direction", "")).strip().lower()
+        if direction and direction != "forward":
+            continue
+        wid = (rel.get("work") or {}).get("id")
+        if wid:
+            ids.add(wid)
+    return ids

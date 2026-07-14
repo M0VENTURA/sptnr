@@ -118,9 +118,9 @@ async def api_album_art(artist: str, album: str):
         artist, album = unquote(artist), unquote(album)
         img_data, mime_type = get_local_album_art(artist, album)
         if img_data:
-            return send_file(io.BytesIO(img_data), mimetype=mime_type)
-    except Exception:
-        pass
+            return await send_file(io.BytesIO(img_data), mimetype=mime_type)
+    except Exception as exc:
+        logger.debug("Album art fetch failed for '%s' / '%s': %s", artist, album, exc)
     return get_album_art_placeholder_svg(size=300)
 
 

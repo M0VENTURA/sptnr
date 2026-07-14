@@ -924,10 +924,10 @@
                          alt="{{ entry.album }}"
                          class="img-thumbnail"
                          style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
-                         onerror="this.src='/api/album-art-placeholder'">
+                         onerror="this.src='{{ url_for('album_routes.api_album_art_placeholder') }}'">
                   </a>
                   {% else %}
-                  <img src="/api/album-art-placeholder"
+                  <img src="{{ url_for('album_routes.api_album_art_placeholder') }}"
                        alt="{{ entry.album }}"
                        class="img-thumbnail"
                        style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;">
@@ -1227,6 +1227,7 @@
     </div>
 </div>
 
+<script>
 // Constants for slskd search polling
 const SLSKD_MAX_POLL_ATTEMPTS = 60;
 const SLSKD_POLL_INTERVAL_MS = 2000;
@@ -1239,9 +1240,20 @@ document.addEventListener('DOMContentLoaded', function() {
     slskdTab.addEventListener('shown.bs.tab', function() {
       if (currentDownloadAlbum.album) {
         showSlskdTrackQueueOption();
+      }
+    });
+  }
+});
+</script>
 
+<script>
 if (typeof toggleGenreCheckbox === 'undefined') {
     window.toggleGenreCheckbox = function(containerId, buttonId) {
+        // Placeholder - will be implemented when genre-utils.js loads
+    };
+}
+</script>
+
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 <style>
 /* Dark theme improvements for artist page */

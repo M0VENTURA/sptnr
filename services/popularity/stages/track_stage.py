@@ -294,7 +294,21 @@ def process_track(
         try:
             title = _as_str(effective_track.get("title") or track.get("title") or "")
             if title:
-                is_cover, reason = detect_cover_song(title, track_artist)
+                # Pass existing DB cover state so already-confirmed covers
+                # are skipped on subsequent scans (unless the scan options
+                # indicate a forced re-check).
+                raw_track = track_context.get("track", {}) if isinstance(track_context, dict) else {}
+                cover_data = {
+                    "is_cover": raw_track.get("is_cover") or track.get("is_cover"),
+                    "original_cover_artist": raw_track.get("original_cover_artist") or "",
+                    "cover_manual_override": raw_track.get("cover_manual_override") or track.get("cover_manual_override") or False,
+                }
+                force_cover = bool(options.get("force_cover_detection"))
+                is_cover, reason = detect_cover_song(
+                    title, track_artist,
+                    track_data=cover_data,
+                    force=force_cover,
+                )
                 if is_cover:
                     update_payload["is_cover"] = True
                     update_payload["is_cover_reason"] = reason
