@@ -2415,34 +2415,6 @@ async def metadata_compare_accept_navidrome():
         return jsonify({"error": str(exc)}), 500
 
 
-@ui_bp.route("/api/metadata-compare/apply-musicbrainz", methods=["POST"])
-async def metadata_compare_apply_mb():
-    """Apply MusicBrainz metadata to an album — updates both DB and audio files."""
-    data = (await request.get_json(silent=True)) or {}
-    artist = str(data.get("artist", "")).strip()
-    album = str(data.get("album", "")).strip()
-    mb_data = data.get("mb_data", {})
-    if not artist or not album or not mb_data:
-        return jsonify({"error": "artist, album, and mb_data required"}), 400
-    try:
-        with db_session() as session:
-            result = session.execute(text("""
-                UPDATE tracks
-                SET year = :year, musicbrainz_genres = :genres, mb_override = TRUE
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album
-                RETURNING id
-            """), {
-                "year": mb_data.get("year"),
-                "genres": ",".join(mb_data.get("genres", []) or []),
-                "artist": artist,
-                "album": album,
-            })
-            updated_ids = [row[0] for row in result.fetchall()]
-        return jsonify({"success": True, "message": f"Applied MB data to {artist} - {album} ({len(updated_ids)} tracks)", "tracks_updated": len(updated_ids)})
-    except Exception as exc:
-        logger.error("metadata-compare apply MB: %s", exc)
-        return jsonify({"error": str(exc)}), 500
-
 
 @ui_bp.route("/beets")
 async def beets():
