@@ -10,7 +10,7 @@ concurrent operations that could cause conflicts.
 """
 from __future__ import annotations
 import json
-
+import os
 from helpers.config_helpers import get_navidrome_progress_file
 
 NAVIDROME_PROGRESS_FILE = get_navidrome_progress_file()
