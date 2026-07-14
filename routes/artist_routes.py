@@ -83,7 +83,8 @@ def api_artist_corrections_albums():
 def api_artists_corrections():
     """Return per-artist correction indicators for the artist list page."""
     from sqlalchemy import text as sa_text
-    with db_session() as session:
+    try:
+        with db_session() as session:
         result = session.execute(sa_text("""
             SELECT
                 LOWER(REGEXP_REPLACE(
