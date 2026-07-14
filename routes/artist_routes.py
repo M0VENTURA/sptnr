@@ -85,8 +85,8 @@ def api_artists_corrections():
     from sqlalchemy import text as sa_text
     try:
         with db_session() as session:
-        result = session.execute(sa_text("""
-            SELECT
+            result = session.execute(sa_text("""
+                SELECT
                 LOWER(REGEXP_REPLACE(
                     COALESCE(NULLIF(album_artist, ''), artist),
                     '(\s+[\[\(]?\s*(feat\.?|ft\.?|featuring)\s+.*?[\]\)]?$)',
@@ -104,7 +104,7 @@ def api_artists_corrections():
                 COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') > 0
                 OR COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') > 0
                 OR COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') > 0
-        """).execution_options()
+        """))
         rows = result.fetchall()
         corrections_out = {}
         for row in rows:
