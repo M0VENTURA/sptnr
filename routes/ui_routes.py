@@ -490,23 +490,26 @@ async def artist_detail(name: str):
                     return value
         return None
 
-    def split_tag_values(value: Any) -> listif not value:
+    def split_tag_values(value: Any) -> list[str]:
+        if not value:
             return []
 
         if isinstance(value, list):
             raw_items = value
         else:
-            raw_items = re.split(r"[,;|]+", str(value))
+            raw_items = re.split(r"[,;|\\]+", str(value))
 
         cleaned: list[str] = []
         seen: set[str] = set()
 
         for item in raw_items:
             tag = str(item).strip()
+
             if not tag:
                 continue
 
             key = tag.lower()
+
             if key in seen:
                 continue
 
@@ -515,15 +518,18 @@ async def artist_detail(name: str):
 
         return cleaned
 
-    def collect_top_genres(rows: list[dict[str, Any]], limit: int = 30) -> listgenre_fields = [
+    def collect_top_genres(
+        rows: list[dict[str, Any]],
+        limit: int = 30,
+    ) -> list[str]:
+        genre_fields = [
             "manual_genres",
             "navidrome_genres",
             "musicbrainz_genres",
             "spotify_genres",
             "discogs_genres",
             "lastfm_tags",
-            "listenbrainz_genres",
-            "essentia_genres",
+            "listenbrainz_      "essentia_genres",
             "mood",
         ]
 
@@ -534,15 +540,16 @@ async def artist_detail(name: str):
             for field in genre_fields:
                 for genre in split_tag_values(row.get(field)):
                     key = genre.lower()
+
                     counts[key] = counts.get(key, 0) + 1
                     display_names.setdefault(key, genre)
 
         sorted_keys = sorted(
             counts.keys(),
-            key=lambda key: (-counts[key], display_names[key].lower()),
+            key=lambda k: (-counts[k], display_names[k].lower()),
         )
 
-        return [display_names[key] for key in sorted_keys[:limit]]
+        return [display_names[k] for k in sorted_keys[:limit]]
 
     def classify_album(album_row: dict[str, Any]) -> str:
         raw_type = str(
@@ -551,25 +558,34 @@ async def artist_detail(name: str):
             or ""
         ).lower()
 
-        album_name = str(album_row.get("album") or "").lower()
+        album_name = str(
+            album_row.get("album") or ""
+        ).lower()
 
         if "compilation" in raw_type:
             return "compilation"
 
-        if "live" in raw_type or " live" in album_name or album_name.startswith("live"):
+        if (
+            "live" in raw_type
+            or " live" in album_name
+            or album_name.startswith("live")
+        ):
             return "live_album"
 
         if "remix" in raw_type or "remix" in album_name:
             return "remix_album"
 
-        if raw_type == "ep" or " ep" in raw_type or raw_type.startswith("ep "):
+        if (
+            raw_type == "ep"
+            or raw_type.startswith("ep ")
+            or " ep" in raw_type
+        ):
             return "ep"
 
         if "single" in raw_type:
             return "single"
 
         return "album"
-
     with db_session() as session:
         result = session.execute(
             text("""
@@ -925,29 +941,32 @@ async def album_detail(artist: str, album: str):
         for row in tracks:
             for key in keys:
                 value = row.get(key)
+
                 if value not in (None, ""):
                     return value
+
         return None
 
-
-    def split_tag_values(value: Any) -> listif not value:
+    def split_tag_values(value: Any) -> list[str]:
+        if not value:
             return []
-
 
         if isinstance(value, list):
             raw_items = value
         else:
-            raw_items = re.split(r"[,;|]+", str(value))
+            raw_items = re.split(r"[,;|\\]+", str(value))
 
         cleaned: list[str] = []
         seen: set[str] = set()
 
         for item in raw_items:
             tag = str(item).strip()
+
             if not tag:
                 continue
 
             key = tag.lower()
+
             if key in seen:
                 continue
 
@@ -956,36 +975,41 @@ async def album_detail(artist: str, album: str):
 
         return cleaned
 
-    def collect_album_genres() -> listgenre_fields = [
-        "manual_genres",
-        "navidrome_genres",
-        "musicbrainz_genres",
-        "spotify_genres",
-        "discogs_genres",
-        "lastfm_tags",
-        "listenbrainz_genres",
-        "essentia_genres",
-        "mood",
-    ]
+    def collect_album_genres() -> list[str]:
+        genre_fields = [
+            "manual_genres",
+            "navidrome_genres",
+            "musicbrainz_genres",
+            "spotify_genres",
+            "discogs_genres",
+            "lastfm_tags",
+            "listenbrainz       "essentia_genres",
+            "mood",
+        ]
 
-    genres: list[str] = []
-    seen: set[str] = set()
+        genres: list[str] = []
+        seen: set[str] = set()
 
-    for row in tracks:
-        for field in genre_fields:
-            for genre in split_tag_values(row.get(field)):
-                key = genre.lower()
-                if key not in seen:
+        for row in tracks:
+            for field in genre_fields:
+                for genre in split_tag_values(row.get(field)):
+                    key = genre.lower()
+
+                    if key in seen:
+                        continue
+
                     seen.add(key)
                     genres.append(genre)
 
-    return genres
+        return genres
 
     def safe_float(value: Any) -> float | None:
         try:
             if value in (None, ""):
                 return None
+
             return float(value)
+
         except (TypeError, ValueError):
             return None
 
@@ -993,10 +1017,12 @@ async def album_detail(artist: str, album: str):
         try:
             if value in (None, ""):
                 return None
+
             return int(value)
+
         except (TypeError, ValueError):
             return None
-
+            
     durations = [
         safe_float(track.get("duration"))
         for track in tracks
@@ -2273,41 +2299,6 @@ async def metadata_compare_search_mb():
         return jsonify({"error": str(exc)}), 500
 
 
-@ui_bp.route("/api/metadata-compare/accept-navidrome", methods=["POST"])
-async def metadata_compare_accept_navidrome():
-    """Lock current Navidrome metadata for an album."""
-    data = (await request.get_json(silent=True)) or {}
-
-    artist = str(data.get("artist") or "").strip()
-    album = str(data.get("album") or "").strip()
-
-    if not artist or not album:
-        return jsonify({"error": "artist and album required"}), 400
-
-    try:
-        with db_session() as session:
-            session.execute(
-                text("""
-                    UPDATE tracks
-                    SET metadata_locked = TRUE
-                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
-                      AND LOWER(COALESCE(album, '')) = LOWER(:album)
-                """),
-                {
-                    "artist": artist,
-                    "album": album,
-                },
-            )
-
-        return jsonify({
-            "success": True,
-            "message": f"Navidrome data locked for {artist} - {album}",
-        })
-
-    except Exception as exc:
-        logger.error("metadata-compare accept navidrome: %s", exc, exc_info=True)
-        return jsonify({"error": str(exc)}), 500
-
 
 @ui_bp.route("/api/metadata-compare/apply-musicbrainz", methods=["POST"])
 async def metadata_compare_apply_mb():
@@ -2388,18 +2379,37 @@ async def metadata_compare_apply_mb():
 
 @ui_bp.route("/api/metadata-compare/accept-navidrome", methods=["POST"])
 async def metadata_compare_accept_navidrome():
-    """Mark an album as locked to prevent Beets from overwriting it."""
+    """Lock current Navidrome metadata for an album."""
     data = (await request.get_json(silent=True)) or {}
-    artist = str(data.get("artist", "")).strip()
-    album = str(data.get("album", "")).strip()
+
+    artist = str(data.get("artist") or "").strip()
+    album = str(data.get("album") or "").strip()
+
     if not artist or not album:
         return jsonify({"error": "artist and album required"}), 400
+
     try:
         with db_session() as session:
-            session.execute(text("UPDATE tracks SET metadata_locked = 1 WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"), {"artist": artist, "album": album})
-        return jsonify({"success": True, "message": f"Navidrome data locked for {artist} - {album}"})
+            session.execute(
+                text("""
+                    UPDATE tracks
+                    SET metadata_locked = TRUE
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                      AND LOWER(COALESCE(album, '')) = LOWER(:album)
+                """),
+                {
+                    "artist": artist,
+                    "album": album,
+                },
+            )
+
+        return jsonify({
+            "success": True,
+            "message": f"Navidrome data locked for {artist} - {album}",
+        })
+
     except Exception as exc:
-        logger.error("metadata-compare accept navidrome: %s", exc)
+        logger.error("metadata-compare accept navidrome: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
