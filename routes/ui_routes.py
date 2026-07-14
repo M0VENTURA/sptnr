@@ -381,7 +381,10 @@ async def artists():
               AND COALESCE(NULLIF(album_artist, ''), artist) != ''
             GROUP BY canonical
             HAVING COUNT(DISTINCT album) > 0
-            ORDER BY LOWER(canonical)
+            ORDER BY LOWER(
+                COALESCE(NULLIF(album_artist, ''), artist)
+            )
+
         """))
         rows = [dict(r._mapping) for r in result.fetchall()]
 
