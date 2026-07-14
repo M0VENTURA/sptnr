@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  sptnr:
+    container_name: sptnr
+    image: moventura/sptnr:latest
+    
+    # Uncomment the next line to build the Docker image locally
+    # build: .
+
+    # Run both web server and queue processor
+    entrypoint: ["./entrypoint.sh"]
+
+    environment:
+      - TZ=Australia/Melbourne             #Container timezone
+      - NAV_BASE_URL=                      #URL That Navidrome is hosted
+      - NAV_USER=                          #Navidrome User that you want to sync ratings for
+      - NAV_PASS=                          #Navidrome Password
+      - LASTFM_API_KEY=                    #Last.FM API Key
+      - LASTFM_API_SECRET=                 #Last.FM API Secret
+      - DISCOGS_TOKEN=                     #Discogs Personal Access Token (https://www.discogs.com/settings/developers)
+      - LASTFM_WEIGHT=0.55                 #Adjust Last.FM Weighting (lastfm + listenbrainz + age should sum to 1.0)
+      - AGE_WEIGHT=0.10                    #Adjust Age/Recency Weighting
+      - MUSIC_FOLDER=/music                #Path to music folder inside container
+      - DB_PATH=/database/sptnr.db         #Path to SQLite database
+      - DOWNLOADS_DIR=/downloads/Music     #Path to downloads folder
+      - MUSIC_ROOT=/music                  #Path to music library folder
+      - SPTNR_AUTO_INSTALL_FFMPEG=0        #Set 1 to attempt apt-based ffmpeg install at container start if missing
+    
+    ports:
+      - "5000:5000"                        #Web UI port
+    
+    volumes:
+      - ./logs:/config                     # Config and log files
+      - ./data:/database                   # SQLite database
+      - /path/to/your/downloads:/downloads # Downloads folder for Soulseek
+      - /path/to/your/music:/music         # Music library folder
+
+    # Example: Rate a single artist
+    # command: ["--artist", "Orpheus Omega", "--sync"]
+    
+    # Example: Perpetual mode with MP3 and Navidrome scans
+    # command: ["--perpetual", "--batchrate", "--sync"]
+    
+    restart: unless-stopped
+

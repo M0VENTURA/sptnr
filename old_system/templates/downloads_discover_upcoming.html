@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+
+{% block title %}Upcoming Releases · Popularr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <div class="mb-4">
+    <h1 class="h2 mb-2">
+      <i class="bi bi-download"></i> Music Downloads
+      <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2" title="Help for Downloads">
+          <i class="bi bi-question-circle"></i>
+      </a>
+    </h1>
+    <p class="text-muted mb-0">Discover and download upcoming releases</p>
+  </div>
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-calendar-event"></i> Upcoming Album Releases
+      </h5>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <button class="btn btn-sm btn-success" onclick="checkForUpdates()">
+          <i class="bi bi-bell"></i> Check for Updates
+        </button>
+        <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleases()">
+          <i class="bi bi-download"></i> Update from Wikipedia
+        </button>
+        <button class="btn btn-sm btn-outline-primary" onclick="refreshUpcomingReleases()">
+          <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <button class="btn btn-sm btn-outline-danger" onclick="clearUpcomingReleases()" title="Clear old entries and start fresh">
+          <i class="bi bi-trash"></i> Clear Database
+        </button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="mb-3">
+        <label class="form-check">
+          <input class="form-check-input" type="checkbox" id="upcomingFilterCollection" onchange="refreshUpcomingReleases()">
+          <span class="form-check-label">Only show releases from artists in my collection</span>
+        </label>
+      </div>
+
+      <div id="upcomingStatus" class="alert alert-info" style="display:none;">
+        <div class="d-flex">
+          <div class="spinner-border spinner-border-sm me-2" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <div>
+            <span id="upcomingStatusText">Loading upcoming releases...</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="upcomingError" class="alert alert-danger" style="display:none;"></div>
+
+      <div id="upcomingReleases">
+        <div class="text-center py-5">
+          <p class="text-muted">Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  #musicBrainzModal .modal-content,
+  #musicBrainzModal .accordion-item,
+  #musicBrainzModal .accordion-button {
+    background-color: #1a1a1a;
+    color: #e0e0e0;
+    border-color: #333;
+  }
+
+  #musicBrainzModal .accordion-button:not(.collapsed) {
+    background-color: #2a2a2a;
+    color: #e0e0e0;
+  }
+
+  #musicBrainzModal .accordion-button:focus {
+    border-color: #555;
+    box-shadow: 0 0 0 0.25rem rgba(70, 130, 180, 0.25);
+  }
+
+  #musicBrainzModal .table {
+    color: #e0e0e0;
+    border-color: #333;
+  }
+
+  #musicBrainzModal .table thead {
+    border-color: #333;
+  }
+
+  #musicBrainzModal .table th {
+    color: #e0e0e0;
+    border-color: #333;
+  }
+
+  #musicBrainzModal .table tbody tr {
+    border-color: #333;
+  }
+
+  #musicBrainzModal .table tbody tr:hover {
+    background-color: #2a2a2a;
+  }
+
+  #musicBrainzModal .btn-success {
+    background-color: #28a745;
+    border-color: #28a745;
+  }
+
+  #musicBrainzModal .btn-success:hover {
+    background-color: #218838;
+    border-color: #1e7e34;
+  }
+
+  #musicBrainzModal .badge {
+    background-color: #555;
+  }
+
+  #musicBrainzModal .alert {
+    background-color: #2a2a2a;
+    border-color: #333;
+    color: #e0e0e0;
+  }
+
+  #musicBrainzModal .alert-secondary {
+    background-color: #2a2a2a;
+    border-color: #444;
+  }
+
+  #musicBrainzModal .text-muted {
+    color: #999 !important;
+  }
+
+  #musicBrainzModal .modal-body {
+    background-color: #1a1a1a;
+  }
+</style>
+
+<!-- MusicBrainz Search Modal (required by static/js/downloads.js) -->
+<div class="modal fade" id="musicBrainzModal" tabindex="-1" aria-labelledby="musicBrainzModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content" style="background-color: #1a1a1a; color: #e0e0e0;">
+      <div class="modal-header" style="border-bottom-color: #333;">
+        <h5 class="modal-title" id="musicBrainzModalLabel">
+          <i class="bi bi-disc"></i> MusicBrainz Release Search
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="mbSearchInfo" class="alert alert-secondary" style="display:none;">
+          Searching <strong id="mbSearchArtist"></strong> - <strong id="mbSearchAlbum"></strong>
+        </div>
+
+        <div id="mbSearchStatus" class="text-center py-4" style="display:none;">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Searching...</span>
+          </div>
+          <div class="mt-2">Searching MusicBrainz...</div>
+        </div>
+
+        <div id="mbSearchError" class="alert alert-danger" style="display:none;"></div>
+        <div id="mbSearchResults"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Include existing JavaScript -->
+<script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const lastChecked = localStorage.getItem('upcomingReleasesLastChecked');
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    if (!lastChecked || (Date.now() - parseInt(lastChecked, 10)) > oneDayMs) {
+      setTimeout(checkForUpdates, 1000);
+    } else {
+      setTimeout(refreshUpcomingReleases, 1000);
+    }
+  });
+</script>
+{% endblock %}

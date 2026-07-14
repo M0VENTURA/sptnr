@@ -16,13 +16,16 @@ navidrome_bp = Blueprint("navidrome_api", __name__)
 def get_navidrome_client() -> NavidromeClient | None:
     """Return a configured Navidrome client for the active user.
 
-    Multi-user config is preferred when a Flask session username is present;
-    otherwise the legacy single-user ``navidrome`` config is used.
+    Resolution order:
+    1. Multi-user config (``navidrome_users``) + active session username.
+    2. Multi-user config — first user (when no session is active).
+    3. Legacy single-user ``navidrome`` config key.
     """
     cfg = get_config() or {}
     nav_users = cfg.get("navidrome_users", []) or []
     current_user = session.get("username")
 
+    # 1. Multi-user with session match
     if nav_users and current_user:
         match = next((item for item in nav_users if item.get("user") == current_user), None)
         if match:
@@ -32,10 +35,22 @@ def get_navidrome_client() -> NavidromeClient | None:
                 password=match.get("pass", match.get("password", "")),
             )
 
+    # 2. Multi-user — first user as fallback (no session)
+    if nav_users:
+        first = nav_users[0]
+        base_url = first.get("base_url", "") or first.get("url", "")
+        if base_url:
+            return NavidromeClient(
+                base_url=base_url,
+                username=first.get("user", first.get("username", "")),
+                password=first.get("pass", first.get("password", "")),
+            )
+
+    # 3. Legacy single-user config
     nav_cfg = cfg.get("navidrome", {}) if isinstance(cfg.get("navidrome"), dict) else {}
-    if nav_cfg.get("base_url"):
+    if nav_cfg.get("base_url") or nav_cfg.get("url"):
         return NavidromeClient(
-            base_url=nav_cfg.get("base_url", ""),
+            base_url=nav_cfg.get("base_url", nav_cfg.get("url", "")),
             username=nav_cfg.get("user", nav_cfg.get("username", "")),
             password=nav_cfg.get("pass", nav_cfg.get("password", "")),
         )

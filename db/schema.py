@@ -118,10 +118,20 @@ TABLES_TO_ENSURE: dict[str, str] = {
             album_name TEXT NOT NULL,
             source TEXT NOT NULL DEFAULT 'wikipedia',
             release_date TEXT,
+            release_year INTEGER,
+            artist_in_collection BOOLEAN DEFAULT FALSE,
+            album_in_collection BOOLEAN DEFAULT FALSE,
             release_group_mbid TEXT,
             match_source TEXT,
             primary_type TEXT,
+            mbid_match_status TEXT DEFAULT 'unmatched',
+            mbid_source TEXT,
+            mbid_confidence TEXT,
+            mbid_match_score REAL,
+            mbid_last_checked_at TEXT,
+            mbid_manual_override BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT uq_upcoming_artist_album_source UNIQUE (artist_name, album_name, source)
         )
     """,
@@ -139,7 +149,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "discogs_genres": "TEXT", "musicbrainz_genres": "TEXT", "essentia_genres": "TEXT",
         "file_path": "TEXT", "duration": "DOUBLE PRECISION",
         "track_number": "TEXT", "disc_number": "TEXT", "year": "TEXT", "release_year": "INTEGER",
-        "last_scanned": "TEXT", "spotify_score": "DOUBLE PRECISION", "lastfm_score": "DOUBLE PRECISION",
+        "last_scanned": "TEXT", "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "spotify_score": "DOUBLE PRECISION", "lastfm_score": "DOUBLE PRECISION",
         "lastfm_listeners": "INTEGER", "lastfm_playcount": "BIGINT",
         "lastfm_tags": "TEXT", "lastfm_last_updated": "TIMESTAMP",
         "listenbrainz_score": "DOUBLE PRECISION", "listenbrainz_listens": "INTEGER",
@@ -187,6 +197,18 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
     },
     "musicbrainz_releases": {"album_artist": "TEXT", "genres": "TEXT", "cover_art_url": "TEXT", "release_source": "TEXT"},
     "musicbrainz_release_tracks": {"composer": "TEXT", "album_artist": "TEXT", "year": "TEXT"},
+    "upcoming_releases": {
+        "release_year": "INTEGER",
+        "artist_in_collection": "BOOLEAN DEFAULT FALSE",
+        "album_in_collection": "BOOLEAN DEFAULT FALSE",
+        "mbid_match_status": "TEXT DEFAULT 'unmatched'",
+        "mbid_source": "TEXT",
+        "mbid_confidence": "TEXT",
+        "mbid_match_score": "REAL",
+        "mbid_last_checked_at": "TEXT",
+        "mbid_manual_override": "BOOLEAN DEFAULT FALSE",
+        "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+    },
 }
 
 # =============================================================================

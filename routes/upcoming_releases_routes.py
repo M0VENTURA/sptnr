@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
 from quart import Blueprint, jsonify, request
 
 from sqlalchemy import text
@@ -176,51 +175,23 @@ async def api_match_upcoming_release(release_id):
 @upcoming_bp.route("/scrape", methods=["POST"])
 def api_scrape_upcoming_releases():
     """Scrape Wikipedia for upcoming releases and store in DB."""
-    from datetime import datetime
-    from api_clients.wikipedia import WikipediaClient
+    from services.upcoming_releases.wikipedia_scraper_service import scrape
 
     try:
-        wiki_client = WikipediaClient()
-        parse_data = wiki_client.parse_page("List_of_upcoming_albums")
-        
-        if not parse_data:
-            return jsonify({"success": False, "error": "No content from Wikipedia"}), 500
-        
-        text = parse_data.get("text", {}).get("*", "")
-        if not text:
-            return jsonify({"success": False, "error": "No content from Wikipedia"}), 500
+        results = scrape()
+        total = results.get("total_found", 0)
+        new_count = results.get("total_new", 0)
+        updated_count = results.get("total_updated", 0)
 
-        # Parse table rows — basic extraction of artist and album names
-        import re
-        rows_found = 0
-
-        # Match table rows with artist and album cells
-        to_insert = []
-        for match in re.finditer(
-            r'<tr>.*?<td>(.*?)</td>.*?<td><a[^>]*>(.*?)</a>.*?</tr>',
-            text, re.DOTALL,
-        ):
-            artist_name = re.sub(r'<[^>]+>', '', match.group(1)).strip()
-            album_title = re.sub(r'<[^>]+>', '', match.group(2)).strip()
-            if artist_name and album_title and len(artist_name) < 200:
-                to_insert.append((artist_name, album_title))
-                rows_found += 1
-
-        if to_insert:
-            with db_session() as session:
-                for artist_name, album_title in to_insert:
-                    try:
-                        session.execute(
-                            text("""INSERT INTO upcoming_releases (artist_name, album_name, source, created_at)
-                                   VALUES (:artist, :album, 'wikipedia', CURRENT_TIMESTAMP)
-                                   ON CONFLICT DO NOTHING"""),
-                            {"artist": artist_name, "album": album_title},
-                        )
-                    except Exception:
-                        pass
-
-        logger.info("Scraped %s upcoming releases from Wikipedia", rows_found)
-        return jsonify({"success": True, "message": f"Scraped {rows_found} releases"})
+        logger.info(
+            "Scraped %s upcoming releases (%s new, %s updated)",
+            total, new_count, updated_count,
+        )
+        return jsonify({
+            "success": True,
+            "message": f"Scraped {total} releases ({new_count} new, {updated_count} updated)",
+            "results": results,
+        })
     except Exception as exc:
         logger.error("Failed to scrape Wikipedia: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500

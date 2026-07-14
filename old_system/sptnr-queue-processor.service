@@ -1,0 +1,32 @@
+[Unit]
+Description=SPTNR Download Queue Processor
+Documentation=https://github.com/krestaino/sptnr
+After=network.target
+
+[Service]
+Type=simple
+User=sptnr
+WorkingDirectory=/opt/sptnr
+Environment="DB_PATH=/var/lib/sptnr/sptnr.db"
+Environment="DOWNLOADS_DIR=/music/downloads"
+Environment="MUSIC_ROOT=/music"
+ExecStart=/usr/bin/python3 /opt/sptnr/queue_processor.py 30
+
+# Restart on failure
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sptnr-queue-processor
+
+# Resource limits
+MemoryLimit=512M
+
+# Security
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

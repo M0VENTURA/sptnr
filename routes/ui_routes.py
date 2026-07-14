@@ -375,7 +375,7 @@ async def artists():
                 COUNT(DISTINCT album) AS album_count,
                 COUNT(*) AS track_count,
                 COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) AS five_star_count,
-                MAX(updated_at) AS last_updated
+                MAX(last_scanned) AS last_updated
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
               AND COALESCE(NULLIF(album_artist, ''), artist) != ''

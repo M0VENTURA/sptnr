@@ -1,0 +1,230 @@
+# Option 1: Single user (current format - works fine for one user)
+navidrome:
+  base_url: "http://localhost:4533"
+  user: "admin"
+  pass: "password"
+
+# Option 2: Multiple users (uncomment and configure if you want to set ratings for multiple users)
+# navidrome_users:
+#   - base_url: "http://localhost:4533"
+#     user: "user1"
+#     pass: "password1"
+#   - base_url: "http://localhost:4533"
+#     user: "user2"
+#     pass: "password2"
+
+# qBittorrent Integration - Search for missing releases from artist pages
+qbittorrent:
+  enabled: false
+  web_url: "http://localhost:8080"  # URL to your qBittorrent Web UI
+  username: ""  # qBittorrent username (required for API access)
+  password: ""  # qBittorrent password (required for API access)
+  downloads_folder: ""  # Folder where qBittorrent saves completed torrent downloads (leave blank if same as Downloads Folder above)
+
+# Soulseek (slskd) Integration - P2P music file sharing
+slskd:
+  enabled: true
+  web_url: "http://localhost:5030"  # URL to your slskd Web UI
+  api_key: ""  # slskd API key (found in Settings > API)
+
+# Downloads Folder Configuration
+downloads:
+  folder: "/downloads/Music"  # Path to watch for downloaded music files
+  
+  # Quality Filter - Enforce format/bitrate requirements for downloads
+  # Reject files that don't match your preferred formats and bitrates
+  # Set enabled: false to disable filtering and accept all files
+  quality_filter:
+    enabled: true  # Enable format/bitrate filtering
+    reject_others: true  # Reject files not matching any priority (or accept all if false)
+    bitrate_tolerance: 5  # Allow ±5 kbps variance from specified bitrate
+    priorities:
+      - format: "mp3"
+        bitrate_kbps: 320  # Priority 1: 320 kbps MP3 (highest quality lossy)
+      - format: "flac"
+        bitrate_kbps: null  # Priority 2: FLAC (lossless, no bitrate requirement)
+    # Examples of other formats you could add:
+    # - format: "m4a"  
+    #   bitrate_kbps: 256  # AAC 256 kbps
+    # - format: "ogg"
+    #   bitrate_kbps: 192  # OGG Vorbis 192 kbps
+    # If a file doesn't match any priority and reject_others is true, it will be skipped
+
+# Watcher Service Configuration
+watcher:
+  scan_interval: 30  # How often to check for new files (in seconds)
+  navidrome_sync_wait: 600  # How long to wait for Navidrome scan to complete (in seconds)
+  auto_import_enabled: true  # Automatically import new songs from Navidrome
+  auto_popularity_scan: true  # Automatically run popularity scan on newly imported songs
+  downloads_watcher_enabled: true  # Monitor /downloads folder for new files
+
+# API Integrations - Enable/disable external services and provide credentials
+api_integrations:
+  spotify:
+    enabled: true
+    client_id: "your_spotify_client_id"
+    client_secret: "your_spotify_client_secret"
+    user_id: ""  # Optional: Spotify User ID to fetch public playlists from (e.g., "spotify")
+  
+  lastfm:
+    enabled: true
+    api_key: "your_lastfm_api_key"
+  
+  listenbrainz:
+    enabled: true
+    # No API key needed - public API
+  
+  discogs:
+    enabled: true
+    token: "your_discogs_token"  # Get token from https://www.discogs.com/settings/developers (required for single detection)
+  
+  musicbrainz:
+    enabled: true
+    # No API key needed - public API with rate limits
+  
+  audiodb:
+    enabled: true
+    api_key: "195003"  # Free API key from https://www.theaudiodb.com/free_music_api
+  
+  google:
+    enabled: false
+    api_key: ""
+    cse_id: ""
+  
+  youtube:
+    enabled: false
+    api_key: ""
+  
+  searchapi:
+    enabled: false
+    api_key: ""  # SearchAPI.io key for DuckDuckGo searches
+
+
+# Beets configuration has been removed - not currently used
+
+# Web API Configuration
+web_api_key: ""  # API key for web interface authentication
+enable_web_api_key: true  # Set to false to disable API key requirement
+
+weights:
+  lastfm: 0.70       # Community scrobbles: genuine user choice (established 2002)
+  age: 0.30          # Recency and track maturity
+
+database:
+  path: "/database/sptnr.db"
+  vacuum_on_start: false
+
+# Tag Mapping Configuration for metadata extraction from audio files
+tags:
+  writer:
+    # Aliases for writer/lyricist fields across different tag formats
+    # ID3 tags: TWRT (standard writer), TOLY (original lyricist), TXXX frames
+    # Vorbis comments (FLAC): WRITER, LYRICIST, AUTHOR
+    # iTunes: Name tags in custom frames
+    aliases:
+      - "TWRT"          # ID3v2.4: Writer tag
+      - "TOLY"          # ID3v2.4: Original Lyricist
+      - "TXXX:WRITER"   # Custom ID3 frame with description "WRITER"
+      - "TXXX:LYRICIST" # Custom ID3 frame with description "LYRICIST"
+      - "TXXX:AUTHOR"   # Custom ID3 frame with description "AUTHOR"
+      - "WRITER"        # Vorbis comment field (FLAC)
+      - "LYRICIST"      # Vorbis comment field (FLAC)
+      - "AUTHOR"        # Vorbis comment field (FLAC)
+      - "©wrt"          # iTunes atom tag for writer
+    # These are kept separate from composer to avoid double-crediting
+    # Composer field will be looked up separately if needed
+
+logging:
+  level: "INFO"
+  file: "/config/app.log"
+  console: true
+
+features:
+  dry_run: false
+  sync: true
+  force: false
+  verbose: false
+  perpetual: true
+  batchrate: false
+  full_scan: false  # When enabled, automatically run Navidrome import → Popularity → Beets import in sequence
+  auto_boot_navidrome_scan: false  # When enabled, automatically scan Navidrome metadata on startup
+  artist: []
+  # Single-detection and scoring knobs
+  album_skip_days: 7  # Number of days before rescanning an album (albums scanned within this many days will be skipped)
+  album_skip_min_tracks: 1
+  clamp_min: 0.75
+  clamp_max: 1.25
+  cap_top4_pct: 0.25
+  title_sim_threshold: 0.92
+  short_release_counts_as_match: false
+  secondary_single_lookup_enabled: true
+  secondary_lookup_metric: "score"
+  secondary_lookup_delta: 0.05
+  secondary_required_strong_sources: 2
+  median_gate_strategy: "hard"
+  use_lastfm_single: true
+  refresh_artist_index_on_start: false
+  discogs_min_interval_sec: 0.35
+  include_user_ratings_on_scan: true
+  scan_worker_threads: 4
+  spotify_prefetch_timeout: 30
+  # Strict Spotify matching - only include exact matches
+  strict_spotify_matching: true  # When enabled, only include exact title matches with ±2s duration and ISRC validation
+  spotify_duration_tolerance: 2  # Maximum duration difference in seconds (default: 2)
+  downloads_duplicate_cleanup:
+    delete_duplicate_files: true
+    prune_empty_folders: true
+
+single_detection:
+  zscore_medium_threshold: 0.6
+  zscore_high_threshold: 1.0
+  standout_gap_z: 0.75  # Minimum z-normalized gap to next track for standout-driven 5★
+
+# Essentia local ML mood/genre tagging — https://github.com/WB2024/Essentia-to-Metadata
+# The official Docker image bundles Essentia-to-Metadata at /opt/Essentia-to-Metadata/tag_music.py
+# and pre-downloads all models to /opt/essentia_models — no manual setup required.
+# Override script_path / models_dir below only if you installed Essentia-to-Metadata elsewhere.
+essentia:
+  script_path: ""  # Leave blank to use the Docker default (/opt/Essentia-to-Metadata/tag_music.py)
+  models_dir: ""   # Leave blank to use the Docker default (/opt/essentia_models)
+  mood_threshold: 0.005  # Minimum activation probability for mood tags (Essentia default)
+  per_file_timeout: 300  # Seconds to wait for Essentia to process one file (increase for slow hardware)
+  parse_json_features: true  # Import BPM/danceability from Essentia JSON sidecars when present
+  delete_json_after_import: true  # Remove Essentia sidecar JSON after successful import
+  json_output_dir: ""  # Optional override for where Essentia writes JSON sidecars
+  cpu_nice: 10  # Unix nice(1) increment for per-file subprocesses (0=normal priority, higher values=lower priority, max 19). Prevents the scan from consuming excessive CPU.
+  inter_file_delay: 0.0  # Extra seconds to sleep between files (additional throttle on very constrained hardware; 0 = off)
+
+# Upcoming Releases Sources — Wikipedia pages scraped for upcoming album release data.
+# The source key must contain a 4-digit year (e.g. 2026_rock) for date parsing.
+# columns: left-to-right table columns on the Wikipedia page.
+#   Valid values: day, artist, album, genre  (genre columns are skipped)
+upcoming_releases:
+  sources:
+    - key: "2026_albums"
+      name: "General 2026 Albums"
+      url: "https://en.wikipedia.org/wiki/List_of_2026_albums"
+      columns: [day, artist, album, genre]
+      enabled: true
+    - key: "2026_heavy_metal"
+      name: "Heavy Metal 2026"
+      url: "https://en.wikipedia.org/wiki/2026_in_heavy_metal_music"
+      columns: [day, artist, album]
+      enabled: true
+    - key: "2026_rock"
+      name: "Rock Music 2026"
+      url: "https://en.wikipedia.org/wiki/2026_in_rock_music"
+      columns: [day, artist, album]
+      enabled: true
+    - key: "2026_kpop"
+      name: "K-Pop/Korean Music 2026"
+      url: "https://en.wikipedia.org/wiki/2026_in_South_Korean_music"
+      columns: [day, album, artist]
+      enabled: true
+    - key: "2026_american"
+      name: "American Music 2026"
+      url: "https://en.wikipedia.org/wiki/2026_in_American_music"
+      columns: [day, album, artist]
+      enabled: true
+
+
