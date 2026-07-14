@@ -46,10 +46,16 @@ Architecture:
     Called by: Album/artist enrichment services, genre display routes
     Should use: helpers.config_helpers.get_genre_weights(), get_genre_synonyms()
 """
-
-from __future__ import annotations
 import re
+from __future__ import annotations
+from db.engine import db_session
+from db.utils import get_db_connection
 from collections import defaultdict
+from sqlalchemy import text
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 # Import centralized configuration getters
 from helpers.config_helpers import get_genre_weights, get_genre_synonyms
