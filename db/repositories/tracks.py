@@ -18,7 +18,6 @@ from helpers.normalization_service import (
 from sqlalchemy import text
 
 from db.engine import db_session
-from db.utils import row_get
 
 from services.metadata.tag_file_service import ( 
     update_file_tags
@@ -74,19 +73,6 @@ def get_top_tracks(limit: int = 10) -> list[Any]:
         return result.fetchall() or []
 
 
-def get_existing_track_ids(conn: Any) -> set[str]:
-    """Fetch all known track IDs using an existing connection."""
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT id FROM tracks")
-        return {str(row_get(row, "id", 0)) for row in cursor.fetchall() or [] if row_get(row, "id", 0)}
-    finally:
-        try:
-            cursor.close()
-        except Exception:
-            pass
-
-
 def get_all_ratings() -> list[dict[str, Any]]:
     """Return all tracks with a non-null star rating > 0.
 
@@ -123,25 +109,39 @@ def get_current_track_rating(track_id: str) -> int:
     return 0
 
 
-def delete_tracks_by_id(conn: Any, track_ids: Set[str], *, context: str) -> int:
-    """Delete tracks by ID using an existing connection; caller controls commit."""
+def delete_tracks_by_id(track_ids: Set[str], *, context: str, session: Any | None = None) -> int:
+    """Delete tracks by ID.
+    
+    Args:
+        track_ids: Set of track IDs to delete.
+        context: Description for logging (e.g. artist name).
+        session: Optional SQLAlchemy session. If None, creates one.
+        
+    Returns:
+        Number of tracks deleted.
+    """
     if not track_ids:
         return 0
+    
+    def _do_delete(sess):
+        placeholders = ", ".join([f":id_{i}" for i in range(len(track_ids))])
+        params = {f"id_{i}": tid for i, tid in enumerate(track_ids)}
+        sess.execute(text(f"DELETE FROM tracks WHERE id IN ({placeholders})"), params)
+        return len(track_ids)
+    
     try:
-        cursor = conn.cursor()
-        try:
-            placeholders = ", ".join(["%s"] * len(track_ids))
-            cursor.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", list(track_ids))
-            return len(track_ids)
-        finally:
-            cursor.close()
+        if session is not None:
+            return _do_delete(session)
+        else:
+            with db_session() as sess:
+                return _do_delete(sess)
     except Exception as err:
         logger.error(
             "Failed to remove stale tracks for %s: %s",
             context,
             err,
-    )
-    return 0
+        )
+        return 0
 
 # db/repositories/tracks.py
 def update_track_single_status(

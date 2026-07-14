@@ -299,19 +299,19 @@ def verify_and_prune(data: dict) -> dict:
 def find_existing_discovered_file(*, file_path: str, filename: str, rel_path: str) -> Optional[Dict[str, Any]]:
     try:
         with db_session() as session:
-            cursor.execute(
-                """
+            result = session.execute(
+                text("""
                 SELECT * FROM download_queue
-                WHERE file_path = %s
-                   OR found_filename = %s
-                   OR found_filename = %s
-                   OR found_filename = %s
+                WHERE file_path = :file_path
+                   OR found_filename = :filename
+                   OR found_filename = :rel_path
+                   OR found_filename = :file_path2
                 LIMIT 1
-                """,
-                (file_path, filename, rel_path, file_path),
+                """),
+                {"file_path": file_path, "filename": filename, "rel_path": rel_path, "file_path2": file_path},
             )
-            row = cursor.fetchone()
-            return dict(zip([c[0] for c in cursor.description], row)) if row else None
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
     except Exception as e:
         logger.error(f"[find_existing_discovered_file] {e}")
         return None

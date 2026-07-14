@@ -222,7 +222,7 @@ def api_album_apply_discogs_id():
 
 
 @album_bp.route("/ignore-missing-track", methods=["POST"])
-async def_api_album_ignore_missing_track():
+async def api_album_ignore_missing_track():
     """Mark a persisted missing track as ignored."""
     data = request.get_json(force=True, silent=True) or {}
     missing_id = data.get("id")
@@ -270,7 +270,7 @@ def api_album_set_art():
 
 
 @album_bp.route("/upload-art", methods=["POST"])
-async def_api_album_upload_art():
+async def api_album_upload_art():
     """Set custom album art from an uploaded file."""
     artist = request.form.get("artist", "").strip()
     album = request.form.get("album", "").strip()
@@ -294,7 +294,7 @@ async def_api_album_upload_art():
 
 
 @album_bp.route("/submit-musicbrainz", methods=["POST"])
-async def_api_album_submit_musicbrainz():
+async def api_album_submit_musicbrainz():
     """Generate a MusicBrainz submission URL for an album."""
     data = request.get_json(silent=True) or {}
     artist = str(data.get("artist", "")).strip()

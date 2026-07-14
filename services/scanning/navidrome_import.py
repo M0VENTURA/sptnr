@@ -291,11 +291,10 @@ def scan_artist_to_db(
         albums_needing_reimport = state["albums_needing_reimport"]
 
         normalize_existing_artist_rows_safe(
-            conn,
             artist_name=artist_name,
             canonical_artist_name=canonical_artist_name,
         )
-        sanitize_artist_rows_safe(conn, canonical_artist_name=canonical_artist_name)
+        sanitize_artist_rows_safe(canonical_artist_name=canonical_artist_name)
         conn.commit()
 
         changed_album_names: set[str] | None = None
@@ -409,7 +408,6 @@ def scan_artist_to_db(
 
             if diff_mode:
                 cleanup_stale_album_tracks_if_needed(
-                    conn,
                     artist_name=artist_name,
                     album_name=album_name,
                     cached_ids_for_album=cached_ids_for_album,
@@ -418,7 +416,6 @@ def scan_artist_to_db(
 
         if not filter_missing and not album_filter and not diff_mode:
             cleanup_stale_artist_tracks_if_needed(
-                conn,
                 artist_name=artist_name,
                 existing_track_ids=existing_track_ids,
                 navidrome_track_ids=navidrome_track_ids,

@@ -26,20 +26,20 @@ from db.repositories.tracks import delete_tracks_by_id
 from helpers.logging_config import log_unified
 
 
-def normalize_existing_artist_rows_safe(conn: Any, *, artist_name: str, canonical_artist_name: str) -> None:
+def normalize_existing_artist_rows_safe(*, artist_name: str, canonical_artist_name: str) -> None:
     """Best-effort wrapper around artist row normalization."""
     try:
-        updated_rows = normalize_existing_artist_rows(conn, canonical_artist_name, aliases=[artist_name])
+        updated_rows = normalize_existing_artist_rows(canonical_artist_name=canonical_artist_name, aliases=[artist_name])
         if updated_rows:
             logging.info("[ARTIST_NORMALIZE] %s: normalized %s existing rows", canonical_artist_name, updated_rows)
     except Exception as err:
         logging.debug("[ARTIST_NORMALIZE] Skipped for %s: %s", canonical_artist_name, err)
 
 
-def sanitize_artist_rows_safe(conn: Any, *, canonical_artist_name: str) -> None:
+def sanitize_artist_rows_safe(*, canonical_artist_name: str) -> None:
     """Best-effort stale path and duplicate cleanup wrapper."""
     try:
-        summary = sanitize_artist_file_paths_and_duplicates(conn, canonical_artist_name)
+        summary = sanitize_artist_file_paths_and_duplicates(canonical_artist_name)
         path_updates, duplicates_removed = normalize_sanitize_summary(summary)
         if path_updates or duplicates_removed:
             logging.info("[NAVIDROME_SANITIZE] %s: normalized_paths=%s, duplicates_removed=%s", canonical_artist_name, path_updates, duplicates_removed)
@@ -47,26 +47,24 @@ def sanitize_artist_rows_safe(conn: Any, *, canonical_artist_name: str) -> None:
         logging.debug("[NAVIDROME_SANITIZE] Skipped for %s: %s", canonical_artist_name, err)
 
 
-def cleanup_stale_album_tracks_if_needed(conn: Any, *, artist_name: str, album_name: str, cached_ids_for_album: Set[str], navidrome_tracks: list[Dict[str, Any]]) -> None:
+def cleanup_stale_album_tracks_if_needed(*, artist_name: str, album_name: str, cached_ids_for_album: Set[str], navidrome_tracks: list[Dict[str, Any]]) -> None:
     """Delete DB tracks that no longer exist in a Navidrome album."""
     nav_ids = {track.get("id") for track in navidrome_tracks if track.get("id")}
     stale_ids = cached_ids_for_album - nav_ids
     if not stale_ids:
         return
-    removed = delete_tracks_by_id(conn, stale_ids, context=f"album '{album_name}' (diff_mode)")
+    removed = delete_tracks_by_id(stale_ids, context=f"album '{album_name}' (diff_mode)")
     if removed:
-        conn.commit()
         log_unified(f"Navidrome Import - {artist_name} - Removed {removed} stale track(s) from album '{album_name}'")
 
 
-def cleanup_stale_artist_tracks_if_needed(conn: Any, *, artist_name: str, existing_track_ids: Set[str], navidrome_track_ids: Set[str]) -> None:
+def cleanup_stale_artist_tracks_if_needed(*, artist_name: str, existing_track_ids: Set[str], navidrome_track_ids: Set[str]) -> None:
     """Delete DB tracks that no longer exist in Navidrome for an artist."""
     stale_ids = existing_track_ids - navidrome_track_ids
     if not stale_ids:
         return
-    removed = delete_tracks_by_id(conn, stale_ids, context=f"artist '{artist_name}'")
+    removed = delete_tracks_by_id(stale_ids, context=f"artist '{artist_name}'")
     if removed:
-        conn.commit()
         log_unified(f"Navidrome Import - {artist_name} - Removed {removed} stale track(s) no longer in library")
 
 

@@ -213,11 +213,20 @@ def has_valid_local_track_paths_for_mp3_import(
 
 
 def normalize_existing_artist_rows(
-    conn: Any,
-    canonical_artist_name: str,
+    session: Any | None = None,
+    canonical_artist_name: str | None = None,
     aliases: list[str] | None = None,
 ) -> int:
-    """Rewrite variant artist names to canonical value."""
+    """Rewrite variant artist names to canonical value.
+    
+    Args:
+        session: Optional SQLAlchemy session. If None, creates one.
+        canonical_artist_name: The canonical name to normalize to.
+        aliases: List of variant names to normalize.
+        
+    Returns:
+        Number of rows updated.
+    """
     if not canonical_artist_name:
         return 0
 
@@ -225,7 +234,6 @@ def normalize_existing_artist_rows(
     if not canonical_key:
         return 0
 
-    cursor = conn.cursor()
     updates = 0
 
     alias_candidates = {alias for alias in (aliases or []) if alias}
@@ -236,56 +244,64 @@ def normalize_existing_artist_rows(
         canonical_artist_name.title(),
     })
 
-    for original in alias_candidates:
-        if not original or original == canonical_artist_name:
-            continue
+    def _do_update(sess):
+        nonlocal updates
+        for original in alias_candidates:
+            if not original or original == canonical_artist_name:
+                continue
 
-        if _normalize_artist_key(original) != canonical_key:
-            continue
+            if _normalize_artist_key(original) != canonical_key:
+                continue
 
-        for column_name in ("album_artist", "artist"):
-            cursor.execute(
-                f"""
-                UPDATE tracks
-                SET {column_name} = %s
-                WHERE {column_name} = %s
-                """,
-                (canonical_artist_name, original),
-            )
+            for column_name in ("album_artist", "artist"):
+                result = sess.execute(
+                    text(f"""
+                    UPDATE tracks
+                    SET {column_name} = :canonical
+                    WHERE {column_name} = :original
+                    """),
+                    {"canonical": canonical_artist_name, "original": original},
+                )
+                updates += max(int(result.rowcount or 0), 0)
 
-            updates += max(int(cursor.rowcount or 0), 0)
-
-    if updates:
-        conn.commit()
+    if session is not None:
+        _do_update(session)
+    else:
+        with db_session() as sess:
+            _do_update(sess)
 
     return updates
 
 
 def sanitize_artist_file_paths_and_duplicates(
-    conn: Any,
     artist_name: str,
+    session: Any | None = None,
 ) -> dict[str, int]:
-    """Normalize file paths and remove duplicate rows."""
+    """Normalize file paths and remove duplicate rows.
+    
+    Args:
+        artist_name: Name of the artist to sanitize.
+        session: Optional SQLAlchemy session. If None, creates one.
+        
+    Returns:
+        Dict with path_updates and duplicates_removed counts.
+    """
     if not artist_name:
         return {"path_updates": 0, "duplicates_removed": 0}
 
-    cursor = None
-
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT id, file_path, duration, mbid, last_scanned
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND file_path IS NOT NULL
-              AND TRIM(file_path) != ''
-            """,
-            (artist_name,),
+    def _do_sanitize(sess):
+        result = sess.execute(
+            text("""
+                SELECT id, file_path, duration, mbid, last_scanned
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist_name
+                  AND file_path IS NOT NULL
+                  AND TRIM(file_path) != ''
+            """),
+            {"artist_name": artist_name},
         )
 
-        rows = cursor.fetchall() or []
+        rows = result.fetchall() or []
         if not rows:
             return {"path_updates": 0, "duplicates_removed": 0}
 
@@ -295,17 +311,17 @@ def sanitize_artist_file_paths_and_duplicates(
         path_updates = 0
 
         for row in rows:
-            track_id = row_get(row, "id", 0)
-            raw_path = str(row_get(row, "file_path", 1, "") or "")
+            track_id = row[0]
+            raw_path = str(row[1] or "")
 
             normalized_path = _resolve_navidrome_file_path_for_storage(raw_path, music_root)
 
             if normalized_path and normalized_path != raw_path:
-                cursor.execute(
-                    "UPDATE tracks SET file_path = %s WHERE id = %s",
-                    (normalized_path, track_id),
+                sess.execute(
+                    text("UPDATE tracks SET file_path = :path WHERE id = :id"),
+                    {"path": normalized_path, "id": track_id},
                 )
-                path_updates += int(cursor.rowcount or 0)
+                path_updates += 1
 
             effective_path = normalized_path or raw_path
 
@@ -314,15 +330,15 @@ def sanitize_artist_file_paths_and_duplicates(
 
             grouped.setdefault(effective_path.lower(), []).append({
                 "id": track_id,
-                "duration": row_get(row, "duration", 2),
-                "mbid": row_get(row, "mbid", 3),
-                "last_scanned": row_get(row, "last_scanned", 4),
+                "duration": row[2],
+                "mbid": row[3],
+                "last_scanned": row[4],
             })
 
         duplicates_removed = 0
 
-        for rows in grouped.values():
-            if len(rows) <= 1:
+        for rows_list in grouped.values():
+            if len(rows_list) <= 1:
                 continue
 
             def score(r):
@@ -332,34 +348,26 @@ def sanitize_artist_file_paths_and_duplicates(
                     str(r["last_scanned"] or ""),
                 )
 
-            keeper = max(rows, key=score)
+            keeper = max(rows_list, key=score)
 
-            for r in rows:
+            for r in rows_list:
                 if r["id"] == keeper["id"]:
                     continue
 
-                cursor.execute(
-                    "DELETE FROM tracks WHERE id = %s",
-                    (r["id"],),
+                sess.execute(
+                    text("DELETE FROM tracks WHERE id = :id"),
+                    {"id": r["id"]},
                 )
-                duplicates_removed += int(cursor.rowcount or 0)
-
-        if path_updates or duplicates_removed:
-            conn.commit()
+                duplicates_removed += 1
 
         return {
             "path_updates": path_updates,
             "duplicates_removed": duplicates_removed,
         }
 
-    except Exception as exc:
-        logging.debug("[SCAN_DB] Sanitize failed for '%s': %s", artist_name, exc)
-        return {"path_updates": 0, "duplicates_removed": 0}
-
-    finally:
-        if cursor:
-            try:
-                cursor.close()
-            except Exception:
-                pass
+    if session is not None:
+        return _do_sanitize(session)
+    else:
+        with db_session() as sess:
+            return _do_sanitize(sess)
 
