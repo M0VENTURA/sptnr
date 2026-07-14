@@ -233,29 +233,52 @@ def apply_album_deviation_adjustment(
             db_conn.close()
 
 
-def apply_album_deviation_adjustment(track_popularity: float, artist_name: str, album_name: str, artist_mean_popularity: float | None = None, conn=None) -> float:
+def apply_album_deviation_adjustment(
+    track_popularity: float,
+    artist_name: str,
+    album_name: str,
+    artist_mean_popularity: float | None = None,
+    conn=None,
+) -> float:
     """Apply album-level deviation adjustment for underperforming albums."""
     if track_popularity <= 0:
         return track_popularity
+    should_close = conn is None
+    db_conn = conn or get_db_connection()
     try:
-        with db_connection_context(conn) as db_conn:
-            cursor = db_conn.cursor()
-            cursor.execute(
-                """
-                SELECT final_score FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                  AND album = %s
-                  AND final_score > 0
-                """,
-                (artist_name, album_name),
-            )
-            album_values = [float(row_get(row, "final_score", 0) or 0) for row in cursor.fetchall()]
+        cursor = db_conn.cursor()
+        cursor.execute(
+            """
+            SELECT final_score
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+              AND album = %s
+              AND final_score > 0
+            """,
+            (artist_name, album_name),
+        )
+        album_values = [
+            float(row_get(row, "final_score", 0) or 0)
+            for row in cursor.fetchall()
+        ]
         if len(album_values) < 2:
             return track_popularity
         album_median = median(album_values)
-        if artist_mean_popularity and album_median < artist_mean_popularity * 0.6 and track_popularity > album_median:
+        if (
+            artist_mean_popularity
+            and album_median < artist_mean_popularity * 0.6
+            and track_popularity > album_median
+        ):
             return min(100.0, track_popularity * 1.05)
         return track_popularity
     except Exception as exc:
-        logger.debug("Album deviation adjustment failed for %s / %s: %s", artist_name, album_name, exc)
+        logger.debug(
+            "Album deviation adjustment failed for %s / %s: %s",
+            artist_name,
+            album_name,
+            exc,
+        )
         return track_popularity
+    finally:
+        if should_close and db_conn:
+            db_conn.close()
