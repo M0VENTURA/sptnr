@@ -78,7 +78,7 @@ def api_album_favourite():
         artist = request.args.get("artist", "").strip()
         album = request.args.get("album", "").strip()
     else:
-        data = request.get_json() or {}
+        data = (await request.get_json(silent=True)) or {}
         artist = data.get("artist", "").strip()
         album = data.get("album", "").strip()
 
@@ -112,7 +112,7 @@ def api_album_art_placeholder():
 
 
 @album_bp.route("/<path:artist>/<path:album>/art")
-def api_album_art(artist, album):
+async def api_album_art(artist: str, album: str):
     """Get album art. Uses service layer to abstract DB and API calls."""
     try:
         artist, album = unquote(artist), unquote(album)
@@ -175,7 +175,7 @@ def api_album_queue_status():
 @album_bp.route("/apply-genres", methods=["POST"])
 def api_album_apply_genres():
     """Apply selected genres to all audio files in an album."""
-    data = request.get_json() or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "").strip()
     album = data.get("album", "").strip()
     genres = data.get("genres", [])
@@ -191,7 +191,7 @@ def api_album_apply_genres():
 @album_bp.route("/apply-mbid", methods=["POST"])
 def api_album_apply_mbid():
     """Apply MusicBrainz ID and cover art to all tracks in an album."""
-    data = request.get_json() or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "")
     album = data.get("album", "")
     mbid = str(data.get("mbid", "") or "").strip()
@@ -208,7 +208,7 @@ def api_album_apply_mbid():
 @album_bp.route("/apply-discogs-id", methods=["POST"])
 def api_album_apply_discogs_id():
     """Apply Discogs ID to all tracks in an album."""
-    data = request.get_json() or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "")
     album = data.get("album", "")
     discogs_id = data.get("discogs_id", "")
@@ -222,7 +222,7 @@ def api_album_apply_discogs_id():
 
 
 @album_bp.route("/ignore-missing-track", methods=["POST"])
-def api_album_ignore_missing_track():
+async def_api_album_ignore_missing_track():
     """Mark a persisted missing track as ignored."""
     data = request.get_json(force=True, silent=True) or {}
     missing_id = data.get("id")
@@ -257,7 +257,7 @@ def api_album_search_art():
 @album_bp.route("/set-art", methods=["POST"])
 def api_album_set_art():
     """Set custom album art from a URL."""
-    data = request.get_json() or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "").strip()
     album = data.get("album", "").strip()
     image_url = data.get("image_url", "").strip()
@@ -270,7 +270,7 @@ def api_album_set_art():
 
 
 @album_bp.route("/upload-art", methods=["POST"])
-def api_album_upload_art():
+async def_api_album_upload_art():
     """Set custom album art from an uploaded file."""
     artist = request.form.get("artist", "").strip()
     album = request.form.get("album", "").strip()
@@ -294,7 +294,7 @@ def api_album_upload_art():
 
 
 @album_bp.route("/submit-musicbrainz", methods=["POST"])
-def api_album_submit_musicbrainz():
+async def_api_album_submit_musicbrainz():
     """Generate a MusicBrainz submission URL for an album."""
     data = request.get_json(silent=True) or {}
     artist = str(data.get("artist", "")).strip()
@@ -390,7 +390,7 @@ def api_album_spotify_genres():
 @album_bp.route("/majority-artist", methods=["POST"])
 def api_album_majority_artist():
     """Get the most common artist from all tracks in an album."""
-    data = request.get_json() or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "").strip()
     album = data.get("album", "").strip()
     
@@ -404,7 +404,7 @@ def api_album_majority_artist():
 @album_bp.route("/add-to-missing-releases", methods=["POST"])
 def api_album_add_to_missing_releases():
     """Add an album to the missing releases tracking list."""
-    data = request.get_json() or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "").strip()
     album = data.get("album", "").strip()
     year = data.get("year", "").strip()
