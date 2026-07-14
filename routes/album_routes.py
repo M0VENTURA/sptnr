@@ -72,7 +72,7 @@ def api_album_rename_files(artist, album):
 
 
 @album_bp.route("/favourite", methods=["GET", "POST", "DELETE"])
-def api_album_favourite():
+async def api_album_favourite():
     """Check, add, or remove an album from favourites."""
     if request.method in ["GET", "DELETE"]:
         artist = request.args.get("artist", "").strip()
@@ -173,7 +173,7 @@ def api_album_queue_status():
 
 
 @album_bp.route("/apply-genres", methods=["POST"])
-def api_album_apply_genres():
+async def api_album_apply_genres():
     """Apply selected genres to all audio files in an album."""
     data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "").strip()
@@ -189,7 +189,7 @@ def api_album_apply_genres():
 
 
 @album_bp.route("/apply-mbid", methods=["POST"])
-def api_album_apply_mbid():
+async def api_album_apply_mbid():
     """Apply MusicBrainz ID and cover art to all tracks in an album."""
     data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "")
@@ -206,7 +206,7 @@ def api_album_apply_mbid():
 
 
 @album_bp.route("/apply-discogs-id", methods=["POST"])
-def api_album_apply_discogs_id():
+async def api_album_apply_discogs_id():
     """Apply Discogs ID to all tracks in an album."""
     data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "")
@@ -255,7 +255,7 @@ def api_album_search_art():
 
 
 @album_bp.route("/set-art", methods=["POST"])
-def api_album_set_art():
+async def api_album_set_art():
     """Set custom album art from a URL."""
     data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "").strip()
@@ -388,7 +388,7 @@ def api_album_spotify_genres():
 
 
 @album_bp.route("/majority-artist", methods=["POST"])
-def api_album_majority_artist():
+async def api_album_majority_artist():
     """Get the most common artist from all tracks in an album."""
     data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "").strip()
@@ -402,7 +402,7 @@ def api_album_majority_artist():
 
 
 @album_bp.route("/add-to-missing-releases", methods=["POST"])
-def api_album_add_to_missing_releases():
+async def api_album_add_to_missing_releases():
     """Add an album to the missing releases tracking list."""
     data = (await request.get_json(silent=True)) or {}
     artist = data.get("artist", "").strip()
