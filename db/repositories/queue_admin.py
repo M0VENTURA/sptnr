@@ -24,7 +24,6 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 
 from db.engine import db_session
-from db.context import db_cursor
 from db.utils import row_get
 from helpers.config_helpers import get_config
 from services.downloads.download_scan_service import resolve_downloads_dir
@@ -161,26 +160,26 @@ def cleanup_copied_sources() -> dict:
 
 def cleanup_orphaned(data: dict) -> dict:
     try:
-        with db_cursor() as (conn, cursor):
+        with db_session() as session:
             downloads_root = os.path.abspath(resolve_downloads_dir())
             perform_cleanup = bool(data.get("cleanup", False))
             filter_artist = (data.get("artist") or "").strip().lower()
 
-            cursor.execute("""
+            result = session.execute(text("""
                 SELECT id, file_path, found_filename, artist, title
                 FROM download_queue
                 WHERE status IN ('imported', 'completed')
-            """)
-            items = cursor.fetchall()
+            """))
+            items = result.fetchall()
             orphaned_files = []
             deleted_files = []
 
             for row in items:
-                queue_id = row_get(row, "id", 0)
-                file_path = row_get(row, "file_path", 1)
-                found_filename = row_get(row, "found_filename", 2)
-                artist = (row_get(row, "artist", 3) or "").lower()
-                title = row_get(row, "title", 4)
+                queue_id = row[0]
+                file_path = row[1]
+                found_filename = row[2]
+                artist = (row[3] or "").lower()
+                title = row[4]
 
                 if filter_artist and filter_artist not in artist:
                     continue
@@ -236,26 +235,26 @@ def count_pending_by_release(release_mbid: str) -> int:
 
 def verify_and_prune(data: dict) -> dict:
     try:
-        with db_cursor(commit=True) as (conn, cursor):
+        with db_session() as session:
             dry_run = bool(data.get("dry_run", True))
             filter_artist = (data.get("filter_artist") or "").strip().lower()
 
-            cursor.execute("""
+            result = session.execute(text("""
                 SELECT id, file_path, found_filename, artist, title, status
                 FROM download_queue
-            """)
-            items = cursor.fetchall()
+            """))
+            items = result.fetchall()
             checked_count = 0
             missing_items = []
             pruned_count = 0
             downloads_root = os.path.abspath(resolve_downloads_dir())
 
             for row in items:
-                queue_id = row_get(row, "id", 0)
-                file_path = row_get(row, "file_path", 1)
-                found_filename = row_get(row, "found_filename", 2)
-                artist = (row_get(row, "artist", 3) or "").lower()
-                title = row_get(row, "title", 4)
+                queue_id = row[0]
+                file_path = row[1]
+                found_filename = row[2]
+                artist = (row[3] or "").lower()
+                title = row[4]
 
                 if filter_artist and filter_artist not in artist:
                     continue
@@ -277,7 +276,7 @@ def verify_and_prune(data: dict) -> dict:
                         "file_path": file_path,
                     })
                     if not dry_run:
-                        cursor.execute("DELETE FROM download_queue WHERE id=%s", (queue_id,))
+                        session.execute(text("DELETE FROM download_queue WHERE id = :id"), {"id": queue_id})
                         pruned_count += 1
 
             return {
@@ -320,20 +319,20 @@ def find_existing_discovered_file(*, file_path: str, filename: str, rel_path: st
 
 def find_duplicate_queue_item(*, artist: str, title: str, album: str | None) -> Optional[Dict[str, Any]]:
     try:
-        with db_cursor() as (_, cursor):
-            cursor.execute(
-                """
+        with db_session() as session:
+            result = session.execute(
+                text("""
                 SELECT * FROM download_queue
-                WHERE LOWER(artist) = LOWER(%s)
-                  AND LOWER(title) = LOWER(%s)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                WHERE LOWER(artist) = LOWER(:artist)
+                  AND LOWER(title) = LOWER(:title)
+                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(:album, ''))
                   AND status NOT IN ('removed', 'cancelled')
                 LIMIT 1
-                """,
-                (artist, title, album),
+                """),
+                {"artist": artist, "title": title, "album": album},
             )
-            row = cursor.fetchone()
-            return dict(zip([c[0] for c in cursor.description], row)) if row else None
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
     except Exception as e:
         logger.error(f"[find_duplicate_queue_item] {e}")
         return None
@@ -374,19 +373,19 @@ def insert_discovered_file(
 
 def delete_duplicate_queue_entries(*, keep_id: int, artist: str, title: str, album: str | None) -> int:
     try:
-        with db_cursor(commit=True) as (_, cursor):
-            cursor.execute(
-                """
+        with db_session() as session:
+            result = session.execute(
+                text("""
                 DELETE FROM download_queue
-                WHERE id <> %s
-                  AND LOWER(artist) = LOWER(%s)
-                  AND LOWER(title) = LOWER(%s)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                WHERE id <> :keep_id
+                  AND LOWER(artist) = LOWER(:artist)
+                  AND LOWER(title) = LOWER(:title)
+                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(:album, ''))
                   AND status NOT IN ('removed', 'cancelled', 'deleted', 'imported', 'in_collection')
-                """,
-                (keep_id, artist, title, album),
+                """),
+                {"keep_id": keep_id, "artist": artist, "title": title, "album": album},
             )
-            return int(cursor.rowcount or 0)
+            return int(result.rowcount or 0)
     except Exception as e:
         logger.error(f"[delete_duplicate_queue_entries] {e}")
         return 0
@@ -398,21 +397,21 @@ def delete_duplicate_queue_entries(*, keep_id: int, artist: str, title: str, alb
 
 def get_queue_items_by_folder(folder_path: str) -> List[Dict[str, Any]]:
     try:
-        with db_cursor() as (conn, cursor):
-            cursor.execute(
-                """
+        with db_session() as session:
+            result = session.execute(
+                text("""
                 SELECT id, artist, album, title, status, track_number,
                        found_filename, album_artist, release_mbid, release_id, import_group
                 FROM download_queue
-                WHERE import_group = %s
+                WHERE import_group = :folder_path
                 ORDER BY
                     CASE WHEN TRIM(COALESCE(track_number, '')) ~ '^\d+$'
                         THEN TRIM(track_number)::integer ELSE 9999 END,
                     id
-                """,
-                (folder_path,),
+                """),
+                {"folder_path": folder_path},
             )
-            return [dict(zip([c[0] for c in cursor.description], r)) for r in cursor.fetchall()]
+            return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
         logger.error(f"[get_queue_items_by_folder] {e}")
         return []
@@ -420,14 +419,14 @@ def get_queue_items_by_folder(folder_path: str) -> List[Dict[str, Any]]:
 
 def slskd_eligibility_diagnostics() -> dict:
     try:
-        with db_cursor() as (_, cursor):
-            cursor.execute("""
+        with db_session() as session:
+            result = session.execute(text("""
                 SELECT status, COUNT(*) as count
                 FROM download_queue
                 GROUP BY status
                 ORDER BY count DESC
-            """)
-            rows = cursor.fetchall()
+            """))
+            rows = result.fetchall()
             return {
                 "success": True,
                 "status_counts": {r[0]: r[1] for r in rows},
@@ -443,9 +442,9 @@ def delete_folder(data: dict) -> dict:
         if not group_id:
             return {"success": False, "error": "No group_id provided"}
 
-        with db_cursor(commit=True) as (_, cursor):
-            cursor.execute("DELETE FROM download_queue WHERE import_group = %s", (group_id,))
-            return {"success": True, "deleted": cursor.rowcount}
+        with db_session() as session:
+            result = session.execute(text("DELETE FROM download_queue WHERE import_group = :group_id"), {"group_id": group_id})
+            return {"success": True, "deleted": result.rowcount}
     except Exception as e:
         logger.error(f"[delete_folder] {e}")
         return {"success": False, "error": str(e)}
@@ -457,12 +456,12 @@ def remove_group(data: dict) -> dict:
         if not group_id:
             return {"success": False, "error": "No group_id provided"}
 
-        with db_cursor(commit=True) as (_, cursor):
-            cursor.execute(
-                "UPDATE download_queue SET import_group = NULL WHERE import_group = %s",
-                (group_id,),
+        with db_session() as session:
+            result = session.execute(
+                text("UPDATE download_queue SET import_group = NULL WHERE import_group = :group_id"),
+                {"group_id": group_id},
             )
-            return {"success": True, "updated": cursor.rowcount}
+            return {"success": True, "updated": result.rowcount}
     except Exception as e:
         logger.error(f"[remove_group] {e}")
         return {"success": False, "error": str(e)}
@@ -470,28 +469,29 @@ def remove_group(data: dict) -> dict:
 
 def reset_moving(queue_ids: list[int] | None, stale_minutes: int) -> dict:
     try:
-        with db_cursor(commit=True) as (_, cursor):
+        with db_session() as session:
             if queue_ids:
-                placeholders = ", ".join(["%s"] * len(queue_ids))
-                cursor.execute(
-                    f"""
+                placeholders = ", ".join([f":id_{i}" for i in range(len(queue_ids))])
+                params = {f"id_{i}": qid for i, qid in enumerate(queue_ids)}
+                result = session.execute(
+                    text(f"""
                     UPDATE download_queue
                     SET status = 'completed', updated_at = CURRENT_TIMESTAMP
                     WHERE id IN ({placeholders}) AND status = 'moving'
-                    """,
-                    queue_ids,
+                    """),
+                    params,
                 )
             else:
-                cursor.execute(
-                    """
+                result = session.execute(
+                    text("""
                     UPDATE download_queue
                     SET status = 'completed', updated_at = CURRENT_TIMESTAMP
                     WHERE status = 'moving'
-                      AND updated_at < NOW() - make_interval(mins => %s)
-                    """,
-                    (stale_minutes,),
+                      AND updated_at < NOW() - make_interval(mins => :stale_minutes)
+                    """),
+                    {"stale_minutes": stale_minutes},
                 )
-            return {"success": True, "updated": cursor.rowcount}
+            return {"success": True, "updated": result.rowcount}
     except Exception as e:
         logger.error(f"[reset_moving] {e}")
         return {"success": False, "error": str(e)}
@@ -503,21 +503,25 @@ def reset_moving(queue_ids: list[int] | None, stale_minutes: int) -> dict:
 
 def apply_release_mbid(queue_ids: list, mbid: str, artist: str, album: str) -> int:
     try:
-        with db_cursor(commit=True) as (_, cursor):
-            placeholders = ", ".join(["%s"] * len(queue_ids))
-            cursor.execute(
-                f"""
+        with db_session() as session:
+            placeholders = ", ".join([f":id_{i}" for i in range(len(queue_ids))])
+            params = {f"id_{i}": qid for i, qid in enumerate(queue_ids)}
+            params["mbid"] = mbid
+            params["artist"] = artist
+            params["album"] = album
+            result = session.execute(
+                text(f"""
                 UPDATE download_queue
-                SET release_mbid = %s, release_id = %s,
+                SET release_mbid = :mbid, release_id = :mbid,
                     release_source = 'musicbrainz',
-                    album_artist = CASE WHEN NULLIF(TRIM(album_artist), '') IS NULL THEN %s ELSE album_artist END,
-                    album = CASE WHEN NULLIF(TRIM(album), '') IS NULL THEN %s ELSE album END,
+                    album_artist = CASE WHEN NULLIF(TRIM(album_artist), '') IS NULL THEN :artist ELSE album_artist END,
+                    album = CASE WHEN NULLIF(TRIM(album), '') IS NULL THEN :album ELSE album END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id IN ({placeholders})
-                """,
-                (mbid, mbid, artist, album, *queue_ids),
+                """),
+                params,
             )
-            return cursor.rowcount
+            return result.rowcount
     except Exception as e:
         logger.error(f"[apply_release_mbid] {e}")
         return 0
@@ -533,21 +537,21 @@ def mark_in_collection(
 ) -> Optional[Dict[str, Any]]:
     """Mark a queue item as already present in the collection."""
     try:
-        with db_cursor(commit=True) as (_, cursor):
-            cursor.execute(
-                """
+        with db_session() as session:
+            result = session.execute(
+                text("""
                 UPDATE download_queue
                 SET status = 'in_collection',
-                    matched_file_path = %s,
-                    collection_track_id = %s,
+                    matched_file_path = :matched_file_path,
+                    collection_track_id = :collection_track_id,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
+                WHERE id = :queue_id
                 RETURNING *
-                """,
-                (matched_file_path, collection_track_id, queue_id),
+                """),
+                {"matched_file_path": matched_file_path, "collection_track_id": collection_track_id, "queue_id": queue_id},
             )
-            row = cursor.fetchone()
-            return dict(zip([c[0] for c in cursor.description], row)) if row else None
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
     except Exception as e:
         logger.error(f"[mark_in_collection] {e}")
         return None
@@ -556,15 +560,15 @@ def mark_in_collection(
 def get_active_queue_signatures() -> set[str]:
     """Return a set of normalized (artist::title) signatures for the active queue."""
     try:
-        with db_cursor() as (_, cursor):
-            cursor.execute("""
+        with db_session() as session:
+            result = session.execute(text("""
                 SELECT LOWER(COALESCE(NULLIF(artist, ''), 'unknown'))
                        || '::' ||
                        LOWER(COALESCE(NULLIF(title, ''), 'unknown'))
                 FROM download_queue
                 WHERE status IN ('queued', 'searching', 'downloading', 'pending_match')
-            """)
-            return {row[0] for row in cursor.fetchall() or []}
+            """))
+            return {row[0] for row in result.fetchall() or []}
     except Exception as e:
         logger.error(f"[get_active_queue_signatures] {e}")
         return set()

@@ -15,7 +15,6 @@ from datetime import datetime
 from sqlalchemy import text
 
 from db.engine import db_session
-from db.context import db_cursor
 from db.utils import row_get
 
 from helpers.config_helpers import get_config
@@ -403,12 +402,16 @@ def get_queue_match_targets(
     )
 
     try:
-        with db_cursor() as (conn, cursor):
+        with db_session() as session:
 
-            status_placeholders = ", ".join(["%s"] * len(active_statuses))
+            status_placeholders = ", ".join([f":status_{i}" for i in range(len(active_statuses))])
+            params = {f"status_{i}": s for i, s in enumerate(active_statuses)}
+            params["artist"] = artist
+            params["album"] = album
+            params["selected_queue_id"] = selected_queue_id
 
-            cursor.execute(
-                f"""
+            result = session.execute(
+                text(f"""
                 SELECT
                     id,
                     artist,
@@ -420,12 +423,12 @@ def get_queue_match_targets(
                     found_filename,
                     created_at
                 FROM download_queue
-                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-                  AND LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER(%s)
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                  AND LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER(:album)
                   AND status IN ({status_placeholders})
                 ORDER BY
                     CASE
-                        WHEN %s IS NOT NULL AND id = %s THEN 0
+                        WHEN :selected_queue_id IS NOT NULL AND id = :selected_queue_id THEN 0
                         ELSE 1
                     END,
                     CASE
@@ -436,8 +439,8 @@ def get_queue_match_targets(
                     COALESCE(NULLIF(TRIM(track_number), ''), '9999'),
                     id
                 LIMIT 250
-                """,
-                (artist, album, *active_statuses, selected_queue_id, selected_queue_id),
+                """),
+                params,
             )
 
             return [
@@ -452,7 +455,7 @@ def get_queue_match_targets(
                     "found_filename": r[7] or '',
                     "created_at": r[8],
                 }
-                for r in cursor.fetchall() or []
+                for r in result.fetchall() or []
             ]
 
     except Exception as e:
