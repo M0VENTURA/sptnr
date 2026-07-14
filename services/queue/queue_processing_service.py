@@ -29,7 +29,6 @@ from db.repositories.tracks import find_library_track
 from helpers.metadata_reader import read_mp3_metadata
 from helpers.normalization_service import normalize_artist
 from services.downloads.download_processing_service import add_to_queue
-from services.downloads.download_organize_service import build_target_path
 from services.metadata.tag_file_service import update_file_metadata
 
 logger = logging.getLogger(__name__)
@@ -304,7 +303,7 @@ def add_release_tracks_to_queue(
                     f"{track_artist} - {track_title}"
                 )
 
-                session.execute(
+                result = session.execute(
                     text("""
                         INSERT INTO download_queue
                         (
@@ -340,6 +339,7 @@ def add_release_tracks_to_queue(
                             CURRENT_TIMESTAMP,
                             CURRENT_TIMESTAMP
                         )
+                        RETURNING id
                     """),
                     {
                         "artist": track_artist,
@@ -355,14 +355,14 @@ def add_release_tracks_to_queue(
                         "recording_mbid": recording_mbid,
                     },
                 )
+                
+                
+                queue_id = result.scalar_one_or_none()
+                
+                if queue_id is not None:
+                    queue_ids.append(int(queue_id))
 
-                row = cursor.fetchone()
-
-                if row:
-                    queue_ids.append(
-                        int(row[0])
-                    )
-
+                
             logger.info(
                 "[QUEUE_ADD] Added %s tracks for release %s",
                 len(queue_ids),
