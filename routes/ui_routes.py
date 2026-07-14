@@ -529,7 +529,8 @@ async def artist_detail(name: str):
             "spotify_genres",
             "discogs_genres",
             "lastfm_tags",
-            "listenbrainz_      "essentia_genres",
+            "listenbrainz_genres",
+            "essentia_genres",
             "mood",
         ]
 
@@ -983,7 +984,8 @@ async def album_detail(artist: str, album: str):
             "spotify_genres",
             "discogs_genres",
             "lastfm_tags",
-            "listenbrainz       "essentia_genres",
+            "listenbrainz_genres",
+            "essentia_genres",
             "mood",
         ]
 
