@@ -9,13 +9,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import unicodedata
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import httpx
 
 from sqlalchemy import text
 from db.engine import db_session
