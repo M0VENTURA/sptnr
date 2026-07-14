@@ -369,13 +369,13 @@ async def artists():
     from helpers.normalization_service import strip_featured_artist
 
     with db_session() as session:
-        # Fetch all canonical artist names with their stats
         result = session.execute(text("""
             SELECT
                 COALESCE(NULLIF(album_artist, ''), artist) AS canonical,
                 COUNT(DISTINCT album) AS album_count,
                 COUNT(*) AS track_count,
-                COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) AS five_star_count
+                COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) AS five_star_count,
+                MAX(updated_at) AS last_updated
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
               AND COALESCE(NULLIF(album_artist, ''), artist) != ''
@@ -384,83 +384,375 @@ async def artists():
             ORDER BY LOWER(
                 COALESCE(NULLIF(album_artist, ''), artist)
             )
-
         """))
         rows = [dict(r._mapping) for r in result.fetchall()]
 
-    # Group by feat-stripped name so "Apocalyptica" and
-    # "Apocalyptica feat. Ville Valo" merge into one row.
-    merged: dict[str, dict] = {}
+    merged: dict[str, dict[str, Any]] = {}
+
     for row in rows:
-        raw_name = row["canonical"]
-        clean = strip_featured_artist(raw_name).lower()
+        raw_name = row.get("canonical") or ""
+        clean = strip_featured_artist(raw_name).strip().lower()
+
+        if not clean:
+            continue
+
+        first_char = clean[0].upper()
+        sort_letter = first_char if first_char.isalpha() else "#"
 
         if clean not in merged:
             merged[clean] = {
                 "sort_key": clean,
+                "sort_letter": sort_letter,
                 "display_name": raw_name,
                 "link_artist": raw_name,
                 "album_count": 0,
                 "track_count": 0,
                 "five_star_count": 0,
+                "last_updated": row.get("last_updated"),
             }
-        # Keep the most common spelling as display/link name
+
         entry = merged[clean]
-        if row["album_count"] > entry["album_count"]:
+
+        if row.get("album_count", 0) > entry.get("album_count", 0):
             entry["display_name"] = raw_name
             entry["link_artist"] = raw_name
-        entry["album_count"] += row["album_count"]
-        entry["track_count"] += row["track_count"]
-        entry["five_star_count"] += row["five_star_count"]
 
-    artists_data = sorted(merged.values(), key=lambda a: a["sort_key"])
+        entry["album_count"] += int(row.get("album_count") or 0)
+        entry["track_count"] += int(row.get("track_count") or 0)
+        entry["five_star_count"] += int(row.get("five_star_count") or 0)
+
+        row_updated = row.get("last_updated")
+        entry_updated = entry.get("last_updated")
+
+        if row_updated and (not entry_updated or row_updated > entry_updated):
+            entry["last_updated"] = row_updated
+
+    artists_data = sorted(
+        merged.values(),
+        key=lambda a: (
+            1 if a["sort_letter"] == "#" else 0,
+            a["sort_letter"],
+            a["sort_key"],
+        ),
+    )
 
     with db_session() as session:
-        result = session.execute(text("SELECT COUNT(*) as tc, COUNT(DISTINCT album) as ac FROM tracks"))
-        total_stats = dict(result.fetchone()._mapping)
+        result = session.execute(text("""
+            SELECT
+                COUNT(*) AS track_count,
+                COUNT(DISTINCT album) AS album_count,
+                COALESCE(
+                    SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END),
+                    0
+                ) AS five_star_count
+            FROM tracks
+        """))
+        row = result.fetchone()
+        total_stats = dict(row._mapping) if row else {
+            "track_count": 0,
+            "album_count": 0,
+            "five_star_count": 0,
+        }
 
-    return await render_template("pages/artist_list.html", artists=artists_data, total_stats=total_stats)
+    return await render_template(
+        "pages/artist_list.html",
+        artists=artists_data,
+        total_stats=total_stats,
+    )
 
 
 @ui_bp.route("/artist/<path:name>")
-async def artist_detail(name):
-    name = unquote(name)
+async def artist_detail(name: str):
+    name = unquote(name or "").strip()
     cfg = get_config()
 
+    def safe_float(value: Any) -> float | None:
+        try:
+            if value in (None, ""):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def safe_int(value: Any) -> int | None:
+        try:
+            if value in (None, ""):
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def first_value(rows: list[dict[str, Any]], *keys: str) -> Any:
+        for row in rows:
+            for key in keys:
+                value = row.get(key)
+                if value not in (None, ""):
+                    return value
+        return None
+
+    def split_tag_values(value: Any) -> listif not value:
+            return []
+
+        if isinstance(value, list):
+            raw_items = value
+        else:
+            raw_items = re.split(r"[,;|]+", str(value))
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for item in raw_items:
+            tag = str(item).strip()
+            if not tag:
+                continue
+
+            key = tag.lower()
+            if key in seen:
+                continue
+
+            seen.add(key)
+            cleaned.append(tag)
+
+        return cleaned
+
+    def collect_top_genres(rows: list[dict[str, Any]], limit: int = 30) -> listgenre_fields = [
+            "manual_genres",
+            "navidrome_genres",
+            "musicbrainz_genres",
+            "spotify_genres",
+            "discogs_genres",
+            "lastfm_tags",
+            "listenbrainz_genres",
+            "essentia_genres",
+            "mood",
+        ]
+
+        counts: dict[str, int] = {}
+        display_names: dict[str, str] = {}
+
+        for row in rows:
+            for field in genre_fields:
+                for genre in split_tag_values(row.get(field)):
+                    key = genre.lower()
+                    counts[key] = counts.get(key, 0) + 1
+                    display_names.setdefault(key, genre)
+
+        sorted_keys = sorted(
+            counts.keys(),
+            key=lambda key: (-counts[key], display_names[key].lower()),
+        )
+
+        return [display_names[key] for key in sorted_keys[:limit]]
+
+    def classify_album(album_row: dict[str, Any]) -> str:
+        raw_type = str(
+            album_row.get("spotify_album_type")
+            or album_row.get("album_type")
+            or ""
+        ).lower()
+
+        album_name = str(album_row.get("album") or "").lower()
+
+        if "compilation" in raw_type:
+            return "compilation"
+
+        if "live" in raw_type or " live" in album_name or album_name.startswith("live"):
+            return "live_album"
+
+        if "remix" in raw_type or "remix" in album_name:
+            return "remix_album"
+
+        if raw_type == "ep" or " ep" in raw_type or raw_type.startswith("ep "):
+            return "ep"
+
+        if "single" in raw_type:
+            return "single"
+
+        return "album"
+
     with db_session() as session:
-        result = session.execute(text("""
-            SELECT MIN(album) as album, COUNT(*) as track_count, AVG(stars) as avg_stars,
-                   MIN(year) as album_year
-            FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
-            GROUP BY LOWER(TRIM(COALESCE(album, '')))
-            ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST
-        """), {"name": name})
-        albums = [dict(r._mapping) for r in result.fetchall()]
+        result = session.execute(
+            text("""
+                SELECT *
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
+                ORDER BY
+                    LOWER(COALESCE(album, '')),
+                    COALESCE(disc_number, 1),
+                    track_number,
+                    title
+            """),
+            {"name": name},
+        )
+        tracks = [dict(r._mapping) for r in result.fetchall()]
 
-        result = session.execute(text("""
-            SELECT COUNT(*) as track_count, COUNT(DISTINCT album) as album_count,
-                   AVG(stars) as avg_stars, MIN(year) as earliest_year, MAX(year) as latest_year
-            FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
-        """), {"name": name})
-        row = result.fetchone()
-        stats = dict(row._mapping) if row else {}
+        appears_result = session.execute(
+            text("""
+                SELECT *
+                FROM tracks
+                WHERE LOWER(COALESCE(artist, '')) = LOWER(:name)
+                  AND LOWER(COALESCE(NULLIF(album_artist, ''), artist)) != LOWER(:name)
+                ORDER BY
+                    LOWER(COALESCE(album_artist, '')),
+                    LOWER(COALESCE(album, '')),
+                    COALESCE(disc_number, 1),
+                    track_number,
+                    title
+            """),
+            {"name": name},
+        )
+        appears_tracks = [dict(r._mapping) for r in appears_result.fetchall()]
 
-        result = session.execute(text("""
-            SELECT id, title, album, stars, final_score FROM tracks
-            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
-            ORDER BY stars DESC NULLS LAST LIMIT 20
-        """), {"name": name})
-        top_tracks = [dict(r._mapping) for r in result.fetchall()]
+    albums_by_key: dict[str, dict[str, Any]] = {}
 
-        # Fetch genre columns for all tracks to build genre_sources.
-        result = session.execute(text("""
-            SELECT lastfm_tags, listenbrainz_genres, discogs_genres,
-                   musicbrainz_genres, spotify_genres, essentia_genres,
-                   navidrome_genres, manual_genres, mood
-            FROM tracks
-            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
-        """), {"name": name})
-        genre_rows = [dict(r._mapping) for r in result.fetchall()]
+    for track in tracks:
+        album_name = str(track.get("album") or "").strip()
+        if not album_name:
+            continue
+
+        album_key = album_name.lower().strip()
+
+        if album_key not in albums_by_key:
+            albums_by_key[album_key] = {
+                "album": album_name,
+                "album_year": safe_int(track.get("year")),
+                "track_count": 0,
+                "avg_stars": None,
+                "total_duration": 0,
+                "last_updated": track.get("updated_at"),
+                "spotify_album_type": track.get("spotify_album_type")
+                    or track.get("album_type"),
+                "album_type": track.get("album_type")
+                    or track.get("spotify_album_type"),
+                "is_missing": False,
+            }
+
+        album_entry = albums_by_key[album_key]
+        album_entry["track_count"] += 1
+
+        duration = safe_float(track.get("duration"))
+        if duration:
+            album_entry["total_duration"] += duration
+
+        year = safe_int(track.get("year"))
+        if year and not album_entry.get("album_year"):
+            album_entry["album_year"] = year
+
+        updated = track.get("updated_at")
+        existing_updated = album_entry.get("last_updated")
+        if updated and (not existing_updated or updated > existing_updated):
+            album_entry["last_updated"] = updated
+
+    for album_key, album_entry in albums_by_key.items():
+        album_tracks = [
+            track for track in tracks
+            if str(track.get("album") or "").strip().lower() == album_key
+        ]
+
+        stars = [
+            safe_float(track.get("stars"))
+            for track in album_tracks
+            if safe_float(track.get("stars")) is not None
+        ]
+
+        album_entry["avg_stars"] = (
+            round(sum(stars) / len(stars), 2)
+            if stars
+            else None
+        )
+
+    albums = sorted(
+        albums_by_key.values(),
+        key=lambda album: (
+            album.get("album_year") is None,
+            -(album.get("album_year") or 0),
+            str(album.get("album") or "").lower(),
+        ),
+    )
+
+    album_count = len(albums)
+    track_count = len(tracks)
+
+    star_values = [
+        safe_float(track.get("stars"))
+        for track in tracks
+        if safe_float(track.get("stars")) is not None
+    ]
+
+    duration_values = [
+        safe_float(track.get("duration"))
+        for track in tracks
+        if safe_float(track.get("duration")) is not None
+    ]
+
+    year_values = [
+        safe_int(track.get("year"))
+        for track in tracks
+        if safe_int(track.get("year")) is not None
+    ]
+
+    five_star_count = sum(
+        1 for track in tracks
+        if safe_int(track.get("stars")) == 5
+    )
+
+    stats = {
+        "track_count": track_count,
+        "album_count": album_count,
+        "avg_stars": round(sum(star_values) / len(star_values), 2)
+            if star_values
+            else None,
+        "five_star_count": five_star_count,
+        "total_duration": sum(duration_values) if duration_values else None,
+        "earliest_year": min(year_values) if year_values else None,
+        "latest_year": max(year_values) if year_values else None,
+        "musicbrainz_artist_id": first_value(
+            tracks,
+            "musicbrainz_artist_id",
+            "musicbrainz_artistid",
+            "musicbrainz_albumartistid",
+            "artist_mbid",
+        ),
+        "lastfm_artist_mbid": first_value(
+            tracks,
+            "lastfm_artist_mbid",
+            "lastfm_mbid",
+        ),
+        "discogs_artist_id": first_value(
+            tracks,
+            "discogs_artist_id",
+            "discogs_artistid",
+        ),
+    }
+
+    top_tracks = sorted(
+        tracks,
+        key=lambda track: (
+            safe_float(track.get("artist_z_score"))
+            if safe_float(track.get("artist_z_score")) is not None
+            else safe_float(track.get("final_score"))
+            if safe_float(track.get("final_score")) is not None
+            else safe_float(track.get("stars"))
+            if safe_float(track.get("stars")) is not None
+            else 0
+        ),
+        reverse=True,
+    )[:20]
+
+    for track in top_tracks:
+        if track.get("artist_z_score") is None:
+            track["artist_z_score"] = track.get("final_score") or 0
+
+        if track.get("popularity_score") is None:
+            track["popularity_score"] = track.get("final_score") or 0
+
+        if track.get("is_single") is None:
+            track["is_single"] = 0
+
+        if track.get("file_path") is None:
+            track["file_path"] = ""
+
+    genre_rows = tracks
 
     genre_sources = {}
     try:
@@ -469,31 +761,289 @@ async def artist_detail(name):
     except Exception as exc:
         logger.debug("Failed to aggregate artist genre sources: %s", exc)
 
+    genres = collect_top_genres(tracks)
+
     albums_by_category = {
-        "album": [a for a in albums if not a.get("album", "").lower().startswith("(")],
-        "ep": [], "single": [], "compilation": [], "live_album": [], "remix_album": [],
+        "album": [],
+        "ep": [],
+        "single": [],
+        "compilation": [],
+        "live_album": [],
+        "remix_album": [],
     }
+
+    for album_entry in albums:
+        category = classify_album(album_entry)
+        albums_by_category.setdefault(category, []).append(album_entry)
+
+    appears_by_key: dict[str, dict[str, Any]] = {}
+
+    for track in appears_tracks:
+        album_name = str(track.get("album") or "").strip()
+        album_artist = str(
+            track.get("album_artist")
+            or track.get("artist")
+            or ""
+        ).strip()
+
+        if not album_name:
+            continue
+
+        key = f"{album_artist.lower()}::{album_name.lower()}"
+
+        if key not in appears_by_key:
+            appears_by_key[key] = {
+                "album": album_name,
+                "album_artist": album_artist,
+                "album_year": safe_int(track.get("year")),
+                "track_count": 0,
+                "avg_stars": None,
+                "is_missing": False,
+            }
+
+        entry = appears_by_key[key]
+        entry["track_count"] += 1
+
+        year = safe_int(track.get("year"))
+        if year and not entry.get("album_year"):
+            entry["album_year"] = year
+
+    for key, entry in appears_by_key.items():
+        album_artist_key, album_key = key.split("::", 1)
+
+        matching_tracks = [
+            track for track in appears_tracks
+            if str(track.get("album") or "").strip().lower() == album_key
+            and str(track.get("album_artist") or track.get("artist") or "").strip().lower() == album_artist_key
+        ]
+
+        stars = [
+            safe_float(track.get("stars"))
+            for track in matching_tracks
+            if safe_float(track.get("stars")) is not None
+        ]
+
+        entry["avg_stars"] = (
+            round(sum(stars) / len(stars), 2)
+            if stars
+            else None
+        )
+
+    appears_on_albums = sorted(
+        appears_by_key.values(),
+        key=lambda item: (
+            str(item.get("album_artist") or "").lower(),
+            str(item.get("album") or "").lower(),
+        ),
+    )
+
+    artist_bio = first_value(
+        tracks,
+        "artist_bio",
+        "bio",
+        "lastfm_bio",
+        "musicbrainz_bio",
+    ) or ""
+
+    artist_country = first_value(
+        tracks,
+        "artist_country",
+        "country",
+        "origin_country",
+        "musicbrainz_country",
+    ) or ""
+
+    artist_members_value = first_value(
+        tracks,
+        "artist_members",
+        "musicbrainz_members",
+        "members",
+    )
+
+    artist_members: list[Any] = []
+
+    if isinstance(artist_members_value, list):
+        artist_members = artist_members_value
+    elif isinstance(artist_members_value, str) and artist_members_value.strip():
+        try:
+            import json
+            parsed_members = json.loads(artist_members_value)
+            if isinstance(parsed_members, list):
+                artist_members = parsed_members
+        except Exception:
+            artist_members = []
+
     return await render_template(
-        "pages/artist_detail.html", artist_name=name, albums=albums, stats=stats,
-        top_tracks=top_tracks, genre_sources=genre_sources,
+        "pages/artist_detail.html",
+        artist_name=name,
+        albums=albums,
+        stats=stats,
+        top_tracks=top_tracks,
+        genre_sources=genre_sources,
+        genres=genres,
         albums_by_category=albums_by_category,
+        appears_on_albums=appears_on_albums,
+        artist_bio=artist_bio,
+        artist_country=artist_country,
+        artist_members=artist_members,
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
 
-
-@ui_bp.route("/album/<path:artist>/<path:album>")
-async def album_detail(artist, album):
-    artist = unquote(artist)
-    album = unquote(album)
+@ui_bp.route("/album/<path:artist>/<path:album>", methods=["GET", "POST"])
+async def album_detail(artist: str, album: str):
+    artist_name = unquote(artist or "").strip()
+    album_name = unquote(album or "").strip()
     cfg = get_config()
+
+    if request.method == "POST":
+        # The template currently posts album metadata back to this route.
+        # If save/update logic is not implemented yet, avoid a 405 and give feedback.
+        flash("Album metadata saving is not implemented in this route yet.", "warning")
+        return redirect(url_for("ui.album_detail", artist=artist_name, album=album_name))
 
     with db_session() as session:
         result = session.execute(
-            text("SELECT * FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album ORDER BY disc_number, track_number"),
-            {"artist": artist, "album": album},
+            text("""
+                SELECT *
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                  AND LOWER(COALESCE(album, '')) = LOWER(:album)
+                ORDER BY
+                    COALESCE(disc_number, 1),
+                    NULLIF(regexp_replace(COALESCE(track_number::text, ''), '[^0-9].*$', ''), '')::int NULLS LAST,
+                    track_number,
+                    title
+            """),
+            {"artist": artist_name, "album": album_name},
         )
         tracks = [dict(r._mapping) for r in result.fetchall()]
+
+    first_track = tracks[0] if tracks else {}
+
+    def first_value(*keys: str) -> Any:
+        for row in tracks:
+            for key in keys:
+                value = row.get(key)
+                if value not in (None, ""):
+                    return value
+        return None
+
+
+    def split_tag_values(value: Any) -> listif not value:
+            return []
+
+
+        if isinstance(value, list):
+            raw_items = value
+        else:
+            raw_items = re.split(r"[,;|]+", str(value))
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for item in raw_items:
+            tag = str(item).strip()
+            if not tag:
+                continue
+
+            key = tag.lower()
+            if key in seen:
+                continue
+
+            seen.add(key)
+            cleaned.append(tag)
+
+        return cleaned
+
+    def collect_album_genres() -> listgenre_fields = [
+        "manual_genres",
+        "navidrome_genres",
+        "musicbrainz_genres",
+        "spotify_genres",
+        "discogs_genres",
+        "lastfm_tags",
+        "listenbrainz_genres",
+        "essentia_genres",
+        "mood",
+    ]
+
+    genres: list[str] = []
+    seen: set[str] = set()
+
+    for row in tracks:
+        for field in genre_fields:
+            for genre in split_tag_values(row.get(field)):
+                key = genre.lower()
+                if key not in seen:
+                    seen.add(key)
+                    genres.append(genre)
+
+    return genres
+
+    def safe_float(value: Any) -> float | None:
+        try:
+            if value in (None, ""):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def safe_int(value: Any) -> int | None:
+        try:
+            if value in (None, ""):
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    durations = [
+        safe_float(track.get("duration"))
+        for track in tracks
+        if safe_float(track.get("duration")) is not None
+    ]
+
+    star_values = [
+        safe_float(track.get("stars"))
+        for track in tracks
+        if safe_float(track.get("stars")) is not None
+    ]
+
+    disc_values = [
+        safe_int(track.get("disc_number"))
+        for track in tracks
+        if safe_int(track.get("disc_number")) is not None
+    ]
+
+    singles_count = sum(
+        1
+        for track in tracks
+        if safe_int(track.get("is_single")) == 1
+    )
+
+    album_data = {
+        **first_track,
+        "track_count": len(tracks),
+        "avg_stars": round(sum(star_values) / len(star_values), 2) if star_values else None,
+        "total_duration": sum(durations) if durations else None,
+        "total_discs": max(disc_values) if disc_values else 1,
+        "singles_count": singles_count,
+        "spotify_release_date": first_value("spotify_release_date", "release_date", "date"),
+        "spotify_album_type": first_value("spotify_album_type", "album_type"),
+        "record_label": first_value("record_label", "label"),
+        "catalog_number": first_value("catalog_number", "catalog"),
+        "last_scanned": first_value("last_scanned", "updated_at", "created_at"),
+        "musicbrainz_album_mbid": first_value("musicbrainz_album_mbid", "musicbrainz_releaseid", "musicbrainz_albumid"),
+        "musicbrainz_releasegroupid": first_value("musicbrainz_releasegroupid", "musicbrainz_release_group_id"),
+        "discogs_album_id": first_value("discogs_album_id", "discogs_release_id"),
+    }
+
+    tracks_by_disc: dict[int, list[dict[str, Any]]] = {}
+    for track in tracks:
+        disc_number = safe_int(track.get("disc_number")) or 1
+        tracks_by_disc.setdefault(disc_number, []).append(track)
+
+    album_genres = collect_album_genres()
 
     genre_sources = {}
     try:
@@ -502,39 +1052,786 @@ async def album_detail(artist, album):
     except Exception as exc:
         logger.debug("Failed to aggregate album genre sources: %s", exc)
 
+    album_artist_mbid = first_value(
+        "artist_mbid",
+        "musicbrainz_artistid",
+        "musicbrainz_albumartistid",
+    ) or ""
+
     return await render_template(
         "pages/album_detail.html",
-        artist=artist, album=album, tracks=tracks,
+
+        # Names expected by album_detail.html
+        artist_name=artist_name,
+        album_name=album_name,
+
+        # Backwards-compatible names, in case older template/js pieces still use them
+        artist=artist_name,
+        album=album_name,
+
+        # Album page data
+        album_data=album_data,
+        tracks=tracks,
+        tracks_by_disc=tracks_by_disc,
+        album_genres=album_genres,
         genre_sources=genre_sources,
+        album_artist_mbid=album_artist_mbid,
+
+        # Currently defaulted until favourites are wired into a repository/service
+        is_album_favourite=False,
+
+        # Download provider config
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
 
-
-@ui_bp.route("/track/<track_id>")
-async def track_detail(track_id):
+@ui_bp.route("/track/<track_id>", methods=["GET", "POST"])
+async def track_detail(track_id: str):
+    """View and edit track details."""
     cfg = get_config()
 
-    with db_session() as session:
-        result = session.execute(text("SELECT * FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
-        row = result.fetchone()
-        if not row:
-            return await render_template("pages/track_detail.html", track=None, error="Track not found")
+    def split_tag_values(value: Any) -> list[str]:
+        if value in (None, ""):
+            return []
 
-        track = dict(row._mapping)
+        try:
+            import json
 
-    genre_sources = {}
+            if isinstance(value, str) and value.strip().startswith("["):
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    raw_items = parsed
+                else:
+                    raw_items = [value]
+            elif isinstance(value, list):
+                raw_items = value
+            else:
+                raw_items = re.split(r"[,;|\\]+", str(value))
+        except Exception:
+            raw_items = re.split(r"[,;|\\]+", str(value))
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for item in raw_items:
+            text = str(item).strip()
+            if not text:
+                continue
+
+            key = text.lower()
+            if key in seen:
+                continue
+
+            seen.add(key)
+            cleaned.append(text)
+
+        return cleaned
+
+    def stringify_tag_field(value: Any) -> str:
+        return ", ".join(split_tag_values(value))
+
+    def get_track_column_types(db) -> dict[str, str]:
+        try:
+            result = db.execute(text("""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = 'tracks'
+            """))
+            return {
+                str(row._mapping["column_name"]): str(row._mapping["data_type"]).lower()
+                for row in result.fetchall()
+            }
+        except Exception:
+            return {}
+
+    def quote_identifier(column_name: str) -> str:
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", column_name):
+            raise ValueError(f"Unsafe column name: {column_name}")
+        return f'"{column_name}"'
+
+    def parse_optional_int(value: Any, allow_prefix: bool = False) -> int | None:
+        text_value = str(value or "").strip()
+        if not text_value:
+            return None
+
+        if allow_prefix and "/" in text_value:
+            text_value = text_value.split("/", 1)[0].strip()
+
+        try:
+            return int(text_value)
+        except ValueError:
+            return None
+
+    def parse_optional_float(value: Any) -> float | None:
+        text_value = str(value or "").strip()
+        if not text_value:
+            return None
+
+        try:
+            return float(text_value)
+        except ValueError:
+            return None
+
+    def parse_bool(value: Any) -> bool:
+        return str(value or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "checked",
+        }
+
+    def normalize_for_column(
+        column_name: str,
+        value: Any,
+        column_types: dict[str, str],
+    ) -> Any:
+        column_type = column_types.get(column_name, "")
+
+        if column_type in {
+            "integer",
+            "bigint",
+            "smallint",
+        }:
+            return parse_optional_int(
+                value,
+                allow_prefix=(column_name == "track_number"),
+            )
+
+        if column_type in {
+            "numeric",
+            "double precision",
+            "real",
+            "decimal",
+        }:
+            return parse_optional_float(value)
+
+        if column_type == "boolean":
+            return parse_bool(value)
+
+        text_value = str(value or "").strip()
+        return text_value if text_value else None
+
+    def normalize_flag_for_column(
+        column_name: str,
+        value: bool,
+        column_types: dict[str, str],
+    ) -> Any:
+        column_type = column_types.get(column_name, "")
+
+        if column_type == "boolean":
+            return bool(value)
+
+        return 1 if value else 0
+
+    def apply_track_template_aliases(track: dict[str, Any]) -> dict[str, Any]:
+        # Display-friendly genre fields.
+        for field in [
+            "navidrome_genres",
+            "lastfm_tags",
+            "discogs_genres",
+            "musicbrainz_genres",
+            "essentia_genres",
+            "listenbrainz_genres",
+        ]:
+            if track.get(field):
+                track[field] = stringify_tag_field(track.get(field))
+
+        # Main editable genre field.
+        if not track.get("genres"):
+            track["genres"] = (
+                track.get("manual_genres")
+                or track.get("top_genres")
+                or track.get("navidrome_genres")
+                or ""
+            )
+
+        # Mood list for badge display.
+        track["mood_list"] = split_tag_values(track.get("mood"))
+
+        # Writer sometimes arrives as JSON.
+        if track.get("writer"):
+            track["writer"] = stringify_tag_field(track.get("writer"))
+
+        # Single-source list for template checks.
+        track["single_sources_list"] = split_tag_values(
+            track.get("single_sources")
+            or track.get("single_detection_sources")
+            or ""
+        )
+
+        # MusicBrainz compatibility aliases.
+        if not track.get("musicbrainz_albumid"):
+            track["musicbrainz_albumid"] = (
+                track.get("musicbrainz_album_mbid")
+                or track.get("musicbrainz_releaseid")
+                or ""
+            )
+
+        if not track.get("musicbrainz_album_mbid"):
+            track["musicbrainz_album_mbid"] = (
+                track.get("musicbrainz_albumid")
+                or track.get("musicbrainz_releaseid")
+                or ""
+            )
+
+        if not track.get("musicbrainz_trackid"):
+            track["musicbrainz_trackid"] = (
+                track.get("mbid")
+                or track.get("beets_mbid")
+                or ""
+            )
+
+        if not track.get("mbid"):
+            track["mbid"] = (
+                track.get("musicbrainz_trackid")
+                or track.get("beets_mbid")
+                or ""
+            )
+
+        if not track.get("beets_mbid"):
+            track["beets_mbid"] = (
+                track.get("mbid")
+                or track.get("musicbrainz_trackid")
+                or ""
+            )
+
+        if not track.get("musicbrainz_artist_id"):
+            track["musicbrainz_artist_id"] = (
+                track.get("musicbrainz_artistid")
+                or track.get("artist_mbid")
+                or ""
+            )
+
+        if not track.get("musicbrainz_artistid"):
+            track["musicbrainz_artistid"] = (
+                track.get("musicbrainz_artist_id")
+                or track.get("artist_mbid")
+                or ""
+            )
+
+        if not track.get("album_artist"):
+            track["album_artist"] = (
+                track.get("albumartist")
+                or track.get("artist")
+                or ""
+            )
+
+        if track.get("artist_z_score") is None:
+            track["artist_z_score"] = (
+                track.get("final_score")
+                or track.get("popularity_score")
+            )
+
+        if track.get("popularity_score") is None:
+            track["popularity_score"] = (
+                track.get("final_score")
+                or track.get("artist_z_score")
+            )
+
+        if track.get("is_single") is None:
+            track["is_single"] = 0
+
+        if not track.get("single_confidence"):
+            track["single_confidence"] = "low"
+
+        if track.get("file_path") is None:
+            track["file_path"] = ""
+
+        return track
+
+    def resolve_music_file_path(path_value: Any) -> str | None:
+        if not path_value:
+            return None
+
+        raw_path = str(path_value).strip()
+        if not raw_path:
+            return None
+
+        candidates = [raw_path]
+
+        if not os.path.isabs(raw_path):
+            for root in [
+                os.environ.get("MUSIC_FOLDER"),
+                os.environ.get("MUSIC_ROOT"),
+                os.environ.get("MUSIC_DIR"),
+                "/music",
+            ]:
+                if root:
+                    candidates.append(os.path.join(str(root).strip(), raw_path))
+
+        seen: set[str] = set()
+
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+
+            seen.add(candidate)
+
+            if os.path.exists(candidate):
+                return candidate
+
+        return None
+
+    def build_tags_to_write(update_values: dict[str, Any]) -> dict[str, Any]:
+        tag_map = {
+            "title": "title",
+            "artist": "artist",
+            "album": "album",
+            "album_artist": "album_artist",
+            "genres": "genre",
+            "year": "year",
+            "composer": "composer",
+            "writer": "writer",
+            "arranger": "arranger",
+            "mixer": "mixer",
+            "producer": "producer",
+            "work": "work",
+            "track_number": "track_number",
+            "disc_number": "disc_number",
+            "comment": "comment",
+            "mbid": "mbid",
+            "isrc": "isrc",
+            "bpm": "bpm",
+            "titlesort": "titlesort",
+            "albumsort": "albumsort",
+            "artistsort": "artistsort",
+            "composersort": "composersort",
+            "albumartistsort": "albumartistsort",
+            "lyricistsort": "lyricistsort",
+            "artistssort": "artistssort",
+            "albumartistssort": "albumartistssort",
+            "artists": "artists",
+            "albumartists": "albumartists",
+            "conductor": "conductor",
+            "performer": "performer",
+            "director": "director",
+            "djmixer": "djmixer",
+            "engineer": "engineer",
+            "remixer": "remixer",
+            "lyricist": "lyricist",
+            "albumversion": "albumversion",
+            "recordlabel": "recordlabel",
+            "copyright": "copyright",
+            "releasedate": "releasedate",
+            "releasetype": "releasetype",
+            "releasestatus": "releasestatus",
+            "releasecountry": "releasecountry",
+            "media": "media",
+            "barcode": "barcode",
+            "catalognumber": "catalognumber",
+            "asin": "asin",
+            "originalyear": "originalyear",
+            "originaldate": "originaldate",
+            "tracktotal": "tracktotal",
+            "disctotal": "disctotal",
+            "script": "script",
+            "discsubtitle": "discsubtitle",
+            "lyrics": "lyrics",
+            "subtitle": "subtitle",
+            "grouping": "grouping",
+            "movement": "movement",
+            "movementname": "movementname",
+            "movementtotal": "movementtotal",
+            "key": "key",
+            "language": "language",
+            "license": "license",
+            "website": "website",
+            "encodedby": "encodedby",
+            "encodersettings": "encodersettings",
+            "explicitstatus": "explicitstatus",
+            "musicbrainz_albumid": "musicbrainz_albumid",
+            "musicbrainz_artistid": "musicbrainz_artistid",
+            "musicbrainz_albumartistid": "musicbrainz_albumartistid",
+            "musicbrainz_releasegroupid": "musicbrainz_releasegroupid",
+            "musicbrainz_releasetrackid": "musicbrainz_releasetrackid",
+            "musicbrainz_workid": "musicbrainz_workid",
+            "musicbrainz_trackid": "musicbrainz_trackid",
+            "replaygain_track_gain": "replaygain_track_gain",
+            "replaygain_track_peak": "replaygain_track_peak",
+            "replaygain_album_gain": "replaygain_album_gain",
+            "replaygain_album_peak": "replaygain_album_peak",
+            "r128_track_gain": "r128_track_gain",
+            "r128_album_gain": "r128_album_gain",
+        }
+
+        tags: dict[str, Any] = {}
+
+        for column_name, tag_name in tag_map.items():
+            value = update_values.get(column_name)
+
+            if value not in (None, ""):
+                tags[tag_name] = value
+
+        return tags
+
     try:
-        from services.enrichment.genre_tag_aggregator import get_track_genre_sources
-        genre_sources = get_track_genre_sources(track)
-    except Exception as exc:
-        logger.debug("Failed to aggregate track genre sources: %s", exc)
+        with db_session() as db:
+            column_types = get_track_column_types(db)
 
-    return await render_template(
-        "pages/track_detail.html", track=track, genre_sources=genre_sources,
-        qbit_config=cfg.get("qbittorrent", {}),
-        slskd_config=cfg.get("slskd", {}),
-    )
+            result = db.execute(
+                text("""
+                    SELECT *
+                    FROM tracks
+                    WHERE CAST(id AS TEXT) = :id
+                    LIMIT 1
+                """),
+                {"id": str(track_id)},
+            )
+            row = result.fetchone()
+
+            if not row:
+                flash("Track not found", "error")
+                return redirect(url_for("ui.dashboard"))
+
+            track = apply_track_template_aliases(dict(row._mapping))
+            existing_columns = set(track.keys())
+
+            if request.method == "POST":
+                form = await request.form
+
+                direct_fields = [
+                    "title",
+                    "artist",
+                    "album",
+                    "album_artist",
+                    "stars",
+                    "is_single",
+                    "single_confidence",
+                    "mbid",
+                    "suggested_mbid",
+                    "suggested_mbid_confidence",
+                    "genres",
+                    "year",
+                    "composer",
+                    "writer",
+                    "arranger",
+                    "mixer",
+                    "producer",
+                    "work",
+                    "track_number",
+                    "disc_number",
+                    "comment",
+                    "isrc",
+                    "bpm",
+                    "bitrate",
+                    "sample_rate",
+                    "titlesort",
+                    "albumsort",
+                    "artistsort",
+                    "composersort",
+                    "albumartistsort",
+                    "lyricistsort",
+                    "artistssort",
+                    "albumartistssort",
+                    "artists",
+                    "albumartists",
+                    "conductor",
+                    "performer",
+                    "director",
+                    "djmixer",
+                    "engineer",
+                    "remixer",
+                    "lyricist",
+                    "albumversion",
+                    "recordlabel",
+                    "copyright",
+                    "releasedate",
+                    "releasetype",
+                    "releasestatus",
+                    "releasecountry",
+                    "media",
+                    "barcode",
+                    "catalognumber",
+                    "asin",
+                    "originalyear",
+                    "originaldate",
+                    "tracktotal",
+                    "disctotal",
+                    "script",
+                    "discsubtitle",
+                    "lyrics",
+                    "subtitle",
+                    "grouping",
+                    "movement",
+                    "movementname",
+                    "movementtotal",
+                    "key",
+                    "language",
+                    "license",
+                    "website",
+                    "encodedby",
+                    "encodersettings",
+                    "explicitstatus",
+                    "musicbrainz_albumid",
+                    "musicbrainz_artistid",
+                    "musicbrainz_albumartistid",
+                    "musicbrainz_releasegroupid",
+                    "musicbrainz_releasetrackid",
+                    "musicbrainz_workid",
+                    "musicbrainz_trackid",
+                    "replaygain_track_gain",
+                    "replaygain_track_peak",
+                    "replaygain_album_gain",
+                    "replaygain_album_peak",
+                    "r128_track_gain",
+                    "r128_album_gain",
+                ]
+
+                flag_fields = [
+                    "is_cover",
+                    "cover_manual_override",
+                    "alternate_take",
+                    "is_compilation",
+                    "is_live",
+                    "is_acoustic",
+                    "is_remix",
+                    "single_manual_override",
+                ]
+
+                update_values: dict[str, Any] = {}
+
+                for field_name in direct_fields:
+                    if field_name not in existing_columns:
+                        continue
+
+                    if field_name not in form:
+                        continue
+
+                    update_values[field_name] = normalize_for_column(
+                        field_name,
+                        form.get(field_name),
+                        column_types,
+                    )
+
+                # Keep track ID aliases in sync where those columns exist.
+                mbid_value = form.get("mbid", "").strip() if "mbid" in form else None
+                if mbid_value:
+                    for column_name in [
+                        "mbid",
+                        "beets_mbid",
+                        "musicbrainz_trackid",
+                    ]:
+                        if column_name in existing_columns:
+                            update_values[column_name] = mbid_value
+
+                # Keep MusicBrainz album aliases in sync where those columns exist.
+                mb_album_value = (
+                    form.get("musicbrainz_albumid", "").strip()
+                    if "musicbrainz_albumid" in form
+                    else None
+                )
+                if mb_album_value:
+                    for column_name in [
+                        "musicbrainz_albumid",
+                        "musicbrainz_album_mbid",
+                        "musicbrainz_releaseid",
+                    ]:
+                        if column_name in existing_columns:
+                            update_values[column_name] = mb_album_value
+
+                # Keep genre aliases in sync where those columns exist.
+                genres_value = form.get("genres", "").strip() if "genres" in form else None
+                if genres_value is not None:
+                    for column_name in [
+                        "genres",
+                        "manual_genres",
+                    ]:
+                        if column_name in existing_columns:
+                            update_values[column_name] = genres_value or None
+
+                for field_name in flag_fields:
+                    if field_name not in existing_columns:
+                        continue
+
+                    update_values[field_name] = normalize_flag_for_column(
+                        field_name,
+                        parse_bool(form.get(field_name)),
+                        column_types,
+                    )
+
+                # Compatibility with old behaviour: manually editing is_single marks the override.
+                if "single_manual_override" in existing_columns:
+                    update_values["single_manual_override"] = normalize_flag_for_column(
+                        "single_manual_override",
+                        True,
+                        column_types,
+                    )
+
+                if update_values:
+                    params: dict[str, Any] = {
+                        "id": str(track_id),
+                    }
+                    set_clauses: list[str] = []
+
+                    for index, (column_name, value) in enumerate(update_values.items()):
+                        param_name = f"value_{index}"
+                        set_clauses.append(f"{quote_identifier(column_name)} = :{param_name}")
+                        params[param_name] = value
+
+                    if "updated_at" in existing_columns:
+                        set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+
+                    db.execute(
+                        text(f"""
+                            UPDATE tracks
+                            SET {", ".join(set_clauses)}
+                            WHERE CAST(id AS TEXT) = :id
+                        """),
+                        params,
+                    )
+                    db.commit()
+
+                    file_path = track.get("file_path")
+                    resolved_path = resolve_music_file_path(file_path)
+
+                    if resolved_path:
+                        try:
+                            from helpers.tag_manager import write_tags_to_file
+
+                            tags_to_write = build_tags_to_write(update_values)
+
+                            if tags_to_write:
+                                file_write_success = write_tags_to_file(
+                                    resolved_path,
+                                    tags_to_write,
+                                )
+
+                                if file_write_success:
+                                    flash(
+                                        "Track metadata updated and written to the audio file.",
+                                        "success",
+                                    )
+                                else:
+                                    flash(
+                                        "Track metadata updated, but writing tags to the audio file failed.",
+                                        "warning",
+                                    )
+                            else:
+                                flash("Track metadata updated.", "success")
+
+                        except Exception as tag_err:
+                            logger.warning(
+                                "Tag writing unavailable for track %s: %s",
+                                track_id,
+                                tag_err,
+                            )
+                            flash(
+                                "Track metadata updated. Audio tag writing was unavailable.",
+                                "info",
+                            )
+                    elif file_path:
+                        flash(
+                            "Track metadata updated, but the audio file could not be found on disk.",
+                            "warning",
+                        )
+                    else:
+                        flash(
+                            "Track metadata updated. No file path is available for audio tag writing.",
+                            "info",
+                        )
+
+                return redirect(url_for("ui.track_detail", track_id=str(track_id)))
+
+            # Recommended genres from other tracks by this artist.
+            recommended_genres: list[str] = []
+            artist_name = track.get("artist") or ""
+
+            if artist_name:
+                try:
+                    genre_result = db.execute(
+                        text("""
+                            SELECT genres
+                            FROM tracks
+                            WHERE artist = :artist
+                              AND genres IS NOT NULL
+                              AND genres != ''
+                            LIMIT 10
+                        """),
+                        {"artist": artist_name},
+                    )
+
+                    genre_set: set[str] = set()
+
+                    for genre_row in genre_result.fetchall():
+                        genre_text = genre_row._mapping.get("genres")
+                        for genre in split_tag_values(genre_text):
+                            genre_set.add(genre)
+
+                    recommended_genres = sorted(genre_set)
+
+                except Exception as rec_err:
+                    logger.debug(
+                        "Could not get recommended genres for track %s: %s",
+                        track_id,
+                        rec_err,
+                    )
+
+            # Favourite status.
+            is_track_favourite = False
+            try:
+                if "bookmarks" in {
+                    "bookmarks",
+                }:
+                    fav_result = db.execute(
+                        text("""
+                            SELECT 1
+                            FROM bookmarks
+                            WHERE type = :type
+                              AND CAST(track_id AS TEXT) = :track_id
+                            LIMIT 1
+                        """),
+                        {
+                            "type": "track",
+                            "track_id": str(track_id),
+                        },
+                    )
+                    is_track_favourite = fav_result.fetchone() is not None
+            except Exception as fav_err:
+                logger.debug(
+                    "Track favourite check failed for %s: %s",
+                    track_id,
+                    fav_err,
+                )
+
+        genre_sources = {}
+        try:
+            try:
+                from services.enrichment.genre_tag_aggregator import get_track_genre_sources
+
+                genre_sources = get_track_genre_sources(track)
+            except ImportError:
+                from services.enrichment.genre_tag_aggregator import get_track_genres_summary
+
+                genre_sources = get_track_genres_summary(track)
+        except Exception as ge_err:
+            logger.debug(
+                "Could not get genre sources for track %s: %s",
+                track_id,
+                ge_err,
+            )
+
+        return await render_template(
+            "pages/track_detail.html",
+            track=track,
+            recommended_genres=recommended_genres,
+            track_id=str(track_id),
+            is_track_favourite=is_track_favourite,
+            genre_sources=genre_sources,
+            qbit_config=cfg.get(
+                "qbittorrent",
+                {"enabled": False, "web_url": "http://localhost:8080"},
+            ),
+            slskd_config=cfg.get(
+                "slskd",
+                {"enabled": False},
+            ),
+        )
+
+    except Exception as exc:
+        logger.error("Error loading track %s: %s", track_id, exc, exc_info=True)
+        flash(f"Error loading track: {exc}", "error")
+        return redirect(url_for("ui.dashboard"))
 
 
 @ui_bp.route("/search")
@@ -785,69 +2082,309 @@ async def artist_genre_management(name):
 
 @ui_bp.route("/metadata-compare")
 async def metadata_compare():
-    """Metadata comparison page — compare Navidrome vs Beets album data."""
+    """Metadata comparison page — compare Navidrome vs Beets album metadata."""
     try:
         with db_session() as session:
             result = session.execute(text("""
-                SELECT DISTINCT
-                    album, COALESCE(NULLIF(album_artist, ''), artist) AS artist,
-                    year, beets_year, navidrome_genres, musicbrainz_genres,
+                SELECT
+                    album,
+                    COALESCE(NULLIF(album_artist, ''), artist) AS artist_name,
+                    year AS navidrome_year,
+                    beets_year,
+                    navidrome_genres,
+                    musicbrainz_genres,
                     COUNT(*) AS track_count
                 FROM tracks
-                GROUP BY album, artist, year, beets_year, navidrome_genres, musicbrainz_genres
-                ORDER BY artist, album
+                WHERE album IS NOT NULL
+                  AND album != ''
+                  AND COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+                  AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                GROUP BY
+                    album,
+                    COALESCE(NULLIF(album_artist, ''), artist),
+                    year,
+                    beets_year,
+                    navidrome_genres,
+                    musicbrainz_genres
+                ORDER BY
+                    LOWER(COALESCE(NULLIF(album_artist, ''), artist)),
+                    LOWER(album)
             """))
-            rows = result.fetchall()
+            rows = [dict(row._mapping) for row in result.fetchall()]
 
-        album_comparisons = []
+        album_comparisons: list[dict[str, Any]] = []
+
         for row in rows:
-            album = row[0] or ""
-            artist = row[1] or ""
-            nav_year = row[2]
-            beets_year = row[3]
-            nav_genres_raw = row[4] or ""
-            beets_genres_raw = row[5] or ""
-            track_count = int(row[6] or 0)
+            album = row.get("album") or ""
+            artist = row.get("artist_name") or ""
+            nav_year = row.get("navidrome_year")
+            beets_year = row.get("beets_year")
+            nav_genres_raw = row.get("navidrome_genres") or ""
+            beets_genres_raw = row.get("musicbrainz_genres") or ""
+            track_count = int(row.get("track_count") or 0)
 
-            if (nav_year != beets_year) or (nav_genres_raw != beets_genres_raw):
+            nav_genres = [
+                genre.strip()
+                for genre in str(nav_genres_raw).split(",")
+                if genre.strip()
+            ]
+
+            beets_genres = [
+                genre.strip()
+                for genre in str(beets_genres_raw).split(",")
+                if genre.strip()
+            ]
+
+            has_year_mismatch = str(nav_year or "") != str(beets_year or "")
+            has_genre_mismatch = sorted(g.lower() for g in nav_genres) != sorted(
+                g.lower() for g in beets_genres
+            )
+
+            if has_year_mismatch or has_genre_mismatch:
                 album_comparisons.append({
                     "album": album,
                     "artist": artist,
                     "track_count": track_count,
                     "navidrome": {
                         "year": nav_year,
-                        "genres": nav_genres_raw.split(",") if nav_genres_raw else [],
+                        "genres": nav_genres,
                     },
                     "beets": {
                         "year": beets_year,
-                        "genres": beets_genres_raw.split(",") if beets_genres_raw else [],
+                        "genres": beets_genres,
                     },
                 })
 
-        return await render_template("pages/metadata_compare.html", album_comparisons=album_comparisons)
+        return await render_template(
+            "pages/metadata_compare.html",
+            album_comparisons=album_comparisons,
+        )
+
     except Exception as exc:
-        logger.error("metadata-compare: %s", exc)
+        logger.error("metadata-compare: %s", exc, exc_info=True)
         flash(f"Error loading metadata comparison: {exc}", "danger")
         return redirect(url_for("ui.dashboard"))
 
 
 @ui_bp.route("/api/metadata-compare/search-musicbrainz", methods=["POST"])
 async def metadata_compare_search_mb():
-    """Search MusicBrainz for an album match to resolve metadata conflicts."""
+    """Search MusicBrainz for possible album metadata matches."""
     data = (await request.get_json(silent=True)) or {}
-    artist = str(data.get("artist", "")).strip()
-    album = str(data.get("album", "")).strip()
+
+    artist = str(data.get("artist") or "").strip()
+    album = str(data.get("album") or "").strip()
+
     if not artist or not album:
         return jsonify({"error": "artist and album required"}), 400
+
     try:
         from services.enrichment.musicbrainz_service import MusicBrainzService
+
         svc = MusicBrainzService()
-        mbid, confidence = svc.get_suggested_mbid(album, artist)
-        return jsonify({"success": True, "result": {"mbid": mbid, "confidence": confidence, "album": album, "artist": artist}})
+        results: list[dict[str, Any]] = []
+
+        raw_results = None
+
+        if hasattr(svc, "search_releases"):
+            raw_results = svc.search_releases(artist=artist, album=album)
+        elif hasattr(svc, "search_album"):
+            raw_results = svc.search_album(artist=artist, album=album)
+        elif hasattr(svc, "search_release"):
+            raw_results = svc.search_release(artist=artist, album=album)
+
+        if raw_results:
+            if isinstance(raw_results, dict):
+                raw_results = [raw_results]
+
+            for item in raw_results:
+                if not isinstance(item, dict):
+                    continue
+
+                release_date = (
+                    item.get("first-release-date")
+                    or item.get("first_release_date")
+                    or item.get("date")
+                    or item.get("release_date")
+                    or ""
+                )
+
+                year = item.get("year")
+                if not year and release_date:
+                    year = str(release_date).split("-")[0]
+
+                genres = (
+                    item.get("genres")
+                    or item.get("tags")
+                    or item.get("musicbrainz_genres")
+                    or []
+                )
+
+                if isinstance(genres, str):
+                    genres = [
+                        genre.strip()
+                        for genre in genres.split(",")
+                        if genre.strip()
+                    ]
+
+                results.append({
+                    "id": item.get("id") or item.get("mbid") or item.get("release_id"),
+                    "title": item.get("title") or item.get("album") or album,
+                    "album": item.get("album") or item.get("title") or album,
+                    "artist": item.get("artist") or item.get("artist-credit") or artist,
+                    "artist-credit": item.get("artist-credit") or item.get("artist") or artist,
+                    "first-release-date": release_date,
+                    "year": year,
+                    "genres": genres,
+                    "confidence": item.get("confidence"),
+                })
+
+        if not results and hasattr(svc, "get_suggested_mbid"):
+            suggested = svc.get_suggested_mbid(album, artist)
+
+            mbid = None
+            confidence = None
+
+            if isinstance(suggested, tuple):
+                mbid = suggested[0] if len(suggested) > 0 else None
+                confidence = suggested[1] if len(suggested) > 1 else None
+            else:
+                mbid = suggested
+
+            if mbid:
+                results.append({
+                    "id": mbid,
+                    "title": album,
+                    "album": album,
+                    "artist": artist,
+                    "artist-credit": artist,
+                    "first-release-date": "",
+                    "year": None,
+                    "genres": [],
+                    "confidence": confidence,
+                })
+
+        return jsonify({
+            "success": True,
+            "results": results,
+        })
+
     except Exception as exc:
-        logger.error("metadata-compare MB search: %s", exc)
+        logger.error("metadata-compare MB search: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
+
+@ui_bp.route("/api/metadata-compare/accept-navidrome", methods=["POST"])
+async def metadata_compare_accept_navidrome():
+    """Lock current Navidrome metadata for an album."""
+    data = (await request.get_json(silent=True)) or {}
+
+    artist = str(data.get("artist") or "").strip()
+    album = str(data.get("album") or "").strip()
+
+    if not artist or not album:
+        return jsonify({"error": "artist and album required"}), 400
+
+    try:
+        with db_session() as session:
+            session.execute(
+                text("""
+                    UPDATE tracks
+                    SET metadata_locked = TRUE
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                      AND LOWER(COALESCE(album, '')) = LOWER(:album)
+                """),
+                {
+                    "artist": artist,
+                    "album": album,
+                },
+            )
+
+        return jsonify({
+            "success": True,
+            "message": f"Navidrome data locked for {artist} - {album}",
+        })
+
+    except Exception as exc:
+        logger.error("metadata-compare accept navidrome: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@ui_bp.route("/api/metadata-compare/apply-musicbrainz", methods=["POST"])
+async def metadata_compare_apply_mb():
+    """Apply selected MusicBrainz metadata to an album."""
+    data = (await request.get_json(silent=True)) or {}
+
+    artist = str(data.get("artist") or "").strip()
+    album = str(data.get("album") or "").strip()
+    mb_data = data.get("mb_data") or {}
+
+    if not artist or not album or not isinstance(mb_data, dict):
+        return jsonify({"error": "artist, album, and mb_data required"}), 400
+
+    try:
+        release_date = (
+            mb_data.get("first-release-date")
+            or mb_data.get("first_release_date")
+            or mb_data.get("release_date")
+            or ""
+        )
+
+        year = mb_data.get("year")
+        if not year and release_date:
+            year = str(release_date).split("-")[0]
+
+        genres = mb_data.get("genres") or []
+
+        if isinstance(genres, str):
+            genres = [
+                genre.strip()
+                for genre in genres.split(",")
+                if genre.strip()
+            ]
+
+        genres_text = ",".join(genres)
+
+        mbid = (
+            mb_data.get("id")
+            or mb_data.get("mbid")
+            or mb_data.get("release_id")
+            or ""
+        )
+
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE tracks
+                    SET
+                        year = COALESCE(:year, year),
+                        beets_year = COALESCE(:year, beets_year),
+                        musicbrainz_genres = COALESCE(NULLIF(:genres, ''), musicbrainz_genres),
+                        musicbrainz_album_mbid = COALESCE(NULLIF(:mbid, ''), musicbrainz_album_mbid),
+                        mb_override = TRUE
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                      AND LOWER(COALESCE(album, '')) = LOWER(:album)
+                    RETURNING id
+                """),
+                {
+                    "year": year,
+                    "genres": genres_text,
+                    "mbid": mbid,
+                    "artist": artist,
+                    "album": album,
+                },
+            )
+
+            updated_ids = [row[0] for row in result.fetchall()]
+
+        return jsonify({
+            "success": True,
+            "message": f"Applied MusicBrainz data to {artist} - {album} ({len(updated_ids)} tracks)",
+            "tracks_updated": len(updated_ids),
+        })
+
+    except Exception as exc:
+        logger.error("metadata-compare apply MB: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
 
 @ui_bp.route("/api/metadata-compare/accept-navidrome", methods=["POST"])
 async def metadata_compare_accept_navidrome():
