@@ -3,6 +3,38 @@
 {% block title %}Artists - Popularr{% endblock %}
 
 {% block content %}
+<style>
+    /* Sticky letter headers — stick below the fixed navbar */
+    #artistsList > .list-group-item[data-letter-header] {
+        position: sticky;
+        top: 3.5rem;
+        z-index: 10;
+        scroll-margin-top: 80px;
+    }
+
+    /* Correction & albums detail rows */
+    .correction-album-row {
+        background: var(--secondary-bg, #1e1e1e);
+        border: 1px solid var(--border-color, #333);
+        transition: background 0.15s ease;
+    }
+    .correction-album-row:hover {
+        background: var(--tertiary-bg, #282828);
+    }
+
+    .correction-detail-content,
+    .albums-detail-content {
+        border-left: 3px solid var(--spotify-green, #1db954);
+        border-radius: 0 6px 6px 0;
+    }
+
+    /* Prevent artist name from overflowing on small screens */
+    #artistsList .min-width-0 {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+</style>
 <div class="container-fluid mt-4">
     <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-md-items-center mb-4 gap-2">
         <h1 class="h2 mb-0">
@@ -251,7 +283,6 @@ function jumpToLetter(letter) {
     if (letter === 'all') {
         items.forEach(item => item.style.display = '');
         list.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        window.scrollBy(0, -70);
         return;
     }
     
@@ -273,8 +304,8 @@ function jumpToLetter(letter) {
     });
     
     if (headerItem) {
+        // CSS scroll-margin-top on the header handles the navbar offset
         headerItem.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        window.scrollBy(0, -70);
     }
 }
 
@@ -607,12 +638,15 @@ async function toggleCorrectionDetail(row, artistName, info, triggerEl) {
     }
 }
 
-// Simple HTML-escape helper
+// Simple HTML-escape helper (handles &, <, >, ", ')
 function escHtml(str) {
     if (!str) return '';
-    const d = document.createElement('div');
-    d.appendChild(document.createTextNode(str));
-    return d.innerHTML;
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
 // ── Expandable album rows ──────────────────────────────────────────────────
@@ -689,38 +723,5 @@ document.addEventListener('DOMContentLoaded', function () {
 
 {% include 'components/_musicbrainz_search_modal.html' %}
 {% include 'components/_musicbrainz_search_functions.html' %}
-
-<style>
-    /* Sticky letter headers — stick below the fixed navbar */
-    #artistsList > .list-group-item[data-letter-header] {
-        position: sticky;
-        top: 3.5rem;
-        z-index: 10;
-        scroll-margin-top: 80px;
-    }
-
-    /* Correction & albums detail rows */
-    .correction-album-row {
-        background: var(--secondary-bg, #1e1e1e);
-        border: 1px solid var(--border-color, #333);
-        transition: background 0.15s ease;
-    }
-    .correction-album-row:hover {
-        background: var(--tertiary-bg, #282828);
-    }
-
-    .correction-detail-content,
-    .albums-detail-content {
-        border-left: 3px solid var(--spotify-green, #1db954);
-        border-radius: 0 6px 6px 0;
-    }
-
-    /* Prevent artist name from overflowing on small screens */
-    #artistsList .min-width-0 {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-</style>
 
 {% endblock %}

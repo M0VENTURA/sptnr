@@ -4,29 +4,53 @@
 
 {% block content %}
 <style>
+/* ── Page-specific overrides for artist page ──────────────────────────── */
 @media (max-width: 576px) {
-  /* Artist image: shrink slightly, stay centered */
-  .album-art-container {
-    width: 150px !important;
-    height: 150px !important;
-  }
-  /* Action button row: ensure adequate touch targets */
-  .d-flex.flex-row.flex-wrap .btn {
-    min-height: 44px;
-  }
-  /* Country/IDs btn-group: adequate tap size */
-  .btn-group.btn-group-sm .btn {
-    min-height: 40px;
-    padding: 0.375rem 0.75rem;
-  }
-  /* Artist ID inputs: prevent iOS zoom */
-  .col-12.col-lg-6 input.form-control {
-    font-size: 16px;
-  }
+  .album-art-container { width: 150px !important; height: 150px !important; }
+  .d-flex.flex-row.flex-wrap .btn { min-height: 44px; }
+  .btn-group.btn-group-sm .btn { min-height: 40px; padding: 0.375rem 0.75rem; }
+  .col-12.col-lg-6 input.form-control { font-size: 16px; }
 }
 /* Ensure sticky nav doesn't cover section headers when clicked */
-[id$="-section"] {
-    scroll-margin-top: 130px; 
+[id$="-section"] { scroll-margin-top: 130px; }
+
+/* Missing release cards */
+.missing-release-card {
+  background-color: var(--primary-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.missing-release-art img {
+  width: 80px; height: 80px; border-radius: 0.35rem; object-fit: cover;
+  border: 1px solid var(--border-color); background-color: #2a2a2a;
+}
+/* Font sizing */
+#artist-similar-section .card-title, #artist-genres-section .card-title { font-size: 1.2rem; }
+#artistSimilarArtistsContainer strong { font-size: 1.05rem; }
+.similar-artist-pill { font-size: 0.95rem; padding: 0.45rem 0.6rem; }
+#artistGenresContainer .badge { font-size: 0.95rem; padding: 0.45rem 0.65rem; }
+/* Accordion album rows */
+.artist-page .accordion-item {
+  border: 1px solid var(--border-color);
+  margin-bottom: 0.25rem;
+  background-color: var(--secondary-bg);
+}
+.artist-page .accordion-button {
+  background-color: var(--secondary-bg);
+  color: var(--text-primary);
+  box-shadow: none;
+  gap: 0.5rem;
+}
+.artist-page .accordion-button:not(.collapsed) {
+  background-color: var(--primary-bg);
+  color: var(--text-primary);
+}
+.artist-page .accordion-button::after { order: -1; margin-right: 0.5rem; margin-left: 0; }
+.artist-page .accordion-button .album-art-wrapper img { border-radius: 4px; }
+@media (max-width: 767.98px) {
+  .artist-page .accordion-button .flex-grow-1 { font-size: 0.9rem; }
 }
 </style>
 
@@ -108,7 +132,7 @@
           <!-- Artist Image -->
           <div class="col-12 col-md-3 d-flex flex-column align-items-center">
             <div class="artist-img-wrap position-relative mb-3" style="width: min(200px, 50vw); aspect-ratio: 1; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
-              <img id="artistImage" src="{{ url_for('api_artist_image', name=artist_name) }}" 
+              <img id="artistImage" src="{{ url_for('artist.api_artist_image', name=artist_name) }}" 
                    alt="{{ artist_name }}" 
                    style="width: 100%; height: 100%; object-fit: cover;"
                    onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
@@ -333,7 +357,7 @@
                       <p class="text-muted small mb-2">Tags/moods collected from {{ label }} during scan · sorted by frequency</p>
                       <div class="d-flex flex-wrap gap-2 mb-3" id="artistSourceTags_{{ key }}">
                         {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
-                          <label class="badge genre-source-selectable" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; cursor:pointer; user-select:none; font-size:0.85rem;" title="Click to select">
+                          <label class="badge genre-source-selectable" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; cursor:pointer; user-select:none; font-size:0.85rem;" title="Click to select" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();const cb=this.querySelector('.artist-source-tag-check');cb.checked=!cb.checked;}">
                             <input type="checkbox" class="artist-source-tag-check" value="{{ genre.name }}" style="margin-right:0.3rem;cursor:pointer;">
                             {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
                           </label>
@@ -421,13 +445,13 @@
               {% for track in top_tracks %}
                 {% set track_is_queued = track.file_path and '__queued_for_download__' in track.file_path %}
                 <tr{% if track_is_queued %} class="table-secondary opacity-75"{% endif %}>
-                  <td class="text-center text-muted">{{ loop.index }}</td>
-                  <td>
+                  <td class="text-center text-muted" data-label="#">{{ loop.index }}</td>
+                  <td data-label="Track">
                     {% if track_is_queued %}
                       <span class="text-muted">{{ track.title }}</span>
                       <span class="badge bg-warning text-dark ms-2" title="This track is currently in the download queue">In Queue</span>
                     {% else %}
-                      <a href="{{ url_for('track_detail', artist=artist_name, album=track.album, track_id=track.id) }}" class="text-decoration-none">
+                      <a href="{{ url_for('ui.track_detail', artist=artist_name, album=track.album, track_id=track.id) }}" class="text-decoration-none">
                         {{ track.title }}
                       </a>
                     {% endif %}
@@ -435,14 +459,14 @@
                       <span class="badge bg-warning text-dark ms-2">Single</span>
                     {% endif %}
                   </td>
-                  <td>
-                    <a href="{{ url_for('album_detail', artist=artist_name, album=track.album) }}" class="text-decoration-none">
+                  <td data-label="Album">
+                    <a href="{{ url_for('ui.album_detail', artist=artist_name, album=track.album) }}" class="text-decoration-none">
                       {{ track.album }}
                     </a>
                   </td>
-                  <td class="text-center"><span class="badge bg-info">{{ '%.2f'|format(track.artist_z_score or 0) }}</span></td>
-                  <td class="text-center">{{ (track.popularity_score or 0)|round(1) }}</td>
-                  <td class="text-center">{{ track.stars or 0 }}★</td>
+                  <td class="text-center" data-label="Z-Score"><span class="badge bg-info">{{ '%.2f'|format(track.artist_z_score or 0) }}</span></td>
+                  <td class="text-center" data-label="Pop">{{ (track.popularity_score or 0)|round(1) }}</td>
+                  <td class="text-center" data-label="Stars">{{ track.stars or 0 }}★</td>
                 </tr>
               {% endfor %}
             {% else %}
@@ -791,10 +815,10 @@
           {% if appears_on_albums and appears_on_albums|length > 0 %}
             {% for entry in appears_on_albums %}
               <tr>
-                <td class="text-center" style="width: 100px; padding: 0.5rem;">
+                <td class="text-center" style="width: 100px; padding: 0.5rem;" data-label="Art">
                   {% if entry.album and entry.album_artist %}
-                  <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}">
-                    <img src="{{ url_for('api_album_art', artist=entry.album_artist, album=entry.album) }}"
+                  <a href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}">
+                    <img src="{{ url_for('album_routes.api_album_art', artist=entry.album_artist, album=entry.album) }}"
                          alt="{{ entry.album }}"
                          class="img-thumbnail"
                          style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
@@ -807,17 +831,17 @@
                        style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;">
                   {% endif %}
                 </td>
-                <td>
+                <td data-label="Release">
                   <div class="d-flex flex-column justify-content-center" style="min-height: 80px;">
                     {% if entry.album and entry.album_artist %}
-                    <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}" class="text-decoration-none fw-semibold">
+                    <a href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}" class="text-decoration-none fw-semibold">
                       {{ entry.album }}
                     </a>
                     {% else %}
                     <span class="fw-semibold">{{ entry.album or '—' }}</span>
                     {% endif %}
                     {% if entry.album_artist %}
-                    <a href="{{ url_for('artist_detail', name=entry.album_artist) }}" class="text-decoration-none small text-muted mt-1">
+                    <a href="{{ url_for('ui.artist_detail', name=entry.album_artist) }}" class="text-decoration-none small text-muted mt-1">
                       {{ entry.album_artist }}
                     </a>
                     {% else %}
@@ -825,17 +849,17 @@
                     {% endif %}
                   </div>
                 </td>
-                <td class="text-center">{{ entry.album_year or '—' }}</td>
-                <td class="text-center">{{ entry.track_count or 0 }}</td>
-                <td class="text-center">
+                <td class="text-center" data-label="Year">{{ entry.album_year or '—' }}</td>
+                <td class="text-center" data-label="Tracks">{{ entry.track_count or 0 }}</td>
+                <td class="text-center" data-label="Avg ★">
                   {% if entry.avg_stars %}
                     <span class="badge bg-info">{{ entry.avg_stars|round(2) }}★</span>
                   {% else %}
                     <span class="text-muted">—</span>
                   {% endif %}
                 </td>
-                <td class="text-center">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}" title="View album">
+                <td class="text-center" data-label="Open">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}" title="View album">
                     <i class="bi bi-arrow-right"></i>
                   </a>
                 </td>
@@ -1038,8 +1062,18 @@
                         <datalist id="editArtistGenreDatalist">
                             <option value="Rock"><option value="Pop"><option value="Jazz"><option value="Classical">
                             <option value="Hip-Hop"><option value="Electronic"><option value="Blues"><option value="Country">
-                            <option value="R&B"><option value="Soul"><option value="Funk"><option value="Metal">
+                            <option value="R&amp;B"><option value="Soul"><option value="Funk"><option value="Metal">
                             <option value="Punk"><option value="Alternative"><option value="Indie">
+                            <option value="Thrash Metal"><option value="Death Metal"><option value="Black Metal"><option value="Doom Metal">
+                            <option value="Hardcore Punk"><option value="Post-Hardcore"><option value="Metalcore"><option value="Emo">
+                            <option value="Post-Rock"><option value="Shoegaze"><option value="Dream Pop"><option value="Noise Rock">
+                            <option value="Progressive Rock"><option value="Psychedelic Rock"><option value="Stoner Rock"><option value="Folk Rock">
+                            <option value="Synthwave"><option value="Industrial"><option value="Ambient"><option value="Trip-Hop">
+                            <option value="Folk"><option value="Singer-Songwriter"><option value="Americana"><option value="Bluegrass">
+                            <option value="Reggae"><option value="Ska"><option value="Dancehall"><option value="Dub">
+                            <option value="House"><option value="Techno"><option value="Drum and Bass"><option value="Dubstep">
+                            <option value="Grunge"><option value="Nu Metal"><option value="Gothic Rock"><option value="Hard Rock">
+                            <option value="New Wave"><option value="Post-Punk"><option value="Art Rock"><option value="Math Rock">
                         </datalist>
                         <input type="hidden" id="editArtistTrackGenresField" name="genres">
                     </div>
@@ -1120,87 +1154,6 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
-<style>
-  /* Page-specific overrides for artist page — shared dark theme is in popularr.css */
-  .missing-release-card {
-    background-color: var(--primary-bg);
-    border: 1px solid var(--border-color);
-    border-radius: 0.5rem;
-    padding: 0.75rem;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-  }
-  .missing-release-art img {
-    width: 80px;
-    height: 80px;
-    border-radius: 0.35rem;
-    object-fit: cover;
-    border: 1px solid var(--border-color);
-    background-color: #2a2a2a;
-  }
-  /* Font sizing for similar artists & genres */
-  #artist-similar-section .card-title,
-  #artist-genres-section .card-title { font-size: 1.2rem; }
-  #artistSimilarArtistsContainer strong { font-size: 1.05rem; }
-  #artistSimilarArtistsContainer .card-title { font-size: 1.02rem; }
-  .similar-artist-pill { font-size: 0.95rem; padding: 0.45rem 0.6rem; }
-  #artistGenreSourcesContainer, #artistGenresContainer { font-size: 1rem; }
-  .artist-genre-source-badge, .artist-genre-badge,
-  #artistGenresContainer .badge { font-size: 0.95rem; padding: 0.45rem 0.65rem; }
-  /* Accordion album rows: clean card appearance */
-  .artist-page .accordion-item {
-    border: 1px solid var(--border-color);
-    margin-bottom: 0.25rem;
-    background-color: var(--secondary-bg);
-  }
-  .artist-page .accordion-button {
-    background-color: var(--secondary-bg);
-    color: var(--text-primary);
-    box-shadow: none;
-    gap: 0.5rem;
-  }
-  .artist-page .accordion-button:not(.collapsed) {
-    background-color: var(--primary-bg);
-    color: var(--text-primary);
-  }
-  .artist-page .accordion-button::after {
-    order: -1;
-    margin-right: 0.5rem;
-    margin-left: 0;
-  }
-  .artist-page .accordion-button .album-art-wrapper img {
-    border-radius: 4px;
-  }
-  @media (max-width: 767.98px) {
-    .artist-page .accordion-button .flex-grow-1 {
-      font-size: 0.9rem;
-    }
-  }
-</style>
-
-<!-- Track Editing Modal -->
-<div class="modal fade" id="editTrackModal" tabindex="-1">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title"><i class="bi bi-pencil-square"></i> Edit Track</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body">
-        <input type="hidden" id="editTrackId">
-        <input type="hidden" id="editTrackCurrentField">
-        <div class="mb-3">
-          <label class="form-label" id="editTrackLabel">Track Title</label>
-          <input type="text" class="form-control" id="editTrackValue" placeholder="Enter value">
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-primary" onclick="saveEditedTrackFromArtistPage()">Save Changes</button>
-      </div>
-    </div>
-  </div>
-</div>
-
 
 {% include 'components/_musicbrainz_search_modal.html' %}
 {% include 'components/_musicbrainz_search_functions.html' %}

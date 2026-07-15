@@ -4,7 +4,7 @@
    ========================================================================== */
 
 /* ── Modern card aesthetics ─────────────────────────────────────────────── */
-/* (handled in Card & Table dark overrides section below)
+/* handled in Card & Table dark overrides section below */
 
 .progress {
     height: 4px !important;
@@ -86,6 +86,18 @@
         display: table-cell;
         padding: 0.25rem !important;
     }
+
+    /* Inject column headers via data-label attributes */
+    .table-responsive td::before {
+        content: attr(data-label);
+        font-weight: 600;
+        color: var(--text-secondary);
+        margin-right: 0.5rem;
+        flex-shrink: 0;
+    }
+    .table-responsive td:empty::before {
+        content: none;
+    }
 }
 
 /* ── Smooth scrollbar for log areas ──────────────────────────────────────── */
@@ -116,39 +128,39 @@ body {
 /* ── Card & Table dark overrides ───────────────────────────────────────── */
 .card, .card-body, .card-header, .table, .table th, .table td {
   background-color: var(--secondary-bg) !important;
-  color: var(--text-primary) !important;
-  border-color: var(--border-color) !important;
+  color: var(--text-primary);
+  border-color: var(--border-color);
 }
 .card {
   border-radius: 0.75rem;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 .card-header {
-  background-color: var(--tertiary-bg) !important;
-  border-bottom: 1px solid var(--border-color) !important;
+  background-color: var(--tertiary-bg);
+  border-bottom: 1px solid var(--border-color);
 }
 
-p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th { color: var(--text-primary) !important; }
-a { color: var(--spotify-green) !important; }
-a:hover { color: var(--spotify-green-hover) !important; }
-strong, b { color: var(--text-primary) !important; }
+p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th { color: var(--text-primary); }
+a:not(.btn) { color: var(--spotify-green); }
+a:not(.btn):hover { color: var(--spotify-green-hover); }
+strong, b { color: var(--text-primary); }
 
 /* ── List group dark theme ─────────────────────────────────────────────── */
 .list-group {
-  background-color: var(--secondary-bg) !important;
-  border-color: var(--border-color) !important;
+  background-color: var(--secondary-bg);
+  border-color: var(--border-color);
 }
 .list-group-item {
-  background-color: var(--secondary-bg) !important;
-  color: var(--text-primary) !important;
-  border-color: var(--border-color) !important;
+  background-color: var(--secondary-bg);
+  color: var(--text-primary);
+  border-color: var(--border-color);
 }
 .list-group-item:hover {
-  background-color: var(--tertiary-bg) !important;
+  background-color: var(--tertiary-bg);
 }
 .list-group-item.bg-primary {
-  background-color: var(--tertiary-bg) !important;
+  background-color: var(--tertiary-bg);
 }
 
 /* ── Expandable album detail area ──────────────────────────────────────── */
@@ -176,14 +188,14 @@ strong, b { color: var(--text-primary) !important; }
 ::placeholder { color: var(--text-secondary) !important; opacity: 1 !important; }
 
 input, select, textarea {
-  color: var(--text-primary) !important;
-  background-color: var(--secondary-bg) !important;
-  border-color: var(--border-color) !important;
+  color: var(--text-primary);
+  background-color: var(--secondary-bg);
+  border-color: var(--border-color);
 }
 input:focus, select:focus, textarea:focus {
-  background-color: var(--tertiary-bg) !important;
-  border-color: var(--spotify-green) !important;
-  box-shadow: 0 0 0 0.2rem rgba(29, 185, 84, 0.25) !important;
+  background-color: var(--tertiary-bg);
+  border-color: var(--spotify-green);
+  box-shadow: 0 0 0 0.2rem rgba(29, 185, 84, 0.25);
 }
 .form-label { color: var(--text-primary) !important; font-weight: 500; }
 .form-text { color: var(--text-secondary) !important; }

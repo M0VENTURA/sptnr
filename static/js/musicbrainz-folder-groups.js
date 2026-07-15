@@ -7,16 +7,21 @@
 
 async function loadFolderGroupsWithMusicBrainz() {
   try {
+    const section = document.getElementById('folderGroupsSection');
+    // Only run on pages that have the folder groups section
+    if (!section) return;
+
     const response = await fetch('/api/downloads/folder-groups');
     const data = await response.json();
     
     if (!data.success || data.count === 0) {
-      document.getElementById('folderGroupsSection').style.display = 'none';
+      section.style.display = 'none';
       return;
     }
     
-    document.getElementById('folderGroupsSection').style.display = 'block';
-    document.getElementById('folderGroupsBadge').textContent = data.count;
+    section.style.display = 'block';
+    const badge = document.getElementById('folderGroupsBadge');
+    if (badge) badge.textContent = data.count;
     
     const html = data.folder_groups.map((group) => {
       const isMusicBrainz = group.type === 'musicbrainz';
@@ -112,8 +117,10 @@ async function loadFolderGroupsWithMusicBrainz() {
       `;
     }).join('');
     
-    document.getElementById('folderGroupsList').innerHTML = 
-      `<div class="list-group list-group-flush">${html}</div>`;
+    const list = document.getElementById('folderGroupsList');
+    if (list) {
+      list.innerHTML = `<div class="list-group list-group-flush">${html}</div>`;
+    }
     
     // Initialize tooltips
     const tooltipElements = document.querySelectorAll('[data-bs-toggle="tooltip"]');
