@@ -42,24 +42,25 @@ def scan_mood():
 
 
 @scans_bp.route("/scan/essentia-mood", methods=["POST"])
-def scan_essentia_mood():
+async def scan_essentia_mood():
     """Run Essentia local-ML mood/genre enrichment."""
+    form = await request.form
     mode = request.args.get("mode", "all")
 
     artist_filter = (
-        request.form.get("artist")
+        form.get("artist")
         or request.args.get("artist")
         or ""
     ).strip()
 
     album_filter = (
-        request.form.get("album")
+        form.get("album")
         or request.args.get("album")
         or ""
     ).strip()
 
     track_id_filter = (
-        request.form.get("track_id")
+        form.get("track_id")
         or request.args.get("track_id")
         or ""
     ).strip()

@@ -34,11 +34,12 @@ from services.scanning.pipelines.popularity_pipeline import (
 
 
 @scans_bp.route("/scan/artist-custom", methods=["POST"])
-def scan_artist_custom():
+async def scan_artist_custom():
     """Run a specific scan type for an artist."""
-    scan_type = request.form.get("scan_type", "full")
-    artist = (request.form.get("artist") or "").strip()
-    force = form_bool(request.form.get("force"))
+    form = await request.form
+    scan_type = form.get("scan_type", "full")
+    artist = (form.get("artist") or "").strip()
+    force = form_bool(form.get("force"))
 
     if not artist:
         flash("Error: No artist name provided", "danger")
@@ -75,12 +76,13 @@ def scan_artist_custom():
 
 
 @scans_bp.route("/scan/album-custom", methods=["POST"])
-def scan_album_custom():
+async def scan_album_custom():
     """Run a specific scan type for an album."""
-    scan_type = request.form.get("scan_type", "full")
-    artist = (request.form.get("artist") or "").strip()
-    album = (request.form.get("album") or "").strip()
-    force = form_bool(request.form.get("force"))
+    form = await request.form
+    scan_type = form.get("scan_type", "full")
+    artist = (form.get("artist") or "").strip()
+    album = (form.get("album") or "").strip()
+    force = form_bool(form.get("force"))
 
     if not artist or not album:
         flash("Error: Artist and album name are required", "danger")
