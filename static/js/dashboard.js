@@ -205,12 +205,23 @@ async function stopAllScans() {
 
 // ===== Recent Scans (Dynamic) =====
 var SCAN_TYPE_DISPLAY_NAMES = {
+  // Session-level scan types (recorded by popularity_pipeline.py)
+  navidrome: "Navidrome Import",
+  metadata: "Metadata Scan",
+  popularity: "Popularity Scan",
+  singles: "Singles Detection",
+  singles_detection: "Singles Detection",
+  essentia: "Essentia Mood Scan",
+  mood: "Mood Scan",
+  combined: "Combined Scan",
+  all: "Full Scan (All)",
+  // Scan runner progress-file types (from run_scan / scan_stage_runner.py)
   navidrome_scan: "Navidrome Import",
   metadata_lookup_scan: "Metadata Scan",
-  popularity_scan: "Popularity and Single Scan",
+  popularity_scan: "Popularity Scan",
   singles_scan: "Singles Detection",
   mood_scan: "Mood Scan",
-  essentia_mood_scan: "Mood Scan (Essentia)",
+  essentia_mood_scan: "Essentia Mood Scan",
   combined_scan: "Combined Scan",
   missing_releases_scan: "Missing Releases Scan",
 };
@@ -309,32 +320,16 @@ function renderRecentScans(scans) {
   var rows = entries
     .map(function (group) {
       if (group.artist === "_SCAN_SESSION_") {
-        var typeName =
-          group.album === "navidrome"
-            ? "Navidrome Import"
-            : group.album === "popularity"
-            ? "Popularity Scan"
-            : group.album === "singles"
-            ? "Singles Scan"
-            : group.album === "mood"
-            ? "Mood Scan"
-            : group.album === "essentia_mood"
-            ? "Mood Scan (Essentia)"
-            : group.album === "combined"
-            ? "Combined Scan"
-            : escapeHtml(group.album);
+        var typeKey = group.album || group.scan_types?.[0]?.type || "";
+        var typeName = SCAN_TYPE_DISPLAY_NAMES[typeKey] || escapeHtml(typeKey);
         var typeIcon =
-          group.album === "navidrome"
-            ? "bi-cloud"
-            : group.album === "popularity"
-            ? "bi-graph-up"
-            : group.album === "singles"
-            ? "bi-star"
-            : group.album === "mood"
-            ? "bi-emoji-smile"
-            : group.album === "essentia_mood"
-            ? "bi-cpu"
-            : "bi-lightning-fill";
+          typeKey === "navidrome" ? "bi-cloud"
+          : typeKey === "popularity" ? "bi-graph-up"
+          : typeKey === "singles" || typeKey === "singles_detection" ? "bi-star"
+          : typeKey === "mood" || typeKey === "essentia" || typeKey === "essentia_mood" ? "bi-emoji-smile"
+          : typeKey === "metadata" || typeKey === "metadata_lookup_scan" ? "bi-info-circle"
+          : typeKey === "combined" || typeKey === "all" ? "bi-lightning-fill"
+          : "bi-lightning-fill";
         return '<tr class="table-success bg-opacity-10"><td colspan="4" class="py-1 ps-3"><small class="text-success"><i class="bi bi-check-circle-fill me-1"></i><strong>' + typeName + '</strong> completed \u2014 ' + formatScanTimestamp(group.latest_timestamp) + '<span class="badge bg-success ms-2"><i class="bi ' + typeIcon + '"></i></span></small></td><td></td></tr>';
       }
       var artistUrl = "/artist/" + encodeURIComponent(group.artist);
@@ -353,6 +348,8 @@ function renderRecentScans(scans) {
             badgeHtml = '<span class="badge bg-primary" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-cloud"></i> Navidrome</span>';
           } else if (st.type === "popularity") {
             badgeHtml = '<span class="badge bg-success" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-graph-up"></i> Popularity</span>';
+          } else if (st.type === "metadata" || st.type === "metadata_lookup_scan") {
+            badgeHtml = '<span class="badge bg-info text-dark" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-info-circle"></i> Metadata</span>';
           } else if (st.type === "singles" || st.type === "singles_scan" || st.type === "single_detection") {
             badgeHtml = '<span class="badge bg-warning text-dark" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-star"></i> Singles</span>';
           } else if (st.type === "mood" || st.type === "mood_scan") {

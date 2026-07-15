@@ -428,8 +428,10 @@
     }
   });
 
-  // Pre-fill and auto-execute search from URL query parameter
+</script>
+
 <script id="page-data" type="application/json">{{ {"initialQuery": initial_query} | tojson | safe }}</script>
+<script>
   (function() {
     var _pd = JSON.parse(document.getElementById('page-data').textContent);
     const initialQuery = _pd.initialQuery;

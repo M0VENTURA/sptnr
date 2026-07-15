@@ -194,12 +194,12 @@ def api_artist_favourite():
 
 @artist_bp.route("/api/artist/image")
 def api_artist_image():
-    from flask import redirect as flask_redirect
+    from quart import redirect as quart_redirect
     artist = request.args.get("name", "")
     data, code = metadata.get_artist_image(artist)
     if data.get("success") and data.get("image_url"):
-        return flask_redirect(data["image_url"])
-    # Return a 1x1 transparent pixel as SVG fallback instead of JSON
+        return quart_redirect(data["image_url"])
+    # Return a gray SVG fallback so the <img> tag never breaks the layout
     from quart import Response
     return Response(
         '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><rect fill="#2a2a2a" width="200" height="200"/></svg>',

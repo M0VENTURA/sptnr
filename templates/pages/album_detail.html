@@ -47,6 +47,11 @@
                                 <small class="text-muted d-block">Release Year</small>
                                 <strong>{{ album_data.spotify_release_date[:4] }}</strong>
                             </div>
+                            {% elif album_data and album_data.album_year %}
+                            <div class="col-6">
+                                <small class="text-muted d-block">Release Year</small>
+                                <strong>{{ album_data.album_year }}</strong>
+                            </div>
                             {% endif %}
                             <div class="col-6">
                                 <small class="text-muted d-block">Album Type</small>
@@ -116,8 +121,8 @@
             <p class="text-muted mb-0">by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
         </div>
         <div class="d-flex gap-2 flex-wrap">
-            <button class="btn btn-outline-success btn-sm" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites">
-                <i class="bi bi-star"></i> <span class="d-none d-sm-inline">Favourite</span>
+            <button class="btn btn-outline-success btn-sm" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites" id="albumFavBtn">
+                <i class="bi {{ 'bi-star-fill' if is_album_favourite else 'bi-star' }}" id="albumFavIcon"></i> <span class="d-none d-sm-inline" id="albumFavLabel">{{ 'Favourited' if is_album_favourite else 'Favourite' }}</span>
             </button>
             <button class="btn btn-outline-info btn-sm" onclick="openAlbumLookupModal()">
                 <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Lookup</span>
@@ -165,7 +170,6 @@
                 <li class="nav-item"><a class="nav-link" href="#album-overview-section">Overview</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-genres-section">Genres and Moods</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-similar-section">Similar</a></li>
-                <li class="nav-item"><a class="nav-link" href="#album-information-section">IDs</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-tracks-section">Tracks</a></li>
             </ul>
         </div>
@@ -1053,6 +1057,5 @@
 
 {# Shared MusicBrainz Release Search System #}
 {% include 'components/_musicbrainz_search_modal.html' %}
-{% include 'components/_musicbrainz_search_functions.html' %}
 
 {% endblock %}

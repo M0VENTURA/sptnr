@@ -283,6 +283,12 @@ def process_track(
             )
             update_payload.update(score_data)
 
+            # Map combined_score → final_score so it persists to the DB.
+            # calculate_combined_popularity_score returns "combined_score"
+            # but the tracks table column is named "final_score".
+            update_payload["final_score"] = score_data.get("combined_score", 0.0)
+            update_payload["popularity"] = score_data.get("combined_score", 0.0)
+
         except Exception as e:
             logger.debug("[track_stage][SCORING] %s: %s", track_id, e)
 

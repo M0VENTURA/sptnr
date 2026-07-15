@@ -28,11 +28,28 @@ from db.engine import db_session
 logger = logging.getLogger(__name__)
 
 # Default Wikipedia sources for upcoming releases
+# "List_of_upcoming_albums" was deleted — using year-specific "in music" pages instead.
+_YEAR = datetime.now().year
 DEFAULT_WIKIPEDIA_SOURCES: dict[str, dict[str, Any]] = {
-    "upcoming_albums": {
-        "url": "https://en.wikipedia.org/wiki/List_of_upcoming_albums",
-        "name": "Upcoming Albums",
+    f"{_year}_albums": {
+        "url": f"https://en.wikipedia.org/wiki/{_year}_in_music",
+        "name": f"{_year} Albums",
         "columns": ["day", "artist", "album", "genre"],
+        "fallback_titles": [
+            f"{_year}_in_music#Upcoming_albums",
+            f"{_year}_in_American_music",
+            f"{_year}_in_British_music",
+            "List_of_upcoming_albums",
+        ],
+    },
+    f"{_year + 1}_albums": {
+        "url": f"https://en.wikipedia.org/wiki/{_year + 1}_in_music",
+        "name": f"{_year + 1} Albums",
+        "columns": ["day", "artist", "album", "genre"],
+        "fallback_titles": [
+            f"{_year + 1}_in_music#Upcoming_albums",
+            "List_of_upcoming_albums",
+        ],
     },
 }
 
@@ -118,16 +135,30 @@ class WikipediaReleaseScraper:
         year = self._extract_year(src_key)
         logger.debug("[SCRAPER] Scraping %s (year=%s)", name, year)
 
-        # Fetch page HTML via Wikipedia API
-        page_title = self._url_to_page_title(url)
-        parse_data = self.http.parse_page(page_title, prop="text")
+        # Fetch page HTML via Wikipedia API, trying fallback pages if needed
+        page_titles_to_try = [self._url_to_page_title(url)]
+        fallback_titles = src_info.get("fallback_titles", [])
+        for ft in fallback_titles:
+            if ft not in page_titles_to_try:
+                page_titles_to_try.append(ft)
+
+        parse_data = None
+        used_title = None
+        for pt in page_titles_to_try:
+            parse_data = self.http.parse_page(pt, prop="text")
+            if parse_data:
+                used_title = pt
+                logger.debug("[SCRAPER] Found content on page: %s", pt)
+                break
+            logger.debug("[SCRAPER] Page not found, trying fallback: %s", pt)
+
         if not parse_data:
-            logger.warning("[SCRAPER] No parse data for %s", name)
+            logger.warning("[SCRAPER] No parse data for %s (tried %d titles)", name, len(page_titles_to_try))
             return []
 
         raw_html = parse_data.get("text", {}).get("*", "")
         if not raw_html:
-            logger.warning("[SCRAPER] No HTML content for %s", name)
+            logger.warning("[SCRAPER] No HTML content for %s (title=%s)", name, used_title)
             return []
 
         return self._parse_html_tables(raw_html, src_key, name, year, column_order)

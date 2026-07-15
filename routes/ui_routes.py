@@ -554,6 +554,8 @@ async def artist_detail(name: str):
         return [display_names[k] for k in sorted_keys[:limit]]
 
     def classify_album(album_row: dict[str, Any]) -> str:
+        import re as _re
+
         raw_type = str(
             album_row.get("spotify_album_type")
             or album_row.get("album_type")
@@ -564,26 +566,25 @@ async def artist_detail(name: str):
             album_row.get("album") or ""
         ).lower()
 
+        # Compilation / soundtrack
         if "compilation" in raw_type:
             return "compilation"
+        if "soundtrack" in raw_type or "soundtrack" in album_name:
+            return "compilation"
 
-        if (
-            "live" in raw_type
-            or " live" in album_name
-            or album_name.startswith("live")
-        ):
+        # Live / unplugged / acoustic
+        if "live" in raw_type or _re.search(r'\blive\b', album_name) or "unplugged" in album_name:
             return "live_album"
 
+        # Remix
         if "remix" in raw_type or "remix" in album_name:
             return "remix_album"
 
-        if (
-            raw_type == "ep"
-            or raw_type.startswith("ep ")
-            or " ep" in raw_type
-        ):
+        # EP
+        if raw_type == "ep" or raw_type.startswith("ep") or " ep" in raw_type:
             return "ep"
 
+        # Single
         if "single" in raw_type:
             return "single"
 
@@ -680,7 +681,15 @@ async def artist_detail(name: str):
         )
 
         # Attach tracks to the album entry so the macro can render them
-        album_entry["tracks"] = album_tracks
+        # Sort numerically by disc_number then track_number
+        album_entry["tracks"] = sorted(
+            album_tracks,
+            key=lambda t: (
+                safe_int(t.get("disc_number")) or 1,
+                safe_int(t.get("track_number")) or 0,
+                str(t.get("title") or "").lower(),
+            ),
+        )
 
     albums = sorted(
         albums_by_key.values(),
@@ -784,6 +793,81 @@ async def artist_detail(name: str):
 
     genres = collect_top_genres(tracks)
 
+    # ── Load missing releases from DB ──────────────────────────────────────
+    missing_entries: list[dict[str, Any]] = []
+    try:
+        with db_session() as session:
+            missing_result = session.execute(
+                text("""
+                    SELECT title, release_id, primary_type, first_release_date,
+                           cover_art_url, category
+                    FROM missing_releases
+                    WHERE LOWER(artist) = LOWER(:name)
+                    ORDER BY first_release_date DESC NULLS LAST
+                """),
+                {"name": name},
+            )
+            for row in missing_result.fetchall():
+                mr = dict(row._mapping)
+                mr_title = str(mr.get("title") or "").strip()
+                if not mr_title:
+                    continue
+                # Skip if we already have this album in the library
+                album_key = mr_title.lower()
+                if album_key in albums_by_key:
+                    continue
+
+                release_year = None
+                first_release = str(mr.get("first_release_date") or "")
+                if len(first_release) == 4 and first_release.isdigit():
+                    release_year = safe_int(first_release)
+                elif first_release and len(first_release) >= 4:
+                    try:
+                        release_year = safe_int(first_release[:4])
+                    except Exception:
+                        pass
+
+                missing_entry = {
+                    "album": mr_title,
+                    "title": mr_title,
+                    "album_year": release_year,
+                    "track_count": 0,
+                    "avg_stars": None,
+                    "total_duration": 0,
+                    "is_missing": True,
+                    "first_release_date": first_release,
+                    "cover_art_url": mr.get("cover_art_url") or "",
+                    "release_id": mr.get("release_id") or "",
+                }
+
+                # Determine category based on MusicBrainz primary type
+                primary_type = str(mr.get("primary_type") or mr.get("category") or "").lower()
+                if primary_type in ("ep", "single", "compilation"):
+                    missing_entry["_category"] = primary_type
+                elif primary_type == "live":
+                    missing_entry["_category"] = "live_album"
+                elif primary_type in ("remix", "remix+compilation"):
+                    missing_entry["_category"] = "remix_album"
+                elif primary_type == "soundtrack":
+                    missing_entry["_category"] = "compilation"
+                else:
+                    missing_entry["_category"] = "album"
+
+                missing_entries.append(missing_entry)
+    except Exception as exc:
+        logger.debug("Failed to load missing releases for '%s': %s", name, exc)
+
+    # ── Merge discovered + missing into a single sorted list ───────────────
+    all_albums = albums + missing_entries
+    all_albums.sort(
+        key=lambda a: (
+            a.get("album_year") is None,
+            -(a.get("album_year") or 0),
+            str(a.get("album") or a.get("title") or "").lower(),
+        ),
+    )
+
+    # ── Categorize ─────────────────────────────────────────────────────────
     albums_by_category = {
         "album": [],
         "ep": [],
@@ -793,8 +877,9 @@ async def artist_detail(name: str):
         "remix_album": [],
     }
 
-    for album_entry in albums:
-        category = classify_album(album_entry)
+    for album_entry in all_albums:
+        # Missing releases have a pre-computed category
+        category = album_entry.get("_category") or classify_album(album_entry)
         albums_by_category.setdefault(category, []).append(album_entry)
 
     appears_by_key: dict[str, dict[str, Any]] = {}
@@ -853,6 +938,8 @@ async def artist_detail(name: str):
     appears_on_albums = sorted(
         appears_by_key.values(),
         key=lambda item: (
+            item.get("album_year") is None,
+            -(item.get("album_year") or 0),
             str(item.get("album_artist") or "").lower(),
             str(item.get("album") or "").lower(),
         ),
@@ -928,6 +1015,31 @@ async def artist_detail(name: str):
         except Exception as exc:
             logger.debug("Failed to fetch artist members for '%s': %s", name, exc)
 
+    # ── Similar artists (pre-rendered to avoid spinner) ────────────────────
+    similar_artists: dict[str, list[dict]] = {"lastfm": [], "listenbrainz": []}
+    try:
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT similar_artists_lastfm, similar_artists_listenbrainz FROM artists WHERE name = :name"),
+                {"name": name},
+            ).fetchone()
+            if row:
+                import json
+                lf_raw = str(row[0] or "") if row[0] else ""
+                lb_raw = str(row[1] or "") if row[1] else ""
+                if lf_raw:
+                    try:
+                        similar_artists["lastfm"] = json.loads(lf_raw)
+                    except Exception:
+                        pass
+                if lb_raw:
+                    try:
+                        similar_artists["listenbrainz"] = json.loads(lb_raw)
+                    except Exception:
+                        pass
+    except Exception as exc:
+        logger.debug("Failed to load similar artists for '%s': %s", name, exc)
+
     return await render_template(
         "pages/artist_detail.html",
         artist_name=name,
@@ -941,6 +1053,7 @@ async def artist_detail(name: str):
         artist_bio=artist_bio,
         artist_country=artist_country,
         artist_members=artist_members,
+        similar_artists=similar_artists,
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
@@ -952,10 +1065,112 @@ async def album_detail(artist: str, album: str):
     cfg = get_config()
 
     if request.method == "POST":
-        # The template currently posts album metadata back to this route.
-        # If save/update logic is not implemented yet, avoid a 405 and give feedback.
-        await flash("Album metadata saving is not implemented in this route yet.", "warning")
-        return redirect(url_for("ui.album_detail", artist=artist_name, album=album_name))
+        form = await request.form
+        from db.repositories.tracks import insert_or_update_track
+        from services.metadata.tag_file_service import update_file_tags
+
+        updates: dict[str, Any] = {}
+
+        new_title = (form.get("album_title") or "").strip()
+        new_artist = (form.get("album_artist") or "").strip()
+        release_year = (form.get("release_year") or "").strip()
+        album_type = (form.get("album_type") or "").strip()
+        track_artist = (form.get("track_artist") or "").strip()
+        track_composer = (form.get("track_composer") or "").strip()
+        track_comment = (form.get("track_comment") or "").strip()
+        album_mbid = (form.get("album_mbid") or "").strip()
+        album_rg_mbid = (form.get("album_release_group_mbid") or "").strip()
+        discogs_id = (form.get("album_discogs_id") or "").strip()
+        artist_mbid = (form.get("artist_mbid") or "").strip()
+        genres_str = (form.get("album_genres") or "").strip()
+        cover_url = (form.get("cover_art_url") or "").strip()
+
+        updated_count = 0
+
+        for track in tracks:
+            track_id = track.get("id")
+            if not track_id:
+                continue
+
+            payload: dict[str, Any] = {"id": track_id}
+
+            # Album title / artist
+            if new_title and new_title != track.get("album"):
+                payload["album"] = new_title
+
+            if new_artist and new_artist != (track.get("album_artist") or track.get("artist")):
+                payload["album_artist"] = new_artist
+                payload["artist"] = new_artist
+
+            # Year
+            if release_year:
+                payload["year"] = release_year
+                try:
+                    payload["release_year"] = int(release_year)
+                except ValueError:
+                    pass
+
+            # Album type
+            if album_type:
+                payload["spotify_album_type"] = album_type
+                payload["album_type"] = album_type
+                payload["musicbrainz_albumtype"] = album_type
+
+            # Track-level overrides
+            if track_artist and track_artist != track.get("artist"):
+                payload["artist"] = track_artist
+            if track_composer:
+                payload["composer"] = track_composer
+            if track_comment:
+                payload["comment"] = track_comment
+
+            # MBIDs
+            if album_mbid:
+                payload["musicbrainz_album_mbid"] = album_mbid
+                payload["musicbrainz_albumid"] = album_mbid
+            if album_rg_mbid:
+                payload["musicbrainz_releasegroupid"] = album_rg_mbid
+            if artist_mbid:
+                payload["musicbrainz_artistid"] = artist_mbid
+
+            # Discogs ID
+            if discogs_id:
+                payload["discogs_album_id"] = discogs_id
+
+            # Cover art URL
+            if cover_url:
+                payload["cover_art_url"] = cover_url
+
+            # Genres — write to both DB and audio file
+            if genres_str:
+                genres_list = [g.strip() for g in genres_str.split(",") if g.strip()]
+                if genres_list:
+                    from db.repositories.metadata import update_track_genres
+                    update_track_genres(track_id=track_id, genres_str=genres_str)
+                    # Write to audio file
+                    file_path = track.get("file_path")
+                    if file_path and os.path.exists(file_path):
+                        try:
+                            update_file_tags(file_path, {"genres": genres_list})
+                        except Exception as tag_err:
+                            logger.debug("[album_detail] Tag write failed for %s: %s", track_id, tag_err)
+
+            if len(payload) > 1:  # more than just id
+                try:
+                    insert_or_update_track(track_id, payload)
+                    updated_count += 1
+                except Exception as db_err:
+                    logger.debug("[album_detail] DB update failed for %s: %s", track_id, db_err)
+
+        if updated_count > 0:
+            await flash(f"Album metadata saved — {updated_count} track(s) updated.", "success")
+        else:
+            await flash("No changes were made.", "info")
+
+        # Redirect to the new album name if changed
+        redirect_artist = new_artist or artist_name
+        redirect_album = new_title or album_name
+        return redirect(url_for("ui.album_detail", artist=redirect_artist, album=redirect_album))
 
     with db_session() as session:
         result = session.execute(
@@ -1104,6 +1319,35 @@ async def album_detail(artist: str, album: str):
         "discogs_album_id": first_value("discogs_album_id", "discogs_release_id"),
     }
 
+    # Derive album year from track years as fallback
+    year_values = [
+        safe_int(track.get("year"))
+        for track in tracks
+        if safe_int(track.get("year")) is not None
+    ]
+    album_data["album_year"] = (
+        max(year_values) if year_values else None
+    )
+
+    # Check if album is bookmarked/favourited
+    is_album_favourite = False
+    try:
+        with db_session() as session:
+            row = session.execute(
+                text("""
+                    SELECT 1 FROM bookmarks
+                    WHERE bookmark_type = 'album'
+                      AND LOWER(artist_name) = LOWER(:artist)
+                      AND LOWER(album_name) = LOWER(:album)
+                    LIMIT 1
+                """),
+                {"artist": artist_name, "album": album_name},
+            ).fetchone()
+            if row:
+                is_album_favourite = True
+    except Exception as exc:
+        logger.debug("Failed to check album bookmark for '%s' - '%s': %s", artist_name, album_name, exc)
+
     tracks_by_disc: dict[int, list[dict[str, Any]]] = {}
     for track in tracks:
         disc_number = safe_int(track.get("disc_number")) or 1
@@ -1143,8 +1387,7 @@ async def album_detail(artist: str, album: str):
         genre_sources=genre_sources,
         album_artist_mbid=album_artist_mbid,
 
-        # Currently defaulted until favourites are wired into a repository/service
-        is_album_favourite=False,
+        is_album_favourite=is_album_favourite,
 
         # Download provider config
         qbit_config=cfg.get("qbittorrent", {}),

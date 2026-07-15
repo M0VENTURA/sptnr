@@ -826,7 +826,6 @@ def run_essentia_mood_scan(
                     all_genres = list(dict.fromkeys(existing_list + child_genres))
                     updates["essentia_genres"] = json.dumps(all_genres)
                     updates["genres"] = "; ".join(merged_genres[:3])
-                    updates["genre_source"] = "essentia"
 
                     # Sync merged genres to file tags
                     write_ok = update_file_tags(file_path, {"genre": "; ".join(merged_genres)})

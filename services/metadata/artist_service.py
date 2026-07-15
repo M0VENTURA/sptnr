@@ -142,6 +142,9 @@ def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
       - missing_tracks: True when tracks are missing file paths
       - track_count: number of tracks in the album
       - has_mbid: whether any track has an album MBID
+      - album_type: detected album type (album, ep, single, compilation, live_album, remix)
+      - album_year: release year from track data
+      - is_missing: whether all tracks have no file_path
     """
     artist_name = str(artist_name or "").strip()
     if not artist_name:
@@ -156,7 +159,11 @@ def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
                     COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') AS disc_issue_count,
                     COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') AS mbid_issue_count,
                     COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') AS missing_track_count,
-                    MAX(CASE WHEN musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != '' THEN 1 ELSE 0 END) AS has_mbid
+                    COUNT(*) FILTER (WHERE file_path IS NOT NULL AND file_path != '') AS present_track_count,
+                    MAX(CASE WHEN musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != '' THEN 1 ELSE 0 END) AS has_mbid,
+                    MAX(year) AS album_year,
+                    MAX(spotify_album_type) AS spotify_album_type,
+                    MAX(album_type) AS album_type
                 FROM tracks
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
                    OR LOWER(REGEXP_REPLACE(
@@ -168,12 +175,34 @@ def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
                 GROUP BY album
                 ORDER BY album
             """), {"name": artist_name})
+
+            # Helper to classify album type (mirrors classify_album from ui_routes)
+            def _classify(album_row: dict) -> str:
+                import re as _re
+                raw_type = str(album_row.get("spotify_album_type") or album_row.get("album_type") or "").lower()
+                album_name = str(album_row.get("album") or "").lower()
+                if "compilation" in raw_type:
+                    return "compilation"
+                if "soundtrack" in raw_type or "soundtrack" in album_name:
+                    return "compilation"
+                if "live" in raw_type or _re.search(r'\blive\b', album_name) or "unplugged" in album_name:
+                    return "live_album"
+                if "remix" in raw_type or "remix" in album_name:
+                    return "remix_album"
+                if raw_type == "ep" or raw_type.startswith("ep") or " ep" in raw_type:
+                    return "ep"
+                if "single" in raw_type:
+                    return "single"
+                return "album"
+
             albums = []
             for r in rows.fetchall():
                 row_dict = dict(r._mapping)
+                present_count = int(row_dict.get("present_track_count") or 0)
+                total_count = int(row_dict["track_count"] or 0)
                 albums.append({
                     "album": row_dict["album"],
-                    "track_count": int(row_dict["track_count"] or 0),
+                    "track_count": total_count,
                     "disc_issues": int(row_dict["disc_issue_count"] or 0) > 0,
                     "disc_issue_count": int(row_dict["disc_issue_count"] or 0),
                     "mbid_issues": int(row_dict["mbid_issue_count"] or 0) > 0,
@@ -181,9 +210,16 @@ def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
                     "missing_tracks": int(row_dict["missing_track_count"] or 0) > 0,
                     "missing_track_count": int(row_dict["missing_track_count"] or 0),
                     "has_mbid": bool(row_dict["has_mbid"]),
+                    "album_year": int(row_dict["album_year"]) if row_dict.get("album_year") else None,
+                    "is_missing": present_count == 0 and total_count > 0,
+                    "album_type": _classify(row_dict),
+                    "spotify_album_type": row_dict.get("spotify_album_type") or "",
                 })
     except Exception as exc:
         logger.error("[get_correction_albums] Query failed for '%s': %s", artist_name, exc)
         albums = []
+
+    # Sort: missing last, then by year desc, then by name
+    albums.sort(key=lambda a: (a.get("is_missing") or False, a.get("album_year") is None, -(a.get("album_year") or 0), str(a.get("album") or "").lower()))
 
     return {"success": True, "albums": albums}, 200

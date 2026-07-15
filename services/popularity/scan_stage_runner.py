@@ -25,6 +25,17 @@ from services.scanning.scan_history_service import record_scan
 logger = logging.getLogger(__name__)
 
 
+def _resolve_scan_type(options: dict[str, Any]) -> str:
+    """Return a human-readable scan-type label from the runner options."""
+    if options.get("metadata_only"):
+        return "metadata"
+    if options.get("singles_only") or options.get("singles_with_missing_popularity"):
+        return "singles"
+    if options.get("popularity_only"):
+        return "popularity"
+    return "combined"
+
+
 def run_scan(
     *,
     verbose: bool = False,
@@ -111,8 +122,9 @@ def run_scan(
 
         stat_eligible_tracks = get_stat_eligible_tracks(track_contexts)
 
-        # Record per-artist scan in history for dashboard display
-        record_scan("popularity", "started", message=f"Popularity scan: {artist} - {album}", artist=artist, album=album)
+        # Determine actual scan type from options for history display
+        _scan_type = _resolve_scan_type(options)
+        record_scan(_scan_type, "started", message=f"{_scan_type} scan: {artist} - {album}", artist=artist, album=album)
 
         album_result = enrich_album(
             album_row=album_row,
@@ -165,7 +177,7 @@ def run_scan(
 
         # Record completion for this album scan
         try:
-            record_scan("popularity", "completed", message=f"Popularity scan: {artist} - {album}", artist=artist, album=album)
+            record_scan(_scan_type, "completed", message=f"{_scan_type} scan: {artist} - {album}", artist=artist, album=album)
         except Exception:
             pass  # Non-critical — dashboard data is best-effort
 

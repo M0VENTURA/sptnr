@@ -291,11 +291,39 @@
     </div>
     <div class="card-body" style="background-color: var(--secondary-bg);">
       <div id="artistSimilarArtistsContainer">
-        <div class="d-flex justify-content-center py-3">
-          <div class="spinner-border spinner-border-sm" role="status">
-            <span class="visually-hidden">Loading similar artists...</span>
+        {% set has_similar = similar_artists and (similar_artists.lastfm|length > 0 or similar_artists.listenbrainz|length > 0) %}
+        {% if has_similar %}
+          {% if similar_artists.lastfm %}
+            <div class="mb-3">
+              <small class="text-muted d-block mb-2"><i class="bi bi-music-note"></i> From Last.fm</small>
+              <div class="d-flex flex-wrap gap-2">
+                {% for sa in similar_artists.lastfm %}
+                  <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="text-decoration-none">
+                    <span class="badge bg-secondary similar-artist-pill">{{ sa.name }}</span>
+                  </a>
+                {% endfor %}
+              </div>
+            </div>
+          {% endif %}
+          {% if similar_artists.listenbrainz %}
+            <div>
+              <small class="text-muted d-block mb-2"><i class="bi bi-music-note"></i> From ListenBrainz</small>
+              <div class="d-flex flex-wrap gap-2">
+                {% for sa in similar_artists.listenbrainz %}
+                  <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="text-decoration-none">
+                    <span class="badge bg-secondary similar-artist-pill">{{ sa.name }}</span>
+                  </a>
+                {% endfor %}
+              </div>
+            </div>
+          {% endif %}
+        {% else %}
+          <div class="text-center py-3 text-muted">
+            <i class="bi bi-info-circle"></i>
+            <span>No similar artists available yet.</span>
+            <br><small>Similar artists are collected during popularity scans from Last.fm and ListenBrainz.</small>
           </div>
-        </div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -426,7 +454,7 @@
       <h5 class="card-title mb-0">
         <i class="bi bi-graph-up-arrow"></i> Top Tracks
       </h5>
-      <small class="text-muted">Top 10 by z-score</small>
+      <small class="text-muted">Top 20 by popularity score</small>
     </div>
     <div class="card-body p-0">
       <div class="table-responsive">
@@ -527,11 +555,12 @@
       <div class="card h-100">
         <div class="card-body text-center">
           <div class="text-muted mb-2" style="font-size: 0.85rem;">
-            <i class="bi bi-calendar"></i> Avg Score
+            <i class="bi bi-star-half"></i> Avg Rating
           </div>
           <div class="h5 mb-0">
             {% if stats.avg_stars %}
-              <span class="badge badge-info">{{ (stats.avg_stars * 20)|round(0)|int }}%</span>
+              {{ stats.avg_stars|round(2) }} ★
+              <span class="badge bg-info ms-1">{{ (stats.avg_stars * 20)|round(0)|int }}%</span>
             {% else %}
               —
             {% endif %}
@@ -1136,31 +1165,26 @@
     </div>
 </div>
 
+<!-- Page data for artist_detail.js -->
+<script id="page-data" type="application/json">{{ {"artistName": artist_name} | tojson | safe }}</script>
 <script>
-// Constants for slskd search polling
-const SLSKD_MAX_POLL_ATTEMPTS = 60;
-const SLSKD_POLL_INTERVAL_MS = 2000;
-const BYTES_TO_MB = 1024 * 1024;
-
-// Event listener for Soulseek tab - show track queue option when tab is clicked
-document.addEventListener('DOMContentLoaded', function() {
-  var slskdTab = document.getElementById('slskd-tab');
-  if (slskdTab) {
-    slskdTab.addEventListener('shown.bs.tab', function() {
-      if (typeof currentDownloadAlbum !== 'undefined' && currentDownloadAlbum.album) {
-        showSlskdTrackQueueOption();
-      }
-    });
-  }
-});
+var _pd = JSON.parse(document.getElementById('page-data').textContent);
 </script>
+
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
+<script src="{{ url_for('static', filename='js/artist_detail.js') }}"></script>
 
 {% include 'components/_musicbrainz_search_modal.html' %}
-{% include 'components/_musicbrainz_search_functions.html' %}
 
 <script>
-// Keep existing inline Javascript handling searches and logic here
+document.addEventListener('DOMContentLoaded', function() {
+  var artistName = _pd.artistName;
+
+  // Load covers of this artist's songs
+  if (typeof loadArtistCoveredBy === 'function') {
+    loadArtistCoveredBy(artistName);
+  }
+});
 </script>
 
 {% endblock %}

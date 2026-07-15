@@ -1,7 +1,5 @@
-<script>
-// Guard: only define if not already loaded by downloads.js or base template
-if (typeof window.mbSearchFunctionsLoaded === 'undefined') {
-  window.mbSearchFunctionsLoaded = true;
+{# Backward compatibility shim — delegates to the unified component #}
+{% include 'components/_musicbrainz_search_component.html' %}
 
   if (typeof escapeHtml === 'undefined') {
     function escapeHtml(text) {

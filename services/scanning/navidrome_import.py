@@ -45,9 +45,19 @@ VA_ALBUM_ARTIST_VARIANTS = frozenset({
 })
 
 
-def _get_empty_client() -> NavidromeClient:
-    """Return a fallback client used only when legacy start.py helpers are unavailable."""
-    return NavidromeClient(base_url="", username="", password="")
+def _get_fallback_client() -> NavidromeClient | None:
+    """Return a properly configured Navidrome client from the scan service.
+
+    Returns None when Navidrome is not configured so callers can degrade
+    gracefully instead of crashing or producing malformed requests.
+    """
+    try:
+        from services.scanning.navidrome_scan_service import get_nav_client
+        return get_nav_client()
+    except RuntimeError:
+        return None
+    except Exception:
+        return None
 
 
 def fetch_artist_albums(artist_id: str, client: NavidromeClient | None = None) -> list[dict[str, Any]]:
@@ -59,7 +69,10 @@ def fetch_artist_albums(artist_id: str, client: NavidromeClient | None = None) -
         from start import fetch_artist_albums as existing_fetch_artist_albums
         return existing_fetch_artist_albums(artist_id) or []
     except Exception:
-        return _get_empty_client().fetch_artist_albums(artist_id) or []
+        fb = _get_fallback_client()
+        if fb:
+            return fb.fetch_artist_albums(artist_id) or []
+        return []
 
 
 def fetch_album_tracks(album_id: str, client: NavidromeClient | None = None) -> dict[str, Any]:
@@ -71,7 +84,10 @@ def fetch_album_tracks(album_id: str, client: NavidromeClient | None = None) -> 
         from start import fetch_album_tracks as existing_fetch_album_tracks
         return existing_fetch_album_tracks(album_id) or {}
     except Exception:
-        return _get_empty_client().fetch_album_tracks(album_id) or {}
+        fb = _get_fallback_client()
+        if fb:
+            return fb.fetch_album_tracks(album_id) or {}
+        return {}
 
 
 def save_to_db(track_payload: dict[str, Any]) -> None:
@@ -297,7 +313,7 @@ def scan_artist_to_db(
         # Only create fallback client for getSong metadata extraction if a real
         # client was not passed and the legacy start.py helpers were used for
         # album/track fetching.
-        navi_client = active_client or _get_empty_client()
+        navi_client = active_client or _get_fallback_client()
 
         for album_index, album in enumerate(albums, 1):
             album_name = album.get("name") or ""
