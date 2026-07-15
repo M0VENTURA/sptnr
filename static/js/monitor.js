@@ -528,3 +528,99 @@ async function migrateExistingQueueItems(buttonEl) {
 
 async function executeFolderMerge() { alert('Folder merge functionality coming soon.'); }
 async function showDestinationFolderPicker() { alert('Folder picker coming soon.'); }
+
+// ===== Merged Queue Releases Renderer (replaces loadCurrentQueueReleasesForFolder + loadCurrentQueueReleases) =====
+async function renderCurrentQueueReleases(containerId, artist, album, actionHtmlBuilder) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  try {
+    const apiUrl = `/api/queue/matched-releases?artist=${encodeURIComponent(artist || '')}&album=${encodeURIComponent(album || '')}&limit=80`;
+    const data = await fetchJsonOrThrow(apiUrl);
+    const releases = data.releases || [];
+
+    if (!releases.length) {
+      container.innerHTML = '<div class="alert alert-info mb-0 small">No matched releases found. Use <strong>Search Online</strong> below.</div>';
+      return;
+    }
+
+    const rows = releases.map(rel => {
+      const relArtist = rel.artist || '';
+      const relAlbum = rel.album || '';
+      const relMbid = rel.mbid || '';
+      const relYear = rel.year || '';
+      const relCount = rel.track_count || 0;
+
+      return `
+        <tr>
+          <td>${escapeHtml(relArtist)}</td>
+          <td>${escapeHtml(relAlbum)}</td>
+          <td>${escapeHtml(String(relYear))}</td>
+          <td>${escapeHtml(String(relCount))}</td>
+          <td><small class="text-info">${escapeHtml(relMbid)}</small></td>
+          <td>${actionHtmlBuilder(relArtist, relAlbum, relMbid)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <div class="table-responsive">
+        <table class="table table-sm table-dark table-striped mb-0">
+          <thead>
+            <tr>
+              <th>Artist</th><th>Album</th><th>Year</th><th>Tracks</th><th>MBID</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  } catch (error) {
+    console.error(`Error loading queue releases for ${containerId}:`, error);
+    container.innerHTML = '<div class="alert alert-warning mb-0 small">Could not load current queue releases.</div>';
+  }
+}
+
+// ===== Fixed queueMissingTracks (Promise.all for concurrent requests) =====
+async function queueMissingTracks(tracksJson, artist) {
+  try {
+    const tracks = JSON.parse(tracksJson);
+    const missingTracks = tracks.filter(t => t.status === 'missing');
+
+    if (missingTracks.length === 0) {
+      alert('No missing tracks to queue');
+      return;
+    }
+
+    // Use Promise.all to run requests concurrently instead of one-by-one
+    const queuePromises = missingTracks.map(track =>
+      fetch('/api/downloads/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: track.title || '',
+          artist: artist,
+          album: track.release_title || '',
+          source: 'musicbrainz',
+          status: 'queued'
+        })
+      }).then(r => r.ok)
+    );
+
+    const results = await Promise.all(queuePromises);
+    const queuedCount = results.filter(Boolean).length;
+
+    if (queuedCount > 0) {
+      alert(`Successfully queued ${queuedCount}/${missingTracks.length} missing tracks`);
+      setTimeout(loadQueueStatus, 500);
+
+      const modal = bootstrap.Modal.getInstance(document.getElementById('releaseTracklistModal'));
+      if (modal) modal.hide();
+    } else {
+      alert('Failed to queue any tracks');
+    }
+  } catch (error) {
+    console.error('Error queuing missing tracks:', error);
+    alert(`Error: ${error.message}`);
+  }
+}
