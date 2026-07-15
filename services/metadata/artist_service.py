@@ -16,7 +16,6 @@ from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection
 from db.repositories.metadata import (
     fetch_track_for_delete,
     delete_track_row,
@@ -33,88 +32,59 @@ logger = logging.getLogger(__name__)
 
 def delete_track(track_id: str, delete_file: bool = True):
     """Delete a track DB row and optionally remove its local file."""
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        row = fetch_track_for_delete(cursor, track_id)
-        if not row:
-            return {"success": False, "error": "Track not found"}, 404
+    row = fetch_track_for_delete(None, track_id)
+    if not row:
+        return {"success": False, "error": "Track not found"}, 404
 
-        data = dict(row) if hasattr(row, "keys") else {
-            "id": row[0],
-            "file_path": row[1],
-            "artist": row[2],
-            "album": row[3],
-            "title": row[4],
-        }
+    data = {
+        "id": row[0],
+        "file_path": row[1],
+        "artist": row[2],
+        "album": row[3],
+        "title": row[4],
+    }
 
-        deleted_file = False
-        file_path = data.get("file_path")
-        if delete_file and file_path:
-            normalized = str(file_path).replace("\\", "/")
-            if not normalized.startswith("__queued_for_download__") and os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                    deleted_file = True
-                except Exception as exc:
-                    logger.warning("[CORRECTIONS] File delete failed: %s", exc)
+    deleted_file = False
+    file_path = data.get("file_path")
+    if delete_file and file_path:
+        normalized = str(file_path).replace("\\", "/")
+        if not normalized.startswith("__queued_for_download__") and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                deleted_file = True
+            except Exception as exc:
+                logger.warning("[CORRECTIONS] File delete failed: %s", exc)
 
-        delete_track_row(conn, track_id)
-        conn.commit()
-
-    finally:
-        conn.close()
+    delete_track_row(None, track_id)
 
     return {"success": True, "deleted_track_id": track_id, "deleted_file": deleted_file}, 200
-   
+
 
 def merge_albums(artist: str, source_albums: list[str], canonical_name: str):
     if not source_albums:
         return {"success": False, "error": "source_albums is required"}, 400
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        rows_updated = merge_album_names(cursor, artist, source_albums, canonical_name)
-        conn.commit()
-    finally:
-        conn.close()
+    rows_updated = merge_album_names(None, artist, source_albums, canonical_name)
     return {"success": True, "rows_updated": rows_updated}, 200
 
 
 def clear_disc_number(artist: str, album: str, force: bool = False):
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        disc_count = count_album_disc_numbers(cursor, artist, album)
-        if disc_count > 1 and not force:
-            return {"success": False, "error": "Likely multi-disc album", "needs_manual_review": True}, 409
-        cleared = clear_album_disc_numbers(conn, artist, album)
-        conn.commit()
-    finally:
-        conn.close()
+    disc_count = count_album_disc_numbers(None, artist, album)
+    if disc_count > 1 and not force:
+        return {"success": False, "error": "Likely multi-disc album", "needs_manual_review": True}, 409
+    cleared = clear_album_disc_numbers(None, artist, album)
     return {"success": True, "cleared": cleared}, 200
 
 
 def artist_exists(artist: str):
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        count = artist_track_count(cursor, artist)
-    finally:
-        conn.close()
+    count = artist_track_count(None, artist)
     return {"exists": count > 0}, 200
 
 
 def get_cached_missing(artist: str):
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        rows = fetch_cached_missing_releases(conn, artist)
-    finally:
-        conn.close()
+    rows = fetch_cached_missing_releases(None, artist)
     return {
         "artist": artist,
-        "missing": [{"title": r[0] if not hasattr(r, "get") else r.get("title"), "id": r[1] if not hasattr(r, "get") else r.get("release_id")} for r in rows],
+        "missing": [{"title": r[0], "id": r[1]} for r in rows],
     }, 200
 
 
@@ -128,13 +98,7 @@ def apply_album_mbid(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     if not artist_name or not album_name or not album_mbid:
         return {"success": False, "error": "artist, album, and mbid are required"}, 400
 
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        rows_updated = update_album_mbid_fields(conn, artist_name, album_name, album_mbid, release_group_mbid, None)
-        conn.commit()
-    finally:
-        conn.close()
+    rows_updated = update_album_mbid_fields(None, artist_name, album_name, album_mbid, release_group_mbid, None)
 
     # File tag updates (best-effort, outside transaction)
     files_updated = 0
@@ -142,14 +106,12 @@ def apply_album_mbid(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
         try:
             from services.metadata.tag_file_service import update_file_tags as update_tags
             import os
-            conn2 = get_db_connection()
-            try:
-                cursor2 = conn2.cursor()
-                cursor2.execute("""
+            with db_session() as session:
+                result = session.execute(text("""
                     SELECT file_path FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
-                """, (artist_name, album_name))
-                for row in cursor2.fetchall() or []:
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album
+                """), {"artist": artist_name, "album": album_name})
+                for row in result.fetchall() or []:
                     fp = str(row[0] or "").strip()
                     if fp and os.path.exists(fp):
                         try:
@@ -160,8 +122,6 @@ def apply_album_mbid(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
                                 files_updated += 1
                         except Exception:
                             pass
-            finally:
-                conn2.close()
         except Exception:
             pass
 
