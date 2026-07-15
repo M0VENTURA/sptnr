@@ -272,8 +272,9 @@ async def api_album_set_art():
 @album_bp.route("/upload-art", methods=["POST"])
 async def api_album_upload_art():
     """Set custom album art from an uploaded file."""
-    artist = request.form.get("artist", "").strip()
-    album = request.form.get("album", "").strip()
+    form = await request.form
+    artist = form.get("artist", "").strip()
+    album = form.get("album", "").strip()
     image_file = request.files.get("image")
 
     if not artist or not album:

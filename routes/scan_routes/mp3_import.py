@@ -32,10 +32,11 @@ from services.scanning.pipelines.mp3_import_pipeline import run_mp3_import_pipel
 
 
 @scans_bp.route("/scan/mp3-import", methods=["POST"])
-def scan_mp3_import():
+async def scan_mp3_import():
     """Run MP3 metadata import scan."""
-    directory = request.form.get("directory") or None
-    dry_run = str(request.form.get("dry_run") or "").strip().lower() == "on"
+    form = await request.form
+    directory = form.get("directory") or None
+    dry_run = str(form.get("dry_run") or "").strip().lower() == "on"
 
     progress_file = get_scan_progress_path("mp3_import")
 

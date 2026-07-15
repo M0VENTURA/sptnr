@@ -32,10 +32,11 @@ from services.scanning.pipelines.navidrome_pipeline import run_navidrome_import_
 # -------------------------------------------------------------------------
 
 @scans_bp.route("/scan/start", methods=["POST"])
-def scan_start():
-    scan_type = request.form.get("scan_type", "full")
-    artist = (request.form.get("artist") or "").strip()
-    force = form_bool(request.form.get("force"))
+async def scan_start():
+    form = await request.form
+    scan_type = form.get("scan_type", "full")
+    artist = (form.get("artist") or "").strip()
+    force = form_bool(form.get("force"))
 
     # -------------------------------------------------
     # Artist-only scan

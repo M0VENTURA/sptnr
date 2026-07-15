@@ -4,7 +4,7 @@
 {% set album_id = safe_artist + '_' + safe_album %}
 <div class="accordion-item album-row" data-year="{{ album.get('album_year') or (album.get('first_release_date') or '')[:4] or 0 }}" data-status="{% if album.get('is_downloading') %}downloading{% elif is_missing %}missing{% else %}discovered{% endif %}" data-album="{{ album.get('album') or album.get('title') }}" {% if not is_missing and album.get('musicbrainz_album_mbid') %}data-mb-mbid="{{ album.get('musicbrainz_album_mbid') }}" data-artist="{{ artist_name|e }}" data-album-name="{{ (album.get('album') or album.get('title'))|e }}"{% endif %}>
   <h2 class="accordion-header" id="heading-{{ album_id }}">
-    <button class="accordion-button collapsed py-2 px-3" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ album_id }}" aria-expanded="false" aria-controls="collapse-{{ album_id }}">
+    <div class="accordion-button collapsed py-2 px-3" type="button" role="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ album_id }}" aria-expanded="false" aria-controls="collapse-{{ album_id }}">
       <div class="d-flex align-items-center gap-3 w-100 flex-wrap">
         <!-- Album Art -->
         <div class="album-art-wrapper flex-shrink-0" style="width: 48px; height: 48px;">
@@ -86,11 +86,50 @@
           </form>
         </div>
       </div>
-    </button>
+    </div>
   </h2>
   <div id="collapse-{{ album_id }}" class="accordion-collapse collapse" aria-labelledby="heading-{{ album_id }}" data-bs-parent="#{{ parent_id }}">
     <div class="accordion-body py-2 px-3 text-muted small">
-      <!-- Expandable content: track list, details, etc. -->
+      {% set album_tracks = album.get('tracks') or [] %}
+      {% if album_tracks %}
+      <div class="table-responsive">
+        <table class="table table-sm table-dark table-striped mb-0">
+          <thead>
+            <tr>
+              <th style="width: 40px;">#</th>
+              <th>Track</th>
+              <th style="width: 80px;" class="text-center">Duration</th>
+              <th style="width: 70px;" class="text-center">Stars</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in album_tracks %}
+            <tr>
+              <td class="text-center text-muted">{{ t.get('track_number') or loop.index }}</td>
+              <td>
+                <a href="{{ url_for('ui.track_detail', artist=artist_name, album=album.get('album') or album.get('title') or '', track_id=t.get('id') or 0) }}" class="text-reset text-decoration-none">
+                  {{ t.get('title') or '—' }}
+                </a>
+                {% if t.get('artist') and t.get('artist') != artist_name %}
+                <small class="text-muted"> — {{ t.get('artist') }}</small>
+                {% endif %}
+              </td>
+              <td class="text-center">
+                {% if t.get('duration') %}
+                  {{ (t.get('duration') / 60)|int }}:{{ '%02d' % (t.get('duration') % 60) }}
+                {% else %}—{% endif %}
+              </td>
+              <td class="text-center">{{ t.get('stars') or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="text-center py-2 text-muted">
+        <i class="bi bi-info-circle me-1"></i>No track details available.
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>

@@ -59,8 +59,9 @@ def login_required(f):
 @ui_bp.route("/login", methods=["GET", "POST"])
 async def login():
     if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
-        password = (request.form.get("password") or "").strip()
+        form = await request.form
+        username = (form.get("username") or "").strip()
+        password = (form.get("password") or "").strip()
         cfg = get_config()
         nav_users = cfg.get("navidrome_users", [])
 
@@ -677,6 +678,9 @@ async def artist_detail(name: str):
             if stars
             else None
         )
+
+        # Attach tracks to the album entry so the macro can render them
+        album_entry["tracks"] = album_tracks
 
     albums = sorted(
         albums_by_key.values(),
