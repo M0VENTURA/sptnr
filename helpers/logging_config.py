@@ -172,6 +172,8 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
             },
             "urllib3": {"level": "ERROR"},
             "httpx": {"level": "ERROR"},
+            "apscheduler.schedulers.background": {"level": "WARNING"},
+            "apscheduler.executors.default": {"level": "WARNING"},
         },
     }
 

@@ -116,7 +116,7 @@ def run(interval: int | None = None, batch_size: int | None = None) -> None:
                     payload,
                 )
             else:
-                logger.info(
+                logger.debug(
                     "Queue cycle success (loop=%s duration=%ss): processed=%s success=%s failed=%s skipped=%s",
                     loop_count,
                     duration,
