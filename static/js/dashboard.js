@@ -255,6 +255,10 @@ function formatScanTimestamp(ts) {
   return '<span title="' + escapeHtml(full) + '">' + escapeHtml(relative) + "</span>";
 }
 
+function _scanTs(scan) {
+  return scan.scan_timestamp || scan.started_at || scan.timestamp || null;
+}
+
 function renderRecentScans(scans) {
   var body = document.getElementById("recent-scans-body");
   if (!body) return;
@@ -265,11 +269,12 @@ function renderRecentScans(scans) {
   var grouped = {};
   var inProgress = [];
   scans.forEach(function (scan) {
+    var ts = _scanTs(scan);
     if (scan._inProgress) {
       inProgress.push({
         artist: scan.artist,
         album: scan.album || "\u2026",
-        scan_types: [{ type: scan.scan_type, timestamp: scan.scan_timestamp, _inProgress: true }],
+        scan_types: [{ type: scan.scan_type, timestamp: ts, _inProgress: true }],
         latest_timestamp_obj: new Date(),
         _inProgress: true,
       });
@@ -281,16 +286,16 @@ function renderRecentScans(scans) {
         artist: scan.artist,
         album: scan.album,
         scan_types: [],
-        latest_timestamp_obj: parseScanTimestamp(scan.scan_timestamp),
+        latest_timestamp_obj: parseScanTimestamp(ts),
       };
     }
     if (!grouped[key].scan_types.find(function (s) { return s.type === scan.scan_type; })) {
-      grouped[key].scan_types.push({ type: scan.scan_type, timestamp: scan.scan_timestamp });
+      grouped[key].scan_types.push({ type: scan.scan_type, timestamp: ts });
     }
-    var scanTime = parseScanTimestamp(scan.scan_timestamp);
+    var scanTime = parseScanTimestamp(ts);
     var currentLatest = grouped[key].latest_timestamp_obj;
     if (scanTime && (!currentLatest || scanTime > currentLatest)) {
-      grouped[key].latest_timestamp = scan.scan_timestamp;
+      grouped[key].latest_timestamp = ts;
       grouped[key].latest_timestamp_obj = scanTime;
     }
   });
