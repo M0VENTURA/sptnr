@@ -4,60 +4,20 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <div class="mb-4">
-    <h1 class="h2 mb-2">
-      <i class="bi bi-download"></i> Music Downloads
-      <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2" title="Help for Downloads">
-          <i class="bi bi-question-circle"></i>
-      </a>
-    </h1>
-    <p class="text-muted mb-0">Search and download music from qBittorrent</p>
+  <div class="alert alert-info mb-4">
+    <i class="bi bi-info-circle"></i> The qBittorrent search has moved to the
+    <a href="{{ url_for('ui.search') }}#qbittorrent" class="alert-link">unified search page</a>.
+    You'll be redirected automatically.
   </div>
-<div class="row g-4 mb-4">
-    <!-- qBittorrent Search - Full Width -->
-    {% if qbit_config.enabled %}
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header">
-          <h5 class="card-title mb-0">
-            <i class="bi bi-cloud-download"></i> qBittorrent Search
-          </h5>
-        </div>
-        <div class="card-body">
-          <div class="mb-3">
-            <div class="input-group">
-              <input type="text" class="form-control" id="qbitSearchInput" placeholder="Search torrents...">
-              <button class="btn btn-primary" onclick="performQbitSearch()">
-                <i class="bi bi-search"></i> Search
-              </button>
-            </div>
-          </div>
-          
-          <div id="qbitLoading" class="text-center py-4" style="display: none;">
-            <div class="spinner-border text-primary" role="status">
-              <span class="visually-hidden">Searching...</span>
-            </div>
-            <p class="mt-2">Searching qBittorrent...</p>
-          </div>
-          
-          <div id="qbitResults" style="max-height: 600px; overflow-y: auto;"></div>
-        </div>
-      </div>
+
+  <div class="card mb-4">
+    <div class="card-header">
+      <h5 class="card-title mb-0"><i class="bi bi-cloud-download"></i> qBittorrent Search</h5>
     </div>
-    {% else %}
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header">
-          <h5 class="card-title mb-0">
-            <i class="bi bi-cloud-download"></i> qBittorrent Search
-          </h5>
-        </div>
-        <div class="card-body">
-          <div class="alert alert-warning">
-            <i class="bi bi-exclamation-triangle"></i> qBittorrent integration is not enabled. 
-            <a href="{{ url_for('ui.config_editor') }}">Configure it</a> in config.yaml.
-          </div>
-        </div>
+    <div class="card-body">
+      {% include 'components/search/_qbittorrent.html' %}
+    </div>
+  </div>
       </div>
     </div>
     {% endif %}
@@ -122,4 +82,9 @@
 
 <!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+<script>
+setTimeout(function() {
+  window.location.href = '{{ url_for("ui.search") }}#qbittorrent';
+}, 5000);
+</script>
 {% endblock %}

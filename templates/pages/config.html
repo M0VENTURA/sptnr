@@ -2,11 +2,9 @@
 {% block title %}Config · Popularr{% endblock %}
 {% block content %}
 <div class="container-fluid py-3 py-md-4">
-  <!-- Config data as JSON for JavaScript -->
-  <script id="config-data" type="application/json">{{ config | tojson | safe }}</script>
   <script>
     // Make config data available to JavaScript
-    window.pageConfig = JSON.parse(document.getElementById('config-data').textContent);
+    window.pageConfig = {{ config | tojson }};
   </script>
   <div class="row mb-3">
     <div class="col-12 col-md-auto">
@@ -34,37 +32,34 @@
   </div>
   {% endif %}
 
-  <!-- Quick Jump Navigation -->
-  <div class="card mb-3 border-primary">
-    <div class="card-body py-2">
-      <div class="d-flex flex-wrap gap-2 align-items-center justify-content-center">
-        <span class="text-muted small me-2"><i class="bi bi-lightning-fill"></i> Jump:</span>
-        <span class="text-muted small fw-semibold border-end pe-2 me-1">Connect</span>
-        <a href="#users" class="btn btn-sm btn-outline-primary">Users</a>
-        <a href="#api-integrations" class="btn btn-sm btn-outline-primary">APIs</a>
-        <a href="#sources" class="btn btn-sm btn-outline-primary">Sources</a>
-        <span class="text-muted small fw-semibold border-end pe-2 me-1">Downloads</span>
-        <a href="#downloads" class="btn btn-sm btn-outline-primary">Files</a>
-        <a href="#download-matching" class="btn btn-sm btn-outline-primary">Match</a>
-        <a href="#queue-matching" class="btn btn-sm btn-outline-primary">Queue</a>
-        <a href="#slskd-timeouts" class="btn btn-sm btn-outline-primary">Timeouts</a>
-        <span class="text-muted small fw-semibold border-end pe-2 me-1">Scan</span>
-        <a href="#watcher" class="btn btn-sm btn-outline-primary">Auto</a>
-        <a href="#essentia-mood-scan" class="btn btn-sm btn-outline-primary">Essentia</a>
-        <a href="#popularity-weights" class="btn btn-sm btn-outline-primary">Weights</a>
-        <a href="#single-detection-zscore" class="btn btn-sm btn-outline-primary">Z-Score</a>
-        <span class="text-muted small fw-semibold border-end pe-2 me-1">Match</span>
-        <a href="#matching-config" class="btn btn-sm btn-outline-primary">Tracks</a>
-        <a href="#lastfm-advanced" class="btn btn-sm btn-outline-primary">Last.fm</a>
-        <a href="#genre-weights" class="btn btn-sm btn-outline-primary">Genres</a>
-        <a href="#wikidata" class="btn btn-sm btn-outline-primary">Bio</a>
-        <span class="text-muted small fw-semibold">System</span>
-        <a href="#search-filters" class="btn btn-sm btn-outline-primary">Filters</a>
-        <a href="#upcoming-releases-sources" class="btn btn-sm btn-outline-primary">Upcoming</a>
-        <a href="#filesystem" class="btn btn-sm btn-outline-primary">FS</a>
+  <!-- Vertical Tab Navigation -->
+  <div class="row mt-3">
+    <div class="col-12 col-md-3 col-xl-2 mb-4">
+      <div class="nav flex-column nav-pills sticky-top" style="top:5rem;z-index:100;" id="configTabs" role="tablist" aria-orientation="vertical">
+        <button class="nav-link active text-start" data-bs-toggle="pill" data-bs-target="#tab-system" type="button" role="tab">
+          <i class="bi bi-pc-display"></i> System & Users
+        </button>
+        <button class="nav-link text-start" data-bs-toggle="pill" data-bs-target="#tab-apis" type="button" role="tab">
+          <i class="bi bi-plug"></i> Integrations
+        </button>
+        <button class="nav-link text-start" data-bs-toggle="pill" data-bs-target="#tab-downloads" type="button" role="tab">
+          <i class="bi bi-cloud-download"></i> Downloads
+        </button>
+        <button class="nav-link text-start" data-bs-toggle="pill" data-bs-target="#tab-matching" type="button" role="tab">
+          <i class="bi bi-union"></i> Matching
+        </button>
+        <button class="nav-link text-start" data-bs-toggle="pill" data-bs-target="#tab-analytics" type="button" role="tab">
+          <i class="bi bi-graph-up"></i> Analytics & Scoring
+        </button>
       </div>
     </div>
-  </div>
+
+    <div class="col-12 col-md-9 col-xl-10">
+      <form id="configForm">
+        <div class="tab-content" id="configTabsContent">
+
+        <!-- ===== TAB 1: SYSTEM & USERS ===== -->
+        <div class="tab-pane fade show active" id="tab-system" role="tabpanel">
 
   {% set navidrome_users = config.get('navidrome_users', []) %}
   {% if navidrome_users and navidrome_users|length > 1 %}
@@ -89,15 +84,7 @@
   </div>
   {% endif %}
 
-  <!--
-    == MULTI-USER CONFIG ==
-    Config path: navidrome_users[]
-    Reads: get_navidrome_config(), get_config().get('navidrome_users', [])
-    Affects: Navidrome API connection, per-user Spotify/Last.fm/ListenBrainz identities
-    Used by: routes/navidrome/*, services/library/library_sync_service.py,
-             services/navidrome/rating_sync_service.py,
-             services/scanning/navidrome_scan_service.py
-  -->
+  <!-- Multi-User Configuration Section -->
   <div class="card shadow-sm mb-3" id="users">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
@@ -142,7 +129,7 @@
             <div class="d-flex justify-content-between align-items-center mb-3">
               <h6 class="mb-0">{{ user.get('display_name', user.get('username', 'User ' ~ loop.index)) }}</h6>
               {% if loop.length > 1 %}
-              <button type="button" class="btn btn-sm btn-outline-danger" data-index="{{ loop.index0 }}" onclick="removeUser(this)">
+              <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUser({{ loop.index0 }})">
                 <i class="bi bi-trash"></i> Remove
               </button>
               {% endif %}
@@ -228,15 +215,12 @@
     </div>
   </div>
 
-  <!--
-    == SHARED API INTEGRATIONS ==
-    Config path: api_integrations.{spotify,lastfm,listenbrainz,discogs,musicbrainz,audiodb,google,youtube}
-    Reads: get_config().get('api_integrations', {})
-    Affects: API client connectivity for all external services
-    Used by: api_clients/*, services/enrichment/*,
-             services/queue/queue_matching_service.py,
-             routes/social_routes.py
-  -->
+        </div><!-- /tab-system -->
+
+        <!-- ===== TAB 2: INTEGRATIONS ===== -->
+        <div class="tab-pane fade" id="tab-apis" role="tabpanel">
+
+  <!-- Shared API Integrations -->
   <div class="card shadow-sm mb-3" id="api-integrations">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-plug-fill"></i> Shared API Integrations</h5>
@@ -379,15 +363,12 @@
     </div>
   </div>
 
-  <!--
-    == DOWNLOAD SOURCES (qBittorrent + slskd) ==
-    Config path: qbittorrent.{enabled,web_url,username,password,downloads_folder}
-                 slskd.{enabled,web_url,api_key}
-    Reads: get_config().get('qbittorrent', {}), get_config().get('slskd', {})
-    Affects: Torrent (qBittorrent) and P2P (Soulseek/slskd) download clients
-    Used by: routes/download_search_routes.py, routes/downloads.py,
-             services/downloads/*, routes/ui_routes.py
-  -->
+        </div><!-- /tab-apis -->
+
+        <!-- ===== TAB 3: DOWNLOADS ===== -->
+        <div class="tab-pane fade" id="tab-downloads" role="tabpanel">
+
+  <!-- qBittorrent & slskd Section (Download Sources) -->
   <div class="card shadow-sm mb-3" id="sources">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-cloud-download"></i> Download Sources</h5>
@@ -445,15 +426,7 @@
     </div>
   </div>
 
-  <!--
-    == DOWNLOADS (folder, naming, quality, conversion) ==
-    Config path: downloads.{folder,external_export_path,file_name_format,quality_filter,conversion}
-                 features.downloads_duplicate_cleanup
-    Reads: get_config().get('downloads', {}), get_config().get('features', {}).get('downloads_duplicate_cleanup', {})
-    Affects: Download folder monitoring, file naming/organization, quality filtering, FLAC→MP3 conversion
-    Used by: services/downloads/*, services/infrastructure/filesystem_service.py,
-             services/infrastructure/base.py, routes/downloads.py
-  -->
+  <!-- Downloads Section -->
   <div class="card shadow-sm mb-3" id="downloads">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-folder-fill"></i> Downloads</h5>
@@ -577,16 +550,7 @@
     </div>
   </div>
 
-  <!-- Automation section stays here (after Downloads group) -->
-  <!--
-    == AUTOMATION / WATCHER SERVICES ==
-    Config path: watcher.{scan_interval,navidrome_sync_wait,auto_import_enabled,auto_popularity_scan,downloads_watcher_enabled}
-                 features.{retry_scheduler,download_queue_cleanup_scheduler,mature_track_min_age_years,
-                           daily_musicbrainz_release_*,live_musicbrainz_*}
-    Reads: get_watcher_settings(), get_config().get('features', {})
-    Affects: Background scan scheduling, auto-import, watcher service behaviour
-    Used by: services/scanning/*, helpers/task_manager.py
-  -->
+  <!-- Automation Services Section -->
   <div class="card shadow-sm mb-3" id="watcher">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-gear-fill"></i> Automation Services</h5>
@@ -749,15 +713,7 @@
   </div>
 
 
-  <!--
-    == ESSENTIA MOOD & GENRE SCAN ==
-    Config path: essentia.{script_path,models_dir,mood_threshold,per_file_timeout,json_output_dir,
-                           tag_moods,parse_json_features,delete_json_after_import,tag_genres,
-                           num_genres,genre_threshold,genre_format}
-    Reads: get_config().get('essentia', {})
-    Affects: On-device ML mood/genre tagging via Essentia-to-Metadata
-    Used by: services/scanning/pipelines/essentia_pipeline.py
-  -->
+  <!-- Essentia Mood Scan Section -->
   <div class="card shadow-sm mb-3" id="essentia-mood-scan">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-cpu"></i> Essentia Mood &amp; Genre Scan</h5>
@@ -863,15 +819,7 @@
     </div>
   </div>
 
-  <!--
-    == SINGLE DETECTION & STANDOUT THRESHOLDS ==
-    Config path: single_detection.{zscore_high_threshold,standout_gap_z,album_zscore_threshold,
-                                   artist_zscore_threshold,artist_top_percentile,artist_min_tracks,
-                                   star_5,star_4,star_3,star_2}
-    Reads: get_standout_config()
-    Affects: Detection of standout tracks, star rating assignment (1-5★)
-    Used by: services/popularity/standout_service.py, services/popularity/scoring.py
-  -->
+  <!-- Single Detection & Standout Thresholds Section (expanded) -->
   <div class="card shadow-sm mb-3" id="single-detection-zscore">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-sliders"></i> Single Detection &amp; Standout Thresholds</h5>
@@ -971,14 +919,7 @@
     </div>
   </div>
 
-  <!--
-    == POPULARITY WEIGHTS ==
-    Config path: weights.{lastfm,listenbrainz,age}
-                 popularity.weights.{lastfm,listenbrainz,age}
-    Reads: get_weights(), get_popularity_weights()
-    Affects: How Last.fm/LB/age scores are blended into final popularity scores
-    Used by: services/popularity/popularity_math.py, services/popularity/popularity_config.py
-  -->
+  <!-- Popularity Weights Section -->
   <div class="card shadow-sm mb-3" id="popularity-weights">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-gear-wide-connected"></i> Popularity Weights</h5>
@@ -1030,13 +971,7 @@
     </div>
   </div>
 
-  <!--
-    == ARTIST BIOGRAPHY (Wikidata) ==
-    Config path: wikidata.{musician_terms}
-    Reads: get_config().get('wikidata', {})
-    Affects: Wikidata/Wikipedia biography lookup disambiguation
-    Used by: api_clients/wikidata_http.py, services/enrichment/artist_bio_service.py
-  -->
+  <!-- Wikidata / Artist Biography Section (NEW) -->
   <div class="card shadow-sm mb-3" id="wikidata">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-person-badge"></i> Artist Biography</h5>
@@ -1053,15 +988,7 @@
     </div>
   </div>
 
-  <!--
-    == QUEUE MATCHING ==
-    Config path: queue.matching.{threshold,partial_match,strict_duration_sec,tolerance_duration_sec,
-                                 soft_variants,hard_variants,detect_live_tracks,detect_remix_tracks,
-                                 detect_compilations,title_variant_tokens,compilation_artists}
-    Reads: get_queue_matching_config_v2(), get_queue_matching_config_legacy()
-    Affects: Download queue matching thresholds, variant/subtype detection
-    Used by: services/queue/queue_matching_service.py, services/queue/queue_matching_helpers.py
-  -->
+  <!-- Queue Matching Configuration Section -->
   <div class="card shadow-sm mb-3" id="queue-matching">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-arrow-left-right"></i> Queue Matching</h5>
@@ -1107,14 +1034,7 @@
     </div>
   </div>
 
-  <!--
-    == GENRE AGGREGATION ==
-    Config path: genres.weights.{musicbrainz,discogs,audiodb,lastfm,spotify}
-                 genres.synonyms
-    Reads: get_genre_weights(), get_genre_synonyms()
-    Affects: Genre source weighting for aggregation, synonym normalisation
-    Used by: services/enrichment/genre_aggregation_service.py
-  -->
+  <!-- Genre Aggregation Weights Section (NEW) -->
   <div class="card shadow-sm mb-3" id="genre-weights">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-tags-fill"></i> Genre Aggregation</h5>
@@ -1155,15 +1075,7 @@
     </div>
   </div>
 
-  <!--
-    == LAST.FM ADVANCED ==
-    Config path: lastfm.{min_artist_plays,min_similarity_score,max_similar_per_artist,
-                         max_albums_per_artist,recent_months,cache_ttl_hours,max_retries,
-                         rate_limit_delay}
-    Reads: get_config().get('lastfm', {})
-    Affects: Last.fm API client rate limiting, caching, and filtering behaviour
-    Used by: api_clients/lastfm_http.py, services/enrichment/lastfm_service.py
-  -->
+  <!-- Last.fm Advanced Settings Section (NEW) -->
   <div class="card shadow-sm mb-3" id="lastfm-advanced">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-database-fill-gear"></i> Last.fm Advanced</h5>
@@ -1207,13 +1119,7 @@
     </div>
   </div>
 
-  <!--
-    == TRACK MATCHING ==
-    Config path: matching.{min_accept_score,duration_tolerance_seconds,early_accept_length_tolerance,top_n_candidates}
-    Reads: get_matching_config()
-    Affects: Track matching thresholds when matching library tracks to external provider results
-    Used by: services/matching/track_matching.py, helpers/config_helpers.py
-  -->
+  <!-- Matching Configuration Section (NEW) -->
   <div class="card shadow-sm mb-3" id="matching-config">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-union"></i> Track Matching</h5>
@@ -1241,13 +1147,7 @@
     </div>
   </div>
 
-  <!--
-    == DOWNLOAD MATCHING ==
-    Config path: downloads.matching.{min_accept_score,duration_tolerance_seconds,early_accept_length_tolerance,top_n_candidates}
-    Reads: get_config().get('downloads', {}).get('matching', {})
-    Affects: Matching downloaded files against existing library tracks
-    Used by: services/downloads/download_matching_service.py
-  -->
+  <!-- Download Matching Section (NEW) -->
   <div class="card shadow-sm mb-3" id="download-matching">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-file-earmark-check"></i> Download Matching</h5>
@@ -1275,15 +1175,7 @@
     </div>
   </div>
 
-  <!--
-    == SLSKD TRANSFER TIMEOUTS ==
-    Config path: slskd.timeouts.{min_retry_delay_minutes,long_retry_delay_minutes,
-                                 remotely_queued_timeout_minutes,active_state_timeout_minutes,
-                                 inter_item_delay_seconds,state_timeouts}
-    Reads: get_slskd_timeouts()
-    Affects: slskd/Soulseek download retry delays and state timeout behaviour
-    Used by: helpers/config_helpers.py, services/downloads/slskd_service.py
-  -->
+  <!-- slskd Timeouts Section (NEW) -->
   <div class="card shadow-sm mb-3" id="slskd-timeouts">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-hourglass-split"></i> slskd Transfer Timeouts</h5>
@@ -1315,13 +1207,12 @@
     </div>
   </div>
 
-  <!--
-    == FILESYSTEM ==
-    Config path: filesystem.{audio_formats}
-    Reads: get_config().get('filesystem', {})
-    Affects: Which audio file extensions the system recognises
-    Used by: services/infrastructure/filesystem_service.py
-  -->
+        </div><!-- /tab-downloads -->
+
+        <!-- ===== TAB 4: MATCHING ===== -->
+        <div class="tab-pane fade" id="tab-matching" role="tabpanel">
+
+  <!-- Filesystem Section (NEW) -->
   <div class="card shadow-sm mb-3" id="filesystem">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-hdd-stack"></i> File System</h5>
@@ -1338,13 +1229,9 @@
     </div>
   </div>
 
-  <!--
-    == SEARCH FILTERS (strip_parentheses) ==
-    Config path: strip_parentheses_filters
-    Reads: get_config().get('strip_parentheses_filters', [])
-    Affects: Parenthetical content removal during external API searches (e.g. "Song (Remastered)" → "Song")
-    Used by: services/scanning/filters.py
-  -->
+  <!-- Single Detection Z-Score Thresholds (expanded) -->
+  <!-- ===== (filesystem card is above; kept in Matching tab for DOM continuity) ===== -->
+
   <div class="card shadow-sm mb-3" id="search-filters">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
@@ -1376,7 +1263,7 @@
       <div class="row g-3 mb-3">
         <div class="col-12">
           <label class="form-label"><strong>Strip Keywords</strong></label>
-          <div class="border rounded p-3" style="background-color: var(--secondary-bg);">
+          <div class="border rounded p-3" style="background-color: var(--bs-body-bg);"">
             <div id="stripKeywordsList" class="d-flex flex-wrap gap-2 mb-3">
               <!-- Keywords will be populated by JavaScript -->
             </div>
@@ -1402,13 +1289,12 @@
     </div>
   </div>
 
-  <!--
-    == UPCOMING RELEASES SOURCES ==
-    Config path: upcoming_releases.sources
-    Reads: get_config().get('upcoming_releases', {}).get('sources', [])
-    Affects: Wikipedia page scraping for upcoming album release data
-    Used by: routes/upcoming_releases_routes.py
-  -->
+        </div><!-- /tab-matching -->
+
+        <!-- ===== TAB 5: ANALYTICS & ADVANCED ===== -->
+        <div class="tab-pane fade" id="tab-analytics" role="tabpanel">
+
+  <!-- Upcoming Releases Sources Section -->
   <div class="card shadow-sm mb-3" id="upcoming-releases-sources">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
@@ -1443,7 +1329,7 @@
 
       <!-- Add new source form (hidden by default) -->
       <div id="addUpcomingSourceForm" class="card border-primary mt-3 d-none">
-        <div class="card-header" style="background-color: var(--tertiary-bg);"
+        <div class="card-header bg-primary bg-opacity-10">
           <strong><i class="bi bi-plus-circle"></i> New Wikipedia Source</strong>
         </div>
         <div class="card-body">
@@ -1480,16 +1366,135 @@
     </div>
   </div>
 
-  <!-- Features & Weights Section - Dynamically Rendered -->
-  <div id="featuresWeightsContainer"></div>
+  <!-- Features & Weights Section (Jinja-rendered) -->
+  <div class="card shadow-sm mb-3" id="features-weights">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-sliders"></i> Features</h5>
+      <small class="text-muted">Advanced options for scoring and detection</small>
+    </div>
+    <div class="card-body">
+      <div id="featuresWeightsForm">
+        <div class="row g-3">
+          {% set feature_groups = {
+            'General Operation': ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'full_scan', 'auto_boot_navidrome_scan', 'artist'],
+            'Spotify Matching': ['strict_spotify_matching', 'spotify_duration_tolerance'],
+            'Single Detection & Scoring': ['album_skip_days', 'album_skip_min_tracks', 'clamp_min', 'clamp_max', 'cap_top4_pct', 'title_sim_threshold', 'short_release_counts_as_match', 'secondary_single_lookup_enabled', 'secondary_lookup_metric', 'secondary_lookup_delta', 'secondary_required_strong_sources', 'median_gate_strategy', 'use_lastfm_single', 'refresh_artist_index_on_start', 'discogs_min_interval_sec', 'include_user_ratings_on_scan', 'scan_worker_threads', 'spotify_prefetch_timeout'],
+            'Single Detection Sources': ['source_discogs_confidence', 'source_spotify_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence']
+          } %}
+          {% set source_confidence_fields = ['source_discogs_confidence', 'source_spotify_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence'] %}
+          {% set feature_explanations = {
+            'dry_run': 'Run all operations in test mode without making changes.',
+            'sync': 'Enable automatic syncing of music libraries.',
+            'force': 'Force rescanning of albums even if already scanned.',
+            'verbose': 'Show detailed debug logs.',
+            'perpetual': 'Keep background services running continuously.',
+            'batchrate': 'Enable batch rating mode.',
+            'full_scan': 'Run full scan pipeline on startup.',
+            'auto_boot_navidrome_scan': 'Scan Navidrome metadata on app startup.',
+            'artist': 'Comma-separated list of artist names to prioritize.',
+            'strict_spotify_matching': 'Enable strict exact-match rules for Spotify tracks.',
+            'spotify_duration_tolerance': 'Max duration difference (sec) for strict matching.',
+            'album_skip_days': 'Days before rescanning an album.',
+            'album_skip_min_tracks': 'Minimum tracks for a valid album.',
+            'clamp_min': 'Minimum normalization clamp value.',
+            'clamp_max': 'Maximum normalization clamp value.',
+            'cap_top4_pct': 'Max % weight for top 4 sources.',
+            'title_sim_threshold': 'Title similarity threshold (0-1) for album matching.',
+            'short_release_counts_as_match': 'Treat short releases as valid matches.',
+            'secondary_single_lookup_enabled': 'Enable secondary single lookup step.',
+            'secondary_lookup_metric': 'Metric for secondary lookup.',
+            'secondary_lookup_delta': 'Score delta triggering secondary lookup.',
+            'secondary_required_strong_sources': 'Strong sources required for secondary confirmation.',
+            'median_gate_strategy': 'Strategy for ambiguous matches: hard or soft.',
+            'use_lastfm_single': 'Use Last.fm data for single detection.',
+            'refresh_artist_index_on_start': 'Refresh artist index on startup.',
+            'discogs_min_interval_sec': 'Min seconds between Discogs API calls.',
+            'include_user_ratings_on_scan': 'Include user ratings during scanning.',
+            'scan_worker_threads': 'Parallel worker threads for scanning.',
+            'spotify_prefetch_timeout': 'Timeout (sec) for Spotify prefetching.'
+          } %}
 
-  <!-- Save Button -->
-  <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
-    <button type="button" class="btn btn-outline-secondary" id="cancelBtn" data-dashboard-url="{{ url_for('ui.dashboard') }}">Cancel</button>
-    <button type="button" class="btn btn-primary btn-lg" id="saveBtn" data-save-url="{{ url_for('ui.config_save_json') }}" onclick="saveConfig()">
-      <i class="bi bi-check-circle"></i> Save Configuration
-    </button>
+          {% for group_name, group_keys in feature_groups.items() %}
+          <div class="col-12 mt-4">
+            <h5>{{ group_name }}</h5>
+          </div>
+          {% for key in group_keys %}
+          {% if config.get('features', {}).get(key) is not none or key in source_confidence_fields %}
+          <div class="col-md-4">
+            <label class="form-label">{{ key|replace('_', ' ')|title }}</label>
+            {% if feature_explanations.get(key) %}
+            <div class="text-muted small mb-1">{{ feature_explanations[key] }}</div>
+            {% endif %}
+            {% set value = config.get('features', {}).get(key) %}
+            {% if key in source_confidence_fields %}
+            <select class="form-select feature-field" name="feature_{{ key }}">
+              {% for opt in ['low', 'medium', 'high'] %}
+              <option value="{{ opt }}" {% if (value or 'medium') == opt %}selected{% endif %}>{{ opt|title }}</option>
+              {% endfor %}
+            </select>
+            {% elif value is boolean or value is sameas true or value is sameas false %}
+            <select class="form-select feature-field" name="feature_{{ key }}">
+              <option value="true" {% if value %}selected{% endif %}>True</option>
+              <option value="false" {% if not value %}selected{% endif %}>False</option>
+            </select>
+            {% elif value is number %}
+            <input type="number" step="any" class="form-control feature-field" name="feature_{{ key }}" value="{{ value }}">
+            {% elif value is string %}
+            <input type="text" class="form-control feature-field" name="feature_{{ key }}" value="{{ value }}">
+            {% elif value is iterable and value is not string %}
+            <input type="text" class="form-control feature-field" name="feature_{{ key }}" value="{{ value|join(', ') }}">
+            {% else %}
+            <input type="text" class="form-control feature-field" name="feature_{{ key }}" value="{{ value or '' }}">
+            {% endif %}
+          </div>
+          {% endif %}
+          {% endfor %}
+          {% endfor %}
+
+          {# Remaining ungrouped features #}
+          {% set grouped_keys = [] %}
+          {% for gk in feature_groups.values() %}{% for k in gk %}{% set _ = grouped_keys.append(k) %}{% endfor %}{% endfor %}
+          {% for key, value in config.get('features', {}).items() %}
+          {% if key not in grouped_keys %}
+          <div class="col-md-4">
+            <label class="form-label">{{ key|replace('_', ' ')|title }}</label>
+            <div class="text-muted small mb-1">(Custom feature)</div>
+            {% if value is boolean or value is sameas true or value is sameas false %}
+            <select class="form-select feature-field" name="feature_{{ key }}">
+              <option value="true" {% if value %}selected{% endif %}>True</option>
+              <option value="false" {% if not value %}selected{% endif %}>False</option>
+            </select>
+            {% elif value is number %}
+            <input type="number" step="any" class="form-control feature-field" name="feature_{{ key }}" value="{{ value }}">
+            {% elif value is iterable and value is not string %}
+            <input type="text" class="form-control feature-field" name="feature_{{ key }}" value="{{ value|join(', ') }}">
+            {% else %}
+            <input type="text" class="form-control feature-field" name="feature_{{ key }}" value="{{ value or '' }}">
+            {% endif %}
+          </div>
+          {% endif %}
+          {% endfor %}
+        </div>
+        <div class="mt-3 text-end">
+          <button type="button" class="btn btn-primary" onclick="saveFeaturesWeights()">Save Features</button>
+        </div>
+      </div>
+    </div>
   </div>
+
+        </div><!-- /tab-analytics -->
+      </div><!-- /tab-content -->
+
+      <!-- Save Button (inside the form) -->
+      <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4 mt-3">
+        <button type="button" class="btn btn-outline-secondary" id="cancelBtn">Cancel</button>
+        <button type="button" class="btn btn-primary btn-lg" id="saveBtn" onclick="saveConfig()">
+          <i class="bi bi-check-circle"></i> Save Configuration
+        </button>
+      </div>
+    </form><!-- /configForm -->
+  </div><!-- /col -->
+</div><!-- /row -->
   <!-- Toast notification -->
   <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 11">
     <div id="configToast" class="toast" role="alert">
@@ -1520,1548 +1525,12 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-primary" id="rawYamlSaveBtn" data-editor-url="{{ url_for('ui.config_editor') }}" onclick="saveRawYaml()">Save</button>
+        <button type="button" class="btn btn-primary" onclick="saveRawYaml()">Save</button>
       </div>
     </div>
   </div>
 </div>
 
-<script>
-// Default search strip keywords
-// Only includes terms that indicate "same song, different cut" - not alternate versions
-const DEFAULT_STRIP_KEYWORDS = [
-  'remaster', 'remastered',
-  'radio edit', 'radio mix',
-  'single version', 'album version',
-  'deluxe', 'deluxe edition',
-  'extended', 'extended edition',
-  'expanded', 'expanded edition',
-  'edition'
-];
-
-// Initialize strip keywords UI on page load
-document.addEventListener('DOMContentLoaded', function() {
-  initializeStripKeywords();
-  initUpcomingSourcesUI();
-
-  const configUserSelector = document.getElementById('configUserSelector');
-  if (configUserSelector) {
-    const savedUser = localStorage.getItem('selectedNavidromeUser');
-    if (savedUser !== null) {
-      configUserSelector.value = savedUser;
-    }
-  }
-  
-  var cancelBtn = document.getElementById('cancelBtn');
-  if (cancelBtn) {
-    cancelBtn.addEventListener('click', function(e) {
-      window.location.href = cancelBtn.dataset.dashboardUrl;
-      e.preventDefault();
-      return false;
-    });
-  }
-});
-
-function setActiveUserContext(userIndex) {
-  localStorage.setItem('selectedNavidromeUser', userIndex);
-  const notice = document.getElementById('userContextNotice');
-  if (notice) {
-    notice.textContent = 'User context updated for this browser.';
-    notice.classList.remove('d-none');
-  }
-}
-
-// Initialize the keywords list from config
-function initializeStripKeywords() {
-  const config = window.pageConfig || {}; // Assuming page config is available globally
-  const keywords = config.strip_parentheses_filters || [];
-  const keywordsList = document.getElementById('stripKeywordsList');
-  
-  if (!keywordsList) return;
-  
-  // Use defaults if no keywords configured
-  const displayKeywords = keywords.length > 0 ? keywords : DEFAULT_STRIP_KEYWORDS;
-  
-  // Render keyword badges
-  displayKeywords.forEach(keyword => {
-    addKeywordBadge(keyword);
-  });
-}
-
-// Render a single keyword badge
-function addKeywordBadge(keyword) {
-  const list = document.getElementById('stripKeywordsList');
-  if (!list) return;
-  
-  const badge = document.createElement('span');
-  badge.className = 'badge bg-primary d-flex align-items-center gap-2';
-  badge.innerHTML = `
-    ${escapeHtml(keyword)}
-    <button type="button" class="btn-close btn-close-white" aria-label="Remove" onclick="removeKeywordBadge(this)"></button>
-  `;
-  list.appendChild(badge);
-}
-
-// Remove a keyword badge
-function removeKeywordBadge(btn) {
-  btn.closest('.badge').remove();
-}
-
-// Add a new keyword
-function addStripKeyword() {
-  const input = document.getElementById('newKeywordInput');
-  if (!input) return;
-  
-  const keyword = input.value.trim().toLowerCase();
-  
-  if (!keyword) {
-    showToast('Error', 'Please enter a keyword', 'warning');
-    return;
-  }
-  
-  // Check if keyword already exists
-  const existingKeywords = Array.from(
-    document.querySelectorAll('#stripKeywordsList .badge')
-  ).map(el => {
-    const text = el.textContent.trim();
-    return text.substring(0, text.length - 1).trim(); // Remove the × button text
-  });
-  
-  if (existingKeywords.map(k => k.toLowerCase()).includes(keyword.toLowerCase())) {
-    showToast('Warning', 'This keyword already exists', 'warning');
-    return;
-  }
-  
-  addKeywordBadge(keyword);
-  input.value = '';
-  input.focus();
-}
-
-// Allow Enter key to add keyword
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter' && document.activeElement && document.activeElement.id === 'newKeywordInput') {
-    e.preventDefault();
-    addStripKeyword();
-  }
-});
-
-// Reset keywords to defaults
-function resetStripKeywords() {
-  if (!confirm('Reset search filter keywords to system defaults?')) {
-    return;
-  }
-  
-  const list = document.getElementById('stripKeywordsList');
-  if (!list) return;
-  
-  list.innerHTML = '';
-  DEFAULT_STRIP_KEYWORDS.forEach(keyword => {
-    addKeywordBadge(keyword);
-  });
-  
-  showToast('Success', 'Keywords reset to defaults', 'success');
-}
-
-// Utility function to escape HTML
-function escapeHtml(text) {
-  const map = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;'
-  };
-  return text.replace(/[&<>"']/g, m => map[m]);
-}
-
-function showToast(title, message, type = 'info') {
-  const toast = new bootstrap.Toast(document.getElementById('configToast'));
-  document.getElementById('toastTitle').textContent = title;
-  document.getElementById('toastMessage').textContent = message;
-  
-  const toastEl = document.getElementById('configToast');
-  toastEl.classList.remove('bg-success', 'bg-danger', 'bg-warning');
-  if (type === 'success') toastEl.classList.add('bg-success', 'text-white');
-  else if (type === 'error') toastEl.classList.add('bg-danger', 'text-white');
-  else if (type === 'warning') toastEl.classList.add('bg-warning', 'text-dark');
-  
-  toast.show();
-}
-
-function buildConfigObject() {
-  // Helper function to safely get element value
-  function getValue(id, defaultValue = '') {
-    const el = document.getElementById(id);
-    return el ? el.value : defaultValue;
-  }
-  
-  function getChecked(id, defaultValue = false) {
-    const el = document.getElementById(id);
-    return el ? el.checked : defaultValue;
-  }
-  
-  // Build multi-user array
-  const navidrome_users = [];
-  const userCards = document.querySelectorAll('.user-card');
-  
-  userCards.forEach((card, index) => {
-    const user = {
-      user: card.querySelector('.user-nav-username').value,
-      display_name: card.querySelector('.user-display-name').value,
-      base_url: card.querySelector('.user-nav-url').value,
-      pass: card.querySelector('.user-nav-password').value,
-      spotify_username: card.querySelector('.user-spotify-username').value,
-      spotify_client_id: card.querySelector('.user-spotify-id').value,
-      spotify_client_secret: card.querySelector('.user-spotify-secret').value,
-      lastfm_username: card.querySelector('.user-lastfm-username').value,
-      listenbrainz_user_token: card.querySelector('.user-listenbrainz-token').value
-    };
-    // Only add user if it has at least username and Navidrome URL
-    if (user.user && user.base_url) {
-      navidrome_users.push(user);
-    }
-  });
-  
-  return {
-    navidrome_users: navidrome_users,
-    qbittorrent: {
-      enabled: getChecked('qbit_enabled', false),
-      web_url: getValue('qbit_web_url', ''),
-      username: getValue('qbit_username', ''),
-      password: getValue('qbit_password', ''),
-      downloads_folder: getValue('qbit_downloads_folder', '')
-    },
-    slskd: {
-      enabled: getChecked('slskd_enabled', false),
-      web_url: getValue('slskd_web_url', ''),
-      api_key: getValue('slskd_api_key', '')
-    },
-    downloads: {
-      folder: getValue('downloads_folder', ''),
-      external_export_path: getValue('external_export_path', ''),
-      file_name_format: getValue('downloads_file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}'),
-      matching: {
-        min_accept_score: parseFloat(getValue('dl_match_min_accept', '0.45')) || 0.45,
-        duration_tolerance_seconds: parseInt(getValue('dl_match_duration_tolerance', '5')) || 5,
-        early_accept_length_tolerance: parseInt(getValue('dl_match_early_accept', '2')) || 2,
-        top_n_candidates: parseInt(getValue('dl_match_top_n', '50')) || 50
-      },
-      quality_filter: (() => {
-        const priorities = [];
-        if (getChecked('downloads_quality_allow_mp3_320', true)) {
-          priorities.push({ format: 'mp3', bitrate_kbps: 320 });
-        }
-        if (getChecked('downloads_quality_allow_flac', true)) {
-          priorities.push({ format: 'flac', bitrate_kbps: null });
-        }
-        return {
-          enabled: getChecked('downloads_quality_enabled', false),
-          reject_others: getChecked('downloads_quality_reject_others', true),
-          bitrate_tolerance: parseInt(getValue('downloads_quality_bitrate_tolerance', '5')) || 5,
-          priorities: priorities
-        };
-      })(),
-      conversion: {
-        enabled: getChecked('downloads_conversion_enabled', false),
-        mode: getValue('downloads_conversion_mode', 'flac_to_mp3'),
-        mp3_bitrate_kbps: parseInt(getValue('downloads_conversion_mp3_bitrate', '320')) || 320,
-        original_handling: getValue('downloads_conversion_original_handling', 'move_to_original'),
-        original_subfolder: getValue('downloads_conversion_original_subfolder', 'Original')
-      }
-    },
-    watcher: {
-      scan_interval: parseInt(getValue('watcher_scan_interval', '30')) || 30,
-      navidrome_sync_wait: parseInt(getValue('watcher_navidrome_sync_wait', '600')) || 600,
-      auto_import_enabled: getChecked('watcher_auto_import', true),
-      auto_popularity_scan: getChecked('watcher_auto_popularity', true),
-      downloads_watcher_enabled: getChecked('watcher_downloads_enabled', true)
-    },
-    features: Object.assign(
-      {},
-      (window.currentConfig && window.currentConfig.features) ? window.currentConfig.features : {},
-      {
-        retry_scheduler: {
-          interval_seconds: parseInt(getValue('retry_scheduler_interval', '60')) || 60,
-          auto_start: getChecked('retry_scheduler_enabled', true)
-        },
-        download_queue_cleanup_scheduler: {
-          enabled: getChecked('queue_cleanup_scheduler_enabled', true),
-          interval_minutes: parseInt(getValue('queue_cleanup_scheduler_interval_minutes', '60')) || 60
-        },
-        downloads_duplicate_cleanup: {
-          delete_duplicate_files: getChecked('downloads_delete_duplicate_files', true),
-          prune_empty_folders: getChecked('downloads_prune_empty_folders', true)
-        },
-        mature_track_min_age_years: parseInt(getValue('mature_track_min_age_years', '2')) || 2,
-        daily_musicbrainz_release_scan_enabled: getChecked('daily_musicbrainz_release_scan_enabled', true),
-        daily_musicbrainz_release_lookback_days: parseInt(getValue('daily_musicbrainz_release_lookback_days', '42')) || 42,
-        daily_musicbrainz_release_lookahead_days: parseInt(getValue('daily_musicbrainz_release_lookahead_days', '28')) || 28,
-        daily_musicbrainz_release_max_artists: parseInt(getValue('daily_musicbrainz_release_max_artists', '500')) || 500,
-        daily_musicbrainz_release_per_artist_limit: parseInt(getValue('daily_musicbrainz_release_per_artist_limit', '100')) || 100,
-        live_musicbrainz_upcoming_releases_enabled: getChecked('live_musicbrainz_upcoming_releases_enabled', true),
-        live_musicbrainz_lookback_days: parseInt(getValue('live_musicbrainz_lookback_days', '14')) || 14,
-        live_musicbrainz_lookahead_days: parseInt(getValue('live_musicbrainz_lookahead_days', '180')) || 180,
-        live_musicbrainz_added_lookback_days: parseInt(getValue('live_musicbrainz_added_lookback_days', '7')) || 7,
-        live_musicbrainz_max_results: parseInt(getValue('live_musicbrainz_max_results', '200')) || 200
-      }
-    ),
-    single_detection: {
-      zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
-      standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75,
-      album_zscore_threshold: parseFloat(getValue('sd_album_zscore', '0.8')) || 0.8,
-      artist_zscore_threshold: parseFloat(getValue('sd_artist_zscore', '2.2')) || 2.2,
-      artist_top_percentile: parseFloat(getValue('sd_artist_pct', '0.10')) || 0.10,
-      artist_min_tracks: parseInt(getValue('sd_artist_min_tracks', '10')) || 10,
-      star_5: {
-        album_z: parseFloat(getValue('star5_album_z', '1.0')) || 1.0,
-        artist_z: parseFloat(getValue('star5_artist_z', '1.2')) || 1.2,
-        artist_pct: parseFloat(getValue('star5_pct', '0.10')) || 0.10
-      },
-      star_4: {
-        album_z: parseFloat(getValue('star4_album_z', '0.8')) || 0.8,
-        artist_z: parseFloat(getValue('star4_artist_z', '1.0')) || 1.0,
-        artist_pct: parseFloat(getValue('star4_pct', '0.20')) || 0.20
-      },
-      star_3: {
-        album_z: parseFloat(getValue('star3_album_z', '0.0')) || 0.0
-      }
-    },
-    weights: {
-      lastfm: parseFloat(getValue('weight_lastfm', '0.55')) || 0.55,
-      listenbrainz: parseFloat(getValue('weight_listenbrainz', '0.35')) || 0.35,
-      age: parseFloat(getValue('weight_age', '0.10')) || 0.10
-    },
-    popularity: Object.assign(
-      {},
-      (window.currentConfig && window.currentConfig.popularity) || {},
-      {
-        weights: {
-          lastfm: parseFloat(getValue('pop_weight_lastfm', '0.55')) || 0.55,
-          listenbrainz: parseFloat(getValue('pop_weight_listenbrainz', '0.35')) || 0.35,
-          age: parseFloat(getValue('pop_weight_age', '0.10')) || 0.10
-        }
-      }
-    ),
-    api_integrations: {
-      spotify: {
-        enabled: getChecked('api_spotify_enabled', false),
-        client_id: getValue('api_spotify_client_id', ''),
-        client_secret: getValue('api_spotify_client_secret', ''),
-        user_id: getValue('api_spotify_user_id', '')
-      },
-      lastfm: {
-        enabled: getChecked('api_lastfm_enabled', false),
-        api_key: getValue('api_lastfm_api_key', '')
-      },
-      listenbrainz: {
-        enabled: getChecked('api_listenbrainz_enabled', false)
-      },
-      discogs: {
-        enabled: getChecked('api_discogs_enabled', false),
-        token: getValue('api_discogs_token', '')
-      },
-      musicbrainz: {
-        enabled: getChecked('api_musicbrainz_enabled', true)
-      },
-      audiodb: {
-        enabled: getChecked('api_audiodb_enabled', false),
-        api_key: getValue('api_audiodb_api_key', '')
-      },
-      google: {
-        enabled: getChecked('api_google_enabled', false),
-        api_key: getValue('api_google_api_key', ''),
-        cse_id: getValue('api_google_cse_id', '')
-      },
-      youtube: {
-        enabled: getChecked('api_youtube_enabled', false),
-        api_key: getValue('api_youtube_api_key', '')
-      }
-    },
-    // database remains PostgreSQL-only with no UI controls and is restored by config_save_json.
-    strip_parentheses_filters: Array.from(
-      document.querySelectorAll('#stripKeywordsList .badge')
-    ).map(badge => {
-      // Extract only the text content, excluding the button
-      return badge.childNodes[0].textContent.trim();
-    }).filter(Boolean),
-    upcoming_releases: {
-      sources: getUpcomingSourcesForSave()
-    },
-    essentia: {
-      script_path: getValue('essentia_script_path', ''),
-      models_dir: getValue('essentia_models_dir', ''),
-      mood_threshold: parseFloat(getValue('essentia_mood_threshold', '0.005')) || 0.005,
-      per_file_timeout: parseInt(getValue('essentia_per_file_timeout', '300')) || 300,
-      json_output_dir: getValue('essentia_json_output_dir', ''),
-      tag_moods: getChecked('essentia_tag_moods', true),
-      parse_json_features: getChecked('essentia_parse_json_features', true),
-      delete_json_after_import: getChecked('essentia_delete_json_after_import', true),
-      tag_genres: getChecked('essentia_tag_genres', false),
-      num_genres: parseInt(getValue('essentia_num_genres', '3')) || 3,
-      genre_threshold: parseFloat(getValue('essentia_genre_threshold', '15')) || 15.0,
-      genre_format: getValue('essentia_genre_format', 'parent_child')
-    },
-    // --- Sections below were missing from buildConfigObject and are now included ---
-    queue: {
-      matching: {
-        threshold: parseFloat(getValue('queue_match_threshold', '0.65')) || 0.65,
-        partial_match: parseFloat(getValue('queue_match_partial', '0.7')) || 0.7,
-        strict_duration_sec: parseInt(getValue('queue_strict_duration', '2')) || 2,
-        tolerance_duration_sec: parseInt(getValue('queue_tolerance_duration', '5')) || 5,
-        detect_live_tracks: getChecked('queue_detect_live', true),
-        detect_remix_tracks: getChecked('queue_detect_remix', true),
-        detect_compilations: getChecked('queue_detect_compilations', true)
-      }
-    },
-    matching: {
-      min_accept_score: parseFloat(getValue('matching_min_accept', '0.45')) || 0.45,
-      duration_tolerance_seconds: parseInt(getValue('matching_duration_tolerance', '5')) || 5,
-      early_accept_length_tolerance: parseInt(getValue('matching_early_accept', '2')) || 2,
-      top_n_candidates: parseInt(getValue('matching_top_n', '50')) || 50
-    },
-    lastfm: {
-      min_artist_plays: parseInt(getValue('lastfm_min_artist_plays', '20')) || 20,
-      min_similarity_score: parseFloat(getValue('lastfm_min_similarity', '0.46')) || 0.46,
-      max_similar_per_artist: parseInt(getValue('lastfm_max_similar', '5')) || 5,
-      max_albums_per_artist: parseInt(getValue('lastfm_max_albums', '5')) || 5,
-      recent_months: parseInt(getValue('lastfm_recent_months', '3')) || 3,
-      cache_ttl_hours: parseInt(getValue('lastfm_cache_ttl', '24')) || 24,
-      max_retries: parseInt(getValue('lastfm_max_retries', '3')) || 3,
-      rate_limit_delay: parseFloat(getValue('lastfm_rate_limit', '0.5')) || 0.5
-    },
-    wikidata: {
-      musician_terms: getValue('wikidata_musician_terms', 'singer, musician, band, rapper, composer').split(',').map(s => s.trim()).filter(Boolean)
-    },
-    slskd: Object.assign(
-      {},
-      (window.currentConfig && window.currentConfig.slskd) || {},
-      {
-        enabled: getChecked('slskd_enabled', false),
-        web_url: getValue('slskd_web_url', ''),
-        api_key: getValue('slskd_api_key', ''),
-        timeouts: {
-          min_retry_delay_minutes: parseInt(getValue('slskd_min_retry_delay', '60')) || 60,
-          long_retry_delay_minutes: parseInt(getValue('slskd_long_retry_delay', '1440')) || 1440,
-          remotely_queued_timeout_minutes: parseInt(getValue('slskd_remotely_queued_timeout', '60')) || 60,
-          active_state_timeout_minutes: parseInt(getValue('slskd_active_timeout', '240')) || 240,
-          inter_item_delay_seconds: parseInt(getValue('slskd_inter_item_delay', '5')) || 5
-        }
-      }
-    ),
-    filesystem: {
-      audio_formats: getValue('filesystem_audio_formats', '.mp3, .flac, .m4a, .ogg, .wav, .aac, .wma').split(',').map(s => s.trim()).filter(Boolean)
-    },
-    genres: Object.assign(
-      {},
-      (window.currentConfig && window.currentConfig.genres) || {},
-      {
-        weights: {
-          musicbrainz: parseFloat(getValue('genre_weight_musicbrainz', '0.40')) || 0.40,
-          discogs: parseFloat(getValue('genre_weight_discogs', '0.25')) || 0.25,
-          audiodb: parseFloat(getValue('genre_weight_audiodb', '0.20')) || 0.20,
-          lastfm: parseFloat(getValue('genre_weight_lastfm', '0.10')) || 0.10,
-          spotify: parseFloat(getValue('genre_weight_spotify', '0.05')) || 0.05
-        },
-        synonyms: (() => {
-          const text = document.getElementById('genre_synonyms')?.value || '';
-          const synonyms = {};
-          text.split('\n').forEach(line => {
-            const idx = line.indexOf(':');
-            if (idx > 0) {
-              const key = line.substring(0, idx).trim();
-              const val = line.substring(idx + 1).trim();
-              if (key && val) synonyms[key] = val;
-            }
-          });
-          return synonyms;
-        })()
-      }
-    )
-  };
-}
-
-function saveConfig() {
-  const saveBtn = document.getElementById('saveBtn');
-  saveBtn.disabled = true;
-  const originalText = saveBtn.innerHTML;
-  saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
-  
-  const config = buildConfigObject();
-  
-  fetch(saveBtn.dataset.saveUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(config)
-  })
-  .then(response => {
-    // Check if response is JSON
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      return response.text().then(text => {
-        throw new Error('Server returned non-JSON response: ' + text.substring(0, 100));
-      });
-    }
-    return response.json().then(data => ({
-      status: response.status,
-      data: data
-    }));
-  })
-  .then(result => {
-    if (result.status !== 200) {
-      showToast('Error', result.data.error || 'Failed to save configuration', 'error');
-    } else if (result.data.success) {
-      showToast('Success', 'Configuration saved successfully', 'success');
-      window.currentConfig = config;
-    } else {
-      showToast('Error', result.data.error || 'Failed to save configuration', 'error');
-    }
-  })
-  .catch(error => {
-    showToast('Error', error.message || 'Network error: ' + error.toString(), 'error');
-  })
-  .finally(() => {
-    saveBtn.disabled = false;
-    saveBtn.innerHTML = originalText;
-  });
-}
-
-function syncRatingsNow() {
-  const btn = document.getElementById('syncRatingsNowBtn');
-  if (!btn) return;
-
-  btn.disabled = true;
-  const originalHtml = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Syncing...';
-
-  fetch('/api/navidrome/ratings/sync-now', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({})
-  })
-  .then(async response => {
-    const data = await response.json().catch(() => ({}));
-    return {
-      ok: response.ok,
-      data
-    };
-  })
-  .then(result => {
-    const data = result.data || {};
-    if (!result.ok || data.success === false) {
-      const message = data.error || 'Failed to sync ratings';
-      showToast('Sync Failed', message, 'error');
-      return;
-    }
-
-    const users = Array.isArray(data.users) ? data.users : [];
-    const usersWithErrors = users.filter(u => (u.failed || 0) > 0);
-    const summary = `Synced ${data.synced_total || 0}/${data.attempted_total || 0} rating updates across ${data.users_total || 0} user(s)`;
-
-    if (usersWithErrors.length > 0) {
-      const failingNames = usersWithErrors.map(u => u.display_name || u.username || 'Unknown user').join(', ');
-      showToast('Partial Sync Complete', `${summary}. Issues: ${failingNames}`, 'warning');
-    } else {
-      showToast('Sync Complete', summary, 'success');
-    }
-  })
-  .catch(error => {
-    showToast('Sync Failed', error.message || 'Network error while syncing ratings', 'error');
-  })
-  .finally(() => {
-    btn.disabled = false;
-    btn.innerHTML = originalHtml;
-  });
-}
-
-function toggleSyncRatingsToAllUsers(enabled) {
-  fetch('/api/features/update', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sync_ratings_to_all_users: enabled })
-  })
-  .then(async response => {
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.success === false) {
-      showToast('Error', data.error || 'Failed to update setting', 'error');
-      // Revert toggle on failure
-      const toggle = document.getElementById('syncRatingsToAllUsersToggle');
-      if (toggle) toggle.checked = !enabled;
-      return;
-    }
-    showToast(
-      'Setting Saved',
-      enabled
-        ? 'Star ratings will be synced to all Navidrome users after each scan and for individual track ratings.'
-        : 'Star ratings will only be synced to the primary Navidrome user.',
-      'success'
-    );
-  })
-  .catch(error => {
-    showToast('Error', error.message || 'Network error', 'error');
-    const toggle = document.getElementById('syncRatingsToAllUsersToggle');
-    if (toggle) toggle.checked = !enabled;
-  });
-}
-
-function saveRawYaml() {
-  const saveBtn = event.target;
-  saveBtn.disabled = true;
-  const originalText = saveBtn.textContent;
-  saveBtn.textContent = 'Saving...';
-  
-  const configContent = document.getElementById('config_content').value;
-  
-  const formData = new FormData();
-  formData.append('config_content', configContent);
-  
-  fetch(document.getElementById('rawYamlSaveBtn').dataset.editorUrl, {
-    method: 'POST',
-    body: formData
-  })
-  .then(response => response.text())
-  .then(() => {
-    showToast('Success', 'Configuration saved successfully', 'success');
-    bootstrap.Modal.getInstance(document.getElementById('rawYamlModal')).hide();
-  })
-  .catch(error => {
-    showToast('Error', 'Network error: ' + error.message, 'error');
-  })
-  .finally(() => {
-    saveBtn.disabled = false;
-    saveBtn.textContent = originalText;
-  });
-}
-
-function getCustomBookmarkLinks() {
-  return [];  // Bookmarks removed from config page
-}
-
-// Custom Bookmark Link Management Functions (removed - no longer used)
-function addBookmarkLink() {}
-function removeBookmarkLink(button) {}
-
-// Multi-User Management Functions
-function addNewUser() {
-  const container = document.getElementById('usersContainer');
-  
-  // Hide empty message if it exists
-  const emptyMessage = document.getElementById('emptyUsersMessage');
-  if (emptyMessage) {
-    emptyMessage.remove();
-  }
-  
-  // Get next user index
-  const existingCards = container.querySelectorAll('.user-card');
-  const userIndex = existingCards.length;
-  
-  const userCard = document.createElement('div');
-  userCard.className = 'user-card mb-4 p-3 border rounded';
-  userCard.setAttribute('data-user-index', userIndex);
-  userCard.innerHTML = `
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <h6 class="mb-0">User ${userIndex + 1}: <span class="user-display-value">New User</span></h6>
-      <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUser(${userIndex})">
-        <i class="bi bi-trash"></i> Remove
-      </button>
-    </div>
-    
-    <!-- Navidrome Configuration -->
-    <div class="mb-3">
-      <h6 class="text-primary mb-2"><i class="bi bi-music-note-beamed"></i> Navidrome</h6>
-      <div class="row g-2">
-        <div class="col-12">
-          <label class="form-label form-label-sm">Display Name</label>
-          <input type="text" class="form-control form-control-sm user-display-name" placeholder="My Name" onchange="updateUserTitle(this)">
-        </div>
-        <div class="col-12">
-          <label class="form-label form-label-sm">Navidrome Base URL</label>
-          <input type="text" class="form-control form-control-sm user-nav-url" placeholder="http://localhost:4533">
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label form-label-sm">Username</label>
-          <input type="text" class="form-control form-control-sm user-nav-username" placeholder="username">
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label form-label-sm">Password</label>
-          <input type="password" class="form-control form-control-sm user-nav-password" placeholder="••••••••">
-        </div>
-      </div>
-    </div>
-    
-    <!-- Spotify Configuration -->
-    <div class="mb-3">
-      <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify</h6>
-      <div class="row g-2">
-        <div class="col-12">
-          <label class="form-label form-label-sm">Spotify Username</label>
-          <input type="text" class="form-control form-control-sm user-spotify-username" placeholder="spotify_username">
-          <small class="form-text text-muted">Your Spotify profile username (for personalized recommendations)</small>
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label form-label-sm">Client ID</label>
-          <input type="text" class="form-control form-control-sm user-spotify-id" placeholder="spotify_client_id">
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label form-label-sm">Client Secret</label>
-          <input type="password" class="form-control form-control-sm user-spotify-secret" placeholder="••••••••">
-        </div>
-      </div>
-    </div>
-    
-    <!-- Last.fm Configuration -->
-    <div class="mb-3">
-      <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> Last.fm</h6>
-      <div class="row g-2">
-        <div class="col-12">
-          <label class="form-label form-label-sm">Last.fm Username</label>
-          <input type="text" class="form-control form-control-sm user-lastfm-username" placeholder="lastfm_username">
-          <small class="form-text text-muted">Your Last.fm username (for personalized recommendations)</small>
-        </div>
-      </div>
-    </div>
-    
-    <!-- ListenBrainz Configuration -->
-    <div class="mb-3">
-      <h6 class="text-secondary mb-2"><i class="bi bi-headphones"></i> ListenBrainz</h6>
-      <div class="row g-2">
-        <div class="col-12">
-          <label class="form-label form-label-sm">ListenBrainz User Token</label>
-          <input type="text" class="form-control form-control-sm user-listenbrainz-token" placeholder="listenbrainz_user_token">
-          <small class="form-text text-muted">Your ListenBrainz personal token from <a href="https://listenbrainz.org/settings/" target="_blank">https://listenbrainz.org/settings/</a> (for recommendations)</small>
-        </div>
-      </div>
-    </div>
-  `;
-  
-  container.appendChild(userCard);
-}
-
-function removeUser(btn) {
-  // Remove the user card from the DOM
-  const idx = parseInt(btn.dataset.index);
-  const userCards = document.querySelectorAll('.user-card');
-  if (userCards[idx]) {
-    userCards[idx].remove();
-  }
-  // Optionally, update the underlying config data structure if needed
-  // TODO: Add logic to update config and persist changes if required
-}
-
-function updateUserTitle(displayNameInput) {
-  // Update the user title when display name changes
-  const userCard = displayNameInput.closest('.user-card');
-  const displayValue = userCard.querySelector('.user-display-value');
-  const displayName = displayNameInput.value.trim() || 'New User';
-  displayValue.textContent = displayName;
-}
-
-// --- Features & Weights Editing ---
-function renderFeaturesWeights(features, weights) {
-  let html = '';
-  const featureLabelOverrides = {
-    source_radio_edit_confidence: 'Single/Radio Edit Confidence'
-  };
-
-  // --- Groupings and Explanations ---
-  const featureGroups = [
-    {
-      heading: 'General Operation',
-      description: 'Core options that control the overall behavior of the app, including dry-run/testing, syncing, and batch operations.',
-      keys: ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'full_scan', 'auto_boot_navidrome_scan', 'artist'],
-      explanations: {
-        dry_run: 'Run all operations in test mode without making any changes to your files or database. Useful for safely testing configuration changes.',
-        sync: 'Enable automatic syncing of your music libraries between sources and the app.',
-        force: 'Force rescanning of albums even if they were already scanned. When enabled, ignores scan history and rescans all albums during artist/album rescans.',
-        verbose: 'Show detailed logs and debug information for troubleshooting and advanced users.',
-        perpetual: 'Keep background services (like folder watchers and scanners) running continuously.',
-        batchrate: 'Enable batch rating mode to rate multiple albums or tracks at once.',
-        full_scan: 'Run full scan pipeline: Navidrome import → Popularity detection. When enabled, automatically executes scans in sequence.',
-        auto_boot_navidrome_scan: 'Automatically scan Navidrome metadata on application startup. When enabled, imports Navidrome library data when the app starts.',
-        artist: 'Comma-separated list of artist names to prioritize or filter during scans and imports.'
-      }
-    },
-    {
-      heading: 'Spotify Matching',
-      description: 'Controls how Spotify tracks are matched and selected for popularity scoring.',
-      keys: [
-        'strict_spotify_matching', 'spotify_duration_tolerance'
-      ],
-      explanations: {
-        strict_spotify_matching: 'Enable strict exact-match rules for Spotify tracks. When enabled, only tracks with exact title match, ±2s duration, and matching ISRC (if available) are selected. Rejects all alternate versions (remixes, live, acoustic, etc.).',
-        spotify_duration_tolerance: 'Maximum duration difference in seconds for strict matching (default: 2). Only used when strict_spotify_matching is enabled.'
-      }
-    },
-    {
-      heading: 'Single Detection & Scoring',
-      description: 'Advanced controls for how singles and albums are detected, scored, and filtered. Adjust these for fine-tuning detection accuracy and automation.',
-      keys: [
-        'album_skip_days', 'album_skip_min_tracks', 'clamp_min', 'clamp_max', 'cap_top4_pct', 'title_sim_threshold',
-        'short_release_counts_as_match', 'secondary_single_lookup_enabled', 'secondary_lookup_metric', 'secondary_lookup_delta',
-        'secondary_required_strong_sources', 'median_gate_strategy', 'use_lastfm_single', 'refresh_artist_index_on_start',
-        'discogs_min_interval_sec', 'include_user_ratings_on_scan', 'scan_worker_threads', 'spotify_prefetch_timeout'
-      ],
-      explanations: {
-        album_skip_days: 'Number of days before rescanning an album. Albums scanned within this many days will be skipped unless force rescan is enabled.',
-        album_skip_min_tracks: 'Minimum number of tracks required for an album to be considered valid.',
-        clamp_min: 'Minimum allowed value for score normalization (prevents scores from dropping too low).',
-        clamp_max: 'Maximum allowed value for score normalization (prevents scores from exceeding this value).',
-        cap_top4_pct: 'Maximum percentage weight that the top 4 sources can contribute to the overall score.',
-        title_sim_threshold: 'How similar two album titles must be (0-1) to be considered a match. Higher values mean stricter matching.',
-        short_release_counts_as_match: 'If enabled, short releases (like singles/EPs) are treated as valid matches.',
-        secondary_single_lookup_enabled: 'Enable a secondary lookup step for singles to improve detection accuracy.',
-        secondary_lookup_metric: 'Which metric to use for secondary lookup (e.g., score, popularity).',
-        secondary_lookup_delta: 'How much the score must differ to trigger a secondary lookup.',
-        secondary_required_strong_sources: 'Number of strong sources required to confirm a secondary lookup match.',
-        median_gate_strategy: 'Strategy for handling ambiguous matches: "hard" (strict) or "soft" (lenient).',
-        use_lastfm_single: 'Use Last.fm data as an additional source for single detection.',
-        refresh_artist_index_on_start: 'Refresh the artist index every time the app starts (may slow startup).',
-        discogs_min_interval_sec: 'Minimum time (in seconds) between Discogs API calls to avoid rate limits.',
-        include_user_ratings_on_scan: 'Include user ratings when scanning and scoring albums.',
-        scan_worker_threads: 'Number of parallel worker threads to use for scanning (higher = faster, but more CPU).',
-        spotify_prefetch_timeout: 'Timeout (in seconds) for Spotify data prefetching during scans.'
-      }
-    },
-    {
-      heading: 'Single Detection Sources',
-      description: 'Configure the confidence level for each single detection source. When a source is set to HIGH, detection will stop searching once that source confirms a track is a single.',
-      keys: [
-        'source_discogs_confidence', 'source_spotify_confidence', 'source_musicbrainz_confidence',
-        'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence',
-        'source_lastfm_confidence', 'source_radio_edit_confidence'
-      ],
-      explanations: {
-        source_discogs_confidence: 'Confidence level for Discogs single detection. Default: high (stops search when confirmed). Set to "low" or "medium" to continue checking other sources.',
-        source_spotify_confidence: 'Confidence level for Spotify single detection. Default: medium. Set to "high" to skip remaining sources when Spotify confirms.',
-        source_musicbrainz_confidence: 'Confidence level for MusicBrainz single detection. Default: medium. Set to "high" to skip remaining sources when MusicBrainz confirms.',
-        source_musicbrainz_compilation_confidence: 'Confidence level for MusicBrainz compilation detection (track appears on Various Artists/compilation albums). Default: medium. Set to "low" to prevent compilation appearances from counting toward the 2-medium=high rule.',
-        source_discogs_video_confidence: 'Confidence level for Discogs music video detection. Default: medium. Set to "high" to skip Last.fm/z-score when video confirms.',
-        source_lastfm_confidence: 'Confidence level for Last.fm single detection. Default: medium. Set to "high" to skip z-score inference when Last.fm confirms.',
-        source_radio_edit_confidence: 'Confidence level for Single/Radio Edit detection from title and Spotify metadata. Default: high. Set to "medium" if you want this source to require additional confirmation.'
-      }
-    }
-  ];
-
-  const weightExplanations = {};  // Weights section removed (Last.fm is the only popularity metric)
-
-  html += '<div class="card shadow-sm mb-3">';
-  html += '<div class="card-header bg-secondary bg-opacity-10 border-bottom">';
-  html += '<h5 class="mb-0"><i class="bi bi-sliders"></i> Features</h5>';
-  html += '<small class="text-muted">Advanced options for scoring and detection</small>';
-  html += '</div>';
-  html += '<div class="card-body">';
-  html += '<form id="featuresWeightsForm">';
-  html += '<div class="row g-3">';
-
-  // Render grouped features
-  for (const group of featureGroups) {
-    html += `<div class="col-12 mt-4"><h5>${group.heading}</h5>`;
-    if (group.description) {
-      html += `<div class="text-muted mb-2">${group.description}</div>`;
-    }
-    html += `</div>`;
-    for (const key of group.keys) {
-      if (features.hasOwnProperty(key)) {
-        const displayLabel = featureLabelOverrides[key] || key;
-        html += '<div class="col-md-4">';
-        html += `<label class="form-label">${displayLabel}</label>`;
-        if (group.explanations[key]) {
-          html += `<div class="text-muted small mb-1">${group.explanations[key]}</div>`;
-        }
-        const value = features[key];
-        
-        // Handle source confidence fields with dropdown
-        if (key.startsWith('source_') && key.endsWith('_confidence')) {
-          const currentValue = value || 'medium';
-          html += `<select class="form-select feature-field" name="feature_${key}">
-            <option value="low"${currentValue === 'low' ? ' selected' : ''}>Low</option>
-            <option value="medium"${currentValue === 'medium' ? ' selected' : ''}>Medium</option>
-            <option value="high"${currentValue === 'high' ? ' selected' : ''}>High</option>
-          </select>`;
-        } else if (typeof value === 'boolean') {
-          html += `<select class="form-select feature-field" name="feature_${key}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
-        } else if (typeof value === 'number') {
-          html += `<input type="number" step="any" class="form-control feature-field" name="feature_${key}" value="${value}">`;
-        } else if (Array.isArray(value)) {
-          html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value.join(', ')}">`;
-        } else {
-          html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value}">`;
-        }
-        html += '</div>';
-      }
-    }
-  }
-
-  // Render any other features not grouped
-  const groupedKeys = featureGroups.flatMap(g => g.keys);
-  for (const [key, value] of Object.entries(features)) {
-    if (!groupedKeys.includes(key)) {
-      html += '<div class="col-md-4">';
-      html += `<label class="form-label">${key}</label>`;
-      html += `<div class="text-muted small mb-1">(Custom/Other feature)</div>`;
-      if (typeof value === 'boolean') {
-        html += `<select class="form-select feature-field" name="feature_${key}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
-      } else if (typeof value === 'number') {
-        html += `<input type="number" step="any" class="form-control feature-field" name="feature_${key}" value="${value}">`;
-      } else if (Array.isArray(value)) {
-        html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value.join(', ')}">`;
-      } else {
-        html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value}">`;
-      }
-      html += '</div>';
-    }
-  }
-
-  html += '</div>';
-  html += '<div class="mt-3 text-end">';
-  html += '<button type="button" class="btn btn-primary" onclick="saveFeaturesWeights()">Save Features</button>';
-  html += '</div>';
-  html += '</form>';
-  html += '</div></div>';
-  return html;
-}
-
-function saveFeaturesWeights() {
-  // Start with the current config from buildConfigObject (all other sections)
-  // buildConfigObject already merges window.currentConfig.features so all feature flags are preserved
-  const config = buildConfigObject();
-  
-  // Override individual feature fields with the values from the dynamic features form
-  document.querySelectorAll('.feature-field').forEach(input => {
-    let key = input.name.replace('feature_', '');
-    let val = input.value;
-    if (input.tagName === 'SELECT') {
-      // Only convert to boolean for boolean-typed options; keep strings (e.g. confidence levels) as-is
-      if (val === 'true' || val === 'false') {
-        val = (val === 'true');
-      }
-    } else if (window.currentConfig.features && Array.isArray(window.currentConfig.features[key])) {
-      val = val.split(',').map(s => s.trim()).filter(Boolean);
-    } else if (!isNaN(val) && val !== '') {
-      val = Number(val);
-    }
-    config.features[key] = val;
-  });
-  
-  // Save via AJAX
-  const saveBtn = event.target;
-  saveBtn.disabled = true;
-  const originalText = saveBtn.textContent;
-  saveBtn.textContent = 'Saving...';
-  
-  fetch('/config/save-json', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(config)
-  })
-  .then(r => r.json())
-  .then(resp => {
-    if (resp.success) {
-      showToast('Success', 'Features saved successfully', 'success');
-      setTimeout(() => location.reload(), 1000);
-    } else {
-      showToast('Error', resp.error || 'Unknown error', 'error');
-    }
-  })
-  .catch(err => {
-    showToast('Error', 'Network error: ' + err.message, 'error');
-  })
-  .finally(() => {
-    saveBtn.disabled = false;
-    saveBtn.textContent = originalText;
-  });
-}
-
-</script>
-<script>
-// On page load, render features/weights section
-window.currentConfig = window.pageConfig;
-document.addEventListener('DOMContentLoaded', function() {
-  // Render features/weights section
-  if (window.currentConfig) {
-    const features = window.currentConfig.features || {};
-    const weights = window.currentConfig.weights || {};
-    const container = document.getElementById('featuresWeightsContainer');
-    if (container) {
-      container.innerHTML = renderFeaturesWeights(features, weights);
-    }
-  }
-});
-</script>
-
-<style>
-.form-label-sm {
-  font-size: 0.85rem;
-  font-weight: 600;
-}
-
-.form-control-sm {
-  font-size: 0.9rem;
-}
-
-.monospace {
-  font-family: 'Courier New', monospace !important;
-  font-size: 0.875rem;
-}
-
-@media (max-width: 576px) {
-  .card {
-    border: none;
-    border-top: 1px solid #dee2e6;
-    border-radius: 0;
-    box-shadow: none !important;
-  }
-  
-  .card:first-of-type {
-    border-top: none;
-  }
-  
-  .card-header {
-    padding: 1rem 0 0.5rem 0;
-    border: none;
-    background: none !important;
-  }
-  
-  .card-body {
-    padding: 1rem 0;
-  }
-  
-  h5 {
-    font-size: 1rem;
-  }
-</style>
-<script>
-function cleanupDuplicates(dryRun) {
-  const previewBtn = document.getElementById('cleanupDryRunBtn');
-  const applyBtn = document.getElementById('cleanupApplyBtn');
-  const msg = document.getElementById('cleanupMsg');
-  
-  // Disable both buttons
-  previewBtn.disabled = true;
-  applyBtn.disabled = true;
-  
-  if (dryRun) {
-    previewBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Analyzing...';
-  } else {
-    applyBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Cleaning...';
-  }
-  
-  msg.innerHTML = '';
-  
-  fetch('/api/database/cleanup-duplicates', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dry_run: dryRun })
-  })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
-      const stats = data.stats;
-      let html = '<div class="alert alert-' + (dryRun ? 'info' : 'success') + '">';
-      html += '<strong>' + (dryRun ? 'Preview Results:' : 'Cleanup Complete!') + '</strong><br>';
-      html += data.message + '<br>';
-      html += '<ul class="mb-0 mt-2">';
-      html += '<li>Duplicate sets found: ' + stats.duplicate_sets + '</li>';
-      html += '<li>Tracks to keep: ' + stats.tracks_kept + '</li>';
-      html += '<li>Tracks ' + (dryRun ? 'to delete' : 'deleted') + ': ' + stats.tracks_deleted + '</li>';
-      html += '<li>Albums affected: ' + stats.albums_affected + '</li>';
-      html += '</ul>';
-      html += '</div>';
-      msg.innerHTML = html;
-      
-      if (dryRun && stats.tracks_deleted > 0) {
-        msg.innerHTML += '<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> To apply these changes, click "Apply Cleanup"</div>';
-      }
-    } else {
-      msg.innerHTML = '<div class="alert alert-danger">Error: ' + (data.error || 'Unknown error') + '</div>';
-    }
-  })
-  .catch(error => {
-    msg.innerHTML = '<div class="alert alert-danger">Error: ' + error.message + '</div>';
-  })
-  .finally(() => {
-    // Re-enable buttons and reset text
-    previewBtn.disabled = false;
-    applyBtn.disabled = false;
-    previewBtn.innerHTML = '<i class="bi bi-eye"></i> Preview Cleanup';
-    applyBtn.innerHTML = '<i class="bi bi-trash"></i> Apply Cleanup';
-  });
-}
-
-function migrateToPostgres() {
-  const btn = document.getElementById('migratePostgresBtn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Migrating...';
-  const msg = document.getElementById('pgMigrateMsg');
-  msg.innerHTML = '';
-  const data = {
-    pg_host: document.getElementById('pg_host').value,
-    pg_port: document.getElementById('pg_port').value,
-    pg_user: document.getElementById('pg_user').value,
-    pg_password: document.getElementById('pg_password').value,
-    pg_database: document.getElementById('pg_database').value,
-    backup_sqlite: document.getElementById('pg_backup_sqlite').checked
-  };
-  fetch('/config/migrate_postgres', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(data)
-  })
-  .then(r => r.json())
-  .then(resp => {
-    if (resp.success) {
-      const backupLine = resp.backup_path
-        ? '<br><small class="text-muted">SQLite backup: <code>' + resp.backup_path + '</code></small>'
-        : '';
-      
-      // Check if restart is happening
-      if (resp.requires_restart) {
-        msg.innerHTML = '<span class="text-info"><i class="bi bi-arrow-repeat"></i> Flask is restarting with PostgreSQL... Page will reload automatically.</span>' + backupLine;
-        
-        // Poll for Flask to come back online
-        const maxAttempts = 30;  // 30 seconds max wait (1 second intervals)
-        let attempts = 0;
-        const checkFlaskHealth = setInterval(() => {
-          attempts++;
-          fetch('/api/unified-log?lines=1')  // Light health check
-            .then(r => r.ok && clearInterval(checkFlaskHealth))
-            .then(() => {
-              // Flask is back - reload page
-              setTimeout(() => {
-                window.location.reload();
-              }, 500);
-            })
-            .catch(() => {
-              if (attempts >= maxAttempts) {
-                clearInterval(checkFlaskHealth);
-                msg.innerHTML = '<span class="text-warning"><i class="bi bi-exclamation-triangle"></i> Flask restart took longer than expected. <a href="#">Click here to refresh the page</a>.</span>';
-              }
-            });
-        }, 1000);  // Check every second
-      } else {
-        msg.innerHTML = '<span class="text-success">Migration successful!</span>' + backupLine;
-      }
-    } else {
-      msg.innerHTML = '<span class="text-danger">' + (resp.error || 'Migration failed.') + '</span>';
-    }
-  })
-  .catch(function(e) {
-    msg.innerHTML = '<span class="text-danger">' + (e && e.message ? e.message : 'Unknown error') + '</span>';
-  })
-  .finally(function() {
-    btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL';
-  });
-}
-
-// ============================================================================
-// UPCOMING RELEASES SOURCES
-// ============================================================================
-
-let upcomingSources = [];
-
-function initUpcomingSourcesUI() {
-  const config = window.pageConfig || {};
-  const savedSources = ((config.upcoming_releases || {}).sources || []);
-  if (Array.isArray(savedSources) && savedSources.length > 0) {
-    upcomingSources = savedSources.map(s => Object.assign({}, s));
-  } else {
-    // Built-in defaults (mirrors WIKIPEDIA_SOURCES in wikipedia_releases_scraper.py)
-    upcomingSources = [
-      { key: '2026_albums',      name: 'General 2026 Albums',        url: 'https://en.wikipedia.org/wiki/List_of_2026_albums',            columns: ['day','artist','album','genre'], enabled: true },
-      { key: '2026_heavy_metal', name: 'Heavy Metal 2026',           url: 'https://en.wikipedia.org/wiki/2026_in_heavy_metal_music',      columns: ['day','artist','album'],         enabled: true },
-      { key: '2026_rock',        name: 'Rock Music 2026',            url: 'https://en.wikipedia.org/wiki/2026_in_rock_music',             columns: ['day','artist','album'],         enabled: true },
-      { key: '2026_kpop',        name: 'K-Pop/Korean Music 2026',    url: 'https://en.wikipedia.org/wiki/2026_in_South_Korean_music',     columns: ['day','album','artist'],         enabled: true },
-      { key: '2026_american',    name: 'American Music 2026',        url: 'https://en.wikipedia.org/wiki/2026_in_American_music',         columns: ['day','album','artist'],         enabled: true },
-    ];
-  }
-  renderUpcomingSourcesList();
-}
-
-function renderUpcomingSourcesList() {
-  const container = document.getElementById('upcomingSourcesList');
-  if (!container) return;
-  if (upcomingSources.length === 0) {
-    container.innerHTML = '<p class="text-muted fst-italic">No sources configured. Add a source below.</p>';
-    return;
-  }
-  container.innerHTML = upcomingSources.map((src, idx) => buildUpcomingSourceRow(src, idx)).join('');
-}
-
-function buildUpcomingSourceRow(src, idx) {
-  const enabled = src.enabled !== false;
-  const cols = Array.isArray(src.columns) ? src.columns : ['day','artist','album'];
-  const colBadges = cols.map(c => {
-    if (c === 'genre') {
-      return `<span class="badge bg-secondary" title="Skipped during parsing" style="text-decoration:line-through;">${escapeHtml(c)}</span>`;
-    }
-    return `<span class="badge bg-primary">${escapeHtml(c)}</span>`;
-  }).join(' <i class="bi bi-arrow-right-short text-muted"></i> ');
-
-  return `<div class="border rounded p-3 mb-2" id="srcRow_${idx}">
-  <div class="d-flex flex-column flex-md-row align-items-md-start gap-3">
-    <div class="form-check form-switch pt-1 flex-shrink-0">
-      <input class="form-check-input" type="checkbox" role="switch" id="srcEnabled_${idx}"
-             ${enabled ? 'checked' : ''} onchange="toggleUpcomingSourceEnabled(${idx})">
-    </div>
-    <div class="flex-grow-1 overflow-hidden">
-      <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
-        <strong>${escapeHtml(src.name)}</strong>
-        <code class="text-muted small">${escapeHtml(src.key)}</code>
-        ${!enabled ? '<span class="badge bg-secondary">Disabled</span>' : ''}
-      </div>
-      <div class="text-muted small mb-2 text-truncate">
-        <i class="bi bi-link-45deg"></i>
-        <a href="${escapeHtml(src.url)}" target="_blank" rel="noopener noreferrer" class="text-muted">${escapeHtml(src.url)}</a>
-      </div>
-      <div class="d-flex flex-wrap align-items-center gap-1">
-        <small class="text-muted me-1">Column order:</small>
-        ${colBadges}
-      </div>
-    </div>
-    <div class="d-flex gap-2 flex-shrink-0">
-      <button type="button" class="btn btn-outline-secondary btn-sm" onclick="editUpcomingSource(${idx})" title="Edit source">
-        <i class="bi bi-pencil"></i>
-      </button>
-      <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeUpcomingSource(${idx})" title="Remove source">
-        <i class="bi bi-trash"></i>
-      </button>
-    </div>
-  </div>
-</div>`;
-}
-
-function toggleEssentiaGenreSettings() {
-  const cb = document.getElementById('essentia_tag_genres');
-  const panel = document.getElementById('essentia-genre-settings');
-  if (panel) panel.classList.toggle('d-none', !cb || !cb.checked);
-}
-
-let _essentiaDownloadPollTimer = null;
-
-function startEssentiaDownload() {
-  const btn = document.getElementById('btn-essentia-download');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Starting…';
-
-  fetch('/api/essentia/download-models', { method: 'POST' })
-    .then(r => r.json())
-    .then(data => {
-      if (data.status === 'already_running') {
-        _essentiaSetStatusText('Download already in progress…');
-        document.getElementById('essentia-download-status').classList.remove('d-none');
-      }
-      pollEssentiaDownloadStatus();
-    })
-    .catch(err => {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Download Models &amp; Script';
-      showToast('Error', 'Could not start Essentia download: ' + err, 'error');
-    });
-}
-
-function pollEssentiaDownloadStatus() {
-  if (_essentiaDownloadPollTimer) clearTimeout(_essentiaDownloadPollTimer);
-  // Progress bar reserves 10% for the git-clone step and up to 95% for file downloads.
-  const CLONE_PCT = 10;
-  const DOWNLOAD_RANGE_PCT = 85;
-  const EXPECTED_FILES = 5;  // 5 model files from essentia.upf.edu
-  fetch('/api/essentia/download-status')
-    .then(r => r.json())
-    .then(data => {
-      const statusDiv = document.getElementById('essentia-download-status');
-      const bar = document.getElementById('essentia-download-bar');
-      const btn = document.getElementById('btn-essentia-download');
-
-      if (!data || data.status === 'idle') {
-        statusDiv.classList.add('d-none');
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-cloud-download"></i> Download Models &amp; Script';
-        return;
-      }
-
-      statusDiv.classList.remove('d-none');
-      const total = data.files_total || EXPECTED_FILES;
-      const done = data.files_done || 0;
-
-      bar.classList.remove('bg-success', 'bg-danger');
-      bar.classList.add('progress-bar-striped', 'progress-bar-animated');
-
-      if (data.status === 'complete') {
-        bar.style.width = '100%';
-        bar.classList.remove('progress-bar-animated');
-        bar.classList.add('bg-success');
-        _essentiaSetStatusText('✅ Download complete — models saved to ' + (data.models_dir || '/opt/essentia_models'));
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-cloud-download"></i> Download Models &amp; Script';
-      } else if (data.status === 'error') {
-        bar.classList.remove('progress-bar-animated');
-        bar.classList.add('bg-danger');
-        bar.style.width = '100%';
-        _essentiaSetStatusText('❌ Error: ' + (data.error || 'unknown error'));
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-cloud-download"></i> Retry Download';
-      } else {
-        // still running — update progress and poll again
-        const pct = data.status === 'cloning_script'
-          ? CLONE_PCT
-          : Math.max(CLONE_PCT, Math.round(CLONE_PCT + (done / total) * DOWNLOAD_RANGE_PCT));
-        bar.style.width = pct + '%';
-        _essentiaSetStatusText(data.current_step || 'Downloading…');
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Downloading…';
-        _essentiaDownloadPollTimer = setTimeout(pollEssentiaDownloadStatus, 2000);
-      }
-    })
-    .catch(() => {
-      _essentiaDownloadPollTimer = setTimeout(pollEssentiaDownloadStatus, 3000);
-    });
-}
-
-function _essentiaSetStatusText(msg) {
-  const el = document.getElementById('essentia-download-status-text');
-  if (el) el.textContent = msg;
-}
-
-function toggleUpcomingSourceEnabled(idx) {
-  const cb = document.getElementById(`srcEnabled_${idx}`);
-  if (cb && upcomingSources[idx]) {
-    upcomingSources[idx].enabled = cb.checked;
-  }
-}
-
-function editUpcomingSource(idx) {
-  const src = upcomingSources[idx];
-  if (!src) return;
-  const row = document.getElementById(`srcRow_${idx}`);
-  if (!row) return;
-  const cols = Array.isArray(src.columns) ? src.columns.join(', ') : 'day, artist, album';
-  row.innerHTML = `<div class="row g-2 mb-2">
-    <div class="col-12 col-md-4">
-      <label class="form-label small fw-bold">Source Key</label>
-      <input type="text" class="form-control form-control-sm" id="editSrcKey_${idx}" value="${escapeHtml(src.key)}" placeholder="e.g. 2026_jazz">
-      <div class="form-text">Must include a 4-digit year</div>
-    </div>
-    <div class="col-12 col-md-4">
-      <label class="form-label small fw-bold">Display Name</label>
-      <input type="text" class="form-control form-control-sm" id="editSrcName_${idx}" value="${escapeHtml(src.name)}">
-    </div>
-    <div class="col-12 col-md-4">
-      <label class="form-label small fw-bold">Column Order</label>
-      <input type="text" class="form-control form-control-sm" id="editSrcCols_${idx}" value="${escapeHtml(cols)}">
-      <div class="form-text">e.g. <code>day, artist, album</code></div>
-    </div>
-    <div class="col-12">
-      <label class="form-label small fw-bold">Wikipedia URL</label>
-      <input type="url" class="form-control form-control-sm" id="editSrcUrl_${idx}" value="${escapeHtml(src.url)}">
-    </div>
-  </div>
-  <div class="d-flex gap-2">
-    <button type="button" class="btn btn-primary btn-sm" onclick="saveUpcomingSourceEdit(${idx})">
-      <i class="bi bi-check-circle"></i> Save
-    </button>
-    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="renderUpcomingSourcesList()">
-      Cancel
-    </button>
-  </div>`;
-}
-
-function saveUpcomingSourceEdit(idx) {
-  const key  = (document.getElementById(`editSrcKey_${idx}`)?.value  || '').trim();
-  const name = (document.getElementById(`editSrcName_${idx}`)?.value || '').trim();
-  const url  = (document.getElementById(`editSrcUrl_${idx}`)?.value  || '').trim();
-  const colsRaw = (document.getElementById(`editSrcCols_${idx}`)?.value || '').trim();
-  if (!key || !name || !url) { showToast('Error', 'Key, name, and URL are required', 'warning'); return; }
-  if (!/20[2-9]\d/.test(key)) { showToast('Warning', 'Source key should include a year (e.g. 2026_...) for date parsing', 'warning'); }
-  const cols = parseUpcomingCols(colsRaw);
-  if (!cols.includes('artist') || !cols.includes('album')) {
-    showToast('Error', 'Column order must include both "artist" and "album"', 'warning'); return;
-  }
-  upcomingSources[idx] = { ...upcomingSources[idx], key, name, url, columns: cols };
-  renderUpcomingSourcesList();
-}
-
-function removeUpcomingSource(idx) {
-  const src = upcomingSources[idx];
-  if (!src) return;
-  if (!confirm(`Remove source "${src.name}"?`)) return;
-  upcomingSources.splice(idx, 1);
-  renderUpcomingSourcesList();
-}
-
-function toggleAddUpcomingSourceForm() {
-  const form = document.getElementById('addUpcomingSourceForm');
-  if (form) form.classList.toggle('d-none');
-}
-
-function addUpcomingSource() {
-  const key     = (document.getElementById('newSrcKey')?.value     || '').trim();
-  const name    = (document.getElementById('newSrcName')?.value    || '').trim();
-  const url     = (document.getElementById('newSrcUrl')?.value     || '').trim();
-  const colsRaw = (document.getElementById('newSrcColumns')?.value || '').trim();
-  if (!key || !name || !url) { showToast('Error', 'Key, name, and URL are required', 'warning'); return; }
-  if (upcomingSources.some(s => s.key === key)) {
-    showToast('Error', `Source key "${key}" already exists`, 'warning'); return;
-  }
-  if (!/20[2-9]\d/.test(key)) { showToast('Warning', 'Source key should include a year (e.g. 2026_...) for date parsing', 'warning'); }
-  const cols = parseUpcomingCols(colsRaw || 'day, artist, album');
-  if (!cols.includes('artist') || !cols.includes('album')) {
-    showToast('Error', 'Column order must include both "artist" and "album"', 'warning'); return;
-  }
-  upcomingSources.push({ key, name, url, columns: cols, enabled: true });
-  document.getElementById('newSrcKey').value     = '';
-  document.getElementById('newSrcName').value    = '';
-  document.getElementById('newSrcUrl').value     = '';
-  document.getElementById('newSrcColumns').value = 'day, artist, album';
-  toggleAddUpcomingSourceForm();
-  renderUpcomingSourcesList();
-}
-
-function parseUpcomingCols(raw) {
-  const valid = ['day','artist','album','genre'];
-  return raw.split(',').map(c => c.trim().toLowerCase()).filter(c => valid.includes(c));
-}
-
-function getUpcomingSourcesForSave() {
-  // Sync enabled toggles before collecting
-  upcomingSources.forEach((src, idx) => {
-    const cb = document.getElementById(`srcEnabled_${idx}`);
-    if (cb) src.enabled = cb.checked;
-  });
-  return upcomingSources.map(s => ({
-    key:     s.key,
-    name:    s.name,
-    url:     s.url,
-    columns: Array.isArray(s.columns) ? s.columns : ['day','artist','album'],
-    enabled: s.enabled !== false,
-  }));
-}
-
-// ============================================================================
-// RETRY SCHEDULER FUNCTIONS
-// ============================================================================
-
-function getRetrySchedulerStatus() {
-  fetch('/api/downloads/scheduler/status')
-    .then(r => r.json())
-    .then(data => {
-      const statusIcon = document.getElementById('schedulerStatusIcon');
-      const statusText = document.getElementById('schedulerStatusText');
-      const statusDetail = document.getElementById('schedulerStatusDetail');
-      const startBtn = document.getElementById('startSchedulerBtn');
-      const stopBtn = document.getElementById('stopSchedulerBtn');
-      
-      const isRunning = data.running || false;
-      
-      if (statusIcon) {
-        statusIcon.className = isRunning 
-          ? 'bi bi-circle-fill text-success' 
-          : 'bi bi-circle-fill text-muted';
-        statusIcon.title = isRunning ? 'Running' : 'Stopped';
-      }
-      
-      if (statusText) {
-        statusText.textContent = isRunning ? 'Running' : 'Stopped';
-      }
-      
-      if (statusDetail) {
-        statusDetail.innerHTML = isRunning 
-          ? '<span class="badge bg-success"><i class="bi bi-play-circle"></i> Running</span> - Retry scheduler is actively monitoring and retrying failed downloads every configured interval.'
-          : '<span class="badge bg-secondary"><i class="bi bi-stop-circle"></i> Stopped</span> - Retry scheduler is not running. Click "Start" to begin automatic retry management.';
-      }
-      
-      if (startBtn) startBtn.disabled = isRunning;
-      if (stopBtn) stopBtn.disabled = !isRunning;
-    })
-    .catch(e => {
-      console.error('Error getting scheduler status:', e);
-      const statusDetail = document.getElementById('schedulerStatusDetail');
-      if (statusDetail) {
-        statusDetail.textContent = 'Unable to load status';
-      }
-    });
-}
-
-function startRetryScheduler() {
-  const btn = document.getElementById('startSchedulerBtn');
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
-  }
-  
-  fetch('/api/downloads/scheduler/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' }
-  })
-  .then(r => r.json())
-  .then(data => {
-    if (data.success) {
-      showToast('Retry scheduler started', 'success');
-      setTimeout(getRetrySchedulerStatus, 500);
-    } else {
-      showToast('Error: ' + (data.error || 'Failed to start scheduler'), 'danger');
-      if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-play-fill"></i> Start';
-      }
-    }
-  })
-  .catch(e => {
-    showToast('Network error: ' + e.message, 'danger');
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="bi bi-play-fill"></i> Start';
-    }
-  });
-}
-
-function stopRetryScheduler() {
-  const btn = document.getElementById('stopSchedulerBtn');
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Stopping...';
-  }
-  
-  fetch('/api/downloads/scheduler/stop', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' }
-  })
-  .then(r => r.json())
-  .then(data => {
-    if (data.success) {
-      showToast('Retry scheduler stopped', 'warning');
-      setTimeout(getRetrySchedulerStatus, 500);
-    } else {
-      showToast('Error: ' + (data.error || 'Failed to stop scheduler'), 'danger');
-      if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-stop-fill"></i> Stop';
-      }
-    }
-  })
-  .catch(e => {
-    showToast('Network error: ' + e.message, 'danger');
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="bi bi-stop-fill"></i> Stop';
-    }
-  });
-}
-
-// ============================================================================
-// RETRY SCHEDULER STATUS
-// ============================================================================
-
-// Load scheduler status on page load
-document.addEventListener('DOMContentLoaded', function() {
-  getRetrySchedulerStatus();
-  // Refresh status every 5 seconds
-  setInterval(getRetrySchedulerStatus, 5000);
-  // Resume any in-progress Essentia download display
-  pollEssentiaDownloadStatus();
-});
-</script>
+<script src="{{ url_for('static', filename='js/config.js') }}"></script>
 {% endblock %}
 

@@ -108,7 +108,7 @@ def run_artist_scan_pipeline(artist_name: str, force: bool = False):
 
         # optional essentia
         try:
-            from essentia_mood_scan import run_essentia_mood_scan
+            from services.scanning.pipelines.essentia_scanner import run_essentia_mood_scan
             run_essentia_mood_scan(artist_filter=artist_name, force=force)
         except Exception as exc:
             logger.debug("[SCAN_PIPELINE] Essentia scan skipped for '%s': %s", artist_name, exc)

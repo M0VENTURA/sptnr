@@ -74,17 +74,17 @@ async def login():
                         client = NavidromeClient(base_url=base_url, username=username, password=password)
                         if client.ping():
                             session["username"] = username
-                            flash(f"Welcome back, {username}!", "success")
+                            await flash(f"Welcome back, {username}!", "success")
                             return redirect(url_for("ui.dashboard"))
                     except Exception:
                         pass
                 # Fallback: check against stored password
                 if user.get("pass") == password:
                     session["username"] = username
-                    flash(f"Welcome back, {username}!", "success")
+                    await flash(f"Welcome back, {username}!", "success")
                     return redirect(url_for("ui.dashboard"))
 
-        flash("Invalid credentials", "error")
+        await flash("Invalid credentials", "error")
         return await render_template("auth/login.html")
     return await render_template("auth/login.html")
 
@@ -916,7 +916,7 @@ async def album_detail(artist: str, album: str):
     if request.method == "POST":
         # The template currently posts album metadata back to this route.
         # If save/update logic is not implemented yet, avoid a 405 and give feedback.
-        flash("Album metadata saving is not implemented in this route yet.", "warning")
+        await flash("Album metadata saving is not implemented in this route yet.", "warning")
         return redirect(url_for("ui.album_detail", artist=artist_name, album=album_name))
 
     with db_session() as session:
@@ -1509,7 +1509,7 @@ async def track_detail(track_id: str):
             row = result.fetchone()
 
             if not row:
-                flash("Track not found", "error")
+                await flash("Track not found", "error")
                 return redirect(url_for("ui.dashboard"))
 
             track = apply_track_template_aliases(dict(row._mapping))
@@ -1726,17 +1726,17 @@ async def track_detail(track_id: str):
                                 )
 
                                 if file_write_success:
-                                    flash(
+                                    await flash(
                                         "Track metadata updated and written to the audio file.",
                                         "success",
                                     )
                                 else:
-                                    flash(
+                                    await flash(
                                         "Track metadata updated, but writing tags to the audio file failed.",
                                         "warning",
                                     )
                             else:
-                                flash("Track metadata updated.", "success")
+                                await flash("Track metadata updated.", "success")
 
                         except Exception as tag_err:
                             logger.warning(
@@ -1744,17 +1744,17 @@ async def track_detail(track_id: str):
                                 track_id,
                                 tag_err,
                             )
-                            flash(
+                            await flash(
                                 "Track metadata updated. Audio tag writing was unavailable.",
                                 "info",
                             )
                     elif file_path:
-                        flash(
+                        await flash(
                             "Track metadata updated, but the audio file could not be found on disk.",
                             "warning",
                         )
                     else:
-                        flash(
+                        await flash(
                             "Track metadata updated. No file path is available for audio tag writing.",
                             "info",
                         )
@@ -1858,7 +1858,7 @@ async def track_detail(track_id: str):
 
     except Exception as exc:
         logger.error("Error loading track %s: %s", track_id, exc, exc_info=True)
-        flash(f"Error loading track: {exc}", "error")
+        await flash(f"Error loading track: {exc}", "error")
         return redirect(url_for("ui.dashboard"))
 
 
@@ -2038,44 +2038,36 @@ async def downloads_page():
     )
 
 
-@ui_bp.route("/downloads/search/soulseek")
-async def downloads_search_soulseek():
+@ui_bp.route("/downloads/search")
+async def downloads_search():
+    """Unified search interface — all providers via tabs."""
     cfg = get_config()
     return await render_template(
-        "pages/downloads/search_soulseek.html",
+        "pages/downloads/search.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
+
+
+# Legacy redirects — keep old URLs working.
+@ui_bp.route("/downloads/search/soulseek")
+async def downloads_search_soulseek():
+    return redirect(url_for("ui.downloads_search") + "#search-soulseek")
 
 
 @ui_bp.route("/downloads/search/musicbrainz")
 async def downloads_search_musicbrainz():
-    cfg = get_config()
-    return await render_template(
-        "pages/downloads/search_musicbrainz.html",
-        qbit_config=cfg.get("qbittorrent", {}),
-        slskd_config=cfg.get("slskd", {}),
-    )
+    return redirect(url_for("ui.downloads_search") + "#search-musicbrainz")
 
 
 @ui_bp.route("/downloads/search/qbittorrent")
 async def downloads_search_qbittorrent():
-    cfg = get_config()
-    return await render_template(
-        "pages/downloads/search_qbittorrent.html",
-        qbit_config=cfg.get("qbittorrent", {}),
-        slskd_config=cfg.get("slskd", {}),
-    )
+    return redirect(url_for("ui.downloads_search") + "#search-qbittorrent")
 
 
 @ui_bp.route("/downloads/search/playlists")
 async def downloads_search_playlists():
-    cfg = get_config()
-    return await render_template(
-        "pages/downloads/search_playlists.html",
-        qbit_config=cfg.get("qbittorrent", {}),
-        slskd_config=cfg.get("slskd", {}),
-    )
+    return redirect(url_for("ui.downloads_search") + "#search-playlists")
 
 
 @ui_bp.route("/downloads/manager")
@@ -2190,7 +2182,7 @@ async def metadata_compare():
 
     except Exception as exc:
         logger.error("metadata-compare: %s", exc, exc_info=True)
-        flash(f"Error loading metadata comparison: {exc}", "danger")
+        await flash(f"Error loading metadata comparison: {exc}", "danger")
         return redirect(url_for("ui.dashboard"))
 
 

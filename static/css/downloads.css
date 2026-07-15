@@ -1,0 +1,17 @@
+/* Downloads page styles — shared across manager, monitor, queue, search_* */
+/* Global card/table/modal styles are in popularr.css — only page-specific rules here */
+
+.processing-log {
+    max-height: 400px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 0.85rem;
+}
+
+.status-badge-pending {
+    background-color: var(--brand-spotify, #1db954) !important;
+}
+
+.status-badge-incomplete {
+    background-color: var(--brand-lastfm, #d51007) !important;
+}

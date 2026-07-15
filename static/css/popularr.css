@@ -1,0 +1,137 @@
+/* ==========================================================================
+   Popularr — Global Application Styles
+   Loaded from base.html on every page.
+   ========================================================================== */
+
+/* ── Modern card aesthetics ─────────────────────────────────────────────── */
+.card {
+    border-radius: 0.75rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+.card-header {
+    background-color: transparent !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+.progress {
+    height: 4px !important;
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+.progress-bar {
+    position: relative;
+    overflow: hidden;
+}
+
+/* ── Album art container (extracted from inline styles) ──────────────────── */
+.album-art-container {
+    width: min(200px, 50vw);
+    aspect-ratio: 1;
+    border-radius: 0.5rem;
+    overflow: hidden;
+    background-color: var(--tertiary-bg, #2a2a2a);
+    border: 2px solid var(--border-color);
+}
+
+.album-art-sm {
+    width: 80px;
+    height: 80px;
+    border-radius: 0.35rem;
+    object-fit: cover;
+    border: 1px solid var(--border-color);
+    background-color: var(--tertiary-bg, #2a2a2a);
+}
+
+/* ── Table hover transitions (desktop) ──────────────────────────────────── */
+@media (min-width: 768px) {
+    .table-hover tbody tr {
+        transition: background-color 0.15s ease-in-out;
+    }
+    .table-hover tbody tr:hover {
+        background-color: rgba(255, 255, 255, 0.05) !important;
+    }
+}
+
+/* ── Mobile: tables → stacked cards ──────────────────────────────────────── */
+@media (max-width: 767px) {
+    .table-responsive table,
+    .table-responsive tbody,
+    .table-responsive tr,
+    .table-responsive td {
+        display: block;
+        width: 100%;
+    }
+
+    .table-responsive thead {
+        display: none;
+    }
+
+    .table-responsive tr {
+        background-color: var(--secondary-bg, #1e1e1e);
+        border: 1px solid var(--border-color, #333);
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+        padding: 0.5rem;
+    }
+
+    .table-responsive td {
+        border: none !important;
+        padding: 0.4rem 0.5rem !important;
+        text-align: left !important;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .table-responsive td.text-center {
+        justify-content: flex-end;
+    }
+
+    /* Keep nested tables inside cards as compact inline tables */
+    .table-responsive .table-responsive td {
+        display: table-cell;
+        padding: 0.25rem !important;
+    }
+}
+
+/* ── Smooth scrollbar for log areas ──────────────────────────────────────── */
+.pre-scroll {
+    font-family: monospace;
+    font-size: 12px;
+}
+
+/* ── Genre/mood source brand colors ─────────────────────────────────────── */
+:root {
+    --brand-spotify: #1db954;
+    --brand-lastfm: #d51007;
+    --brand-listenbrainz: #0066ff;
+    --brand-discogs: #6c757d;
+    --brand-essentia: #6f42c1;
+    --brand-navidrome: #17a589;
+    --brand-musicbrainz: #eb743b;
+    --brand-mood: #f59c00;
+}
+.badge-source-spotify { background-color: var(--brand-spotify) !important; color: #fff !important; }
+.badge-source-lastfm { background-color: var(--brand-lastfm) !important; color: #fff !important; }
+.badge-source-listenbrainz { background-color: var(--brand-listenbrainz) !important; color: #fff !important; }
+.badge-source-discogs { background-color: var(--brand-discogs) !important; color: #fff !important; }
+.badge-source-essentia { background-color: var(--brand-essentia) !important; color: #fff !important; }
+.badge-source-navidrome { background-color: var(--brand-navidrome) !important; color: #fff !important; }
+.badge-source-musicbrainz { background-color: var(--brand-musicbrainz) !important; color: #fff !important; }
+.badge-source-mood { background-color: var(--brand-mood) !important; color: #000 !important; }
+
+/* ── ScrollSpy active nav link ──────────────────────────────────────────── */
+.nav-pills .nav-link.active {
+    background-color: var(--spotify-green, #1db954) !important;
+    color: #000 !important;
+}
+
+/* ── Misc utilities ──────────────────────────────────────────────────────── */
+.sticky-header thead th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}

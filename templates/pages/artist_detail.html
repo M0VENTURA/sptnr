@@ -4,48 +4,33 @@
 
 {% block content %}
 <style>
-/* Critical artist-page table colors to prevent white flash before late styles load. */
-.artist-page .card,
-.artist-page .table-responsive,
-.artist-page .table,
-.artist-page .table tbody,
-.artist-page .table tbody tr,
-.artist-page .table tbody td {
-  background-color: var(--secondary-bg, #1e1e1e) !important;
-  color: var(--text-primary, #e8e8e8) !important;
-}
-
-.artist-page .table thead,
-.artist-page .table thead th {
-  background-color: var(--primary-bg, #141414) !important;
-  color: var(--text-primary, #e8e8e8) !important;
-}
-
 @media (max-width: 576px) {
   /* Artist image: shrink slightly, stay centered */
-  .artist-img-wrap {
+  .album-art-container {
     width: 150px !important;
     height: 150px !important;
   }
-
   /* Action button row: ensure adequate touch targets */
   .d-flex.flex-row.flex-wrap .btn {
     min-height: 44px;
   }
-
   /* Country/IDs btn-group: adequate tap size */
   .btn-group.btn-group-sm .btn {
     min-height: 40px;
     padding: 0.375rem 0.75rem;
   }
-
   /* Artist ID inputs: prevent iOS zoom */
   .col-12.col-lg-6 input.form-control {
     font-size: 16px;
   }
 }
+/* Ensure sticky nav doesn't cover section headers when clicked */
+[id$="-section"] {
+    scroll-margin-top: 130px; 
+}
 </style>
-<div class="container-fluid mt-4 artist-page">
+
+<div class="container-fluid mt-4 artist-page" data-bs-spy="scroll" data-bs-target="#artist-nav" data-bs-smooth-scroll="true" tabindex="0">
   <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
       <li class="breadcrumb-item"><a href="{{ url_for('ui.dashboard') }}">Dashboard</a></li>
@@ -73,16 +58,9 @@
       <a class="btn btn-outline-secondary" href="{{ url_for('ui.artists') }}">
         <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
       </a>
-      <form action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
+      <form action="{{ url_for('scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
         <input type="hidden" name="artist" value="{{ artist_name }}">
-        <select name="scan_type" class="form-select form-select-sm" style="min-width: 160px; width: auto;" title="Select scan type">
-          <option value="full">Full</option>
-          <option value="navidrome">Navidrome</option>
-          <option value="popularity">Popularity</option>
-          <option value="metadata">Metadata</option>
-          <option value="singles">Singles</option>
-          <option value="essentia">Essentia</option>
-        </select>
+        {% include 'components/_scan_selector.html' %}
         <div class="form-check form-check-inline mb-0" title="Force full rescan for this artist">
           <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
           <label class="form-check-label small" for="artistForceScan">Force</label>
@@ -96,13 +74,13 @@
 
   <!-- Needs Correcting badge — always shown when corrections exist -->
   <div id="artist-corrections-banner" style="display:none;" class="mb-3">
-    <a href="{{ url_for('ui.artist_corrections', name=artist_name) }}" class="btn btn-outline-danger btn-sm">
+    <a href="{{ url_for('artist_corrections', name=artist_name) }}" class="btn btn-outline-danger btn-sm">
       <i class="bi bi-tools"></i> Needs Correcting
     </a>
     <span id="artist-missing-tracks-badge" class="badge bg-warning text-dark ms-2" style="display:none;"></span>
   </div>
   <div class="mb-3">
-    <a href="{{ url_for('ui.artist_genre_management', name=artist_name) }}" class="btn btn-outline-info btn-sm">
+    <a href="{{ url_for('artist_genre_management', name=artist_name) }}" class="btn btn-outline-info btn-sm">
       <i class="bi bi-tags"></i> Genre Management
     </a>
   </div>
@@ -130,7 +108,7 @@
           <!-- Artist Image -->
           <div class="col-12 col-md-3 d-flex flex-column align-items-center">
             <div class="artist-img-wrap position-relative mb-3" style="width: min(200px, 50vw); aspect-ratio: 1; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
-              <img id="artistImage" src="{{ url_for('artist.api_artist_image', name=artist_name) }}" 
+              <img id="artistImage" src="{{ url_for('api_artist_image', name=artist_name) }}" 
                    alt="{{ artist_name }}" 
                    style="width: 100%; height: 100%; object-fit: cover;"
                    onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
@@ -449,7 +427,7 @@
                       <span class="text-muted">{{ track.title }}</span>
                       <span class="badge bg-warning text-dark ms-2" title="This track is currently in the download queue">In Queue</span>
                     {% else %}
-                      <a href="{{ url_for('ui.track_detail', artist=artist_name, album=track.album, track_id=track.id) }}" class="text-decoration-none">
+                      <a href="{{ url_for('track_detail', artist=artist_name, album=track.album, track_id=track.id) }}" class="text-decoration-none">
                         {{ track.title }}
                       </a>
                     {% endif %}
@@ -458,7 +436,7 @@
                     {% endif %}
                   </td>
                   <td>
-                    <a href="{{ url_for('ui.album_detail', artist=artist_name, album=track.album) }}" class="text-decoration-none">
+                    <a href="{{ url_for('album_detail', artist=artist_name, album=track.album) }}" class="text-decoration-none">
                       {{ track.album }}
                     </a>
                   </td>
@@ -538,22 +516,20 @@
     </div>
   </div>
 
-  <!-- Import Macro -->
   {% from "components/_album_category_section.html" import render_album_row %}
 
-  <!-- Albums Section -->
   {% set total_discovered_albums = albums_by_category.album|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_albums = albums_by_category.album|selectattr('is_missing', 'equalto', True)|list|length %}
-  {% set total_discovered_eps = albums_by_category.ep|selectattr('is_missing', 'equalto', False)|list|length %}
-  {% set total_missing_eps = albums_by_category.ep|selectattr('is_missing', 'equalto', True)|list|length %}
-  {% set total_discovered_singles = albums_by_category.single|selectattr('is_missing', 'equalto', False)|list|length %}
-  {% set total_missing_singles = albums_by_category.single|selectattr('is_missing', 'equalto', True)|list|length %}
   {% set total_discovered_compilations = albums_by_category.compilation|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_compilations = albums_by_category.compilation|selectattr('is_missing', 'equalto', True)|list|length %}
   {% set total_discovered_live_albums = albums_by_category.live_album|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_live_albums = albums_by_category.live_album|selectattr('is_missing', 'equalto', True)|list|length %}
   {% set total_discovered_remix_albums = albums_by_category.remix_album|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_remix_albums = albums_by_category.remix_album|selectattr('is_missing', 'equalto', True)|list|length %}
+  {% set total_discovered_eps = albums_by_category.ep|selectattr('is_missing', 'equalto', False)|list|length %}
+  {% set total_missing_eps = albums_by_category.ep|selectattr('is_missing', 'equalto', True)|list|length %}
+  {% set total_discovered_singles = albums_by_category.single|selectattr('is_missing', 'equalto', False)|list|length %}
+  {% set total_missing_singles = albums_by_category.single|selectattr('is_missing', 'equalto', True)|list|length %}
   
   <div class="card mb-4" id="albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
@@ -578,33 +554,16 @@
         </button>
       </div>
     </div>
-    <div class="table-responsive">
-      <table class="table table-hover mb-0">
-        <thead class="d-none d-md-table-header-group">
-          <tr>
-            <th style="width: 100px;">Art</th>
-            <th>Title</th>
-            <th class="text-center" style="width: 80px;">Year</th>
-            <th class="text-center" style="width: 100px;">Status</th>
-            <th class="text-center" style="width: 80px;">Tracks</th>
-            <th class="text-center" style="width: 100px;">Avg ★</th>
-            <th class="text-center" style="width: 150px;">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="albums-tbody">
-          {% if albums_by_category.album|length > 0 %}
-            {% for album in albums_by_category.album %}
-              {{ render_album_row(album, artist_name, album.is_missing) }}
-            {% endfor %}
-          {% else %}
-            <tr>
-              <td colspan="7" class="text-center text-muted py-4">
-                <i class="bi bi-info-circle"></i> No albums found
-              </td>
-            </tr>
-          {% endif %}
-        </tbody>
-      </table>
+    <div class="accordion accordion-flush" id="accordion-albums">
+      {% if albums_by_category.album|length > 0 %}
+        {% for album in albums_by_category.album %}
+          {{ render_album_row(album, artist_name, album.is_missing, "accordion-albums") }}
+        {% endfor %}
+      {% else %}
+        <div class="text-center text-muted py-4">
+          <i class="bi bi-info-circle"></i> No albums found
+        </div>
+      {% endif %}
     </div>
   </div>
 
@@ -627,33 +586,16 @@
         </button>
       {% endif %}
     </div>
-    <div class="table-responsive">
-      <table class="table table-hover mb-0">
-        <thead class="d-none d-md-table-header-group">
-          <tr>
-            <th style="width: 100px;">Art</th>
-            <th>Title</th>
-            <th class="text-center" style="width: 80px;">Year</th>
-            <th class="text-center" style="width: 100px;">Status</th>
-            <th class="text-center" style="width: 80px;">Tracks</th>
-            <th class="text-center" style="width: 100px;">Avg ★</th>
-            <th class="text-center" style="width: 150px;">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="compilations-tbody">
-          {% if albums_by_category.compilation|length > 0 %}
-            {% for album in albums_by_category.compilation %}
-              {{ render_album_row(album, artist_name, album.is_missing) }}
-            {% endfor %}
-          {% else %}
-            <tr>
-              <td colspan="7" class="text-center text-muted py-4">
-                <i class="bi bi-info-circle"></i> No compilations found
-              </td>
-            </tr>
-          {% endif %}
-        </tbody>
-      </table>
+    <div class="accordion accordion-flush" id="accordion-compilations">
+      {% if albums_by_category.compilation|length > 0 %}
+        {% for album in albums_by_category.compilation %}
+          {{ render_album_row(album, artist_name, album.is_missing, "accordion-compilations") }}
+        {% endfor %}
+      {% else %}
+        <div class="text-center text-muted py-4">
+          <i class="bi bi-info-circle"></i> No compilations found
+        </div>
+      {% endif %}
     </div>
   </div>
 
@@ -681,33 +623,16 @@
         </button>
       </div>
     </div>
-    <div class="table-responsive">
-      <table class="table table-hover mb-0">
-        <thead class="d-none d-md-table-header-group">
-          <tr>
-            <th style="width: 100px;">Art</th>
-            <th>Title</th>
-            <th class="text-center" style="width: 80px;">Year</th>
-            <th class="text-center" style="width: 100px;">Status</th>
-            <th class="text-center" style="width: 80px;">Tracks</th>
-            <th class="text-center" style="width: 100px;">Avg ★</th>
-            <th class="text-center" style="width: 150px;">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="live-albums-tbody">
-          {% if albums_by_category.live_album|length > 0 %}
-            {% for album in albums_by_category.live_album %}
-              {{ render_album_row(album, artist_name, album.is_missing) }}
-            {% endfor %}
-          {% else %}
-            <tr>
-              <td colspan="7" class="text-center text-muted py-4">
-                <i class="bi bi-info-circle"></i> No live albums found
-              </td>
-            </tr>
-          {% endif %}
-        </tbody>
-      </table>
+    <div class="accordion accordion-flush" id="accordion-live-albums">
+      {% if albums_by_category.live_album|length > 0 %}
+        {% for album in albums_by_category.live_album %}
+          {{ render_album_row(album, artist_name, album.is_missing, "accordion-live-albums") }}
+        {% endfor %}
+      {% else %}
+        <div class="text-center text-muted py-4">
+          <i class="bi bi-info-circle"></i> No live albums found
+        </div>
+      {% endif %}
     </div>
   </div>
 
@@ -735,33 +660,16 @@
         </button>
       </div>
     </div>
-    <div class="table-responsive">
-      <table class="table table-hover mb-0">
-        <thead class="d-none d-md-table-header-group">
-          <tr>
-            <th style="width: 100px;">Art</th>
-            <th>Title</th>
-            <th class="text-center" style="width: 80px;">Year</th>
-            <th class="text-center" style="width: 100px;">Status</th>
-            <th class="text-center" style="width: 80px;">Tracks</th>
-            <th class="text-center" style="width: 100px;">Avg ★</th>
-            <th class="text-center" style="width: 150px;">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="remix-albums-tbody">
-          {% if albums_by_category.remix_album|length > 0 %}
-            {% for album in albums_by_category.remix_album %}
-              {{ render_album_row(album, artist_name, album.is_missing) }}
-            {% endfor %}
-          {% else %}
-            <tr>
-              <td colspan="7" class="text-center text-muted py-4">
-                <i class="bi bi-info-circle"></i> No remix albums found
-              </td>
-            </tr>
-          {% endif %}
-        </tbody>
-      </table>
+    <div class="accordion accordion-flush" id="accordion-remix-albums">
+      {% if albums_by_category.remix_album|length > 0 %}
+        {% for album in albums_by_category.remix_album %}
+          {{ render_album_row(album, artist_name, album.is_missing, "accordion-remix-albums") }}
+        {% endfor %}
+      {% else %}
+        <div class="text-center text-muted py-4">
+          <i class="bi bi-info-circle"></i> No remix albums found
+        </div>
+      {% endif %}
     </div>
   </div>
 
@@ -789,33 +697,16 @@
         </button>
       </div>
     </div>
-    <div class="table-responsive">
-      <table class="table table-hover mb-0">
-        <thead class="d-none d-md-table-header-group">
-          <tr>
-            <th style="width: 100px;">Art</th>
-            <th>Title</th>
-            <th class="text-center" style="width: 80px;">Year</th>
-            <th class="text-center" style="width: 100px;">Status</th>
-            <th class="text-center" style="width: 80px;">Tracks</th>
-            <th class="text-center" style="width: 100px;">Avg ★</th>
-            <th class="text-center" style="width: 150px;">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="eps-tbody">
-          {% if albums_by_category.ep|length > 0 %}
-            {% for album in albums_by_category.ep %}
-              {{ render_album_row(album, artist_name, album.is_missing) }}
-            {% endfor %}
-          {% else %}
-            <tr>
-              <td colspan="7" class="text-center text-muted py-4">
-                <i class="bi bi-info-circle"></i> No EPs found
-              </td>
-            </tr>
-          {% endif %}
-        </tbody>
-      </table>
+    <div class="accordion accordion-flush" id="accordion-eps">
+      {% if albums_by_category.ep|length > 0 %}
+        {% for album in albums_by_category.ep %}
+          {{ render_album_row(album, artist_name, album.is_missing, "accordion-eps") }}
+        {% endfor %}
+      {% else %}
+        <div class="text-center text-muted py-4">
+          <i class="bi bi-info-circle"></i> No EPs found
+        </div>
+      {% endif %}
     </div>
   </div>
 
@@ -843,33 +734,16 @@
         </button>
       </div>
     </div>
-    <div class="table-responsive">
-      <table class="table table-hover mb-0">
-        <thead class="d-none d-md-table-header-group">
-          <tr>
-            <th style="width: 100px;">Art</th>
-            <th>Title</th>
-            <th class="text-center" style="width: 80px;">Year</th>
-            <th class="text-center" style="width: 100px;">Status</th>
-            <th class="text-center" style="width: 80px;">Tracks</th>
-            <th class="text-center" style="width: 100px;">Avg ★</th>
-            <th class="text-center" style="width: 150px;">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="singles-tbody">
-          {% if albums_by_category.single|length > 0 %}
-            {% for album in albums_by_category.single %}
-              {{ render_album_row(album, artist_name, album.is_missing) }}
-            {% endfor %}
-          {% else %}
-            <tr>
-              <td colspan="7" class="text-center text-muted py-4">
-                <i class="bi bi-info-circle"></i> No singles found
-              </td>
-            </tr>
-          {% endif %}
-        </tbody>
-      </table>
+    <div class="accordion accordion-flush" id="accordion-singles">
+      {% if albums_by_category.single|length > 0 %}
+        {% for album in albums_by_category.single %}
+          {{ render_album_row(album, artist_name, album.is_missing, "accordion-singles") }}
+        {% endfor %}
+      {% else %}
+        <div class="text-center text-muted py-4">
+          <i class="bi bi-info-circle"></i> No singles found
+        </div>
+      {% endif %}
     </div>
   </div>
 
@@ -919,15 +793,15 @@
               <tr>
                 <td class="text-center" style="width: 100px; padding: 0.5rem;">
                   {% if entry.album and entry.album_artist %}
-                  <a href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}">
-                    <img src="{{ url_for('album_routes.api_album_art', artist=entry.album_artist, album=entry.album) }}"
+                  <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}">
+                    <img src="{{ url_for('api_album_art', artist=entry.album_artist, album=entry.album) }}"
                          alt="{{ entry.album }}"
                          class="img-thumbnail"
                          style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
-                         onerror="this.src='{{ url_for('album_routes.api_album_art_placeholder') }}'">
+                         onerror="this.src='/api/album-art-placeholder'">
                   </a>
                   {% else %}
-                  <img src="{{ url_for('album_routes.api_album_art_placeholder') }}"
+                  <img src="/api/album-art-placeholder"
                        alt="{{ entry.album }}"
                        class="img-thumbnail"
                        style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;">
@@ -936,14 +810,14 @@
                 <td>
                   <div class="d-flex flex-column justify-content-center" style="min-height: 80px;">
                     {% if entry.album and entry.album_artist %}
-                    <a href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}" class="text-decoration-none fw-semibold">
+                    <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}" class="text-decoration-none fw-semibold">
                       {{ entry.album }}
                     </a>
                     {% else %}
                     <span class="fw-semibold">{{ entry.album or '—' }}</span>
                     {% endif %}
                     {% if entry.album_artist %}
-                    <a href="{{ url_for('ui.artist_detail', name=entry.album_artist) }}" class="text-decoration-none small text-muted mt-1">
+                    <a href="{{ url_for('artist_detail', name=entry.album_artist) }}" class="text-decoration-none small text-muted mt-1">
                       {{ entry.album_artist }}
                     </a>
                     {% else %}
@@ -961,7 +835,7 @@
                   {% endif %}
                 </td>
                 <td class="text-center">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}" title="View album">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}" title="View album">
                     <i class="bi bi-arrow-right"></i>
                   </a>
                 </td>
@@ -1235,316 +1109,72 @@ const BYTES_TO_MB = 1024 * 1024;
 
 // Event listener for Soulseek tab - show track queue option when tab is clicked
 document.addEventListener('DOMContentLoaded', function() {
-  const slskdTab = document.getElementById('slskd-tab');
+  var slskdTab = document.getElementById('slskd-tab');
   if (slskdTab) {
     slskdTab.addEventListener('shown.bs.tab', function() {
-      if (currentDownloadAlbum.album) {
+      if (typeof currentDownloadAlbum !== 'undefined' && currentDownloadAlbum.album) {
         showSlskdTrackQueueOption();
       }
     });
   }
 });
 </script>
-
-<script>
-if (typeof toggleGenreCheckbox === 'undefined') {
-    window.toggleGenreCheckbox = function(containerId, buttonId) {
-        // Placeholder - will be implemented when genre-utils.js loads
-    };
-}
-</script>
-
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 <style>
-/* Dark theme improvements for artist page */
-
-.missing-release-card {
-  background-color: var(--primary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 0.5rem;
-  padding: 0.75rem;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-}
-
-.missing-release-art img {
-  width: 80px;
-  height: 80px;
-  border-radius: 0.35rem;
-  object-fit: cover;
-  border: 1px solid var(--border-color);
-  background-color: #2a2a2a;
-}
-
-/* Fix outline buttons visibility on dark theme */
-.btn-outline-primary {
-    color: #0d6efd !important;
-    border-color: #0d6efd !important;
-    background-color: rgba(13, 110, 253, 0.1) !important;
-}
-
-.btn-outline-primary:hover {
-    color: #fff !important;
-    background-color: #0d6efd !important;
-    border-color: #0d6efd !important;
-}
-
-.btn-outline-info {
-    color: #0dcaf0 !important;
-    border-color: #0dcaf0 !important;
-    background-color: rgba(13, 202, 240, 0.1) !important;
-}
-
-.btn-outline-info:hover {
-    color: #000 !important;
-    background-color: #0dcaf0 !important;
-    border-color: #0dcaf0 !important;
-}
-
-.btn-outline-secondary {
-    color: #6c757d !important;
-    border-color: #6c757d !important;
-    background-color: rgba(108, 117, 125, 0.1) !important;
-}
-
-.btn-outline-secondary:hover {
-    color: #fff !important;
-    background-color: #6c757d !important;
-    border-color: #6c757d !important;
-}
-
-.card {
-    background-color: var(--secondary-bg) !important;
-    border-color: var(--border-color) !important;
-}
-
-.card-header {
-    background-color: var(--primary-bg) !important;
-    border-bottom-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
-
-.card-body {
-    background-color: var(--secondary-bg) !important;
-    color: var(--text-primary) !important;
-}
-
-.table-responsive {
-    background-color: var(--secondary-bg) !important;
-}
-
-.table {
-    color: var(--text-primary) !important;
-    background-color: transparent !important;
-}
-
-.table thead {
-    background-color: var(--primary-bg) !important;
-    color: var(--text-primary) !important;
-}
-
-.table thead th {
-    background-color: var(--primary-bg) !important;
-    color: var(--text-primary) !important;
-    border-color: var(--border-color) !important;
-}
-
-.table tbody {
-    background-color: transparent !important;
-}
-
-.table tbody tr {
-    background-color: transparent !important;
-    border-color: var(--border-color) !important;
-}
-
-.table tbody td {
-    background-color: transparent !important;
-    color: var(--text-primary) !important;
-    border-color: var(--border-color) !important;
-}
-
-.table-hover tbody tr:hover {
-    background-color: var(--primary-bg) !important;
-    color: var(--text-primary) !important;
-}
-
-.table-hover tbody tr:hover td {
-    background-color: var(--primary-bg) !important;
-}
-
-.modal-content {
-    background-color: var(--secondary-bg) !important;
-    color: var(--text-primary) !important;
-    border-color: var(--border-color) !important;
-}
-
-.modal-header {
-    background-color: var(--primary-bg) !important;
-    border-bottom-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
-
-.modal-body {
-    background-color: var(--secondary-bg) !important;
-    color: var(--text-primary) !important;
-}
-
-.modal-body .form-control {
-    background-color: var(--primary-bg) !important;
-    border-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
-
-.modal-body .form-control:focus {
-    background-color: var(--primary-bg) !important;
-    border-color: var(--spotify-green) !important;
-    color: var(--text-primary) !important;
-}
-
-.modal-body .form-text {
-    color: var(--text-secondary) !important;
-}
-
-.modal-body .table {
-    background-color: transparent !important;
-}
-
-.modal-body .table thead {
-    background-color: var(--primary-bg) !important;
-}
-
-.modal-body .table tbody {
-    background-color: transparent !important;
-}
-
-.modal-body .table tbody tr {
-    background-color: transparent !important;
-}
-
-.modal-body .table tbody td {
-    background-color: transparent !important;
-    color: var(--text-primary) !important;
-}
-
-.modal-body .table-hover tbody tr:hover {
-    background-color: var(--primary-bg) !important;
-}
-
-.modal-body .table-hover tbody tr:hover td {
-    background-color: var(--primary-bg) !important;
-}
-
-/* Similar artists and genres typography improvements */
-#artist-similar-section .card-title,
-#artist-genres-section .card-title {
-  font-size: 1.2rem;
-}
-
-#artistSimilarArtistsContainer strong {
-  font-size: 1.05rem;
-}
-
-#artistSimilarArtistsContainer .card-title {
-  font-size: 1.02rem;
-}
-
-.similar-artist-pill {
-  font-size: 0.95rem;
-  padding: 0.45rem 0.6rem;
-}
-
-#artistGenreSourcesContainer,
-#artistGenresContainer {
-  font-size: 1rem;
-}
-
-.artist-genre-source-badge,
-.artist-genre-badge,
-#artistGenresContainer .badge {
-  font-size: 0.95rem !important;
-  padding: 0.45rem 0.65rem;
-}
-
-@media (max-width: 767.98px) {
-  .artist-page .table-responsive {
-    overflow-x: hidden;
-  }
-
-  .artist-page tr.album-row {
-    display: block;
-    margin-bottom: 0.75rem;
+  /* Page-specific overrides for artist page — shared dark theme is in popularr.css */
+  .missing-release-card {
+    background-color: var(--primary-bg);
     border: 1px solid var(--border-color);
     border-radius: 0.5rem;
+    padding: 0.75rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+  .missing-release-art img {
+    width: 80px;
+    height: 80px;
+    border-radius: 0.35rem;
+    object-fit: cover;
+    border: 1px solid var(--border-color);
+    background-color: #2a2a2a;
+  }
+  /* Font sizing for similar artists & genres */
+  #artist-similar-section .card-title,
+  #artist-genres-section .card-title { font-size: 1.2rem; }
+  #artistSimilarArtistsContainer strong { font-size: 1.05rem; }
+  #artistSimilarArtistsContainer .card-title { font-size: 1.02rem; }
+  .similar-artist-pill { font-size: 0.95rem; padding: 0.45rem 0.6rem; }
+  #artistGenreSourcesContainer, #artistGenresContainer { font-size: 1rem; }
+  .artist-genre-source-badge, .artist-genre-badge,
+  #artistGenresContainer .badge { font-size: 0.95rem; padding: 0.45rem 0.65rem; }
+  /* Accordion album rows: clean card appearance */
+  .artist-page .accordion-item {
+    border: 1px solid var(--border-color);
+    margin-bottom: 0.25rem;
     background-color: var(--secondary-bg);
-    overflow: hidden;
   }
-
-  .artist-page tr.album-row td {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    width: 100%;
-    padding: 0.5rem 0.75rem;
-    border: 0 !important;
+  .artist-page .accordion-button {
+    background-color: var(--secondary-bg);
+    color: var(--text-primary);
+    box-shadow: none;
+    gap: 0.5rem;
   }
-
-  .artist-page tr.album-row td:nth-child(1) {
-    justify-content: center;
-    padding-top: 0.75rem;
+  .artist-page .accordion-button:not(.collapsed) {
+    background-color: var(--primary-bg);
+    color: var(--text-primary);
   }
-
-  .artist-page tr.album-row td:nth-child(1) img {
-    width: 92px !important;
-    height: 92px !important;
+  .artist-page .accordion-button::after {
+    order: -1;
+    margin-right: 0.5rem;
+    margin-left: 0;
   }
-
-  .artist-page tr.album-row td:nth-child(2) {
-    justify-content: flex-start;
-    font-weight: 600;
-    padding-top: 0.25rem;
+  .artist-page .accordion-button .album-art-wrapper img {
+    border-radius: 4px;
   }
-
-  .artist-page tr.album-row td:nth-child(3)::before {
-    content: 'Year';
-    color: var(--text-secondary);
-    font-size: 0.82rem;
+  @media (max-width: 767.98px) {
+    .artist-page .accordion-button .flex-grow-1 {
+      font-size: 0.9rem;
+    }
   }
-
-  .artist-page tr.album-row td:nth-child(4)::before {
-    content: 'Status';
-    color: var(--text-secondary);
-    font-size: 0.82rem;
-  }
-
-  .artist-page tr.album-row td:nth-child(5)::before {
-    content: 'Tracks';
-    color: var(--text-secondary);
-    font-size: 0.82rem;
-  }
-
-  .artist-page tr.album-row td:nth-child(6)::before {
-    content: 'Avg';
-    color: var(--text-secondary);
-    font-size: 0.82rem;
-  }
-
-  .artist-page tr.album-row td:nth-child(7)::before {
-    content: 'Actions';
-    color: var(--text-secondary);
-    font-size: 0.82rem;
-  }
-
-  .artist-page tr.album-row td:nth-child(7) .btn-group {
-    width: 100%;
-    justify-content: flex-end;
-    flex-wrap: wrap;
-  }
-
-  .artist-page tr.tracklist-row td {
-    padding: 0.5rem 0.25rem !important;
-  }
-}
 </style>
 
 <!-- Track Editing Modal -->
@@ -1574,4 +1204,9 @@ if (typeof toggleGenreCheckbox === 'undefined') {
 
 {% include 'components/_musicbrainz_search_modal.html' %}
 {% include 'components/_musicbrainz_search_functions.html' %}
+
+<script>
+// Keep existing inline Javascript handling searches and logic here
+</script>
+
 {% endblock %}

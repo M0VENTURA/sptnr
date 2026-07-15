@@ -8,6 +8,7 @@ Metadata Reader
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Dict
@@ -337,3 +338,40 @@ def write_genre_to_audio_file(file_path: str, genres: str | list[str]) -> bool:
     return False
 
 
+# =============================================================================
+# ✅ MULTI-ARTIST PARSING (migrated from old_system/compilation_manager.py)
+# =============================================================================
+
+
+def parse_artists_field(artists_raw: str) -> list[str]:
+    """Parse the raw ARTISTS field from MP3 tags (usually JSON array).
+
+    Handles JSON arrays, semicolon/comma/pipe-delimited strings, and
+    plain single-artist values.  Used to extract featured/collaboration
+    artists from compilation tracks.
+
+    Args:
+        artists_raw: Raw artists field value (JSON array or delimited string).
+
+    Returns:
+        List of individual artist names.
+    """
+    if not artists_raw:
+        return []
+
+    try:
+        if artists_raw.startswith("["):
+            data = json.loads(artists_raw)
+            if isinstance(data, list):
+                return [str(a).strip() for a in data if a]
+
+        for sep in ["; ", ";", " | ", "|", ", ", ","]:
+            if sep in artists_raw:
+                return [a.strip() for a in artists_raw.split(sep) if a.strip()]
+
+        if artists_raw.strip():
+            return [artists_raw.strip()]
+    except Exception:
+        pass
+
+    return []

@@ -1,0 +1,50 @@
+{#
+  Album Metadata Lookup Modal — MusicBrainz & Discogs search.
+  Included by album_detail.html.
+  Requires: album_name, artist_name (Jinja context).
+#}
+<div class="modal fade" id="albumLookupModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">External Metadata Lookup for "{{ album_name }}"</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-grid gap-2 d-md-flex mb-4">
+                    <button type="button" class="btn btn-outline-info" onclick="lookupAlbumMusicBrainz()">
+                        <i class="bi bi-search"></i> MusicBrainz
+                    </button>
+                    <button type="button" class="btn btn-outline-warning" onclick="lookupAlbumDiscogs()">
+                        <i class="bi bi-search"></i> Discogs
+                    </button>
+                </div>
+                <div class="mb-3">
+                    <button class="btn btn-sm btn-link text-decoration-none p-0 text-muted" type="button" data-bs-toggle="collapse" data-bs-target="#mbManualSearchCollapse">
+                        <i class="bi bi-pencil-square me-1"></i>Search with different terms
+                    </button>
+                    <div class="collapse" id="mbManualSearchCollapse">
+                        <div class="card card-body py-2 px-3 mt-2 bg-dark-subtle border">
+                            <div class="row g-2 align-items-end">
+                                <div class="col">
+                                    <label class="form-label form-label-sm mb-1">Artist</label>
+                                    <input type="text" id="mbManualArtist" class="form-control form-control-sm" placeholder="Artist name" value="{{ artist_name }}">
+                                </div>
+                                <div class="col">
+                                    <label class="form-label form-label-sm mb-1">Album</label>
+                                    <input type="text" id="mbManualAlbum" class="form-control form-control-sm" placeholder="Album name" value="{{ album_name }}">
+                                </div>
+                                <div class="col-auto">
+                                    <button class="btn btn-sm btn-outline-info" onclick="lookupAlbumMusicBrainzManual()">
+                                        <i class="bi bi-search"></i> Search
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="albumLookupResults"></div>
+            </div>
+        </div>
+    </div>
+</div>

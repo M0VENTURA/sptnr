@@ -4,43 +4,40 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <div class="mb-3 d-flex flex-wrap align-items-start gap-2">
+  <div class="mb-4 d-flex flex-wrap align-items-start gap-2">
     <div class="flex-grow-1">
-      <h1 class="h4 mb-0">
-        <i class="bi bi-download"></i> Music Downloads
-        <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2 py-0" title="Help">
-            <i class="bi bi-question-circle"></i>
-        </a>
-      </h1>
-      <p class="text-muted small mb-0">Search and download music from qBittorrent and Soulseek</p>
+      {% set subtitle = 'Search and download music from qBittorrent and Soulseek' %}
+      {% include 'components/_downloads_header.html' %}
     </div>
-    <a href="/downloads/banned-words" class="btn btn-outline-danger btn-sm py-0 px-2 align-self-center">
-      <i class="bi bi-slash-circle"></i> Banned
+    <a href="/downloads/banned-words" class="btn btn-outline-danger btn-sm align-self-center">
+      <i class="bi bi-slash-circle"></i> Banned Words
     </a>
   </div>
 <!-- Add to Queue Section -->
-  <div class="card mb-3">
-    <div class="card-header py-2">
-      <h6 class="mb-0"><i class="bi bi-plus-circle"></i> Add to Download Queue</h6>
+  <div class="card mb-4">
+    <div class="card-header">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-plus-circle"></i> Add to Download Queue
+      </h5>
     </div>
-    <div class="card-body py-2">
+    <div class="card-body">
       <form id="addToQueueForm" onsubmit="addToQueue(event)">
-        <div class="row g-2 mb-2">
+        <div class="row g-3 mb-3">
           <div class="col-md-3">
-            <label for="queueArtist" class="form-label small mb-0">Artist <span class="text-muted">(optional)</span></label>
-            <input type="text" id="queueArtist" class="form-control form-control-sm" placeholder="e.g., Daft Punk">
+            <label for="queueArtist" class="form-label">Artist <span class="text-muted">(optional)</span></label>
+            <input type="text" id="queueArtist" class="form-control" placeholder="e.g., Daft Punk">
           </div>
           <div class="col-md-3">
-            <label for="queueTitle" class="form-label small mb-0">Song Title</label>
-            <input type="text" id="queueTitle" class="form-control form-control-sm" placeholder="e.g., Get Lucky">
+            <label for="queueTitle" class="form-label">Song Title</label>
+            <input type="text" id="queueTitle" class="form-control" placeholder="e.g., Get Lucky">
           </div>
           <div class="col-md-3">
-            <label for="queueAlbum" class="form-label small mb-0">Album</label>
-            <input type="text" id="queueAlbum" class="form-control form-control-sm" placeholder="e.g., Random Access Memories">
+            <label for="queueAlbum" class="form-label">Album (Optional)</label>
+            <input type="text" id="queueAlbum" class="form-control" placeholder="e.g., Random Access Memories">
           </div>
           <div class="col-md-3">
-            <label for="queuePriority" class="form-label small mb-0">Priority</label>
-            <select id="queuePriority" class="form-select form-select-sm">
+            <label for="queuePriority" class="form-label">Priority</label>
+            <select id="queuePriority" class="form-select">
               <option value="1">🔴 Critical</option>
               <option value="3">🟠 High</option>
               <option value="5" selected>🟡 Normal</option>
@@ -48,19 +45,19 @@
             </select>
           </div>
         </div>
-        <div class="row g-2">
+        <div class="row g-3 mb-3">
           <div class="col-md-6">
-            <label for="queueSource" class="form-label small mb-0">Download Source</label>
-            <select id="queueSource" class="form-select form-select-sm">
+            <label for="queueSource" class="form-label">Download Source</label>
+            <select id="queueSource" class="form-select">
               <option value="soulseek" selected>🔍 Soulseek (Songs/Playlists)</option>
             </select>
           </div>
           <div class="col-md-6 d-flex align-items-end gap-2">
-            <button type="submit" class="btn btn-primary btn-sm flex-grow-1">
+            <button type="submit" class="btn btn-primary flex-grow-1">
               <i class="bi bi-plus-circle"></i> Add to Queue
             </button>
-            <button type="button" class="btn btn-outline-info btn-sm" onclick="searchMusicBrainzForQueue()" title="Search MusicBrainz">
-              <i class="bi bi-music-note-list"></i> Search
+            <button type="button" class="btn btn-outline-info" onclick="searchMusicBrainzForQueue()" title="Search MusicBrainz using any combination of artist, album, or song title">
+              <i class="bi bi-music-note-list"></i> Search Releases
             </button>
           </div>
         </div>
@@ -69,22 +66,24 @@
   </div>
 
   <!-- Download from Playlist Section -->
-  <div class="card mb-3">
-    <div class="card-header py-2">
-      <h6 class="mb-0"><i class="bi bi-collection-play"></i> Download from Playlist</h6>
+  <div class="card mb-4">
+    <div class="card-header">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-collection-play"></i> Download from Playlist
+      </h5>
     </div>
-    <div class="card-body py-2">
+    <div class="card-body">
 
       <!-- Step 1 -->
-      <div class="card border-success mb-2">
-        <div class="card-body py-2 d-flex flex-column flex-md-row align-items-md-center gap-2">
+      <div class="card border-success mb-3">
+        <div class="card-body d-flex flex-column flex-md-row align-items-md-center gap-3">
           <div class="flex-grow-1">
-            <small class="fw-semibold"><i class="bi bi-cloud-download text-success"></i> Step 1 — Get your playlist CSV</small>
-            <p class="mb-0 text-secondary small" style="font-size:12px;">
-              Click <strong>Open Exportify</strong> to log in with Spotify, export any playlist, and save the <code>.csv</code> file.
+            <h6 class="mb-1"><i class="bi bi-cloud-download text-success"></i> Step 1 — Get your playlist CSV</h6>
+            <p class="mb-0 text-secondary small">
+              Click <strong>Open Exportify</strong> to log in with Spotify, export any playlist, and save the <code>.csv</code> file. The site opens in a popup you can close when done.
             </p>
           </div>
-           <a href="https://exportify.net" target="_blank" rel="noopener" class="btn btn-success btn-sm text-nowrap">
+           <a href="https://exportify.net" target="_blank" rel="noopener" class="btn btn-success btn-lg text-nowrap">
             <i class="bi bi-spotify"></i> Open Exportify
           </a>
         </div>
@@ -92,26 +91,26 @@
 
       <!-- Step 2 — inline CSV upload form -->
       <div class="card" id="csvImportCard">
-        <div class="card-header py-1">
-          <small class="fw-semibold"><i class="bi bi-upload"></i> Step 2 — Upload your CSV</small>
+        <div class="card-header">
+          <h6 class="mb-0"><i class="bi bi-upload"></i> Step 2 — Upload your CSV</h6>
         </div>
 
         <!-- Form state -->
-        <div class="card-body py-2" id="csvInlineForm">
+        <div class="card-body" id="csvInlineForm">
           <form id="csvInlineFormEl" onsubmit="csvInlineImport(event)">
-            <div class="row g-2">
+            <div class="row g-3">
               <div class="col-12 col-md-6">
-                <label for="csvInlineFile" class="form-label small mb-0">CSV File <span class="text-danger">*</span></label>
-                <input type="file" id="csvInlineFile" class="form-control form-control-sm" accept=".csv" required />
-                <div class="form-text small" style="font-size:11px;"><i class="bi bi-info-circle"></i> Exportify CSV with <code>Track Name</code> and <code>Artist Name(s)</code>.</div>
+                <label for="csvInlineFile" class="form-label fw-semibold">CSV File <span class="text-danger">*</span></label>
+                <input type="file" id="csvInlineFile" class="form-control" accept=".csv" required />
+                <div class="form-text"><i class="bi bi-info-circle"></i> Exportify CSV — must contain <code>Track Name</code> and <code>Artist Name(s)</code>.</div>
               </div>
               <div class="col-12 col-md-6">
-                <label for="csvInlineName" class="form-label small mb-0">Import Name <span class="text-danger">*</span></label>
-                <input type="text" id="csvInlineName" class="form-control form-control-sm" placeholder="e.g., My Exported Playlist" required />
-                <div class="form-text small" style="font-size:11px;">Label applied to all queue items for this import.</div>
+                <label for="csvInlineName" class="form-label fw-semibold">Import Name <span class="text-danger">*</span></label>
+                <input type="text" id="csvInlineName" class="form-control" placeholder="e.g., My Exported Playlist" required />
+                <div class="form-text">Label applied to all queue items for this import.</div>
               </div>
               <div class="col-12">
-                <button type="submit" class="btn btn-primary btn-sm" id="csvInlineSubmitBtn">
+                <button type="submit" class="btn btn-primary" id="csvInlineSubmitBtn">
                   <i class="bi bi-upload"></i> Import &amp; Queue All Tracks
                 </button>
               </div>
@@ -154,216 +153,33 @@
     </div>
   </div>
 
-  <script>
-  (function () {
-    function escapeHtml(text) {
-      const d = document.createElement('div');
-      d.textContent = String(text ?? '');
-      return d.innerHTML;
-    }
-
-    function csvSetProgress(pct, label, sub) {
-      document.getElementById('csvInlineProgressBar').style.width = pct + '%';
-      document.getElementById('csvInlineProgressBar').setAttribute('aria-valuenow', pct);
-      document.getElementById('csvInlineProgressPct').textContent = pct + '%';
-      if (label !== undefined) document.getElementById('csvInlineProgressLabel').textContent = label;
-      if (sub !== undefined) document.getElementById('csvInlineProgressSub').textContent = sub;
-    }
-
-    window.csvInlineReset = function () {
-      document.getElementById('csvInlineForm').style.display = '';
-      document.getElementById('csvInlineProgress').style.display = 'none';
-      document.getElementById('csvInlineResult').style.display = 'none';
-      document.getElementById('csvInlineFormEl').reset();
-    };
-
-    window.csvInlineImport = async function (event) {
-      event.preventDefault();
-
-      const fileInput  = document.getElementById('csvInlineFile');
-      const importName = document.getElementById('csvInlineName').value.trim();
-      if (!fileInput.files.length || !importName) return;
-
-      // Switch to progress view
-      document.getElementById('csvInlineForm').style.display = 'none';
-      document.getElementById('csvInlineProgress').style.display = '';
-      document.getElementById('csvInlineResult').style.display = 'none';
-      csvSetProgress(5, 'Parsing CSV…', 'Reading track metadata from the file.');
-
-      try {
-        // Step 1 – parse CSV
-        const formData = new FormData();
-        formData.append('file', fileInput.files[0]);
-        formData.append('playlist_name', importName);
-        formData.append('skip_matching', 'true');
-
-        const parseRes  = await fetch('/api/playlist/import/csv', { method: 'POST', body: formData });
-        const parseData = await parseRes.json();
-        if (!parseRes.ok) throw new Error(parseData.error || 'CSV processing failed');
-
-        const allTracks = parseData.all_tracks || [];
-        if (!allTracks.length) throw new Error('No tracks found in CSV');
-
-        // Step 2 – queue tracks in small batches so the progress bar moves
-        // and we don't hit gateway timeouts on large playlists.
-        const BATCH_SIZE = 10;
-        const nameSlug    = importName.replace(/\s+/g, '_').substring(0, 80);
-        const currentYear = String(new Date().getFullYear());
-        const items = allTracks.map((t, idx) => ({
-          artist:       t.artist,
-          title:        t.title,
-          album:        importName,
-          album_artist: 'Various Artists',
-          year:         currentYear,
-          track_number: idx + 1,
-          duration:     t.duration_s  || null,
-          genres:       t.genres      || null,
-          isrc:         t.isrc        || null,
-          // Playlists don't have an album release — omit per-track Spotify IDs
-          // so tracks aren't grouped as individual releases in the queue UI.
-        }));
-
-        let totalAdded = 0, totalSkipped = 0, totalFailed = 0;
-        let processedCount = 0;
-
-        csvSetProgress(2, 'Adding to queue…',
-          `Sending ${items.length} track${items.length !== 1 ? 's' : ''} to the download queue.`);
-
-        for (let i = 0; i < items.length; i += BATCH_SIZE) {
-          const batch = items.slice(i, i + BATCH_SIZE);
-          let batchAdded = 0, batchSkipped = 0, batchFailed = 0;
-          try {
-            const res = await fetch('/api/queue/add-batch', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                items: batch,
-                import_group: nameSlug,
-                import_type: 'playlist',
-                source: 'soulseek',
-              }),
-            });
-            const data = await res.json();
-            if (data && (data.added !== undefined || data.failed !== undefined)) {
-              batchAdded   = data.added   || 0;
-              batchSkipped = data.skipped || 0;
-              batchFailed  = data.failed  || 0;
-            } else if (!res.ok) {
-              batchFailed = batch.length;
-            }
-          } catch (batchErr) {
-            console.warn('Batch queue add error:', batchErr);
-            batchFailed = batch.length;
-          }
-
-          totalAdded   += batchAdded;
-          totalSkipped += batchSkipped;
-          totalFailed  += batchFailed;
-          processedCount += batch.length;
-
-          const pct = (processedCount / items.length) * 100;
-          csvSetProgress(pct, 'Adding to queue…',
-            `Processed ${processedCount} of ${items.length}  •  Added ${totalAdded}  •  Failed ${totalFailed}`);
-        }
-
-        csvSetProgress(100, 'Done!', `${totalAdded} track${totalAdded !== 1 ? 's' : ''} added to the queue.`);
-
-        // Switch to result view
-        document.getElementById('csvInlineProgress').style.display = 'none';
-        document.getElementById('csvInlineResult').style.display = '';
-
-        const queueOk = totalFailed === 0;
-        document.getElementById('csvInlineResultStats').innerHTML = `
-          <div class="col-6 col-md-4">
-            <div class="card text-center bg-info bg-opacity-10 border-info h-100">
-              <div class="card-body py-3">
-                <div class="h3 text-info mb-1">${allTracks.length}</div>
-                <div class="small text-secondary">Total Tracks</div>
-              </div>
-            </div>
-          </div>
-          <div class="col-6 col-md-4">
-            <div class="card text-center bg-success bg-opacity-10 border-success h-100">
-              <div class="card-body py-3">
-                <div class="h3 text-success mb-1">${totalAdded}</div>
-                <div class="small text-secondary">Added to Queue</div>
-              </div>
-            </div>
-          </div>
-          <div class="col-6 col-md-4">
-            <div class="card text-center bg-secondary bg-opacity-10 border-secondary h-100">
-              <div class="card-body py-3">
-                <div class="h3 text-secondary mb-1">${totalSkipped}</div>
-                <div class="small text-secondary">Already Queued</div>
-              </div>
-            </div>
-          </div>
-          <div class="col-12">
-            <div class="alert alert-${queueOk ? 'success' : 'warning'} mb-0 py-2">
-              <i class="bi bi-${queueOk ? 'check-circle-fill' : 'exclamation-triangle-fill'} me-2"></i>
-              ${queueOk
-                ? `<strong>${totalAdded}</strong> track${totalAdded !== 1 ? 's' : ''} queued.
-                   ${totalSkipped > 0 ? `<span class="text-secondary">(${totalSkipped} already in queue)</span>` : ''}
-                   Matching &amp; tagging can now be done in the queue.`
-                : `Queued ${totalAdded}, skipped ${totalSkipped}, failed ${totalFailed}.`
-              }
-            </div>
-          </div>`;
-
-        if (allTracks.length) {
-          document.getElementById('csvInlineQueuedSection').style.display = '';
-          document.getElementById('csvInlineQueuedList').innerHTML = allTracks.map(t => {
-            const esc = v => escapeHtml(String(v ?? ''));
-            return `<div style="padding:0.4rem 0;border-bottom:1px solid #495057;font-size:0.9rem;">
-              <span class="fw-semibold">${esc(t.title)}</span>
-              <span class="text-secondary ms-2">${esc(t.artist)}</span>
-            </div>`;
-          }).join('');
-        }
-
-      } catch (err) {
-        console.error('CSV import error:', err);
-        csvSetProgress(0, 'Error', err.message);
-        // Show an error alert and return to form
-        document.getElementById('csvInlineProgress').style.display = 'none';
-        document.getElementById('csvInlineForm').style.display = '';
-        const alertDiv = document.createElement('div');
-        alertDiv.className = 'alert alert-danger mt-3 mb-0';
-        alertDiv.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-2"></i><strong>Error:</strong> ${escapeHtml(err.message)}`;
-        // Insert after the form, remove after 8 s
-        const formBody = document.getElementById('csvInlineForm');
-        const existing = formBody.querySelector('.alert');
-        if (existing) existing.remove();
-        formBody.appendChild(alertDiv);
-        setTimeout(() => alertDiv.remove(), 8000);
-      }
-    };
-  })();
-  </script>
+  <script src="{{ url_for('static', filename='js/monitor.js') }}"></script>
 
   <!-- Upcoming Releases Section -->
-  <div class="card mb-3" id="upcomingReleasesMonitorCard">
-    <div class="card-header py-2 d-flex justify-content-between align-items-center">
-      <h6 class="mb-0"><i class="bi bi-calendar-event"></i> Upcoming Album Releases</h6>
-      <div class="d-flex align-items-center gap-1 flex-wrap">
-        <button class="btn btn-sm btn-outline-success py-0" id="autoMatchAllMonitorBtn" onclick="autoMatchAllUpcomingReleasesMonitor(this)" title="Auto-match MBID">
-          <i class="bi bi-magic"></i>
+  <div class="card mb-4" id="upcomingReleasesMonitorCard">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-calendar-event"></i> Upcoming Album Releases
+      </h5>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <button class="btn btn-sm btn-outline-success" id="autoMatchAllMonitorBtn" onclick="autoMatchAllUpcomingReleasesMonitor(this)" title="Auto-match MusicBrainz MBID for all unmatched releases">
+          <i class="bi bi-magic"></i> Auto Match All
         </button>
-        <button class="btn btn-sm btn-success py-0" onclick="checkForUpdatesMonitor()">
-          <i class="bi bi-bell"></i>
+        <button class="btn btn-sm btn-success" onclick="checkForUpdatesMonitor()">
+          <i class="bi bi-bell"></i> Check for Updates
         </button>
-        <button class="btn btn-sm btn-primary py-0" onclick="scrapeUpcomingReleasesMonitor()">
-          <i class="bi bi-download"></i>
+        <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleasesMonitor()">
+          <i class="bi bi-download"></i> Update from Wikipedia
         </button>
-        <button class="btn btn-sm btn-outline-primary py-0" onclick="refreshUpcomingReleasesMonitor()">
-          <i class="bi bi-arrow-clockwise"></i>
+        <button class="btn btn-sm btn-outline-primary" onclick="refreshUpcomingReleasesMonitor()">
+          <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
-        <button class="btn btn-sm btn-outline-danger py-0" onclick="clearUpcomingReleasesMonitor()" title="Clear database">
-          <i class="bi bi-trash"></i>
+        <button class="btn btn-sm btn-outline-danger" onclick="clearUpcomingReleasesMonitor()" title="Clear old entries and start fresh">
+          <i class="bi bi-trash"></i> Clear Database
         </button>
       </div>
     </div>
-    <div class="card-body py-2">
+    <div class="card-body">
       <div class="row g-2 mb-3">
         <div class="col-12">
           <label class="form-check mb-0">
@@ -398,16 +214,18 @@
   </div>
 
   <!-- Auto-Discovery Section -->
-  <div class="card mb-3">
-    <div class="card-header py-2">
-      <h6 class="mb-0"><i class="bi bi-folder-plus"></i> Auto-Discover Files</h6>
+  <div class="card mb-4">
+    <div class="card-header">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-folder-plus"></i> Auto-Discover Files
+      </h5>
     </div>
-    <div class="card-body py-2">
+    <div class="card-body">
       <div class="row">
         <div class="col-md-8">
-          <p class="mb-1 small">
+          <p class="mb-2">
             <i class="bi bi-info-circle text-info"></i> 
-            Scan the <code>{{ downloads_dir or '/downloads/Music' }}</code> folder for audio files (.mp3, .flac, .m4a, .ogg, .wav)
+            Automatically scan the <code>{{ downloads_dir or '/downloads/Music' }}</code> folder for audio files (.mp3, .flac, .m4a, .ogg, .wav)
             and add them to the Download Monitor for review.
           </p>
           <p class="text-muted small mb-0">
@@ -629,40 +447,37 @@
     </div>
   </div>
 
-  <div class="row g-3 mb-3">
-    <div class="col-12 col-lg-6">
-      <div class="card h-100">
-        <div class="card-header py-2 d-flex justify-content-between align-items-center">
-          <small class="fw-semibold"><i class="bi bi-terminal"></i> Queue Activity Log</small>
-          <div class="d-flex gap-1">
-            <a href="/api/download-log/queue" class="btn btn-sm btn-outline-info py-0 px-1" download title="Download"><i class="bi bi-download"></i></a>
-            <button id="queueLogPauseBtn" type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="toggleQueueLogPause()">
-              <i class="bi bi-pause-fill"></i>
-            </button>
-          </div>
-        </div>
-        <div class="card-body p-1">
-          <pre id="queueActivityLog" style="height:200px; overflow-y:auto; font-family:monospace; font-size:11px; background:#111; color:#ccc; padding:6px; margin:0; border-radius:4px;"></pre>
-        </div>
-      </div>
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-terminal"></i> Queue Activity Log</span>
+      <button id="queueLogPauseBtn" type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleQueueLogPause()">
+        <i class="bi bi-pause-fill"></i> Pause
+      </button>
     </div>
-    <div class="col-12 col-lg-6">
-      <div class="card h-100">
-        <div class="card-header py-2 d-flex justify-content-between align-items-center">
-          <small class="fw-semibold"><i class="bi bi-search"></i> Soulseek Search Log</small>
-          <div class="d-flex gap-1">
-            <a href="/api/download-log/search" class="btn btn-sm btn-outline-info py-0 px-1" download title="Download"><i class="bi bi-download"></i></a>
-            <button id="searchLogPauseBtn" type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="toggleSearchLogPause()">
-              <i class="bi bi-pause-fill"></i>
-            </button>
-          </div>
-        </div>
-        <div class="card-body p-1">
-          <pre id="soulseekSearchLog" style="height:200px; overflow-y:auto; font-family:monospace; font-size:11px; background:#111; color:#ccc; padding:6px; margin:0; border-radius:4px;"></pre>
-        </div>
+    <div class="card-body p-2">
+      <pre id="queueActivityLog" style="height:250px; overflow-y:auto; font-family:monospace; font-size:12px; background:#111; color:#ccc; padding:8px; margin:0; border-radius:4px;"></pre>
+      <div class="mt-2">
+        <a href="/api/download-log/queue" class="btn btn-sm btn-outline-info" download>
+          <i class="bi bi-download"></i> Download Last Hour
+        </a>
       </div>
     </div>
   </div>
+
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-search"></i> Soulseek Search Log</span>
+      <button id="searchLogPauseBtn" type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleSearchLogPause()">
+        <i class="bi bi-pause-fill"></i> Pause
+      </button>
+    </div>
+    <div class="card-body p-2">
+      <pre id="soulseekSearchLog" style="height:250px; overflow-y:auto; font-family:monospace; font-size:12px; background:#111; color:#ccc; padding:8px; margin:0; border-radius:4px;"></pre>
+      <div class="mt-2">
+        <a href="/api/download-log/search" class="btn btn-sm btn-outline-info" download>
+          <i class="bi bi-download"></i> Download Last Hour
+        </a>
+      </div>
     </div>
   </div>
 
@@ -671,28 +486,7 @@
 </div>
 
 <style>
-  .active-album-header {
-    background-color: rgba(25, 135, 84, 0.15) !important;
-    border-left: 3px solid #198754;
-  }
-  .queue-track-row td {
-    border-bottom: none !important;
-  }
-  .queue-track-row:last-child td {
-    border-bottom: 1px solid #495057 !important;
-  }
-  .queue-track-match-row {
-    font-size: 0.85rem;
-  }
-  .queue-track-final-row {
-    font-size: 0.85rem;
-  }
-  .folder-header-meta {
-    font-size: 0.9rem;
-  }
-  .folder-header-meta .badge {
-    font-size: 0.8rem;
-  }
+  /* .active-album-header, .queue-track-row, .folder-header-meta styles are in popularr.css */
 </style>
 
 <!-- Include existing JavaScript -->
@@ -745,52 +539,6 @@ function changeQueuePage(direction) {
 
   queuePageOffset = nextOffset;
   loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
-}
-
-async function fetchJsonOrThrow(url, options = {}, timeoutMs = 30000) {
-  const controller = new AbortController();
-  const mergedOptions = { ...options, signal: options?.signal || controller.signal };
-  const timeoutId = setTimeout(() => {
-    if (!options?.signal) {
-      controller.abort();
-    }
-  }, timeoutMs);
-
-  let response;
-  let raw;
-  try {
-    response = await fetch(url, mergedOptions);
-    raw = await response.text();
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      if (options?.signal?.aborted) {
-        throw error;
-      }
-      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  // Gateway timeouts return HTML error pages, not JSON
-  if (response.status === 524 || response.status === 504 || response.status === 502) {
-    throw new Error(`Connection timed out (HTTP ${response.status}). The server took too long to respond — please try again in a moment.`);
-  }
-
-  let data = null;
-  try {
-    data = raw ? JSON.parse(raw) : {};
-  } catch (e) {
-    throw new Error(`Server returned non-JSON response (HTTP ${response.status})`);
-  }
-
-  if (!response.ok) {
-    const serverMsg = data && data.error ? data.error : response.statusText;
-    throw new Error(`HTTP ${response.status}: ${serverMsg || 'Request failed'}`);
-  }
-
-  return data;
 }
 
 let upcomingReleasesRequestController = null;
@@ -1169,51 +917,18 @@ async function refreshUpcomingReleasesMonitor() {
   }
 }
 
-window.searchMusicBrainzRelease = function(event, artist, album, track) {
-  if (event) { event.preventDefault(); event.stopPropagation(); }
-  var modalEl = document.getElementById('musicBrainzModal');
-  if (!modalEl) { alert('Search modal element not found on the page.'); return; }
-  try { new bootstrap.Modal(modalEl).show(); } catch(e) { alert('Could not open search modal: ' + e.message); return; }
-  var resultsEl = document.getElementById('mbSearchResults');
-  var inputEl = document.getElementById('mbSearchInput');
-  var query = [artist, album, track].filter(Boolean).join(' ');
-  if (inputEl) inputEl.value = query || '';
-  if (resultsEl) resultsEl.innerHTML = '<div class="col-12 text-center py-4"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Searching...</span></div><p class="mt-2 text-muted">Searching MusicBrainz...</p></div>';
-  fetch('/api/upcoming-releases/search-musicbrainz', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({artist: artist || '', album: album || '', track: track || ''})
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (!resultsEl) return;
-    if (data.success && data.results && data.results.length > 0) {
-      resultsEl.innerHTML = data.results.map(function(r) {
-        var year = (r.date || r.year || '').split('-')[0] || '?';
-        var type = r.primary_type || r.type || 'Release';
-        var a = r.artist || (r['artist-credit'] && r['artist-credit'][0] && r['artist-credit'][0].name) || '?';
-        return '<div class="col-12 col-md-6 col-lg-4 mb-2"><div class="card h-100"><div class="card-body p-2"><h6 class="card-title mb-1">' + (r.title||'').replace(/[<>&"']/g,'') + '</h6><p class="card-text small text-muted mb-1">' + (a||'').replace(/[<>&"']/g,'') + ' · ' + year + ' · ' + (type||'').replace(/[<>&"']/g,'') + '</p></div></div></div>';
-      }).join('');
-    } else {
-      resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-4"><p>No results found for "' + (query||'').replace(/[<>&"']/g,'') + '"</p></div>';
-    }
-  })
-  .catch(function(err) {
-    if (resultsEl) resultsEl.innerHTML = '<div class="col-12 text-center py-4"><p class="text-danger">Search failed: ' + (err.message||'').replace(/[<>&"']/g,'') + '</p></div>';
-  });
-};
+function searchMusicBrainzForQueue() {
+  const artist = document.getElementById('queueArtist').value.trim();
+  const album = document.getElementById('queueAlbum').value.trim();
+  const track = document.getElementById('queueTitle').value.trim();
 
-window.searchMusicBrainzForQueue = function() {
-  var artist = (document.getElementById('queueArtist') || {}).value || '';
-  var album = (document.getElementById('queueAlbum') || {}).value || '';
-  var track = (document.getElementById('queueTitle') || {}).value || '';
-  artist = artist.trim(); album = album.trim(); track = track.trim();
   if (!artist && !album && !track) {
     alert('Please enter at least one field (artist, album, or song title) before searching MusicBrainz.');
     return;
   }
-  window.searchMusicBrainzRelease(null, artist, album, track);
-};
+
+  searchMusicBrainzRelease(null, artist, album, track);
+}
 
 async function discoverFiles(clickEvent) {
   try {
@@ -2004,80 +1719,6 @@ let folderStatusData = {}; // Tracks completion status from database
 let lastFolderGroupsRenderSignature = null;
 let folderGroupsRequestInFlight = false;
 
-function encodeInlineArg(value) {
-  // encodeURIComponent does not encode apostrophes, but they break single-quoted
-  // JS string arguments embedded in onclick="...func('${arg}')..." attributes.
-  return encodeURIComponent(JSON.stringify(value)).replace(/'/g, '%27');
-}
-
-function decodeInlineArg(value, fallback = null) {
-  try {
-    return JSON.parse(decodeURIComponent(value));
-  } catch (error) {
-    console.warn('Failed to decode inline argument:', error);
-    return fallback;
-  }
-}
-
-function normalizeSoulseekQuery(value) {
-  return String(value || '')
-    .replace(/\\u0026/gi, ' ')
-    .replace(/&amp;/gi, ' ')
-    .replace(/&/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function normalizeTrackText(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/\([^)]*\)/g, ' ')
-    .replace(/\[[^\]]*\]/g, ' ')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function getTrackSimilarity(a, b) {
-  const x = normalizeTrackText(a);
-  const y = normalizeTrackText(b);
-  if (!x || !y) return 0;
-  if (x === y) return 1;
-  if (x.includes(y) || y.includes(x)) return 0.9;
-
-  const xWords = x.split(' ');
-  const yWords = y.split(' ');
-  const ySet = new Set(yWords);
-  const common = xWords.filter(w => ySet.has(w)).length;
-  const maxLen = Math.max(xWords.length, yWords.length);
-  let score = maxLen > 0 ? (common / maxLen) : 0;
-
-  // Be more forgiving for common metadata variants (e.g. "feat", edit labels).
-  if (score >= 0.34 && (x.includes(' feat ') || y.includes(' feat ') || x.includes(' remaster') || y.includes(' remaster'))) {
-    score = Math.max(score, 0.5);
-  }
-
-  return score;
-}
-
-function getCommonReleaseId(items) {
-  const ids = items.map(i => i.release_mbid || i.release_id).filter(Boolean);
-  if (ids.length === 0) return null;
-  const first = ids[0];
-  if (ids.every(id => id === first)) return first;
-  const counts = {};
-  let maxCount = 0;
-  let maxId = null;
-  for (const id of ids) {
-    counts[id] = (counts[id] || 0) + 1;
-    if (counts[id] > maxCount) {
-      maxCount = counts[id];
-      maxId = id;
-    }
-  }
-  return maxId;
-}
-
 function buildFolderToReleaseTrackMap(folderTracks, releaseTracks) {
   const mapping = {};
   if (!Array.isArray(folderTracks) || !Array.isArray(releaseTracks) || releaseTracks.length === 0) {
@@ -2660,7 +2301,7 @@ async function mergeDuplicateFolders(primaryId, secondaryIds) {
   }
   
   try {
-    const response = await fetch('/api/downloads/merge-folders', {
+    const response = await fetch('/api/downloads/folder-merge', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2682,13 +2323,6 @@ async function mergeDuplicateFolders(primaryId, secondaryIds) {
     console.error('Error merging folders:', error);
     alert('❌ Network error: ' + error.message);
   }
-}
-
-function makeSafeDomId(value) {
-  return String(value || '')
-    .replace(/[^a-zA-Z0-9_-]/g, '_')
-    .replace(/_+/g, '_')
-    .slice(0, 120);
 }
 
 function setFolderGroupFilter(filter) {
@@ -2754,43 +2388,6 @@ function buildQueueTrackStatusDetail(track, group) {
   }
 
   return parts.length > 0 ? parts.join(' | ') : 'No additional status details.';
-}
-
-function classifyTrackPath(pathValue, fieldName) {
-  const raw = String(pathValue || '').trim();
-  if (!raw) return { kind: 'unknown', label: 'Path' };
-
-  const normalized = raw.replace(/\\/g, '/').toLowerCase();
-  const sourceField = String(fieldName || '').toLowerCase();
-
-  if (sourceField === 'source_file_path') {
-    return { kind: 'remote', label: 'Remote path' };
-  }
-
-  if (sourceField === 'source_music_path') {
-    return { kind: 'local', label: 'Local music path' };
-  }
-
-  if (/^(https?|ftp|smb):\/\//i.test(raw) || raw.startsWith('\\\\')) {
-    return { kind: 'remote', label: 'Remote path' };
-  }
-
-  // Check downloads path BEFORE music path so that paths like
-  // /downloads/Music/... are not misclassified as "Local music path"
-  // due to the /music/ substring appearing inside the downloads directory name.
-  if (normalized.startsWith('/downloads/') || normalized.includes('/downloads/')) {
-    return { kind: 'local', label: 'Local downloads path' };
-  }
-
-  if (normalized.startsWith('/music/') || normalized.includes('/music/')) {
-    return { kind: 'local', label: 'Local music path' };
-  }
-
-  if (/^[a-z]:\//i.test(normalized)) {
-    return { kind: 'local', label: 'Local path' };
-  }
-
-  return { kind: 'unknown', label: 'Path' };
 }
 
 function buildTrackPathDetailsHtml(track) {
@@ -2897,7 +2494,7 @@ function getTrackFinalLocation(track, group) {
   const year = track?.release_year || track?.year || group?.year || '';
   const trackNumber = track?.track_number || '';
   const trackArtist = track?.artist || '';
-  var ext = _getTrackFileExtension(track);
+  const ext = _getTrackFileExtension(track);
 
   if (albumArtist && album && title) {
     const tn = trackNumber ? String(trackNumber).padStart(2, '0') : '';
@@ -2922,8 +2519,8 @@ function getTrackFinalLocation(track, group) {
     trackNum = '00';
   }
 
-  // Extract file extension from available paths (ext already declared above)
-  if (!ext) ext = '';
+  // Extract file extension from available paths
+  let ext = '';
   const pathWithExt = track?.file_path || track?.found_filename || track?.source_file_path || '';
   if (pathWithExt) {
     const match = String(pathWithExt).match(/\.([a-zA-Z0-9]{2,5})$/);
@@ -2932,8 +2529,8 @@ function getTrackFinalLocation(track, group) {
     }
   }
 
-  var trackArtist2 = track?.artist || artist || 'Unknown Artist';
-  return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${trackNum}. ${trackArtist2} - ${title}${ext}`;
+  const trackArtist = track?.artist || artist || 'Unknown Artist';
+  return `/music/${artist}/${year ? year + ' - ' : ''}${album}/${trackNum}. ${trackArtist} - ${title}${ext}`;
 }
 
 function isTrackInFinalLocation(track) {
@@ -6879,12 +6476,6 @@ function groupByAlbum(items) {
 
 
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = String(text || '');
-  return div.innerHTML;
-}
-
 // Auto-discover files periodically (every 60 seconds)
 async function autoDiscoverFiles() {
   try {
@@ -7497,7 +7088,7 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Listen for queue updates from other tabs/windows (e.g., downloads.html)
   window.addEventListener('storage', function(e) {
-    if (e.key === 'popularr_queue_updated') {
+    if (e.key === 'popularr_queue_updated' || e.key === 'sptnr_queue_updated') {
       console.log('Queue updated from another tab, refreshing immediately...');
       loadQueueStatus();
       loadFolderGroups({ keepVisibleOnEmpty: true });
@@ -7549,57 +7140,4 @@ async function addPlaylistToQueue() {
 }
 </script>
 {% include 'components/_musicbrainz_search_functions.html' %}
-
-<style>
-  .card {
-    background-color: var(--secondary-bg, #1e1e1e) !important;
-    border-color: var(--border-color, #333) !important;
-  }
-  .card-header {
-    background-color: var(--primary-bg, #121212) !important;
-    border-bottom-color: var(--border-color, #333) !important;
-  }
-  .table {
-    color: var(--text-primary, #fff) !important;
-    background-color: transparent !important;
-  }
-  .table thead th {
-    color: var(--text-primary, #fff) !important;
-    background-color: var(--primary-bg, #121212) !important;
-    border-color: var(--border-color, #333) !important;
-  }
-  .table tbody td {
-    color: var(--text-primary, #fff) !important;
-    background-color: transparent !important;
-    border-color: var(--border-color, #333) !important;
-  }
-  .table-hover tbody tr:hover {
-    background-color: var(--primary-bg, #121212) !important;
-  }
-  .modal-content {
-    background-color: var(--secondary-bg, #1e1e1e) !important;
-    border-color: var(--border-color, #333) !important;
-  }
-  .modal-header {
-    background-color: var(--primary-bg, #121212) !important;
-    border-bottom-color: var(--border-color, #333) !important;
-  }
-  .modal-footer {
-    border-top-color: var(--border-color, #333) !important;
-  }
-  .list-group-item {
-    background-color: var(--secondary-bg, #1e1e1e) !important;
-    border-color: var(--border-color, #333) !important;
-    color: var(--text-primary, #fff) !important;
-  }
-  pre {
-    background-color: #111 !important;
-    color: #ccc !important;
-    border: 1px solid var(--border-color, #333) !important;
-  }
-  .progress {
-    background-color: var(--tertiary-bg, #282828) !important;
-  }
-</style>
-
 {% endblock %}

@@ -53,134 +53,104 @@
             <i class="bi bi-info-circle"></i> No artists found. Run a scan to populate the database.
         </div>
     {% else %}
-        <!-- Letter Navigation -->
+        <!-- Letter Navigation (mobile-friendly: horizontally scrollable with larger touch targets) -->
         <div class="card mb-3">
             <div class="card-body py-2">
-                <div class="d-flex flex-wrap gap-1 justify-content-center align-items-center">
-                    <span class="text-muted small me-2">Jump to:</span>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="jumpToLetter('all')">All</button>
-                    {% for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' %}
-                    <button class="btn btn-sm btn-outline-secondary" onclick="jumpToLetter('{{ letter }}')">{{ letter }}</button>
-                    {% endfor %}
-                    <button class="btn btn-sm btn-outline-secondary" onclick="jumpToLetter('#')">#</button>
+                <div class="d-flex align-items-center gap-1">
+                    <span class="text-muted small me-1 flex-shrink-0">Jump:</span>
+                    <div class="d-flex flex-nowrap overflow-auto gap-1 py-1" style="scrollbar-width: none; -webkit-overflow-scrolling: touch;">
+                        <button class="btn btn-outline-secondary flex-shrink-0" style="min-width:44px;min-height:44px;" onclick="jumpToLetter('all')">All</button>
+                        <button class="btn btn-outline-secondary flex-shrink-0" style="min-width:44px;min-height:44px;" onclick="jumpToLetter('#')">#</button>
+                        {% for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' %}
+                        <button class="btn btn-outline-secondary flex-shrink-0" style="min-width:44px;min-height:44px;" onclick="jumpToLetter('{{ letter }}')">{{ letter }}</button>
+                        {% endfor %}
+                    </div>
                 </div>
             </div>
         </div>
         
         <div class="card">
-            <div class="table-responsive">
-                <table class="table table-hover mb-0" id="artistsTable">
-                    <thead class="table-dark sticky-top">
-                        <tr>
-                            <th class="d-none d-sm-table-cell">
-                                <i class="bi bi-person"></i> Artist
-                            </th>
-                            <th class="d-sm-none">Artist</th>
-                            <th class="d-none d-md-table-cell text-center">
-                                <i class="bi bi-disc"></i> Albums
-                            </th>
-                            <th class="d-none d-md-table-cell text-center">
-                                <i class="bi bi-music-note"></i> Tracks
-                            </th>
-                            <th class="d-none d-md-table-cell text-center">
-                                <i class="bi bi-star-fill"></i> 5★ Songs
-                            </th>
-                            <th class="d-none d-lg-table-cell text-center">Last Updated</th>
-                            <th class="text-center">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% set ns = namespace(current_letter='') %}
-                        {% for artist in artists %}
-                        {% set letter_key = artist.sort_letter if artist.sort_letter else '#' %}
-                        
-                        <!-- Letter Section Header -->
-                        {% if letter_key != ns.current_letter %}
-                        <tr class="table-light" id="letter-header-{{ letter_key }}" data-letter-header="{{ letter_key }}">
-                            <td colspan="7" class="py-2 px-0">
-                                <div class="d-flex justify-content-between align-items-center px-3 py-2 bg-primary bg-opacity-10">
-                                    <h5 class="mb-0 fw-bold">{{ letter_key }}</h5>
-                                    <div class="d-flex align-items-center gap-2">
-                                        <div class="form-check form-check-inline mb-0" title="Force full rescan from this letter">
-                                            <input class="form-check-input letter-force-check" type="checkbox" id="letter-force-{{ loop.index0 }}" data-letter="{{ letter_key }}">
-                                            <label class="form-check-label small" for="letter-force-{{ loop.index0 }}">Force</label>
-                                        </div>
-                                        <button class="btn btn-outline-primary btn-sm" onclick="scanLetterArtists('{{ letter_key }}')" title="Scan from this letter">
-                                            <i class="bi bi-lightning"></i> Scan
-                                        </button>
-                                    </div>
-                                </div>
-                            </td>
-                        </tr>
-                        {% set ns.current_letter = letter_key %}
-                        {% endif %}
-                        
-                        <tr data-letter="{{ letter_key }}" data-artist="{{ artist.link_artist }}" class="artist-main-row">
-                            <td class="d-none d-sm-table-cell">
-                                <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
-                                    {{ artist.display_name }}
-                                </a>
-                                <span class="correction-badge-desktop"></span>
-                            </td>
-                            <td class="d-sm-none">
-                                <div class="text-truncate">
-                                    <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
-                                        <strong>{{ artist.display_name }}</strong>
-                                    </a>
-                                    <span class="correction-badge-mobile"></span>
-                                </div>
-                                <div class="small text-muted">
-                                    <span class="d-inline d-md-none">{{ artist.album_count or 0 }} albums</span>
-                                    <span class="d-inline d-md-none ms-1">•</span>
-                                    <span class="d-inline d-md-none ms-1">{{ artist.track_count or 0 }} tracks</span>
-                                    {% if artist.five_star_count and artist.five_star_count > 0 %}
-                                        <span class="d-inline d-md-none ms-1">•</span>
-                                        <span class="d-inline d-md-none ms-1"><span class="badge bg-warning text-dark">{{ artist.five_star_count }} ★★★★★</span></span>
-                                    {% endif %}
-                                </div>
-                            </td>
-                            <td class="d-none d-md-table-cell text-center">{{ artist.album_count or 0 }}</td>
-                            <td class="d-none d-md-table-cell text-center">{{ artist.track_count or 0 }}</td>
-                            <td class="d-none d-md-table-cell text-center">
-                                {% if artist.five_star_count and artist.five_star_count > 0 %}
-                                    <span class="badge bg-warning text-dark" title="5 Star Songs">{{ artist.five_star_count }}</span>
-                                {% else %}
-                                    <span class="text-muted">0</span>
-                                {% endif %}
-                            </td>
-                            <td class="d-none d-lg-table-cell text-center text-muted" style="font-size: 0.85rem;">
+            <div class="list-group list-group-flush" id="artistsList">
+                {% set ns = namespace(current_letter='') %}
+                {% for artist in artists %}
+                {% set letter_key = artist.sort_letter if artist.sort_letter else '#' %}
+                
+                <!-- Letter Section Header -->
+                {% if letter_key != ns.current_letter %}
+                <div class="list-group-item bg-primary bg-opacity-10" id="letter-header-{{ letter_key }}" data-letter-header="{{ letter_key }}" style="scroll-margin-top: 80px;">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0 fw-bold">{{ letter_key }}</h5>
+                        <div class="d-flex align-items-center gap-2">
+                            <div class="form-check form-check-inline mb-0" title="Force full rescan from this letter">
+                                <input class="form-check-input letter-force-check" type="checkbox" id="letter-force-{{ loop.index0 }}" data-letter="{{ letter_key }}">
+                                <label class="form-check-label small" for="letter-force-{{ loop.index0 }}">Force</label>
+                            </div>
+                            <button class="btn btn-outline-primary btn-sm" onclick="scanLetterArtists('{{ letter_key }}')" title="Scan from this letter">
+                                <i class="bi bi-lightning"></i> Scan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                {% set ns.current_letter = letter_key %}
+                {% endif %}
+                
+                <!-- Artist Item -->
+                <div class="list-group-item" data-letter="{{ letter_key }}" data-artist="{{ artist.link_artist }}">
+                    <div class="d-flex justify-content-between align-items-center gap-2">
+                        <div class="flex-grow-1 min-width-0">
+                            <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="text-decoration-none fw-semibold">
+                                {{ artist.display_name }}
+                            </a>
+                            <span class="correction-badge-desktop"></span>
+                            <!-- Desktop-only stats inline -->
+                            <span class="d-none d-md-inline text-muted small ms-2">{{ artist.album_count or 0 }} albums</span>
+                            <span class="d-none d-md-inline text-muted small ms-1">• {{ artist.track_count or 0 }} tracks</span>
+                            {% if artist.five_star_count and artist.five_star_count > 0 %}
+                                <span class="d-none d-md-inline ms-1"><span class="badge bg-warning text-dark" title="5 Star Songs">{{ artist.five_star_count }}</span></span>
+                            {% endif %}
+                            <span class="d-none d-lg-inline text-muted small ms-2">
                                 {% if artist.last_updated %}
-                                    {{ artist.last_updated|format_datetime }}
+                                    • {{ artist.last_updated|format_datetime }}
                                 {% else %}
-                                    <span>Never</span>
+                                    • Never
                                 {% endif %}
-                            </td>
-                            <td class="text-center">
-                                <div class="btn-group btn-group-sm" role="group">
-                                    <span class="correction-action-btns"></span>
-                                    <button class="btn btn-outline-primary" type="button" onclick="lookupMetadata('artist', '{{ artist.link_artist }}')" title="Get artist metadata">
-                                        <i class="bi bi-search"></i>
-                                    </button>
-                                    <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="btn btn-outline-secondary" title="View artist details">
-                                        <i class="bi bi-arrow-right"></i>
-                                    </a>
-                                </div>
-                            </td>
-                        </tr>
-                        <!-- Expandable correction detail row -->
-                        <tr class="correction-detail-row d-none" data-artist="{{ artist.link_artist }}">
-                            <td colspan="7" class="p-0 border-0">
-                                <div class="correction-detail-content p-3" style="background:var(--tertiary-bg);">
-                                    <div class="correction-detail-loading text-center small py-2 d-none">
-                                        <span class="spinner-border spinner-border-sm me-2" role="status"></span>Loading…
-                                    </div>
-                                    <div class="correction-detail-body"></div>
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+                            </span>
+                        </div>
+                        <div class="btn-group btn-group-sm flex-shrink-0" role="group">
+                            <span class="correction-action-btns"></span>
+                            <button class="btn btn-outline-info btn-expand-albums" type="button" data-artist="{{ artist.link_artist }}" title="Show albums">
+                                <i class="bi bi-collection"></i>
+                            </button>
+                            <button class="btn btn-outline-primary" type="button" onclick="lookupMetadata('artist', '{{ artist.link_artist }}')" title="Get artist metadata">
+                                <i class="bi bi-search"></i>
+                            </button>
+                            <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="btn btn-outline-secondary" title="View artist details">
+                                <i class="bi bi-arrow-right"></i>
+                            </a>
+                        </div>
+                    </div>
+                    <!-- Mobile-only stats row -->
+                    <div class="d-md-none small text-muted mt-1">
+                        <span>{{ artist.album_count or 0 }} albums</span>
+                        <span class="ms-1">•</span>
+                        <span class="ms-1">{{ artist.track_count or 0 }} tracks</span>
+                        {% if artist.five_star_count and artist.five_star_count > 0 %}
+                            <span class="ms-1">•</span>
+                            <span class="ms-1"><span class="badge bg-warning text-dark">{{ artist.five_star_count }} ★★★★★</span></span>
+                        {% endif %}
+                        <span class="correction-badge-mobile"></span>
+                    </div>
+                    <!-- Expandable albums detail (nested div — valid HTML) -->
+                    <div class="albums-detail-row d-none mt-2" data-artist="{{ artist.link_artist }}">
+                        <div class="albums-detail-content p-3" style="background:var(--tertiary-bg);">
+                            <div class="albums-loading text-center small py-2 d-none">
+                                <span class="spinner-border spinner-border-sm me-2" role="status"></span>Loading albums…
+                            </div>
+                            <div class="albums-body"></div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
             </div>
         </div>
     {% endif %}
@@ -275,37 +245,36 @@ function addArtist() {
 
 // ── Letter navigation (with fixed-navbar offset) ──
 function jumpToLetter(letter) {
-    const table = document.getElementById('artistsTable');
-    const rows = table.querySelectorAll('tbody tr');
+    const list = document.getElementById('artistsList');
+    const items = list.querySelectorAll(':scope > .list-group-item');
     
     if (letter === 'all') {
-        rows.forEach(row => row.style.display = '');
-        table.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        // Offset for fixed navbar
+        items.forEach(item => item.style.display = '');
+        list.scrollIntoView({ behavior: 'smooth', block: 'start' });
         window.scrollBy(0, -70);
         return;
     }
     
-    // Hide all rows first
-    rows.forEach(row => row.style.display = 'none');
+    // Hide all items first
+    items.forEach(item => item.style.display = 'none');
     
-    // Show matching header + artist rows
-    let headerRow = null;
-    rows.forEach(row => {
-        const rowLetter = row.getAttribute('data-letter');
-        const hasHeader = row.getAttribute('data-letter-header');
+    // Show matching header + artist items
+    let headerItem = null;
+    items.forEach(item => {
+        const itemLetter = item.getAttribute('data-letter');
+        const hasHeader = item.getAttribute('data-letter-header');
         
         if (hasHeader === letter) {
-            row.style.display = '';
-            headerRow = row;
-        } else if (rowLetter === letter) {
-            row.style.display = '';
+            item.style.display = '';
+            headerItem = item;
+        } else if (itemLetter === letter) {
+            item.style.display = '';
         }
     });
     
-    if (headerRow) {
-        headerRow.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        window.scrollBy(0, -70);  // Offset for fixed navbar
+    if (headerItem) {
+        headerItem.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        window.scrollBy(0, -70);
     }
 }
 
@@ -353,7 +322,7 @@ async function loadArtistCorrections() {
         const data = await response.json();
         const corrections = data.corrections || {};
 
-        document.querySelectorAll('#artistsTable tbody tr[data-artist]').forEach(row => {
+        document.querySelectorAll('#artistsList > .list-group-item[data-artist]').forEach(row => {
             const artistName = row.dataset.artist;
             // Case-insensitive lookup — API keys are lowercased
             const info = corrections[artistName.toLowerCase()] || corrections[artistName];
@@ -645,61 +614,92 @@ function escHtml(str) {
     d.appendChild(document.createTextNode(str));
     return d.innerHTML;
 }
+
+// ── Expandable album rows ──────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.btn-expand-albums').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var artist = this.getAttribute('data-artist');
+            if (!artist) return;
+
+            var detailRow = document.querySelector('.albums-detail-row[data-artist="' + artist.replace(/"/g, '\\"') + '"]');
+            if (!detailRow) return;
+
+            var isHidden = detailRow.classList.contains('d-none');
+
+            // Collapse all other open rows first
+            document.querySelectorAll('.albums-detail-row:not(.d-none)').forEach(function (row) {
+                row.classList.add('d-none');
+                var otherBtn = document.querySelector('.btn-expand-albums[data-artist="' + row.getAttribute('data-artist') + '"]');
+                if (otherBtn) otherBtn.innerHTML = '<i class="bi bi-collection"></i>';
+            });
+
+            if (isHidden) {
+                // Show this row
+                detailRow.classList.remove('d-none');
+                this.innerHTML = '<i class="bi bi-collection-fill"></i>';
+
+                var loading = detailRow.querySelector('.albums-loading');
+                var body = detailRow.querySelector('.albums-body');
+
+                // Only fetch if not already loaded
+                if (!body.hasAttribute('data-loaded')) {
+                    loading.classList.remove('d-none');
+                    body.innerHTML = '';
+
+                    fetch('/api/artist/corrections-albums?artist=' + encodeURIComponent(artist))
+                        .then(function (r) { return r.json(); })
+                        .then(function (data) {
+                            loading.classList.add('d-none');
+                            body.setAttribute('data-loaded', 'true');
+
+                            var albums = data.albums || [];
+                            if (albums.length === 0) {
+                                body.innerHTML = '<div class="text-muted small py-2">No albums found.</div>';
+                                return;
+                            }
+
+                            var html = '<div class="d-flex flex-wrap gap-2">';
+                            albums.forEach(function (album) {
+                                var icon = album.mbid_issues ? 'exclamation-circle text-warning' : 'disc-fill text-info';
+                                var title = escHtml(album.album) + ' (' + album.track_count + ' tracks)';
+                                html += '<a href="/album/' + encodeURIComponent(artist) + '/' + encodeURIComponent(album.album) + '" class="btn btn-sm btn-outline-secondary text-start d-flex align-items-center gap-2" style="flex:1 1 200px;max-width:100%;" title="' + title + '">' +
+                                    '<i class="bi bi-' + icon + '"></i>' +
+                                    '<span class="text-truncate">' + escHtml(album.album) + '</span>' +
+                                    '<span class="badge bg-secondary ms-auto flex-shrink-0">' + album.track_count + '</span>' +
+                                    '</a>';
+                            });
+                            html += '</div>';
+                            body.innerHTML = html;
+                        })
+                        .catch(function (err) {
+                            loading.classList.add('d-none');
+                            body.innerHTML = '<div class="text-danger small py-2">Failed to load albums: ' + err.message + '</div>';
+                        });
+                }
+            } else {
+                // Hide this row
+                detailRow.classList.add('d-none');
+                this.innerHTML = '<i class="bi bi-collection"></i>';
+            }
+        });
+    });
+});
 </script>
 
 {% include 'components/_musicbrainz_search_modal.html' %}
 {% include 'components/_musicbrainz_search_functions.html' %}
 
 <style>
-    .card {
-        background-color: var(--secondary-bg, #1e1e1e) !important;
-        border-color: var(--border-color, #333) !important;
-    }
-
-    .card-header {
-        background-color: var(--primary-bg, #121212) !important;
-        border-bottom-color: var(--border-color, #333) !important;
-    }
-
-    .table-responsive {
-        background-color: var(--secondary-bg, #1e1e1e) !important;
-    }
-
-    .table {
-        color: var(--text-primary, #fff) !important;
-        background-color: transparent !important;
-    }
-
-    .table thead th {
-        color: var(--text-primary, #fff) !important;
-        background-color: var(--primary-bg, #121212) !important;
-        border-color: var(--border-color, #333) !important;
-    }
-
-    .table tbody td {
-        color: var(--text-primary, #fff) !important;
-        background-color: transparent !important;
-        border-color: var(--border-color, #333) !important;
-    }
-
-    .table-hover tbody tr:hover {
-        background-color: var(--primary-bg, #121212) !important;
-    }
-
-    .table-light {
-        background-color: transparent !important;
-    }
-
-    .table-light td {
-        background-color: transparent !important;
-    }
-
-    /* Offset for fixed navbar when jumping to letter headers */
-    [id^="letter-header-"] {
+    /* Sticky letter headers — stick below the fixed navbar */
+    #artistsList > .list-group-item[data-letter-header] {
+        position: sticky;
+        top: 3.5rem;
+        z-index: 10;
         scroll-margin-top: 80px;
     }
 
-    /* Correction album rows */
+    /* Correction & albums detail rows */
     .correction-album-row {
         background: var(--secondary-bg, #1e1e1e);
         border: 1px solid var(--border-color, #333);
@@ -709,10 +709,17 @@ function escHtml(str) {
         background: var(--tertiary-bg, #282828);
     }
 
-    /* Correction detail content area */
-    .correction-detail-content {
+    .correction-detail-content,
+    .albums-detail-content {
         border-left: 3px solid var(--spotify-green, #1db954);
         border-radius: 0 6px 6px 0;
+    }
+
+    /* Prevent artist name from overflowing on small screens */
+    #artistsList .min-width-0 {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 </style>
 

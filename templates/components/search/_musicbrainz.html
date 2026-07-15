@@ -1,0 +1,48 @@
+<!-- MusicBrainz search panel (reusable component) -->
+<p class="text-muted small mb-3">
+  Search for releases on MusicBrainz and download them via Soulseek or qBittorrent
+</p>
+<div class="mb-3">
+  <div class="input-group">
+    <input type="text" class="form-control" id="mbSearchInput" placeholder="Search artist or release...">
+    <button class="btn btn-info" type="button" id="mbSearchBtn">
+      <i class="bi bi-search"></i> Search
+    </button>
+  </div>
+</div>
+
+<!-- Download Options -->
+<div class="mb-3">
+  <div class="form-check">
+    <input class="form-check-input" type="checkbox" id="persistentSearchCheck" checked>
+    <label class="form-check-label" for="persistentSearchCheck">
+      <small><i class="bi bi-arrow-repeat"></i> Keep searching until found (with auto-retry)</small>
+    </label>
+  </div>
+  <small class="text-muted d-block mt-1">
+    If enabled, failed downloads will automatically retry every 5 minutes until the track is verified in Navidrome.
+  </small>
+</div>
+
+<!-- Add to Session (Optional) -->
+<div class="mb-3">
+  <label for="mbSessionSelector" class="form-label">
+    <small><i class="bi bi-collection-play"></i> Add to Playlist Session (Optional)</small>
+  </label>
+  <select class="form-select form-select-sm" id="mbSessionSelector">
+    <option value="">— None (standalone download)</option>
+    <option value="create">+ Create new session...</option>
+  </select>
+  <small class="text-muted d-block mt-1">
+    Group related downloads together and track their progress as a session.
+  </small>
+</div>
+
+<div id="mbLoading" class="text-center py-4" style="display: none;">
+  <div class="spinner-border text-info" role="status">
+    <span class="visually-hidden">Searching...</span>
+  </div>
+  <p class="mt-2">Searching MusicBrainz...</p>
+</div>
+
+<div id="mbResults"></div>

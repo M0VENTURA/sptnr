@@ -1,0 +1,27 @@
+{#
+  MusicBrainz Release Match Modal (per-track) — lets the user pick a different
+  MusicBrainz release for a specific track. Included by album_detail.html.
+#}
+<div class="modal fade" id="albumTrackMbReleaseModal" tabindex="-1" aria-labelledby="albumTrackMbReleaseModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="albumTrackMbReleaseModalLabel">
+                    <i class="bi bi-music-note-list"></i> Match Track to MusicBrainz Release
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3">Select the correct release (album) this track belongs to. This updates the MusicBrainz Album ID for this track.</p>
+                <div id="albumTrackMbReleaseStatus" class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2 text-muted">Fetching releases from MusicBrainz…</p>
+                </div>
+                <div id="albumTrackMbReleaseError" class="alert alert-danger" style="display:none;"></div>
+                <div id="albumTrackMbReleaseResults"></div>
+            </div>
+        </div>
+    </div>
+</div>

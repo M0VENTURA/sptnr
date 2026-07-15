@@ -1,0 +1,45 @@
+/* Dashboard page styles — only dashboard-specific rules, global styles in popularr.css */
+.dashboard-mobile-search {
+    width: 100%;
+    max-width: 480px;
+}
+
+@media (max-width: 576px) {
+    .dashboard-mobile-search {
+        max-width: 100%;
+    }
+}
+
+.upcoming-source-chip {
+    font-size: 0.70rem;
+    padding: 0.15rem 0.4rem;
+    border-radius: 999px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+}
+
+.upcoming-source-musicbrainz {
+    background: rgba(240, 106, 52, 0.2);
+    color: #ff9e73;
+    border: 1px solid rgba(240, 106, 52, 0.45);
+}
+
+.upcoming-source-wikipedia {
+    background: rgba(120, 135, 160, 0.2);
+    color: #c7d2e6;
+    border: 1px solid rgba(120, 135, 160, 0.45);
+}
+
+/* Log toggle animation */
+#logBody {
+    transition: max-height 0.3s ease;
+    overflow: hidden;
+}
+
+#logBody.collapsed {
+    max-height: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}

@@ -59,6 +59,8 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
   {% endif %}
+  <!-- Global Popularr styles -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/popularr.css') }}">
   <style>
     :root {
       --primary-bg: #121212;
@@ -1411,6 +1413,37 @@
       </div>
     </div>
   </div>
+
+  <!-- Slide-over panel for inline detail views (album/track) -->
+  <div class="offcanvas offcanvas-end" tabindex="-1" id="detailSlideOver" style="width: 100%; max-width: 600px; background-color: var(--secondary-bg);">
+    <div class="offcanvas-header border-bottom border-secondary border-opacity-25">
+      <h5 class="offcanvas-title" id="slideOverTitle">Loading...</h5>
+      <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+    </div>
+    <div class="offcanvas-body p-0" id="slideOverContent">
+      <div class="d-flex justify-content-center align-items-center h-100">
+        <div class="spinner-border text-primary"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Open a slide-over panel with content fetched from *url*.
+    // Used by artist, album, and track pages for inline detail editing.
+    function openSlideOver(url, title) {
+      var el = document.getElementById('detailSlideOver');
+      var contentEl = document.getElementById('slideOverContent');
+      var titleEl = document.getElementById('slideOverTitle');
+      titleEl.textContent = title || 'Loading...';
+      contentEl.innerHTML = '<div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary"></div></div>';
+      var bsOffcanvas = new bootstrap.Offcanvas(el);
+      bsOffcanvas.show();
+      fetch(url)
+        .then(function(r) { return r.text(); })
+        .then(function(html) { contentEl.innerHTML = html; })
+        .catch(function(err) { contentEl.innerHTML = '<div class="alert alert-danger m-3">Error loading details: ' + err.message + '</div>'; });
+    }
+  </script>
 
   {% if config.get('features', {}).get('use_local_assets', False) %}
   <script src="{{ dist }}/vendor/bootstrap.bundle.min.js"></script>

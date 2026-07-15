@@ -18,7 +18,7 @@ def run_essentia_pipeline(
     resume_from_artist: str = "",
 ) -> None:
     """Run Essentia local mood/genre enrichment."""
-    from essentia_mood_scan import run_essentia_mood_scan
+    from services.scanning.pipelines.essentia_scanner import run_essentia_mood_scan
 
     try:
         cfg = get_config() or {}

@@ -4,104 +4,22 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <div class="mb-4">
-    <h1 class="h2 mb-2">
-      <i class="bi bi-download"></i> Music Downloads
-      <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2" title="Help for Downloads">
-          <i class="bi bi-question-circle"></i>
-      </a>
-    </h1>
-    <p class="text-muted mb-0">Search MusicBrainz for releases, then download via Soulseek or qBittorrent</p>
+  <div class="alert alert-info mb-4">
+    <i class="bi bi-info-circle"></i> The MusicBrainz search has moved to the
+    <a href="{{ url_for('ui.search') }}#musicbrainz" class="alert-link">unified search page</a>.
+    You'll be redirected automatically.
   </div>
 
-  <div class="row g-4 mb-4">
-    <!-- MusicBrainz Search Card -->
-    <div class="col-lg-7">
-      <div class="card h-100">
-        <div class="card-header">
-          <h5 class="card-title mb-0">
-            <i class="bi bi-disc"></i> MusicBrainz Release Search
-          </h5>
-        </div>
-        <div class="card-body">
-          <div class="mb-3">
-            <div class="input-group">
-              <span class="input-group-text"><i class="bi bi-search"></i></span>
-              <input type="text" class="form-control" id="mbSearchInput"
-                     placeholder="Artist name, album title, or MusicBrainz ID..."
-                     onkeypress="if(event.key==='Enter')performMbSearch();">
-              <button class="btn btn-primary" type="button" id="mbSearchBtn" onclick="performMbSearch()">
-                Search
-              </button>
-            </div>
-          </div>
-
-          <!-- Options row -->
-          <div class="row g-2 mb-0">
-            <div class="col-md-6">
-              <div class="form-check">
-                <input class="form-check-input" type="checkbox" id="persistentSearchCheck" checked>
-                <label class="form-check-label" for="persistentSearchCheck">
-                  <small><i class="bi bi-arrow-repeat"></i> Auto-retry until found</small>
-                </label>
-              </div>
-            </div>
-            <div class="col-md-6">
-              <div class="input-group input-group-sm">
-                <span class="input-group-text"><i class="bi bi-collection-play"></i></span>
-                <select class="form-select form-select-sm" id="mbSessionSelector">
-                  <option value="">No session (standalone)</option>
-                  <option value="create">+ Create new session...</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <div id="mbLoading" class="text-center py-4" style="display: none;">
-            <div class="spinner-border text-info" role="status">
-              <span class="visually-hidden">Searching...</span>
-            </div>
-            <p class="mt-2 mb-0">Searching MusicBrainz...</p>
-          </div>
-
-          <div id="mbResults" class="mt-3"></div>
-        </div>
-      </div>
+  <div class="card mb-4">
+    <div class="card-header">
+      <h5 class="card-title mb-0"><i class="bi bi-disc"></i> MusicBrainz Release Search</h5>
     </div>
-
-    <!-- Quick Actions Card -->
-    <div class="col-lg-5">
-      <div class="card h-100">
-        <div class="card-header">
-          <h5 class="card-title mb-0">
-            <i class="bi bi-lightning"></i> Quick Actions
-          </h5>
-        </div>
-        <div class="card-body">
-          <div class="d-grid gap-2">
-            <a href="/downloads/search/soulseek" class="btn btn-outline-success text-start">
-              <i class="bi bi-music-note-beamed me-2"></i> Soulseek Search
-              <small class="d-block text-muted">Search for individual tracks or albums</small>
-            </a>
-            <a href="/downloads/search/qbittorrent" class="btn btn-outline-primary text-start">
-              <i class="bi bi-cloud-download me-2"></i> qBittorrent Search
-              <small class="d-block text-muted">Search torrent sites for music</small>
-            </a>
-            <a href="/downloads/similar-artists" class="btn btn-outline-warning text-start">
-              <i class="bi bi-people me-2"></i> Similar Artists
-              <small class="d-block text-muted">Discover artists similar to your collection</small>
-            </a>
-            <a href="/downloads/upcoming" class="btn btn-outline-info text-start">
-              <i class="bi bi-calendar-event me-2"></i> Upcoming Releases
-              <small class="d-block text-muted">Browse upcoming album releases</small>
-            </a>
-          </div>
-        </div>
-      </div>
+    <div class="card-body">
+      {% include 'components/search/_musicbrainz.html' %}
     </div>
   </div>
 
-  <!-- Managed Downloads Card -->
+  <!-- Managed Downloads -->
   <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
@@ -109,7 +27,7 @@
       </h5>
       <div class="d-flex align-items-center gap-2">
         <span class="badge bg-info" id="mbDownloadCount" style="display:none"></span>
-        <button class="btn btn-sm btn-outline-info" type="button" id="mbRefreshBtn" onclick="refreshMbDownloads()">
+        <button class="btn btn-sm btn-outline-info" type="button" id="mbRefreshBtn">
           <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
       </div>
@@ -151,9 +69,10 @@
 <!-- Include JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
 <script>
-  // Auto-load managed downloads on page load
-  document.addEventListener('DOMContentLoaded', function() {
-    refreshMbDownloads();
-  });
+  document.getElementById('mbSearchBtn').addEventListener('click', performMbSearch);
+  document.getElementById('mbRefreshBtn').addEventListener('click', refreshMbDownloads);
+  setTimeout(function() {
+    window.location.href = '{{ url_for("ui.search") }}#musicbrainz';
+  }, 5000);
 </script>
 {% endblock %}

@@ -26,7 +26,7 @@
                 <div class="row g-4">
                     <!-- Album Art -->
                     <div class="col-12 col-md-3 d-flex flex-column align-items-center">
-                        <div class="position-relative mb-3" style="width: min(200px, 50vw); aspect-ratio: 1; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
+                        <div class="album-art-container position-relative mb-3">
                             <img id="trackAlbumArtImage" src="{{ url_for('album_routes.api_album_art', artist=track.artist|urlencode, album=track.album|urlencode) }}" 
                                  alt="{{ track.album }}" 
                                  style="width: 100%; height: 100%; object-fit: cover;"
@@ -1316,17 +1316,17 @@
 
 <script id="page-data" type="application/json">{{ {
     "trackId": track.id,
-    "beetsMbid": track.beets_mbid,
-    "mbid": track.mbid,
-    "suggestedMbid": track.suggested_mbid,
-    "beetsAlbumArtist": track.beets_album_artist,
-    "albumArtist": track.album_artist,
-    "beetsYear": track.beets_year,
-    "year": track.year,
-    "lastfmTags": track.lastfm_tags,
-    "listenbrainzGenres": track.listenbrainz_genres,
-    "discogsGenres": track.discogs_genres,
-    "musicbrainzGenres": track.musicbrainz_genres
+    "beetsMbid": track.get("beets_mbid"),
+    "mbid": track.get("mbid"),
+    "suggestedMbid": track.get("suggested_mbid"),
+    "beetsAlbumArtist": track.get("beets_album_artist"),
+    "albumArtist": track.get("album_artist"),
+    "beetsYear": track.get("beets_year"),
+    "year": track.get("year"),
+    "lastfmTags": track.get("lastfm_tags"),
+    "listenbrainzGenres": track.get("listenbrainz_genres"),
+    "discogsGenres": track.get("discogs_genres"),
+    "musicbrainzGenres": track.get("musicbrainz_genres")
 } | tojson | safe }}</script>
 <script>
     var _pd = JSON.parse(document.getElementById('page-data').textContent);

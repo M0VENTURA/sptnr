@@ -227,82 +227,17 @@
 </div>
 
 <style>
-/* Dark theme improvements for downloads manager page */
-.card {
-    background-color: var(--secondary-bg) !important;
-    border-color: var(--border-color) !important;
-}
-
-.card-header {
-    background-color: var(--primary-bg) !important;
-    border-bottom-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
-
-.card-body {
-    background-color: var(--secondary-bg) !important;
-    color: var(--text-primary) !important;
-}
-
-.table {
-    color: var(--text-primary) !important;
-    background-color: var(--secondary-bg) !important;
-}
-
-.table thead {
-    background-color: var(--primary-bg) !important;
-    color: var(--text-primary) !important;
-}
-
-.table tbody {
-    background-color: var(--secondary-bg) !important;
-}
-
-.table-hover tbody tr:hover {
-    background-color: rgba(255, 255, 255, 0.05) !important;
-    color: var(--text-primary) !important;
-}
-
-.modal-content {
-    background-color: var(--secondary-bg) !important;
-    color: var(--text-primary) !important;
-    border-color: var(--border-color) !important;
-}
-
-.modal-header {
-    background-color: var(--primary-bg) !important;
-    border-bottom-color: var(--border-color) !important;
-}
-
-.modal-body {
-    background-color: var(--secondary-bg) !important;
-}
+  /* Card/table/modal dark theme is in popularr.css — page-specific overrides only */
+  .manager-section-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+  }
 </style>
 
 {% endblock %}
 
+<script src="{{url_for('static', filename='js/downloads.js')}}"></script>
 <script>
-    function formatBytes(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
-    }
-
-    function formatDuration(seconds) {
-        if (!seconds) return '—';
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins}:${secs.toString().padStart(2, '0')}`;
-    }
-
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
     function scanDownloads() {
         document.getElementById('loadingState').style.display = 'block';
         document.getElementById('emptyState').style.display = 'none';

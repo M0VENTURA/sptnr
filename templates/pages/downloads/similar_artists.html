@@ -5,30 +5,13 @@
 {% block content %}
 <div class="container-fluid mt-4">
   <div class="mb-4">
-    <h1 class="h2 mb-2">
-      <i class="bi bi-download"></i> Music Downloads
-      <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2" title="Help for Downloads">
-          <i class="bi bi-question-circle"></i>
-      </a>
-    </h1>
-    <p class="text-muted mb-0">Discover and download music from similar artists</p>
+    {% set subtitle = 'Discover and download music from similar artists' %}
+    {% include 'components/_downloads_header.html' %}
   </div>
-
-  <!-- Page intro -->
-  <div class="card mb-4">
-    <div class="card-body py-3">
-      <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
-        <div>
-          <i class="bi bi-info-circle text-info me-1"></i>
-          Artists recommended by your collection but <strong>not yet in your library</strong>, sorted by recommendation frequency.
-        </div>
-        <div class="input-group" style="max-width: 280px;">
-          <span class="input-group-text"><i class="bi bi-search"></i></span>
-          <input type="text" class="form-control form-control-sm" id="similarArtistFilter"
-                 placeholder="Filter artists..." oninput="filterSimilarArtistsCards()">
-        </div>
-      </div>
-    </div>
+<!-- Page intro -->
+  <div class="alert alert-info mb-4">
+    <i class="bi bi-info-circle"></i>
+    Similar artists that appear in your collection's artist recommendations but are <strong>not yet in your collection</strong>, sorted by how many of your artists recommend them.
   </div>
 
   <!-- Loading / Results container -->
@@ -46,23 +29,11 @@
 
 <script>
 (function () {
-  let _allArtistCards = [];
-
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.appendChild(document.createTextNode(String(text || '')));
     return div.innerHTML;
   }
-
-  function filterSimilarArtistsCards() {
-    const query = (document.getElementById('similarArtistFilter')?.value || '').toLowerCase();
-    const cards = document.querySelectorAll('#similarArtistsDiscoverContainer .col-6');
-    cards.forEach(card => {
-      const name = (card.getAttribute('data-artist-name') || '').toLowerCase();
-      card.style.display = name.includes(query) ? '' : 'none';
-    });
-  }
-  window.filterSimilarArtistsCards = filterSimilarArtistsCards;
 
   async function loadSimilarArtistsDiscover() {
     const container = document.getElementById('similarArtistsDiscoverContainer');
@@ -88,7 +59,7 @@
         <div class="d-flex justify-content-between align-items-center mb-3">
           <span class="text-muted">${notInCollection.length} artist${notInCollection.length !== 1 ? 's' : ''} recommended but not in your collection</span>
         </div>
-        <div class="row g-3" id="similarArtistsGrid">
+        <div class="row g-3">
       `;
 
       notInCollection.forEach(artist => {
@@ -100,7 +71,7 @@
         const fromArtistsNote = fromArtistsList ? `<small class="text-muted d-block mt-1">Via: ${fromArtistsList}${(artist.from_artists || []).length > 3 ? ' & more' : ''}</small>` : '';
 
         html += `
-          <div class="col-6 col-md-4 col-lg-3 col-xl-2" data-artist-name="${escapeHtml(artist.name).toLowerCase()}">
+          <div class="col-6 col-md-4 col-lg-3">
             <div class="card h-100 overflow-hidden" style="position: relative;">
               ${countBadge}
               <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
@@ -108,14 +79,14 @@
                      onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
                 <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8; display: none;"></i>
               </div>
-              <div class="card-body d-flex flex-column p-2">
-                <h6 class="card-title mb-1 fw-bold text-truncate" style="font-size:0.9rem;" title="${escapeHtml(artist.name)}">${escapeHtml(artist.name)}</h6>
+              <div class="card-body d-flex flex-column">
+                <h6 class="card-title mb-1 fw-bold text-truncate" title="${escapeHtml(artist.name)}">${escapeHtml(artist.name)}</h6>
                 ${fromArtistsNote}
-                <div class="mt-auto pt-2 d-grid gap-1" style="font-size:0.8rem;">
-                  <button class="btn btn-sm btn-outline-secondary" data-artist-name="${escapeHtml(artist.name)}" data-action="find-releases" title="Search MusicBrainz for releases">
+                <div class="btn-group-vertical btn-group-sm mt-auto pt-2" role="group">
+                  <button class="btn btn-outline-secondary btn-sm" data-artist-name="${escapeHtml(artist.name)}" data-action="find-releases" title="Search MusicBrainz for releases">
                     <i class="bi bi-download"></i> Find Releases
                   </button>
-                  <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-sm btn-outline-info" title="View on Last.fm">
+                  <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
                     <i class="bi bi-box-arrow-up-right"></i> Last.fm
                   </a>
                 </div>
@@ -145,23 +116,55 @@
 
   document.addEventListener('DOMContentLoaded', loadSimilarArtistsDiscover);
 })();
-
-// Global function for find-releases buttons: fills the shared modal search and triggers search
-function searchMusicBrainzRelease(event, artist, album) {
-  if (event) { event.preventDefault(); event.stopPropagation(); }
-  var modalEl = document.getElementById('musicBrainzModal');
-  var inputEl = document.getElementById('mbSearchInput');
-  if (!modalEl || !inputEl) { alert('Search UI not available on this page.'); return; }
-  inputEl.value = (artist || '') + (album ? ' ' + album : '');
-  var modal = new bootstrap.Modal(modalEl);
-  modal.show();
-  if (typeof performMbSearch === 'function') {
-    setTimeout(performMbSearch, 300);
-  }
-}
 </script>
 
-{% include 'components/_musicbrainz_search_modal.html' %}
-{% include 'components/_musicbrainz_search_functions.html' %}
+<style>
+  #musicBrainzModal .modal-content,
+  #musicBrainzModal .accordion-item,
+  #musicBrainzModal .accordion-button {
+    background-color: #1a1a1a;
+    color: #e0e0e0;
+    border-color: #333;
+  }
+  #musicBrainzModal .accordion-button:not(.collapsed) {
+    background-color: #2a2a2a;
+    color: #e0e0e0;
+  }
+  #musicBrainzModal .table { color: #e0e0e0; border-color: #333; }
+  #musicBrainzModal .table th, #musicBrainzModal .table td { border-color: #333; }
+  #musicBrainzModal .table tbody tr:hover { background-color: #2a2a2a; }
+  #musicBrainzModal .badge { background-color: #555; }
+  #musicBrainzModal .alert { background-color: #2a2a2a; border-color: #333; color: #e0e0e0; }
+  #musicBrainzModal .text-muted { color: var(--text-secondary, #d0d0d0); }
+  #musicBrainzModal .modal-body { background-color: #1a1a1a; }
+</style>
+
+<!-- MusicBrainz Search Modal (required by static/js/downloads.js) -->
+<div class="modal fade" id="musicBrainzModal" tabindex="-1" aria-labelledby="musicBrainzModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content" style="background-color: #1a1a1a; color: #e0e0e0;">
+      <div class="modal-header" style="border-bottom-color: #333;">
+        <h5 class="modal-title" id="musicBrainzModalLabel">
+          <i class="bi bi-disc"></i> MusicBrainz Release Search
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="mbSearchInfo" class="alert alert-secondary" style="display:none;">
+          Searching <strong id="mbSearchArtist"></strong> - <strong id="mbSearchAlbum"></strong>
+        </div>
+        <div id="mbSearchStatus" class="text-center py-4" style="display:none;">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Searching...</span>
+          </div>
+          <div class="mt-2">Searching MusicBrainz...</div>
+        </div>
+        <div id="mbSearchError" class="alert alert-danger" style="display:none;"></div>
+        <div id="mbSearchResults"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 

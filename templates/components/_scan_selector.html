@@ -1,0 +1,16 @@
+{# 
+  Reusable scan type dropdown selector.
+  Usage:
+    {% include 'components/_scan_selector.html' %}
+    
+  The parent form must provide the hidden fields (artist, album, etc.)
+  and the force checkbox separately because those vary per page.
+#}
+<select name="scan_type" class="form-select form-select-sm" style="min-width: 140px; width: auto;" title="Select scan type">
+    <option value="full">Full</option>
+    <option value="navidrome">Navidrome</option>
+    <option value="popularity">Popularity</option>
+    <option value="metadata">Metadata</option>
+    <option value="singles">Singles</option>
+    <option value="essentia">Essentia</option>
+</select>

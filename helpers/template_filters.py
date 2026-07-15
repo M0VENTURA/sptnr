@@ -8,6 +8,15 @@ Called once during app factory setup.
 """
 
 def register_filters(app):
+    """Register all Jinja2 template filters and context processors."""
+
+    @app.context_processor
+    def inject_globals():
+        """Inject global template variables."""
+        return {
+            "dist": "/static/dist",
+        }
+
     @app.template_filter('format_duration')
     def format_duration(seconds):
         return f"{int(seconds // 60)}:{int(seconds % 60):02d}"

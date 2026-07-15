@@ -113,6 +113,154 @@ function formatETA(seconds) {
   return `${secs}s`;
 }
 
+// ===== ENCODING / STRING UTILITY FUNCTIONS =====
+
+/**
+ * Encode a JS value for safe inclusion in single-quoted onclick attribute strings.
+ * Combines JSON.stringify + encodeURIComponent, then escapes apostrophes.
+ */
+function encodeInlineArg(value) {
+  return encodeURIComponent(JSON.stringify(value)).replace(/'/g, '%27');
+}
+
+/**
+ * Decode a value previously encoded with encodeInlineArg.
+ */
+function decodeInlineArg(value, fallback = null) {
+  try {
+    return JSON.parse(decodeURIComponent(value));
+  } catch (error) {
+    console.warn('Failed to decode inline argument:', error);
+    return fallback;
+  }
+}
+
+/**
+ * Normalize a Soulseek search query by removing HTML entities and extra whitespace.
+ */
+function normalizeSoulseekQuery(value) {
+  return String(value || '')
+    .replace(/\\u0026/gi, ' ')
+    .replace(/&amp;/gi, ' ')
+    .replace(/&/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Normalize track text for fuzzy comparison: lowercase, strip brackets/parens, remove non-alphanumeric.
+ */
+function normalizeTrackText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Compute a similarity score (0-1) between two track title strings.
+ * Handles "feat", remaster variants, and substring matches.
+ */
+function getTrackSimilarity(a, b) {
+  const x = normalizeTrackText(a);
+  const y = normalizeTrackText(b);
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  if (x.includes(y) || y.includes(x)) return 0.9;
+
+  const xWords = x.split(' ');
+  const yWords = y.split(' ');
+  const ySet = new Set(yWords);
+  const common = xWords.filter(w => ySet.has(w)).length;
+  const maxLen = Math.max(xWords.length, yWords.length);
+  let score = maxLen > 0 ? (common / maxLen) : 0;
+
+  if (score >= 0.34 && (x.includes(' feat ') || y.includes(' feat ') || x.includes(' remaster') || y.includes(' remaster'))) {
+    score = Math.max(score, 0.5);
+  }
+
+  return score;
+}
+
+/**
+ * Given an array of items that may have release_mbid or release_id,
+ * return the most common release ID, or null if none found.
+ */
+function getCommonReleaseId(items) {
+  const ids = items.map(i => i.release_mbid || i.release_id).filter(Boolean);
+  if (ids.length === 0) return null;
+  const first = ids[0];
+  if (ids.every(id => id === first)) return first;
+  const counts = {};
+  let maxCount = 0;
+  let maxId = null;
+  for (const id of ids) {
+    counts[id] = (counts[id] || 0) + 1;
+    if (counts[id] > maxCount) {
+      maxCount = counts[id];
+      maxId = id;
+    }
+  }
+  return maxId;
+}
+
+/**
+ * Sanitize a string for safe use as an HTML element ID or CSS selector.
+ */
+function sanitizeId(id) {
+  return String(id).replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+/**
+ * Make a safe DOM ID from an arbitrary value (max 120 chars).
+ */
+function makeSafeDomId(value) {
+  return String(value || '')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .slice(0, 120);
+}
+
+/**
+ * Classify a track file path to determine its type (remote, local downloads, local music, etc.).
+ */
+function classifyTrackPath(pathValue, fieldName) {
+  const raw = String(pathValue || '').trim();
+  if (!raw) return { kind: 'unknown', label: 'Path' };
+
+  const normalized = raw.replace(/\\/g, '/').toLowerCase();
+  const sourceField = String(fieldName || '').toLowerCase();
+
+  if (sourceField === 'source_file_path') {
+    return { kind: 'remote', label: 'Remote path' };
+  }
+
+  if (sourceField === 'source_music_path') {
+    return { kind: 'local', label: 'Local music path' };
+  }
+
+  if (/^(https?|ftp|smb):\/\//i.test(raw) || raw.startsWith('\\\\')) {
+    return { kind: 'remote', label: 'Remote path' };
+  }
+
+  if (normalized.startsWith('/downloads/') || normalized.includes('/downloads/')) {
+    return { kind: 'local', label: 'Local downloads path' };
+  }
+
+  if (normalized.startsWith('/music/') || normalized.includes('/music/')) {
+    return { kind: 'local', label: 'Local music path' };
+  }
+
+  if (/^[a-z]:\//i.test(normalized)) {
+    return { kind: 'local', label: 'Local path' };
+  }
+
+  return { kind: 'unknown', label: 'Path' };
+}
+
 // ===== qBITTORRENT FUNCTIONS =====
 
 function performQbitSearch() {
