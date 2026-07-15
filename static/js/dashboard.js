@@ -56,20 +56,14 @@ async function pollPopularityStatus() {
   var r = await fetch("/api/popularity/status"),
     d = await r.json();
   if (!d.success) return;
-  var e = document.getElementById("pop-status"),
-    b = document.getElementById("pop-progress-bar"),
-    t = document.getElementById("pop-progress-text");
+  var e = document.getElementById("pop-status");
+  if (!e) return;
   if (d.running) {
     e.innerText = (d.message || "Running...") + fE(d.elapsed_seconds);
     e.className = "text-primary small";
-    var p = Math.min(d.progress || 0, 100);
-    b.style.width = p + "%";
-    t.innerText = (d.mode || "popularity") + " \u2014 " + p + "% (" + (d.processed_items || 0) + "/" + (d.total_items || "?") + ")";
   } else {
     e.innerText = d.message || "Idle";
     e.className = "text-muted small";
-    b.style.width = "0%";
-    t.innerText = "";
   }
 }
 
@@ -98,17 +92,13 @@ async function stopNavidromeSync() {
 }
 
 async function pollNavidromeStatus() {
-  var e = document.getElementById("nav-status"),
-    b = document.getElementById("nav-progress-bar"),
-    t = document.getElementById("nav-progress-text"),
-    pd = await (await fetch("/api/scan-progress")).json().catch(() => ({})),
+  var e = document.getElementById("nav-status");
+  if (!e) return;
+  var pd = await (await fetch("/api/scan-progress")).json().catch(() => ({})),
     ns = (pd.active_scans || []).find(function (s) { return s.scan_type === "navidrome_scan"; });
   if (ns && ns.is_running) {
     e.innerText = (ns.message || "Importing...") + fE(ns.elapsed_seconds);
     e.className = "text-primary small";
-    var p = Math.min(ns.percent_complete || 0, 100);
-    b.style.width = p + "%";
-    t.innerText = (ns.mode || "import") + " \u2014 " + p + "%";
     if (e.dataset.started) { delete e.dataset.started; }
     return;
   }
@@ -116,8 +106,6 @@ async function pollNavidromeStatus() {
   if (sd.scanning) {
     e.innerText = "Server scanning...";
     e.className = "text-warning small";
-    b.style.width = "100%";
-    t.innerText = "Count: " + (sd.count || 0);
     if (e.dataset.started) { delete e.dataset.started; }
   } else if (e.dataset.started) {
     var elapsed = Date.now() - parseInt(e.dataset.started, 10);
@@ -128,14 +116,10 @@ async function pollNavidromeStatus() {
       delete e.dataset.started;
       e.innerText = "Idle";
       e.className = "text-muted small";
-      b.style.width = "0%";
-      t.innerText = "";
     }
   } else {
     e.innerText = "Idle";
     e.className = "text-muted small";
-    b.style.width = "0%";
-    t.innerText = "";
   }
 }
 
@@ -151,23 +135,15 @@ async function pollLibraryStatus() {
   var r = await fetch("/api/library/status"),
     d = await r.json();
   if (!d.success) return;
-  var e = document.getElementById("lib-status"),
-    b = document.getElementById("lib-progress-bar"),
-    t = document.getElementById("lib-progress-text");
+  var e = document.getElementById("lib-status");
+  if (!e) return;
   if (d.running) {
     var es = d.started_at ? " \u2014 " + Math.floor((Date.now() / 1000 - d.started_at) / 60) + "m" : "";
     e.innerText = (d.message || "Sync...") + es;
     e.className = "text-primary small";
-    var tot = d.artists_total || 0,
-      pro = d.artists_processed || 0,
-      pct = tot > 0 ? Math.min(Math.round((pro / tot) * 100), 100) : 0;
-    b.style.width = pct + "%";
-    t.innerText = "diff \u2014 " + pct + "% (" + pro + "/" + tot + " artists, " + (d.tracks_attempted || 0) + " tracks)";
   } else {
     e.innerText = d.message || "Idle";
     e.className = "text-muted small";
-    b.style.width = "0%";
-    t.innerText = "";
   }
 }
 
@@ -180,22 +156,16 @@ async function stopEssentiaScan() {
 }
 
 async function pollEssentiaStatus() {
-  var e = document.getElementById("ess-status"),
-    b = document.getElementById("ess-progress-bar"),
-    t = document.getElementById("ess-progress-text"),
-    pd = await (await fetch("/api/scan-progress")).json().catch(() => ({})),
+  var e = document.getElementById("ess-status");
+  if (!e) return;
+  var pd = await (await fetch("/api/scan-progress")).json().catch(() => ({})),
     es = (pd.active_scans || []).find(function (s) { return s.scan_type === "essentia_mood_scan"; });
   if (es && es.is_running) {
     e.innerText = (es.message || "Running...") + fE(es.elapsed_seconds);
     e.className = "text-primary small";
-    var p = Math.min(es.percent_complete || 0, 100);
-    b.style.width = p + "%";
-    t.innerText = "essentia \u2014 " + p + "%";
   } else {
     e.innerText = "Idle";
     e.className = "text-muted small";
-    b.style.width = "0%";
-    t.innerText = "";
   }
 }
 
