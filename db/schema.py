@@ -177,6 +177,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "country": "TEXT", "bio": "TEXT", "image_url": "TEXT",
         "similar_artists_lastfm": "TEXT", "similar_artists_listenbrainz": "TEXT",
         "similar_artists_last_updated": "TEXT",
+        "members": "TEXT", "members_last_updated": "TEXT",
     },
     "download_queue": {
         "album_artist": "TEXT", "track_number": "TEXT", "disc_number": "TEXT", "year": "TEXT",

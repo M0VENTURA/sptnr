@@ -216,8 +216,9 @@ window.updateAlbumsSequentially = function(folders, index, onComplete) {
 window.navSearch = function(event) {
   event.preventDefault();
   var form = event && event.target ? event.target : null;
-  var activeInput = form ? form.querySelector('input[type="text"]') : null;
+  var activeInput = form ? form.querySelector('input[type="text"], input[type="search"]') : null;
   var fallbackInput = document.getElementById('navSearchInput');
-  var query = ((activeInput && activeInput.value) || (fallbackInput && fallbackInput.value) || '').trim();
+  var fallbackSearchInput = document.getElementById('dashboardTopSearchInput');
+  var query = ((activeInput && activeInput.value) || (fallbackInput && fallbackInput.value) || (fallbackSearchInput && fallbackSearchInput.value) || '').trim();
   if (query) window.location.href = '/search?q=' + encodeURIComponent(query);
 };

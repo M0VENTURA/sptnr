@@ -184,10 +184,12 @@ async def api_musicbrainz_search():
     try:
         client = _get_mb_client()
         if artist_only:
-            results = client.get("artist/", params={"query": f"artist:{query}", "limit": 10})
+            raw = client.get("artist/", params={"query": f"artist:{query}", "limit": 10})
+            results = raw.get("artists", [])
         else:
-            results = client.get("release-group/", params={"query": f"releasegroup:{query}", "limit": 20})
-        return jsonify({"success": True, "results": results})
+            raw = client.get("release-group/", params={"query": f"releasegroup:{query}", "limit": 20})
+            results = raw.get("release-groups", [])
+        return jsonify({"success": True, "releases": results})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

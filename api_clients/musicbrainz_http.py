@@ -143,6 +143,39 @@ class MusicBrainzHttpClient:
             params["inc"] = inc
         return self.get(f"artist/{artist_mbid}", params=params, timeout=timeout)
 
+    def get_artist_members(self, artist_mbid: str, timeout: float = 10.0) -> list[dict[str, Any]]:
+        """Fetch band members/relations for a MusicBrainz artist.
+
+        Returns a list of dicts with keys: name, relation_type, begin, end, attributes, ended.
+        """
+        if not self.enabled or not artist_mbid:
+            return []
+        try:
+            data = self.get_artist(artist_mbid, inc="artist-rels", timeout=timeout)
+            relations = data.get("relations", [])
+            members = []
+            allowed_types = {"member of band", "member", "has member", "founder", "co-founder"}
+            for rel in relations:
+                rtype = rel.get("type", "").lower()
+                if rtype not in allowed_types:
+                    continue
+                # Direction "backward" → this artist is the object (band), rel.artist is the subject (member)
+                # Direction "forward" → this artist is the subject, rel.artist is the object
+                target = rel.get("artist", {})
+                if not target or not target.get("name"):
+                    continue
+                members.append({
+                    "name": target.get("name"),
+                    "relation_type": rtype,
+                    "begin": rel.get("begin", ""),
+                    "end": rel.get("end", ""),
+                    "ended": rel.get("ended", False),
+                    "attributes": rel.get("attributes", []),
+                })
+            return members
+        except Exception:
+            return []
+
     def browse_releases_for_group(self, release_group_mbid: str, inc: str = "media", limit: int = 50) -> list[dict[str, Any]]:
         payload = self.get("release", params={"fmt": "json", "release-group": release_group_mbid, "inc": inc, "limit": limit})
         return payload.get("releases", []) if isinstance(payload.get("releases"), list) else []

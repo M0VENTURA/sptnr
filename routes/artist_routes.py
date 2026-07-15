@@ -194,9 +194,18 @@ def api_artist_favourite():
 
 @artist_bp.route("/api/artist/image")
 def api_artist_image():
+    from flask import redirect as flask_redirect
     artist = request.args.get("name", "")
     data, code = metadata.get_artist_image(artist)
-    return jsonify(data), code
+    if data.get("success") and data.get("image_url"):
+        return flask_redirect(data["image_url"])
+    # Return a 1x1 transparent pixel as SVG fallback instead of JSON
+    from quart import Response
+    return Response(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><rect fill="#2a2a2a" width="200" height="200"/></svg>',
+        mimetype="image/svg+xml",
+        status=200,
+    )
 
 
 @artist_bp.route("/api/artist/search-images")

@@ -866,6 +866,19 @@ async def artist_detail(name: str):
         "musicbrainz_bio",
     ) or ""
 
+    # Fallback to artists table if tracks don't have bio data
+    if not artist_bio:
+        try:
+            with db_session() as session:
+                row = session.execute(
+                    text("SELECT bio FROM artists WHERE name = :name AND bio IS NOT NULL AND bio != '' LIMIT 1"),
+                    {"name": name},
+                ).fetchone()
+                if row:
+                    artist_bio = str(row[0])
+        except Exception:
+            pass
+
     artist_country = first_value(
         tracks,
         "artist_country",
@@ -873,6 +886,19 @@ async def artist_detail(name: str):
         "origin_country",
         "musicbrainz_country",
     ) or ""
+
+    # Fallback to artists table for country
+    if not artist_country:
+        try:
+            with db_session() as session:
+                row = session.execute(
+                    text("SELECT country FROM artists WHERE name = :name AND country IS NOT NULL AND country != '' LIMIT 1"),
+                    {"name": name},
+                ).fetchone()
+                if row:
+                    artist_country = str(row[0])
+        except Exception:
+            pass
 
     artist_members_value = first_value(
         tracks,
@@ -893,6 +919,14 @@ async def artist_detail(name: str):
                 artist_members = parsed_members
         except Exception:
             artist_members = []
+
+    # Fallback: fetch members from MusicBrainz API via cache
+    if not artist_members:
+        try:
+            from services.metadata.artist_metadata_service import get_artist_members_cached
+            artist_members = get_artist_members_cached(name)
+        except Exception as exc:
+            logger.debug("Failed to fetch artist members for '%s': %s", name, exc)
 
     return await render_template(
         "pages/artist_detail.html",

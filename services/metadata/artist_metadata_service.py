@@ -168,7 +168,6 @@ def get_artist_image(artist: str):
         return {"success": False, "error": "DB connection failed", "image_url": ""}, 200
     try:
         cursor = conn.cursor()
-        # Wrap column reference to handle missing columns gracefully
         try:
             cursor.execute("SELECT image_url FROM artists WHERE name = %s", (artist,))
             row = cursor.fetchone()
@@ -299,6 +298,70 @@ def get_main_tracks(artist: str) -> tuple[dict, int]:
                 "stars": float(r[3] or 0) if not hasattr(r, "get") else float(r.get("stars", 0) or 0),
             })
         return {"success": True, "tracks": tracks}, 200
+    finally:
+        conn.close()
+
+
+def get_artist_members_cached(artist: str) -> list[dict]:
+    """Fetch artist members from DB cache, or MusicBrainz API if stale/missing."""
+    import json
+    from datetime import datetime, timezone, timedelta
+    from api_clients.musicbrainz_http import MusicBrainzHttpClient
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT members, members_last_updated FROM artists WHERE name = %s",
+            (artist,),
+        )
+        row = cursor.fetchone()
+        now = datetime.now(timezone.utc)
+
+        if row:
+            members_raw = str(row[0] or "") if len(row) > 0 else ""
+            updated_raw = str(row[1] or "") if len(row) > 1 else ""
+            if members_raw and updated_raw:
+                try:
+                    updated = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+                    if updated.tzinfo is None:
+                        updated = updated.replace(tzinfo=timezone.utc)
+                    # Cache is valid for 7 days
+                    if (now - updated) < timedelta(days=7):
+                        return json.loads(members_raw)
+                except Exception:
+                    pass
+
+        # Cache miss — fetch from MusicBrainz
+        # First resolve the artist MBID
+        mb = MusicBrainzHttpClient()
+        results = mb.search_artists(artist, limit=5)
+        if not results:
+            return []
+
+        # Prefer groups/orchestras
+        preferred = next(
+            (a for a in results if (a.get("type") or "").lower() in {"group", "orchestra", "choir"}),
+            results[0],
+        )
+        artist_mbid = preferred.get("id")
+        if not artist_mbid:
+            return []
+
+        members = mb.get_artist_members(artist_mbid)
+        members_json = json.dumps(members)
+
+        # Cache in artists table
+        cursor.execute(
+            "INSERT INTO artists (id, name, members, members_last_updated) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (name) DO UPDATE SET members = EXCLUDED.members, members_last_updated = EXCLUDED.members_last_updated",
+            (artist, artist, members_json, now.isoformat()),
+        )
+        conn.commit()
+        return members
+    except Exception:
+        return []
     finally:
         conn.close()
 

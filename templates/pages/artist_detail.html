@@ -148,8 +148,9 @@
               {% if artist_bio %}
                 <p>{{ artist_bio|e|replace('&lt;br /&gt;', '<br>')|replace('&lt;br/&gt;', '<br>')|replace('&lt;br&gt;', '<br>')|replace('\n', '<br>')|safe }}</p>
               {% else %}
-                <p class="text-center mt-2">
-                  <small>Loading artist information from database...</small>
+                <p class="text-center mt-2 text-muted">
+                  <i class="bi bi-info-circle"></i>
+                  <small>No biography available. Run a popularity scan to collect artist metadata.</small>
                 </p>
               {% endif %}
             </div>
