@@ -296,9 +296,20 @@ function renderRecentScans(scans) {
       grouped[key] = {
         artist: scan.artist,
         album: scan.album,
+        status: scan.status,
         scan_types: [],
         latest_timestamp_obj: parseScanTimestamp(ts),
       };
+    }
+    // Keep the most recent status (started → completed → failed)
+    if (scan.status === "failed" || scan.status === "error") {
+      grouped[key].status = "failed";
+    } else if (scan.status === "completed" || scan.status === "complete") {
+      if (grouped[key].status !== "failed") grouped[key].status = "completed";
+    } else if (scan.status === "started" && !grouped[key].status) {
+      grouped[key].status = "started";
+    } else if (scan.status === "stopped" && grouped[key].status !== "failed" && grouped[key].status !== "completed") {
+      grouped[key].status = "stopped";
     }
     if (!grouped[key].scan_types.find(function (s) { return s.type === scan.scan_type; })) {
       grouped[key].scan_types.push({ type: scan.scan_type, timestamp: ts });
@@ -330,7 +341,13 @@ function renderRecentScans(scans) {
           : typeKey === "metadata" || typeKey === "metadata_lookup_scan" ? "bi-info-circle"
           : typeKey === "combined" || typeKey === "all" ? "bi-lightning-fill"
           : "bi-lightning-fill";
-        return '<tr class="table-success bg-opacity-10"><td colspan="4" class="py-1 ps-3"><small class="text-success"><i class="bi bi-check-circle-fill me-1"></i><strong>' + typeName + '</strong> completed \u2014 ' + formatScanTimestamp(group.latest_timestamp) + '<span class="badge bg-success ms-2"><i class="bi ' + typeIcon + '"></i></span></small></td><td></td></tr>';
+        var scanStatus = group.status || "started";
+        var isRunning = scanStatus === "started";
+        var statusIcon = isRunning ? "bi-hourglass-split text-primary" : scanStatus === "failed" ? "bi-x-circle-fill text-danger" : "bi-check-circle-fill text-success";
+        var statusLabel = isRunning ? "running" : scanStatus === "failed" ? "failed" : "completed";
+        var rowClass = isRunning ? ' class="table-primary"' : scanStatus === "failed" ? ' class="table-danger"' : ' class="table-success bg-opacity-10"';
+        var spinnerHtml = isRunning ? '<span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span>' : '';
+        return '<tr' + rowClass + '><td colspan="4" class="py-1 ps-3"><small class="' + (isRunning ? 'text-primary' : scanStatus === 'failed' ? 'text-danger' : 'text-success') + '">' + spinnerHtml + '<i class="bi ' + statusIcon + ' me-1"></i><strong>' + typeName + '</strong> ' + statusLabel + ' \u2014 ' + formatScanTimestamp(group.latest_timestamp) + '<span class="badge bg-' + (isRunning ? 'primary' : scanStatus === 'failed' ? 'danger' : 'success') + ' ms-2"><i class="bi ' + typeIcon + '"></i></span></small></td><td></td></tr>';
       }
       var artistUrl = "/artist/" + encodeURIComponent(group.artist);
       var albumUrl =
@@ -622,12 +639,69 @@ function updateUnifiedLog() {
     .catch(function () { /* silent */ });
 }
 
+// ===== Active Scans Progress Panel =====
+var ACTIVE_SCAN_CONFIG = {
+  popularity_scan:     { icon: "bi-graph-up",        label: "Popularity",   color: "bg-primary" },
+  navidrome_scan:      { icon: "bi-cloud-arrow-down", label: "Navidrome",   color: "bg-secondary" },
+  library_scan:        { icon: "bi-server",           label: "Library Sync", color: "bg-warning" },
+  essentia_mood_scan:  { icon: "bi-cpu",              label: "Essentia",    color: "bg-info" },
+  metadata_lookup_scan:{ icon: "bi-info-circle",      label: "Metadata",    color: "bg-info" },
+  singles_scan:        { icon: "bi-star",             label: "Singles",     color: "bg-warning" },
+  missing_releases_scan:{icon: "bi-flag",             label: "Missing",     color: "bg-secondary" },
+};
+
+function updateActiveScans() {
+  fetch("/api/scan-progress?_ts=" + Date.now(), { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      var panel = document.getElementById("activeScansPanel");
+      var body = document.getElementById("activeScansBody");
+      if (!panel || !body) return;
+
+      var active = data.active_scans || [];
+      if (active.length === 0) {
+        panel.style.display = "none";
+        return;
+      }
+
+      panel.style.display = "";
+      var html = "";
+      active.forEach(function (scan) {
+        var cfg = ACTIVE_SCAN_CONFIG[scan.scan_type] || { icon: "bi-lightning", label: scan.scan_type, color: "bg-secondary" };
+        var pct = Math.min(scan.progress || 0, 100);
+        var items = scan.processed_items || 0;
+        var total = scan.total_items || "?";
+        var current = scan.current_item || "";
+        var message = scan.message || "";
+
+        html += '<div class="mb-2">';
+        html += '<div class="d-flex justify-content-between align-items-center mb-1">';
+        html += '<span><i class="bi ' + cfg.icon + ' me-1"></i><strong>' + cfg.label + '</strong>';
+        if (message) html += ' <span class="text-muted small ms-2">' + escapeHtml(message) + '</span>';
+        html += '</span>';
+        html += '<span class="small text-muted">' + items + '/' + total + '</span>';
+        html += '</div>';
+        if (current) {
+          html += '<div class="small text-muted mb-1 text-truncate" style="max-width:600px;" title="' + escapeHtml(current) + '">' + escapeHtml(current) + '</div>';
+        }
+        html += '<div class="progress" style="height:8px;">';
+        html += '<div class="progress-bar progress-bar-striped progress-bar-animated ' + cfg.color + '" style="width:' + pct + '%;"></div>';
+        html += '</div>';
+        html += '</div>';
+      });
+
+      body.innerHTML = html;
+    })
+    .catch(function () { /* silent */ });
+}
+
 // ===== Polling Orchestration =====
 function updateAll() {
   pollPopularityStatus();
   pollNavidromeStatus();
   pollLibraryStatus();
   pollEssentiaStatus();
+  updateActiveScans();
   updateRecentScans();
 }
 

@@ -121,7 +121,45 @@ def process_track(
                     if mb_data.get("title"):
                         update_payload["musicbrainz_title"] = mb_data["title"]
                     if mb_data.get("album"):
-                        update_payload["album"] = mb_data["album"]
+                        # Use the folder name from file_path as the primary
+                        # reference for album matching — it reflects the actual
+                        # file structure and is more reliable than the `album`
+                        # column (which may have been overwritten by a previous
+                        # bad MusicBrainz match). Falls back to the existing
+                        # `album` column if file_path is not available.
+                        existing_album = _as_str(track.get("album") or "")
+                        fp = _as_str(track.get("file_path") or "")
+                        folder_name = ""
+                        if fp:
+                            import os as _os
+                            # Extract parent folder name from file path
+                            # e.g. "/music/Artist/Album/track.flac" → "Album"
+                            parts = _os.path.normpath(fp).split(_os.sep)
+                            if len(parts) >= 2:
+                                folder_name = parts[-2]
+                        primary_ref = folder_name or existing_album
+
+                        mb_album = _as_str(mb_data["album"])
+                        match_ratio = 0.0
+                        if primary_ref and mb_album:
+                            from difflib import SequenceMatcher
+                            match_ratio = SequenceMatcher(None, primary_ref.lower(), mb_album.lower()).ratio()
+                            if match_ratio >= 0.6:
+                                update_payload["album"] = mb_album
+                            elif folder_name and existing_album:
+                                # If MB doesn't match the folder, check if old
+                                # album column is closer — keep existing if so
+                                old_ratio = SequenceMatcher(None, existing_album.lower(), mb_album.lower()).ratio()
+                                if old_ratio >= 0.6:
+                                    update_payload["album"] = mb_album
+                        elif mb_album:
+                            update_payload["album"] = mb_album
+
+                        if not update_payload.get("album"):
+                            logger.debug(
+                                "[track_stage] Skipping album rename (folder='%s', album='%s') → '%s' (ratio=%.2f)",
+                                folder_name or "?", existing_album, mb_album, match_ratio,
+                            )
                     if mb_data.get("artist"):
                         update_payload["artist"] = mb_data["artist"]
                     if mb_data.get("year"):

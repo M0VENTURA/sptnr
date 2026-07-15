@@ -1064,12 +1064,28 @@ async def album_detail(artist: str, album: str):
     album_name = unquote(album or "").strip()
     cfg = get_config()
 
+    # Fetch tracks early — both GET and POST need them
+    with db_session() as session:
+        result = session.execute(
+            text("""
+                SELECT *
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                  AND LOWER(COALESCE(album, '')) = LOWER(:album)
+                ORDER BY
+                    COALESCE(disc_number, '1'),
+                    NULLIF(regexp_replace(COALESCE(track_number::text, ''), '[^0-9].*$', ''), '')::int NULLS LAST,
+                    track_number,
+                    title
+            """),
+            {"artist": artist_name, "album": album_name},
+        )
+        tracks = [dict(r._mapping) for r in result.fetchall()]
+
     if request.method == "POST":
         form = await request.form
         from db.repositories.tracks import insert_or_update_track
         from services.metadata.tag_file_service import update_file_tags
-
-        updates: dict[str, Any] = {}
 
         new_title = (form.get("album_title") or "").strip()
         new_artist = (form.get("album_artist") or "").strip()
@@ -1171,23 +1187,6 @@ async def album_detail(artist: str, album: str):
         redirect_artist = new_artist or artist_name
         redirect_album = new_title or album_name
         return redirect(url_for("ui.album_detail", artist=redirect_artist, album=redirect_album))
-
-    with db_session() as session:
-        result = session.execute(
-            text("""
-                SELECT *
-                FROM tracks
-                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
-                  AND LOWER(COALESCE(album, '')) = LOWER(:album)
-                ORDER BY
-                    COALESCE(disc_number, '1'),
-                    NULLIF(regexp_replace(COALESCE(track_number::text, ''), '[^0-9].*$', ''), '')::int NULLS LAST,
-                    track_number,
-                    title
-            """),
-            {"artist": artist_name, "album": album_name},
-        )
-        tracks = [dict(r._mapping) for r in result.fetchall()]
 
     first_track = tracks[0] if tracks else {}
 
@@ -1793,8 +1792,10 @@ async def track_detail(track_id: str):
                 await flash("Track not found", "error")
                 return redirect(url_for("ui.dashboard"))
 
+            raw_db_columns = set(row._mapping.keys())
             track = apply_track_template_aliases(dict(row._mapping))
-            existing_columns = set(track.keys())
+            # Use the original DB column names (not aliased) for UPDATE checks
+            existing_columns = raw_db_columns
 
             if request.method == "POST":
                 form = await request.form
