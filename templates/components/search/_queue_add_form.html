@@ -1,51 +1,28 @@
 <!-- Add to Download Queue Form -->
-<div class="card mb-4">
-  <div class="card-header">
-    <h5 class="card-title mb-0">
-      <i class="bi bi-plus-circle"></i> Add to Download Queue
-    </h5>
-  </div>
+<div class="card mb-4 shadow-sm">
   <div class="card-body">
     <form id="addToQueueForm" onsubmit="addToQueue(event)">
-      <div class="row g-3 mb-3">
-        <div class="col-md-3">
-          <label for="queueArtist" class="form-label">Artist <span class="text-muted">(optional)</span></label>
-          <input type="text" id="queueArtist" class="form-control" placeholder="e.g., Daft Punk">
+      <div class="row g-3 align-items-end">
+        <div class="col-12 col-md-4">
+          <label for="queueArtist" class="form-label">Artist</label>
+          <input type="text" id="queueArtist" class="form-control" placeholder="e.g. Daft Punk" required>
         </div>
-        <div class="col-md-3">
-          <label for="queueTitle" class="form-label">Song Title</label>
-          <input type="text" id="queueTitle" class="form-control" placeholder="e.g., Get Lucky">
+        <div class="col-12 col-md-4">
+          <label for="queueTitle" class="form-label">Title / Album</label>
+          <input type="text" id="queueTitle" class="form-control" placeholder="e.g. Get Lucky" required>
         </div>
-        <div class="col-md-3">
-          <label for="queueAlbum" class="form-label">Album (Optional)</label>
-          <input type="text" id="queueAlbum" class="form-control" placeholder="e.g., Random Access Memories">
-        </div>
-        <div class="col-md-3">
-          <label for="queuePriority" class="form-label">Priority</label>
-          <select id="queuePriority" class="form-select">
-            <option value="1">🔴 Critical</option>
-            <option value="3">🟠 High</option>
-            <option value="5" selected>🟡 Normal</option>
-            <option value="8">🟢 Low</option>
-          </select>
-        </div>
-      </div>
-      <div class="row g-3 mb-3">
-        <div class="col-md-6">
-          <label for="queueSource" class="form-label">Download Source</label>
-          <select id="queueSource" class="form-select">
-            <option value="soulseek" selected>🔍 Soulseek (Songs/Playlists)</option>
-          </select>
-        </div>
-        <div class="col-md-6 d-flex align-items-end gap-2">
+        <div class="col-12 col-md-4 d-flex gap-2">
           <button type="submit" class="btn btn-primary flex-grow-1">
-            <i class="bi bi-plus-circle"></i> Add to Queue
+            <i class="bi bi-download"></i> Queue Track
           </button>
-          <button type="button" class="btn btn-outline-info" onclick="searchMusicBrainzForQueue()" title="Search MusicBrainz using any combination of artist, album, or song title">
-            <i class="bi bi-music-note-list"></i> Search Releases
+          <button type="button" class="btn btn-outline-info" onclick="showMusicBrainzModal()" title="Search full releases">
+            <i class="bi bi-disc"></i>
           </button>
         </div>
       </div>
+      <input type="hidden" id="queueAlbum" value="">
+      <input type="hidden" id="queueSource" value="soulseek">
+      <input type="hidden" id="queuePriority" value="5">
     </form>
   </div>
 </div>
