@@ -187,45 +187,29 @@ def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
     if not artist_name:
         return {"success": False, "error": "artist required", "albums": []}, 400
 
-    # Normalise: strip "feat." / "&" suffixes so the correction UI finds albums
-    # regardless of whether the passed name includes a featured-artist suffix.
-    feat_patterns = [
-        r"\s+[\[\(]?\s*(feat\.?|ft\.?|featuring|with|w\/)\s+.*?[\]\)]?$",
-        r"\s+[\[\(]?\s*(&|and)\s+.*?[\]\)]?$",
-    ]
-    stripped = artist_name.lower()
-    for pat in feat_patterns:
-        import re
-        stripped = re.sub(pat, "", stripped).strip()
-
     try:
         with db_session() as session:
-            # Build a LIKE pattern for SQLite-compatible matching:
-            # match artist_name, its lowercased version, and the feat-stripped version
-            like_patterns = [f"%{artist_name.lower()}%", f"%{stripped}%"]
-            # Also try exact match on the normalised database column
             rows = session.execute(text("""
                 SELECT
                     album,
                     COUNT(*) AS track_count,
-                    SUM(CASE WHEN disc_number IS NULL OR disc_number = '' THEN 1 ELSE 0 END) AS disc_issue_count,
-                    SUM(CASE WHEN mbid IS NULL OR mbid = '' THEN 1 ELSE 0 END) AS mbid_issue_count,
-                    SUM(CASE WHEN file_path IS NULL OR file_path = '' THEN 1 ELSE 0 END) AS missing_track_count,
+                    COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') AS disc_issue_count,
+                    COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') AS mbid_issue_count,
+                    COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') AS missing_track_count,
                     MAX(CASE WHEN musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != '' THEN 1 ELSE 0 END) AS has_mbid
                 FROM tracks
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:name)
-                   OR LOWER(COALESCE(NULLIF(album_artist, ''), artist)) LIKE :like1
-                   OR LOWER(COALESCE(NULLIF(album_artist, ''), artist)) LIKE :like2
+                   OR LOWER(REGEXP_REPLACE(
+                          COALESCE(NULLIF(album_artist, ''), artist),
+                          '(\s+[\[\(]?\s*(feat\.?|ft\.?|featuring|with|w\/|&|and)\s+.*?[\]\)]?$)',
+                          '',
+                          'i'
+                      )) = LOWER(:name)
                 GROUP BY album
                 ORDER BY album
-            """), {
-                "name": artist_name,
-                "like1": like_patterns[0],
-                "like2": like_patterns[1],
-            })
-            rows_list = rows.fetchall()
+            """), {"name": artist_name})
             albums = []
-            for r in rows_list:
+            for r in rows.fetchall():
                 row_dict = dict(r._mapping)
                 albums.append({
                     "album": row_dict["album"],
