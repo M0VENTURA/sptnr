@@ -77,6 +77,10 @@ def add_to_queue(
             **kwargs,
         )
 
+        # If it was a duplicate, skip the wake-up signal
+        if item.get("already_queued"):
+            return {"success": True, "already_queued": True, "item": item}
+
         # Signal the event-driven queue worker to wake up immediately
         # instead of waiting for the next 30-second polling cycle.
         try:
@@ -128,7 +132,7 @@ def queue_add_batch(data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(items, list):
         return {"success": False, "error": "items must be a list"}
 
-    added, failed = 0, 0
+    added, skipped, failed = 0, 0, 0
     results: List[Dict[str, Any]] = []
 
     for item in items:
@@ -150,7 +154,9 @@ def queue_add_batch(data: Dict[str, Any]) -> Dict[str, Any]:
 
         results.append(result)
 
-        if result.get("success"):
+        if result.get("already_queued"):
+            skipped += 1
+        elif result.get("success"):
             added += 1
         else:
             failed += 1
@@ -158,6 +164,7 @@ def queue_add_batch(data: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "success": True,
         "added": added,
+        "skipped": skipped,
         "failed": failed,
         "results": results,
     }

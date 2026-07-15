@@ -20,6 +20,7 @@ from services.popularity.stages.finalise_stage import finalise_scan
 from services.popularity.stages.load_stage import load_candidates
 from services.popularity.stages.track_stage import process_track
 from services.scanning.scan_state import is_stop_requested
+from services.scanning.scan_history_service import record_scan
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,9 @@ def run_scan(
 
         stat_eligible_tracks = get_stat_eligible_tracks(track_contexts)
 
+        # Record per-artist scan in history for dashboard display
+        record_scan("popularity", "started", message=f"Popularity scan: {artist} - {album}", artist=artist, album=album)
+
         album_result = enrich_album(
             album_row=album_row,
             album_context=album_context,
@@ -158,6 +162,12 @@ def run_scan(
                 results.append(track_result)
 
             tracks_processed += 1
+
+        # Record completion for this album scan
+        try:
+            record_scan("popularity", "completed", message=f"Popularity scan: {artist} - {album}", artist=artist, album=album)
+        except Exception:
+            pass  # Non-critical — dashboard data is best-effort
 
         albums_processed += 1
 

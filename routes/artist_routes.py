@@ -87,23 +87,18 @@ def api_artists_corrections():
         with db_session() as session:
             result = session.execute(sa_text("""
                 SELECT
-                LOWER(REGEXP_REPLACE(
-                    COALESCE(NULLIF(album_artist, ''), artist),
-                    '(\s+[\[\(]?\s*(feat\.?|ft\.?|featuring)\s+.*?[\]\)]?$)',
-                    '',
-                    'i'
-                )) AS artist_key,
+                LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS artist_key,
                 COALESCE(NULLIF(album_artist, ''), artist) AS artist_name,
                 0 AS duplicate_track_count,
-                COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') AS disc_inconsistent_count,
-                COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') AS mbid_inconsistent_count,
-                COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') AS missing_tracks_count
+                SUM(CASE WHEN disc_number IS NULL OR disc_number = '' THEN 1 ELSE 0 END) AS disc_inconsistent_count,
+                SUM(CASE WHEN mbid IS NULL OR mbid = '' THEN 1 ELSE 0 END) AS mbid_inconsistent_count,
+                SUM(CASE WHEN file_path IS NULL OR file_path = '' THEN 1 ELSE 0 END) AS missing_tracks_count
             FROM tracks
-            GROUP BY artist_key, artist_name
+            GROUP BY LOWER(COALESCE(NULLIF(album_artist, ''), artist)), artist_name
             HAVING
-                COUNT(*) FILTER (WHERE disc_number IS NULL OR disc_number = '') > 0
-                OR COUNT(*) FILTER (WHERE mbid IS NULL OR mbid = '') > 0
-                OR COUNT(*) FILTER (WHERE file_path IS NULL OR file_path = '') > 0
+                SUM(CASE WHEN disc_number IS NULL OR disc_number = '' THEN 1 ELSE 0 END) > 0
+                OR SUM(CASE WHEN mbid IS NULL OR mbid = '' THEN 1 ELSE 0 END) > 0
+                OR SUM(CASE WHEN file_path IS NULL OR file_path = '' THEN 1 ELSE 0 END) > 0
         """))
         rows = result.fetchall()
         corrections_out = {}

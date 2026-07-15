@@ -60,10 +60,10 @@
                     <span class="text-muted small me-1 flex-shrink-0">Jump:</span>
                     <div class="d-flex flex-nowrap overflow-auto gap-1 py-1" style="scrollbar-width: none; -webkit-overflow-scrolling: touch;">
                         <button class="btn btn-outline-secondary flex-shrink-0" style="min-width:44px;min-height:44px;" onclick="jumpToLetter('all')">All</button>
-                        <button class="btn btn-outline-secondary flex-shrink-0" style="min-width:44px;min-height:44px;" onclick="jumpToLetter('#')">#</button>
                         {% for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' %}
                         <button class="btn btn-outline-secondary flex-shrink-0" style="min-width:44px;min-height:44px;" onclick="jumpToLetter('{{ letter }}')">{{ letter }}</button>
                         {% endfor %}
+                        <button class="btn btn-outline-secondary flex-shrink-0" style="min-width:44px;min-height:44px;" onclick="jumpToLetter('#')">#</button>
                     </div>
                 </div>
             </div>

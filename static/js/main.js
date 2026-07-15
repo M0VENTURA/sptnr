@@ -10,13 +10,6 @@
  *   3. Rebuild: `npm run build`
  */
 
-// Core modules
-import "./downloads.js";
-import "./genre-utils.js";
-import "./musicbrainz-folder-groups.js";
-import "./player.js";
-import "./playlist.js";
-
 // Global initialization runs after DOM is ready
 document.addEventListener("DOMContentLoaded", () => {
   // Initialize Bootstrap tooltips if Bootstrap loaded

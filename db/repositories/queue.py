@@ -116,6 +116,10 @@ def insert_queue_item(
 ) -> dict[str, Any]:
     """Insert a new item into the download queue.
 
+    Performs duplicate detection before inserting: if an active item with the
+    same artist + title + source already exists, returns that item with
+    ``already_queued=True`` instead of creating a duplicate.
+
     Args:
         artist: Artist name.
         title: Track title.
@@ -126,9 +130,33 @@ def insert_queue_item(
                   year, release_id, release_mbid, recording_mbid, duration, etc.).
 
     Returns:
-        The inserted row as a dict.
+        The inserted row as a dict, or the existing row with ``already_queued`` set.
     """
+    # ── Duplicate detection ────────────────────────────────────────────────
     with db_session() as session:
+        existing = session.execute(
+            text("""
+                SELECT * FROM download_queue
+                WHERE LOWER(artist) = LOWER(:artist)
+                  AND LOWER(title) = LOWER(:title)
+                  AND source = :source
+                  AND status IN ('queued', 'searching', 'downloading', 'completed', 'unmatched')
+                ORDER BY created_at ASC
+                LIMIT 1
+            """),
+            {"artist": artist, "title": title, "source": source},
+        ).fetchone()
+
+        if existing is not None:
+            row = dict(existing._mapping)
+            row["already_queued"] = True
+            logger.info(
+                "Duplicate skipped: %s - %s already in queue (ID %s)",
+                artist, title, row.get("id"),
+            )
+            return row
+
+        # ── Insert ──
         result = session.execute(
             text("""
                 INSERT INTO download_queue

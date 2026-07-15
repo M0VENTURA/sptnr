@@ -108,9 +108,24 @@ def _parse_filename_parts(filename: str) -> dict[str, str | None]:
     return result
 
 
+# Regex for characters slskd's tokenizer handles poorly
+_SLSKD_PROBLEMATIC_PUNCT_RE = re.compile(r"[\u2018\u2019\u201A\u201B\u2039\u203A'\u201C\u201D\u201E\u201F\u2033\u2036]")
+
 # =============================================================================
 # QUERY BUILDER
 # =============================================================================
+
+def _sanitize_slskd_query(query: str) -> str:
+    """Strip characters that Soulseek's search tokenizer mishandles.
+
+    Removes apostrophes and curly/typographic quote characters while keeping
+    hyphens, slashes, parentheses, and other legitimate characters.
+    """
+    if not query:
+        return query
+    cleaned = _SLSKD_PROBLEMATIC_PUNCT_RE.sub("", query)
+    return " ".join(cleaned.split())
+
 
 def build_search_query(item: dict) -> str:
     """Build a structured search query for slskd.
@@ -118,21 +133,32 @@ def build_search_query(item: dict) -> str:
     Produces targeted queries that reduce noise:
     - For album downloads: ``Artist - Album Year``
     - For track downloads: ``Artist - Title``
+    - Strips problematic punctuation for slskd compatibility.
+    - For generic artists (Various Artists, etc.) uses title as the query.
     """
+    from helpers.config_helpers import _GENERIC_COMPILATION_ARTISTS, _FEAT_SUFFIX_RE
+
     artist = (item.get("artist") or "").strip()
     title = (item.get("title") or "").strip()
     album = (item.get("album") or "").strip()
     year = (item.get("year") or item.get("release_year") or "")
 
-    # Prefer hyphen-separated queries (common on Soulseek)
-    if album:
-        query = f"{artist} - {album}"
-        if year:
-            query += f" {year}"
+    # If artist is a generic compilation name, use title as the search query
+    # instead of "Various Artists - Song" which returns poor results on slskd.
+    if artist.lower() in _GENERIC_COMPILATION_ARTISTS:
+        query = title
     else:
-        query = f"{artist} - {title}"
+        # Strip "feat." suffixes for a cleaner query
+        clean_artist = _FEAT_SUFFIX_RE.sub("", artist).strip()
 
-    return query
+        if album:
+            query = f"{clean_artist} - {album}"
+            if year:
+                query += f" {year}"
+        else:
+            query = f"{clean_artist} - {title}"
+
+    return _sanitize_slskd_query(query)
 
 
 # =============================================================================

@@ -430,7 +430,7 @@ async def artists():
     artists_data = sorted(
         merged.values(),
         key=lambda a: (
-            1 if a["sort_letter"] == "#" else 0,
+            0 if a["sort_letter"] == "#" else 1,
             a["sort_letter"],
             a["sort_key"],
         ),

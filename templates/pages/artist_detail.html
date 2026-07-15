@@ -74,7 +74,7 @@
 
   <!-- Needs Correcting badge — always shown when corrections exist -->
   <div id="artist-corrections-banner" style="display:none;" class="mb-3">
-    <a href="{{ url_for('artist_corrections', name=artist_name) }}" class="btn btn-outline-danger btn-sm">
+    <a href="{{ url_for('ui.artist_corrections', name=artist_name) }}" class="btn btn-outline-danger btn-sm">
       <i class="bi bi-tools"></i> Needs Correcting
     </a>
     <span id="artist-missing-tracks-badge" class="badge bg-warning text-dark ms-2" style="display:none;"></span>
