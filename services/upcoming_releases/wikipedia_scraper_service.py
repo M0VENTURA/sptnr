@@ -36,7 +36,6 @@ DEFAULT_WIKIPEDIA_SOURCES: dict[str, dict[str, Any]] = {
         "name": f"{_year} Albums",
         "columns": ["day", "artist", "album", "genre"],
         "fallback_titles": [
-            f"{_year}_in_music#Upcoming_albums",
             f"{_year}_in_American_music",
             f"{_year}_in_British_music",
             "List_of_upcoming_albums",
@@ -47,7 +46,6 @@ DEFAULT_WIKIPEDIA_SOURCES: dict[str, dict[str, Any]] = {
         "name": f"{_year + 1} Albums",
         "columns": ["day", "artist", "album", "genre"],
         "fallback_titles": [
-            f"{_year + 1}_in_music#Upcoming_albums",
             "List_of_upcoming_albums",
         ],
     },

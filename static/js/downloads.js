@@ -1320,7 +1320,7 @@ function getMbStatusBadge(status) {
   return `<span class="badge bg-secondary">${escapeHtml(status)}</span>`;
 }
 
-function performMbSearch() {
+function performMbDownloadSearch() {
   const query = (document.getElementById('mbSearchInput') || {}).value;
   if (!query || !query.trim()) return;
 
@@ -1619,7 +1619,7 @@ document.addEventListener('DOMContentLoaded', function() {
   // Initialize MusicBrainz search page if present
   if (document.getElementById('mbSearchInput')) {
     document.getElementById('mbSearchInput').addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') performMbSearch();
+      if (e.key === 'Enter') performMbDownloadSearch();
     });
     loadMbSessionSelector();
     refreshMbDownloads();

@@ -1044,7 +1044,7 @@
 </style>
 
 <script id="page-data" type="application/json">{{ {"artistName": artist_name, "albumName": album_name} | tojson | safe }}</script>
-<script>window._pageData = JSON.parse(document.getElementById('page-data').textContent);</script>
+<script>var _pd = JSON.parse(document.getElementById('page-data').textContent); window._pageData = _pd;</script>
 <script src="{{ url_for('static', filename='js/album_detail.js') }}"></script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 

@@ -260,7 +260,7 @@
 
 <script>
 // Pass server-rendered data to external dashboard.js
-window._initialRecentScans = {{ recent_scans|default([])|tojson|safe }};
+var _pd = { recentScans: {{ recent_scans|default([])|tojson|safe }} };
 </script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 {% endblock %}

@@ -634,7 +634,7 @@ function updateAll() {
 var _pi = null;
 document.addEventListener("DOMContentLoaded", function () {
   // Render initial recent scans from server-provided data
-  renderRecentScans(window._initialRecentScans || []);
+  renderRecentScans((window._pd && window._pd.recentScans) || []);
 
   // Upcoming releases table
   try {
