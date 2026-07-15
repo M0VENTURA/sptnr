@@ -58,7 +58,7 @@
       <a class="btn btn-outline-secondary" href="{{ url_for('ui.artists') }}">
         <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
       </a>
-      <form action="{{ url_for('scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
+      <form action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
         <input type="hidden" name="artist" value="{{ artist_name }}">
         {% include 'components/_scan_selector.html' %}
         <div class="form-check form-check-inline mb-0" title="Force full rescan for this artist">

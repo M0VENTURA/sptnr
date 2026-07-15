@@ -1,0 +1,57 @@
+<!-- Upcoming Album Releases Section -->
+<div class="card mb-4" id="upcomingReleasesMonitorCard">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h5 class="card-title mb-0">
+      <i class="bi bi-calendar-event"></i> Upcoming Album Releases
+    </h5>
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+      <button class="btn btn-sm btn-outline-success" id="autoMatchAllMonitorBtn" onclick="autoMatchAllUpcomingReleasesMonitor(this)" title="Auto-match MusicBrainz MBID for all unmatched releases">
+        <i class="bi bi-magic"></i> Auto Match All
+      </button>
+      <button class="btn btn-sm btn-success" onclick="checkForUpdatesMonitor()">
+        <i class="bi bi-bell"></i> Check for Updates
+      </button>
+      <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleasesMonitor()">
+        <i class="bi bi-download"></i> Update from Wikipedia
+      </button>
+      <button class="btn btn-sm btn-outline-primary" onclick="refreshUpcomingReleasesMonitor()">
+        <i class="bi bi-arrow-clockwise"></i> Refresh
+      </button>
+      <button class="btn btn-sm btn-outline-danger" onclick="clearUpcomingReleasesMonitor()" title="Clear old entries and start fresh">
+        <i class="bi bi-trash"></i> Clear Database
+      </button>
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="row g-2 mb-3">
+      <div class="col-12">
+        <label class="form-check mb-0">
+          <input class="form-check-input" type="checkbox" id="upcomingFilterCollectionMonitor" onchange="refreshUpcomingReleasesMonitor()">
+          <span class="form-check-label">Only show releases from artists in my collection</span>
+        </label>
+      </div>
+    </div>
+
+    <div id="upcomingStatusMonitor" class="alert alert-info" style="display:none;">
+      <div class="d-flex">
+        <div class="spinner-border spinner-border-sm me-2" role="status">
+          <span class="visually-hidden">Loading...</span>
+        </div>
+        <div>
+          <span id="upcomingStatusTextMonitor">Loading upcoming releases...</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="upcomingErrorMonitor" class="alert alert-danger" style="display:none;"></div>
+
+    <div id="upcomingReleasesMonitor">
+      <div class="text-center py-3">
+        <div class="spinner-border text-primary spinner-border-sm" role="status">
+          <span class="visually-hidden">Loading...</span>
+        </div>
+        <p class="mt-2 small text-muted mb-0">Loading upcoming releases...</p>
+      </div>
+    </div>
+  </div>
+</div>

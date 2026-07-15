@@ -1733,3 +1733,294 @@ function pollSlskdSearchResults() {
       if (slskdPollInterval) { clearInterval(slskdPollInterval); slskdPollInterval = null; }
     });
 }
+
+// ===== QUEUE MANAGEMENT FUNCTIONS =====
+
+let queuePageOffset = 0;
+const QUEUE_PAGE_LIMIT = 500;
+
+function getQueuePageUrl(limit, offset) {
+  const params = new URLSearchParams({
+    limit: String(limit || QUEUE_PAGE_LIMIT),
+    offset: String(Math.max(0, offset || queuePageOffset))
+  });
+  return `/api/downloads/queue?${params.toString()}`;
+}
+
+function updateQueuePageControls(totalCount, loadedCount) {
+  const summary = document.getElementById('queuePageSummary');
+  const prevBtn = document.getElementById('queuePrevPageBtn');
+  const nextBtn = document.getElementById('queueNextPageBtn');
+  const safeTotal = Number(totalCount || 0);
+  const safeLoaded = Number(loadedCount || 0);
+  const start = safeTotal === 0 ? 0 : queuePageOffset + 1;
+  const end = safeTotal === 0 ? 0 : Math.min(queuePageOffset + safeLoaded, safeTotal);
+  if (summary) summary.textContent = safeTotal === 0 ? 'Showing 0 of 0' : `Showing ${start}-${end} of ${safeTotal}`;
+  if (prevBtn) prevBtn.disabled = queuePageOffset <= 0;
+  if (nextBtn) nextBtn.disabled = (queuePageOffset + safeLoaded) >= safeTotal;
+}
+
+function changeQueuePage(direction) {
+  const nextOffset = Math.max(0, queuePageOffset + (direction * QUEUE_PAGE_LIMIT));
+  if (nextOffset === queuePageOffset) return;
+  queuePageOffset = nextOffset;
+  const fn = window.loadFolderGroups || function(){};
+  fn({ forceRender: true, keepVisibleOnEmpty: true });
+}
+
+let upcomingReleasesRequestController = null;
+
+async function addToQueue(event) {
+  event.preventDefault();
+  const artist = document.getElementById('queueArtist').value.trim();
+  const title = document.getElementById('queueTitle').value.trim();
+  const album = document.getElementById('queueAlbum').value.trim();
+  const source = document.getElementById('queueSource')?.value || 'soulseek';
+  const priority = parseInt(document.getElementById('queuePriority')?.value || 5);
+  if (!artist) { alert('Please enter an artist.'); return; }
+  if (!title && !album) { alert('Please enter either a song title or an album name.'); return; }
+  if (!title && album) {
+    if (confirm('No song title entered. Search MusicBrainz releases for this artist/album instead?')) {
+      const fn = window.searchMusicBrainzForQueue || function(){};
+      fn();
+    }
+    return;
+  }
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist, title, album, source, priority })
+    });
+    if (data.success) {
+      alert(`✅ Added to queue: ${artist} - ${title}`);
+      const form = document.getElementById('addToQueueForm');
+      if (form) form.reset();
+      queuePageOffset = 0;
+      await loadQueueStatus();
+      const fg = window.loadFolderGroups || function(){};
+      await fg({ forceRender: true, keepVisibleOnEmpty: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add to queue'));
+    }
+  } catch (error) {
+    console.error('Error adding to queue:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function loadQueueStatus() {
+  try {
+    const data = await fetchJsonOrThrow('/api/downloads/queue?limit=1&offset=0');
+    if (!data || !data.queue) {
+      ['queueTotalCount','queueActiveCount','queueQueuedCount','queueCompletedCount','queueMovingCount','queueFailedCount'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '0';
+      });
+      return;
+    }
+    const statusCounts = data.status_counts || {};
+    const countFor = (...s) => s.reduce((sum, st) => sum + Number(statusCounts[st] || 0), 0);
+    const setNum = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = String(val); };
+    setNum('queueTotalCount', countFor('queued','searching','unmatched','pending_match','discovered','queried','matched','downloading','completed','moving','importing','failed','possible_duplicate','duplicate'));
+    setNum('queueQueuedCount', countFor('queued','searching','unmatched','pending_match','discovered','queried','matched'));
+    setNum('queueActiveCount', countFor('downloading'));
+    setNum('queueCompletedCount', countFor('completed'));
+    setNum('queueMovingCount', countFor('moving','importing'));
+    setNum('queueFailedCount', countFor('failed'));
+  } catch (error) {
+    console.error('Error loading queue status:', error);
+  }
+}
+
+async function clearEntireQueue() {
+  if (!confirm('Clear the entire queue? This removes queued, failed and completed items but keeps imported records.')) return;
+  try {
+    const resp = await fetch('/api/queue/clear', { method: 'DELETE' });
+    if (!resp.ok) { alert('❌ Server error: ' + resp.statusText); return; }
+    const data = await resp.json();
+    if (data.success) {
+      alert(`✅ Cleared ${data.deleted || 0} item(s) from queue`);
+      await loadQueueStatus();
+    } else {
+      alert('❌ ' + (data.error || 'Failed to clear queue'));
+    }
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function purgeAllQueueAndDownloads() {
+  if (!confirm('PURGE ALL? This deletes all queue rows and permanently deletes all files/folders in your configured downloads folder. This cannot be undone.')) return;
+  try {
+    const resp = await fetch('/api/queue/purge-all', { method: 'DELETE' });
+    if (!resp.ok) { alert('❌ Server error: ' + resp.statusText); return; }
+    const data = await resp.json();
+    if (data.success) {
+      alert(`✅ Purge complete\n\nDownloads folder: ${data.downloads_dir || 'unknown'}\nQueue items removed: ${data.queue_items_deleted || 0}\nFiles deleted: ${data.deleted_files || 0}`);
+      queuePageOffset = 0;
+      await loadQueueStatus();
+    } else {
+      alert('❌ ' + (data.error || 'Failed to purge'));
+    }
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function retryAllFailed() {
+  if (!confirm('Re-queue all failed downloads?')) return;
+  try {
+    const resp = await fetch('/api/queue/retry-all-failed', { method: 'POST' });
+    if (!resp.ok) { alert('❌ Server error: ' + resp.statusText); return; }
+    const data = await resp.json();
+    if (data.success) {
+      alert(`✅ Re-queued ${data.retried || 0} failed item(s)`);
+      await loadQueueStatus();
+    } else {
+      alert('❌ ' + (data.error || 'Failed to retry'));
+    }
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function cleanupCopiedSources() {
+  if (!confirm('Delete copied source files from /downloads while keeping queue history?')) return;
+  try {
+    const resp = await fetch('/api/queue/cleanup-copied', { method: 'POST' });
+    if (!resp.ok) { alert('❌ Server error: ' + resp.statusText); return; }
+    const data = await resp.json();
+    if (data.success) {
+      alert(`✅ ${data.message} (scanned ${data.scanned})`);
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Cleanup failed'));
+    }
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function loadQueueEvents() {
+  try {
+    const resp = await fetch('/api/queue/events?limit=50');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const events = data.events || [];
+    const emptyDiv = document.getElementById('queueEventsEmpty');
+    const table = document.getElementById('queueEventsTable');
+    const tbody = document.getElementById('queueEventsBody');
+    if (!emptyDiv || !table || !tbody) return;
+    if (events.length === 0) {
+      emptyDiv.style.display = 'block';
+      table.style.display = 'none';
+      return;
+    }
+    emptyDiv.style.display = 'none';
+    table.style.display = 'table';
+    tbody.innerHTML = events.map(function(e) {
+      var ts = new Date(e.created_at);
+      var badgeClass = e.event_type === 'file_found' ? 'bg-info' : e.event_type === 'status_change' ? 'bg-primary' : e.event_type === 'error' ? 'bg-danger' : 'bg-success';
+      return '<tr><td class="small text-muted">' + ts.toLocaleString() + '</td><td><span class="badge ' + badgeClass + '">' + escapeHtml((e.event_type || '').replace(/_/g, ' ').toUpperCase()) + '</span></td><td>' + escapeHtml(e.message || '') + '</td></tr>';
+    }).join('');
+  } catch (error) { console.error('Error loading queue events:', error); }
+}
+
+function clearQueueEventsLog() {
+  var tbody = document.getElementById('queueEventsBody');
+  var emptyDiv = document.getElementById('queueEventsEmpty');
+  var table = document.getElementById('queueEventsTable');
+  if (tbody) tbody.innerHTML = '';
+  if (table) table.style.display = 'none';
+  if (emptyDiv) emptyDiv.style.display = 'block';
+}
+
+async function restartQueueProcessor() {
+  var btn = document.getElementById('restartProcessorBtn');
+  var originalText = btn ? btn.innerHTML : '';
+  try {
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Restarting...'; }
+    var resp = await fetch('/api/queue-processor/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    var data = await resp.json();
+    if (data.success) {
+      if (btn) { btn.innerHTML = '<i class="bi bi-check-circle"></i> Restarted!'; }
+      setTimeout(function() {
+        var fn = window.loadQueueStatus || function(){};
+        fn();
+        if (btn) { btn.innerHTML = originalText; btn.disabled = false; }
+      }, 2000);
+    } else {
+      if (btn) { btn.innerHTML = '<i class="bi bi-exclamation-circle"></i> Failed!'; setTimeout(function(){ btn.innerHTML = originalText; btn.disabled = false; }, 3000); }
+    }
+  } catch (e) {
+    if (btn) { btn.innerHTML = '<i class="bi bi-exclamation-circle"></i> Error!'; setTimeout(function(){ btn.innerHTML = originalText; btn.disabled = false; }, 3000); }
+  }
+}
+
+async function deleteQueueItem(queueId, deleteDownloadsFile) {
+  var promptText = deleteDownloadsFile ? 'Delete this item from queue AND remove its file from /downloads?' : 'Remove from queue?';
+  if (!confirm(promptText)) return;
+  try {
+    var query = deleteDownloadsFile ? '?delete_download_file=1' : '';
+    var resp = await fetch('/api/queue/' + queueId + '/delete' + query, { method: 'DELETE' });
+    if (!resp.ok) { alert('❌ Server error: ' + resp.statusText); return; }
+    var data = await resp.json();
+    if (data.success) {
+      alert('✅ Removed from queue');
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to delete'));
+    }
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function retryQueueItem(queueId) {
+  try {
+    var data = await fetchJsonOrThrow('/api/queue/' + queueId + '/requeue', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    if (data.success) {
+      alert('✅ Retrying download...');
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to retry'));
+    }
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function organizeFile(queueId) {
+  if (!confirm('Copy file to music library?')) return;
+  try {
+    var data = await fetchJsonOrThrow('/api/queue/' + queueId + '/organize', { method: 'POST' }, 120000);
+    if (data.success) {
+      alert('✅ File organized successfully!');
+      await loadQueueStatus();
+      var fg = window.loadFolderGroups || function(){};
+      await fg({ forceRender: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to organize'));
+    }
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function runQueueCleanup() {
+  if (!confirm('Run queue cleanup now?')) return;
+  try {
+    var data = await fetchJsonOrThrow('/api/queue/cleanup', { method: 'POST' });
+    if (data.success) {
+      var stats = data.stats || {};
+      alert('✅ Cleanup complete\n\nDuplicates removed: ' + (stats.deleted_duplicates || 0) + '\nCompleted albums: ' + (stats.completed_albums || 0));
+      await loadQueueStatus();
+      var fg = window.loadFolderGroups || function(){};
+      await fg({ forceRender: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Cleanup failed'));
+    }
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function searchMusicBrainzForQueue() {
+  var artist = document.getElementById('queueArtist')?.value.trim() || '';
+  var album = document.getElementById('queueAlbum')?.value.trim() || '';
+  var track = document.getElementById('queueTitle')?.value.trim() || '';
+  if (!artist && !album && !track) {
+    alert('Please enter at least one field before searching MusicBrainz.');
+    return;
+  }
+  var fn = window.searchMusicBrainzRelease || function(){};
+  fn(null, artist || album, album || track);
+}
+
+async function organizeSelected() { alert('organizeSelected not yet implemented'); }
+async function batchOrganizeSelected() { alert('batchOrganizeSelected not yet implemented'); }

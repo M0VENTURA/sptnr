@@ -103,6 +103,104 @@
     font-size: 12px;
 }
 
+/* ==========================================================================
+   Base template styles (moved from inline base.html <style> block)
+   ========================================================================== */
+
+* {
+  color-scheme: dark;
+}
+
+body {
+  background: linear-gradient(135deg, var(--primary-bg) 0%, var(--secondary-bg) 100%);
+  padding-top: 4rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+  overflow-x: hidden;
+}
+
+p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th { color: var(--text-primary) !important; }
+a { color: var(--spotify-green) !important; }
+a:hover { color: var(--spotify-green-hover) !important; }
+strong, b { color: var(--text-primary) !important; }
+
+::placeholder { color: var(--text-secondary) !important; opacity: 1 !important; }
+
+input, select, textarea {
+  color: var(--text-primary) !important;
+  background-color: var(--secondary-bg) !important;
+  border-color: var(--border-color) !important;
+}
+input:focus, select:focus, textarea:focus {
+  background-color: var(--tertiary-bg) !important;
+  border-color: var(--spotify-green) !important;
+  box-shadow: 0 0 0 0.2rem rgba(29, 185, 84, 0.25) !important;
+}
+.form-label { color: var(--text-primary) !important; font-weight: 500; }
+.form-text { color: var(--text-secondary) !important; }
+option { background-color: var(--secondary-bg); color: var(--text-primary); }
+option:checked { background-color: var(--spotify-green); color: #000; }
+
+/* Navbar */
+.navbar { background-color: var(--primary-bg) !important; border-bottom: 1px solid var(--border-color); backdrop-filter: blur(10px); background: rgba(18,18,18,0.95) !important; }
+.navbar-brand { font-weight: 700; font-size: 1.5rem; color: var(--spotify-green) !important; letter-spacing: -0.5px; }
+.nav-link { color: var(--text-secondary) !important; transition: all 0.3s ease; display: flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
+.nav-link:hover { color: var(--spotify-green) !important; }
+.nav-link.active { color: var(--spotify-green) !important; border-bottom: 2px solid var(--spotify-green); }
+
+/* Buttons */
+.btn-primary { background-color: var(--spotify-green); border-color: var(--spotify-green); color: #000; font-weight: 600; }
+.btn-primary:hover { background-color: var(--spotify-green-hover); border-color: var(--spotify-green-hover); }
+.btn-outline-primary { color: var(--spotify-green); border-color: var(--spotify-green); background-color: transparent; }
+.btn-outline-primary:hover { background-color: var(--spotify-green); border-color: var(--spotify-green); color: #000; }
+.btn-secondary { background-color: var(--tertiary-bg); border-color: var(--border-color); color: var(--text-primary); }
+.btn-warning { background-color: #ff6b00; border-color: #ff6b00; color: #fff; font-weight: 600; }
+
+/* Alerts */
+.alert { background-color: var(--secondary-bg); border: 1px solid var(--border-color); }
+.alert-info { border-left: 4px solid var(--spotify-green); }
+.alert-warning { border-left: 4px solid #ff6b00; }
+.alert-danger { border-left: 4px solid #e74c3c; }
+.alert-success { border-left: 4px solid #1db954; }
+
+/* Badges */
+.badge-success { background-color: rgba(29,185,84,0.25); color: var(--spotify-green); border-color: var(--spotify-green); }
+.bg-success { background-color: #1db954 !important; color: #000 !important; }
+.bg-danger { background-color: #e74c3c !important; color: #fff !important; }
+.bg-info { background-color: #3498db !important; color: #fff !important; }
+
+/* Modals */
+.modal-content { background-color: var(--secondary-bg); border: 1px solid var(--border-color); }
+.modal-header { border-bottom: 1px solid var(--border-color); background-color: var(--tertiary-bg); }
+.modal-footer { border-top: 1px solid var(--border-color); background-color: var(--tertiary-bg); }
+.btn-close { filter: invert(1); }
+
+/* Dropdowns */
+.dropdown-menu { background-color: var(--secondary-bg) !important; border-color: var(--border-color) !important; }
+.dropdown-item { color: var(--text-primary) !important; background-color: var(--secondary-bg) !important; }
+.dropdown-item:hover { background-color: var(--tertiary-bg) !important; color: var(--spotify-green) !important; }
+
+/* Nav tabs */
+.nav-tabs { border-bottom-color: var(--border-color); }
+.nav-tabs .nav-link { color: var(--text-secondary); border-color: transparent; }
+.nav-tabs .nav-link:hover { border-color: var(--border-color); color: var(--text-primary); }
+.nav-tabs .nav-link.active { background-color: var(--secondary-bg); border-color: var(--border-color) var(--border-color) var(--secondary-bg); color: var(--spotify-green); }
+
+/* Accordion */
+.accordion-button { background-color: var(--secondary-bg) !important; color: var(--text-primary) !important; border-color: var(--border-color) !important; }
+.accordion-button:not(.collapsed) { background-color: var(--tertiary-bg) !important; color: var(--spotify-green) !important; }
+
+/* Mobile */
+@media (max-width: 576px) {
+  body { padding-top: 3.5rem; font-size: 14px; }
+  main.container-fluid { padding: 0.75rem; }
+  .card { margin-bottom: 0.75rem; }
+  .btn { min-height: 44px; }
+}
+@media (max-width: 991.98px) {
+  .navbar-nav { flex-direction: column !important; width: 100%; }
+  .navbar-nav .nav-link { padding: 0.875rem 1.25rem !important; min-height: 48px; }
+}
+
 /* ── Genre/mood source brand colors ─────────────────────────────────────── */
 :root {
     --brand-spotify: #1db954;
