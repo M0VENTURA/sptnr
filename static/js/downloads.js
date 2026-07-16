@@ -140,6 +140,104 @@ window.openGlobalMbSearch = function(artist, album, callback) {
 
 
 // ============================================================================
+// MUSICBRAINZ SEARCH & RESULTS CORE
+// ============================================================================
+
+window.performMbSearch = async function() {
+  const input = document.getElementById('mbSearchInput');
+  const query = input?.value.trim();
+  if (!query) return;
+
+  // The component might use 'mbSearchResults' or 'mbResults' depending on the version
+  const resultsEl = document.getElementById('mbSearchResults') || document.getElementById('mbResults');
+  
+  if (resultsEl) {
+    resultsEl.innerHTML = '<div class="text-center mt-4"><div class="spinner-border text-info"></div><p class="mt-2 text-muted">Searching MusicBrainz...</p></div>';
+  }
+
+  try {
+    const data = await fetchJsonOrThrow('/api/musicbrainz/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+    
+    const releases = data.releases || [];
+    if (releases.length === 0) {
+      if (resultsEl) resultsEl.innerHTML = `<div class="alert alert-info"><i class="bi bi-info-circle"></i> No releases found for "${escapeHtml(query)}"</div>`;
+      return;
+    }
+
+    let html = '<div class="list-group">';
+    releases.forEach(release => {
+      const coverArt = release.cover_art_url || '';
+      const releaseDate = release.first_release_date || 'Unknown';
+      const category = release.category || release.primary_type || 'Release';
+      // Handle the complex artist-credit array from MusicBrainz
+      const artist = release.artist || (release['artist-credit']?.[0]?.name) || 'Unknown Artist';
+      
+      const imgHtml = coverArt
+        ? `<img src="${escapeHtml(coverArt)}" class="rounded shadow-sm" style="width:80px;height:80px;object-fit:cover;" alt="">`
+        : '<div class="rounded bg-secondary d-flex align-items-center justify-content-center shadow-sm" style="width:80px;height:80px;"><i class="bi bi-music-note-beamed text-white fs-4"></i></div>';
+
+      // MAGIC ROUTER: If a callback exists (opened from Artist page), show "Select". 
+      // If no callback exists (opened from Dashboard), show the standard Download buttons.
+      const actionButtons = window._mbSearchCallback
+        ? `<button class="btn btn-sm btn-success" onclick="handleGlobalMbSelect('${encodeInlineArg(release)}')"><i class="bi bi-check-circle"></i> Select Match</button>`
+        : `<div class="btn-group" role="group">
+             <button class="btn btn-sm btn-success" onclick="downloadMbRelease('${escapeHtml(release.id)}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'slskd')" title="Download via Soulseek"><i class="bi bi-music-note-list"></i> Soulseek</button>
+             <button class="btn btn-sm btn-primary" onclick="downloadMbRelease('${escapeHtml(release.id)}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'qbittorrent')" title="Download via qBittorrent"><i class="bi bi-cloud-download"></i> qBit</button>
+           </div>`;
+
+      html += `
+        <div class="list-group-item bg-dark-subtle border-secondary mb-2 rounded">
+          <div class="d-flex gap-3 align-items-start">
+            ${imgHtml}
+            <div class="flex-grow-1">
+              <h6 class="mb-1 fw-bold">${escapeHtml(release.title)}</h6>
+              <p class="mb-1 text-muted small">${escapeHtml(artist)}</p>
+              <div class="d-flex gap-2 align-items-center mb-2 flex-wrap">
+                <span class="badge bg-secondary">${escapeHtml(category)}</span>
+                <span class="badge bg-info text-dark"><i class="bi bi-cloud"></i> MusicBrainz</span>
+                <span class="text-muted small">${escapeHtml(releaseDate)}</span>
+              </div>
+            </div>
+            <div class="flex-shrink-0 mt-2 mt-sm-0">
+              ${actionButtons}
+            </div>
+          </div>
+        </div>`;
+    });
+    html += '</div>';
+    
+    if (resultsEl) resultsEl.innerHTML = html;
+
+  } catch (error) {
+    if (resultsEl) resultsEl.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> Error: ${escapeHtml(error.message)}</div>`;
+  }
+};
+
+// Handles routing the selected release back to the component that asked for it
+window.handleGlobalMbSelect = function(releaseEnc) {
+    const release = decodeInlineArg(releaseEnc);
+    if (window._mbSearchCallback && release) {
+        window._mbSearchCallback(release);
+        window._mbSearchCallback = null; // Clear the callback so it doesn't fire twice
+    }
+    
+    // Close the modal
+    const modalEl = document.getElementById('musicBrainzModal');
+    if (modalEl) {
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) modal.hide();
+    }
+};
+
+// Also map performMbDownloadSearch to performMbSearch in case any old HTML buttons rely on it
+window.performMbDownloadSearch = window.performMbSearch;
+
+
+// ============================================================================
 // QBITTORRENT FUNCTIONS
 // ============================================================================
 
@@ -483,15 +581,14 @@ async function refreshUpcomingReleases() {
   }
 }
 
-// Highly specific search used ONLY for upcoming releases (combines Discogs fallback)
+// Highly specific search used ONLY for upcoming releases
 async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId = null) {
   if (event) { event.preventDefault(); event.stopPropagation(); }
 
   window.currentUpcomingReleaseContext = upcomingReleaseId ? { releaseId: upcomingReleaseId, artist, album } : null;
 
-  // Use the new global trigger instead of building a duplicate modal!
+  // Use the new global trigger instead of building a duplicate modal
   window.openGlobalMbSearch(artist, album, (selectedRelease) => {
-      // Callback logic for when the user selects a release in the modal
       downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
   });
 }
