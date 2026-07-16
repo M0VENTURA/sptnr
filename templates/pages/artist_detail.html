@@ -84,7 +84,7 @@
       </a>
       <form action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
         <input type="hidden" name="artist" value="{{ artist_name }}">
-        {% include 'components/_scan_selector.html' %}
+        {% include 'components/_scan_selector.html' ignore missing %}
         <div class="form-check form-check-inline mb-0" title="Force full rescan for this artist">
           <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
           <label class="form-check-label small" for="artistForceScan">Force</label>
@@ -96,7 +96,6 @@
     </div>
   </div>
 
-  <!-- Needs Correcting badge — always shown when corrections exist -->
   <div id="artist-corrections-banner" style="display:none;" class="mb-3">
     <a href="{{ url_for('ui.artist_corrections', name=artist_name) }}" class="btn btn-outline-danger btn-sm">
       <i class="bi bi-tools"></i> Needs Correcting
@@ -124,12 +123,10 @@
     </div>
   </div>
 
-  <!-- Artist Image Section -->
   <div class="mb-4" id="artist-overview-section">
     <div class="card">
       <div class="card-body">
         <div class="row g-4">
-          <!-- Artist Image -->
           <div class="col-12 col-md-3 d-flex flex-column align-items-center">
             <div class="artist-img-wrap position-relative mb-3" style="width: min(200px, 50vw); aspect-ratio: 1; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
               <img id="artistImage" src="{{ url_for('artist.api_artist_image', name=artist_name) }}" 
@@ -141,7 +138,6 @@
               </button>
             </div>
           </div>
-          <!-- Artist Bio and Country/Origin -->
           <div class="col-12 col-md-9">
             <h5 class="mb-3"><i class="bi bi-info-circle"></i> Artist Bio</h5>
             <div id="artistBio" class="text-muted" style="min-height: 120px;" data-has-initial-bio="{{ '1' if artist_bio else '0' }}">
@@ -155,7 +151,6 @@
               {% endif %}
             </div>
             
-            <!-- Country/Origin under Bio -->
             <div class="mt-4 pt-3" style="border-top: 1px solid var(--border-color);">
               <h6 class="mb-3"><i class="bi bi-globe"></i> Country/Origin</h6>
               <div id="artistCountryDisplay">
@@ -196,7 +191,6 @@
               </div>
             </div>
 
-            <!-- Artist IDs below Biography -->
             <div class="mt-4 pt-3" style="border-top: 1px solid var(--border-color);">
               <div class="d-flex justify-content-between align-items-center mb-3">
                 <h6 class="mb-0"><i class="bi bi-link-45deg"></i> Artist IDs</h6>
@@ -238,7 +232,6 @@
     </div>
   </div>
 
-  <!-- Statistics Cards -->
   <div class="row g-2 g-md-3 mb-4" id="artist-stats-section">
     <div class="col-6 col-md-3">
       <div class="card h-100">
@@ -282,7 +275,6 @@
     </div>
   </div>
 
-  <!-- Similar Artists Section -->
   <div class="card mb-4" id="artist-similar-section">
     <div class="card-header">
       <h5 class="card-title mb-0">
@@ -328,7 +320,6 @@
     </div>
   </div>
 
-  <!-- Genre Display and Management -->
   <div class="mb-4" id="artist-genres-section">
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
@@ -340,7 +331,6 @@
         </button>
       </div>
       <div class="card-body">
-        <!-- Detected Genres from Database (pre-rendered from scan data) -->
         <div class="mb-4">
           <h6 class="mb-3"><i class="bi bi-database-fill"></i> Detected Genres</h6>
           <p class="text-muted small mb-2">All genres detected from external sources (Last.fm, Discogs, MusicBrainz, Essentia, etc.) across all tracks. These are kept in the database for reference.</p>
@@ -412,7 +402,6 @@
         
         <hr style="margin: 1.5rem 0; border-color: var(--border-color);">
         
-        <!-- Top Genres from All Tracks -->
         <div class="mb-3">
           <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Top Genres</h6>
           <p class="text-muted small mb-2">These are the top genres saved to track metadata across all tracks by this artist (up to 3 per track). Click the × to remove incorrect genres.</p>
@@ -435,7 +424,6 @@
           </div>
         </div>
         
-        <!-- Recommended Genres Section -->
         <div id="recommendedArtistGenresSection" style="display: none;">
           <h6 class="mb-2"><i class="bi bi-stars"></i> Suggested Genres from MusicBrainz</h6>
           <p class="text-muted small mb-2">Click genres to select, then apply to all tracks by this artist</p>
@@ -448,7 +436,6 @@
     </div>
   </div>
 
-  <!-- Top Tracks Section -->
   <div class="card mb-4" id="artist-top-tracks-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
@@ -511,7 +498,6 @@
     </div>
   </div>
 
-  <!-- Additional Stats: Duration and Year Range -->
   <div class="row g-2 g-md-3 mb-4">
     <div class="col-6 col-md-4">
       <div class="card h-100">
@@ -570,7 +556,7 @@
     </div>
   </div>
 
-  {% from "components/_album_category_section.html" import render_album_row %}
+  {% from "components/_album_category_section.html" import render_album_row ignore missing %}
 
   {% set total_discovered_albums = albums_by_category.album|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_albums = albums_by_category.album|selectattr('is_missing', 'equalto', True)|list|length %}
@@ -600,10 +586,10 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases("{{ artist_name }}")' title="Search MusicBrainz for all artist releases to download">
           <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
         </button>
-        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases("{{ artist_name }}")' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
@@ -621,7 +607,6 @@
     </div>
   </div>
 
-  <!-- Compilations Section -->
   <div class="card mb-4" id="compilations-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <div>
@@ -653,7 +638,6 @@
     </div>
   </div>
 
-  <!-- Live Albums Section -->
   <div class="card mb-4" id="live-albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
@@ -669,10 +653,10 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases("{{ artist_name }}")' title="Search MusicBrainz for all artist releases to download">
           <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
         </button>
-        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases("{{ artist_name }}")' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
@@ -690,7 +674,6 @@
     </div>
   </div>
 
-  <!-- Remix Albums Section -->
   <div class="card mb-4" id="remix-albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
@@ -706,10 +689,10 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases("{{ artist_name }}")' title="Search MusicBrainz for all artist releases to download">
           <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
         </button>
-        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases("{{ artist_name }}")' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
@@ -727,7 +710,6 @@
     </div>
   </div>
 
-  <!-- EPs Section -->
   <div class="card mb-4" id="eps-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
@@ -743,10 +725,10 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases("{{ artist_name }}")' title="Search MusicBrainz for all artist releases to download">
           <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
         </button>
-        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases("{{ artist_name }}")' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
@@ -764,7 +746,6 @@
     </div>
   </div>
 
-  <!-- Singles Section -->
   <div class="card mb-4" id="singles-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
@@ -780,10 +761,10 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases("{{ artist_name }}")' title="Search MusicBrainz for all artist releases to download">
           <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
         </button>
-        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases("{{ artist_name }}")' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
@@ -801,7 +782,6 @@
     </div>
   </div>
 
-  <!-- Covered By Section -->
   <div class="card mb-4" id="artist-covers-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
@@ -821,7 +801,6 @@
     </div>
   </div>
 
-  <!-- Appears On Section -->
   <div class="card mb-4" id="artist-appears-on-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
@@ -909,7 +888,6 @@
 
 </div>
 
-<!-- Download Search Modal (qBittorrent & Soulseek) -->
 {% if qbit_config.enabled or slskd_config.enabled %}
 <div class="modal fade" id="downloadModal" tabindex="-1" aria-labelledby="downloadModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-xl">
@@ -921,7 +899,6 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <!-- Tabs Navigation -->
         <ul class="nav nav-tabs mb-3" id="downloadTabs" role="tablist">
           {% if qbit_config.enabled and qbit_config.web_url %}
           <li class="nav-item" role="presentation">
@@ -943,9 +920,7 @@
           {% endif %}
         </ul>
 
-        <!-- Tabs Content -->
         <div class="tab-content" id="downloadTabsContent">
-          <!-- qBittorrent Tab -->
           {% if qbit_config.enabled and qbit_config.web_url %}
           <div class="tab-pane fade show active" id="qbit-content" role="tabpanel" aria-labelledby="qbit-tab">
             <div class="mb-3">
@@ -969,10 +944,9 @@
           </div>
           {% endif %}
 
-          <!-- Soulseek Tab -->
           {% if slskd_config.enabled %}
           <div class="tab-pane fade {% if not (qbit_config.enabled and qbit_config.web_url) %}show active{% endif %}" 
-               id="slskd-content" role="tabpanel" aria-labelledby="slskd-tab">
+                id="slskd-content" role="tabpanel" aria-labelledby="slskd-tab">
             <div class="mb-3">
               <div class="input-group">
                 <input type="text" class="form-control" id="slskdSearchInput" placeholder="Search query...">
@@ -983,7 +957,6 @@
               <div class="form-text">Search for albums or tracks on Soulseek network</div>
             </div>
             
-            <!-- Track Queue Section -->
             <div id="slskdTracksContainer" class="mb-3"></div>
             
             <div id="slskdLoading" class="text-center py-4" style="display: none;">
@@ -1003,7 +976,6 @@
 </div>
 {% endif %}
 
-<!-- Comprehensive Track Edit Modal for Artist Page -->
 <div class="modal fade" id="editTrackFromArtistModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -1017,7 +989,6 @@
                 <form id="editArtistTrackForm">
                     <input type="hidden" id="editArtistTrackId" name="track_id">
                     
-                    <!-- Basic Info -->
                     <div class="row g-3 mb-4">
                         <div class="col-md-12">
                             <label for="editArtistTrackTitleField" class="form-label">Title</label>
@@ -1033,7 +1004,6 @@
                         </div>
                     </div>
                     
-                    <!-- Metadata -->
                     <div class="row g-3 mb-4">
                         <div class="col-md-3">
                             <label for="editArtistTrackYearField" class="form-label">Year</label>
@@ -1067,7 +1037,6 @@
                         </div>
                     </div>
                     
-                    <!-- Recommended Genres Section -->
                     <div class="mb-4" id="artistRecommendedGenresSection" style="display: none;">
                         <div class="alert alert-info" style="padding: 0.75rem; margin-bottom: 1rem;">
                             <h6 class="mb-2"><i class="bi bi-stars"></i> Recommended Genres from Last.fm & Discogs</h6>
@@ -1077,12 +1046,10 @@
                         </div>
                     </div>
                     
-                    <!-- Genres -->
                     <div class="mb-4">
                         <label for="editArtistTrackGenresField" class="form-label">Genres</label>
                         <div id="editArtistTrackGenresDisplay" class="mb-2">
-                            <!-- Genres badges will be inserted here -->
-                        </div>
+                            </div>
                         <div class="input-group mb-2">
                             <input type="text" class="form-control" id="editArtistTrackGenreInput" placeholder="Add genre (e.g., Rock, Jazz)" list="editArtistGenreDatalist">
                             <button class="btn btn-outline-success" type="button" onclick="addEditArtistTrackGenre()">
@@ -1108,7 +1075,6 @@
                         <input type="hidden" id="editArtistTrackGenresField" name="genres">
                     </div>
                     
-                    <!-- Additional Fields -->
                     <div class="row g-3 mb-4">
                         <div class="col-md-6">
                             <label for="editArtistTrackAlbumArtistField" class="form-label">Album Artist</label>
@@ -1132,7 +1098,6 @@
                         </div>
                     </div>
 
-                      <!-- Advanced Navidrome Fields -->
                       <div class="accordion mb-4" id="editArtistTrackAdvancedAccordion">
                         <div class="accordion-item">
                           <h2 class="accordion-header" id="editArtistTrackAdvancedHeading">
@@ -1148,7 +1113,6 @@
                         </div>
                       </div>
                     
-                    <!-- Comment -->
                     <div class="mb-3">
                         <label for="editArtistTrackCommentField" class="form-label">Comment</label>
                         <textarea class="form-control" id="editArtistTrackCommentField" name="comment" rows="2" placeholder="Add notes or comments"></textarea>
@@ -1165,26 +1129,26 @@
     </div>
 </div>
 
-<!-- Page data for artist_detail.js -->
-<script id="page-data" type="application/json">{{ {"artistName": artist_name} | tojson | safe }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script id="page-data" type="application/json">
+  {{ {"artistName": artist_name} | tojson | safe }}
+</script>
 <script>
-var _pd = JSON.parse(document.getElementById('page-data').textContent);
+  const _pd = JSON.parse(document.getElementById('page-data').textContent);
+  window.artistName = _pd.artistName;
 </script>
 
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 <script src="{{ url_for('static', filename='js/artist_detail.js') }}"></script>
 
-{% include 'components/_musicbrainz_search_modal.html' %}
-
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-  var artistName = _pd.artistName;
-
   // Load covers of this artist's songs
   if (typeof loadArtistCoveredBy === 'function') {
-    loadArtistCoveredBy(artistName);
+    loadArtistCoveredBy(window.artistName);
   }
 });
 </script>
-
 {% endblock %}

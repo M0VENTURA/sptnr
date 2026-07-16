@@ -7,22 +7,34 @@
   <div class="mb-4 d-flex flex-wrap align-items-start gap-2">
     <div class="flex-grow-1">
       {% set subtitle = 'Search and download music from qBittorrent and Soulseek' %}
-      {% include 'components/_downloads_header.html' %}
+      {% include 'components/_downloads_header.html' ignore missing %}
     </div>
     <a href="/downloads/banned-words" class="btn btn-outline-danger btn-sm align-self-center">
       <i class="bi bi-slash-circle"></i> Banned Words
     </a>
   </div>
 
-  {% include 'components/search/_queue_add_form.html' %}
-  {% include 'components/search/_monitor_upcoming.html' %}
-  {% include 'components/search/_monitor_discovery.html' %}
-  {% include 'components/search/_monitor_queue_section.html' %}
+  <!-- Modularized UI Sections -->
+  {% include 'components/search/_queue_add_form.html' ignore missing %}
+  {% include 'components/search/_monitor_upcoming.html' ignore missing %}
+  {% include 'components/search/_monitor_discovery.html' ignore missing %}
+  {% include 'components/search/_monitor_queue_section.html' ignore missing %}
 
 </div>
 {% endblock %}
 
 {% block scripts %}
+<!-- 1. Inject backend configurations for the external JS to use -->
+<script id="page-data" type="application/json">
+  {{ {"queueStatusConfig": queue_status_config | default({})} | tojson | safe }}
+</script>
+<script>
+  // Parse the injected backend data and attach it to the window globally
+  const _pd = JSON.parse(document.getElementById('page-data').textContent);
+  window.queueStatusConfig = _pd.queueStatusConfig;
+</script>
+
+<!-- 2. Load the external logic -->
 <script src="{{ url_for('static', filename='js/monitor.js') }}"></script>
 <script src="{{ url_for('static', filename='js/downloads.js') }}"></script>
 {% endblock %}

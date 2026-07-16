@@ -17,14 +17,24 @@
       --text-tertiary: #a0a0a0;
       --border-color: #282828;
     }
+    
     html, body { 
-        background-color: #121212; 
-        color: #ffffff !important;
+        background-color: var(--primary-bg) !important; 
+        color: var(--text-primary) !important;
+        color-scheme: dark;
     }
+    
     .card, .card-body, .card-header, .table, .table th, .table td {
-      background-color: var(--secondary-bg);
-      color: var(--text-primary);
-      border-color: var(--border-color);
+      background-color: var(--secondary-bg) !important;
+      color: var(--text-primary) !important;
+      border-color: var(--border-color) !important;
+    }
+    
+    /* Ensure navbar stays dark and opaque */
+    .navbar {
+        background-color: rgba(18,18,18,0.98) !important;
+        border-bottom: 1px solid var(--border-color) !important;
+        backdrop-filter: blur(10px);
     }
   </style>
 
@@ -111,9 +121,9 @@
     </div>
   </nav>
 
-  <main class="container-fluid">
+  <main class="container-fluid" style="padding-top: 5rem;">
     {% with messages = get_flashed_messages(with_categories=true) %}
-      {% include 'layouts/_flash_messages.html' %}
+      {% include 'layouts/_flash_messages.html' ignore missing %}
     {% endwith %}
 
     {% block content %}{% endblock %}
@@ -143,6 +153,10 @@
         <div class="spinner-border text-primary"></div>
       </div>
     </div>
+  </div>
+
+  <div id="global-mb-search-container">
+      {% include 'components/_musicbrainz_search_modal.html' ignore missing %}
   </div>
 
   <div id="globalPlayerBar" class="d-none" style="position:fixed;bottom:0;left:0;right:0;z-index:2000;background:rgba(18,18,18,0.97);border-top:1px solid var(--border-color);backdrop-filter:blur(10px);padding:0.5rem 1rem;box-shadow:0 -4px 16px rgba(0,0,0,0.5);">
@@ -181,6 +195,28 @@
   <script src="{{ url_for('static', filename='js/player.js') }}"></script>
   <script src="{{ url_for('static', filename='js/musicbrainz-folder-groups.js') }}"></script>
   <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+
+  <script>
+    window.openGlobalMbSearch = function(artist, album, callback) {
+        const modalEl = document.getElementById('musicBrainzModal');
+        if (!modalEl) {
+            console.error("MusicBrainz modal not found in DOM");
+            return;
+        }
+        
+        const modal = new bootstrap.Modal(modalEl);
+        const input = document.getElementById('mbSearchInput');
+        
+        if (input) {
+            const query = `${artist || ''} ${album || ''}`.trim();
+            input.value = query;
+        }
+        
+        // Save callback to window to be called by selectMbRelease
+        window._mbSearchCallback = callback;
+        modal.show();
+    };
+  </script>
 
   {% block scripts %}{% endblock %}
 </body>

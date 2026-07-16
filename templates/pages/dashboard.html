@@ -9,7 +9,6 @@
          data-first-full-scan-done="{{ 'true' if first_full_scan_done else 'false' }}"
          hidden></div>
 
-    <!-- Header -->
     <div class="mb-4">
         <div>
             <h1 class="h2 mb-1">
@@ -35,7 +34,6 @@
         </div>
     </div>
 
-    <!-- Library Stats Badges -->
     <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
         <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-music-note"></i> {{ stats.tc if stats else '?' }} tracks</span>
         <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-disc"></i> {{ stats.ac if stats else '?' }} albums</span>
@@ -53,9 +51,7 @@
     </div>
     {% endif %}
 
-    <!-- Scan Cards — 4-column row on large screens -->
     <div class="row g-2 mb-3">
-        <!-- Popularity -->
         <div class="col-sm-6 col-xl-3">
             <div class="card h-100 border-primary border-opacity-25">
                 <div class="card-header py-2 d-flex justify-content-between align-items-center">
@@ -76,7 +72,6 @@
                 </div>
             </div>
         </div>
-        <!-- Navidrome -->
         <div class="col-sm-6 col-xl-3">
             <div class="card h-100 border-secondary border-opacity-25">
                 <div class="card-header py-2 d-flex justify-content-between align-items-center">
@@ -95,7 +90,6 @@
                 </div>
             </div>
         </div>
-        <!-- Library Sync -->
         <div class="col-sm-6 col-xl-3">
             <div class="card h-100 border-warning border-opacity-25">
                 <div class="card-header py-2 d-flex justify-content-between align-items-center">
@@ -111,7 +105,6 @@
                 </div>
             </div>
         </div>
-        <!-- Essentia -->
         <div class="col-sm-6 col-xl-3">
             <div class="card h-100 border-info border-opacity-25">
                 <div class="card-header py-2 d-flex justify-content-between align-items-center">
@@ -129,7 +122,6 @@
         </div>
     </div>
 
-    <!-- Navigation Buttons (mobile-first icon grid) -->
     <div class="row g-2 mb-4">
         <div class="col-6 col-md-4 col-xl-2">
             <a href="/artists" class="btn btn-primary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
@@ -152,7 +144,7 @@
             </a>
         </div>
         <div class="col-6 col-md-4 col-xl-2">
-            <button onclick="showMusicBrainzModal()" class="btn btn-outline-info w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+            <button onclick="window.openGlobalMbSearch('', '')" class="btn btn-outline-info w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
                 <i class="bi bi-search fs-4"></i> <span class="small fw-semibold">Search</span>
             </button>
         </div>
@@ -163,7 +155,6 @@
         </div>
     </div>
 
-    <!-- Active Scans Progress Panel (hidden when idle) -->
     <div id="activeScansPanel" class="card mb-4 border-success" style="display:none;">
         <div class="card-header py-2 d-flex justify-content-between align-items-center">
             <h6 class="mb-0"><i class="bi bi-activity"></i> Active Scans</h6>
@@ -172,11 +163,9 @@
             </button>
         </div>
         <div class="card-body py-2" id="activeScansBody">
-            <!-- Populated dynamically by dashboard.js -->
-        </div>
+            </div>
     </div>
 
-    <!-- Two-column tables: Recent Scans + Upcoming Releases -->
     <div class="row g-3 mb-4">
         <div class="col-12 col-xl-6">
             <div class="card h-100">
@@ -234,7 +223,6 @@
         </div>
     </div>
 
-    <!-- Unified Log Area (collapsible) -->
     <div class="card mb-4">
         <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
             <span class="fw-semibold"><i class="bi bi-terminal"></i> Unified Log</span>
@@ -257,11 +245,17 @@
 
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 
-{% include 'components/_musicbrainz_search_modal.html' %}
+{% endblock %}
 
-<script>
-// Pass server-rendered data to external dashboard.js
-var _pd = { recentScans: {{ recent_scans|default([])|tojson|safe }} };
+{% block scripts %}
+<script id="page-data" type="application/json">
+  {{ {"recentScans": recent_scans | default([])} | tojson | safe }}
 </script>
+<script>
+  const _pd = JSON.parse(document.getElementById('page-data').textContent);
+  window._pd = _pd;
+</script>
+
+<script src="{{ url_for('static', filename='js/downloads.js') }}"></script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 {% endblock %}

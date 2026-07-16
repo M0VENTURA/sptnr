@@ -5,7 +5,7 @@
 
 // Global error handler for development debugging
 window.onerror = function (msg, url, line) {
-  console.error("Error: " + msg + " on line " + line + " in " + url);
+  console.error(`Error: ${msg} on line ${line} in ${url}`);
 };
 
 // ===== Shared helpers =====
@@ -16,12 +16,12 @@ async function postJSON(u, b) {
 
 function fE(s) {
   if (!s) return "";
-  return " — " + Math.floor(s / 60) + "m " + Math.floor(s % 60) + "s";
+  return ` — ${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`;
 }
 
 function escapeHtml(str) {
   if (!str) return "";
-  var d = document.createElement("div");
+  const d = document.createElement("div");
   d.appendChild(document.createTextNode(str));
   return d.innerHTML;
 }
@@ -29,9 +29,9 @@ function escapeHtml(str) {
 // ===== Scan Card Polling =====
 (async function () {
   try {
-    var r = await fetch("/api/navidrome/scan/status"),
-      d = await r.json(),
-      e = document.getElementById("nav-connectivity");
+    const r = await fetch("/api/navidrome/scan/status");
+    const d = await r.json();
+    const e = document.getElementById("nav-connectivity");
     if (d.success !== false) {
       e.className = "badge bg-success ms-1";
       e.title = "OK";
@@ -53,13 +53,13 @@ async function stopPopularityScan() {
 }
 
 async function pollPopularityStatus() {
-  var r = await fetch("/api/popularity/status"),
-    d = await r.json();
+  const r = await fetch("/api/popularity/status");
+  const d = await r.json();
   if (!d.success) return;
-  var e = document.getElementById("pop-status");
+  const e = document.getElementById("pop-status");
   if (!e) return;
   if (d.running) {
-    e.innerText = (d.message || "Running...") + fE(d.elapsed_seconds);
+    e.innerText = `${d.message || "Running..."}${fE(d.elapsed_seconds)}`;
     e.className = "text-primary small";
   } else {
     e.innerText = d.message || "Idle";
@@ -68,8 +68,8 @@ async function pollPopularityStatus() {
 }
 
 async function startNavidromeImport() {
-  var d = await postJSON("/api/navidrome/import", { mode: "all" }),
-    e = document.getElementById("nav-status");
+  const d = await postJSON("/api/navidrome/import", { mode: "all" });
+  const e = document.getElementById("nav-status");
   if (d.success) {
     e.innerText = d.message || "Started";
     e.className = "text-success small";
@@ -81,8 +81,8 @@ async function startNavidromeImport() {
 }
 
 async function startNavidromeServerScan() {
-  var d = await postJSON("/api/navidrome/scan/start"),
-    e = document.getElementById("nav-status");
+  const d = await postJSON("/api/navidrome/scan/start");
+  const e = document.getElementById("nav-status");
   e.innerText = d.success ? "Server scan triggered" : "Failed";
   e.className = d.success ? "text-success small" : "text-danger small";
 }
@@ -92,23 +92,25 @@ async function stopNavidromeSync() {
 }
 
 async function pollNavidromeStatus() {
-  var e = document.getElementById("nav-status");
+  const e = document.getElementById("nav-status");
   if (!e) return;
-  var pd = await (await fetch("/api/scan-progress")).json().catch(() => ({})),
-    ns = (pd.active_scans || []).find(function (s) { return s.scan_type === "navidrome_scan"; });
+  const pd = await (await fetch("/api/scan-progress")).json().catch(() => ({}));
+  const ns = (pd.active_scans || []).find(s => s.scan_type === "navidrome_scan");
+  
   if (ns && ns.is_running) {
-    e.innerText = (ns.message || "Importing...") + fE(ns.elapsed_seconds);
+    e.innerText = `${ns.message || "Importing..."}${fE(ns.elapsed_seconds)}`;
     e.className = "text-primary small";
-    if (e.dataset.started) { delete e.dataset.started; }
+    if (e.dataset.started) delete e.dataset.started;
     return;
   }
-  var sd = await (await fetch("/api/navidrome/scan/status")).json().catch(() => ({}));
+  
+  const sd = await (await fetch("/api/navidrome/scan/status")).json().catch(() => ({}));
   if (sd.scanning) {
     e.innerText = "Server scanning...";
     e.className = "text-warning small";
-    if (e.dataset.started) { delete e.dataset.started; }
+    if (e.dataset.started) delete e.dataset.started;
   } else if (e.dataset.started) {
-    var elapsed = Date.now() - parseInt(e.dataset.started, 10);
+    const elapsed = Date.now() - parseInt(e.dataset.started, 10);
     if (elapsed < 120000) {
       e.innerText = "Importing...";
       e.className = "text-primary small";
@@ -132,14 +134,14 @@ async function stopLibrarySync() {
 }
 
 async function pollLibraryStatus() {
-  var r = await fetch("/api/library/status"),
-    d = await r.json();
+  const r = await fetch("/api/library/status");
+  const d = await r.json();
   if (!d.success) return;
-  var e = document.getElementById("lib-status");
+  const e = document.getElementById("lib-status");
   if (!e) return;
   if (d.running) {
-    var es = d.started_at ? " \u2014 " + Math.floor((Date.now() / 1000 - d.started_at) / 60) + "m" : "";
-    e.innerText = (d.message || "Sync...") + es;
+    const es = d.started_at ? ` — ${Math.floor((Date.now() / 1000 - d.started_at) / 60)}m` : "";
+    e.innerText = `${d.message || "Sync..."}${es}`;
     e.className = "text-primary small";
   } else {
     e.innerText = d.message || "Idle";
@@ -156,12 +158,12 @@ async function stopEssentiaScan() {
 }
 
 async function pollEssentiaStatus() {
-  var e = document.getElementById("ess-status");
+  const e = document.getElementById("ess-status");
   if (!e) return;
-  var pd = await (await fetch("/api/scan-progress")).json().catch(() => ({})),
-    es = (pd.active_scans || []).find(function (s) { return s.scan_type === "essentia_mood_scan"; });
+  const pd = await (await fetch("/api/scan-progress")).json().catch(() => ({}));
+  const es = (pd.active_scans || []).find(s => s.scan_type === "essentia_mood_scan");
   if (es && es.is_running) {
-    e.innerText = (es.message || "Running...") + fE(es.elapsed_seconds);
+    e.innerText = `${es.message || "Running..."}${fE(es.elapsed_seconds)}`;
     e.className = "text-primary small";
   } else {
     e.innerText = "Idle";
@@ -174,8 +176,7 @@ async function stopAllScans() {
 }
 
 // ===== Recent Scans (Dynamic) =====
-var SCAN_TYPE_DISPLAY_NAMES = {
-  // Session-level scan types (recorded by popularity_pipeline.py)
+const SCAN_TYPE_DISPLAY_NAMES = {
   navidrome: "Navidrome Import",
   metadata: "Metadata Scan",
   popularity: "Popularity Scan",
@@ -185,7 +186,6 @@ var SCAN_TYPE_DISPLAY_NAMES = {
   mood: "Mood Scan",
   combined: "Combined Scan",
   all: "Full Scan (All)",
-  // Scan runner progress-file types (from run_scan / scan_stage_runner.py)
   navidrome_scan: "Navidrome Import",
   metadata_lookup_scan: "Metadata Scan",
   popularity_scan: "Popularity Scan",
@@ -196,72 +196,64 @@ var SCAN_TYPE_DISPLAY_NAMES = {
   missing_releases_scan: "Missing Releases Scan",
 };
 
-var runningScans = new Set();
-var _lastRecentScansPayload = null;
-var _currentScanningAlbum = null;
-var previousScanStates = {};
-
 function parseScanTimestamp(ts) {
   if (!ts && ts !== 0) return null;
   if (ts instanceof Date) return isNaN(ts.getTime()) ? null : ts;
-  if (typeof ts === "number") { var d = new Date(ts); return isNaN(d.getTime()) ? null : d; }
-  var text = String(ts).trim();
+  if (typeof ts === "number") { const d = new Date(ts); return isNaN(d.getTime()) ? null : d; }
+  let text = String(ts).trim();
   if (!text) return null;
   if (/^\d+$/.test(text)) {
-    var n = Number(text);
-    if (!Number.isNaN(n)) { var e = new Date(text.length <= 10 ? n * 1000 : n); if (!isNaN(e.getTime())) return e; }
+    const n = Number(text);
+    if (!Number.isNaN(n)) { const e = new Date(text.length <= 10 ? n * 1000 : n); if (!isNaN(e.getTime())) return e; }
   }
-  var norm = text.replace(" ", "T").replace(/\.(\d{3})\d+/, ".$1").replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  let norm = text.replace(" ", "T").replace(/\.(\d{3})\d+/, ".$1").replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?$/.test(norm)) norm += "Z";
-  var d2 = new Date(norm);
+  const d2 = new Date(norm);
   return isNaN(d2.getTime()) ? null : d2;
 }
 
 function formatScanTimestamp(ts) {
-  var d = parseScanTimestamp(ts);
-  if (!d) return "\u2014";
-  var now = Date.now();
-  var diffMs = now - d.getTime();
-  var diffSec = Math.floor(diffMs / 1000);
-  var diffMin = Math.floor(diffSec / 60);
-  var diffHr = Math.floor(diffMin / 60);
-  var diffDay = Math.floor(diffHr / 24);
-  var relative;
-  if (diffSec < 60) relative = diffSec + "s ago";
-  else if (diffMin < 60) relative = diffMin + "m ago";
-  else if (diffHr < 24) relative = diffHr + "h ago";
-  else if (diffDay < 7) relative = diffDay + "d ago";
+  const d = parseScanTimestamp(ts);
+  if (!d) return "—";
+  const diffSec = Math.floor((Date.now() - d.getTime()) / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHr = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHr / 24);
+  
+  let relative;
+  if (diffSec < 60) relative = `${diffSec}s ago`;
+  else if (diffMin < 60) relative = `${diffMin}m ago`;
+  else if (diffHr < 24) relative = `${diffHr}h ago`;
+  else if (diffDay < 7) relative = `${diffDay}d ago`;
   else relative = d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-  var full = d.toLocaleString();
-  return '<span title="' + escapeHtml(full) + '">' + escapeHtml(relative) + "</span>";
-}
-
-function _scanTs(scan) {
-  return scan.scan_timestamp || scan.started_at || scan.timestamp || null;
+  
+  return `<span title="${escapeHtml(d.toLocaleString())}">${escapeHtml(relative)}</span>`;
 }
 
 function renderRecentScans(scans) {
-  var body = document.getElementById("recent-scans-body");
+  const body = document.getElementById("recent-scans-body");
   if (!body) return;
   if (!scans || scans.length === 0) {
     body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No recent scans yet</td></tr>';
     return;
   }
-  var grouped = {};
-  var inProgress = [];
-  scans.forEach(function (scan) {
-    var ts = _scanTs(scan);
+
+  const grouped = {};
+  const inProgress = [];
+  
+  scans.forEach(scan => {
+    const ts = scan.scan_timestamp || scan.started_at || scan.timestamp || null;
     if (scan._inProgress) {
       inProgress.push({
         artist: scan.artist,
-        album: scan.album || "\u2026",
+        album: scan.album || "…",
         scan_types: [{ type: scan.scan_type, timestamp: ts, _inProgress: true }],
         latest_timestamp_obj: new Date(),
         _inProgress: true,
       });
       return;
     }
-    var key = scan.artist + "|" + scan.album;
+    const key = `${scan.artist}|${scan.album}`;
     if (!grouped[key]) {
       grouped[key] = {
         artist: scan.artist,
@@ -271,401 +263,256 @@ function renderRecentScans(scans) {
         latest_timestamp_obj: parseScanTimestamp(ts),
       };
     }
-    // Keep the most recent status (started → completed → failed)
-    if (scan.status === "failed" || scan.status === "error") {
-      grouped[key].status = "failed";
-    } else if (scan.status === "completed" || scan.status === "complete") {
+    
+    if (scan.status === "failed" || scan.status === "error") grouped[key].status = "failed";
+    else if (scan.status === "completed" || scan.status === "complete") {
       if (grouped[key].status !== "failed") grouped[key].status = "completed";
-    } else if (scan.status === "started" && !grouped[key].status) {
-      grouped[key].status = "started";
-    } else if (scan.status === "stopped" && grouped[key].status !== "failed" && grouped[key].status !== "completed") {
-      grouped[key].status = "stopped";
-    }
-    if (!grouped[key].scan_types.find(function (s) { return s.type === scan.scan_type; })) {
+    } else if (scan.status === "started" && !grouped[key].status) grouped[key].status = "started";
+    else if (scan.status === "stopped" && grouped[key].status !== "failed" && grouped[key].status !== "completed") grouped[key].status = "stopped";
+    
+    if (!grouped[key].scan_types.find(s => s.type === scan.scan_type)) {
       grouped[key].scan_types.push({ type: scan.scan_type, timestamp: ts });
     }
-    var scanTime = parseScanTimestamp(ts);
-    var currentLatest = grouped[key].latest_timestamp_obj;
-    if (scanTime && (!currentLatest || scanTime > currentLatest)) {
+    
+    const scanTime = parseScanTimestamp(ts);
+    if (scanTime && (!grouped[key].latest_timestamp_obj || scanTime > grouped[key].latest_timestamp_obj)) {
       grouped[key].latest_timestamp = ts;
       grouped[key].latest_timestamp_obj = scanTime;
     }
   });
-  var entries = inProgress.concat(
-    Object.values(grouped).sort(function (a, b) {
-      var aTs = a.latest_timestamp_obj ? a.latest_timestamp_obj.getTime() : 0;
-      var bTs = b.latest_timestamp_obj ? b.latest_timestamp_obj.getTime() : 0;
-      return bTs - aTs;
-    })
+
+  const entries = inProgress.concat(
+    Object.values(grouped).sort((a, b) => (b.latest_timestamp_obj?.getTime() || 0) - (a.latest_timestamp_obj?.getTime() || 0))
   );
-  var rows = entries
-    .map(function (group) {
-      if (group.artist === "_SCAN_SESSION_") {
-        var typeKey = group.album || group.scan_types?.[0]?.type || "";
-        var typeName = SCAN_TYPE_DISPLAY_NAMES[typeKey] || escapeHtml(typeKey);
-        var typeIcon =
-          typeKey === "navidrome" ? "bi-cloud"
-          : typeKey === "popularity" ? "bi-graph-up"
-          : typeKey === "singles" || typeKey === "singles_detection" ? "bi-star"
-          : typeKey === "mood" || typeKey === "essentia" || typeKey === "essentia_mood" ? "bi-emoji-smile"
-          : typeKey === "metadata" || typeKey === "metadata_lookup_scan" ? "bi-info-circle"
-          : typeKey === "combined" || typeKey === "all" ? "bi-lightning-fill"
-          : "bi-lightning-fill";
-        var scanStatus = group.status || "started";
-        var isRunning = scanStatus === "started";
-        var statusIcon = isRunning ? "bi-hourglass-split text-primary" : scanStatus === "failed" ? "bi-x-circle-fill text-danger" : "bi-check-circle-fill text-success";
-        var statusLabel = isRunning ? "running" : scanStatus === "failed" ? "failed" : "completed";
-        var rowClass = isRunning ? ' class="table-primary"' : scanStatus === "failed" ? ' class="table-danger"' : ' class="table-success bg-opacity-10"';
-        var spinnerHtml = isRunning ? '<span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span>' : '';
-        return '<tr' + rowClass + '><td colspan="4" class="py-1 ps-3"><small class="' + (isRunning ? 'text-primary' : scanStatus === 'failed' ? 'text-danger' : 'text-success') + '">' + spinnerHtml + '<i class="bi ' + statusIcon + ' me-1"></i><strong>' + typeName + '</strong> ' + statusLabel + ' \u2014 ' + formatScanTimestamp(group.latest_timestamp) + '<span class="badge bg-' + (isRunning ? 'primary' : scanStatus === 'failed' ? 'danger' : 'success') + ' ms-2"><i class="bi ' + typeIcon + '"></i></span></small></td><td></td></tr>';
-      }
-      var artistUrl = "/artist/" + encodeURIComponent(group.artist);
-      var albumUrl =
-        group.album && group.album !== "\u2026"
-          ? "/album/" + encodeURIComponent(group.artist) + "/" + encodeURIComponent(group.album)
-          : artistUrl;
-      var badges = group.scan_types
-        .filter(function (st) { return st.type !== "covers"; })
-        .map(function (st) {
-          var badgeHtml =
-            '<span class="badge bg-secondary" title="' + escapeHtml(st.timestamp || "") + '">' + escapeHtml(st.type) + "</span>";
-          if (st._inProgress) {
-            badgeHtml = '<span class="badge bg-primary"><span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span> Scanning\u2026</span>';
-          } else if (st.type === "navidrome") {
-            badgeHtml = '<span class="badge bg-primary" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-cloud"></i> Navidrome</span>';
-          } else if (st.type === "popularity") {
-            badgeHtml = '<span class="badge bg-success" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-graph-up"></i> Popularity</span>';
-          } else if (st.type === "metadata" || st.type === "metadata_lookup_scan") {
-            badgeHtml = '<span class="badge bg-info text-dark" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-info-circle"></i> Metadata</span>';
-          } else if (st.type === "singles" || st.type === "singles_scan" || st.type === "single_detection") {
-            badgeHtml = '<span class="badge bg-warning text-dark" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-star"></i> Singles</span>';
-          } else if (st.type === "mood" || st.type === "mood_scan") {
-            badgeHtml = '<span class="badge bg-secondary" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-emoji-smile"></i> Mood</span>';
-          } else if (st.type === "essentia-mood" || st.type === "essentia_mood_scan") {
-            badgeHtml = '<span class="badge" style="background-color:#6f42c1" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-cpu"></i> Essentia</span>';
-          } else if (st.type === "combined") {
-            badgeHtml = '<span class="badge bg-info text-dark" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-lightning-fill"></i> Combined</span>';
-          } else if (st.type === "unified") {
-            badgeHtml = '<span class="badge bg-secondary" title="' + escapeHtml(st.timestamp || "") + '"><i class="bi bi-layers"></i> Unified</span>';
-          } else if (st.type === "metadata" || st.type === "metadata_scan" || st.type === "metadata_lookup_scan") {
-            badgeHtml = '<span class="badge badge-musicbrainz" title="' + escapeHtml(st.timestamp || "") + '">Metadata</span>';
-          }
-          return badgeHtml;
-        })
-        .join(" ");
-      var rowClass = group._inProgress ? ' class="table-active"' : "";
-      return (
-        "<tr" +
-        rowClass +
-        "><td><a href='" +
-        artistUrl +
-        "'>" +
-        escapeHtml(group.artist) +
-        "</a></td><td>" +
-        (group.album && group.album !== "\u2026"
-          ? "<a href='" + albumUrl + "'>" + escapeHtml(group.album) + "</a>"
-          : '<span class="text-muted fst-italic">\u2026</span>') +
-        "</td><td><div class='d-flex flex-wrap gap-2'>" +
-        badges +
-        "</div></td><td class='text-muted text-end'><small>" +
-        (group._inProgress ? "now" : formatScanTimestamp(group.latest_timestamp)) +
-        "</small></td><td class='text-center'>" +
-        (!group._inProgress
-          ? "<a href='" + albumUrl + "' class='btn btn-sm btn-outline-primary' title='View album'><i class='bi bi-arrow-right'></i></a>"
-          : "") +
-        "</td></tr>"
-      );
-    })
-    .join("");
-  body.innerHTML = rows;
+
+  body.innerHTML = entries.map(group => {
+    if (group.artist === "_SCAN_SESSION_") {
+      const typeKey = group.album || group.scan_types?.[0]?.type || "";
+      const typeName = SCAN_TYPE_DISPLAY_NAMES[typeKey] || escapeHtml(typeKey);
+      const isRunning = group.status === "started";
+      const statusIcon = isRunning ? "bi-hourglass-split text-primary" : group.status === "failed" ? "bi-x-circle-fill text-danger" : "bi-check-circle-fill text-success";
+      const statusLabel = isRunning ? "running" : group.status === "failed" ? "failed" : "completed";
+      const rowClass = isRunning ? 'table-primary' : group.status === "failed" ? 'table-danger' : 'table-success bg-opacity-10';
+      const spinnerHtml = isRunning ? '<span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span>' : '';
+      return `<tr class="${rowClass}"><td colspan="4" class="py-1 ps-3"><small class="${isRunning ? 'text-primary' : group.status === 'failed' ? 'text-danger' : 'text-success'}">${spinnerHtml}<i class="bi ${statusIcon} me-1"></i><strong>${typeName}</strong> ${statusLabel} — ${formatScanTimestamp(group.latest_timestamp)}</small></td><td></td></tr>`;
+    }
+
+    const artistUrl = `/artist/${encodeURIComponent(group.artist)}`;
+    const albumUrl = group.album && group.album !== "…" ? `/album/${encodeURIComponent(group.artist)}/${encodeURIComponent(group.album)}` : artistUrl;
+    
+    const badges = group.scan_types.filter(st => st.type !== "covers").map(st => {
+      if (st._inProgress) return '<span class="badge bg-primary"><span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span> Scanning…</span>';
+      const typeMap = {
+        navidrome: '<i class="bi bi-cloud"></i> Navidrome',
+        popularity: '<i class="bi bi-graph-up"></i> Popularity',
+        metadata: '<i class="bi bi-info-circle"></i> Metadata',
+        metadata_lookup_scan: '<i class="bi bi-info-circle"></i> Metadata',
+        singles: '<i class="bi bi-star"></i> Singles',
+        mood: '<i class="bi bi-emoji-smile"></i> Mood',
+        "essentia-mood": '<i class="bi bi-cpu"></i> Essentia',
+        combined: '<i class="bi bi-lightning-fill"></i> Combined',
+        unified: '<i class="bi bi-layers"></i> Unified'
+      };
+      const badgeClass = { navidrome: 'bg-primary', popularity: 'bg-success', metadata: 'bg-info text-dark', singles: 'bg-warning text-dark', mood: 'bg-secondary', "essentia-mood": 'bg-purple', combined: 'bg-info text-dark', unified: 'bg-secondary' }[st.type] || 'bg-secondary';
+      return `<span class="badge ${badgeClass}" title="${escapeHtml(st.timestamp || '')}">${typeMap[st.type] || escapeHtml(st.type)}</span>`;
+    }).join(" ");
+
+    return `<tr ${group._inProgress ? 'class="table-active"' : ''}>
+      <td><a href='${artistUrl}'>${escapeHtml(group.artist)}</a></td>
+      <td>${group.album && group.album !== "…" ? `<a href='${albumUrl}'>${escapeHtml(group.album)}</a>` : '<span class="text-muted fst-italic">…</span>'}</td>
+      <td><div class='d-flex flex-wrap gap-2'>${badges}</div></td>
+      <td class='text-muted text-end'><small>${group._inProgress ? "now" : formatScanTimestamp(group.latest_timestamp)}</small></td>
+    </tr>`;
+  }).join("");
 }
 
-function buildRecentScansWithInProgress(scans) {
-  if (!_currentScanningAlbum) return scans;
-  return [_currentScanningAlbum].concat(scans);
-}
+let _lastRecentScansPayload = null;
+let _currentScanningAlbum = null;
 
 function updateRecentScans() {
-  var endpoint = "/api/recent-scans";
-  fetch(endpoint + "?_ts=" + Date.now(), { cache: "no-store" })
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
-      var payload = data.scans || [];
+  fetch(`/api/recent-scans?_ts=${Date.now()}`, { cache: "no-store" })
+    .then(r => r.json())
+    .then(data => {
+      const payload = data.scans || [];
       if (payload.length > 0) {
         _lastRecentScansPayload = payload;
-        renderRecentScans(buildRecentScansWithInProgress(payload));
-      } else if (_lastRecentScansPayload && _lastRecentScansPayload.length > 0) {
-        renderRecentScans(buildRecentScansWithInProgress(_lastRecentScansPayload));
-      } else {
-        renderRecentScans([]);
+        renderRecentScans(_currentScanningAlbum ? [_currentScanningAlbum].concat(payload) : payload);
       }
     })
-    .catch(function (error) {
-      console.error("Error fetching recent scans:", error);
-      if (_lastRecentScansPayload) {
-        renderRecentScans(buildRecentScansWithInProgress(_lastRecentScansPayload));
-      }
-    });
+    .catch(error => console.error("Error fetching recent scans:", error));
 }
 
-// ===== Upcoming Releases Table helpers =====
+// ===== Upcoming Releases =====
+var dashboardTableFilter = "all";
+
 async function addUpcomingReleaseToQueueDashboard(encodedArtist, encodedAlbum, encodedDate, buttonEl) {
   try {
-    var artist = decodeURIComponent(encodedArtist || "").trim();
-    var album = decodeURIComponent(encodedAlbum || "").trim();
-    var dateText = decodeURIComponent(encodedDate || "").trim();
+    const artist = decodeURIComponent(encodedArtist || "").trim();
+    const album = decodeURIComponent(encodedAlbum || "").trim();
+    const dateText = decodeURIComponent(encodedDate || "").trim();
     if (!artist || !album) return;
-    var year = /^\d{4}/.test(dateText) ? dateText.slice(0, 4) : "";
+    
     if (buttonEl) { buttonEl.disabled = true; buttonEl.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>'; }
-    var result = await postJSON("/api/queue/add", {
-      artist: artist,
-      title: album,
-      album: album,
-      import_type: "album",
-      source: "qbittorrent",
-      release_source: "dashboard_upcoming",
-      priority: 5,
-      is_album: true,
-      year: year || null,
+    
+    const result = await postJSON("/api/queue/add", {
+      artist, title: album, album,
+      import_type: "album", source: "qbittorrent", release_source: "dashboard_upcoming",
+      priority: 5, is_album: true, year: /^\d{4}/.test(dateText) ? dateText.slice(0, 4) : null,
     });
+    
     if (buttonEl) {
       buttonEl.disabled = true;
-      buttonEl.classList.remove("btn-outline-primary");
-      buttonEl.classList.add("btn-outline-success");
+      buttonEl.classList.replace("btn-outline-primary", "btn-outline-success");
       buttonEl.innerHTML = '<i class="bi bi-check2"></i>';
       buttonEl.title = (result && result.message) || "Added to queue";
     }
   } catch (error) {
-    console.error("Error adding dashboard upcoming release to queue:", error);
-    if (buttonEl) { buttonEl.disabled = false; buttonEl.innerHTML = '<i class="bi bi-plus-circle"></i>'; buttonEl.title = "Failed to add to queue"; }
+    if (buttonEl) { buttonEl.disabled = false; buttonEl.innerHTML = '<i class="bi bi-plus-circle"></i>'; }
   }
 }
 
-// ===== Upcoming Releases Table =====
-var dashboardTableFilter = "all";
-
 function renderUpcomingReleasesTable(releases) {
-  var body = document.getElementById("upcoming-releases-body");
+  const body = document.getElementById("upcoming-releases-body");
   if (!body) return;
 
-  var countEl = document.getElementById("upcomingTableCount");
-  if (countEl) countEl.textContent = releases.length + " release(s)";
+  const countEl = document.getElementById("upcomingTableCount");
+  if (countEl) countEl.textContent = `${releases.length} release(s)`;
 
   if (!releases || releases.length === 0) {
     body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No upcoming releases found.</td></tr>';
     return;
   }
 
-  var rows = releases
-    .map(function (r) {
-      var releaseDate = r.release_date || "TBA";
-      var sourceRaw = String(r.source || "").toLowerCase();
-      var sourceBadge =
-        sourceRaw.indexOf("wiki") !== -1
-          ? '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>'
-          : '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>';
+  body.innerHTML = releases.map(r => {
+    const releaseDate = r.release_date || "TBA";
+    const isWiki = String(r.source || "").toLowerCase().includes("wiki");
+    const sourceBadge = isWiki 
+      ? '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>'
+      : '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>';
 
-      var isUpcoming = new Date(releaseDate) > new Date();
-      var dateBadge = isUpcoming
-        ? '<span class="badge bg-success">Upcoming</span>'
-        : '<span class="badge bg-primary">Recent</span>';
+    const dateBadge = new Date(releaseDate) > new Date() ? '<span class="badge bg-success">Upcoming</span>' : '<span class="badge bg-primary">Recent</span>';
+    const colBadge = r.artist_in_collection ? '<span class="badge bg-success ms-1" title="Artist in collection"><i class="bi bi-check"></i></span>' : "";
+    const recBadge = r.artist_in_recommended ? '<span class="badge bg-warning text-dark ms-1" title="Recommended artist"><i class="bi bi-star"></i></span>' : "";
+    
+    const eArtist = encodeURIComponent(r.artist_name || "");
+    const eAlbum = encodeURIComponent(r.album_name || "");
+    const sArtist = JSON.stringify(String(r.artist_name || ""));
+    const sAlbum = JSON.stringify(String(r.album_name || ""));
 
-      var colBadge = r.artist_in_collection
-        ? '<span class="badge bg-success ms-1" title="Artist in collection"><i class="bi bi-check"></i></span>'
-        : "";
-      var recBadge = r.artist_in_recommended
-        ? '<span class="badge bg-warning text-dark ms-1" title="Recommended artist"><i class="bi bi-star"></i></span>'
-        : "";
-      var inQueue = r.in_queue === true || r.queue_status === "queued";
+    // NEW UNIFIED SEARCH TRIGGER
+    const searchBtn = `<button class="btn btn-sm btn-outline-info" title="Search on MusicBrainz" onclick='window.openGlobalMbSearch(${sArtist}, ${sAlbum}, function(selected){ if(typeof downloadMbRelease === "function") downloadMbRelease(selected.id, selected.title, selected.artist, "slskd"); })'><i class="bi bi-search"></i></button>`;
+    
+    const inQueue = r.in_queue === true || r.queue_status === "queued";
+    const queueBtn = inQueue
+      ? '<button class="btn btn-sm btn-outline-success" disabled title="Already in queue"><i class="bi bi-check2-circle"></i></button>'
+      : `<button class="btn btn-sm btn-outline-primary" title="Add to queue" onclick="addUpcomingReleaseToQueueDashboard('${eArtist}', '${eAlbum}', '${encodeURIComponent(r.release_date || "")}', this)"><i class="bi bi-plus-circle"></i></button>`;
 
-      var eArtist = encodeURIComponent(r.artist_name || "");
-      var eAlbum = encodeURIComponent(r.album_name || "");
-      var eDate = encodeURIComponent(r.release_date || "");
-      var sArtist = JSON.stringify(String(r.artist_name || ""));
-      var sAlbum = JSON.stringify(String(r.album_name || ""));
-      var searchBtn =
-        '<button class="btn btn-sm btn-outline-info" title="Search on MusicBrainz" onclick="showMusicBrainzModal();setTimeout(function(){populateMusicBrainzSearch(' +
-        sArtist +
-        ", " +
-        sAlbum +
-        ')},300)"><i class="bi bi-search"></i></button>';
-      var queueBtn = inQueue
-        ? '<button class="btn btn-sm btn-outline-success" disabled title="Already in queue"><i class="bi bi-check2-circle"></i></button>'
-        : '<button class="btn btn-sm btn-outline-primary" title="Add to queue" onclick="addUpcomingReleaseToQueueDashboard(\'' +
-          eArtist +
-          "', '" +
-          eAlbum +
-          "', '" +
-          eDate +
-          "', this)\"><i class=\"bi bi-plus-circle\"></i></button>";
-
-      return (
-        "<tr>" +
-        "<td>" +
-        escapeHtml(r.artist_name) +
-        colBadge +
-        recBadge +
-        "</td>" +
-        "<td>" +
-        escapeHtml(r.album_name) +
-        "</td>" +
-        "<td>" +
-        escapeHtml(releaseDate) +
-        " " +
-        dateBadge +
-        "</td>" +
-        "<td>" +
-        sourceBadge +
-        "</td>" +
-        '<td class="text-center"><div class="d-flex gap-1 justify-content-center">' +
-        searchBtn +
-        queueBtn +
-        "</div></td>" +
-        "</tr>"
-      );
-    })
-    .join("");
-
-  body.innerHTML = rows;
-}
-
-function _upcomingTableFilterEndpoint() {
-  var params = new URLSearchParams();
-  if (dashboardTableFilter === "collection") params.set("collection", "true");
-  else if (dashboardTableFilter === "recommended") params.set("recommended", "true");
-  params.set("include_queue", "true");
-  return "/api/upcoming-releases?" + params.toString();
+    return `<tr>
+      <td>${escapeHtml(r.artist_name)}${colBadge}${recBadge}</td>
+      <td>${escapeHtml(r.album_name)}</td>
+      <td>${escapeHtml(releaseDate)} ${dateBadge}</td>
+      <td>${sourceBadge}</td>
+      <td class="text-center"><div class="d-flex gap-1 justify-content-center">${searchBtn}${queueBtn}</div></td>
+    </tr>`;
+  }).join("");
 }
 
 function _renderUpcomingTableFilterButtons() {
-  var ids = { all: "upcomingTableFilterAll", collection: "upcomingTableFilterCollection", recommended: "upcomingTableFilterRecommended" };
-  Object.keys(ids).forEach(function (key) {
-    var btn = document.getElementById(ids[key]);
+  ["all", "collection", "recommended"].forEach(key => {
+    const btn = document.getElementById(`upcomingTableFilter${key.charAt(0).toUpperCase() + key.slice(1)}`);
     if (!btn) return;
-    var active = key === dashboardTableFilter;
+    const active = key === dashboardTableFilter;
     btn.classList.toggle("btn-info", active);
     btn.classList.toggle("btn-outline-info", !active);
-    btn.setAttribute("aria-pressed", active ? "true" : "false");
   });
 }
 
 function setUpcomingTableFilter(filter) {
-  var allowed = ["all", "collection", "recommended"];
-  dashboardTableFilter = allowed.indexOf(filter) !== -1 ? filter : "all";
+  dashboardTableFilter = ["all", "collection", "recommended"].includes(filter) ? filter : "all";
   _renderUpcomingTableFilterButtons();
-  try { sessionStorage.setItem("dashboardTableFilter", dashboardTableFilter); } catch (e) {}
+  sessionStorage.setItem("dashboardTableFilter", dashboardTableFilter);
   loadUpcomingReleasesTable();
 }
 
 async function loadUpcomingReleasesTable() {
   try {
-    var endpoint = _upcomingTableFilterEndpoint();
-    var resp = await fetch(endpoint);
-    var data = await resp.json();
-    var releases = data.releases || [];
+    const params = new URLSearchParams({ include_queue: "true" });
+    if (dashboardTableFilter === "collection") params.set("collection", "true");
+    else if (dashboardTableFilter === "recommended") params.set("recommended", "true");
+    
+    const resp = await fetch(`/api/upcoming-releases?${params.toString()}`);
+    const data = await resp.json();
+    let releases = data.releases || [];
 
-    if (dashboardTableFilter === "collection" && releases.some(function (r) { return r.artist_in_collection !== undefined; })) {
-      releases = releases.filter(function (r) { return r.artist_in_collection; });
-    } else if (dashboardTableFilter === "recommended" && releases.some(function (r) { return r.artist_in_recommended !== undefined; })) {
-      releases = releases.filter(function (r) { return r.artist_in_recommended; });
-    }
+    if (dashboardTableFilter === "collection") releases = releases.filter(r => r.artist_in_collection);
+    else if (dashboardTableFilter === "recommended") releases = releases.filter(r => r.artist_in_recommended);
 
-    releases.sort(function (a, b) {
-      return (a.release_date || "9999-12-31").localeCompare(b.release_date || "9999-12-31");
-    });
-
+    releases.sort((a, b) => (a.release_date || "9999-12-31").localeCompare(b.release_date || "9999-12-31"));
     renderUpcomingReleasesTable(releases);
   } catch (error) {
     console.error("Error loading upcoming releases table:", error);
-    var body = document.getElementById("upcoming-releases-body");
-    if (body) body.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Error loading releases</td></tr>';
   }
 }
 
 // ===== Unified Log =====
-var logPaused = false;
+let logPaused = false;
 
 function toggleLog() {
-  var body = document.getElementById("logBody");
-  var btn = document.getElementById("toggleLogBtn");
+  const body = document.getElementById("logBody");
+  const btn = document.getElementById("toggleLogBtn");
   if (!body || !btn) return;
   body.classList.toggle("collapsed");
-  btn.innerHTML = body.classList.contains("collapsed")
-    ? '<i class="bi bi-chevron-down"></i>'
-    : '<i class="bi bi-chevron-up"></i>';
+  btn.innerHTML = body.classList.contains("collapsed") ? '<i class="bi bi-chevron-down"></i>' : '<i class="bi bi-chevron-up"></i>';
 }
 
 function updateUnifiedLog() {
   if (logPaused) return;
   fetch("/api/unified-log?lines=150")
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
-      var logEl = document.getElementById("unifiedLog");
-      if (logEl && data && data.lines) {
+    .then(r => r.json())
+    .then(data => {
+      const logEl = document.getElementById("unifiedLog");
+      if (logEl && data?.lines) {
         logEl.textContent = data.lines.join("\n");
         logEl.scrollTop = logEl.scrollHeight;
       }
-    })
-    .catch(function () { /* silent */ });
+    }).catch(() => {});
 }
 
 // ===== Active Scans Progress Panel =====
-var ACTIVE_SCAN_CONFIG = {
-  popularity_scan:     { icon: "bi-graph-up",        label: "Popularity",   color: "bg-primary" },
-  navidrome_scan:      { icon: "bi-cloud-arrow-down", label: "Navidrome",   color: "bg-secondary" },
-  library_scan:        { icon: "bi-server",           label: "Library Sync", color: "bg-warning" },
-  essentia_mood_scan:  { icon: "bi-cpu",              label: "Essentia",    color: "bg-info" },
-  metadata_lookup_scan:{ icon: "bi-info-circle",      label: "Metadata",    color: "bg-info" },
-  singles_scan:        { icon: "bi-star",             label: "Singles",     color: "bg-warning" },
-  missing_releases_scan:{icon: "bi-flag",             label: "Missing",     color: "bg-secondary" },
-};
-
 function updateActiveScans() {
-  fetch("/api/scan-progress?_ts=" + Date.now(), { cache: "no-store" })
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
-      var panel = document.getElementById("activeScansPanel");
-      var body = document.getElementById("activeScansBody");
+  fetch(`/api/scan-progress?_ts=${Date.now()}`, { cache: "no-store" })
+    .then(r => r.json())
+    .then(data => {
+      const panel = document.getElementById("activeScansPanel");
+      const body = document.getElementById("activeScansBody");
       if (!panel || !body) return;
 
-      var active = data.active_scans || [];
+      const active = data.active_scans || [];
       if (active.length === 0) {
         panel.style.display = "none";
         return;
       }
 
       panel.style.display = "";
-      var html = "";
-      active.forEach(function (scan) {
-        var cfg = ACTIVE_SCAN_CONFIG[scan.scan_type] || { icon: "bi-lightning", label: scan.scan_type, color: "bg-secondary" };
-        var pct = Math.min(scan.progress || 0, 100);
-        var items = scan.processed_items || 0;
-        var total = scan.total_items || "?";
-        var current = scan.current_item || "";
-        var message = scan.message || "";
-
-        html += '<div class="mb-2">';
-        html += '<div class="d-flex justify-content-between align-items-center mb-1">';
-        html += '<span><i class="bi ' + cfg.icon + ' me-1"></i><strong>' + cfg.label + '</strong>';
-        if (message) html += ' <span class="text-muted small ms-2">' + escapeHtml(message) + '</span>';
-        html += '</span>';
-        html += '<span class="small text-muted">' + items + '/' + total + '</span>';
-        html += '</div>';
-        if (current) {
-          html += '<div class="small text-muted mb-1 text-truncate" style="max-width:600px;" title="' + escapeHtml(current) + '">' + escapeHtml(current) + '</div>';
-        }
-        html += '<div class="progress" style="height:8px;">';
-        html += '<div class="progress-bar progress-bar-striped progress-bar-animated ' + cfg.color + '" style="width:' + pct + '%;"></div>';
-        html += '</div>';
-        html += '</div>';
-      });
-
-      body.innerHTML = html;
-    })
-    .catch(function () { /* silent */ });
+      body.innerHTML = active.map(scan => {
+        const pct = Math.min(scan.progress || 0, 100);
+        return `
+          <div class="mb-2">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <span><i class="bi bi-activity me-1"></i><strong>${escapeHtml(scan.scan_type)}</strong>
+              ${scan.message ? `<span class="text-muted small ms-2">${escapeHtml(scan.message)}</span>` : ''}</span>
+              <span class="small text-muted">${scan.processed_items || 0}/${scan.total_items || "?"}</span>
+            </div>
+            ${scan.current_item ? `<div class="small text-muted mb-1 text-truncate" style="max-width:600px;">${escapeHtml(scan.current_item)}</div>` : ''}
+            <div class="progress" style="height:8px;">
+              <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" style="width:${pct}%;"></div>
+            </div>
+          </div>`;
+      }).join("");
+    }).catch(() => {});
 }
 
-// ===== Polling Orchestration =====
+// ===== Initialization =====
 function updateAll() {
   pollPopularityStatus();
   pollNavidromeStatus();
@@ -675,36 +522,28 @@ function updateAll() {
   updateRecentScans();
 }
 
-var _pi = null;
 document.addEventListener("DOMContentLoaded", function () {
-  // Render initial recent scans from server-provided data
   renderRecentScans((window._pd && window._pd.recentScans) || []);
 
-  // Upcoming releases table
   try {
-    var storedTableFilter = sessionStorage.getItem("dashboardTableFilter");
+    const storedTableFilter = sessionStorage.getItem("dashboardTableFilter");
     if (storedTableFilter) dashboardTableFilter = storedTableFilter;
   } catch (e) {}
+  
   _renderUpcomingTableFilterButtons();
   setTimeout(loadUpcomingReleasesTable, 400);
   setInterval(loadUpcomingReleasesTable, 30 * 60 * 1000);
 
-  // Pause / Resume log button
-  var pauseBtn = document.getElementById("pauseLogBtn");
+  const pauseBtn = document.getElementById("pauseLogBtn");
   if (pauseBtn) {
     pauseBtn.addEventListener("click", function () {
       logPaused = !logPaused;
-      pauseBtn.innerHTML = logPaused
-        ? '<i class="bi bi-play"></i> Resume'
-        : '<i class="bi bi-pause"></i> Pause';
+      pauseBtn.innerHTML = logPaused ? '<i class="bi bi-play"></i> Resume' : '<i class="bi bi-pause"></i> Pause';
     });
   }
 
-  // Start polling
   updateAll();
-  _pi = setInterval(updateAll, 5000);
-
-  // Unified log refreshes less frequently
+  setInterval(updateAll, 5000);
   updateUnifiedLog();
   setInterval(updateUnifiedLog, 10000);
 });
