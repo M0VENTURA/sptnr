@@ -34,3 +34,25 @@ def should_use_cached_score(track):
         return False
 
     return (datetime.now() - last_lookup) < timedelta(days=7)
+
+
+def get_cache_duration_hours(track_year: int | None = None) -> int:
+    """Return cache TTL in hours based on track release age.
+
+    Older releases change less frequently, so they can be cached longer:
+    - 3+ years old: 168 hours (7 days)
+    - 1-3 years old: 72 hours (3 days)
+    - < 1 year or unknown: 24 hours (conservative)
+    """
+    if not track_year:
+        return 24
+    try:
+        age_years = datetime.now().year - int(track_year)
+        if age_years >= 3:
+            return 168
+        elif age_years >= 1:
+            return 72
+        else:
+            return 24
+    except (ValueError, TypeError):
+        return 24

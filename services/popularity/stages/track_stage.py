@@ -50,8 +50,8 @@ from db.repositories.tracks import (
 )
 from helpers.normalization_service import safe_int, safe_str
 
-# Re-fetch threshold: skip API calls if data was fetched within this window.
-_CACHE_TTL_HOURS = 24
+# Re-fetch threshold provider — returns hours based on track release age.
+from services.popularity.popularity_cache_policy import get_cache_duration_hours
 
 logger = logging.getLogger(__name__)
 
@@ -234,19 +234,22 @@ def process_track(
 
             # ── Staleness check ───────────────────────────────────────────
             # Skip API calls if fresh-enough data is already in the DB.
+            # Cache duration varies by track age: older tracks change less.
             from datetime import datetime, timezone
             now_ts = datetime.now(timezone.utc)
+            _track_year = effective_track.get("year") or effective_track.get("release_year")
+            _cache_ttl = get_cache_duration_hours(_track_year)
             last_lf_ts = effective_track.get("lastfm_last_updated")
             last_mb_ts = effective_track.get("musicbrainz_last_updated")
             has_fresh_lf = (
                 last_lf_ts
                 and isinstance(last_lf_ts, datetime)
-                and (now_ts - last_lf_ts).total_seconds() < _CACHE_TTL_HOURS * 3600
+                and (now_ts - last_lf_ts).total_seconds() < _cache_ttl * 3600
             )
             has_fresh_mb = (
                 last_mb_ts
                 and isinstance(last_mb_ts, datetime)
-                and (now_ts - last_mb_ts).total_seconds() < _CACHE_TTL_HOURS * 3600
+                and (now_ts - last_mb_ts).total_seconds() < _cache_ttl * 3600
             )
 
             # Use Last.fm client for track info (with multi-artist candidate handling)
@@ -289,7 +292,7 @@ def process_track(
             has_fresh_lb = (
                 last_lb_ts
                 and isinstance(last_lb_ts, datetime)
-                and (now_ts - last_lb_ts).total_seconds() < _CACHE_TTL_HOURS * 3600
+                and (now_ts - last_lb_ts).total_seconds() < _cache_ttl * 3600
             )
             if not has_fresh_lb:
                 if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
