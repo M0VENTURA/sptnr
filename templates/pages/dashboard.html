@@ -144,7 +144,7 @@
             </a>
         </div>
         <div class="col-6 col-md-4 col-xl-2">
-            <button onclick="window.openGlobalMbSearch('', '')" class="btn btn-outline-info w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+            <button onclick="document.getElementById('lookupCard')?.scrollIntoView({behavior:'smooth'}); document.getElementById('lookupArtist')?.focus()" class="btn btn-outline-info w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
                 <i class="bi bi-search fs-4"></i> <span class="small fw-semibold">Search</span>
             </button>
         </div>
@@ -152,6 +152,44 @@
             <button onclick="stopAllScans()" class="btn btn-outline-danger w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
                 <i class="bi bi-stop-circle fs-4"></i> <span class="small fw-semibold">Stop</span>
             </button>
+        </div>
+    </div>
+
+    <!-- ===== Lookup Card ===== -->
+    <div class="card mb-4 border-info" id="lookupCard">
+        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+            <h6 class="mb-0"><i class="bi bi-search"></i> MusicBrainz Lookup</h6>
+            <small class="text-muted">Search for releases to download</small>
+        </div>
+        <div class="card-body py-3">
+            <form onsubmit="event.preventDefault(); doLookup()">
+                <div class="row g-2 align-items-end">
+                    <div class="col-12 col-sm-6 col-md-3">
+                        <label class="form-label form-label-sm mb-1">Artist</label>
+                        <input type="text" class="form-control form-control-sm" id="lookupArtist" placeholder="Artist name">
+                    </div>
+                    <div class="col-12 col-sm-6 col-md-3">
+                        <label class="form-label form-label-sm mb-1">Album</label>
+                        <input type="text" class="form-control form-control-sm" id="lookupAlbum" placeholder="Album name">
+                    </div>
+                    <div class="col-6 col-sm-4 col-md-2">
+                        <label class="form-label form-label-sm mb-1">Track</label>
+                        <input type="text" class="form-control form-control-sm" id="lookupTrack" placeholder="Track title">
+                    </div>
+                    <div class="col-6 col-sm-4 col-md-1">
+                        <label class="form-label form-label-sm mb-1">Year</label>
+                        <input type="text" class="form-control form-control-sm" id="lookupYear" placeholder="2024" maxlength="4">
+                    </div>
+                    <div class="col-12 col-sm-4 col-md-3 d-flex gap-2">
+                        <button type="submit" class="btn btn-info btn-sm flex-grow-1">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearLookup()" title="Clear">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </div>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -245,6 +283,9 @@
 
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 
+{# MusicBrainz Search Modal (shared component) #}
+{% include 'components/_musicbrainz_search_modal.html' %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -258,4 +299,27 @@
 
 <script src="{{ url_for('static', filename='js/downloads.js') }}"></script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script>
+  function doLookup() {
+    var artist = document.getElementById('lookupArtist')?.value?.trim() || '';
+    var album = document.getElementById('lookupAlbum')?.value?.trim() || '';
+    var track = document.getElementById('lookupTrack')?.value?.trim() || '';
+    var year = document.getElementById('lookupYear')?.value?.trim() || '';
+    var query = [artist, album, track, year].filter(Boolean).join(' ');
+    if (!query) return;
+    if (typeof window.openGlobalMbSearch === 'function') {
+      window.openGlobalMbSearch(artist, query, function(selected) {
+        if (typeof window.downloadMbRelease === 'function') {
+          window.downloadMbRelease(selected.id, selected.title, selected.artist, 'slskd');
+        }
+      });
+    }
+  }
+  function clearLookup() {
+    ['lookupArtist','lookupAlbum','lookupTrack','lookupYear'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+  }
+</script>
 {% endblock %}
