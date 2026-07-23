@@ -14,16 +14,16 @@
         <i class="bi bi-calendar-event"></i> Upcoming Album Releases
       </h5>
       <div class="d-flex align-items-center gap-2 flex-wrap">
-        <button class="btn btn-sm btn-success" onclick="checkForUpdates()">
+        <button class="btn btn-sm btn-success" onclick="checkForUpdatesMonitor()">
           <i class="bi bi-bell"></i> Check for Updates
         </button>
-        <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleases()">
+        <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleasesMonitor()">
           <i class="bi bi-download"></i> Update from Wikipedia
         </button>
-        <button class="btn btn-sm btn-outline-primary" onclick="refreshUpcomingReleases()">
+        <button class="btn btn-sm btn-outline-primary" onclick="refreshUpcomingReleasesMonitor()">
           <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
-        <button class="btn btn-sm btn-outline-danger" onclick="clearUpcomingReleases()" title="Clear old entries and start fresh">
+        <button class="btn btn-sm btn-outline-danger" onclick="clearUpcomingReleasesMonitor()" title="Clear old entries and start fresh">
           <i class="bi bi-trash"></i> Clear Database
         </button>
       </div>
@@ -164,14 +164,15 @@
 
 <!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+<script src="{{url_for('static', filename='js/monitor.js')}}"></script>
 <script>
   document.addEventListener('DOMContentLoaded', function() {
     const lastChecked = localStorage.getItem('upcomingReleasesLastChecked');
     const oneDayMs = 24 * 60 * 60 * 1000;
     if (!lastChecked || (Date.now() - parseInt(lastChecked, 10)) > oneDayMs) {
-      setTimeout(checkForUpdates, 1000);
+      setTimeout(checkForUpdatesMonitor, 1000);
     } else {
-      setTimeout(refreshUpcomingReleases, 1000);
+      setTimeout(refreshUpcomingReleasesMonitor, 1000);
     }
   });
 </script>

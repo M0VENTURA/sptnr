@@ -41,6 +41,83 @@ from services.playlists.playlist_external_import_service import (
 
 playlists_bp = Blueprint("playlists", __name__)
 
+
+
+# =============================================================================
+# PLAYLIST DOWNLOAD SESSIONS (lightweight JSON-backed)
+# =============================================================================
+
+import json as _json
+import os as _os
+import uuid as _uuid
+from datetime import datetime as _datetime
+
+_PLAYLIST_SESSIONS_FILE = _os.environ.get(
+    "PLAYLIST_SESSIONS_FILE",
+    "/data/playlist_sessions.json",
+)
+
+
+def _load_sessions() -> list[dict]:
+    """Load all playlist download sessions from the JSON file."""
+    if not _os.path.exists(_PLAYLIST_SESSIONS_FILE):
+        return []
+    try:
+        with open(_PLAYLIST_SESSIONS_FILE, "r", encoding="utf-8") as _fh:
+            return _json.load(_fh)
+    except Exception:
+        return []
+
+
+def _save_sessions(sessions: list[dict]) -> None:
+    """Persist playlist download sessions to the JSON file."""
+    _os.makedirs(_os.path.dirname(_PLAYLIST_SESSIONS_FILE), exist_ok=True)
+    with open(_PLAYLIST_SESSIONS_FILE, "w", encoding="utf-8") as _fh:
+        _json.dump(sessions, _fh, indent=2, default=str)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/playlist-downloads
+# ---------------------------------------------------------------------------
+
+@playlists_bp.route("/api/playlist-downloads", methods=["GET"])
+def api_playlist_downloads_list():
+    """Return all active playlist download sessions."""
+    sessions = _load_sessions()
+    return jsonify({"sessions": sessions})
+
+
+# ---------------------------------------------------------------------------
+# POST /api/playlist-downloads/create
+# ---------------------------------------------------------------------------
+
+@playlists_bp.route("/api/playlist-downloads/create", methods=["POST"])
+async def api_playlist_downloads_create():
+    """Create a new playlist download session."""
+    data = (await request.get_json(silent=True)) or {}
+    session_name = str(data.get("session_name", "Unnamed Session")).strip()
+    total_tracks = data.get("total_tracks")
+    try:
+        total_tracks = int(total_tracks) if total_tracks is not None else 0
+    except (TypeError, ValueError):
+        total_tracks = 0
+
+    new_session = {
+        "id": str(_uuid.uuid4()),
+        "session_name": session_name or "Unnamed Session",
+        "status": "active",
+        "completed_tracks": 0,
+        "total_tracks": total_tracks,
+        "priority_queue": bool(data.get("priority_queue", False)),
+        "created_at": _datetime.now().isoformat(),
+    }
+
+    sessions = _load_sessions()
+    sessions.append(new_session)
+    _save_sessions(sessions)
+
+    return jsonify({"success": True, "session_id": new_session["id"]})
+
 # =============================================================================
 # UI ROUTES
 # =============================================================================
