@@ -1,0 +1,31 @@
+{# Album Lookup Modal — triggered by openAlbumLookupModal() in album_detail.js #}
+<div class="modal fade" id="albumLookupModal" tabindex="-1" aria-labelledby="albumLookupModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="albumLookupModalLabel">
+          <i class="bi bi-search"></i> Album Lookup
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small">Search for album metadata corrections from MusicBrainz.</p>
+        <div class="mb-3">
+          <label class="form-label">Artist</label>
+          <input type="text" class="form-control" id="albumLookupArtist" value="{{ artist_name }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Album</label>
+          <input type="text" class="form-control" id="albumLookupAlbum" value="{{ album_name }}">
+        </div>
+        <div id="albumLookupResults"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-primary" onclick="runAlbumLookup()">
+          <i class="bi bi-search"></i> Search
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
