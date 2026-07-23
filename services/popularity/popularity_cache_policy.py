@@ -2,26 +2,50 @@
 
 Determines when cached popularity data can be reused vs.
 requiring a fresh API lookup. Uses age-based rules:
-- Tracks older than 2 years with existing scores are frozen.
+- Tracks older than *mature_track_min_age_years* (configurable, default 2)
+  with existing scores are frozen.
 - Recently looked-up tracks reuse cached Spotify scores.
 
 Reduces API calls during repeated scans.
 """
 
+from __future__ import annotations
+
 from datetime import datetime, timedelta
+from typing import Any
 
 
-def is_track_older_than_years(year, years=2):
-    """Return True when a release year is at least *years* old."""
+def _get_mature_cutoff_years() -> int:
+    """Read the mature-track freeze cutoff from config, default 2 years."""
+    try:
+        from helpers.config_helpers import get_feature
+        return max(1, int(get_feature("mature_track_min_age_years", 2)))
+    except Exception:
+        return 2
+
+
+def is_track_older_than_years(year: Any, years: int | None = None) -> bool:
+    """Return True when a release year is at least *years* old.
+
+    If *years* is None, reads from the ``mature_track_min_age_years``
+    config key (default 2).
+    """
+    if years is None:
+        years = _get_mature_cutoff_years()
     if not year:
         return False
     return (datetime.now().year - int(year)) >= years
 
 
-def should_freeze_track(track):
-    """Return True when a mature track with existing score should skip refresh."""
+def should_freeze_track(track: dict[str, Any]) -> bool:
+    """Return True when a mature track with existing score should skip refresh.
+
+    The minimum age threshold is read from config key
+    ``features.mature_track_min_age_years`` (default 2 years).
+    """
+    cutoff = _get_mature_cutoff_years()
     return (
-        is_track_older_than_years(track.get("year"), 2)
+        is_track_older_than_years(track.get("year"), cutoff)
         and track.get("final_score")
     )
 
