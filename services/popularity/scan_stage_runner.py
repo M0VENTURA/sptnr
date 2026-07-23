@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from services.popularity.progress_tracker import update
+from services.popularity.popularity_cache_policy import should_freeze_track
 from services.popularity.scan_hooks import (
     apply_context_fields_to_track,
     get_stat_eligible_tracks,
@@ -158,6 +159,18 @@ def run_scan(
 
         for track_context in track_contexts:
             prepared_track = apply_context_fields_to_track(track_context)
+
+            # ── Mature-track freeze ──────────────────────────────────────
+            # Tracks older than 2 years with an existing final_score are
+            # skipped — their popularity is stable and unlikely to change.
+            if should_freeze_track(prepared_track):
+                logger.debug(
+                    "[scan_runner] Freezing mature track '%s' (has existing score %.1f)",
+                    prepared_track.get("title", "?"),
+                    prepared_track.get("final_score", 0),
+                )
+                tracks_processed += 1
+                continue
 
             track_result = process_track(
                 track=prepared_track,
