@@ -51,7 +51,16 @@ from db.repositories.tracks import (
 from helpers.normalization_service import safe_int, safe_str
 
 # Re-fetch threshold provider — returns hours based on track release age.
-from services.popularity.popularity_cache_policy import get_cache_duration_hours
+from services.popularity.popularity_cache_policy import (
+    get_cache_duration_hours,
+    should_use_cached_score,
+)
+
+# Score adjustments (artist-context and album-deviation)
+from services.popularity.popularity_adjustments import (
+    apply_mean_popularity_adjustment,
+    apply_album_deviation_adjustment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -252,83 +261,132 @@ def process_track(
                 and (now_ts - last_mb_ts).total_seconds() < _cache_ttl * 3600
             )
 
-            # Use Last.fm client for track info (with multi-artist candidate handling)
-            lastfm_listeners = _as_int(effective_track.get("lastfm_listeners") or 0)
-            lastfm_playcount = _as_int(effective_track.get("lastfm_playcount") or 0)
-            if not has_fresh_lf:
-                try:
-                    from helpers.config_helpers import get_config
-                    _lf_cfg = get_config().get("api_integrations", {}).get("lastfm", {})
-                    _lf_api_key = _lf_cfg.get("api_key", "")
-                    if _lf_api_key:
-                        lf = LastFmClient(_lf_api_key)
-                        lf_result = lf.get_track_info(artist, title)
-                        lastfm_listeners = _as_int(lf_result.get("listeners") if isinstance(lf_result, dict) else 0)
-                        lastfm_playcount = _as_int(lf_result.get("track_play") if isinstance(lf_result, dict) else 0)
-                        # Persist raw data + timestamp for future scans
-                        update_payload["lastfm_listeners"] = lastfm_listeners
-                        update_payload["lastfm_playcount"] = lastfm_playcount
-                        update_payload["lastfm_last_updated"] = now_ts
-                        toptags = lf_result.get("toptags", {}) if isinstance(lf_result, dict) else {}
-                        tag_list = toptags.get("tag", []) if isinstance(toptags, dict) else []
-                        if tag_list:
-                            import json
-                            update_payload["lastfm_tags"] = json.dumps(
-                                [t.get("name", "") for t in tag_list if isinstance(t, dict) and t.get("name")]
-                            )
-                    else:
+            # ── Overall cache gate ────────────────────────────────────────
+            # If the track has a fresh Spotify-style cached score AND already
+            # has a valid final_score, skip all API re-fetches entirely.
+            _cached = should_use_cached_score(effective_track) and effective_track.get("final_score")
+            if _cached:
+                logger.debug(
+                    "[track_stage] Using cached score for %s (final_score=%.1f)",
+                    track_id,
+                    effective_track["final_score"],
+                )
+                lastfm_listeners = _as_int(effective_track.get("lastfm_listeners") or 0)
+                lastfm_playcount = _as_int(effective_track.get("lastfm_playcount") or 0)
+                listenbrainz_listens = _as_int(effective_track.get("listenbrainz_listens") or 0)
+                listenbrainz_users = _as_int(effective_track.get("listenbrainz_users") or 0)
+                score_data = {
+                    "combined_score": float(effective_track.get("final_score", 0)),
+                    "lastfm_score": float(effective_track.get("lastfm_score", 0)),
+                    "listenbrainz_score": float(effective_track.get("listenbrainz_score", 0)),
+                    "age_score": float(effective_track.get("age_score", 0)),
+                }
+                update_payload["_cached"] = True
+            else:
+                # --- Last.fm ---
+                lastfm_listeners = _as_int(effective_track.get("lastfm_listeners") or 0)
+                lastfm_playcount = _as_int(effective_track.get("lastfm_playcount") or 0)
+                if not has_fresh_lf:
+                    try:
+                        from helpers.config_helpers import get_config
+                        _lf_cfg = get_config().get("api_integrations", {}).get("lastfm", {})
+                        _lf_api_key = _lf_cfg.get("api_key", "")
+                        if _lf_api_key:
+                            lf = LastFmClient(_lf_api_key)
+                            lf_result = lf.get_track_info(artist, title)
+                            lastfm_listeners = _as_int(lf_result.get("listeners") if isinstance(lf_result, dict) else 0)
+                            lastfm_playcount = _as_int(lf_result.get("track_play") if isinstance(lf_result, dict) else 0)
+                            update_payload["lastfm_listeners"] = lastfm_listeners
+                            update_payload["lastfm_playcount"] = lastfm_playcount
+                            update_payload["lastfm_last_updated"] = now_ts
+                            toptags = lf_result.get("toptags", {}) if isinstance(lf_result, dict) else {}
+                            tag_list = toptags.get("tag", []) if isinstance(toptags, dict) else []
+                            if tag_list:
+                                import json
+                                update_payload["lastfm_tags"] = json.dumps(
+                                    [t.get("name", "") for t in tag_list if isinstance(t, dict) and t.get("name")]
+                                )
+                        else:
+                            lastfm_listeners = 0
+                            lastfm_playcount = 0
+                    except Exception:
                         lastfm_listeners = 0
                         lastfm_playcount = 0
-                except Exception:
-                    lastfm_listeners = 0
-                    lastfm_playcount = 0
 
-            # Use ListenBrainz client for recording score
-            # Prefer pre-fetched album-level data from scan_stage_runner,
-            # fall back to a per-track fetch.
-            listenbrainz_listens = _as_int(effective_track.get("listenbrainz_listens") or 0)
-            listenbrainz_users = _as_int(effective_track.get("listenbrainz_users") or 0)
-            last_lb_ts = effective_track.get("listenbrainz_last_updated")
-            has_fresh_lb = (
-                last_lb_ts
-                and isinstance(last_lb_ts, datetime)
-                and (now_ts - last_lb_ts).total_seconds() < _cache_ttl * 3600
-            )
-            if not has_fresh_lb:
-                if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
-                    lb_entry = album_lb_data[recording_mbid]
-                    if lb_entry:
-                        listenbrainz_listens = _as_int(lb_entry.get("total_listen_count") or 0)
-                        listenbrainz_users = _as_int(lb_entry.get("total_user_count") or 0)
-                if listenbrainz_listens == 0 and recording_mbid:
-                    try:
-                        lb = ListenBrainzClient()
-                        lb_result = lb.get_recording_popularity(recording_mbid) if recording_mbid else {}
-                        listenbrainz_listens = _as_int(lb_result.get("listen_count") if isinstance(lb_result, dict) else 0)
-                        listenbrainz_users = _as_int(lb_result.get("user_count") if isinstance(lb_result, dict) else 0)
-                    except Exception:
-                        listenbrainz_listens = 0
-                        listenbrainz_users = 0
-                # Persist raw data + timestamp
-                update_payload["listenbrainz_listens"] = listenbrainz_listens
-                update_payload["listenbrainz_users"] = listenbrainz_users
-                update_payload["listenbrainz_last_updated"] = now_ts
+                # --- ListenBrainz ---
+                listenbrainz_listens = _as_int(effective_track.get("listenbrainz_listens") or 0)
+                listenbrainz_users = _as_int(effective_track.get("listenbrainz_users") or 0)
+                last_lb_ts = effective_track.get("listenbrainz_last_updated")
+                has_fresh_lb = (
+                    last_lb_ts
+                    and isinstance(last_lb_ts, datetime)
+                    and (now_ts - last_lb_ts).total_seconds() < _cache_ttl * 3600
+                )
+                if not has_fresh_lb:
+                    if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
+                        lb_entry = album_lb_data[recording_mbid]
+                        if lb_entry:
+                            listenbrainz_listens = _as_int(lb_entry.get("total_listen_count") or 0)
+                            listenbrainz_users = _as_int(lb_entry.get("total_user_count") or 0)
+                    if listenbrainz_listens == 0 and recording_mbid:
+                        try:
+                            lb = ListenBrainzClient()
+                            lb_result = lb.get_recording_popularity(recording_mbid) if recording_mbid else {}
+                            listenbrainz_listens = _as_int(lb_result.get("listen_count") if isinstance(lb_result, dict) else 0)
+                            listenbrainz_users = _as_int(lb_result.get("user_count") if isinstance(lb_result, dict) else 0)
+                        except Exception:
+                            listenbrainz_listens = 0
+                            listenbrainz_users = 0
+                    update_payload["listenbrainz_listens"] = listenbrainz_listens
+                    update_payload["listenbrainz_users"] = listenbrainz_users
+                    update_payload["listenbrainz_last_updated"] = now_ts
 
-            score_data = calculate_combined_popularity_score(
-                lastfm_listeners=lastfm_listeners,
-                lastfm_artist_max_listeners=artist_max_lf_listeners,
-                listenbrainz_listens=listenbrainz_listens,
-                album_lb_listens=album_lb_listens,
-                age_source_value=listenbrainz_listens,
-                release_date=release_date,
-            )
+                score_data = calculate_combined_popularity_score(
+                    lastfm_listeners=lastfm_listeners,
+                    lastfm_artist_max_listeners=artist_max_lf_listeners,
+                    listenbrainz_listens=listenbrainz_listens,
+                    album_lb_listens=album_lb_listens,
+                    age_source_value=listenbrainz_listens,
+                    release_date=release_date,
+                )
+
+            # Apply score_data (whether cached or freshly computed)
             update_payload.update(score_data)
 
             # Map combined_score → final_score so it persists to the DB.
-            # calculate_combined_popularity_score returns "combined_score"
-            # but the tracks table column is named "final_score".
-            update_payload["final_score"] = score_data.get("combined_score", 0.0)
-            update_payload["popularity"] = score_data.get("combined_score", 0.0)
+            combined = score_data.get("combined_score", 0.0)
+            update_payload["final_score"] = combined
+            update_payload["popularity"] = combined
+
+            # ── Score adjustments ─────────────────────────────────────────
+            # 1. Artist-context adjustment (median+MAD z-score + pre-2005 decay)
+            if combined > 0:
+                _adjusted = apply_mean_popularity_adjustment(
+                    track_popularity=combined,
+                    artist_name=artist,
+                    release_year=_as_int(
+                        effective_track.get("year") or effective_track.get("release_year")
+                    ) or None,
+                )
+                if _adjusted != combined:
+                    update_payload["final_score"] = _adjusted
+                    update_payload["popularity"] = _adjusted
+                    update_payload["popularity_adjusted"] = True
+                    combined = _adjusted
+
+                # 2. Album-deviation adjustment (standout within album)
+                _album_adjusted = apply_album_deviation_adjustment(
+                    track_popularity=combined,
+                    artist_name=artist,
+                    album_name=_as_str(
+                        album_context.get("album") or track.get("album") or ""
+                    ),
+                    artist_mean_popularity=None,  # computed internally
+                )
+                if _album_adjusted != combined:
+                    update_payload["final_score"] = _album_adjusted
+                    update_payload["popularity"] = _album_adjusted
+                    update_payload["album_deviation_adjusted"] = True
 
         except Exception as e:
             logger.debug("[track_stage][SCORING] %s: %s", track_id, e)
