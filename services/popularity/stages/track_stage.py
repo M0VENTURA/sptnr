@@ -46,7 +46,6 @@ from services.enrichment.genre_aggregation_service import (
 # DB
 from db.repositories.tracks import (
     insert_or_update_track,
-    update_track_single_status,
 )
 from helpers.normalization_service import safe_int, safe_str
 
@@ -499,17 +498,6 @@ def process_track(
         insert_or_update_track(track_id, effective_track)
     except Exception as e:
         logger.debug("[track_stage][DB] %s: %s", track_id, e)
-
-    # Persist single detection status separately
-    if "is_single" in update_payload:
-        try:
-            update_track_single_status(
-                track_id,
-                bool(update_payload["is_single"]),
-                str(update_payload.get("single_confidence", "low")),
-            )
-        except Exception as e:
-            logger.debug("[track_stage][SINGLE_DB] %s: %s", track_id, e)
 
     # -------------------------------------------------------------------------
     # 7. RETURN RESULT
