@@ -52,7 +52,7 @@ class WikipediaClient:
                 self.base_url,
                 params=params,
                 headers=self.headers,
-                timeout=15,
+                timeout=30,
             )
 
             # Check content-type before calling .json() to catch HTML error pages
