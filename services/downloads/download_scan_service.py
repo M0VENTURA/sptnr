@@ -146,7 +146,7 @@ def discover_files() -> dict[str, object]:
                     already_in_queue += 1
             conn.close()
         except Exception as exc:
-            logger.warning("[DISCOVER] Queue check failed: %s", exc)
+            logger.debug("[DISCOVER] Queue check: %s", exc)
 
     return {
         "success": True,
