@@ -33,6 +33,7 @@ from sqlalchemy import (
     String,
     Text,
     text,
+    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.orm import backref, relationship
@@ -209,6 +210,31 @@ class ScanHistory(Base):
 
     def __repr__(self) -> str:
         return f"<ScanHistory(id={self.id}, artist={self.artist!r}, status={self.status!r})>"
+
+
+# =============================================================================
+# scan_states (New Table for Cross-Process State Tracking)
+# =============================================================================
+
+class ScanState(Base):
+    __tablename__ = "scan_states"
+
+    scan_type = Column(String, primary_key=True)
+    is_running = Column(Boolean, server_default=text("FALSE"), nullable=True)
+    status = Column(String, server_default=text("'idle'"), nullable=True)
+    stop_requested = Column(Boolean, server_default=text("FALSE"), nullable=True)
+    current_artist = Column(String, nullable=True)
+    last_scanned_artist = Column(String, nullable=True)
+    extra_data = Column(JSONB, server_default=text("'{}'::jsonb"), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True), 
+        server_default=text("CURRENT_TIMESTAMP"), 
+        onupdate=func.now(),
+        nullable=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<ScanState(scan_type={self.scan_type!r}, status={self.status!r})>"
 
 
 # =============================================================================
