@@ -250,6 +250,10 @@ async def api_popularity_run_compat():
     elif raw.get("singles_only"):
         mode = "singles"
 
+    # Record "started" immediately so the dashboard sees it right away
+    from services.scanning.scan_history_service import record_scan
+    record_scan(mode, "started", message=f"{mode} scan started", artist="_SCAN_SESSION_", album=mode)
+
     with scan_lock:
         if is_runtime_running("popularity"):
             return jsonify({

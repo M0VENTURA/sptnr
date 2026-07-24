@@ -50,7 +50,6 @@ def run_popularity_mode(
     """
 
     progress_file = progress_file or get_scan_progress_path("popularity_scan")
-    record_scan(mode, "started", message=f"{mode} scan started", artist="_SCAN_SESSION_", album=mode)
 
     try:
         scan_type = "popularity_scan"
