@@ -1,12 +1,15 @@
 """Popularity statistics and eligibility helpers."""
 
 from __future__ import annotations
+import logging
 from statistics import mean, median, stdev
 
 from services.catalog.album_classification_service import (
     should_exclude_track_from_stats
 )
 from services.popularity.popularity_math import calculate_track_zscore
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, list[float]]:
@@ -26,9 +29,14 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, 
     values = [float(row[0] or 0) for row in cursor.fetchall() or []]
 
     if not values:
+        logger.debug("[POPULARITY_STATS] No valid score tracks found for album: %s - %s", artist, album)
         return 0.0, 0.0, []
 
-    return mean(values), (stdev(values) if len(values) > 1 else 0.0), values
+    avg = mean(values)
+    sd = stdev(values) if len(values) > 1 else 0.0
+    logger.debug("[POPULARITY_STATS] Album stats for %s - %s: mean=%.1f, stdev=%.1f (count=%d)", artist, album, avg, sd, len(values))
+    
+    return avg, sd, values
 
 
 def calculate_artist_stats(conn, artist: str) -> tuple[float, float, list[float]]:
@@ -47,9 +55,14 @@ def calculate_artist_stats(conn, artist: str) -> tuple[float, float, list[float]
     values = [float(row[0] or 0) for row in cursor.fetchall() or []]
 
     if not values:
+        logger.debug("[POPULARITY_STATS] No valid score tracks found for artist: %s", artist)
         return 0.0, 0.0, []
 
-    return mean(values), (stdev(values) if len(values) > 1 else 0.0), values
+    avg = mean(values)
+    sd = stdev(values) if len(values) > 1 else 0.0
+    logger.debug("[POPULARITY_STATS] Artist stats for %s: mean=%.1f, stdev=%.1f (count=%d)", artist, avg, sd, len(values))
+
+    return avg, sd, values
 
 
 def calculate_artist_popularity_stats(artist_name: str, conn) -> dict:
