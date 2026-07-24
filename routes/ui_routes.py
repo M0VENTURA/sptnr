@@ -1118,9 +1118,10 @@ async def album_detail(artist: str, album: str):
                 payload["album_artist"] = new_artist
                 payload["artist"] = new_artist
 
-            # Year
+            # Year — write to all year-related fields for display consistency
             if release_year:
                 payload["year"] = release_year
+                payload["spotify_release_date"] = release_year
                 try:
                     payload["release_year"] = int(release_year)
                 except ValueError:
