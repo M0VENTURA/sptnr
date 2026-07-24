@@ -135,6 +135,18 @@ TABLES_TO_ENSURE: dict[str, str] = {
             CONSTRAINT uq_upcoming_artist_album_source UNIQUE (artist_name, album_name, source)
         )
     """,
+    "scan_states": """
+        CREATE TABLE IF NOT EXISTS scan_states (
+            scan_type TEXT PRIMARY KEY,
+            is_running BOOLEAN DEFAULT FALSE,
+            status TEXT DEFAULT 'idle',
+            stop_requested BOOLEAN DEFAULT FALSE,
+            current_artist TEXT,
+            last_scanned_artist TEXT,
+            extra_data JSONB DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """,
 }
 
 # =============================================================================
@@ -255,5 +267,3 @@ QUEUE_STARTUP_COLUMNS_TO_ENSURE = {
         "status_changed_at", "updated_at",
     )
 }
-
-
