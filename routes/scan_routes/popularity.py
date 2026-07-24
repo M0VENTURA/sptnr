@@ -6,13 +6,18 @@ import logging
 from typing import Any
 
 from quart import flash, jsonify, redirect, request, url_for
+from sqlalchemy import text
 
 import services.scanning.runtime_state as runtime_state
+from db.engine import db_session
 from routes.scan_routes import scans_bp
 from routes.scan_routes._common import form_bool, is_process_alive, run_async
 from services.popularity.pipeline import run_popularity_from_artist, run_popularity_scan
-from services.scanning.scan_state import progress_path, write_progress_file
-from services.scanning.scan_state import write_progress_with_current_artist
+from services.scanning.scan_state import (
+    progress_path,
+    write_progress_file,
+    write_progress_with_current_artist,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +134,7 @@ def scan_popularity_route():
 
         write_progress_file(progress_file, "popularity_scan", True, {"status": "starting"})
 
-        # Build kwargs for the new orchestrator directly (Phase 1 fix)
+        # Build kwargs for the new orchestrator directly
         scan_kwargs: dict[str, Any] = {
             "force": force_rescan,
             "progress_file": progress_file,
@@ -140,7 +145,6 @@ def scan_popularity_route():
             scan_kwargs["singles_only"] = True
         elif scan_mode == "singles_detection":
             scan_kwargs["singles_with_missing_popularity"] = True
-        # "all" / "popularity" → default behaviour (no mode flag needed)
 
         thread = run_async(
             run_popularity_scan,
@@ -241,6 +245,7 @@ async def api_scan_from_artist():
                 artist=artist,
                 force_rescan=force_rescan,
                 progress_file=progress_file,
+                caller_scan_type="popularity",
                 daemon=False,
             )
 
