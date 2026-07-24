@@ -116,19 +116,22 @@ function decodeInlineArg(value, fallback = null) {
  * Opens the global MusicBrainz modal defined in base.html.
  * Allows prepopulating the search fields and executing a callback on selection.
  */
-window.openGlobalMbSearch = function(artist, album, callback) {
+window.openGlobalMbSearch = function(artist, album, callback, track, year) {
     const modalEl = document.getElementById('musicBrainzModal');
     if (!modalEl) {
         console.error("MusicBrainz modal not found in DOM.");
         return;
     }
     
-    // Auto-fill the search input
-    const input = document.getElementById('mbSearchInput');
-    if (input) {
-        const query = `${artist || ''} ${album || ''}`.trim();
-        input.value = query;
-    }
+    // Auto-fill the 4 search fields
+    const artistEl = document.getElementById('mbSearchArtist');
+    const albumEl = document.getElementById('mbSearchAlbum');
+    const trackEl = document.getElementById('mbSearchTrack');
+    const yearEl = document.getElementById('mbSearchYear');
+    if (artistEl && artist) artistEl.value = artist;
+    if (albumEl && album) albumEl.value = album;
+    if (trackEl && track) trackEl.value = track;
+    if (yearEl && year) yearEl.value = year;
     
     // Assign callback to global window object so the component can trigger it
     window._mbSearchCallback = callback;
@@ -136,6 +139,13 @@ window.openGlobalMbSearch = function(artist, album, callback) {
     // Show Modal
     const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
     modal.show();
+    
+    // Auto-search after modal opens
+    setTimeout(function() {
+        if (typeof window.performMbSearch === 'function') {
+            window.performMbSearch();
+        }
+    }, 500);
 };
 
 
@@ -152,10 +162,9 @@ window.doLookup = function() {
     var album  = document.getElementById('lookupAlbum')?.value?.trim() || '';
     var track  = document.getElementById('lookupTrack')?.value?.trim() || '';
     var year   = document.getElementById('lookupYear')?.value?.trim() || '';
-    var query  = [artist, album, track, year].filter(Boolean).join(' ');
-    if (!query) return;
+    if (!artist && !album && !track && !year) return;
     if (typeof window.openGlobalMbSearch === 'function') {
-        window.openGlobalMbSearch(artist, query, function(selected) {
+        window.openGlobalMbSearch(artist, album, function(selected) {
             if (typeof window.downloadMbRelease === 'function') {
                 window.downloadMbRelease(selected.id, selected.title, selected.artist, 'slskd');
             }

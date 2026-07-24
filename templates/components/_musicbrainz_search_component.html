@@ -32,40 +32,55 @@ Usage (modal):
 
 <!-- Search Controls -->
 <div class="mb-search-form">
-  <div class="row g-2">
-    <div class="col-12 col-md-6">
-      <div class="input-group">
-        <input type="text" id="mbSearchInput" class="form-control" placeholder="Search MusicBrainz..." aria-label="Search MusicBrainz">
-        <button id="mbSearchBtn" class="btn btn-primary" onclick="performMbSearch()">
+  <form onsubmit="event.preventDefault(); performMbSearch()">
+    <div class="row g-2 align-items-end">
+      <div class="col-12 col-sm-6 col-md-3">
+        <label class="form-label form-label-sm mb-1">Artist</label>
+        <input type="text" class="form-control form-control-sm" id="mbSearchArtist" placeholder="Artist name">
+      </div>
+      <div class="col-12 col-sm-6 col-md-3">
+        <label class="form-label form-label-sm mb-1">Album</label>
+        <input type="text" class="form-control form-control-sm" id="mbSearchAlbum" placeholder="Album name">
+      </div>
+      <div class="col-6 col-sm-4 col-md-2">
+        <label class="form-label form-label-sm mb-1">Track</label>
+        <input type="text" class="form-control form-control-sm" id="mbSearchTrack" placeholder="Track title">
+      </div>
+      <div class="col-6 col-sm-4 col-md-1">
+        <label class="form-label form-label-sm mb-1">Year</label>
+        <input type="text" class="form-control form-control-sm" id="mbSearchYear" placeholder="2024" maxlength="4">
+      </div>
+      <div class="col-12 col-sm-4 col-md-3 d-flex gap-2">
+        <button type="submit" class="btn btn-info btn-sm flex-grow-1" id="mbSearchBtn">
           <i class="bi bi-search"></i> Search
+        </button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearMbSearch()" title="Clear">
+          <i class="bi bi-x-lg"></i>
         </button>
       </div>
     </div>
-    <div class="col-6 col-md-3">
-      <select id="mbReleaseType" class="form-select" onchange="performMbSearch()">
-        <option value="">All Types</option>
-        <option value="album">Album</option>
-        <option value="single">Single</option>
-        <option value="ep">EP</option>
-        <option value="compilation">Compilation</option>
-        <option value="soundtrack">Soundtrack</option>
-        <option value="live">Live</option>
-        <option value="remix">Remix</option>
-      </select>
+    <div class="row g-2 mt-2">
+      <div class="col-6 col-md-3">
+        <select id="mbReleaseType" class="form-select form-select-sm" onchange="performMbSearch()">
+          <option value="">All Types</option>
+          <option value="album">Album</option>
+          <option value="single">Single</option>
+          <option value="ep">EP</option>
+          <option value="compilation">Compilation</option>
+          <option value="soundtrack">Soundtrack</option>
+          <option value="live">Live</option>
+          <option value="remix">Remix</option>
+        </select>
+      </div>
+      <div class="col-6 col-md-2">
+        <select id="mbResultLimit" class="form-select form-select-sm" onchange="performMbSearch()">
+          <option value="12">12</option>
+          <option value="25" selected>25</option>
+          <option value="50">50</option>
+        </select>
+      </div>
     </div>
-    <div class="col-6 col-md-2">
-      <select id="mbResultLimit" class="form-select" onchange="performMbSearch()">
-        <option value="12">12</option>
-        <option value="25" selected>25</option>
-        <option value="50">50</option>
-      </select>
-    </div>
-    <div class="col-12 col-md-1">
-      <button class="btn btn-outline-secondary w-100" onclick="clearMbSearch()" title="Clear search">
-        <i class="bi bi-x-lg"></i>
-      </button>
-    </div>
-  </div>
+  </form>
 </div>
 
 <!-- Results -->
@@ -165,38 +180,45 @@ window.hideMusicBrainzModal = function() {
 
 // ===== Populate & auto-search =====
 
-window.populateMusicBrainzSearch = function(artist, album) {
-  var input = document.getElementById('mbSearchInput');
-  if (!input) return;
-  var query = artist || '';
-  if (album) query += ' ' + album;
-  input.value = query.trim();
-  if (query.trim().length > 0) {
-    var btn = document.getElementById('mbSearchBtn');
-    if (btn) btn.click();
+window.populateMusicBrainzSearch = function(artist, album, track, year) {
+  var artistEl = document.getElementById('mbSearchArtist');
+  var albumEl = document.getElementById('mbSearchAlbum');
+  var trackEl = document.getElementById('mbSearchTrack');
+  var yearEl = document.getElementById('mbSearchYear');
+  if (artistEl && artist) artistEl.value = artist;
+  if (albumEl && album) albumEl.value = album;
+  if (trackEl && track) trackEl.value = track;
+  if (yearEl && year) yearEl.value = year;
+  var hasQuery = (artist || album || track || year);
+  if (hasQuery) {
+    setTimeout(function() { performMbSearch(); }, 400);
   }
 };
 
 window.searchMusicBrainzForAllReleases = function(artistName) {
-  var input = document.getElementById('mbSearchInput');
-  if (input) input.value = artistName;
+  var artistEl = document.getElementById('mbSearchArtist');
+  if (artistEl) artistEl.value = artistName;
   window._mbArtistOnlySearch = true;
   showMusicBrainzModal();
   setTimeout(function() {
     performMbSearch();
-  }, 300);
+  }, 400);
 };
 
 // ===== Perform search =====
 
 window.performMbSearch = async function() {
-  var input = document.getElementById('mbSearchInput');
   var resultsEl = document.getElementById('mbSearchResults');
   var typeFilter = document.getElementById('mbReleaseType');
   var limitEl = document.getElementById('mbResultLimit');
-  if (!input || !resultsEl) return;
+  if (!resultsEl) return;
 
-  var query = input.value.trim();
+  // Build query from 4 separate fields
+  var artist = (document.getElementById('mbSearchArtist')?.value || '').trim();
+  var album  = (document.getElementById('mbSearchAlbum')?.value || '').trim();
+  var track  = (document.getElementById('mbSearchTrack')?.value || '').trim();
+  var year   = (document.getElementById('mbSearchYear')?.value || '').trim();
+  var query  = [artist, album, track, year].filter(Boolean).join(' ');
   if (!query) return;
 
   var releaseType = typeFilter ? typeFilter.value : '';
@@ -267,8 +289,10 @@ window.performMbSearch = async function() {
         html += '<div class="row g-0 h-100"><div class="col-4 d-flex align-items-center p-2">';
 
         if (coverUrl) {
-          html += '<img src="' + escHtml(coverUrl) + '" class="rounded img-fluid" style="aspect-ratio:1;object-fit:cover;" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">';
-          html += '<div class="rounded img-fluid d-none" style="aspect-ratio:1;background:var(--tertiary-bg);display:none;align-items:center;justify-content:center;color:var(--text-secondary);"><i class="bi bi-disc fs-1"></i></div>';
+          html += '<div style="position:relative;aspect-ratio:1;">';
+          html += '<img src="' + escHtml(coverUrl) + '" class="rounded img-fluid" style="aspect-ratio:1;object-fit:cover;" onerror="this.style.display=\'none\';this.parentElement.querySelector(\'.mb-placeholder\').style.display=\'flex\'">';
+          html += '<div class="mb-placeholder rounded img-fluid" style="position:absolute;inset:0;display:none;background:var(--tertiary-bg);align-items:center;justify-content:center;color:var(--text-secondary);"><i class="bi bi-disc fs-1"></i></div>';
+          html += '</div>';
         } else {
           html += '<div class="rounded img-fluid d-flex" style="aspect-ratio:1;background:var(--tertiary-bg);align-items:center;justify-content:center;color:var(--text-secondary);"><i class="bi bi-disc fs-1"></i></div>';
         }
@@ -334,11 +358,13 @@ window.selectMbRelease = function(dataKey, releaseId, title) {
 };
 
 window.clearMbSearch = function() {
-  var input = document.getElementById('mbSearchInput');
+  ['mbSearchArtist','mbSearchAlbum','mbSearchTrack','mbSearchYear'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.value = '';
+  });
   var resultsEl = document.getElementById('mbSearchResults');
-  if (input) input.value = '';
   if (resultsEl) {
-    resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-5"><i class="bi bi-music-note-beamed" style="font-size:2rem;"></i><p class="mt-2">Enter a search term above to find releases on MusicBrainz.</p></div>';
+    resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-5"><i class="bi bi-music-note-beamed" style="font-size:2rem;"></i><p class="mt-2">Enter search terms above to find releases on MusicBrainz.</p></div>';
   }
 };
 
