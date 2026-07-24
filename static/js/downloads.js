@@ -4,6 +4,18 @@
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
+// Ensure doLookup exists globally immediately to prevent ReferenceErrors
+window.doLookup = window.doLookup || function(artist, album, track, year, callback) {
+    if (typeof window.openGlobalMbSearch === 'function') {
+        window.openGlobalMbSearch(artist, album, callback || function(selected) {
+            if (typeof window.downloadMbRelease === 'function') {
+                window.downloadMbRelease(selected.id, selected.title, selected.artist, 'slskd');
+            }
+        }, track, year);
+    } else {
+        console.warn('Global MB Search modal not yet initialized.');
+    }
+};
 
 async function fetchJsonOrThrow(url, options = {}, timeoutMs = 30000) {
   const controller = new AbortController();
