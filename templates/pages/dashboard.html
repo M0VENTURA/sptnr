@@ -51,6 +51,78 @@
     </div>
     {% endif %}
 
+    <!-- ===== Lookup Card ===== -->
+    <div class="card mb-4 border-info" id="lookupCard">
+        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+            <h6 class="mb-0"><i class="bi bi-search"></i> MusicBrainz Lookup</h6>
+            <small class="text-muted">Search for releases to download</small>
+        </div>
+        <div class="card-body py-3">
+            <form onsubmit="event.preventDefault(); doLookup()">
+                <div class="row g-2 align-items-end">
+                    <div class="col-12 col-sm-6 col-md-3">
+                        <label class="form-label form-label-sm mb-1">Artist</label>
+                        <input type="text" class="form-control form-control-sm" id="lookupArtist" placeholder="Artist name">
+                    </div>
+                    <div class="col-12 col-sm-6 col-md-3">
+                        <label class="form-label form-label-sm mb-1">Album</label>
+                        <input type="text" class="form-control form-control-sm" id="lookupAlbum" placeholder="Album name">
+                    </div>
+                    <div class="col-6 col-sm-4 col-md-2">
+                        <label class="form-label form-label-sm mb-1">Track</label>
+                        <input type="text" class="form-control form-control-sm" id="lookupTrack" placeholder="Track title">
+                    </div>
+                    <div class="col-6 col-sm-4 col-md-1">
+                        <label class="form-label form-label-sm mb-1">Year</label>
+                        <input type="text" class="form-control form-control-sm" id="lookupYear" placeholder="2024" maxlength="4">
+                    </div>
+                    <div class="col-12 col-sm-4 col-md-3 d-flex gap-2">
+                        <button type="submit" class="btn btn-info btn-sm flex-grow-1">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearLookup()" title="Clear">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="row g-2 mb-4">
+        <div class="col-6 col-md-4 col-xl-2">
+            <a href="/artists" class="btn btn-primary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+                <i class="bi bi-people fs-4"></i> <span class="small fw-semibold">Artists</span>
+            </a>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <a href="/missing" class="btn btn-outline-warning w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+                <i class="bi bi-exclamation-circle fs-4"></i> <span class="small fw-semibold">Missing</span>
+            </a>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <a href="/analytics/genres-moods" class="btn btn-outline-info w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+                <i class="bi bi-bar-chart-line fs-4"></i> <span class="small fw-semibold">Analytics</span>
+            </a>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <a href="/config" class="btn btn-outline-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+                <i class="bi bi-gear fs-4"></i> <span class="small fw-semibold">Settings</span>
+            </a>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <button onclick="document.getElementById('lookupCard')?.scrollIntoView({behavior:'smooth'}); document.getElementById('lookupArtist')?.focus()" class="btn btn-outline-info w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+                <i class="bi bi-search fs-4"></i> <span class="small fw-semibold">Search</span>
+            </button>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <button onclick="stopAllScans()" class="btn btn-outline-danger w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+                <i class="bi bi-stop-circle fs-4"></i> <span class="small fw-semibold">Stop</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- ===== Scan Controls ===== -->
     <div class="row g-2 mb-3">
         <div class="col-sm-6 col-xl-3">
             <div class="card h-100 border-primary border-opacity-25">
@@ -119,77 +191,6 @@
                     <div><span id="ess-status" class="text-muted small">Idle</span></div>
                 </div>
             </div>
-        </div>
-    </div>
-
-    <div class="row g-2 mb-4">
-        <div class="col-6 col-md-4 col-xl-2">
-            <a href="/artists" class="btn btn-primary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-people fs-4"></i> <span class="small fw-semibold">Artists</span>
-            </a>
-        </div>
-        <div class="col-6 col-md-4 col-xl-2">
-            <a href="/missing" class="btn btn-outline-warning w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-exclamation-circle fs-4"></i> <span class="small fw-semibold">Missing</span>
-            </a>
-        </div>
-        <div class="col-6 col-md-4 col-xl-2">
-            <a href="/analytics/genres-moods" class="btn btn-outline-info w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-bar-chart-line fs-4"></i> <span class="small fw-semibold">Analytics</span>
-            </a>
-        </div>
-        <div class="col-6 col-md-4 col-xl-2">
-            <a href="/config" class="btn btn-outline-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-gear fs-4"></i> <span class="small fw-semibold">Settings</span>
-            </a>
-        </div>
-        <div class="col-6 col-md-4 col-xl-2">
-            <button onclick="document.getElementById('lookupCard')?.scrollIntoView({behavior:'smooth'}); document.getElementById('lookupArtist')?.focus()" class="btn btn-outline-info w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-search fs-4"></i> <span class="small fw-semibold">Search</span>
-            </button>
-        </div>
-        <div class="col-6 col-md-4 col-xl-2">
-            <button onclick="stopAllScans()" class="btn btn-outline-danger w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-stop-circle fs-4"></i> <span class="small fw-semibold">Stop</span>
-            </button>
-        </div>
-    </div>
-
-    <!-- ===== Lookup Card ===== -->
-    <div class="card mb-4 border-info" id="lookupCard">
-        <div class="card-header py-2 d-flex justify-content-between align-items-center">
-            <h6 class="mb-0"><i class="bi bi-search"></i> MusicBrainz Lookup</h6>
-            <small class="text-muted">Search for releases to download</small>
-        </div>
-        <div class="card-body py-3">
-            <form onsubmit="event.preventDefault(); doLookup()">
-                <div class="row g-2 align-items-end">
-                    <div class="col-12 col-sm-6 col-md-3">
-                        <label class="form-label form-label-sm mb-1">Artist</label>
-                        <input type="text" class="form-control form-control-sm" id="lookupArtist" placeholder="Artist name">
-                    </div>
-                    <div class="col-12 col-sm-6 col-md-3">
-                        <label class="form-label form-label-sm mb-1">Album</label>
-                        <input type="text" class="form-control form-control-sm" id="lookupAlbum" placeholder="Album name">
-                    </div>
-                    <div class="col-6 col-sm-4 col-md-2">
-                        <label class="form-label form-label-sm mb-1">Track</label>
-                        <input type="text" class="form-control form-control-sm" id="lookupTrack" placeholder="Track title">
-                    </div>
-                    <div class="col-6 col-sm-4 col-md-1">
-                        <label class="form-label form-label-sm mb-1">Year</label>
-                        <input type="text" class="form-control form-control-sm" id="lookupYear" placeholder="2024" maxlength="4">
-                    </div>
-                    <div class="col-12 col-sm-4 col-md-3 d-flex gap-2">
-                        <button type="submit" class="btn btn-info btn-sm flex-grow-1">
-                            <i class="bi bi-search"></i> Search
-                        </button>
-                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearLookup()" title="Clear">
-                            <i class="bi bi-x-lg"></i>
-                        </button>
-                    </div>
-                </div>
-            </form>
         </div>
     </div>
 
