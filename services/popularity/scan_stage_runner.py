@@ -158,7 +158,8 @@ def run_scan(
         # across multiple albums cost at most one API call per artist.
         artist_max_lf = get_lastfm_artist_max_listeners(artist)
 
-        album_count = len(album_context.get("tracks") or [])
+        # ✅ FIXED: Now properly counting track_contexts instead of the empty album_context array
+        album_count = len(track_contexts)
         log_unified(f"[POPULARITY] Album {album_index}/{total_albums}: {artist} - {album} ({album_count} tracks)")
 
         for track_context in track_contexts:
@@ -189,6 +190,20 @@ def run_scan(
 
             if track_result is not None:
                 results.append(track_result)
+                
+                # ✅ FIXED: Added detailed score logging output!
+                if isinstance(track_result, dict):
+                    title = prepared_track.get("title", "Unknown Track")
+                    f_score = track_result.get("final_score")
+                    
+                    if f_score is not None:
+                        sp = track_result.get("spotify_score") or 0.0
+                        lf = track_result.get("lastfm_score") or 0.0
+                        lb = track_result.get("listenbrainz_score") or 0.0
+                        logger.info(
+                            "[TRACK_RESULT] '%s' -> Final: %.1f (SP: %.1f | LF: %.1f | LB: %.1f)", 
+                            title, f_score, sp, lf, lb
+                        )
 
             tracks_processed += 1
 
