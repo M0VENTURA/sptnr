@@ -98,7 +98,7 @@ def run_popularity_scan(
         "singles_with_missing_popularity": singles_with_missing_popularity,
         "popularity_only": popularity_only,
         "metadata_only": metadata_only,
-        "progress_file": progress_file,   # ✅ CORRECT
+        "progress_file": progress_file,
         "caller_scan_type": caller_scan_type,
     }
 
@@ -109,8 +109,15 @@ def run_popularity_scan(
     from helpers.logging_config import log_unified
     try:
         result = scanner(**kwargs)
-        update(stage="complete", progress=100, message="Scan complete")
-        log_unified("[POPULARITY] Scan complete")
+        
+        # Check if the scan was gracefully stopped by the user
+        if result is False or (isinstance(result, dict) and result.get("status") == "stopped"):
+            update(stage="stopped", message="Scan stopped by user")
+            log_unified("[POPULARITY] Scan stopped by user request")
+        else:
+            update(stage="complete", progress=100, message="Scan complete")
+            log_unified("[POPULARITY] Scan complete")
+            
         return result
     except Exception:
         update(stage="failed", message="Scan failed")
@@ -133,8 +140,8 @@ def run_popularity_from_artist(
 
     if progress_file:
         payload: dict[str, Any] = {
-        "resume_from": artist,
-    }
+            "resume_from": artist,
+        }
         write_progress_with_current_artist(
             progress_file,
             "popularity_scan",
@@ -163,7 +170,8 @@ def run_popularity_from_artist(
                 "resume_from": artist,
             }
 
-            if completed is False:
+            # Check for the dictionary stop payload
+            if completed is False or (isinstance(completed, dict) and completed.get("status") == "stopped"):
                 payload["status"] = "stopped"
                 payload["exit_code"] = 1
                 logger.info("Scan stopped for '%s'", artist)

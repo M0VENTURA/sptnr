@@ -162,13 +162,16 @@ window.doLookup = function() {
     var album  = document.getElementById('lookupAlbum')?.value?.trim() || '';
     var track  = document.getElementById('lookupTrack')?.value?.trim() || '';
     var year   = document.getElementById('lookupYear')?.value?.trim() || '';
+    
     if (!artist && !album && !track && !year) return;
+    
     if (typeof window.openGlobalMbSearch === 'function') {
+        // Pass the callback as the 3rd argument, followed by track and year
         window.openGlobalMbSearch(artist, album, function(selected) {
             if (typeof window.downloadMbRelease === 'function') {
                 window.downloadMbRelease(selected.id, selected.title, selected.artist, 'slskd');
             }
-        });
+        }, track, year);
     }
 };
 
@@ -188,11 +191,24 @@ window.clearLookup = function() {
 // ============================================================================
 
 window.performMbSearch = async function() {
-  const input = document.getElementById('mbSearchInput');
-  const query = input?.value.trim();
+  // 1. Gather advanced fields if they exist
+  const artist = document.getElementById('mbSearchArtist')?.value.trim() || '';
+  const album = document.getElementById('mbSearchAlbum')?.value.trim() || '';
+  const track = document.getElementById('mbSearchTrack')?.value.trim() || '';
+  const year = document.getElementById('mbSearchYear')?.value.trim() || '';
+  
+  let query = '';
+
+  // 2. Combine them into a search string, or fallback to the single input
+  if (artist || album || track || year) {
+      query = [artist, album, track, year].filter(Boolean).join(' ');
+  } else {
+      const singleInput = document.getElementById('mbSearchInput');
+      query = singleInput?.value.trim() || '';
+  }
+
   if (!query) return;
 
-  // The component might use 'mbSearchResults' or 'mbResults' depending on the version
   const resultsEl = document.getElementById('mbSearchResults') || document.getElementById('mbResults');
   
   if (resultsEl) {
@@ -217,20 +233,17 @@ window.performMbSearch = async function() {
       const coverArt = release.cover_art_url || '';
       const releaseDate = release.first_release_date || 'Unknown';
       const category = release.category || release.primary_type || 'Release';
-      // Handle the complex artist-credit array from MusicBrainz
-      const artist = release.artist || (release['artist-credit']?.[0]?.name) || 'Unknown Artist';
+      const resultArtist = release.artist || (release['artist-credit']?.[0]?.name) || 'Unknown Artist';
       
       const imgHtml = coverArt
         ? `<img src="${escapeHtml(coverArt)}" class="rounded shadow-sm" style="width:80px;height:80px;object-fit:cover;" alt="">`
         : '<div class="rounded bg-secondary d-flex align-items-center justify-content-center shadow-sm" style="width:80px;height:80px;"><i class="bi bi-music-note-beamed text-white fs-4"></i></div>';
 
-      // MAGIC ROUTER: If a callback exists (opened from Artist page), show "Select". 
-      // If no callback exists (opened from Dashboard), show the standard Download buttons.
       const actionButtons = window._mbSearchCallback
         ? `<button class="btn btn-sm btn-success" onclick="handleGlobalMbSelect('${encodeInlineArg(release)}')"><i class="bi bi-check-circle"></i> Select Match</button>`
         : `<div class="btn-group" role="group">
-             <button class="btn btn-sm btn-success" onclick="downloadMbRelease('${escapeHtml(release.id)}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'slskd')" title="Download via Soulseek"><i class="bi bi-music-note-list"></i> Soulseek</button>
-             <button class="btn btn-sm btn-primary" onclick="downloadMbRelease('${escapeHtml(release.id)}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'qbittorrent')" title="Download via qBittorrent"><i class="bi bi-cloud-download"></i> qBit</button>
+             <button class="btn btn-sm btn-success" onclick="downloadMbRelease('${escapeHtml(release.id)}', '${escapeHtml(release.title)}', '${escapeHtml(resultArtist)}', 'slskd')" title="Download via Soulseek"><i class="bi bi-music-note-list"></i> Soulseek</button>
+             <button class="btn btn-sm btn-primary" onclick="downloadMbRelease('${escapeHtml(release.id)}', '${escapeHtml(release.title)}', '${escapeHtml(resultArtist)}', 'qbittorrent')" title="Download via qBittorrent"><i class="bi bi-cloud-download"></i> qBit</button>
            </div>`;
 
       html += `
@@ -239,7 +252,7 @@ window.performMbSearch = async function() {
             ${imgHtml}
             <div class="flex-grow-1">
               <h6 class="mb-1 fw-bold">${escapeHtml(release.title)}</h6>
-              <p class="mb-1 text-muted small">${escapeHtml(artist)}</p>
+              <p class="mb-1 text-muted small">${escapeHtml(resultArtist)}</p>
               <div class="d-flex gap-2 align-items-center mb-2 flex-wrap">
                 <span class="badge bg-secondary">${escapeHtml(category)}</span>
                 <span class="badge bg-info text-dark"><i class="bi bi-cloud"></i> MusicBrainz</span>
@@ -992,11 +1005,10 @@ function searchMusicBrainzForQueue() {
     return;
   }
   
-  // Use the new global search trigger
-  window.openGlobalMbSearch(artist, album || track, (selectedRelease) => {
-      // Logic for when the user selects a release in the modal
+  // Use the new global search trigger and pass track as the 4th argument
+  window.openGlobalMbSearch(artist, album, (selectedRelease) => {
       downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
-  });
+  }, track);
 }
 
 async function loadQueueStatus() {
