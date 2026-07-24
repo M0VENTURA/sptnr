@@ -96,6 +96,8 @@ def process_track(
     track_id = _as_str(raw_track_id)
     track_title = _as_str(track.get("title"))
     track_artist = _as_str(track.get("artist"))
+    from helpers.logging_config import log_unified
+    log_unified(f"[TRACK_STAGE] {track_artist} - {track_title}")
     logger.debug("[TRACK_STAGE] Processing track: %s - %s (%s)", track_artist, track_title, track_id)
 
     metadata_only = bool(options.get("metadata_only"))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from helpers.logging_config import log_unified
 from services.popularity.progress_tracker import update
 from services.popularity.popularity_cache_policy import should_freeze_track
 from services.popularity.scan_hooks import (
@@ -156,6 +157,9 @@ def run_scan(
         # most popular track.  Cached in-memory so repeated artist lookups
         # across multiple albums cost at most one API call per artist.
         artist_max_lf = get_lastfm_artist_max_listeners(artist)
+
+        album_count = len(album_context.get("tracks") or [])
+        log_unified(f"[POPULARITY] Album {album_index}/{total_albums}: {artist} - {album} ({album_count} tracks)")
 
         for track_context in track_contexts:
             prepared_track = apply_context_fields_to_track(track_context)

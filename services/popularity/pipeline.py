@@ -106,12 +106,15 @@ def run_popularity_scan(
 
     logger.info("Running popularity scan via %s", scanner_module.__name__)
 
+    from helpers.logging_config import log_unified
     try:
         result = scanner(**kwargs)
         update(stage="complete", progress=100, message="Scan complete")
+        log_unified("[POPULARITY] Scan complete")
         return result
     except Exception:
         update(stage="failed", message="Scan failed")
+        log_unified("[POPULARITY] Scan failed")
         raise
 
 

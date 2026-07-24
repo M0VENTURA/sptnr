@@ -24,6 +24,8 @@ from db.utils import get_db_connection, row_get
 from services.popularity.popularity_math import calculate_track_zscore
 from services.popularity.standout_service import STANDOUT_CONFIG
 
+from helpers.logging_config import log_unified
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

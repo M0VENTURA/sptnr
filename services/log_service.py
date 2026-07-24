@@ -68,9 +68,18 @@ def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None
     try:
         log_lines = _read_last_lines(log_path, lines)
         if not verbose:
-            http_pattern = re.compile(r'"(GET|POST|PUT|DELETE|PATCH) /api/')
-            skip_pattern = re.compile(r'\[api_unified_log\]|Checking match|Found \d+', re.I)
-            log_lines = [l for l in log_lines if not http_pattern.search(l) and not skip_pattern.search(l)]
+            # Dashboard mode: keep only scan-related lines.
+            # Full log is available on the /logs page.
+            scan_pattern = re.compile(
+                r'\[POPULARITY\]|\[TRACK_STAGE\]|\[ALBUM_STAGE\]|\[FINALISE_STAGE\]|'
+                r'\[LOAD_STAGE\]|\[scan_runner\]|\[LIBRARY_SYNC\]|'
+                r'\[SINGLE\]|Navidrome Import|Artist scan|'
+                r'popularity scan|Popularity |popularity_scan|'
+                r'Full library scan|Boot scan|Scan complete|Scan failed|'
+                r'Scan stopped|single detection|star ratings',
+                re.I,
+            )
+            log_lines = [l for l in log_lines if scan_pattern.search(l)]
         return {"lines": log_lines[-lines:]}
     except Exception as e:
         logger.error("[LOG] unified read error: %s", e)
