@@ -468,41 +468,24 @@ class WikipediaReleaseScraper:
                 artist = release["artist_name"]
                 album = release["album_name"]
                 rel_date = release["release_date"]
-                rel_year = release.get("release_year")
 
-                # Check artist in collection
-                artist_in_collection = False
-                try:
-                    ar = session.execute(
-                        text("SELECT 1 FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:a) LIMIT 1"),
-                        {"a": artist},
-                    )
-                    artist_in_collection = ar.fetchone() is not None
-                except Exception:
-                    pass
-
-                # Upsert
+                # Upsert (match schema: artist_name, album_name, source, release_date)
                 try:
                     result = session.execute(
                         text("""
                             INSERT INTO upcoming_releases
-                                (artist_name, album_name, release_date, release_year,
-                                 source, artist_in_collection)
-                            VALUES (:artist, :album, :date, :year, :source, :in_collection)
+                                (artist_name, album_name, source, release_date)
+                            VALUES (:artist, :album, :source, :date)
                             ON CONFLICT (artist_name, album_name, source)
                             DO UPDATE SET
                                 release_date = EXCLUDED.release_date,
-                                release_year = EXCLUDED.release_year,
-                                artist_in_collection = EXCLUDED.artist_in_collection,
                                 updated_at = CURRENT_TIMESTAMP
                         """),
                         {
                             "artist": artist,
                             "album": album,
                             "date": rel_date,
-                            "year": rel_year,
                             "source": source_name,
-                            "in_collection": artist_in_collection,
                         },
                     )
                     if result.rowcount == 1:
