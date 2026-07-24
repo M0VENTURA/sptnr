@@ -140,6 +140,41 @@ window.openGlobalMbSearch = function(artist, album, callback) {
 
 
 // ============================================================================
+// LOOKUP FORM HELPERS (shared across dashboard + downloads)
+// ============================================================================
+
+/**
+ * Gather fields from the lookup card and open the MusicBrainz search modal.
+ * Called by the lookup form on dashboard.html and monitor.html.
+ */
+window.doLookup = function() {
+    var artist = document.getElementById('lookupArtist')?.value?.trim() || '';
+    var album  = document.getElementById('lookupAlbum')?.value?.trim() || '';
+    var track  = document.getElementById('lookupTrack')?.value?.trim() || '';
+    var year   = document.getElementById('lookupYear')?.value?.trim() || '';
+    var query  = [artist, album, track, year].filter(Boolean).join(' ');
+    if (!query) return;
+    if (typeof window.openGlobalMbSearch === 'function') {
+        window.openGlobalMbSearch(artist, query, function(selected) {
+            if (typeof window.downloadMbRelease === 'function') {
+                window.downloadMbRelease(selected.id, selected.title, selected.artist, 'slskd');
+            }
+        });
+    }
+};
+
+/**
+ * Clear all lookup form fields.
+ */
+window.clearLookup = function() {
+    ['lookupArtist','lookupAlbum','lookupTrack','lookupYear'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+};
+
+
+// ============================================================================
 // MUSICBRAINZ SEARCH & RESULTS CORE
 // ============================================================================
 

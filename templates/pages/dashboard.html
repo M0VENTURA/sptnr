@@ -299,27 +299,4 @@
 
 <script src="{{ url_for('static', filename='js/downloads.js') }}"></script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
-<script>
-  function doLookup() {
-    var artist = document.getElementById('lookupArtist')?.value?.trim() || '';
-    var album = document.getElementById('lookupAlbum')?.value?.trim() || '';
-    var track = document.getElementById('lookupTrack')?.value?.trim() || '';
-    var year = document.getElementById('lookupYear')?.value?.trim() || '';
-    var query = [artist, album, track, year].filter(Boolean).join(' ');
-    if (!query) return;
-    if (typeof window.openGlobalMbSearch === 'function') {
-      window.openGlobalMbSearch(artist, query, function(selected) {
-        if (typeof window.downloadMbRelease === 'function') {
-          window.downloadMbRelease(selected.id, selected.title, selected.artist, 'slskd');
-        }
-      });
-    }
-  }
-  function clearLookup() {
-    ['lookupArtist','lookupAlbum','lookupTrack','lookupYear'].forEach(function(id) {
-      var el = document.getElementById(id);
-      if (el) el.value = '';
-    });
-  }
-</script>
 {% endblock %}
