@@ -157,21 +157,29 @@ window.openGlobalMbSearch = function(artist, album, callback, track, year) {
  * Gather fields from the lookup card and open the MusicBrainz search modal.
  * Called by the lookup form on dashboard.html and monitor.html.
  */
-window.doLookup = function() {
-    var artist = document.getElementById('lookupArtist')?.value?.trim() || '';
-    var album  = document.getElementById('lookupAlbum')?.value?.trim() || '';
-    var track  = document.getElementById('lookupTrack')?.value?.trim() || '';
-    var year   = document.getElementById('lookupYear')?.value?.trim() || '';
+window.doLookup = function(artist, album, track, year, callback) {
+    // If called without arguments, read from standard form inputs or modal inputs
+    if (!artist && !album && !track && !year) {
+        artist = document.getElementById('lookupArtist')?.value?.trim() || document.getElementById('mbSearchArtist')?.value?.trim() || '';
+        album  = document.getElementById('lookupAlbum')?.value?.trim() || document.getElementById('mbSearchAlbum')?.value?.trim() || '';
+        track  = document.getElementById('lookupTrack')?.value?.trim() || document.getElementById('mbSearchTrack')?.value?.trim() || '';
+        year   = document.getElementById('lookupYear')?.value?.trim() || document.getElementById('mbSearchYear')?.value?.trim() || '';
+    }
     
     if (!artist && !album && !track && !year) return;
-    
-    if (typeof window.openGlobalMbSearch === 'function') {
-        // Pass the callback as the 3rd argument, followed by track and year
-        window.openGlobalMbSearch(artist, album, function(selected) {
+
+    if (typeof callback === 'function') {
+        window._mbSearchCallback = callback;
+    } else {
+        window._mbSearchCallback = function(selected) {
             if (typeof window.downloadMbRelease === 'function') {
                 window.downloadMbRelease(selected.id, selected.title, selected.artist, 'slskd');
             }
-        }, track, year);
+        };
+    }
+    
+    if (typeof window.openGlobalMbSearch === 'function') {
+        window.openGlobalMbSearch(artist, album, window._mbSearchCallback, track, year);
     }
 };
 
@@ -179,7 +187,7 @@ window.doLookup = function() {
  * Clear all lookup form fields.
  */
 window.clearLookup = function() {
-    ['lookupArtist','lookupAlbum','lookupTrack','lookupYear'].forEach(function(id) {
+    ['lookupArtist','lookupAlbum','lookupTrack','lookupYear','mbSearchArtist','mbSearchAlbum','mbSearchTrack','mbSearchYear'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.value = '';
     });
@@ -538,7 +546,7 @@ async function scrapeUpcomingReleases() {
   const errorEl = document.getElementById('upcomingError');
   
   statusEl.style.display = 'block'; errorEl.style.display = 'none';
-  statusText.textContent = 'Scraping Wikipedia for upcoming releases...';
+  statusText.textContent = 'Scraping MusicBrainz for upcoming releases...';
   
   try {
     const data = await fetchJsonOrThrow('/api/upcoming-releases/scrape', { method: 'POST' });
@@ -549,13 +557,13 @@ async function scrapeUpcomingReleases() {
     }, 2000);
   } catch (error) {
     statusEl.style.display = 'none'; errorEl.style.display = 'block';
-    errorEl.innerHTML = `<i class="bi bi-exclamation-triangle"></i> <strong>Error scraping Wikipedia:</strong> ${error.message}`;
+    errorEl.innerHTML = `<i class="bi bi-exclamation-triangle"></i> <strong>Error updating releases:</strong> ${error.message}`;
   }
 }
 
 async function checkForUpdates() {
   localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
-  await refreshUpcomingReleases();
+  await scrapeUpcomingReleases();
 }
 
 async function refreshUpcomingReleases() {
@@ -569,7 +577,7 @@ async function refreshUpcomingReleases() {
     const data = await fetchJsonOrThrow(`/api/upcoming-releases?collection=${filterCollection}&include_queue=true`);
     
     if (!data.releases || data.releases.length === 0) {
-      container.innerHTML = `<div class="alert alert-info"><i class="bi bi-info-circle"></i> No upcoming releases found.</div>`;
+      container.innerHTML = `<div class="alert alert-info"><i class="bi bi-info-circle"></i> No upcoming releases found. Click <strong>Check for Updates</strong> to scan MusicBrainz.</div>`;
       return;
     }
     
@@ -1005,7 +1013,6 @@ function searchMusicBrainzForQueue() {
     return;
   }
   
-  // Use the new global search trigger and pass track as the 4th argument
   window.openGlobalMbSearch(artist, album, (selectedRelease) => {
       downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
   }, track);
@@ -1111,7 +1118,7 @@ async function restartQueueProcessor() {
   const originalText = btn ? btn.innerHTML : '';
   try {
     if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Restarting...'; }
-    const data = await fetchJsonOrThrow('/api/queue-processor/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    await fetchJsonOrThrow('/api/queue-processor/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
     if (btn) btn.innerHTML = '<i class="bi bi-check-circle"></i> Restarted!';
     setTimeout(() => {
       if (typeof window.loadQueueStatus === 'function') window.loadQueueStatus();
