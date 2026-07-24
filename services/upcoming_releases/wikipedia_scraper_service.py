@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Default Wikipedia sources for upcoming releases
 # "List_of_upcoming_albums" was deleted — using year-specific "in music" pages instead.
-_YEAR = datetime.now().year
+_year = datetime.now().year
 DEFAULT_WIKIPEDIA_SOURCES: dict[str, dict[str, Any]] = {
     f"{_year}_albums": {
         "url": f"https://en.wikipedia.org/wiki/{_year}_in_music",
