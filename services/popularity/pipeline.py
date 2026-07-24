@@ -13,7 +13,10 @@ import os
 from typing import Any, Callable
 
 from services.popularity.progress_tracker import update
-from services.scanning.scan_state import write_progress_with_current_artist
+from services.scanning.scan_state import (
+    write_progress_with_current_artist,
+    clear_stop_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +86,14 @@ def run_popularity_scan(
     """Run the popularity scan pipeline. Entry point for CLI, WebUI, and scheduler."""
     logger.info("[POPULARITY_PIPELINE] Starting scan (artist=%s, verbose=%s, force=%s)",
                  artist_filter or "ALL", verbose, force)
+                 
+    # ✅ CLEAR STALE STOP FLAGS: Ensure the scan starts with a clean slate
+    if progress_file:
+        try:
+            clear_stop_request(progress_file)
+        except Exception as e:
+            logger.warning("Failed to clear stop request flag: %s", e)
+
     update(stage="initialising", progress=1, message="Starting popularity scan...")
 
     scanner_module = _load_scanner_module()
@@ -149,6 +160,7 @@ def run_popularity_from_artist(
             current_artist=artist,
             extra={
                 "status": "running",
+                "stop_requested": False,  # ✅ Overwrite any lingering stop state
                 "resume_from": artist,
                 "processed_artists": 0,
                 "total_artists": 0,
