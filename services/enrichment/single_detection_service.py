@@ -260,8 +260,35 @@ def _source_confidence_levels() -> dict[str, str]:
 
 # ── Stage 5-7: Source detection methods ───────────────────────────────────
 
+# Per-artist ListenBrainz top-10% context cache (keyed by artist MBID) so the
+# single-detection evidence below never issues more than one LB API call per
+# artist per scan run.
+_lb_artist_context_cache: dict[str, dict] = {}
+
+
+def _get_lb_artist_context_cached(artist_mbid: str) -> dict:
+    """Return the cached ListenBrainz artist top-10% context."""
+    if not artist_mbid:
+        return {"threshold": 0, "total": 0}
+    if artist_mbid not in _lb_artist_context_cache:
+        try:
+            from services.enrichment.single_detection_context_service import get_artist_listenbrainz_context
+            _lb_artist_context_cache[artist_mbid] = get_artist_listenbrainz_context(artist_mbid)
+        except Exception:
+            _lb_artist_context_cache[artist_mbid] = {"threshold": 0, "total": 0}
+    return _lb_artist_context_cache[artist_mbid]
+
+
 def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
-                        album_track_count: int | None, mb_client=None) -> dict[str, Any]:
+                        album_track_count: int | None, mb_client=None,
+                        mb_cached_singles: set | None = None) -> dict[str, Any]:
+    # Fast path: the title is already known to be a MusicBrainz single from
+    # the artist's cached missing_releases (avoids one MB API call per track).
+    if mb_cached_singles:
+        normalized = (title or "").lower().strip()
+        if normalized in {str(t).lower().strip() for t in mb_cached_singles}:
+            return {"source": "musicbrainz", "matched": True, "confidence": 0.9,
+                    "metadata": {}, "cached": True}
     try:
         if mb_client is None:
             from api_clients.musicbrainz_http import MusicBrainzHttpClient
@@ -408,6 +435,7 @@ def detect_single_for_track(
     mb_cached_singles: set | None = None,
     artist_mbid: str | None = None,
     mb_client=None,
+    listenbrainz_listens: int | None = None,
 ) -> dict[str, Any]:
     """Detect whether a track is a single using the 8-stage algorithm.
 
@@ -504,11 +532,24 @@ def detect_single_for_track(
             reasons.append("discogs_matched")
 
     # MusicBrainz
-    mr = _detect_musicbrainz(lookup_title, artist, artist_mbid, album_track_count, mb_client=mb_client)
+    mr = _detect_musicbrainz(lookup_title, artist, artist_mbid, album_track_count, mb_client=mb_client,
+                             mb_cached_singles=mb_cached_singles)
     sources.append(mr)
     if mr["matched"]:
         musicbrainz_confirmed = True
         reasons.append("musicbrainz_matched")
+
+    # ── ListenBrainz top-10% evidence ───────────────────────────────────
+    # When the artist's ListenBrainz top-10% listen threshold is available and
+    # the track's own listen count meets it, that is strong community evidence
+    # the track is a standout single. Cached per artist to avoid N+1 API calls.
+    lb_top10 = False
+    if listenbrainz_listens is not None and listenbrainz_listens > 0 and artist_mbid:
+        _lb_ctx = _get_lb_artist_context_cached(artist_mbid)
+        _lb_threshold = int(_lb_ctx.get("threshold") or 0)
+        if _lb_threshold > 0 and int(listenbrainz_listens) >= _lb_threshold:
+            lb_top10 = True
+            reasons.append("lb_top10")
 
     # Check high confidence early-stop
     if check_high_confidence_dynamic(discogs_confirmed, musicbrainz_confirmed):
@@ -618,6 +659,8 @@ def detect_single_for_track(
     if single_release_date_match:
         medium_sources += 1
     if isrc_single_confirmed:
+        medium_sources += 1
+    if lb_top10:
         medium_sources += 1
     # A catalog-size-aware z-score standout counts as a high-confidence source
     # (legacy "z-score alone is strong evidence" behaviour).

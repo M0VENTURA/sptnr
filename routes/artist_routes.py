@@ -291,9 +291,9 @@ async def api_artist_genre_management_save():
 
 @artist_bp.route("/api/artist/missing-releases")
 def api_artist_missing_releases():
-    artist = request.args.get("artist")
-    background = request.args.get("background", "0")
-    data, code = scan_get_missing_releases(artist or "")
+    artist = request.args.get("artist", "").strip()
+    background = str(request.args.get("background", "0")).strip().lower() in ("1", "true", "yes", "on")
+    data, code = scan_get_missing_releases(artist or "", background=background)
     return jsonify(data), code
 
 

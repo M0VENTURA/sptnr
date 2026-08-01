@@ -1085,10 +1085,23 @@ function importReleaseFromEncoded(artistEnc, releaseIdEnc, titleEnc) {
 }
 
 function searchMusicBrainzReleaseFromEncoded(event, artistEnc, albumEnc) {
+  // Delegate to the canonical shared-modal opener (main.js, loaded on every page).
+  const artist = decodeInlineArtistArg(artistEnc, '');
+  const album = decodeInlineArtistArg(albumEnc, '');
+  if (typeof window.openGlobalMbSearch === 'function') {
+    if (event && event.preventDefault) event.preventDefault();
+    if (event && event.stopPropagation) event.stopPropagation();
+    window.openGlobalMbSearch(artist, album, (selectedRelease) => {
+      if (typeof downloadMbRelease === 'function') {
+        downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
+      }
+    });
+    return;
+  }
   return searchMusicBrainzRelease(
     event,
-    decodeInlineArtistArg(artistEnc, ''),
-    decodeInlineArtistArg(albumEnc, '')
+    artist,
+    album
   );
 }
 
@@ -1101,21 +1114,17 @@ function loadTracklistFromEncoded(artistEnc, albumEnc, buttonEl, releaseIdEnc) {
   );
 }
 
-function searchMusicBrainzReleaseFromEncoded(event, artistEnc, albumEnc) {
-  return searchMusicBrainzRelease(
-    event,
-    decodeInlineArtistArg(artistEnc, ''),
-    decodeInlineArtistArg(albumEnc, '')
-  );
-}
-    errorEl.style.display = 'block';
-    _showRetry(artist, album);
-  }
-}
-
 function mbRetrySearch() {
   const artist = (document.getElementById('mbRetryArtist')?.value || '').trim();
   const album  = (document.getElementById('mbRetryAlbum')?.value  || '').trim();
+  if (typeof window.openGlobalMbSearch === 'function') {
+    window.openGlobalMbSearch(artist, album, (selectedRelease) => {
+      if (typeof downloadMbRelease === 'function') {
+        downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
+      }
+    });
+    return;
+  }
   searchMusicBrainzRelease(null, artist, album);
 }
 

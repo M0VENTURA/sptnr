@@ -162,8 +162,8 @@ var _pageData = window._pageData || {};
         if (!results || results.length === 0) {
             if (source === 'musicbrainz') {
                 // Offer to submit to MusicBrainz if no results found
-                const album = "_pageData.albumName";
-                const artist = "_pageData.artistName";
+                const album = _pageData.albumName;
+                const artist = _pageData.artistName;
                 resultsDiv.innerHTML = `
                     <div class="alert alert-warning">
                         <p><strong>No MusicBrainz matches found for "${album}" by ${artist}</strong></p>
@@ -476,8 +476,8 @@ var _pageData = window._pageData || {};
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
-                artist: "_pageData.artistName", 
-                album: "_pageData.albumName",
+                artist: _pageData.artistName, 
+                album: _pageData.albumName,
                 mbid: mbid,
                 cover_art_url: coverArtUrl
             })
@@ -502,8 +502,8 @@ var _pageData = window._pageData || {};
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
-                artist: "_pageData.artistName", 
-                album: "_pageData.albumName",
+                artist: _pageData.artistName, 
+                album: _pageData.albumName,
                 discogs_id: discogsID
             })
         })
@@ -618,8 +618,8 @@ var _pageData = window._pageData || {};
     }
 
     function openAlbumArtModal() {
-        const artistName = "_pageData.artistName";
-        const albumName = "_pageData.albumName";
+        const artistName = _pageData.artistName;
+        const albumName = _pageData.albumName;
         
         const modalHtml = `
             <div class="modal fade" id="albumArtModal" tabindex="-1">
@@ -888,8 +888,8 @@ var _pageData = window._pageData || {};
     let selectedGenres = new Set();
 
     function fetchGenreRecommendations() {
-        const artistName = "_pageData.artistName";
-        const albumName = "_pageData.albumName";
+        const artistName = _pageData.artistName;
+        const albumName = _pageData.albumName;
         const btn = document.getElementById('fetchGenresBtn');
         const container = document.getElementById('recommendedGenres');
         const section = document.getElementById('recommendedGenresSection');
@@ -995,15 +995,15 @@ var _pageData = window._pageData || {};
 
     // Remove single genre from all album tracks (uses shared utilities)
     function removeGenreFromAlbum(genre) {
-        const artistName = "_pageData.artistName";
-        const albumName = "_pageData.albumName";
+        const artistName = _pageData.artistName;
+        const albumName = _pageData.albumName;
         handleGenreRemoval(artistName, albumName, [genre], 'album');
     }
 
     // Remove selected genres from all album tracks (batch removal)
     function removeSelectedAlbumGenres() {
-        const artistName = "_pageData.artistName";
-        const albumName = "_pageData.albumName";
+        const artistName = _pageData.artistName;
+        const albumName = _pageData.albumName;
         const selectedGenres = getSelectedGenres('albumGenresForRemoval');
         
         if (selectedGenres.length === 0) {
@@ -1016,8 +1016,8 @@ var _pageData = window._pageData || {};
     
     // Load track-level recommendations when page loads
     async function loadTrackRecommendations() {
-        const artistName = "_pageData.artistName";
-        const albumName = "_pageData.albumName";
+        const artistName = _pageData.artistName;
+        const albumName = _pageData.albumName;
         
         try {
             const response = await fetch(`/api/album/${encodeURIComponent(artistName)}/${encodeURIComponent(albumName)}/track-recommendations`);
@@ -1790,8 +1790,8 @@ var _pageData = window._pageData || {};
 
 
     function populateMajorityArtist() {
-        const album = "_pageData.albumName";
-        const artist = "_pageData.artistName";
+        const album = _pageData.albumName;
+        const artist = _pageData.artistName;
         const trackArtistInput = document.getElementById('track_artist');
         
         // Show loading state
@@ -1991,8 +1991,8 @@ var _pageData = window._pageData || {};
     }
 
     function openEditAlbumIdsModal() {
-        const artistName = "_pageData.artistName";
-        const albumName = "_pageData.albumName";
+        const artistName = _pageData.artistName;
+        const albumName = _pageData.albumName;
         const spotifyId = (document.getElementById('spotifyAlbumId') || {}).value || '';
         const musicbrainzId = (document.getElementById('musicbrainzReleaseId') || {}).value || '';
         const discogsId = (document.getElementById('discogsReleaseId') || {}).value || '';
@@ -2049,8 +2049,8 @@ var _pageData = window._pageData || {};
     }
 
     function saveAlbumIds() {
-        const artistName = "_pageData.artistName";
-        const albumName = "_pageData.albumName";
+        const artistName = _pageData.artistName;
+        const albumName = _pageData.albumName;
         const spotifyId = document.getElementById('editSpotifyAlbumId').value.trim();
         const musicbrainzId = document.getElementById('editMusicbrainzReleaseId').value.trim();
         const discogsId = document.getElementById('editDiscogsReleaseId').value.trim();
@@ -2174,8 +2174,8 @@ var _pageData = window._pageData || {};
             body: JSON.stringify({
                 track_ids: trackIds,
                 genres: genres,
-                artist: '_pageData.artistName',
-                album: '_pageData.albumName'
+                artist: _pageData.artistName,
+                album: _pageData.albumName
             })
         })
         .then(r => r.json())
@@ -2239,8 +2239,8 @@ var _pageData = window._pageData || {};
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 track_ids: trackIds,
-                artist: '_pageData.artistName',
-                album: '_pageData.albumName',
+                artist: _pageData.artistName,
+                album: _pageData.albumName,
                 delete_files: deleteFiles
             })
         })
@@ -2419,7 +2419,7 @@ var _pageData = window._pageData || {};
         });
         
         // Build genre options from album genres
-        const albumGenresArray = "_pageData.albumGenres".split('|').filter(g => g.trim());
+        const albumGenresArray = Array.from(currentAlbumGenres);
         let genreHtml = '';
         
         albumGenresArray.forEach(genre => {
@@ -3157,8 +3157,8 @@ var _pageData = window._pageData || {};
             alert('Please enter a new artist name.');
             return;
         }
-        const album = "_pageData.albumName";
-        const artist = "_pageData.artistName";
+        const album = _pageData.albumName;
+        const artist = _pageData.artistName;
         fetch(`/api/tags/album/${encodeURIComponent(album)}/${encodeURIComponent(artist)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3373,8 +3373,8 @@ var _pageData = window._pageData || {};
 
         // Fetch library tracks for this album
         try {
-            const artistName = "_pageData.artistName";
-            const albumName = "_pageData.albumName";
+            const artistName = _pageData.artistName;
+            const albumName = _pageData.albumName;
             const resp = await fetch(`/api/album/library-tracks?artist=${encodeURIComponent(artistName)}&album=${encodeURIComponent(albumName)}`);
             const data = await resp.json();
             const tracks = data.tracks || [];

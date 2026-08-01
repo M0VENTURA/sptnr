@@ -222,3 +222,69 @@ window.navSearch = function(event) {
   var query = ((activeInput && activeInput.value) || (fallbackInput && fallbackInput.value) || (fallbackSearchInput && fallbackSearchInput.value) || '').trim();
   if (query) window.location.href = '/search?q=' + encodeURIComponent(query);
 };
+
+// ==========================================================================
+// Global MusicBrainz search modal (canonical implementation)
+// ==========================================================================
+// Opens the MusicBrainz search modal included from
+// components/_musicbrainz_search_modal.html (loaded via base.html). Fills
+// the 4-field form (artist/album/track/year), wires the selection callback,
+// and auto-runs the search. This is the single source of truth — pages that
+// once defined their own copy (base.html inline block, downloads.js) are
+// consolidated here.
+
+window.openGlobalMbSearch = function(artist, album, callback, track, year) {
+    const modalEl = document.getElementById('musicBrainzModal');
+    if (!modalEl) {
+        console.error("MusicBrainz modal not found in DOM.");
+        return;
+    }
+
+    // Auto-fill the 4 search fields
+    const artistEl = document.getElementById('mbSearchArtist');
+    const albumEl = document.getElementById('mbSearchAlbum');
+    const trackEl = document.getElementById('mbSearchTrack');
+    const yearEl = document.getElementById('mbSearchYear');
+    if (artistEl && artist) artistEl.value = artist;
+    if (albumEl && album) albumEl.value = album;
+    if (trackEl && track) trackEl.value = track;
+    if (yearEl && year) yearEl.value = year;
+
+    // Assign callback to global window object so the component can trigger it
+    window._mbSearchCallback = callback;
+
+    // Show Modal
+    const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+    modal.show();
+
+    // Auto-search after modal opens
+    setTimeout(function() {
+        if (typeof window.performMbSearch === 'function') {
+            window.performMbSearch();
+        }
+    }, 500);
+};
+
+// ==========================================================================
+// Encoded-argument MusicBrainz search (shared by artist/album detail pages)
+// ==========================================================================
+// Decodes URL-encoded inline arguments and opens the canonical shared modal.
+// Some pages (album_detail.js) render buttons calling this with encoded args.
+
+window.searchMusicBrainzReleaseFromEncoded = function(event, artistEnc, albumEnc) {
+    const decode = function(value, fallback) {
+        try {
+            const decoded = decodeURIComponent(value || '');
+            try { return JSON.parse(decoded); } catch (_e) { return decoded || fallback; }
+        } catch (_e) { return fallback; }
+    };
+    const artist = decode(artistEnc, '');
+    const album = decode(albumEnc, '');
+    if (event && event.preventDefault) event.preventDefault();
+    if (event && event.stopPropagation) event.stopPropagation();
+    window.openGlobalMbSearch(artist, album, function(selectedRelease) {
+        if (selectedRelease && typeof window.downloadMbRelease === 'function') {
+            window.downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
+        }
+    });
+};

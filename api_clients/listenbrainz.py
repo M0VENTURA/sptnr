@@ -267,6 +267,38 @@ class ListenBrainzClient:
             logger.debug("Failed to fetch top release groups for artist %s: %s", artist_mbid, exc)
             return []
 
+    def get_similar_artists(self, artist_mbid: str, limit: int = 10) -> list[dict[str, str]]:
+        """Fetch similar artists from the ListenBrainz labs API.
+
+        GET https://labs.api.listenbrainz.org/similar-artists/json?artist_mbids=<mbid>
+
+        Returns up to ``limit`` dicts with ``name`` and ``mbid`` keys.
+        """
+        if not self.enabled or not artist_mbid:
+            return []
+        try:
+            self._throttle()
+            url = "https://labs.api.listenbrainz.org/similar-artists/json"
+            response = self.session.get(
+                url,
+                params={"artist_mbids": artist_mbid},
+                headers=self._headers(authenticated=False),
+                timeout=(5, 10),
+            )
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "payload" in data:
+                similar_records = data.get("payload", {}).get("artists", []) or []
+                return [
+                    {"name": str(record.get("artist_name", "")), "mbid": str(record.get("artist_mbid", ""))}
+                    for record in similar_records[:limit]
+                    if record.get("artist_name")
+                ]
+            return []
+        except Exception as exc:
+            logger.debug("Failed to fetch similar artists for %s: %s", artist_mbid, exc)
+            return []
+
     # ------------------------------------------------------------------
     # User listening history
     # ------------------------------------------------------------------

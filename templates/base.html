@@ -196,28 +196,6 @@
   <script src="{{ url_for('static', filename='js/musicbrainz-folder-groups.js') }}"></script>
   <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 
-  <script>
-    window.openGlobalMbSearch = function(artist, album, callback) {
-        const modalEl = document.getElementById('musicBrainzModal');
-        if (!modalEl) {
-            console.error("MusicBrainz modal not found in DOM");
-            return;
-        }
-        
-        const modal = new bootstrap.Modal(modalEl);
-        const input = document.getElementById('mbSearchInput');
-        
-        if (input) {
-            const query = `${artist || ''} ${album || ''}`.trim();
-            input.value = query;
-        }
-        
-        // Save callback to window to be called by selectMbRelease
-        window._mbSearchCallback = callback;
-        modal.show();
-    };
-  </script>
-
   {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -4,11 +4,17 @@ from statistics import mean, stdev
 
 
 def get_artist_listenbrainz_context(artist_mbid: str) -> dict:
+    """Return the artist's ListenBrainz top-10% listen threshold.
+
+    Uses the current ``ListenBrainzClient.get_top_recordings_for_artist``
+    (the old module-level ``get_artist_recordings_popularity`` no longer
+    exists, which previously made this helper silently return empty).
+    """
     if not artist_mbid:
         return {"recordings": [], "threshold": 0, "total": 0}
     try:
-        from api_clients.listenbrainz import get_artist_recordings_popularity
-        recordings = get_artist_recordings_popularity(artist_mbid) or []
+        from api_clients.listenbrainz import ListenBrainzClient
+        recordings = ListenBrainzClient().get_top_recordings_for_artist(artist_mbid) or []
     except Exception:
         recordings = []
     counts = sorted([int(r.get("total_listen_count") or 0) for r in recordings], reverse=True)

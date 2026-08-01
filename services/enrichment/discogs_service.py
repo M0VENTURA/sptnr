@@ -73,6 +73,28 @@ class DiscogsService:
         self._single_cache[cache_key] = False
         return False
 
+    def get_artist_id(self, artist: str, timeout: float = 10.0) -> str | None:
+        """Resolve a Discogs artist ID via database search (type=artist).
+
+        Returns the first result's numeric ID as a string, or ``None`` when
+        the artist cannot be found. Mirrors the legacy
+        ``MusicBrainzClient``/``DiscogsClient.get_artist_id`` behaviour.
+        """
+        if not self.enabled or not self.token or not artist:
+            return None
+        try:
+            results = self.http.search_database(
+                {"q": artist, "type": "artist", "per_page": 5},
+                timeout=timeout,
+            )
+            if results and isinstance(results, list):
+                first = results[0]
+                if isinstance(first, dict) and first.get("id"):
+                    return str(first["id"])
+        except Exception as exc:
+            logger.debug("Discogs artist ID lookup failed for '%s': %s", artist, exc)
+        return None
+
     def get_genres(self, title: str, artist: str) -> list[str]:
         if not self.enabled or not self.token: return []
         

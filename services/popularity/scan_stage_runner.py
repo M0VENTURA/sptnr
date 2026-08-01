@@ -42,6 +42,32 @@ def _resolve_scan_type(options: dict[str, Any]) -> str:
     return "combined"
 
 
+def _load_mb_single_titles(artist: str) -> set[str]:
+    """Return MusicBrainz single titles cached in ``missing_releases``.
+
+    Mirrors the legacy pre-load: singles that MusicBrainz knows about but that
+    may not be in the user's library yet. These are used to confirm single
+    status without a per-track MusicBrainz API call.
+    """
+    if not artist:
+        return set()
+    try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            result = session.execute(
+                _text(
+                    "SELECT title FROM missing_releases "
+                    "WHERE LOWER(artist) = LOWER(:artist) AND LOWER(COALESCE(category, '')) = 'single'"
+                ),
+                {"artist": artist},
+            )
+            return {str(row[0]).strip().lower() for row in result.fetchall() or [] if row[0]}
+    except Exception as exc:
+        logger.debug("[scan_runner] Could not pre-load MB singles for '%s': %s", artist, exc)
+        return set()
+
+
 def run_scan(
     *,
     verbose: bool = False,
@@ -104,6 +130,10 @@ def run_scan(
 
     # Per-artist Last.fm listener-context cache (used for dynamic weighting).
     artist_lf_context_cache: dict[str, dict[str, Any]] = {}
+
+    # Per-artist MB single-title cache (from missing_releases) used to confirm
+    # singles without per-track MusicBrainz API calls.
+    artist_mb_singles_cache: dict[str, set[str]] = {}
 
     # Resolve stop progress file — accept both stop_progress_file (direct)
     # and progress_file (passed via **extra_kwargs by pipeline)
@@ -172,6 +202,11 @@ def run_scan(
                 logger.debug("[scan_runner] Last.fm context fetch failed for %s: %s", artist, exc)
                 artist_lf_context_cache[artist] = {"mean": 0, "stdev": 0, "total": 0, "values": []}
         artist_lf_context = artist_lf_context_cache.get(artist) or {}
+
+        # ── Per-artist MB single-title cache (missing_releases) ──────────
+        if artist and artist not in artist_mb_singles_cache:
+            artist_mb_singles_cache[artist] = _load_mb_single_titles(artist)
+        mb_cached_singles = artist_mb_singles_cache.get(artist) or set()
 
         progress = 5 + int((album_index / total_albums) * 90)
 
@@ -278,6 +313,7 @@ def run_scan(
                 album_lb_listens=album_lb_listens if album_lb_listens else None,
                 artist_max_lf_listeners=artist_max_lf,
                 artist_lf_context=artist_lf_context,
+                mb_cached_singles=mb_cached_singles,
             )
 
             if track_result is not None:

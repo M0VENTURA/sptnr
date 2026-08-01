@@ -101,6 +101,7 @@ def process_track(
     album_lb_listens: list[int] | None = None,
     artist_max_lf_listeners: int = 0,
     artist_lf_context: dict[str, Any] | None = None,
+    mb_cached_singles: set | None = None,
 ) -> dict[str, Any] | None:
 
     raw_track_id = track.get("id")
@@ -555,6 +556,12 @@ def process_track(
                 album=sd_album,
                 use_advanced_detection=True,
                 persist_result=False,  # We persist via track_stage
+                mb_cached_singles=mb_cached_singles,
+                artist_mbid=(
+                    effective_track.get("musicbrainz_artistid")
+                    or effective_track.get("musicbrainz_artist_id")
+                ),
+                listenbrainz_listens=int(listenbrainz_listens or 0),
             )
 
             if sd_result:

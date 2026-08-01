@@ -139,6 +139,30 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         except Exception as exc:
             logger.warning("APScheduler: failed to register download_queue_processor: %s", exc)
 
+    # ── Missing releases scan ─────────────────────────────────────────────
+    # Legacy daily behaviour: refresh the missing_releases cache so the
+    # artist page / dashboard always reflect MusicBrainz's latest releases.
+    try:
+        from helpers.config_helpers import get_config as _get_config
+        _feats = (_get_config() or {}).get("features", {}) or {}
+        enabled = bool(_feats.get("daily_musicbrainz_release_scan_enabled", True))
+        if enabled:
+            interval_minutes = jobs.get("missing_releases_scan", {}).get("interval_minutes", 1440)
+            from services.metadata.artist_scan_service import start_missing_release_scan
+            if scheduler.get_job("missing_releases_scan") is None:
+                scheduler.add_job(
+                    start_missing_release_scan,
+                    trigger=IntervalTrigger(minutes=interval_minutes),
+                    id="missing_releases_scan",
+                    name="MusicBrainz missing releases refresh",
+                    replace_existing=True,
+                )
+                logger.info("APScheduler: registered missing_releases_scan (every %s min)", interval_minutes)
+            else:
+                logger.info("APScheduler: missing_releases_scan already registered")
+    except Exception as exc:
+        logger.warning("APScheduler: failed to register missing_releases_scan: %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Convenience: start/stop from Flask

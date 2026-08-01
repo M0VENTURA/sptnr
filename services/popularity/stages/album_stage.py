@@ -243,6 +243,29 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
             similar = lf.get_similar_artists(artist, limit=10) or []
             result["lastfm"] = [s.get("name", "") for s in similar if isinstance(s, dict)]
 
+        # ListenBrainz similar artists (labs API) — requires the artist MBID.
+        if not result["listenbrainz"]:
+            try:
+                artist_mbid = None
+                cursor.execute(
+                    "SELECT musicbrainz_artistid FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
+                    "AND musicbrainz_artistid IS NOT NULL AND TRIM(musicbrainz_artistid) <> '' LIMIT 1",
+                    (artist,),
+                )
+                row = cursor.fetchone()
+                if row and row_get(row, "musicbrainz_artistid"):
+                    artist_mbid = row_get(row, "musicbrainz_artistid")
+                if not artist_mbid:
+                    from services.enrichment.musicbrainz_service import MusicBrainzService
+                    artist_mbid, _conf = MusicBrainzService(enabled=True).get_suggested_mbid(artist, "")
+                if artist_mbid:
+                    from api_clients.listenbrainz import ListenBrainzClient
+                    lb_similar = ListenBrainzClient().get_similar_artists(artist_mbid, limit=10) or []
+                    result["listenbrainz"] = [s.get("name", "") for s in lb_similar if isinstance(s, dict) and s.get("name")]
+            except Exception as exc:
+                logger.debug("[album_stage] ListenBrainz similar artists failed for '%s': %s", artist, exc)
+
         cursor.execute("""
             INSERT INTO artists (id, name, similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated)
             VALUES (%s, %s, %s, %s, %s)
@@ -250,12 +273,50 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
                 similar_artists_lastfm = excluded.similar_artists_lastfm,
                 similar_artists_listenbrainz = excluded.similar_artists_listenbrainz,
                 similar_artists_last_updated = excluded.similar_artists_last_updated
-        """, (artist, artist, json.dumps(result["lastfm"]) if result["lastfm"] else None, None, datetime.now().isoformat()))
+        """, (artist, artist, json.dumps(result["lastfm"]) if result["lastfm"] else None,
+              json.dumps(result["listenbrainz"]) if result["listenbrainz"] else None, datetime.now().isoformat()))
         conn.commit()
     except Exception as exc:
         logger.debug("[album_stage] Similar artists failed: %s", exc)
 
     return result
+
+
+def _fetch_discogs_artist_id(artist: str, conn, options: dict) -> None:
+    """Fetch and cache the Discogs artist ID (legacy parity).
+
+    Skips compilation groups and singles/metadata-only scan modes, matching
+    the legacy scanner. Stores the ID on all of the artist's tracks.
+    """
+    if bool(options.get("singles_only")) or bool(options.get("singles_with_missing_popularity")):
+        return
+    if artist.lower() in ("various artists", "various", "compilation", "soundtrack"):
+        return
+    try:
+        from helpers.config_helpers import get_config
+        cfg = get_config()
+        discogs_cfg = cfg.get("api_integrations", {}).get("discogs", {})
+        token = discogs_cfg.get("token", "")
+        if not (discogs_cfg.get("enabled") and token):
+            return
+        if token.lower() in ("your_discogs_token", "your_token", "placeholder", ""):
+            return
+        from api_clients.discogs import DiscogsClient
+        client = DiscogsClient(token=token)
+        discogs_artist_id = client.get_artist_id(artist, timeout=12)
+        if not discogs_artist_id:
+            return
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET discogs_artist_id = %s "
+            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
+            "AND (discogs_artist_id IS NULL OR TRIM(CAST(discogs_artist_id AS TEXT)) = '')",
+            (str(discogs_artist_id), artist),
+        )
+        conn.commit()
+        logger.info("[album_stage] Discogs artist ID for '%s': %s", artist, discogs_artist_id)
+    except Exception as exc:
+        logger.debug("[album_stage] Discogs artist ID lookup failed for '%s': %s", artist, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +655,10 @@ def enrich_album(
         # 4. Similar artists
         similar = _fetch_similar_artists(artist, conn, options)
 
-        # 5. Live/remix album tagging + alternate-take persistence
+        # 5. Discogs artist ID (legacy parity)
+        _fetch_discogs_artist_id(artist, conn, options)
+
+        # 6. Live/remix album tagging + alternate-take persistence
         _apply_live_remix_album_tagging(conn, cursor, artist, album, detected_type, album_tracks)
         _persist_alternate_takes(conn, cursor, album_context)
 
