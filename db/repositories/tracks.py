@@ -146,11 +146,23 @@ def delete_tracks_by_id(track_ids: Set[str], *, context: str, session: Any | Non
 def update_track_single_status(
     track_id: str,
     is_single: bool,
-    confidence: float,
+    confidence: Any,
 ) -> None:
-    """[COMPLIANT] Persist single-detection results for a track."""
+    """[COMPLIANT] Persist single-detection results for a track.
+
+    ``confidence`` is a string label (``'high'``/``'medium'``/``'low'``/
+    ``'user'``) matching what the star-rating stage and templates compare
+    against. Numeric confidence values are also accepted and mapped here.
+    """
     if not track_id:
         return
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+        if confidence >= 0.9:
+            confidence = "high"
+        elif confidence >= 0.5:
+            confidence = "medium"
+        else:
+            confidence = "low"
     with db_session() as session:
         session.execute(
             text("""

@@ -29,12 +29,26 @@ def is_track_older_than_years(year: Any, years: int | None = None) -> bool:
 
     If *years* is None, reads from the ``mature_track_min_age_years``
     config key (default 2).
+
+    ``year`` is stored as TEXT and may be ``"1995"`` or a full date like
+    ``"1995-06-01"`` — the leading 4-digit year is parsed defensively.
     """
     if years is None:
         years = _get_mature_cutoff_years()
     if not year:
         return False
-    return (datetime.now().year - int(year)) >= years
+    try:
+        if isinstance(year, int):
+            release_year = year
+        else:
+            text_year = str(year).strip()
+            if text_year[:4].isdigit():
+                release_year = int(text_year[:4])
+            else:
+                return False
+    except (TypeError, ValueError):
+        return False
+    return (datetime.now().year - release_year) >= years
 
 
 def should_freeze_track(track: dict[str, Any]) -> bool:
@@ -50,14 +64,37 @@ def should_freeze_track(track: dict[str, Any]) -> bool:
     )
 
 
+def _as_datetime(value):
+    """Coerce a stored timestamp (datetime or ISO string) to a tz-aware datetime, or None."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return dt
+
+
 def should_use_cached_score(track):
-    """Return True when a cached score is fresh enough to reuse."""
-    last_lookup = track.get("last_spotify_lookup")
+    """Return True when a cached score is fresh enough to reuse.
 
-    if not last_lookup:
-        return False
-
-    return (datetime.now() - last_lookup) < timedelta(days=7)
+    Spotify lookups were removed from the popularity pipeline, so the legacy
+    ``last_spotify_lookup`` column is never written.  This now checks the real
+    per-source freshness timestamps (``lastfm_last_updated`` /
+    ``listenbrainz_last_updated``) that ``track_stage`` writes, and treats the
+    whole score as reusable when either source was refreshed within 7 days.
+    """
+    now = datetime.now().astimezone()
+    for key in ("lastfm_last_updated", "listenbrainz_last_updated"):
+        ts = _as_datetime(track.get(key))
+        if ts is not None and (now - ts) < timedelta(days=7):
+            return True
+    return False
 
 
 def get_cache_duration_hours(track_year: int | None = None) -> int:

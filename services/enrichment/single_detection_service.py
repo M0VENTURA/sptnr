@@ -221,6 +221,43 @@ def check_high_confidence_dynamic(
     return False
 
 
+def _source_confidence_levels() -> dict[str, str]:
+    """Load per-source confidence levels from the ``features`` config.
+
+    Mirrors the legacy ``source_*_confidence`` knobs. Defaults match current
+    behaviour: Discogs + MusicBrainz are high-confidence sources; the rest
+    are medium. ``low`` excludes a source from the confidence decision.
+    """
+    feats: dict = {}
+    try:
+        from helpers.config_helpers import get_config
+        cfg = get_config()
+        feats = cfg.get("features", {}) or {}
+    except Exception:
+        feats = {}
+    defaults = {
+        "discogs": "high",
+        "musicbrainz": "high",
+        "discogs_video": "medium",
+        "musicbrainz_compilation": "medium",
+        "lastfm": "medium",
+        "radio_edit": "medium",
+    }
+    keys = {
+        "discogs": "source_discogs_confidence",
+        "musicbrainz": "source_musicbrainz_confidence",
+        "discogs_video": "source_discogs_video_confidence",
+        "musicbrainz_compilation": "source_musicbrainz_compilation_confidence",
+        "lastfm": "source_lastfm_confidence",
+        "radio_edit": "source_radio_edit_confidence",
+    }
+    result: dict[str, str] = {}
+    for src, default in defaults.items():
+        val = str(feats.get(keys[src], default) or default).lower()
+        result[src] = val if val in ("high", "medium", "low") else default
+    return result
+
+
 # ── Stage 5-7: Source detection methods ───────────────────────────────────
 
 def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
@@ -301,23 +338,34 @@ def determine_final_status(
     album_mean: float = 0.0, has_metadata: bool = False,
     is_remastered_only: bool = False, date_match: bool = False,
     is_title_track: bool = False,
+    zscore_high: float = 1.0, zscore_medium: float = 0.6,
+    high_sources: int | None = None, medium_sources: int | None = None,
 ) -> str:
     """Final single status based on source detection and z-score analysis.
 
-    Returns ``'high'``, ``'medium'``, or ``'none'``.
+    ``zscore_high`` / ``zscore_medium`` are the configurable confidence
+    boundaries (``single_detection.zscore_high_threshold`` /
+    ``zscore_medium_threshold``). ``high_sources`` / ``medium_sources``
+    optionally override the source-confidence counts (used to honour the
+    per-source ``source_*_confidence`` config knobs). Returns ``'high'``,
+    ``'medium'``, or ``'none'``.
     """
     max_z = max(album_z, artist_z)
-    high = sum([discogs, musicbrainz])
-    medium = sum([discogs_video, lastfm, mb_video, mb_compilation, radio_edit, date_match])
+    if high_sources is not None and medium_sources is not None:
+        high = high_sources
+        medium = medium_sources
+    else:
+        high = sum([discogs, musicbrainz])
+        medium = sum([discogs_video, lastfm, mb_video, mb_compilation, radio_edit, date_match])
 
-    # Z-score >= 1
-    if max_z >= 1.0:
+    # Z-score above the high boundary
+    if max_z >= max(0.0, zscore_high):
         if high >= 1 or medium >= 2:
             return 'high'
         return 'none'
 
-    # Z-score 0-1
-    if max_z > 0.0:
+    # Z-score between the medium and high boundaries
+    if max_z > max(0.0, zscore_medium):
         if high >= 1:
             return 'high'
         if medium >= 2:
@@ -371,10 +419,10 @@ def detect_single_for_track(
     logger.debug("[SINGLE_DETECTION] Checking: %s - %s", artist, title)
 
     if not title or not artist:
-        return {"is_single": False, "confidence": 0.0, "sources": [], "reasons": ["missing_title_or_artist"]}
+        return {"is_single": False, "confidence": "low", "confidence_score": 0.0, "sources": [], "reasons": ["missing_title_or_artist"]}
 
     if should_skip_single_detection(title, album_type=album_type):
-        return {"is_single": False, "confidence": 0.0, "sources": [], "reasons": ["alternate_or_live_version"]}
+        return {"is_single": False, "confidence": "low", "confidence_score": 0.0, "sources": [], "reasons": ["alternate_or_live_version"]}
 
     is_compilation = is_compilation_album(album_type, album or "")
     is_special = is_special_edition_album(album or "")
@@ -409,7 +457,7 @@ def detect_single_for_track(
 
     # Z-score gate
     if artist_z < -1.0 and not is_compilation and not is_remastered:
-        return {"is_single": False, "confidence": 0.0, "sources": [], "reasons": ["z_score_below_threshold"]}
+        return {"is_single": False, "confidence": "low", "confidence_score": 0.0, "sources": [], "reasons": ["z_score_below_threshold"]}
 
     # ── Gather source confirmations ──
     discogs_confirmed = False
@@ -422,6 +470,29 @@ def detect_single_for_track(
 
     reasons: list[str] = []
     sources: list[dict] = []
+
+    # ── Dynamic z-score standout signal ──────────────────────────────────
+    # Legacy behaviour: when a track's z-score exceeds the catalog-size-aware
+    # dynamic threshold, the z-score alone is treated as strong single
+    # evidence (the old engine used it to short-circuit source lookups).
+    # Here it is added as an additive high-confidence source instead, so the
+    # normal source lookups still run and report their results.
+    z_standout = False
+    try:
+        from services.popularity.popularity_stats_service import calculate_artist_stats
+        _, _, artist_vals = calculate_artist_stats(None, artist)
+        artist_track_count = len(artist_vals or [])
+        if artist_track_count >= 3 and max(album_z, artist_z) > 0:
+            dyn_threshold = get_dynamic_z_threshold(
+                artist_track_count,
+                None,
+                is_compilation,
+            )
+            if max(album_z, artist_z) >= dyn_threshold:
+                z_standout = True
+                reasons.append("z_score_standout")
+    except Exception as exc:
+        logger.debug("Dynamic z-score standout check failed for %s / %s: %s", artist, title, exc)
 
     # Discogs
     if use_advanced_detection:
@@ -512,6 +583,47 @@ def detect_single_for_track(
     if isrc_single_confirmed:
         musicbrainz_confirmed = True
 
+    # Configurable z-score confidence boundaries (single_detection section).
+    try:
+        from services.popularity.popularity_config import get_zscore_thresholds
+        _zth = get_zscore_thresholds()
+        zscore_high = float(_zth.get("high", 1.0) or 1.0)
+        zscore_medium = float(_zth.get("medium", 0.6) or 0.6)
+    except Exception:
+        zscore_high, zscore_medium = 1.0, 0.6
+
+    # Per-source confidence levels (features.source_*_confidence) decide which
+    # sources count as high / medium evidence. Defaults preserve the legacy
+    # behaviour (Discogs + MusicBrainz = high, others = medium).
+    _levels = _source_confidence_levels()
+    high_sources = 0
+    medium_sources = 0
+    for _src, _confirmed in (
+        ("discogs", discogs_confirmed),
+        ("musicbrainz", musicbrainz_confirmed),
+    ):
+        if _confirmed and _levels.get(_src, "high") != "low":
+            if _levels.get(_src, "high") == "high":
+                high_sources += 1
+            else:
+                medium_sources += 1
+    if discogs_video_confirmed and _levels.get("discogs_video", "medium") != "low":
+        medium_sources += 1
+    if lastfm_confirmed and _levels.get("lastfm", "medium") != "low":
+        medium_sources += 1
+    if mb_compilation_confirmed and _levels.get("musicbrainz_compilation", "medium") != "low":
+        medium_sources += 1
+    if (radio_edit_found or duration_support) and _levels.get("radio_edit", "medium") != "low":
+        medium_sources += 1
+    if single_release_date_match:
+        medium_sources += 1
+    if isrc_single_confirmed:
+        medium_sources += 1
+    # A catalog-size-aware z-score standout counts as a high-confidence source
+    # (legacy "z-score alone is strong evidence" behaviour).
+    if z_standout:
+        high_sources += 1
+
     final = determine_final_status(
         discogs=discogs_confirmed, musicbrainz=musicbrainz_confirmed,
         album_z=album_z, artist_z=artist_z,
@@ -523,14 +635,24 @@ def detect_single_for_track(
         is_remastered_only=is_remastered,
         date_match=single_release_date_match,
         is_title_track=is_title,
+        zscore_high=zscore_high,
+        zscore_medium=zscore_medium,
+        high_sources=high_sources,
+        medium_sources=medium_sources,
     )
 
-    confidence_map = {"high": 1.0, "medium": 0.67, "none": 0.0}
+    # `confidence` is a STRING LABEL ('high'/'medium'/'low') — every consumer
+    # (star-rating stage, templates, edit modal) compares against these labels.
+    # `confidence_score` carries the numeric 0.0-1.0 equivalent for any numeric
+    # consumers (e.g. the legacy single_confidence_score column).
+    label_map = {"high": "high", "medium": "medium", "none": "low"}
+    score_map = {"high": 1.0, "medium": 0.67, "none": 0.0}
     is_single = final in ("high", "medium")
 
     result = {
         "is_single": is_single,
-        "confidence": confidence_map.get(final, 0.0),
+        "confidence": label_map.get(final, "low"),
+        "confidence_score": score_map.get(final, 0.0),
         "sources": sources,
         "reasons": reasons or ["no_source_match"],
         "single_status": final,

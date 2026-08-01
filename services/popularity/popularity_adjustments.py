@@ -7,13 +7,13 @@ These functions modify raw popularity scores based on statistical context.
 from __future__ import annotations
 
 import logging
-from statistics import median, mean, stdev
+from statistics import median
 from typing import Optional
 
 from sqlalchemy import text
 from db.engine import db_session
 from db.utils import get_db_connection, row_get
-from services.popularity.popularity_math import calculate_track_zscore, zscore_to_popularity
+from services.popularity.popularity_math import zscore_to_popularity
 
 logger = logging.getLogger(__name__)
 
@@ -123,124 +123,12 @@ def apply_album_deviation_adjustment(
     artist_mean_popularity: float | None = None,
     conn=None,
 ) -> float:
-    """Apply album-level z-score deviation adjustment for tracks in lower-popularity albums.
-    
-    This function adjusts a track's popularity based on its position within the album's
-    popularity distribution. It helps identify standout tracks within underperforming albums.
-    
-    To avoid double-penalizing tracks, the adjustment is skipped for albums that are
-    significantly underperforming relative to the artist's catalog average.
-    
-    Args:
-        track_popularity: Raw popularity score (0-100)
-        artist_name: Artist name for lookup
-        album_name: Album name for track lookup
-        artist_mean_popularity: Optional artist mean popularity for underperformance check
-        conn: Optional existing database connection
-        
-    Returns:
-        Adjusted popularity score (0-100)
+    """Apply album-level deviation adjustment for underperforming albums.
+
+    Boosts tracks that stand out above an album's median when the album is
+    underperforming relative to the artist's catalogue average (legacy
+    standout-within-underperforming-album signal).
     """
-    if track_popularity <= 0:
-        return track_popularity
-
-    should_close = conn is None
-    db_conn = conn or get_db_connection()
-    
-    try:
-        cursor = db_conn.cursor()
-        placeholder = "%s"
-
-        cursor.execute(
-            f"""
-            SELECT popularity
-            FROM tracks
-            WHERE artist = {placeholder} AND album = {placeholder} AND popularity > 0
-            ORDER BY popularity
-            """,
-            (artist_name, album_name),
-        )
-
-        rows = cursor.fetchall()
-        if not rows or len(rows) < 2:
-            return track_popularity
-
-        # Extract popularity values
-        album_popularities = [row_get(row, "popularity") for row in rows]
-        album_popularities = [p for p in album_popularities if p is not None and p > 0]
-        
-        if len(album_popularities) < 2:
-            return track_popularity
-
-        # Guard: skip adjustment for underperforming albums
-        if artist_mean_popularity is not None and artist_mean_popularity > 0:
-            album_median = median(album_popularities)
-            album_is_underperforming = album_median < (artist_mean_popularity * 0.6)
-            if album_is_underperforming:
-                logger.debug(
-                    "Album deviation adjustment skipped for '%s' - '%s': album is underperforming (median=%.1f < artist_mean=%.1f * 0.6)",
-                    artist_name,
-                    album_name,
-                    album_median,
-                    artist_mean_popularity,
-                )
-                return track_popularity
-
-        # Calculate album statistics
-        try:
-            album_mean = mean(album_popularities)
-            album_stddev = stdev(album_popularities) if len(album_popularities) > 1 else 0.0
-        except (ValueError, ZeroDivisionError):
-            return track_popularity
-
-        if album_stddev == 0:
-            return track_popularity
-
-        # Calculate track's z-score within album
-        album_zscore = calculate_track_zscore(track_popularity, album_mean, album_stddev)
-
-        # Determine weight based on album mean popularity
-        if album_mean < 40:
-            album_weight = 0.40
-        elif album_mean < 60:
-            album_weight = 0.30
-        else:
-            album_weight = 0.15
-
-        # Blend original score with z-score popularity
-        album_zscore_pop = zscore_to_popularity(album_zscore)
-        adjusted_score = (track_popularity * (1.0 - album_weight)) + (album_zscore_pop * album_weight)
-
-        logger.debug(
-            "Album deviation adjustment for '%s' - '%s': original=%.1f, album_mean=%.1f, album_stddev=%.2f, album_zscore=%.2f, weight=%.0f%%, adjusted=%.1f",
-            artist_name,
-            album_name,
-            track_popularity,
-            album_mean,
-            album_stddev,
-            album_zscore,
-            album_weight * 100,
-            adjusted_score,
-        )
-
-        return adjusted_score
-
-    except Exception as e:
-        logger.debug("Error applying album deviation adjustment for '%s' - '%s': %s", artist_name, album_name, e)
-        return track_popularity
-    finally:
-        if should_close and db_conn:
-            db_conn.close()
-
-
-def apply_album_deviation_adjustment(
-    track_popularity: float,
-    artist_name: str,
-    album_name: str,
-    artist_mean_popularity: float | None = None,
-    conn=None,
-) -> float:
-    """Apply album-level deviation adjustment for underperforming albums."""
     if track_popularity <= 0:
         return track_popularity
     should_close = conn is None

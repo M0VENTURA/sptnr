@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from helpers.logging_config import log_unified
-from services.popularity.progress_tracker import update
+from services.popularity.progress_tracker import finish, start, update
 from services.popularity.popularity_cache_policy import should_freeze_track
 from services.popularity.scan_hooks import (
     apply_context_fields_to_track,
@@ -21,8 +21,12 @@ from services.popularity.stages.album_stage import enrich_album
 from services.popularity.stages.finalise_stage import finalise_scan
 from services.popularity.stages.load_stage import load_candidates
 from services.popularity.stages.track_stage import process_track
-from services.scanning.scan_state import is_stop_requested
-from services.scanning.scan_history_service import record_scan
+from services.scanning.scan_state import (
+    is_stop_requested,
+    save_artist_scan_checkpoint,
+    write_progress_with_current_artist,
+)
+from services.scanning.scan_history_service import record_scan, was_album_scanned
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +83,27 @@ def run_scan(
     albums = load_candidates(options)
     total_albums = len(albums)
 
+    # Mark the in-memory tracker as running so the WebUI progress service
+    # (which only merges stage detail when ``running`` is True) picks up the
+    # live stage updates emitted below.
+    start(total_items=total_albums)
+
     if not albums:
         update(stage="complete", progress=100, message="No albums to scan.", processed=0, total_items=0)
+        finish(success=True)
         return {"success": True, "albums_processed": 0, "tracks_processed": 0}
 
     albums_processed = 0
     tracks_processed = 0
+    skipped_albums = 0
     results: list[dict[str, Any]] = []
+    last_checkpoint_artist: str | None = None
+
+    # Resolved once up-front (used for history records and skip checks).
+    scan_type = _resolve_scan_type(options)
+
+    # Per-artist Last.fm listener-context cache (used for dynamic weighting).
+    artist_lf_context_cache: dict[str, dict[str, Any]] = {}
 
     # Resolve stop progress file — accept both stop_progress_file (direct)
     # and progress_file (passed via **extra_kwargs by pipeline)
@@ -96,11 +114,64 @@ def run_scan(
         # ✅ Graceful stop support
         if effective_stop_file and is_stop_requested(effective_stop_file):
             logger.info("Scan stopped by user request")
+            finish(success=False)
             return False
 
         artist = album_row.get("artist") or ""
         album = album_row.get("album") or ""
         tracks = album_row.get("tracks") or []
+
+        # ── Album skip (album_skip_days + skip-if-unchanged) ────────────
+        # Mirrors the legacy scanner: albums already scanned within the
+        # configured window, or whose tracks are all scored + singles
+        # assessed, are skipped unless forced or explicitly filtered.
+        skip_album = False
+        if not force and not album_filter and not metadata_only:
+            try:
+                from helpers.config_helpers import get_feature
+                skip_days = int(get_feature("album_skip_days", 7) or 0)
+            except Exception:
+                skip_days = 7
+            if skip_days > 0:
+                if was_album_scanned(artist, album, scan_type, skip_days):
+                    skip_album = True
+                    log_unified(f"Popularity Scan - Skipping album \"{album}\" (scanned within last {skip_days} days)")
+                elif tracks:
+                    all_scored = all(float(t.get("final_score") or 0) > 0 for t in tracks)
+                    all_assessed = all(t.get("single_detection_last_updated") for t in tracks)
+                    if all_scored and all_assessed:
+                        skip_album = True
+                        log_unified(f"Popularity Scan - Skipping album \"{album}\" (no changes detected)")
+        if skip_album:
+            skipped_albums += 1
+            continue
+
+        # ── Per-artist progress checkpoint ───────────────────────────────
+        # Mirrors the legacy scanner: persist an in-progress checkpoint once
+        # per artist so an interrupted scan can resume from this point.
+        if effective_stop_file and artist and artist != last_checkpoint_artist:
+            try:
+                write_progress_with_current_artist(
+                    effective_stop_file,
+                    "popularity_scan",
+                    True,
+                    current_artist=artist,
+                    extra={"status": "running", "stop_requested": False},
+                )
+                save_artist_scan_checkpoint(artist, effective_stop_file)
+                last_checkpoint_artist = artist
+            except Exception as exc:
+                logger.debug("[scan_runner] Progress checkpoint write failed: %s", exc)
+
+        # ── Per-artist Last.fm listener context (dynamic weight) ────────
+        if artist and artist not in artist_lf_context_cache:
+            try:
+                from services.enrichment.single_detection_context_service import get_artist_lastfm_context
+                artist_lf_context_cache[artist] = get_artist_lastfm_context(artist, None, None)
+            except Exception as exc:
+                logger.debug("[scan_runner] Last.fm context fetch failed for %s: %s", artist, exc)
+                artist_lf_context_cache[artist] = {"mean": 0, "stdev": 0, "total": 0, "values": []}
+        artist_lf_context = artist_lf_context_cache.get(artist) or {}
 
         progress = 5 + int((album_index / total_albums) * 90)
 
@@ -125,8 +196,7 @@ def run_scan(
         stat_eligible_tracks = get_stat_eligible_tracks(track_contexts)
 
         # Determine actual scan type from options for history display
-        _scan_type = _resolve_scan_type(options)
-        record_scan(_scan_type, "started", message=f"{_scan_type} scan: {artist} - {album}", artist=artist, album=album)
+        record_scan(scan_type, "started", message=f"{scan_type} scan: {artist} - {album}", artist=artist, album=album)
 
         album_result = enrich_album(
             album_row=album_row,
@@ -174,6 +244,27 @@ def run_scan(
                     prepared_track.get("title", "?"),
                     prepared_track.get("final_score", 0),
                 )
+                # Persist the freeze state so the flag survives restarts
+                # (legacy behaviour: popularity_frozen = TRUE).
+                if not prepared_track.get("popularity_frozen"):
+                    try:
+                        from sqlalchemy import text as _text
+                        from db.engine import db_session as _db_session
+                        with _db_session() as session:
+                            session.execute(
+                                _text(
+                                    "UPDATE tracks SET popularity_frozen = TRUE, "
+                                    "popularity_frozen_at = CURRENT_TIMESTAMP "
+                                    "WHERE id = :id AND COALESCE(popularity_frozen, FALSE) = FALSE"
+                                ),
+                                {"id": prepared_track.get("id")},
+                            )
+                    except Exception as exc:
+                        logger.debug(
+                            "[scan_runner] Could not persist freeze flag for %s: %s",
+                            prepared_track.get("id"),
+                            exc,
+                        )
                 tracks_processed += 1
                 continue
 
@@ -186,6 +277,7 @@ def run_scan(
                 album_lb_data=album_lb_data,
                 album_lb_listens=album_lb_listens if album_lb_listens else None,
                 artist_max_lf_listeners=artist_max_lf,
+                artist_lf_context=artist_lf_context,
             )
 
             if track_result is not None:
@@ -209,7 +301,7 @@ def run_scan(
 
         # Record completion for this album scan
         try:
-            record_scan(_scan_type, "completed", message=f"{_scan_type} scan: {artist} - {album}", artist=artist, album=album)
+            record_scan(scan_type, "completed", message=f"{scan_type} scan: {artist} - {album}", artist=artist, album=album)
         except Exception:
             pass  # Non-critical — dashboard data is best-effort
 
@@ -221,8 +313,11 @@ def run_scan(
 
     update(stage="complete", progress=100, message="Popularity scan complete.", processed=total_albums, total_items=total_albums)
 
+    finish(success=True)
+
     return {
         "success": True,
         "albums_processed": albums_processed,
+        "albums_skipped": skipped_albums,
         "tracks_processed": tracks_processed,
     }

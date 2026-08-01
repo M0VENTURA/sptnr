@@ -31,9 +31,15 @@ def load_config() -> dict:
 
 
 def resolve_weights(config: dict | None = None) -> Tuple[float, float, float]:
-    """Resolve Last.fm, ListenBrainz and age weights from config."""
+    """Resolve Last.fm, ListenBrainz and age weights from config.
+
+    ``popularity.weights`` takes precedence (used by the scan pipeline's UI
+    section); falls back to the top-level ``weights`` block.
+    """
     cfg = config if isinstance(config, dict) else load_config()
-    weights = cfg.get("weights") if isinstance(cfg, dict) else None
+    weights = cfg.get("popularity", {}).get("weights") if isinstance(cfg, dict) else None
+    if not isinstance(weights, dict):
+        weights = cfg.get("weights") if isinstance(cfg, dict) else None
     weights = weights or {}
     try:
         lastfm = float(weights.get("lastfm", DEFAULT_WEIGHTS["lastfm"]))
@@ -50,6 +56,53 @@ def resolve_weights(config: dict | None = None) -> Tuple[float, float, float]:
 
 LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT = resolve_weights()
 SPOTIFY_WEIGHT = 0.0  # legacy alias retained
+
+
+def get_zscore_thresholds(config: dict | None = None) -> dict:
+    """Load single-detection z-score confidence boundaries from config.
+
+    Returns ``{'medium': 0.6, 'high': 1.0, 'standout_gap_z': 0.75}`` by
+    default, matching the legacy ``get_zscore_thresholds`` helper.
+    """
+    cfg = config if isinstance(config, dict) else load_config()
+    sd = cfg.get("single_detection", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(sd, dict):
+        sd = {}
+    return {
+        "medium": float(sd.get("zscore_medium_threshold", 0.6)),
+        "high": float(sd.get("zscore_high_threshold", 1.0)),
+        "standout_gap_z": float(sd.get("standout_gap_z", 0.75)),
+    }
+
+
+def get_single_boost(config: dict | None = None) -> float:
+    """Return the confirmed-single score boost multiplier (default 1.15)."""
+    cfg = config if isinstance(config, dict) else load_config()
+    sd = cfg.get("single_detection", {}) if isinstance(cfg, dict) else {}
+    try:
+        return float(sd.get("single_boost", 1.15))
+    except Exception:
+        return 1.15
+
+
+def get_metadata_score_floor(config: dict | None = None) -> float:
+    """Return the minimum score floor for tracks with confirmed metadata (default 5.0)."""
+    cfg = config if isinstance(config, dict) else load_config()
+    sd = cfg.get("single_detection", {}) if isinstance(cfg, dict) else {}
+    try:
+        return float(sd.get("metadata_score_floor", 5.0))
+    except Exception:
+        return 5.0
+
+
+def get_live_weight_penalty(config: dict | None = None) -> float:
+    """Return the Last.fm weight penalty fraction for live tracks (default 0.5)."""
+    cfg = config if isinstance(config, dict) else load_config()
+    sd = cfg.get("single_detection", {}) if isinstance(cfg, dict) else {}
+    try:
+        return float(sd.get("live_weight_penalty", 0.5))
+    except Exception:
+        return 0.5
 
 
 # ---------------------------------------------------------------------------

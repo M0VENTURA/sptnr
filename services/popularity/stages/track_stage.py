@@ -26,6 +26,19 @@ from services.enrichment.musicbrainz_service import MusicBrainzService
 # Popularity
 from services.popularity.popularity_math import (
     calculate_combined_popularity_score,
+    calculate_listenbrainz_percentile,
+)
+from services.popularity.popularity_config import (
+    LASTFM_WEIGHT,
+    get_live_weight_penalty,
+    get_metadata_score_floor,
+    get_single_boost,
+)
+
+# Provider aggregation helpers (split-variant merging, cross-release lookups)
+from services.popularity.popularity_sources import (
+    get_aggregated_lastfm_popularity,
+    get_aggregated_listenbrainz_popularity,
 )
 
 # Detection
@@ -87,6 +100,7 @@ def process_track(
     album_lb_data: dict[str, dict[str, int | None]] | None = None,
     album_lb_listens: list[int] | None = None,
     artist_max_lf_listeners: int = 0,
+    artist_lf_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
 
     raw_track_id = track.get("id")
@@ -105,6 +119,9 @@ def process_track(
 
     update_payload: dict[str, Any] = {}
     score_data: dict[str, Any] = {}
+    lb_percentile: float = 0.0
+    lastfm_listeners: int = 0
+    listenbrainz_listens: int = 0
 
     # -------------------------------------------------------------------------
     # 1. METADATA - MusicBrainz (via enrichment service for better matching)
@@ -128,6 +145,19 @@ def process_track(
                         update_payload["mbid"] = recording_mbid
                     if confidence is not None:
                         update_payload["musicbrainz_confidence"] = confidence
+
+                    # Writer backfill from MusicBrainz work relationships
+                    # (legacy composer lookup parity) — only when missing.
+                    if recording_mbid:
+                        _existing_writer = _as_str(track.get("writer") or "")
+                        if not _existing_writer or _existing_writer.strip().lower() in ("[]", "null", "none", ""):
+                            try:
+                                writers = mb_service.get_composers_for_recording(recording_mbid)
+                                if writers:
+                                    import json
+                                    update_payload["writer"] = json.dumps(writers)
+                            except Exception as exc:
+                                logger.debug("[track_stage][WRITER] %s: %s", track_id, exc)
                     if mb_data.get("title"):
                         update_payload["musicbrainz_title"] = mb_data["title"]
                     if mb_data.get("album"):
@@ -294,9 +324,18 @@ def process_track(
                         _lf_api_key = _lf_cfg.get("api_key", "")
                         if _lf_api_key:
                             lf = LastFmClient(_lf_api_key)
-                            lf_result = lf.get_track_info(artist, title)
-                            lastfm_listeners = _as_int(lf_result.get("listeners") if isinstance(lf_result, dict) else 0)
-                            lastfm_playcount = _as_int(lf_result.get("track_play") if isinstance(lf_result, dict) else 0)
+                            # Prefer the aggregated fetch which merges split
+                            # Last.fm variants ("Song" vs "Song (Radio Edit)")
+                            # and falls back to a single track.getInfo lookup.
+                            agg = get_aggregated_lastfm_popularity(artist, title, lastfm_client=lf)
+                            if agg and (agg.get("listeners") or 0) > 0:
+                                lastfm_listeners = _as_int(agg.get("listeners") or 0)
+                                lastfm_playcount = _as_int(agg.get("track_play") or agg.get("playcount") or 0)
+                                lf_result = {}
+                            else:
+                                lf_result = lf.get_track_info(artist, title)
+                                lastfm_listeners = _as_int(lf_result.get("listeners") if isinstance(lf_result, dict) else 0)
+                                lastfm_playcount = _as_int(lf_result.get("track_play") if isinstance(lf_result, dict) else 0)
                             update_payload["lastfm_listeners"] = lastfm_listeners
                             update_payload["lastfm_playcount"] = lastfm_playcount
                             update_payload["lastfm_last_updated"] = now_ts
@@ -342,6 +381,61 @@ def process_track(
                     update_payload["listenbrainz_users"] = listenbrainz_users
                     update_payload["listenbrainz_last_updated"] = now_ts
 
+                # ── Cross-release ListenBrainz aggregation ─────────────────
+                # When Last.fm is low/unreliable, search for ALL recordings of
+                # this track by the same artist (single vs album version) and
+                # aggregate their ListenBrainz popularity — mirrors the legacy
+                # scanner behaviour and rescues tracks whose MBID is split.
+                if lastfm_listeners < 20 and recording_mbid and title and artist:
+                    try:
+                        agg_lb = get_aggregated_listenbrainz_popularity(
+                            title=title,
+                            artist=artist,
+                            primary_mbid=recording_mbid,
+                        )
+                        agg_total = _as_int((agg_lb or {}).get("total_listen_count") or 0)
+                        if agg_total > listenbrainz_listens:
+                            listenbrainz_listens = agg_total
+                            update_payload["listenbrainz_listens"] = listenbrainz_listens
+                            logger.debug("[track_stage] Cross-release LB boost for %s: %s listens", track_id, agg_total)
+                    except Exception as exc:
+                        logger.debug("[track_stage] Cross-release LB aggregation failed for %s: %s", track_id, exc)
+
+                is_live_flag = bool(
+                    effective_track.get("is_live")
+                    or effective_track.get("album_context_live")
+                    or album_context.get("is_live_album")
+                )
+                is_featured_flag = bool(
+                    "feat" in str(artist or "").lower()
+                    or "feat" in str(title or "").lower()
+                )
+                has_mb_meta = bool(recording_mbid)
+                prior_single = bool(effective_track.get("is_single"))
+
+                # Dynamic Last.fm weight from artist listener context (legacy
+                # parity): boosts the Last.fm weight for catalogue outliers and
+                # reduces it for underperformers.
+                lastfm_weight_override = None
+                if artist_lf_context and (artist_lf_context.get("total") or 0) > 0 and lastfm_listeners > 0:
+                    try:
+                        from services.enrichment.single_detection_context_service import get_dynamic_lastfm_weight
+                        lastfm_weight_override = get_dynamic_lastfm_weight(
+                            artist_lf_context,
+                            int(lastfm_listeners or 0),
+                            LASTFM_WEIGHT,
+                        )
+                    except Exception as exc:
+                        logger.debug("[track_stage] Dynamic LF weight failed for %s: %s", track_id, exc)
+
+                # Adjustable scoring knobs from config (single_detection section).
+                try:
+                    cfg_single_boost = get_single_boost()
+                    cfg_floor = get_metadata_score_floor()
+                    cfg_live_penalty = get_live_weight_penalty()
+                except Exception:
+                    cfg_single_boost, cfg_floor, cfg_live_penalty = 1.15, 5.0, 0.5
+
                 score_data = calculate_combined_popularity_score(
                     lastfm_listeners=lastfm_listeners,
                     lastfm_artist_max_listeners=artist_max_lf_listeners,
@@ -349,7 +443,21 @@ def process_track(
                     album_lb_listens=album_lb_listens,
                     age_source_value=listenbrainz_listens,
                     release_date=release_date,
+                    is_single=prior_single,
+                    has_metadata=has_mb_meta,
+                    is_featured_track=is_featured_flag,
+                    is_live_track=is_live_flag,
+                    lastfm_weight_override=lastfm_weight_override,
+                    single_boost=cfg_single_boost,
+                    metadata_score_floor=cfg_floor,
+                    live_weight_penalty=cfg_live_penalty,
                 )
+
+            # LB percentile within the album (used by star-rating rescue path)
+            try:
+                lb_percentile = calculate_listenbrainz_percentile(listenbrainz_listens, album_lb_listens) if album_lb_listens else 0.0
+            except Exception:
+                lb_percentile = 0.0
 
             # Apply score_data (whether cached or freshly computed)
             update_payload.update(score_data)
@@ -427,6 +535,8 @@ def process_track(
 
     if not metadata_only and not popularity_only:
         try:
+            from datetime import datetime as _dt, timezone as _tz
+            sd_now = _dt.now(_tz.utc)
             effective_track = _build_effective_track(track, update_payload)
             sd_title = _as_str(effective_track.get("title") or "")
             sd_artist = _as_str(effective_track.get("artist") or "")
@@ -448,9 +558,13 @@ def process_track(
             )
 
             if sd_result:
+                import json as _json
                 update_payload["is_single"] = sd_result.get("is_single", False)
                 update_payload["single_confidence"] = sd_result.get("confidence", "low")
-                update_payload["single_sources"] = sd_result.get("sources", [])
+                update_payload["single_confidence_score"] = sd_result.get("confidence_score", 0.0)
+                update_payload["single_status"] = sd_result.get("single_status", "none")
+                update_payload["single_sources"] = _json.dumps(sd_result.get("sources", []), default=str)
+                update_payload["single_detection_last_updated"] = sd_now
 
         except Exception as e:
             logger.debug("[track_stage][SINGLE] %s: %s", track_id, e)
@@ -510,8 +624,9 @@ def process_track(
         "artist": track_artist,
         "album": effective_track.get("album", ""),
         "title": effective_track.get("title", ""),
-        "lastfm_listeners": int(score_data.get("lastfm_score", 0)),
-        "listenbrainz_listens": int(score_data.get("listenbrainz_score", 0)),
+        "lastfm_listeners": int(lastfm_listeners or 0),
+        "listenbrainz_listens": int(listenbrainz_listens or 0),
+        "lb_percentile": float(lb_percentile or 0.0),
         "popularity_score": float(score_data.get("combined_score", 0)),
         "is_single": bool(update_payload.get("is_single", False)),
         "single_confidence": str(update_payload.get("single_confidence", "low")),

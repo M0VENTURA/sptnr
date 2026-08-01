@@ -378,11 +378,40 @@ class MusicBrainzService:
             return []
 
         try:
-            data = self.http.get_recording(recording_mbid, inc="artist-rels+work-rels+recording-level-rels")
+            data = self.http.get_recording(
+                recording_mbid,
+                inc="artist-rels+work-rels+work-level-rels+recording-level-rels",
+            )
             return data.get("relations", []) or []
         except Exception as exc:
             logger.debug("Failed to fetch recording relationships for %s: %s", recording_mbid, exc)
             return []
+
+    def get_composers_for_recording(self, recording_mbid: str) -> list[str]:
+        """Extract composer/writer/lyricist names for a recording.
+
+        Mirrors the legacy ``MusicBrainzClient.get_composers_for_track``
+        parsing: composer/writer/lyricist credits attached directly to the
+        recording, plus those attached to any linked Work entity (via
+        ``work-level-rels``). Returns deduplicated names.
+        """
+        if not self.enabled or not recording_mbid:
+            return []
+        composers: list[str] = []
+        for rel in self.get_recording_relationships(recording_mbid):
+            rel_type = str(rel.get("type") or "").lower()
+            if rel_type in ("composer", "writer", "lyricist"):
+                target = rel.get("artist") or {}
+                if target and target.get("name"):
+                    composers.append(target["name"])
+            work = rel.get("work") or {}
+            for work_rel in work.get("relations") or []:
+                work_rel_type = str(work_rel.get("type") or "").lower()
+                if work_rel_type in ("composer", "writer", "lyricist"):
+                    work_target = work_rel.get("artist") or {}
+                    if work_target and work_target.get("name"):
+                        composers.append(work_target["name"])
+        return list(dict.fromkeys(composers))
 
     # ------------------------------------------------------------------
     # Genre-enriched lookups

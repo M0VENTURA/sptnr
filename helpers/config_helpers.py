@@ -614,24 +614,29 @@ def get_standout_config() -> dict[str, Any]:
         "artist_zscore_threshold": 2.2,
         "artist_top_percentile": 0.10,
         "artist_min_tracks": 10,
+        "popularity_5star_z_threshold": 2.0,
+        "lb_unreliable_5star_threshold": 0.50,
+        "standout_gap_z": 0.75,
         "star_5": {"album_z": 1.0, "artist_z": 1.2, "artist_pct": 0.10},
         "star_4": {"album_z": 0.8, "artist_z": 1.0, "artist_pct": 0.20},
         "star_3": {"album_z": 0.0},
         "star_2": {"album_mean": True},
         "star_1": {"default": True},
     }
-    
+
     # Merge user config with defaults
     result = defaults.copy()
-    for key in ("album_zscore_threshold", "artist_zscore_threshold", 
-                "artist_top_percentile", "artist_min_tracks"):
+    for key in ("album_zscore_threshold", "artist_zscore_threshold",
+                "artist_top_percentile", "artist_min_tracks",
+                "popularity_5star_z_threshold", "lb_unreliable_5star_threshold",
+                "standout_gap_z"):
         if key in sd_config:
             result[key] = sd_config[key]
-    
+
     for star_key in ("star_5", "star_4", "star_3", "star_2"):
         if star_key in sd_config and isinstance(sd_config[star_key], dict):
             result.setdefault(star_key, {}).update(sd_config[star_key])
-    
+
     return result
 
 

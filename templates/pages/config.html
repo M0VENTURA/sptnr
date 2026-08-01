@@ -850,8 +850,14 @@
           <small class="form-text text-muted">Default: <strong>1.0</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Medium↔Low Confidence Boundary</label>
+          <input type="number" step="0.1" min="0.1" max="3.0" class="form-control form-control-sm" id="zscore_medium_threshold" placeholder="0.6" value="{{ config.get('single_detection', {}).get('zscore_medium_threshold', 0.6) }}">
+          <small class="form-text text-muted">Default: <strong>0.6</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">Popularity-Only 5★ Threshold</label>
-          <p class="form-control-plaintext form-control-sm text-muted">2.0 <small>(hard-coded)</small></p>
+          <input type="number" step="0.1" min="0.1" max="5.0" class="form-control form-control-sm" id="popularity_5star_z_threshold" placeholder="2.0" value="{{ config.get('single_detection', {}).get('popularity_5star_z_threshold', 2.0) }}">
+          <small class="form-text text-muted">Default: <strong>2.0</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">Top Standout Gap Z-Score</label>
@@ -914,6 +920,30 @@
               <div class="col-6"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="-2" max="5" class="form-control form-control-sm" id="star3_album_z" placeholder="0.0" value="{{ config.get('single_detection', {}).get('star_3', {}).get('album_z', 0.0) }}"></div>
             </div>
           </div>
+        </div>
+      </div>
+      <hr class="my-3">
+      <h6 class="mb-3">Scoring Adjustments</h6>
+      <div class="row g-3">
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Single Boost Multiplier</label>
+          <input type="number" step="0.01" min="1.0" max="2.0" class="form-control form-control-sm" id="single_boost" placeholder="1.15" value="{{ config.get('single_detection', {}).get('single_boost', 1.15) }}">
+          <small class="form-text text-muted">Score multiplier applied to confirmed singles. Default: <strong>1.15</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Metadata Score Floor</label>
+          <input type="number" step="0.5" min="0" max="20" class="form-control form-control-sm" id="metadata_score_floor" placeholder="5.0" value="{{ config.get('single_detection', {}).get('metadata_score_floor', 5.0) }}">
+          <small class="form-text text-muted">Minimum score for tracks with a confirmed MusicBrainz ID. Default: <strong>5.0</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Live Weight Penalty</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="live_weight_penalty" placeholder="0.5" value="{{ config.get('single_detection', {}).get('live_weight_penalty', 0.5) }}">
+          <small class="form-text text-muted">Fraction applied to the Last.fm weight for live tracks. Default: <strong>0.5</strong> (50% reduction)</small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">LB Unreliable 5★ Threshold</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="lb_unreliable_5star_threshold" placeholder="0.50" value="{{ config.get('single_detection', {}).get('lb_unreliable_5star_threshold', 0.50) }}">
+          <small class="form-text text-muted">Min ListenBrainz percentile for the Last.fm-unreliable 5★ rescue. Default: <strong>0.50</strong></small>
         </div>
       </div>
     </div>

@@ -125,6 +125,8 @@ def run_popularity_scan(
         if result is False or (isinstance(result, dict) and result.get("status") == "stopped"):
             update(stage="stopped", message="Scan stopped by user")
             log_unified("[POPULARITY] Scan stopped by user request")
+            from services.popularity.progress_tracker import finish as _tracker_finish
+            _tracker_finish(success=False)
         else:
             update(stage="complete", progress=100, message="Scan complete")
             log_unified("[POPULARITY] Scan complete")
@@ -133,6 +135,8 @@ def run_popularity_scan(
     except Exception:
         update(stage="failed", message="Scan failed")
         log_unified("[POPULARITY] Scan failed")
+        from services.popularity.progress_tracker import finish as _tracker_finish
+        _tracker_finish(success=False)
         raise
 
 

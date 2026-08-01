@@ -144,6 +144,60 @@ def ensure_cover_columns() -> bool: return _ensure_subset("tracks", ("is_cover",
 def ensure_mood_columns() -> bool: return _ensure_subset("tracks", ("mood", "mood_confidence", "mood_source", "mood_last_updated"), TRACK_COLUMNS_TO_ENSURE)
 def ensure_essentia_feature_columns() -> bool: return _ensure_subset("tracks", ("danceability", "essentia_last_updated", "essentia_model_version"), TRACK_COLUMNS_TO_ENSURE)
 def ensure_popularity_freeze_columns() -> bool: return _ensure_subset("tracks", ("popularity_frozen", "popularity_frozen_at"), TRACK_COLUMNS_TO_ENSURE)
+
+def ensure_single_detection_columns() -> bool:
+    """Add single-detection persistence columns and normalise ``single_confidence`` to TEXT.
+
+    The legacy pipeline stored ``single_confidence`` as a TEXT label
+    (``'high'`` / ``'medium'`` / ``'low'`` / ``'user'``) which every UI
+    template, star-rating consumer and the edit modal expects. The staged
+    pipeline briefly declared it as DOUBLE PRECISION and wrote floats
+    (1.0 / 0.67 / 0.0), which made every string comparison fail. This
+    migration adds the missing single-detection columns and converts an
+    existing numeric column to TEXT, mapping stored floats back to labels.
+    """
+    ok = _ensure_subset(
+        "tracks",
+        (
+            "single_confidence", "single_confidence_score", "single_status",
+            "single_sources", "single_sources_used", "single_detection_last_updated",
+            "single_manual_override", "alternate_take", "base_track_id",
+            "is_compilation", "releasecountry", "discogs_artist_id",
+        ),
+        TRACK_COLUMNS_TO_ENSURE,
+    )
+    ok = _ensure_subset("artists", ["lastfm_artist_tags"], COLUMN_REGISTRY["artists"]) and ok
+
+    # If single_confidence exists as a numeric column, convert it to TEXT and
+    # map stored floats back to the labels consumers expect.
+    try:
+        with db_session() as session:
+            if not table_exists(session, "tracks"):
+                return ok
+            cols = get_table_columns(session, "tracks")
+            if "single_confidence" not in cols:
+                return ok
+            types = get_postgres_column_types(session, "tracks", ["single_confidence"])
+            current_type = (types.get("single_confidence") or "").lower()
+            numeric_types = {"smallint", "integer", "bigint", "real", "double precision", "numeric", "decimal"}
+            if current_type in numeric_types:
+                session.execute(text("""
+                    ALTER TABLE tracks
+                    ALTER COLUMN single_confidence TYPE TEXT
+                    USING (
+                        CASE
+                            WHEN single_confidence IS NULL THEN NULL
+                            WHEN single_confidence >= 0.9 THEN 'high'
+                            WHEN single_confidence >= 0.5 THEN 'medium'
+                            ELSE 'low'
+                        END
+                    )
+                """))
+                logging.info("Migrated tracks.single_confidence from %s to TEXT", current_type)
+    except Exception as exc:
+        logging.warning("Could not migrate single_confidence column: %s", exc)
+    return ok
+
 def ensure_manual_genres_column() -> bool: return _ensure_subset("tracks", ["manual_genres"], TRACK_COLUMNS_TO_ENSURE)
 def ensure_verification_columns() -> bool: return _ensure_subset("tracks", ("verification_status", "verification_checked_at", "verification_error"), TRACK_COLUMNS_TO_ENSURE)
 def ensure_pending_mb_updates_column() -> bool: return _ensure_subset("tracks", ["pending_mb_updates"], TRACK_COLUMNS_TO_ENSURE)
@@ -167,6 +221,7 @@ def ensure_full_schema(_db_path: str | None = None) -> bool:
         ensure_album_artist_column_data()
         ensure_artists_name_unique_constraint()
         ensure_album_art_schema()
+        ensure_single_detection_columns()
         return True
     except Exception as exc:
         if is_transient_pg_startup_error(exc): return False

@@ -87,9 +87,6 @@ def get_lastfm_track_info(
     return choose_best_provider_counts(results) if results else {"track_play": 0, "listeners": 0}
 
 
-import logging
-logger = logging.getLogger(__name__)
-
 # Module-level cache: artist_key (casefold) → max listener count from top tracks.
 _lastfm_artist_max_cache: dict[str, int] = {}
 

@@ -19,7 +19,22 @@ popularity:
     age: 0.10           # Default: 0.10 (10%)
 ```
 
-**Note:** Values are automatically normalized to sum to 1.0.
+**Note:** Values are automatically normalized to sum to 1.0. `popularity.weights` takes precedence; the top-level `weights` block is used as a fallback.
+
+### Scoring Adjustments (`single_detection`)
+Controls the boost/floor/penalty applied by the popularity scan pipeline.
+
+```yaml
+single_detection:
+  zscore_medium_threshold: 0.6      # Medium↔Low confidence boundary (default: 0.6)
+  zscore_high_threshold: 1.0        # High↔Medium confidence boundary (default: 1.0)
+  standout_gap_z: 0.75              # Standout gap z-score (default: 0.75)
+  single_boost: 1.15                # Score multiplier for confirmed singles (default: 1.15)
+  metadata_score_floor: 5.0         # Min score for tracks with a confirmed MBID (default: 5.0)
+  live_weight_penalty: 0.5          # Last.fm weight fraction for live tracks (default: 0.5)
+  popularity_5star_z_threshold: 2.0 # Popularity-only 5★ z threshold (default: 2.0)
+  lb_unreliable_5star_threshold: 0.50 # LB percentile for Last.fm-unreliable 5★ rescue (default: 0.50)
+```
 
 ### Standout Detection & Star Ratings (`single_detection`)
 Controls z-score thresholds for standout track detection and star rating assignment.
@@ -46,6 +61,30 @@ single_detection:
     album_mean: true
   star_1:
     default: true
+```
+
+### Scan Caching (`features`)
+Controls how often mature tracks are re-scored.
+
+```yaml
+features:
+  mature_track_min_age_years: 2  # Tracks at/above this age keep existing popularity unless data missing
+  album_skip_days: 7             # Days before rescanning an album
+  album_skip_min_tracks: 1       # Minimum tracks for a valid album
+```
+
+### Single-Detection Source Confidence (`features.source_*_confidence`)
+Controls which sources count as high / medium evidence in the single-detection
+confidence decision (`low` excludes a source).
+
+```yaml
+features:
+  source_discogs_confidence: "high"
+  source_musicbrainz_confidence: "high"
+  source_discogs_video_confidence: "medium"
+  source_musicbrainz_compilation_confidence: "medium"
+  source_lastfm_confidence: "medium"
+  source_radio_edit_confidence: "medium"
 ```
 
 ## 2. Genre Aggregation

@@ -223,15 +223,70 @@ function buildConfigObject() {
         live_musicbrainz_max_results: parseInt(getValue('live_musicbrainz_max_results', '200')) || 200
       }
     ),
-    single_detection: {
-      zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
-      standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75
-    },
-    weights: {
-      lastfm: parseFloat(getValue('weight_lastfm', '0.55')) || 0.55,
-      listenbrainz: parseFloat(getValue('weight_listenbrainz', '0.35')) || 0.35,
-      age: parseFloat(getValue('weight_age', '0.10')) || 0.10
-    },
+    single_detection: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.single_detection) || {},
+      {
+        zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
+        zscore_medium_threshold: parseFloat(getValue('zscore_medium_threshold', '0.6')) || 0.6,
+        standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75,
+        album_zscore_threshold: parseFloat(getValue('sd_album_zscore', '0.8')) || 0.8,
+        artist_zscore_threshold: parseFloat(getValue('sd_artist_zscore', '2.2')) || 2.2,
+        artist_top_percentile: parseFloat(getValue('sd_artist_pct', '0.10')) || 0.10,
+        artist_min_tracks: parseInt(getValue('sd_artist_min_tracks', '10')) || 10,
+        popularity_5star_z_threshold: parseFloat(getValue('popularity_5star_z_threshold', '2.0')) || 2.0,
+        lb_unreliable_5star_threshold: parseFloat(getValue('lb_unreliable_5star_threshold', '0.50')) || 0.50,
+        single_boost: parseFloat(getValue('single_boost', '1.15')) || 1.15,
+        metadata_score_floor: parseFloat(getValue('metadata_score_floor', '5.0')) || 5.0,
+        live_weight_penalty: parseFloat(getValue('live_weight_penalty', '0.5')) || 0.5,
+        star_5: {
+          album_z: parseFloat(getValue('star5_album_z', '1.0')) || 1.0,
+          artist_z: parseFloat(getValue('star5_artist_z', '1.2')) || 1.2,
+          artist_pct: parseFloat(getValue('star5_pct', '0.10')) || 0.10
+        },
+        star_4: {
+          album_z: parseFloat(getValue('star4_album_z', '0.8')) || 0.8,
+          artist_z: parseFloat(getValue('star4_artist_z', '1.0')) || 1.0,
+          artist_pct: parseFloat(getValue('star4_pct', '0.20')) || 0.20
+        },
+        star_3: {
+          album_z: parseFloat(getValue('star3_album_z', '0.0')) || 0.0
+        }
+      }
+    ),
+    weights: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.weights) || {},
+      {
+        lastfm: parseFloat(getValue('weight_lastfm', '0.55')) || 0.55,
+        listenbrainz: parseFloat(getValue('weight_listenbrainz', '0.35')) || 0.35,
+        age: parseFloat(getValue('weight_age', '0.10')) || 0.10
+      }
+    ),
+    popularity: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.popularity) || {},
+      {
+        weights: {
+          lastfm: parseFloat(getValue('pop_weight_lastfm', '0.55')) || 0.55,
+          listenbrainz: parseFloat(getValue('pop_weight_listenbrainz', '0.35')) || 0.35,
+          age: parseFloat(getValue('pop_weight_age', '0.10')) || 0.10
+        }
+      }
+    ),
+    genres: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.genres) || {},
+      {
+        weights: {
+          musicbrainz: parseFloat(getValue('genre_weight_musicbrainz', '0.40')) || 0.40,
+          discogs: parseFloat(getValue('genre_weight_discogs', '0.25')) || 0.25,
+          audiodb: parseFloat(getValue('genre_weight_audiodb', '0.20')) || 0.20,
+          lastfm: parseFloat(getValue('genre_weight_lastfm', '0.10')) || 0.10,
+          spotify: parseFloat(getValue('genre_weight_spotify', '0.05')) || 0.05
+        }
+      }
+    ),
     api_integrations: {
       spotify: {
         enabled: getChecked('api_spotify_enabled'),

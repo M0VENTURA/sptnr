@@ -108,7 +108,15 @@ enable_web_api_key: true  # Set to false to disable API key requirement
 
 weights:
   lastfm: 0.70       # Community scrobbles: genuine user choice (established 2002)
+  listenbrainz: 0.35 # ListenBrainz listen counts (normalised with the others to sum to 1)
   age: 0.30          # Recency and track maturity
+
+# Popularity scan pipeline weights (preferred over top-level `weights`)
+popularity:
+  weights:
+    lastfm: 0.55        # Default: 0.55 (55%)
+    listenbrainz: 0.35  # Default: 0.35 (35%)
+    age: 0.10           # Default: 0.10 (10%)
 
 database:
   path: "/database/sptnr.db"
@@ -168,6 +176,14 @@ features:
   include_user_ratings_on_scan: true
   scan_worker_threads: 4
   spotify_prefetch_timeout: 30
+  mature_track_min_age_years: 2  # Tracks at/above this age keep existing popularity unless data missing
+  # Per-source single-detection confidence (low/medium/high)
+  source_discogs_confidence: "high"      # Discogs single evidence
+  source_musicbrainz_confidence: "high"  # MusicBrainz single evidence
+  source_discogs_video_confidence: "medium"
+  source_musicbrainz_compilation_confidence: "medium"
+  source_lastfm_confidence: "medium"
+  source_radio_edit_confidence: "medium"
   # Strict Spotify matching - only include exact matches
   strict_spotify_matching: true  # When enabled, only include exact title matches with ±2s duration and ISRC validation
   spotify_duration_tolerance: 2  # Maximum duration difference in seconds (default: 2)
@@ -179,6 +195,32 @@ single_detection:
   zscore_medium_threshold: 0.6
   zscore_high_threshold: 1.0
   standout_gap_z: 0.75  # Minimum z-normalized gap to next track for standout-driven 5★
+  # Standout / star-rating thresholds
+  album_zscore_threshold: 0.8   # Min z-score for album standout
+  artist_zscore_threshold: 2.2  # Min z-score for artist outliers
+  artist_top_percentile: 0.10   # Top 10% of artist catalogue
+  artist_min_tracks: 10         # Min tracks for artist-level stats
+  popularity_5star_z_threshold: 2.0   # Popularity-only 5★ z threshold
+  lb_unreliable_5star_threshold: 0.50 # LB percentile for Last.fm-unreliable 5★ rescue
+  # Scoring adjustments (popularity scan pipeline)
+  single_boost: 1.15        # Score multiplier for confirmed singles
+  metadata_score_floor: 5.0 # Min score for tracks with a confirmed MusicBrainz ID
+  live_weight_penalty: 0.5  # Fraction applied to Last.fm weight for live tracks (0.5 = 50% reduction)
+  # Star rating criteria
+  star_5:
+    album_z: 1.0
+    artist_z: 1.2
+    artist_pct: 0.10
+  star_4:
+    album_z: 0.8
+    artist_z: 1.0
+    artist_pct: 0.20
+  star_3:
+    album_z: 0.0
+  star_2:
+    album_mean: true
+  star_1:
+    default: true
 
 # Essentia local ML mood/genre tagging — https://github.com/WB2024/Essentia-to-Metadata
 # The official Docker image bundles Essentia-to-Metadata at /opt/Essentia-to-Metadata/tag_music.py

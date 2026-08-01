@@ -92,6 +92,7 @@ def _assign_stars(
     is_live = bool(track.get("is_live")) or bool(track.get("album_context_live"))
     lb_listens = float(track.get("listenbrainz_listens") or 0)
     lf_listeners = float(track.get("lastfm_listeners") or 0)
+    lb_percentile = float(track.get("lb_percentile") or 0)
 
     # User override
     if single_confidence == "user":
@@ -106,12 +107,26 @@ def _assign_stars(
     if is_elite and not is_live:
         return 5
     if is_single and single_confidence == "high":
-        if artist_z >= STAR_5_ARTIST_Z or album_z >= STAR_5_ALBUM_Z or is_top_catalog:
+        if is_live:
+            # Live singles reach 5★ only when elite/top-catalogue.
+            if is_elite:
+                return 5
+        elif artist_z >= STAR_5_ARTIST_Z or album_z >= STAR_5_ALBUM_Z or is_top_catalog:
             return 5
 
-    # 4★: medium-confidence single or top 20%
-    if is_single and single_confidence in ("high", "medium"):
-        if artist_z >= STAR_4_ARTIST_Z or album_z >= STAR_4_ALBUM_Z:
+    # 4★/5★: medium-confidence single — 5★ when top catalogue (legacy parity),
+    # 4★ otherwise. Live medium singles are capped at 4★ (3★ if not top).
+    if is_single and single_confidence == "medium":
+        if is_live:
+            return 4 if is_top_catalog else 3
+        return 5 if is_top_catalog else 4
+
+    # 4★: high-confidence single below the 5★ bar
+    if is_single and single_confidence == "high":
+        if is_live:
+            if artist_z >= STAR_4_ARTIST_Z or album_z >= STAR_4_ALBUM_Z:
+                return 4
+        elif artist_z >= STAR_4_ARTIST_Z or album_z >= STAR_4_ALBUM_Z:
             return 4
     if _is_top_artist_percentile(score, artist_scores, STAR_4_ARTIST_PCT):
         return 4
@@ -120,10 +135,15 @@ def _assign_stars(
     if album_z >= POPULARITY_5STAR_Z and not is_live:
         return 5
 
-    # LB override: when Last.fm is unreliable but LB percentile is strong
-    if not is_live and _is_lastfm_unreliable(lf_listeners, lb_listens):
-        if is_top_catalog or album_z >= STAR_4_ALBUM_Z:
-            return 5
+    # LB rescue: Last.fm unreliable but ListenBrainz percentile is strong
+    # and the track is strong within its catalogue (legacy parity).
+    if (
+        not is_live
+        and _is_lastfm_unreliable(lf_listeners, lb_listens)
+        and lb_percentile >= LB_UNRELIABLE_5STAR
+        and (is_top_catalog or album_z >= STAR_4_ALBUM_Z)
+    ):
+        return 5
 
     # 3★: above album average
     if album_z >= STAR_3_ALBUM_Z and score > 0:
@@ -288,6 +308,19 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
             # Collect artist-wide scores
             artist_scores = [float(r.get("popularity_score") or 0) for r in artist_results if float(r.get("popularity_score") or 0) > 0]
 
+            # Merge in existing DB scores so mature/frozen tracks (skipped by
+            # the runner) still anchor the album/artist distributions.
+            try:
+                cursor.execute(
+                    "SELECT final_score FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND final_score > 0",
+                    (artist,),
+                )
+                db_artist_scores = [float(row[0]) for row in cursor.fetchall() if row[0]]
+                artist_scores = list(artist_scores) + list(db_artist_scores)
+            except Exception as exc:
+                logger.debug("[finalise_stage] Artist DB score merge failed for %s: %s", artist, exc)
+
             # Group by album for album-level z-scores
             by_album: dict[str, list[dict]] = defaultdict(list)
             for r in artist_results:
@@ -296,6 +329,16 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
 
             for album, album_results in by_album.items():
                 album_scores = [float(r.get("popularity_score") or 0) for r in album_results if float(r.get("popularity_score") or 0) > 0]
+                try:
+                    cursor.execute(
+                        "SELECT final_score FROM tracks "
+                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND final_score > 0",
+                        (artist, album),
+                    )
+                    db_album_scores = [float(row[0]) for row in cursor.fetchall() if row[0]]
+                    album_scores = list(album_scores) + list(db_album_scores)
+                except Exception as exc:
+                    logger.debug("[finalise_stage] Album DB score merge failed for %s - %s: %s", artist, album, exc)
 
                 for track in album_results:
                     # Assign star rating

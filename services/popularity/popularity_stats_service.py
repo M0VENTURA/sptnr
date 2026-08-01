@@ -13,20 +13,42 @@ logger = logging.getLogger(__name__)
 
 
 def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, list[float]]:
-    """Return (mean, stdev, values) of popularity scores for an album."""
-    cursor = conn.cursor()
+    """Return (mean, stdev, values) of popularity scores for an album.
 
-    cursor.execute(
-        """
-        SELECT final_score FROM tracks
-        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-          AND album = %s
-          AND final_score > 0
-        """,
-        (artist, album),
-    )
-
-    values = [float(row[0] or 0) for row in cursor.fetchall() or []]
+    When ``conn`` is ``None`` a fresh ``db_session`` is opened so callers
+    (e.g. the single-detection service) never crash on ``None.cursor()``.
+    """
+    values: list[float] = []
+    if conn is None:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        try:
+            with _db_session() as session:
+                result = session.execute(
+                    _text("""
+                        SELECT final_score FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                          AND album = :album
+                          AND final_score > 0
+                    """),
+                    {"artist": artist, "album": album},
+                )
+                values = [float(row[0] or 0) for row in result.fetchall() or []]
+        except Exception as exc:
+            logger.debug("[POPULARITY_STATS] Album stats session error for %s - %s: %s", artist, album, exc)
+            return 0.0, 0.0, []
+    else:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT final_score FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+              AND album = %s
+              AND final_score > 0
+            """,
+            (artist, album),
+        )
+        values = [float(row[0] or 0) for row in cursor.fetchall() or []]
 
     if not values:
         logger.debug("[POPULARITY_STATS] No valid score tracks found for album: %s - %s", artist, album)
@@ -35,24 +57,45 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, 
     avg = mean(values)
     sd = stdev(values) if len(values) > 1 else 0.0
     logger.debug("[POPULARITY_STATS] Album stats for %s - %s: mean=%.1f, stdev=%.1f (count=%d)", artist, album, avg, sd, len(values))
-    
+
     return avg, sd, values
 
 
 def calculate_artist_stats(conn, artist: str) -> tuple[float, float, list[float]]:
-    """Return (mean, stdev, values) of popularity scores for an artist."""
-    cursor = conn.cursor()
+    """Return (mean, stdev, values) of popularity scores for an artist.
 
-    cursor.execute(
-        """
-        SELECT final_score FROM tracks
-        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-          AND final_score > 0
-        """,
-        (artist,),
-    )
-
-    values = [float(row[0] or 0) for row in cursor.fetchall() or []]
+    When ``conn`` is ``None`` a fresh ``db_session`` is opened so callers
+    (e.g. the single-detection service) never crash on ``None.cursor()``.
+    """
+    values: list[float] = []
+    if conn is None:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        try:
+            with _db_session() as session:
+                result = session.execute(
+                    _text("""
+                        SELECT final_score FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                          AND final_score > 0
+                    """),
+                    {"artist": artist},
+                )
+                values = [float(row[0] or 0) for row in result.fetchall() or []]
+        except Exception as exc:
+            logger.debug("[POPULARITY_STATS] Artist stats session error for %s: %s", artist, exc)
+            return 0.0, 0.0, []
+    else:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT final_score FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+              AND final_score > 0
+            """,
+            (artist,),
+        )
+        values = [float(row[0] or 0) for row in cursor.fetchall() or []]
 
     if not values:
         logger.debug("[POPULARITY_STATS] No valid score tracks found for artist: %s", artist)

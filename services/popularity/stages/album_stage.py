@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -32,6 +33,11 @@ from services.enrichment.album_art_service import (
 from services.enrichment.artist_bio_service import get_artist_biography
 from services.metadata.artist_metadata_service import (
     cleanup_false_positive_missing,
+)
+from services.catalog.album_classification_service import (
+    detect_live_album_type,
+    is_live_or_unplugged_track_title,
+    normalize_primary_release_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -256,6 +262,241 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
+def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None, str | None]:
+    """Query MusicBrainz release-group for a confident album-type match.
+
+    Returns ``(album_type, release_group_mbid)``. ``album_type`` is one of
+    ``single``, ``ep``, ``album``, ``album+compilation``, ``album+live``,
+    ``album+remix`` — or ``None`` when no confident match exists. This
+    restores the legacy ``get_album_type_with_fallback`` MusicBrainz path that
+    the staged runner had dropped in favour of name-only detection.
+    """
+    try:
+        from services.enrichment.musicbrainz_service import MusicBrainzService
+        svc = MusicBrainzService(enabled=True)
+        matches = svc.search_releasegroup_matches(artist, album, limit=3)
+        if not matches:
+            return None, None
+        best = matches[0]
+        if (best.get("match_score") or 0) < 0.6:
+            return None, None
+        primary = (best.get("primary_type") or "").lower()
+        rg_mbid = best.get("id")
+        mapping = {
+            "single": "single",
+            "ep": "ep",
+            "album": "album",
+            "compilation": "album+compilation",
+            "live": "album+live",
+            "remix": "album+remix",
+        }
+        return mapping.get(primary), rg_mbid
+    except Exception as exc:
+        logger.debug("[album_stage] MB album-type lookup failed for '%s - %s': %s", artist, album, exc)
+        return None, None
+
+
+def _persist_album_type_to_tracks(conn, cursor, artist, album, tracks, album_type, release_group_mbid):
+    """Propagate the detected album type (+ release-group MBID) to album tracks."""
+    if not album_type:
+        return
+    primary = normalize_primary_release_type(album_type)
+    updated = 0
+    for track in tracks or []:
+        track_id = track.get("id")
+        if not track_id:
+            continue
+        # Skip tracks whose stored type already matches — avoids a write
+        # storm on every re-scan (legacy behaviour wrote only on change).
+        current_type = str(track.get("musicbrainz_albumtype") or track.get("spotify_album_type") or "")
+        if current_type == album_type:
+            continue
+        try:
+            cursor.execute(
+                """
+                UPDATE tracks
+                SET spotify_album_type = %s, releasetype = %s, musicbrainz_albumtype = %s
+                WHERE id = %s
+                """,
+                (album_type, primary, album_type, str(track_id)),
+            )
+            updated += 1
+        except Exception as exc:
+            logger.debug("[album_stage] Album-type persist failed for %s: %s", track_id, exc)
+    if updated:
+        conn.commit()
+        logger.info(
+            "[album_stage] Persisted album type '%s' to %s track(s) for '%s - %s'",
+            album_type, updated, artist, album,
+        )
+
+    if release_group_mbid:
+        try:
+            cursor.execute(
+                """
+                UPDATE tracks
+                SET musicbrainz_releasegroupid = %s
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
+                  AND (musicbrainz_releasegroupid IS NULL OR TRIM(musicbrainz_releasegroupid) = '')
+                """,
+                (release_group_mbid, artist, album),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.debug("[album_stage] Release-group MBID propagation failed: %s", exc)
+
+
+def _inject_album_genre(conn, cursor, track_id: str, label: str, mb_genres_raw, genres_raw) -> None:
+    """Insert a genre label (Live/Acoustic/Remix) into stored genre columns."""
+    mb_list: list = []
+    try:
+        if mb_genres_raw and str(mb_genres_raw) not in ("null", "[]", ""):
+            mb_list = json.loads(mb_genres_raw) if isinstance(mb_genres_raw, str) else list(mb_genres_raw)
+    except Exception:
+        mb_list = []
+    if not isinstance(mb_list, list):
+        mb_list = []
+    if label.lower() not in [str(g).lower() for g in mb_list]:
+        mb_list.insert(0, label)
+
+    genre_list = [g.strip() for g in str(genres_raw or "").split(",") if g.strip()]
+    if label.lower() not in [g.lower() for g in genre_list]:
+        genre_list.insert(0, label)
+
+    cursor.execute(
+        "UPDATE tracks SET musicbrainz_genres = %s, genres = %s WHERE id = %s",
+        (json.dumps(mb_list), ", ".join(genre_list), str(track_id)),
+    )
+
+
+def _fetch_artist_lastfm_tags(artist: str, conn) -> None:
+    """Fetch and cache Last.fm artist top tags (legacy parity).
+
+    Stores a JSON list of tag names in ``artists.lastfm_artist_tags``.
+    Skips artists that already have tags cached.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT lastfm_artist_tags FROM artists WHERE name = %s", (artist,))
+        row = cursor.fetchone()
+        if row and row_get(row, "lastfm_artist_tags"):
+            return
+
+        from helpers.config_helpers import get_config
+        cfg = get_config()
+        lf_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
+        if not (lf_cfg.get("enabled") and lf_cfg.get("api_key")):
+            return
+        api_key = lf_cfg["api_key"]
+        if api_key in ("your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""):
+            return
+
+        from api_clients.lastfm import LastFmClient
+        lf = LastFmClient(api_key)
+        tags = lf.get_artist_top_tags(artist, limit=15) or []
+        names = [t.get("name") for t in tags if isinstance(t, dict) and t.get("name")]
+        if names:
+            cursor.execute(
+                "UPDATE artists SET lastfm_artist_tags = %s WHERE name = %s",
+                (json.dumps(names), artist),
+            )
+            conn.commit()
+            logger.info("[album_stage] Stored %d Last.fm tag(s) for '%s'", len(names), artist)
+    except Exception as exc:
+        logger.debug("[album_stage] Last.fm artist tags failed for '%s': %s", artist, exc)
+
+
+def _apply_live_remix_album_tagging(conn, cursor, artist, album, album_type, tracks) -> None:
+    """Tag live/acoustic/remix albums (legacy parity).
+
+    Live/acoustic albums: rename tracks with a ``(Live)`` / ``(Acoustic)``
+    suffix, inject the genre, set ``is_live`` / ``is_acoustic`` and
+    ``album_context_live``. Remix albums: inject a ``Remix`` genre and set
+    ``is_remix`` (no title rename).
+    """
+    lower = (album_type or "").lower()
+    is_live_album = "+live" in lower or "(live)" in lower
+    is_remix_album = "+remix" in lower or "(remix)" in lower
+
+    if is_live_album:
+        live_type = detect_live_album_type(album, album_type) or "live"
+        label = "Acoustic" if live_type == "acoustic" else "Live"
+        for track in tracks or []:
+            track_id = track.get("id")
+            title = str(track.get("title") or "")
+            if not track_id or not title:
+                continue
+            is_live_flag = int(track.get("is_live") or 0)
+            is_acoustic_flag = int(track.get("is_acoustic") or 0)
+            already_tagged = (
+                (label == "Live" and is_live_flag)
+                or (label == "Acoustic" and is_acoustic_flag)
+            )
+            if already_tagged:
+                continue
+            new_title = title
+            has_suffix = bool(re.search(rf"\({label}[^)]*\)\s*$", title, re.IGNORECASE))
+            if not is_live_or_unplugged_track_title(title) and not has_suffix:
+                new_title = f"{title} ({label})"
+            try:
+                cursor.execute(
+                    """
+                    UPDATE tracks
+                    SET is_live = %s, is_acoustic = %s, album_context_live = 1, title = %s
+                    WHERE id = %s
+                    """,
+                    (1 if label == "Live" else 0, 1 if label == "Acoustic" else 0, new_title, str(track_id)),
+                )
+                _inject_album_genre(conn, cursor, str(track_id), label, track.get("musicbrainz_genres"), track.get("genres"))
+            except Exception as exc:
+                logger.debug("[album_stage] Live tagging failed for %s: %s", track_id, exc)
+        conn.commit()
+        logger.info("[album_stage] Tagged '%s - %s' as %s album", artist, album, label)
+
+    if is_remix_album:
+        for track in tracks or []:
+            track_id = track.get("id")
+            if not track_id:
+                continue
+            try:
+                cursor.execute(
+                    "UPDATE tracks SET is_remix = 1 WHERE id = %s AND COALESCE(is_remix, 0) = 0",
+                    (str(track_id),),
+                )
+                _inject_album_genre(conn, cursor, str(track_id), "Remix", track.get("musicbrainz_genres"), track.get("genres"))
+            except Exception as exc:
+                logger.debug("[album_stage] Remix tagging failed for %s: %s", track_id, exc)
+        conn.commit()
+        logger.info("[album_stage] Tagged '%s - %s' as remix album", artist, album)
+
+
+def _persist_alternate_takes(conn, cursor, album_context) -> None:
+    """Mark alternate takes (``alternate_take`` / ``base_track_id``)."""
+    alternate_takes = (album_context or {}).get("alternate_takes") or {}
+    updated = 0
+    for base_key, variants in alternate_takes.items():
+        if not variants or len(variants) < 2:
+            continue
+        base_track = variants[0]
+        base_id = base_track.get("id") if isinstance(base_track, dict) else None
+        if not base_id:
+            continue
+        for variant in variants[1:]:
+            alt_id = variant.get("id") if isinstance(variant, dict) else None
+            if alt_id and str(alt_id) != str(base_id):
+                try:
+                    cursor.execute(
+                        "UPDATE tracks SET alternate_take = 1, base_track_id = %s WHERE id = %s AND COALESCE(alternate_take, 0) = 0",
+                        (str(base_id), str(alt_id)),
+                    )
+                    updated += 1
+                except Exception as exc:
+                    logger.debug("[album_stage] Alternate-take persist failed for %s: %s", alt_id, exc)
+    if updated:
+        conn.commit()
+        logger.info("[album_stage] Marked %s alternate take(s) in album", updated)
+
+
 def enrich_album(
     *,
     album_row: dict[str, Any],
@@ -285,12 +526,45 @@ def enrich_album(
         pass
 
     conn = get_db_connection()
+    cursor = conn.cursor()
+    album_tracks = album_row.get("tracks") or []
     try:
-        # 1. Album type detection
+        # 1. Album type detection (name-based + MusicBrainz release-group)
         detected_type = _detect_album_type(artist, album, album_artist or None, spotify_type or None)
+        mb_type, rg_mbid = _lookup_musicbrainz_album_type(artist, album)
+        if mb_type:
+            track_count = len(album_tracks)
+            # A MusicBrainz 'single'/'ep' verdict for a large track count is
+            # almost certainly a full album — downgrade (legacy EP override).
+            if mb_type in ("single", "ep") and track_count > 6:
+                mb_type = "album"
+            elif mb_type == "single" and track_count > 3:
+                mb_type = "ep"
+            # Prefer the MusicBrainz verdict for single/EP (name-based heuristics
+            # cannot detect those) and let it refine a plain 'album' verdict;
+            # keep name-based live/soundtrack/compilation verdicts otherwise.
+            if detected_type == "album" or mb_type in ("single", "ep"):
+                detected_type = mb_type
+                logger.info("[album_stage] MB album type for '%s - %s': %s", artist, album, detected_type)
         is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
         logger.info("[album_stage] '%s - %s' → type=%s, heterogeneous=%s",
                      artist, album, detected_type, is_hetero)
+
+        # Propagate the detected type + release-group MBID to album tracks.
+        _persist_album_type_to_tracks(conn, cursor, artist, album, album_tracks, detected_type, rg_mbid)
+
+        # Mark compilation/soundtrack albums (legacy is_compilation flag).
+        if "+compilation" in detected_type.lower() or "+soundtrack" in detected_type.lower():
+            try:
+                cursor.execute(
+                    "UPDATE tracks SET is_compilation = 1 "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s "
+                    "AND COALESCE(is_compilation, 0) = 0",
+                    (artist, album),
+                )
+                conn.commit()
+            except Exception as exc:
+                logger.debug("[album_stage] Compilation flag persist failed: %s", exc)
 
         # 2. Album art (delegates to existing enrichment services)
         art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
@@ -300,8 +574,29 @@ def enrich_album(
         # 3. Artist metadata (delegates to existing enrichment services)
         meta = _fetch_artist_metadata(artist, conn)
 
+        # Last.fm artist top tags (legacy parity)
+        _fetch_artist_lastfm_tags(artist, conn)
+
+        # Backfill releasecountry for tracks missing a release country so
+        # Navidrome's "Release Country" field stays populated (legacy parity).
+        if meta.get("country"):
+            try:
+                cursor.execute(
+                    "UPDATE tracks SET releasecountry = %s "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
+                    "AND (releasecountry IS NULL OR TRIM(releasecountry) = '')",
+                    (meta["country"], artist),
+                )
+                conn.commit()
+            except Exception as exc:
+                logger.debug("[album_stage] releasecountry backfill failed: %s", exc)
+
         # 4. Similar artists
         similar = _fetch_similar_artists(artist, conn, options)
+
+        # 5. Live/remix album tagging + alternate-take persistence
+        _apply_live_remix_album_tagging(conn, cursor, artist, album, detected_type, album_tracks)
+        _persist_alternate_takes(conn, cursor, album_context)
 
         conn.commit()
     except Exception as exc:

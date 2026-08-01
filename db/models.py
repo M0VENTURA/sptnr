@@ -130,7 +130,13 @@ class Track(Base):
 
     # Single detection
     is_single = Column(Boolean, server_default=text("FALSE"), nullable=True)
-    single_confidence = Column(Double, nullable=True)
+    single_confidence = Column(Text, nullable=True)
+    single_confidence_score = Column(Double, nullable=True)
+    single_status = Column(Text, nullable=True)
+    single_sources = Column(Text, nullable=True)
+    single_sources_used = Column(Text, nullable=True)
+    single_detection_last_updated = Column(DateTime, nullable=True)
+    single_manual_override = Column(Boolean, server_default=text("FALSE"), nullable=True)
 
     # Popularity freeze
     popularity_frozen = Column(Boolean, server_default=text("FALSE"), nullable=True)
@@ -170,6 +176,12 @@ class Track(Base):
     is_live = Column(BigInteger, server_default=text("0"), nullable=True)
     is_acoustic = Column(BigInteger, server_default=text("0"), nullable=True)
     is_remix = Column(BigInteger, server_default=text("0"), nullable=True)
+    alternate_take = Column(BigInteger, server_default=text("0"), nullable=True)
+    base_track_id = Column(String, nullable=True)
+    is_compilation = Column(BigInteger, server_default=text("0"), nullable=True)
+    releasecountry = Column(String, nullable=True)
+    discogs_artist_id = Column(String, nullable=True)
+    recording_mbid = Column(String, nullable=True)
     mood = Column(String, nullable=True)
     mood_confidence = Column(Double, nullable=True)
     mood_source = Column(String, nullable=True)

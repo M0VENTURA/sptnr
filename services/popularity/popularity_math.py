@@ -97,8 +97,25 @@ def calculate_combined_popularity_score(
     album_lb_listens: Optional[List[int]] = None,
     age_source_value: float = 0.0,
     release_date: Optional[str] = None,
+    is_single: bool = False,
+    has_metadata: bool = False,
+    is_featured_track: bool = False,
+    is_live_track: bool = False,
+    lastfm_weight_override: Optional[float] = None,
+    single_boost: float = 1.15,
+    metadata_score_floor: float = 5.0,
+    live_weight_penalty: float = 0.5,
 ) -> Dict[str, float]:
-    """Blend Last.fm + ListenBrainz + age into one weighted popularity score."""
+    """Blend Last.fm + ListenBrainz + age into one weighted popularity score.
+
+    Matches the legacy ``popularity_scan`` behaviour:
+    - live tracks get a ``live_weight_penalty`` (default 50%) on the Last.fm weight
+    - source-mismatch weighting honours featured-track / metadata flags
+    - confirmed singles receive a ``single_boost`` (default +15%)
+    - tracks with a confirmed MusicBrainz ID get a ``metadata_score_floor``
+      (default 5.0) so a known track never scores near zero when external
+      APIs have no data
+    """
     lastfm_score = calculate_lastfm_popularity_score(lastfm_listeners, lastfm_artist_max_listeners)
     lb_score = calculate_listenbrainz_popularity_score(listenbrainz_listens)
 
@@ -118,7 +135,15 @@ def calculate_combined_popularity_score(
     # Check for source mismatch and adjust weights dynamically
     has_mismatch = is_source_mismatch(lastfm_listeners, listenbrainz_listens)
     is_unreliable = is_lastfm_unreliable(lastfm_listeners, listenbrainz_listens)
-    
+
+    # Live-track penalty: legacy logic halves the Last.fm weight because live
+    # recordings are streamed far less than their studio counterparts.
+    effective_lf_weight = lastfm_weight_override
+    if effective_lf_weight is None:
+        effective_lf_weight = LASTFM_WEIGHT
+        if is_live_track:
+            effective_lf_weight = LASTFM_WEIGHT * max(0.0, min(1.0, live_weight_penalty))
+
     # Build active score/weight pairs so missing sources don't dilute the blend
     active_scores: list[float] = []
     active_weights: list[float] = []
@@ -126,11 +151,13 @@ def calculate_combined_popularity_score(
     if has_mismatch or is_unreliable:
         # Use dynamic weights when sources conflict
         lf_weight, lb_weight = adjust_weights(
-            lastfm_listeners, 
+            lastfm_listeners,
             listenbrainz_listens,
-            is_featured_track=False,
-            metadata_confirmed=False
+            is_featured_track=is_featured_track,
+            metadata_confirmed=has_metadata,
         )
+        if is_live_track:
+            lf_weight = lf_weight * max(0.0, min(1.0, live_weight_penalty))
         if lastfm_score > 0:
             active_scores.append(lastfm_score)
             active_weights.append(lf_weight)
@@ -141,7 +168,7 @@ def calculate_combined_popularity_score(
         # Use default weights when sources agree
         if lastfm_score > 0:
             active_scores.append(lastfm_score)
-            active_weights.append(LASTFM_WEIGHT)
+            active_weights.append(effective_lf_weight)
         if lb_score > 0:
             active_scores.append(lb_score)
             active_weights.append(LISTENBRAINZ_WEIGHT)
@@ -155,7 +182,16 @@ def calculate_combined_popularity_score(
         combined = sum(s * w for s, w in zip(active_scores, active_weights)) / total_weight
     else:
         combined = 0.0
-    
+
+    # Minimum popularity floor for tracks with confirmed metadata (MBID) so a
+    # known track never scores near zero when external APIs have no data.
+    if has_metadata and 0.0 < combined < metadata_score_floor:
+        combined = metadata_score_floor
+
+    # Confirmed singles receive a subtle boost (legacy behaviour).
+    if is_single and combined > 0:
+        combined *= single_boost
+
     return {
         "combined_score": round(min(100.0, max(0.0, combined)), 3),
         "lastfm_score": round(lastfm_score, 3),

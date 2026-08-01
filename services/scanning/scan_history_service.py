@@ -99,3 +99,34 @@ def get_recent_album_scans(limit: int = 50):
             dict(zip(cols, row))
             for row in result.fetchall() or []
         ]
+
+
+def was_album_scanned(artist: str, album: str, scan_type: str, days: int = 7) -> bool:
+    """Return True when an album was successfully scanned within ``days`` days.
+
+    Mirrors the legacy ``was_album_scanned`` helper used by ``album_skip_days``:
+    an album whose most recent scan of the given type completed within the
+    window is treated as already scanned and can be skipped.
+    """
+    if not artist or not album or days <= 0:
+        return False
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT 1 FROM scan_history
+                    WHERE scan_type = :scan_type
+                      AND LOWER(COALESCE(artist, '')) = LOWER(:artist)
+                      AND LOWER(COALESCE(album, '')) = LOWER(:album)
+                      AND status = 'completed'
+                      AND started_at > (NOW() - (:days * INTERVAL '1 day'))
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                """),
+                {"scan_type": scan_type, "artist": artist, "album": album, "days": int(days)},
+            )
+            return result.fetchone() is not None
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("was_album_scanned query failed")
+        return False

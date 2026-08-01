@@ -27,10 +27,32 @@ def blend_top_10_thresholds(lastfm_threshold: int, lastfm_total: int, listenbrai
 
 
 def get_artist_lastfm_context(artist_name: str, conn, artist_mbid: str | None = None) -> dict:
+    """Return the artist's Last.fm listener distribution from cached tracks.
+
+    ``conn`` may be ``None`` — a fresh ``db_session`` is opened in that case
+    so callers never crash on ``None.cursor()``.
+    """
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT title, lastfm_listeners FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND lastfm_listeners > 0", (artist_name,))
-        rows = cur.fetchall() or []
+        if conn is not None:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT title, lastfm_listeners FROM tracks "
+                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND lastfm_listeners > 0",
+                (artist_name,),
+            )
+            rows = cur.fetchall() or []
+        else:
+            from sqlalchemy import text as _text
+            from db.engine import db_session as _db_session
+            with _db_session() as session:
+                result = session.execute(
+                    _text(
+                        "SELECT title, lastfm_listeners FROM tracks "
+                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND lastfm_listeners > 0"
+                    ),
+                    {"artist": artist_name},
+                )
+                rows = result.fetchall() or []
         values = [int((row[1] if not isinstance(row, dict) else row.get("lastfm_listeners")) or 0) for row in rows]
         return {"mean": mean(values) if values else 0, "stdev": stdev(values) if len(values) > 1 else 0, "total": len(values), "values": values}
     except Exception:

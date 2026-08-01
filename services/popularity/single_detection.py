@@ -25,10 +25,10 @@ def detect_single(
     if not track_info:
         popularity = float(score_data.get("final_score", 0) or 0)
         if popularity > 85:
-            return {"is_single": True, "single_confidence": min(1.0, popularity / 100.0)}
+            return {"is_single": True, "single_confidence": "high", "confidence": "high"}
         if popularity > 70:
-            return {"is_single": True, "single_confidence": 0.6 * (popularity / 100.0)}
-        return {"is_single": False, "single_confidence": 0.0}
+            return {"is_single": True, "single_confidence": "medium", "confidence": "medium"}
+        return {"is_single": False, "single_confidence": "low", "confidence": "low"}
 
     api_result = _detect_single_for_track(
         title=track_info.get("title", ""),
@@ -41,7 +41,8 @@ def detect_single(
     if api_result:
         return {
             "is_single": bool(api_result.get("is_single", False)),
-            "single_confidence": float(api_result.get("confidence", 0.0)),
+            "single_confidence": api_result.get("confidence", "low"),
+            "confidence": api_result.get("confidence", "low"),
         }
 
-    return {"is_single": False, "single_confidence": 0.0}
+    return {"is_single": False, "single_confidence": "low", "confidence": "low"}
