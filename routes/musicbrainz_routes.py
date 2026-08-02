@@ -213,9 +213,44 @@ async def api_musicbrainz_search():
             return "Album"
         return primary_type or "Other"
 
+    def _category_from_types(primary_type: str, secondary_types) -> str:
+        """Derive a display category combining primary + secondary types.
+
+        MusicBrainz ``primary_type`` is only ever Album / Single / EP /
+        Broadcast / Other.  Live, Remix, Compilation and Soundtrack are
+        ``secondary-types`` on the release-group — without this they all get
+        lumped under "Album".
+        """
+        pt = _normalise_category(primary_type)
+
+        secondary = secondary_types or []
+        if isinstance(secondary, str):
+            secondary = [secondary]
+        sec = [str(s).strip().lower() for s in secondary if str(s).strip()]
+
+        # Secondary types take precedence for display grouping so Live /
+        # Remix / Compilation / Soundtrack get their own sections.
+        for label, keys in (
+            ("Live", ("live",)),
+            ("Remix", ("remix",)),
+            ("Compilation", ("compilation",)),
+            ("Soundtrack", ("soundtrack",)),
+            ("DJ-mix", ("dj-mix", "djmix")),
+            ("Mixtape", ("mixtape",)),
+            ("Interview", ("interview",)),
+            ("Spokenword", ("spokenword", "spoken word")),
+            ("Demo", ("demo",)),
+            ("Audiobook", ("audiobook",)),
+        ):
+            if any(k in sec for k in keys):
+                return label
+
+        return pt
+
     def _enrich_release_group(rg: dict[str, Any], source: str) -> dict[str, Any]:
         rgid = str(rg.get("id") or "")
         primary_type = rg.get("primary-type") or rg.get("type") or "Other"
+        secondary_types = rg.get("secondary-types") or rg.get("secondary_type") or []
         artist_credit = rg.get("artist-credit") or []
         artist_name = ""
         if artist_credit and isinstance(artist_credit, list):
@@ -241,7 +276,8 @@ async def api_musicbrainz_search():
             "id": rgid,
             "title": rg.get("title", ""),
             "primary_type": primary_type,
-            "category": _normalise_category(str(primary_type)),
+            "secondary_types": [str(s) for s in (secondary_types or [])],
+            "category": _category_from_types(str(primary_type), secondary_types),
             "first_release_date": first_release_date,
             "artist": artist_name,
             "artist-credit": artist_credit,
@@ -295,6 +331,7 @@ async def api_musicbrainz_search():
                         "id": release_id,
                         "title": str(row["title"] or ""),
                         "primary_type": pt,
+                        "secondary_types": [],
                         "category": _normalise_category(pt),
                         "first_release_date": str(row["first_release_date"] or ""),
                         "artist": artist_name,

@@ -235,7 +235,18 @@ window.performMbSearch = async function() {
       body: JSON.stringify(payload)
     });
     
-    const releases = data.releases || [];
+    let releases = data.releases || [];
+
+    // Apply the release-type dropdown filter (modal field), if present.
+    const releaseType = document.getElementById('mbReleaseType')?.value || '';
+    if (releaseType) {
+      releases = releases.filter(r => {
+        const cat = (r.category || r.primary_type || '').toLowerCase();
+        const sec = (r.secondary_types || []).map(s => String(s).toLowerCase());
+        return cat === releaseType.toLowerCase() || sec.includes(releaseType.toLowerCase());
+      });
+    }
+
     if (releases.length === 0) {
       if (resultsEl) resultsEl.innerHTML = `<div class="alert alert-info"><i class="bi bi-info-circle"></i> No releases found for "${escapeHtml(query)}"</div>`;
       return;

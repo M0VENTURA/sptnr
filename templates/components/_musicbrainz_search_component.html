@@ -242,8 +242,9 @@ window.performMbSearch = async function() {
 
     if (releaseType) {
       releases = releases.filter(function(r) {
-        return (r.primary_type && r.primary_type.toLowerCase() === releaseType.toLowerCase()) ||
-               (r.category && r.category.toLowerCase() === releaseType.toLowerCase());
+        var cat = (r.category || r.primary_type || '').toLowerCase();
+        var sec = (r.secondary_types || []).map(function(s) { return String(s).toLowerCase(); });
+        return cat === releaseType.toLowerCase() || sec.indexOf(releaseType.toLowerCase()) !== -1;
       });
     }
 
@@ -252,11 +253,13 @@ window.performMbSearch = async function() {
       return;
     }
 
-    // Group by type
+    // Group by derived category (primary + secondary types) so Live / Remix /
+    // Compilation / Soundtrack get their own sections instead of being lumped
+    // under "Album".
     var groups = {};
-    var typeOrder = ['Album', 'EP', 'Single', 'Compilation', 'Soundtrack', 'Live', 'Remix', 'Other'];
+    var typeOrder = ['Album', 'EP', 'Single', 'Compilation', 'Soundtrack', 'Live', 'Remix', 'DJ-mix', 'Other'];
     releases.forEach(function(r) {
-      var t = r.primary_type || r.category || 'Other';
+      var t = r.category || r.primary_type || 'Other';
       if (typeOrder.indexOf(t) === -1) t = 'Other';
       if (!groups[t]) groups[t] = [];
       groups[t].push(r);
