@@ -230,6 +230,7 @@ window.performMbSearch = async function() {
       payload.query = query;
     }
     if (isArtistOnly) payload.artist_only = true;
+    if (releaseType) payload.type = releaseType; // server-side primarytype/secondarytype filter
 
     var resp = await fetch('/api/musicbrainz/search', {
       method: 'POST',

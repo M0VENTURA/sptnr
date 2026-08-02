@@ -228,6 +228,8 @@ window.performMbSearch = async function() {
       payload.query = query; // legacy single free-text input
     }
     if (artistOnly) payload.artist_only = true;
+    const releaseTypeServer = document.getElementById('mbReleaseType')?.value || '';
+    if (releaseTypeServer) payload.type = releaseTypeServer; // server-side primarytype/secondarytype filter
 
     const data = await fetchJsonOrThrow('/api/musicbrainz/search', {
       method: 'POST',
