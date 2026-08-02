@@ -85,7 +85,9 @@ def get_singles_count(artist: str) -> tuple[dict, int]:
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT COUNT(*) FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND COALESCE(is_single, FALSE) = TRUE",
+            "SELECT COUNT(*) FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
+            "AND COALESCE(is_single, FALSE) = TRUE "
+            "AND LOWER(COALESCE(single_confidence, '')) = 'high'",
             (artist,),
         )
         row = cursor.fetchone()

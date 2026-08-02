@@ -276,7 +276,8 @@ def run_scan(
             # singles detection, cover detection, genre aggregation and star
             # rating still run (legacy parity): the freeze only reuses the
             # cached popularity score, it does NOT skip the track entirely.
-            if should_freeze_track(prepared_track):
+            # Forced scans never freeze (legacy ``if not (FORCE_RESCAN or force)``).
+            if not options.get("force") and should_freeze_track(prepared_track):
                 logger.debug(
                     "[scan_runner] Freezing mature track '%s' (has existing score %.1f) — running singles/cover/genre only",
                     prepared_track.get("title", "?"),
@@ -339,20 +340,23 @@ def run_scan(
 
             if track_result is not None:
                 results.append(track_result)
-                
-                # ✅ FIXED: Added detailed score logging output!
+
+                # Per-track score logging so the dashboard unified log shows
+                # exactly how each track was scored (SP / LF / LB / final).
                 if isinstance(track_result, dict):
                     title = prepared_track.get("title", "Unknown Track")
-                    f_score = track_result.get("final_score")
-                    
-                    if f_score is not None:
-                        sp = track_result.get("spotify_score") or 0.0
-                        lf = track_result.get("lastfm_score") or 0.0
-                        lb = track_result.get("listenbrainz_score") or 0.0
-                        logger.info(
-                            "[TRACK_RESULT] '%s' -> Final: %.1f (SP: %.1f | LF: %.1f | LB: %.1f)", 
-                            title, f_score, sp, lf, lb
-                        )
+                    f_score = track_result.get("popularity_score")
+                    sp = track_result.get("spotify_score")
+                    lf = track_result.get("lastfm_score")
+                    lb = track_result.get("listenbrainz_score")
+                    logger.info(
+                        "[TRACK_RESULT] '%s' -> Final: %.1f (SP: %.1f | LF: %.1f | LB: %.1f)",
+                        title,
+                        float(f_score or 0.0),
+                        float(sp or 0.0),
+                        float(lf or 0.0),
+                        float(lb or 0.0),
+                    )
 
             tracks_processed += 1
 

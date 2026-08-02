@@ -300,7 +300,13 @@ def process_track(
             # Frozen mature tracks are ALWAYS routed through the cached path
             # so the popularity score is reused without API calls while the
             # rest of the pipeline (singles/cover/genre) still runs.
-            _cached = frozen_track or (should_use_cached_score(effective_track) and effective_track.get("final_score"))
+            # Forced scans bypass the cache (legacy ``if not (FORCE_RESCAN or force)``).
+            _force = bool(options.get("force"))
+            _cached = frozen_track or (
+                not _force
+                and should_use_cached_score(effective_track)
+                and effective_track.get("final_score")
+            )
             if _cached:
                 logger.debug(
                     "[track_stage] Using cached score for %s (final_score=%.1f)",
@@ -503,7 +509,9 @@ def process_track(
                     update_payload["album_deviation_adjusted"] = True
 
         except Exception as e:
-            logger.debug("[track_stage][SCORING] %s: %s", track_id, e)
+            # Surface scoring failures at WARNING so a scan that ends with all
+            # zero scores (→ 1★ for everything) is diagnosable in the unified log.
+            logger.warning("[track_stage][SCORING] %s: %s", track_id, e, exc_info=True)
 
     # -------------------------------------------------------------------------
     # 3. COVER DETECTION (via enrichment service)
@@ -639,6 +647,10 @@ def process_track(
         "listenbrainz_listens": int(listenbrainz_listens or 0),
         "lb_percentile": float(lb_percentile or 0.0),
         "popularity_score": float(score_data.get("combined_score", 0)),
+        "final_score": float(score_data.get("combined_score", 0)),
+        "spotify_score": float(score_data.get("spotify_score", 0)),
+        "lastfm_score": float(score_data.get("lastfm_score", 0)),
+        "listenbrainz_score": float(score_data.get("listenbrainz_score", 0)),
         "is_single": bool(update_payload.get("is_single", False)),
         "single_confidence": str(update_payload.get("single_confidence", "low")),
         "is_live": bool(track.get("is_live") or track.get("album_context_live")),

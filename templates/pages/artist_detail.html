@@ -471,7 +471,7 @@
                         {{ track.title }}
                       </a>
                     {% endif %}
-                    {% if track.is_single %}
+                    {% if track.is_single == 1 and (track.single_confidence or '')|lower == 'high' %}
                       <span class="badge bg-warning text-dark ms-2">Single</span>
                     {% endif %}
                   </td>

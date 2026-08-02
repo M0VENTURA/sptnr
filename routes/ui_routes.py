@@ -1300,6 +1300,7 @@ async def album_detail(artist: str, album: str):
         1
         for track in tracks
         if safe_int(track.get("is_single")) == 1
+        and str(track.get("single_confidence") or "").strip().lower() == "high"
     )
 
     album_data = {

@@ -67,7 +67,7 @@ def record_scan(
                             WHERE scan_type = :scan_type
                               AND (artist IS NOT DISTINCT FROM :artist)
                               AND status = 'started'
-                            ORDER BY started_at DESC
+                            ORDER BY started_at DESC NULLS LAST, id DESC
                             LIMIT 1
                         )
                     """),
@@ -86,28 +86,49 @@ def record_scan(
 
 def get_recent_album_scans(limit: int = 50):
     with db_session() as session:
+        # NULLS LAST: legacy rows (created under the old ``scan_timestamp``
+        # schema) may have NULL ``started_at`` and would otherwise float to the
+        # top of a DESC ordering and hide real entries.
         result = session.execute(text("""
             SELECT *
             FROM scan_history
-            ORDER BY started_at DESC
+            ORDER BY started_at DESC NULLS LAST, id DESC
             LIMIT :limit
         """), {"limit": limit})
 
         cols = list(result.keys())
 
+        def _to_iso(value) -> str | None:
+            if isinstance(value, datetime):
+                return value.isoformat() + ("Z" if value.tzinfo is None else "")
+            return value
+
         scans = []
         for row in result.fetchall() or []:
             record = dict(zip(cols, row))
-            # Serialize datetime values as ISO-8601 UTC strings so the
-            # dashboard JS can parse them (avoids Quart's default RFC 1123
-            # serialization, which the frontend timestamp parser cannot read).
-            for col in ("started_at", "completed_at"):
-                value = record.get(col)
-                if isinstance(value, datetime):
-                    if value.tzinfo is None:
-                        record[col] = value.isoformat() + "Z"
-                    else:
-                        record[col] = value.isoformat()
+
+            # Resolve the best-available timestamp: modern ``started_at``,
+            # then legacy ``scan_timestamp`` (kept from old deployments), then
+            # ``completed_at``. Exposed as BOTH ``scan_timestamp`` (legacy
+            # frontend key) and ``started_at`` so the dashboard always has a
+            # parseable value.
+            resolved = (
+                record.get("started_at")
+                or record.get("scan_timestamp")
+                or record.get("timestamp")
+                or record.get("completed_at")
+            )
+            resolved_iso = _to_iso(resolved)
+            record["scan_timestamp"] = resolved_iso
+            if record.get("started_at") is None:
+                record["started_at"] = resolved_iso
+
+            # Serialize every datetime value as ISO-8601 so the dashboard JS
+            # can parse them (avoids Quart's default RFC 1123 serialization).
+            for col in ("started_at", "completed_at", "scan_timestamp", "timestamp"):
+                if col in record:
+                    record[col] = _to_iso(record.get(col))
+
             scans.append(record)
         return scans
 

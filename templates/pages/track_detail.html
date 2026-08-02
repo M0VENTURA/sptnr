@@ -1016,7 +1016,7 @@
                             <span class="small text-muted">Last Single Scan:</span>
                             <span class="small">
                                 {% if track.single_detection_last_updated %}
-                                    {{ track.single_detection_last_updated[:16].replace('T', ' ') }}
+                                    {{ (track.single_detection_last_updated|string)[:16].replace('T', ' ') }}
                                 {% else %}
                                     Never
                                 {% endif %}
