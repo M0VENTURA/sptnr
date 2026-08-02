@@ -81,12 +81,17 @@ class ResilientSQLAlchemyJobStore(SQLAlchemyJobStore):
         """Return True for connection-level DB errors worth retrying."""
         if exc is None:
             return False
-        # SQLAlchemy wraps the driver error in .orig
+        try:
+            from sqlalchemy.exc import OperationalError as SAOperationalError
+            from sqlalchemy.exc import InterfaceError as SAInterfaceError
+            if isinstance(exc, (SAOperationalError, SAInterfaceError)):
+                return True
+        except Exception:
+            pass
+        # Also treat the driver-level error (psycopg2) as transient.
         orig = getattr(exc, "orig", None)
-        for candidate in (exc, orig):
-            if candidate is None:
-                continue
-            cls_name = type(candidate).__name__.lower()
+        if orig is not None:
+            cls_name = type(orig).__name__.lower()
             if any(k in cls_name for k in ("operationalerror", "interfaceerror", "connectionerror")):
                 return True
         return False

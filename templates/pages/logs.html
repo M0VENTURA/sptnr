@@ -63,7 +63,16 @@
         currentLogLabel.textContent = name;
         logOutput.textContent = 'Loading...';
         fetch('/api/log-file?name=' + encodeURIComponent(name) + '&lines=500')
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                var contentType = (r.headers.get('content-type') || '').toLowerCase();
+                if (!contentType.includes('application/json')) {
+                    // Non-JSON response (e.g. 404/500 HTML page from a stale
+                    // build, or an auth redirect) — surface a clear message.
+                    throw new Error('Server returned ' + r.status + ' ' + r.statusText +
+                        ' (expected JSON; the API may not be available in this build)');
+                }
+                return r.json();
+            })
             .then(function(data) {
                 if (data && data.lines) {
                     logOutput.textContent = data.lines.join('\n');
