@@ -43,6 +43,42 @@ def _md5_hex(value: str) -> str:
     return hashlib.md5(value.encode("utf-8")).hexdigest()
 
 
+def _coerce_modified_ts(value: Any) -> int | None:
+    """Normalise a timestamp into epoch seconds for ``modified``/``ifModifiedSince``.
+
+    Accepts epoch-seconds (int/float), ISO-8601 strings, and datetime objects.
+    Returns None when the value cannot be interpreted (so callers can skip the
+    parameter rather than sending a malformed request).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        # Numeric epoch string
+        try:
+            return int(float(s))
+        except (TypeError, ValueError):
+            pass
+        # ISO-8601 (with or without timezone)
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return int(dt.timestamp())
+        except (TypeError, ValueError):
+            return None
+    try:
+        # datetime-like object
+        return int(value.timestamp())
+    except (AttributeError, TypeError):
+        return None
+
+
 class NavidromeClient:
     """HTTP client for Navidrome's Subsonic/OpenSubsonic API."""
 
@@ -190,6 +226,30 @@ class NavidromeClient:
 
         return albums
 
+    def get_album_list2_page(
+        self,
+        list_type: str = "newest",
+        size: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Fetch a single page of albums for a ``getAlbumList2`` list type.
+
+        Used by the delta-scan helpers to bound the crawl to recently
+        added/changed albums instead of paging the whole library.
+        """
+        try:
+            data = self._get_subsonic_response(
+                "getAlbumList2",
+                timeout=90,
+                type=list_type,
+                size=min(int(size or 200), 500),
+                offset=offset,
+            )
+            return data.get("albumList2", {}).get("album", []) or []
+        except Exception as exc:
+            logger.error("Failed to fetch album list page (%s, offset %s): %s", list_type, offset, exc)
+            return []
+
     def fetch_artist_albums(self, artist_id: str) -> list[dict[str, Any]]:
         """Fetch all albums for a Navidrome artist ID."""
         try:
@@ -225,14 +285,49 @@ class NavidromeClient:
             logger.debug("Failed to fetch extended song metadata for %s: %s", song_id, exc)
             return {}
 
-    def get_songs(self, offset: int = 0, size: int = 500) -> list[dict[str, Any]]:
-        """Fetch a paged list of songs from Navidrome."""
+    def get_songs(self, offset: int = 0, size: int = 500, modified: Any = None) -> list[dict[str, Any]]:
+        """Fetch a paged list of songs from Navidrome.
+
+        Args:
+            offset: Page offset.
+            size: Page size (max 500).
+            modified: Optional OpenSubsonic ``modified`` filter — only songs
+                whose file changed after this timestamp are returned. Accepts
+                an epoch-seconds int, an ISO-8601 string, or None (no filter).
+        """
         try:
-            data = self._get_subsonic_response("getSongs", timeout=60, offset=offset, size=size)
+            params: dict[str, Any] = {"offset": offset, "size": size}
+            if modified is not None:
+                ts = _coerce_modified_ts(modified)
+                if ts is not None:
+                    params["modified"] = ts
+            data = self._get_subsonic_response("getSongs", timeout=60, **params)
             return data.get("songs", {}).get("song", []) or []
         except Exception as exc:
             logger.debug("Failed to fetch songs at offset %s: %s", offset, exc)
             return []
+
+    def get_indexes(self, if_modified_since: Any = None) -> dict[str, Any]:
+        """Fetch the artist index, optionally restricted to changes after a timestamp.
+
+        Uses the standard Subsonic ``getIndexes`` endpoint with
+        ``ifModifiedSince`` so servers that honour the parameter only return
+        artists whose content changed after the given time.
+
+        Returns:
+            The raw ``indexes`` dict (``index`` list + ``lastModified``) or
+            an empty dict on failure.
+        """
+        try:
+            params: dict[str, Any] = {}
+            ts = _coerce_modified_ts(if_modified_since)
+            if ts is not None:
+                params["ifModifiedSince"] = ts
+            data = self._get_subsonic_response("getIndexes", timeout=60, **params)
+            return data.get("indexes", {}) or {}
+        except Exception as exc:
+            logger.debug("Failed to fetch indexes (ifModifiedSince=%s): %s", if_modified_since, exc)
+            return {}
 
     # ------------------------------------------------------------------
     # Playlist endpoints

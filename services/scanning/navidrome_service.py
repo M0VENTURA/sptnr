@@ -128,6 +128,214 @@ def build_artist_index(client: NavidromeClient) -> dict[str, dict[str, Any]]:
     return fallback
 
 
+# -------------------------------------------------------------------------
+# Delta-scan helpers (only import what changed)
+# -------------------------------------------------------------------------
+
+_DELTA_LIST_TYPES = ("newest", "recentlyAdded")
+_DELTA_MAX_PAGES = 5
+
+
+def _album_sort_ts(album: dict[str, Any]) -> float:
+    """Return a sortable timestamp for an album (newest first)."""
+    raw = album.get("created") or album.get("updated") or album.get("recentlyAdded") or ""
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+def fetch_changed_albums(
+    client: NavidromeClient,
+    since_ts: Any = None,
+    *,
+    page_size: int | None = None,
+    max_pages: int | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch only recently added/changed albums from Navidrome.
+
+    Pages ``getAlbumList2`` with ``newest`` + ``recentlyAdded`` list types
+    (deduped by album id) rather than crawling the full library. When
+    ``since_ts`` is provided the returned list is filtered to albums whose
+    ``created``/``updated`` timestamp is at or after that time; otherwise the
+    head of the lists is treated as "recent".
+
+    Returns:
+        A list of album dicts (id, artist, artistId, songCount, ...).
+    """
+    if page_size is None:
+        page_size = _scan_cfg["page_size"]
+    if max_pages is None:
+        max_pages = _DELTA_MAX_PAGES
+
+    since_epoch = _coerce_epoch(since_ts)
+    seen: set[str] = set()
+    albums: list[dict[str, Any]] = []
+
+    for list_type in _DELTA_LIST_TYPES:
+        offset = 0
+        for _ in range(max(1, int(max_pages))):
+            page = client.get_album_list2_page(
+                list_type=list_type,
+                size=page_size,
+                offset=offset,
+            )
+            if not page:
+                break
+
+            for album in page:
+                album_id = str(album.get("id") or "")
+                if not album_id or album_id in seen:
+                    continue
+                if since_epoch is not None:
+                    ts = _album_sort_ts(album)
+                    if ts and ts < since_epoch:
+                        continue
+                seen.add(album_id)
+                albums.append(album)
+
+            if len(page) < page_size:
+                break
+            offset += page_size
+
+    logger.info("Delta album fetch returned %s changed albums", len(albums))
+    return albums
+
+
+def fetch_changed_songs(
+    client: NavidromeClient,
+    since_ts: Any = None,
+    *,
+    page_size: int | None = None,
+    max_pages: int | None = None,
+) -> list[dict[str, Any]]:
+    """Best-effort fetch of songs modified after ``since_ts``.
+
+    Uses the OpenSubsonic ``modified`` filter on ``getSongs``. Navidrome may
+    ignore or reject the parameter on older versions — in that case this
+    returns an empty list and callers should fall back to the album delta.
+    """
+    if since_ts is None:
+        return []
+
+    if page_size is None:
+        page_size = _scan_cfg["page_size"]
+    if max_pages is None:
+        max_pages = _DELTA_MAX_PAGES
+
+    songs: list[dict[str, Any]] = []
+    offset = 0
+    for _ in range(max(1, int(max_pages))):
+        try:
+            page = client.get_songs(offset=offset, size=page_size, modified=since_ts)
+        except Exception as exc:
+            logger.debug("Delta song fetch failed (server may not support `modified`): %s", exc)
+            break
+        if not page:
+            break
+        songs.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    if songs:
+        logger.info("Delta song fetch returned %s changed songs", len(songs))
+    else:
+        logger.debug("Delta song fetch returned no songs (modified filter likely unsupported)")
+    return songs
+
+
+def build_delta_artist_index(
+    client: NavidromeClient,
+    since_ts: Any = None,
+    *,
+    page_size: int | None = None,
+    max_pages: int | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Build an artist index containing ONLY artists with changed content.
+
+    Delta sources:
+    1. Recently added/changed albums (``getAlbumList2`` newest/recentlyAdded).
+    2. Songs modified since ``since_ts`` (``getSongs?modified=``, best-effort).
+
+    Returns an artist map with the same shape as ``build_artist_index``
+    (``{name: {id, album_count, track_count, last_updated}}``). When no delta
+    can be determined (e.g. server ignores ``modified`` and no recent albums
+    exist) this returns ``{}`` so callers can fall back to a full scan.
+    """
+    artist_map: dict[str, dict[str, Any]] = {}
+
+    changed_albums = fetch_changed_albums(
+        client,
+        since_ts,
+        page_size=page_size,
+        max_pages=max_pages,
+    )
+    for album in changed_albums:
+        artist_name = str(album.get("artist") or "").strip()
+        artist_id = str(album.get("artistId") or "").strip()
+        if not artist_name or not artist_id:
+            continue
+        entry = artist_map.setdefault(artist_name, {
+            "id": artist_id,
+            "album_count": 0,
+            "track_count": 0,
+            "last_updated": None,
+        })
+        entry["album_count"] += 1
+        entry["track_count"] += int(album.get("songCount", 0) or 0)
+
+    changed_songs = fetch_changed_songs(
+        client,
+        since_ts,
+        page_size=page_size,
+        max_pages=max_pages,
+    )
+    for song in changed_songs:
+        artist_name = str(song.get("artist") or "").strip()
+        artist_id = str(song.get("artistId") or "").strip()
+        if not artist_name or not artist_id:
+            continue
+        entry = artist_map.setdefault(artist_name, {
+            "id": artist_id,
+            "album_count": 0,
+            "track_count": 0,
+            "last_updated": None,
+        })
+        entry["track_count"] += 1
+
+    logger.info("Delta artist index: %s artists with changed content", len(artist_map))
+    return artist_map
+
+
+def _coerce_epoch(value: Any) -> float | None:
+    """Coerce a timestamp (epoch / ISO string / datetime) to epoch seconds."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            pass
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return dt.timestamp()
+        except (TypeError, ValueError):
+            return None
+    try:
+        return float(value.timestamp())
+    except (AttributeError, TypeError):
+        return None
+
+
 def get_library_stats(client: NavidromeClient, cache_seconds: int = 3600) -> dict[str, int]:
     """Return cached library stats derived from the scan-oriented artist index."""
     now = time.time()

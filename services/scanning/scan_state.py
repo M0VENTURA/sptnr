@@ -169,11 +169,18 @@ def load_scan_checkpoint(path: str | None = None) -> dict[str, Any]:
         state = session.query(ScanState).filter_by(scan_type=db_scan_type).first()
         if not state or not state.last_scanned_artist:
             return {}
-            
-        return {
+
+        checkpoint = {
             "last_scanned_artist": state.last_scanned_artist,
             "updated_at": state.updated_at.isoformat() if state.updated_at else _now()
         }
+
+        # Merge arbitrary JSON payload (scan markers, delta timestamps, etc.)
+        # so callers can read scan_marker / last_scan_ts back from the checkpoint.
+        if state.extra_data:
+            checkpoint.update(state.extra_data)
+
+        return checkpoint
 
 def save_artist_scan_checkpoint(
     artist_name: str,

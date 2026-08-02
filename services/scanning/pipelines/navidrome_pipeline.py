@@ -81,14 +81,26 @@ def run_navidrome_import_scan(
 
         # Check scan marker — skip if nothing changed since last run
         current_marker: int | None = None
+        current_last_scan: Any = None
         if nav_client and not force_rescan:
             try:
                 scan_status = nav_client.get_scan_status()
                 if scan_status.get("success"):
                     current_marker = scan_status.get("count")
+                    current_last_scan = scan_status.get("lastScan")
                     checkpoint = load_scan_checkpoint(checkpoint_file)
                     last_marker = checkpoint.get("scan_marker")
-                    if last_marker is not None and current_marker == last_marker:
+                    last_scan_ts = checkpoint.get("last_scan_ts")
+
+                    # Skip only when BOTH the file-count marker and the last
+                    # Navidrome scan timestamp are unchanged.
+                    marker_unchanged = last_marker is not None and current_marker == last_marker
+                    scan_unchanged = (
+                        last_scan_ts is not None
+                        and current_last_scan is not None
+                        and str(last_scan_ts) == str(current_last_scan)
+                    )
+                    if marker_unchanged and scan_unchanged:
                         # Double-check: if DB has no tracks, don't skip
                         _db_has_tracks = True
                         try:
@@ -125,7 +137,37 @@ def run_navidrome_import_scan(
         artist_map: dict[str, dict[str, Any]] = {}
         if nav_client:
             try:
-                artist_map = nav_client.build_artist_index() or {}
+                # Delta scan: only import artists whose albums/songs changed
+                # since the previous scan, instead of crawling the full library.
+                delta_since = None
+                if not force_rescan:
+                    checkpoint = load_scan_checkpoint(checkpoint_file)
+                    delta_since = checkpoint.get("last_scan_ts") or current_last_scan
+
+                if not force_rescan and delta_since is not None:
+                    try:
+                        from services.scanning.navidrome_service import build_delta_artist_index
+                        delta_map = build_delta_artist_index(
+                            nav_client,
+                            delta_since,
+                            page_size=int(os.environ.get("POPULARLR_IMPORT_PAGE_SIZE", "200")),
+                        )
+                        if delta_map:
+                            artist_map = delta_map
+                            logging.info(
+                                "Navidrome delta index: %d changed artists since %s",
+                                len(delta_map),
+                                delta_since,
+                            )
+                            log_unified(
+                                f"Navidrome Import - Delta mode: {len(delta_map)} changed artists "
+                                f"since {delta_since}"
+                            )
+                    except Exception as exc:
+                        logging.warning("Delta artist index failed (%s) — falling back to full index", exc)
+
+                if not artist_map:
+                    artist_map = nav_client.build_artist_index() or {}
             except Exception as exc:
                 logging.error("Failed to build artist index: %s", exc)
 
@@ -226,13 +268,24 @@ def run_navidrome_import_scan(
         if nav_client and not force_rescan:
             # Re-fetch marker after scan if we skipped the initial check
             try:
-                if current_marker is None:
-                    current_marker = nav_client.get_scan_status().get("count")
+                if current_marker is None or current_last_scan is None:
+                    scan_status = nav_client.get_scan_status()
+                    if current_marker is None:
+                        current_marker = scan_status.get("count")
+                    if current_last_scan is None:
+                        current_last_scan = scan_status.get("lastScan")
+
+                marker_extra: dict[str, Any] = {}
                 if current_marker is not None:
+                    marker_extra["scan_marker"] = current_marker
+                if current_last_scan is not None:
+                    marker_extra["last_scan_ts"] = str(current_last_scan)
+
+                if marker_extra:
                     save_artist_scan_checkpoint(
                         "__marker__",
                         checkpoint_path=checkpoint_file,
-                        extra={"scan_marker": current_marker},
+                        extra=marker_extra,
                     )
             except Exception as exc:
                 logging.debug("Could not save scan marker: %s", exc)
