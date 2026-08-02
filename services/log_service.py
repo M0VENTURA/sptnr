@@ -85,23 +85,23 @@ def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None
         logger.error("[LOG] unified read error: %s", e)
         return {"error": str(e), "lines": []}, 500
 
-def download_log(log_type: str):
-    if log_type == "search": return _generate_search_log()
-    if log_type == "queue": return _generate_queue_log()
+async def download_log(log_type: str):
+    if log_type == "search": return await _generate_search_log()
+    if log_type == "queue": return await _generate_queue_log()
 
     log_path = _resolve_log_path(log_type)
     if not log_path:
         return {"error": f"Log not found: {log_type}"}, 404
 
-    return _build_download_response(log_path, log_type)
+    return await _build_download_response(log_path, log_type)
 
-def _generate_search_log():
+async def _generate_search_log():
     from db.repositories.search_logs import get_slskd_search_logs
     logs = get_slskd_search_logs(limit=200)
     lines = [f"[{e.get('timestamp')}] {e.get('query')} → {e.get('result_count')} results" for e in logs]
     return Response("\n".join(lines) or "No search logs", mimetype="text/plain")
 
-def _generate_queue_log():
+async def _generate_queue_log():
     from services.queue.queue_diagnostics_service import get_queue_events
     events = get_queue_events(limit=500)
     lines = [f"[{e.get('timestamp')}] {e.get('message')}" for e in events]
@@ -109,6 +109,6 @@ def _generate_queue_log():
 
 
 
-def _build_download_response(path, log_type):
+async def _build_download_response(path, log_type):
     filename = f"{log_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    return send_file(path, as_attachment=True, download_name=filename, mimetype="text/plain")
+    return await send_file(path, as_attachment=True, download_name=filename, mimetype="text/plain")

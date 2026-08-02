@@ -68,12 +68,12 @@ def api_unified_log():
     "/api/download-log/<log_type>",
     methods=["GET"],
 )
-def api_download_log(log_type: str):
+async def api_download_log(log_type: str):
     """
     Download a log file.
     """
 
-    result = download_log(log_type)
+    result = await download_log(log_type)
 
     # If result is a Flask Response (e.g. from _build_download_response), 
     # return it directly.

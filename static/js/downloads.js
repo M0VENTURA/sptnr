@@ -209,7 +209,8 @@ window.performMbSearch = async function() {
   }
   if (query.toLowerCase().startsWith('artist:')) {
     artistOnly = true;
-    query = query.substring(7).trim();
+    artist = query.substring(7).trim();
+    query = [artist, album, track, year].filter(Boolean).join(' ');
   }
   window._mbArtistOnlySearch = artistOnly;
 
@@ -220,10 +221,18 @@ window.performMbSearch = async function() {
   }
 
   try {
+    // Send structured fields so each form entry maps to its MusicBrainz
+    // Lucene index (artist / releasegroup / recording / date) on the backend.
+    const payload = { artist, album, track, year };
+    if (!artist && !album && !track && !year) {
+      payload.query = query; // legacy single free-text input
+    }
+    if (artistOnly) payload.artist_only = true;
+
     const data = await fetchJsonOrThrow('/api/musicbrainz/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, artist_only: artistOnly })
+      body: JSON.stringify(payload)
     });
     
     const releases = data.releases || [];

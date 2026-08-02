@@ -195,7 +195,8 @@ window.performMbSearch = async function() {
   var limitEl = document.getElementById('mbResultLimit');
   if (!resultsEl) return;
 
-  // Build query from 4 separate fields
+  // Build query from 4 separate fields — each field maps to its own
+  // MusicBrainz Lucene index on the backend (artist / releasegroup / recording / date).
   var artist = (document.getElementById('mbSearchArtist')?.value || '').trim();
   var album  = (document.getElementById('mbSearchAlbum')?.value || '').trim();
   var track  = (document.getElementById('mbSearchTrack')?.value || '').trim();
@@ -212,20 +213,28 @@ window.performMbSearch = async function() {
     var isArtistOnly = window._mbArtistOnlySearch === true;
     window._mbArtistOnlySearch = false;
 
-    var searchQuery = query;
-    if (searchQuery.toLowerCase().startsWith('artist:')) {
+    // Detect legacy inline "artist:" prefix; strip it into the artist field.
+    if (query.toLowerCase().startsWith('artist:')) {
       isArtistOnly = true;
-      searchQuery = searchQuery.substring(7).trim();
+      artist = query.substring(7).trim();
+      query = [artist, album, track, year].filter(Boolean).join(' ');
     } else if (artist && !album && !track && !year) {
       // Only the artist field is filled → search release-groups BY the artist,
       // not release-groups whose title matches the artist name.
       isArtistOnly = true;
     }
 
+    var payload = { artist: artist, album: album, track: track, year: year };
+    if (!artist && !album && !track && !year) {
+      // Single free-text input fallback (legacy modal layouts).
+      payload.query = query;
+    }
+    if (isArtistOnly) payload.artist_only = true;
+
     var resp = await fetch('/api/musicbrainz/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: searchQuery, artist_only: isArtistOnly })
+      body: JSON.stringify(payload)
     });
 
     var data = await resp.json();

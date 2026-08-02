@@ -177,26 +177,59 @@ async def api_musicbrainz_batch_update():
 async def api_musicbrainz_search():
     """Search MusicBrainz for releases + local cached missing releases.
 
-    When ``artist_only`` is True, the query is treated as an artist name and
-    we return release-groups BY that artist (query ``artist:"<name>"``) so the
-    modal can offer the artist's releases for download.
+    Accepts structured fields so each search-form entry maps to the correct
+    MusicBrainz Lucene index:
+
+        artist  → artist:"<name>"
+        album   → releasegroup:"<title>"
+        track   → recording:"<title>"
+        year    → date:<year>
+
+    Legacy callers may still send ``query`` (+ optional ``artist_only``); those
+    are routed to ``releasegroup`` / ``artist`` respectively.
     """
     payload = (await request.get_json(silent=True)) or {}
+    artist = str(payload.get("artist", "")).strip()
+    album = str(payload.get("album", "")).strip()
+    track = str(payload.get("track", "")).strip()
+    year = str(payload.get("year", "")).strip()
     query = str(payload.get("query", "")).strip()
     artist_only = bool(payload.get("artist_only", False))
-    if not query:
+
+    def _esc(value: str) -> str:
+        return value.replace('"', "")
+
+    # Build a field-aware MusicBrainz Lucene query from structured fields.
+    parts: list[str] = []
+    if artist:
+        parts.append(f'artist:"{_esc(artist)}"')
+    if album:
+        parts.append(f'releasegroup:"{_esc(album)}"')
+    if track:
+        parts.append(f'recording:"{_esc(track)}"')
+    if year:
+        parts.append(f'date:{_esc(year)}')
+
+    if not parts:
+        # Legacy free-text query path.
+        if not query:
+            return jsonify({"error": "query required"}), 400
+        parts.append(
+            f'artist:"{_esc(query)}"' if artist_only else f'releasegroup:{query}'
+        )
+
+    mb_query = " AND ".join(parts)
+
+    if not mb_query.strip():
         return jsonify({"error": "query required"}), 400
+
     try:
         client = _get_mb_client()
-        if artist_only:
-            raw = client.get("release-group/", params={
-                "query": f'artist:"{query.replace(chr(34), "")}"',
-                "limit": 50,
-            })
-            results = raw.get("release-groups", [])
-        else:
-            raw = client.get("release-group/", params={"query": f"releasegroup:{query}", "limit": 20})
-            results = raw.get("release-groups", [])
+        raw = client.get("release-group/", params={
+            "query": mb_query,
+            "limit": 50 if artist_only else 20,
+        })
+        results = raw.get("release-groups", [])
         return jsonify({"success": True, "releases": results})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

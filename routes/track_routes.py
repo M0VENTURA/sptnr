@@ -70,7 +70,7 @@ def api_get_track(track_id):
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/audio")
-def api_track_audio(track_id):
+async def api_track_audio(track_id):
     """Stream an audio file for in-browser playback."""
     try:
         with db_session() as session:
@@ -98,7 +98,7 @@ def api_track_audio(track_id):
             ".opus": "audio/ogg; codecs=opus", ".m4a": "audio/mp4",
             ".aac": "audio/aac", ".wav": "audio/wav",
         }
-        return send_file(resolved, mimetype=mime_map.get(ext, "application/octet-stream"), conditional=True)
+        return await send_file(resolved, mimetype=mime_map.get(ext, "application/octet-stream"), conditional=True)
     except Exception as exc:
         logger.error("Error streaming track %s: %s", track_id, exc)
         return Response("", status=500)
