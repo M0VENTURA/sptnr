@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -32,6 +33,92 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from db.engine import get_engine
 
 logger = logging.getLogger(__name__)
+
+
+class ResilientSQLAlchemyJobStore(SQLAlchemyJobStore):
+    """SQLAlchemy job store that survives transient PostgreSQL failures.
+
+    APScheduler's stock ``SQLAlchemyJobStore`` keeps a persistent session on a
+    pooled connection.  When PostgreSQL restarts or drops idle connections,
+    that session's connection goes stale and every subsequent ``update_job`` /
+    ``get_due_jobs`` raises ``OperationalError`` with no recovery — the
+    scheduler effectively stops.
+
+    This subclass retries transient DB errors a few times and disposes the
+    engine's pool so the next attempt checks out a fresh connection.
+    """
+
+    _RETRIES = 3
+    _RETRY_DELAY = 1.0
+
+    def _execute(self, fn, *args, **kwargs):
+        last_error: Exception | None = None
+        for attempt in range(self._RETRIES):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:
+                last_error = exc
+                if not self._is_transient(exc):
+                    raise
+                logger.warning(
+                    "[scheduler] Transient DB error in jobstore (attempt %s/%s): %s",
+                    attempt + 1,
+                    self._RETRIES,
+                    exc,
+                )
+                try:
+                    self.engine.dispose()
+                except Exception:
+                    pass
+                if attempt < self._RETRIES - 1:
+                    time.sleep(self._RETRY_DELAY * (attempt + 1))
+        if last_error is not None:
+            raise last_error
+        return None
+
+    @staticmethod
+    def _is_transient(exc: Exception) -> bool:
+        """Return True for connection-level DB errors worth retrying."""
+        if exc is None:
+            return False
+        # SQLAlchemy wraps the driver error in .orig
+        orig = getattr(exc, "orig", None)
+        for candidate in (exc, orig):
+            if candidate is None:
+                continue
+            cls_name = type(candidate).__name__.lower()
+            if any(k in cls_name for k in ("operationalerror", "interfaceerror", "connectionerror")):
+                return True
+        return False
+
+    # ── Override the job-store operations used by the scheduler loop ──────
+    def add_job(self, job):
+        return self._execute(super().add_job, job)
+
+    def update_job(self, job):
+        return self._execute(super().update_job, job)
+
+    def remove_job(self, job_id):
+        return self._execute(super().remove_job, job_id)
+
+    def remove_all_jobs(self):
+        return self._execute(super().remove_all_jobs)
+
+    def lookup_job(self, job_id):
+        return self._execute(super().lookup_job, job_id)
+
+    def get_due_jobs(self, now):
+        return self._execute(super().get_due_jobs, now)
+
+    def get_next_run_time(self):
+        return self._execute(super().get_next_run_time)
+
+    def get_all_jobs(self):
+        return self._execute(super().get_all_jobs)
+
+    def get_jobs(self, jobstore_alias=None):
+        return self._execute(super().get_jobs, jobstore_alias)
+
 
 # ---------------------------------------------------------------------------
 # Singleton
@@ -50,11 +137,13 @@ def get_scheduler() -> BackgroundScheduler:
     cfg = get_config() or {}
     scheduler_cfg = cfg.get("scheduler", {})
 
-    # Use SQLAlchemy job store for persistence across restarts
+    # Use SQLAlchemy job store for persistence across restarts, wrapped so
+    # stale PostgreSQL connections (e.g. after a DB restart) don't kill the
+    # scheduler loop permanently.
     jobstores: dict[str, Any] = {}
     try:
         engine = get_engine()
-        jobstores["default"] = SQLAlchemyJobStore(engine=engine)
+        jobstores["default"] = ResilientSQLAlchemyJobStore(engine=engine)
     except Exception as exc:
         logger.warning("SQLAlchemy job store unavailable, using in-memory: %s", exc)
 
