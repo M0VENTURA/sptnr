@@ -166,11 +166,34 @@ def get_session_factory() -> sessionmaker[Session]:
 # Synchronous session context manager
 # ---------------------------------------------------------------------------
 
+def _is_transient_db_error(exc: Exception) -> bool:
+    """Return True for connection-level DB errors worth retrying."""
+    if exc is None:
+        return False
+    try:
+        from sqlalchemy.exc import OperationalError as SAOperationalError
+        from sqlalchemy.exc import InterfaceError as SAInterfaceError
+        if isinstance(exc, (SAOperationalError, SAInterfaceError)):
+            return True
+    except Exception:
+        pass
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        cls_name = type(orig).__name__.lower()
+        if any(k in cls_name for k in ("operationalerror", "interfaceerror", "connectionerror")):
+            return True
+    return False
+
+
 @contextmanager
-def db_session() -> Iterator[Session]:
+def db_session(retries: int = 2) -> Iterator[Session]:
     """Context manager that yields a SQLAlchemy session and closes on exit.
 
     Commits on success, rolls back on exception.
+
+    Survives transient PostgreSQL connection drops (restart / idle timeout):
+    the whole block is retried on a fresh session a few times, disposing the
+    engine pool so the next attempt checks out a live connection.
 
     Usage::
 
@@ -180,16 +203,30 @@ def db_session() -> Iterator[Session]:
         with db_session() as session:
             track = session.query(Track).filter(Track.id == "123").first()
     """
-    factory = get_session_factory()
-    session: Session = factory()
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+    retries = max(1, int(retries))
+    last_error: Exception | None = None
+
+    for attempt in range(retries):
+        factory = get_session_factory()
+        session: Session = factory()
+        try:
+            yield session
+            session.commit()
+            return
+        except Exception as exc:
+            session.rollback()
+            last_error = exc
+            if not _is_transient_db_error(exc) or attempt >= retries - 1:
+                raise
+            try:
+                _ENGINE and _ENGINE.dispose()
+            except Exception:
+                pass
+        finally:
+            session.close()
+
+    if last_error is not None:
+        raise last_error
 
 
 # ---------------------------------------------------------------------------
