@@ -198,6 +198,21 @@ window.performMbSearch = async function() {
 
   if (!query) return;
 
+  // 3. When only the artist field is populated, search by artist name
+  //    (release-groups BY the artist) instead of a free-text title search.
+  let artistOnly = false;
+  if (window._mbArtistOnlySearch === true) {
+    artistOnly = true;
+    window._mbArtistOnlySearch = false;
+  } else if (artist && !album && !track && !year) {
+    artistOnly = true;
+  }
+  if (query.toLowerCase().startsWith('artist:')) {
+    artistOnly = true;
+    query = query.substring(7).trim();
+  }
+  window._mbArtistOnlySearch = artistOnly;
+
   const resultsEl = document.getElementById('mbSearchResults') || document.getElementById('mbResults');
   
   if (resultsEl) {
@@ -208,7 +223,7 @@ window.performMbSearch = async function() {
     const data = await fetchJsonOrThrow('/api/musicbrainz/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query })
+      body: JSON.stringify({ query, artist_only: artistOnly })
     });
     
     const releases = data.releases || [];

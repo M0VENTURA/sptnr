@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 from difflib import SequenceMatcher
 from typing import Any, Dict
@@ -320,6 +321,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             expected_duration = None
 
     query = build_search_query(item)
+    started_at = time.time()
 
     try:
         # ✅ mark processing
@@ -328,7 +330,18 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
         # ✅ search (allow lower bitrates since scoring handles quality)
         results = slskd.search_and_filter(query, min_bitrate=192)
 
+        elapsed = round(time.time() - started_at, 1)
+
         if not results:
+            _log_search_event(
+                search_type="automatic",
+                query=query,
+                queue_id=queue_id,
+                item=item,
+                result_count=0,
+                duration_seconds=elapsed,
+                notes="no_results",
+            )
             mark_failed(queue_id, "no_results")
             return {"success": False, "status": "no_results"}
 
@@ -346,8 +359,49 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 "[PIPELINE] No qualifying result for queue %s (%s - %s)",
                 queue_id, expected_artist, expected_title,
             )
+            _log_search_event(
+                search_type="automatic",
+                query=query,
+                queue_id=queue_id,
+                item=item,
+                result_count=len(results),
+                duration_seconds=elapsed,
+                notes=f"no_qualifying_result: candidates={len(results)}",
+                selected_result=best,
+                results=results,
+            )
             mark_failed(queue_id, "no_qualifying_result")
             return {"success": False, "status": "no_qualifying_result"}
+
+        # ✅ Re-check the queue item still exists before requesting a download.
+        # The Soulseek search can take up to 150s and the user may have removed
+        # the item (or the album) from the queue in the meantime (legacy parity).
+        if not _queue_item_exists(queue_id):
+            logger.info(
+                "[PIPELINE] Queue %s was removed while searching — skipping download request",
+                queue_id,
+            )
+            return {"success": False, "status": "item_removed"}
+
+        # ✅ Skip peers with no free upload slots (legacy parity).
+        if not best.get("has_free_upload_slot", True):
+            logger.warning(
+                "[PIPELINE] Best match peer %s has 0 free slots — skipping download",
+                best.get("username"),
+            )
+            _log_search_event(
+                search_type="automatic",
+                query=query,
+                queue_id=queue_id,
+                item=item,
+                result_count=len(results),
+                duration_seconds=elapsed,
+                notes="peer_no_free_slots",
+                selected_result=best,
+                results=results,
+            )
+            mark_failed(queue_id, "peer_no_free_slots")
+            return {"success": False, "status": "peer_no_free_slots"}
 
         # ✅ update searching → downloading
         update_queue_item(queue_id, status="downloading")
@@ -359,20 +413,33 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             size=int(best.get("size_mb", 0) * 1024 * 1024)
         )
 
+        _log_search_event(
+            search_type="automatic",
+            query=query,
+            queue_id=queue_id,
+            item=item,
+            result_count=len(results),
+            duration_seconds=elapsed,
+            notes=("queued" if success else "download_failed"),
+            selected_result=best,
+            results=results,
+        )
+
         if not success:
             mark_failed(queue_id, "download_failed")
             return {"success": False, "status": "download_failed"}
 
-        # ✅ success → completed
+        # ✅ success → downloading (final completion is confirmed by the
+        # downloads watcher when the file actually lands on disk).
         update_queue_item(
             queue_id,
             found_filename=best["filename"],
-            status="completed"
+            status="downloading",
         )
 
         return {
             "success": True,
-            "status": "completed",
+            "status": "downloading",
             "query": query,
             "match": best
         }
@@ -381,6 +448,61 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
         logger.error("[PIPELINE] Error processing %s: %s", queue_id, e, exc_info=True)
         mark_failed(queue_id, str(e))
         return {"success": False, "error": str(e)}
+
+
+def _log_search_event(
+    *,
+    search_type: str,
+    query: str,
+    queue_id: int | None,
+    item: dict,
+    result_count: int,
+    duration_seconds: float | None = None,
+    notes: str | None = None,
+    selected_result: dict | None = None,
+    results: list | None = None,
+) -> None:
+    """Write a Soulseek search event to ``slskd_search_logs`` (legacy parity).
+
+    The old ``queue_processor`` logged every automatic search (success,
+    no-results, no-safe-match). Restoring that here so the diagnostics UI
+    and ``log_service`` show what the worker is doing.
+    """
+    try:
+        from db.repositories.search_logs import log_slskd_search
+        log_slskd_search(
+            search_type=search_type,
+            query=query,
+            queue_id=queue_id,
+            artist=(item.get("artist") or "").strip(),
+            title=(item.get("title") or "").strip(),
+            album=(item.get("album") or "").strip(),
+            result_count=result_count,
+            duration_seconds=duration_seconds,
+            notes=notes,
+            selected_result=selected_result,
+            results=results,
+        )
+    except Exception as exc:
+        logger.debug("[PIPELINE] Could not log slskd search event: %s", exc)
+
+
+def _queue_item_exists(queue_id: int | None) -> bool:
+    """Return True when the queue item still exists (legacy re-check)."""
+    if queue_id is None:
+        return False
+    try:
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT 1 FROM download_queue WHERE id = :qid"),
+                {"qid": int(queue_id)},
+            )
+            return result.fetchone() is not None
+    except Exception as exc:
+        logger.debug("[PIPELINE] Item existence check failed for %s: %s", queue_id, exc)
+        return True  # err on the side of not blocking a valid download
 
 
 # =============================================================================

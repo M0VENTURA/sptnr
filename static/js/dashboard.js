@@ -206,6 +206,10 @@ function parseScanTimestamp(ts) {
     const n = Number(text);
     if (!Number.isNaN(n)) { const e = new Date(text.length <= 10 ? n * 1000 : n); if (!isNaN(e.getTime())) return e; }
   }
+  // Try a native parse first (handles RFC 1123 / HTTP-date strings such as
+  // "Sun, 02 Aug 2026 10:00:00 GMT" emitted by older JSON serializers).
+  const native = new Date(text);
+  if (!isNaN(native.getTime())) return native;
   let norm = text.replace(" ", "T").replace(/\.(\d{3})\d+/, ".$1").replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?$/.test(norm)) norm += "Z";
   const d2 = new Date(norm);
@@ -248,6 +252,7 @@ function renderRecentScans(scans) {
         artist: scan.artist,
         album: scan.album || "…",
         scan_types: [{ type: scan.scan_type, timestamp: ts, _inProgress: true }],
+        latest_timestamp: ts,
         latest_timestamp_obj: new Date(),
         _inProgress: true,
       });
@@ -260,6 +265,7 @@ function renderRecentScans(scans) {
         album: scan.album,
         status: scan.status,
         scan_types: [],
+        latest_timestamp: ts,
         latest_timestamp_obj: parseScanTimestamp(ts),
       };
     }

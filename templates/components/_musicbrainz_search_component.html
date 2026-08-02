@@ -216,6 +216,10 @@ window.performMbSearch = async function() {
     if (searchQuery.toLowerCase().startsWith('artist:')) {
       isArtistOnly = true;
       searchQuery = searchQuery.substring(7).trim();
+    } else if (artist && !album && !track && !year) {
+      // Only the artist field is filled → search release-groups BY the artist,
+      // not release-groups whose title matches the artist name.
+      isArtistOnly = true;
     }
 
     var resp = await fetch('/api/musicbrainz/search', {

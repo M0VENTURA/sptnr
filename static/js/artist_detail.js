@@ -2621,6 +2621,335 @@ async function toggleArtistFavourite(artistName) {
   }
 }
 
+// ── Artist Edit Track Modal (comprehensive) ────────────────────────────────
+// Ported from old_system/templates/artist.html — the artist page renders
+// "Edit track" buttons (loadTracklist) that need these handlers.
+
+let editArtistTrackCurrentGenres = [];
+let editArtistTrackModalInstance = null;
+
+const ARTIST_MODAL_ADVANCED_FIELDS = [
+  { name: 'writer', label: 'Writer/Lyricist' },
+  { name: 'arranger', label: 'Arranger' },
+  { name: 'mixer', label: 'Mixer' },
+  { name: 'producer', label: 'Producer' },
+  { name: 'work', label: 'Work/Composition' },
+  { name: 'isrc', label: 'ISRC' },
+  { name: 'bpm', label: 'BPM' },
+  { name: 'bitrate', label: 'Bitrate (kbps)' },
+  { name: 'sample_rate', label: 'Sample Rate (Hz)' },
+  { name: 'titlesort', label: 'Title Sort' },
+  { name: 'albumsort', label: 'Album Sort' },
+  { name: 'artistsort', label: 'Artist Sort' },
+  { name: 'composersort', label: 'Composer Sort' },
+  { name: 'albumartistsort', label: 'Album Artist Sort' },
+  { name: 'lyricistsort', label: 'Lyricist Sort' },
+  { name: 'artistssort', label: 'Artists Sort' },
+  { name: 'albumartistssort', label: 'Album Artists Sort' },
+  { name: 'artists', label: 'Artists (multi)' },
+  { name: 'albumartists', label: 'Album Artists (multi)' },
+  { name: 'conductor', label: 'Conductor' },
+  { name: 'performer', label: 'Performer' },
+  { name: 'director', label: 'Director' },
+  { name: 'djmixer', label: 'DJ Mixer' },
+  { name: 'engineer', label: 'Engineer' },
+  { name: 'remixer', label: 'Remixer' },
+  { name: 'lyricist', label: 'Lyricist' },
+  { name: 'albumversion', label: 'Album Version' },
+  { name: 'recordlabel', label: 'Record Label' },
+  { name: 'copyright', label: 'Copyright' },
+  { name: 'releasedate', label: 'Release Date' },
+  { name: 'releasetype', label: 'Release Type' },
+  { name: 'releasestatus', label: 'Release Status' },
+  { name: 'releasecountry', label: 'Release Country' },
+  { name: 'media', label: 'Media Format' },
+  { name: 'barcode', label: 'Barcode' },
+  { name: 'catalognumber', label: 'Catalog Number' },
+  { name: 'asin', label: 'ASIN' },
+  { name: 'originalyear', label: 'Original Year' },
+  { name: 'originaldate', label: 'Original Date' },
+  { name: 'tracktotal', label: 'Track Total' },
+  { name: 'disctotal', label: 'Disc Total' },
+  { name: 'script', label: 'Script' },
+  { name: 'discsubtitle', label: 'Disc Subtitle' },
+  { name: 'subtitle', label: 'Subtitle' },
+  { name: 'grouping', label: 'Grouping' },
+  { name: 'movement', label: 'Movement' },
+  { name: 'movementname', label: 'Movement Name' },
+  { name: 'movementtotal', label: 'Movement Total' },
+  { name: 'key', label: 'Musical Key' },
+  { name: 'language', label: 'Language' },
+  { name: 'license', label: 'License' },
+  { name: 'website', label: 'Website' },
+  { name: 'encodedby', label: 'Encoded By' },
+  { name: 'encodersettings', label: 'Encoder Settings' },
+  { name: 'explicitstatus', label: 'Explicit Status' },
+  { name: 'musicbrainz_albumid', label: 'MusicBrainz Album ID' },
+  { name: 'musicbrainz_artistid', label: 'MusicBrainz Artist ID' },
+  { name: 'musicbrainz_albumartistid', label: 'MusicBrainz Album Artist ID' },
+  { name: 'musicbrainz_releasegroupid', label: 'MusicBrainz Release Group ID' },
+  { name: 'musicbrainz_releasetrackid', label: 'MusicBrainz Release Track ID' },
+  { name: 'musicbrainz_workid', label: 'MusicBrainz Work ID' },
+  { name: 'replaygain_track_gain', label: 'ReplayGain Track Gain' },
+  { name: 'replaygain_track_peak', label: 'ReplayGain Track Peak' },
+  { name: 'replaygain_album_gain', label: 'ReplayGain Album Gain' },
+  { name: 'replaygain_album_peak', label: 'ReplayGain Album Peak' },
+  { name: 'r128_track_gain', label: 'R128 Track Gain' },
+  { name: 'r128_album_gain', label: 'R128 Album Gain' },
+  { name: 'lyrics', label: 'Lyrics', type: 'textarea' }
+];
+
+function renderArtistAdvancedTrackFields(trackData) {
+  const container = document.getElementById('editArtistTrackAdvancedFields');
+  if (!container) return;
+
+  container.innerHTML = ARTIST_MODAL_ADVANCED_FIELDS.map(def => {
+    const fieldId = `editArtistTrackAdv_${def.name}`;
+    if (def.type === 'textarea') {
+      return `
+        <div class="col-12">
+          <label for="${fieldId}" class="form-label">${def.label}</label>
+          <textarea class="form-control" id="${fieldId}" rows="4"></textarea>
+        </div>
+      `;
+    }
+    return `
+      <div class="col-md-6">
+        <label for="${fieldId}" class="form-label">${def.label}</label>
+        <input type="text" class="form-control" id="${fieldId}">
+      </div>
+    `;
+  }).join('');
+
+  ARTIST_MODAL_ADVANCED_FIELDS.forEach(def => {
+    const el = document.getElementById(`editArtistTrackAdv_${def.name}`);
+    if (el) {
+      const val = trackData?.[def.name];
+      el.value = (val == null) ? '' : String(val);
+    }
+  });
+}
+
+function openEditTrackFromArtistModal(trackId, trackTitle) {
+  if (!trackId) {
+    alert('❌ Error: No track ID');
+    return;
+  }
+  fetch(`/api/track/${encodeURIComponent(trackId)}`)
+    .then(async r => {
+      let data = null;
+      try { data = await r.json(); } catch (_) { /* ignore */ }
+      if (!r.ok) {
+        throw new Error((data && data.error) ? data.error : 'Track not found');
+      }
+      return data;
+    })
+    .then(trackData => {
+      if (!trackData) throw new Error('Empty response from server');
+      if (trackData.track && !trackData.title) {
+        trackData = Object.assign({}, trackData.track, trackData);
+      }
+      openComprehensiveEditArtistTrackModal(trackId, trackData);
+    })
+    .catch(err => {
+      alert('❌ Error loading track: ' + err.message);
+    });
+}
+
+function openComprehensiveEditArtistTrackModal(trackId, trackData) {
+  trackData = trackData || {};
+
+  // Set track ID
+  document.getElementById('editArtistTrackId').value = trackId;
+
+  // Populate form with track data
+  document.getElementById('editArtistTrackTitle').textContent = trackData.title || 'Unknown';
+  document.getElementById('editArtistTrackTitleField').value = trackData.title || '';
+  document.getElementById('editArtistTrackArtistField').value = trackData.artist || '';
+  document.getElementById('editArtistTrackAlbumField').value = trackData.album || '';
+  document.getElementById('editArtistTrackYearField').value = trackData.year || '';
+  document.getElementById('editArtistTrackStarsField').value = trackData.stars || 0;
+  document.getElementById('editArtistTrackSingleField').value = trackData.is_single || 0;
+  document.getElementById('editArtistTrackConfidenceField').value = trackData.single_confidence || 'low';
+  document.getElementById('editArtistTrackAlbumArtistField').value = trackData.album_artist || '';
+  document.getElementById('editArtistTrackComposerField').value = trackData.composer || '';
+  document.getElementById('editArtistTrackTrackNumberField').value = trackData.track_number || '';
+  document.getElementById('editArtistTrackDiscNumberField').value = trackData.disc_number || '';
+  document.getElementById('editArtistTrackMBIDField').value = trackData.mbid || '';
+  document.getElementById('editArtistTrackCommentField').value = trackData.comment || '';
+  renderArtistAdvancedTrackFields(trackData);
+
+  // Handle genres
+  editArtistTrackCurrentGenres = [];
+  if (trackData.genres) {
+    editArtistTrackCurrentGenres = String(trackData.genres).split(/[;,\\\/]/).map(g => g.trim()).filter(g => g);
+  }
+  updateEditArtistTrackGenresDisplay();
+
+  // Load and display recommended genres
+  loadRecommendedGenresForArtistTrack(trackData.artist, trackId);
+
+  // Show modal
+  if (!editArtistTrackModalInstance) {
+    editArtistTrackModalInstance = new bootstrap.Modal(document.getElementById('editTrackFromArtistModal'));
+  }
+  editArtistTrackModalInstance.show();
+}
+
+function loadRecommendedGenresForArtistTrack(artist, trackId) {
+  const section = document.getElementById('artistRecommendedGenresSection');
+  const display = document.getElementById('artistRecommendedGenresDisplay');
+
+  if (!section || !display) return;
+
+  fetch(`/api/genres/track/${encodeURIComponent(trackId)}`)
+    .then(r => r.json())
+    .then(data => {
+      if (!data.genres) return;
+
+      const recommendedGenres = new Map();
+      const addAll = (list) => {
+        (list || []).forEach(genre => {
+          const name = typeof genre === 'object' ? genre.name : genre;
+          if (name) recommendedGenres.set(name, (recommendedGenres.get(name) || 0) + 1);
+        });
+      };
+      addAll(data.genres.lastfm_tags);
+      addAll(data.genres.discogs_genres);
+      addAll(data.genres.spotify_genres);
+
+      if (recommendedGenres.size > 0) {
+        section.style.display = 'block';
+        let genresHtml = '';
+        recommendedGenres.forEach((count, genre) => {
+          genresHtml += `<button type="button" class="btn btn-sm btn-outline-info" onclick="addEditArtistGenreFromRecommended('${escapeJsString(genre)}')" title="Add to track genres">
+            ${escapeHtml(genre)}
+            <small class="text-muted ms-1">(${count})</small>
+          </button>`;
+        });
+        display.innerHTML = genresHtml;
+      } else {
+        section.style.display = 'none';
+      }
+    })
+    .catch(err => {
+      section.style.display = 'none';
+      console.warn('Could not load recommended genres:', err);
+    });
+}
+
+function addEditArtistGenreFromRecommended(genre) {
+  if (!editArtistTrackCurrentGenres.includes(genre)) {
+    editArtistTrackCurrentGenres.push(genre);
+    updateEditArtistTrackGenresDisplay();
+  }
+}
+
+function updateEditArtistTrackGenresDisplay() {
+  const container = document.getElementById('editArtistTrackGenresDisplay');
+  if (!container) return;
+
+  container.innerHTML = '';
+  if (editArtistTrackCurrentGenres.length === 0) {
+    container.innerHTML = '<span class="text-muted small">No genres set</span>';
+  } else {
+    editArtistTrackCurrentGenres.forEach(genre => {
+      const badge = document.createElement('span');
+      badge.className = 'badge bg-primary me-1 mb-1';
+      badge.style.fontSize = '0.9rem';
+      badge.innerHTML = `${escapeHtml(genre)} <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeEditArtistTrackGenre('${escapeJsString(genre)}')" aria-label="Remove"></button>`;
+      container.appendChild(badge);
+    });
+  }
+  document.getElementById('editArtistTrackGenresField').value = editArtistTrackCurrentGenres.join('\\');
+}
+
+function addEditArtistTrackGenre() {
+  const input = document.getElementById('editArtistTrackGenreInput');
+  if (!input) return;
+  const genre = input.value.trim();
+
+  if (!genre) return;
+
+  if (!editArtistTrackCurrentGenres.includes(genre)) {
+    editArtistTrackCurrentGenres.push(genre);
+    updateEditArtistTrackGenresDisplay();
+  }
+
+  input.value = '';
+  input.focus();
+}
+
+function removeEditArtistTrackGenre(genre) {
+  editArtistTrackCurrentGenres = editArtistTrackCurrentGenres.filter(g => g !== genre);
+  updateEditArtistTrackGenresDisplay();
+}
+
+function saveArtistEditedTrack() {
+  const trackId = document.getElementById('editArtistTrackId').value;
+
+  if (!trackId) {
+    alert('❌ Error: No track ID');
+    return;
+  }
+
+  const payload = {
+    track_id: trackId,
+    title: document.getElementById('editArtistTrackTitleField').value.trim(),
+    artist: document.getElementById('editArtistTrackArtistField').value.trim(),
+    album: document.getElementById('editArtistTrackAlbumField').value.trim(),
+    year: document.getElementById('editArtistTrackYearField').value.trim() || null,
+    stars: parseInt(document.getElementById('editArtistTrackStarsField').value) || 0,
+    is_single: parseInt(document.getElementById('editArtistTrackSingleField').value) || 0,
+    single_confidence: document.getElementById('editArtistTrackConfidenceField').value,
+    genres: editArtistTrackCurrentGenres.join('\\'),
+    album_artist: document.getElementById('editArtistTrackAlbumArtistField').value.trim() || null,
+    composer: document.getElementById('editArtistTrackComposerField').value.trim() || null,
+    track_number: document.getElementById('editArtistTrackTrackNumberField').value.trim() || null,
+    disc_number: document.getElementById('editArtistTrackDiscNumberField').value.trim() || null,
+    mbid: document.getElementById('editArtistTrackMBIDField').value.trim() || null,
+    comment: document.getElementById('editArtistTrackCommentField').value.trim() || null,
+    sync_to_file: true
+  };
+
+  ARTIST_MODAL_ADVANCED_FIELDS.forEach(def => {
+    const el = document.getElementById(`editArtistTrackAdv_${def.name}`);
+    if (!el) return;
+    const raw = (el.value || '').trim();
+    payload[def.name] = raw || null;
+  });
+
+  if (!payload.title) {
+    alert('❌ Error: Title is required');
+    return;
+  }
+
+  fetch('/api/track/update-metadata', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      if (editArtistTrackModalInstance) {
+        editArtistTrackModalInstance.hide();
+      }
+      if (data.file_synced === false) {
+        alert('⚠️ Track metadata saved to database, but file tags were not updated. Check file permissions/path and logs.');
+      } else {
+        alert('✅ Track metadata updated successfully (database + file tags)');
+      }
+      setTimeout(() => { location.reload(); }, 500);
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to update'));
+    }
+  })
+  .catch(err => {
+    alert('❌ Network error: ' + err.message);
+  });
+}
+
 // ── Covered By Section ───────────────────────────────────────────────────────
 
 async function loadArtistCoveredBy(artistName) {

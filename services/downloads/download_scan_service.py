@@ -141,7 +141,8 @@ def discover_files() -> dict[str, object]:
                     (path,),
                 )
                 row = cursor.fetchone()
-                count = int(row[0]) if row else 0
+                # Rows are RealDictRow (dict-like); never index by position.
+                count = int(row.get("count") or 0) if row else 0
                 if count > 0:
                     already_in_queue += 1
             conn.close()

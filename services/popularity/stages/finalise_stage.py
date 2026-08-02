@@ -316,7 +316,7 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND final_score > 0",
                     (artist,),
                 )
-                db_artist_scores = [float(row[0]) for row in cursor.fetchall() if row[0]]
+                db_artist_scores = [float(row.get("final_score") or 0) for row in cursor.fetchall() if row.get("final_score")]
                 artist_scores = list(artist_scores) + list(db_artist_scores)
             except Exception as exc:
                 logger.debug("[finalise_stage] Artist DB score merge failed for %s: %s", artist, exc)
@@ -335,7 +335,7 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                         "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND final_score > 0",
                         (artist, album),
                     )
-                    db_album_scores = [float(row[0]) for row in cursor.fetchall() if row[0]]
+                    db_album_scores = [float(row.get("final_score") or 0) for row in cursor.fetchall() if row.get("final_score")]
                     album_scores = list(album_scores) + list(db_album_scores)
                 except Exception as exc:
                     logger.debug("[finalise_stage] Album DB score merge failed for %s - %s: %s", artist, album, exc)
@@ -358,6 +358,29 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                             logger.debug("[finalise_stage] DB update failed for %s: %s", track_id, exc)
 
                 conn.commit()
+
+                # ── Per-album progress (dashboard unified log) ──────────
+                # Mirrors the legacy scanner: emit a human-readable per-album
+                # star-rating summary so operators can follow progress in the
+                # dashboard log while the scan is running.
+                try:
+                    star_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+                    for t in album_results:
+                        s = int(t.get("stars") or 0)
+                        if 1 <= s <= 5:
+                            star_counts[s] += 1
+                    log_unified(
+                        f"Star Ratings - Album '{album}' by {artist}: "
+                        f"5★: {star_counts[5]}, 4★: {star_counts[4]}, 3★: {star_counts[3]}, "
+                        f"2★: {star_counts[2]}, 1★: {star_counts[1]}"
+                    )
+                    singles_detected = [t for t in album_results if t.get("is_single")]
+                    if singles_detected:
+                        log_unified(
+                            f"Singles Detection - Detected {len(singles_detected)} single(s) in '{album}'"
+                        )
+                except Exception as log_exc:
+                    logger.debug("[finalise_stage] Album progress log failed: %s", log_exc)
 
                 # Sync to Navidrome
                 if options.get("sync_navidrome", True):

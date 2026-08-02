@@ -56,7 +56,8 @@ def get_artist_bio(artist: str) -> tuple[dict, int]:
         cursor = conn.cursor()
         cursor.execute("SELECT bio FROM artists WHERE name = %s", (artist,))
         row = cursor.fetchone()
-        bio = str(row[0] or "").strip() if row else ""
+        # Rows are RealDictRow (dict-like); never index by position.
+        bio = str(row.get("bio") or "").strip() if row else ""
     except Exception:
         bio = ""
     finally:
@@ -88,7 +89,8 @@ def get_singles_count(artist: str) -> tuple[dict, int]:
             (artist,),
         )
         row = cursor.fetchone()
-        count = int(row[0] or 0) if row else 0
+        # Rows are RealDictRow (dict-like); never index by position.
+        count = int(row.get("count") or 0) if row else 0
         return {"success": True, "count": count}, 200
     except Exception as exc:
         return {"success": False, "error": str(exc)}, 500
@@ -171,7 +173,8 @@ def get_artist_image(artist: str):
         try:
             cursor.execute("SELECT image_url FROM artists WHERE name = %s", (artist,))
             row = cursor.fetchone()
-            url = str(row[0] or "").strip() if row else ""
+            # Rows are RealDictRow (dict-like); never index by position.
+            url = str(row.get("image_url") or "").strip() if row else ""
         except Exception:
             url = ""
         if url and url.startswith(("http://", "https://")):
@@ -235,8 +238,9 @@ def get_similar_artists(artist: str, args) -> tuple[dict, int]:
         row = cursor.fetchone()
         if row:
             import json
-            lf_raw = str(row[0] or "") if len(row) > 0 else ""
-            lb_raw = str(row[1] or "") if len(row) > 1 else ""
+            # Rows are RealDictRow (dict-like); never index by position.
+            lf_raw = str(row.get("similar_artists_lastfm") or "") if row else ""
+            lb_raw = str(row.get("similar_artists_listenbrainz") or "") if row else ""
             if lf_raw:
                 try:
                     sources["lastfm"] = json.loads(lf_raw) if isinstance(json.loads(lf_raw), list) else []
@@ -319,8 +323,9 @@ def get_artist_members_cached(artist: str) -> list[dict]:
         now = datetime.now(timezone.utc)
 
         if row:
-            members_raw = str(row[0] or "") if len(row) > 0 else ""
-            updated_raw = str(row[1] or "") if len(row) > 1 else ""
+            # Rows are RealDictRow (dict-like); never index by position.
+            members_raw = str(row.get("members") or "") if row else ""
+            updated_raw = str(row.get("members_last_updated") or "") if row else ""
             if members_raw and updated_raw:
                 try:
                     updated = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))

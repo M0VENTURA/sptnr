@@ -95,10 +95,21 @@ def get_recent_album_scans(limit: int = 50):
 
         cols = list(result.keys())
 
-        return [
-            dict(zip(cols, row))
-            for row in result.fetchall() or []
-        ]
+        scans = []
+        for row in result.fetchall() or []:
+            record = dict(zip(cols, row))
+            # Serialize datetime values as ISO-8601 UTC strings so the
+            # dashboard JS can parse them (avoids Quart's default RFC 1123
+            # serialization, which the frontend timestamp parser cannot read).
+            for col in ("started_at", "completed_at"):
+                value = record.get(col)
+                if isinstance(value, datetime):
+                    if value.tzinfo is None:
+                        record[col] = value.isoformat() + "Z"
+                    else:
+                        record[col] = value.isoformat()
+            scans.append(record)
+        return scans
 
 
 def was_album_scanned(artist: str, album: str, scan_type: str, days: int = 7) -> bool:

@@ -114,7 +114,8 @@ def _get_listenbrainz_token(cursor, user_id: int) -> Optional[str]:
         )
         row = cursor.fetchone()
         if row:
-            raw = str(row[0] if hasattr(row, "get") else row[0]).strip()
+            # Rows are RealDictRow (dict-like); never index by position.
+            raw = str(row.get("listenbrainz_token") or "").strip()
             return raw if raw else None
     except Exception:
         pass

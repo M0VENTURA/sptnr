@@ -117,6 +117,7 @@ def process_track(
 
     metadata_only = bool(options.get("metadata_only"))
     popularity_only = bool(options.get("popularity_only"))
+    frozen_track = bool(options.get("frozen_track"))
 
     update_payload: dict[str, Any] = {}
     score_data: dict[str, Any] = {}
@@ -128,7 +129,7 @@ def process_track(
     # 1. METADATA - MusicBrainz (via enrichment service for better matching)
     # -------------------------------------------------------------------------
 
-    if not popularity_only:
+    if not popularity_only and not frozen_track:
         try:
             title = _as_str(track.get("title"))
             artist = _as_str(track.get("artist"))
@@ -296,7 +297,10 @@ def process_track(
             # ── Overall cache gate ────────────────────────────────────────
             # If the track has a fresh Spotify-style cached score AND already
             # has a valid final_score, skip all API re-fetches entirely.
-            _cached = should_use_cached_score(effective_track) and effective_track.get("final_score")
+            # Frozen mature tracks are ALWAYS routed through the cached path
+            # so the popularity score is reused without API calls while the
+            # rest of the pipeline (singles/cover/genre) still runs.
+            _cached = frozen_track or (should_use_cached_score(effective_track) and effective_track.get("final_score"))
             if _cached:
                 logger.debug(
                     "[track_stage] Using cached score for %s (final_score=%.1f)",

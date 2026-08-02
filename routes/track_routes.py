@@ -53,7 +53,13 @@ def api_get_track(track_id):
             row = result.fetchone()
             if not row:
                 return jsonify({"error": "Track not found"}), 404
-            return jsonify({"success": True, "track": dict(row._mapping)})
+            track = dict(row._mapping)
+            # Return track fields at the top level (legacy frontend contract used
+            # by the album/downloads edit-track modals, genre removal, etc.), and
+            # also expose them under ``track`` for API consumers.
+            payload = {"success": True, "track": track}
+            payload.update(track)
+            return jsonify(payload)
     except Exception as exc:
         logger.error("Error fetching track %s: %s", track_id, exc)
         return jsonify({"error": str(exc)}), 500

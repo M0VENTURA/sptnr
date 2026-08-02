@@ -3,6 +3,7 @@
 Provides queue maintenance and cleanup operations:
     - queue_cleanup(): Remove stale/expired queue entries.
     - queue_reset_moving(): Reset items stuck in 'moving' state.
+    - cleanup_stuck_items(): Reset items stuck in 'searching'/'downloading'.
 
 Architecture:
     Uses direct repository calls (``db.repositories.queue``) exclusively.
@@ -13,8 +14,12 @@ Architecture:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import Any, Mapping
 
+from sqlalchemy import text
+
+from db.engine import db_session
 from db.repositories import queue as queue_repository
 from helpers.response_helpers import _ok, _fail, _safe_int
 
@@ -25,9 +30,71 @@ logger = logging.getLogger(__name__)
 # ✅ CLEANUP OPERATIONS
 # =============================================================================
 
+# Items stuck in 'searching' for more than 300 seconds are likely hung.
+# _SLSKD_SEARCH_MAX_WAIT_SECONDS is 150s, so legitimate searches can stay in
+# 'searching' for up to ~2.5 min. 300s (5 min, 2x) gives ample margin before
+# declaring an item truly stuck (e.g. after a crash left the status unreset).
+_STUCK_SEARCH_SECONDS = 300
+
+# Items stuck in 'downloading' for longer than 6 hours are presumed dead —
+# the downloads watcher normally completes them within minutes.
+_STUCK_DOWNLOAD_SECONDS = 6 * 3600
+
+
 def cleanup_stuck_items() -> dict[str, int]:
-    """Clean up stuck queue items. Thin wrapper for queue_orchestrator."""
-    return queue_cleanup()
+    """Reset queue items stuck in 'searching'/'downloading'.
+
+    Mirrors the legacy ``cleanup_stuck_searching_items`` behaviour:
+    - ``searching`` items older than 5 minutes are reset to ``queued`` for retry.
+    - ``downloading`` items older than 6 hours are reset to ``failed``.
+
+    Returns:
+        ``{"searching_reset": int, "downloading_reset": int}``
+    """
+    searching_reset = 0
+    downloading_reset = 0
+    try:
+        now = datetime.utcnow()
+
+        # Stuck 'searching' → back to 'queued' so the worker retries it.
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = 'queued',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = 'searching'
+                      AND updated_at < :cutoff
+                """),
+                {"cutoff": (now - timedelta(seconds=_STUCK_SEARCH_SECONDS)).isoformat()},
+            )
+            searching_reset = int(result.rowcount or 0)
+
+        # Stuck 'downloading' → failed (the watcher never confirmed it).
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = 'failed',
+                        failure_reason = 'Stuck in downloading state',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = 'downloading'
+                      AND updated_at < :cutoff
+                """),
+                {"cutoff": (now - timedelta(seconds=_STUCK_DOWNLOAD_SECONDS)).isoformat()},
+            )
+            downloading_reset = int(result.rowcount or 0)
+
+        if searching_reset or downloading_reset:
+            logger.warning(
+                "Reset stuck queue items — searching=%s, downloading=%s",
+                searching_reset, downloading_reset,
+            )
+        return {"searching_reset": searching_reset, "downloading_reset": downloading_reset}
+
+    except Exception as exc:
+        logger.exception("cleanup_stuck_items failed")
+        return {"searching_reset": 0, "downloading_reset": 0, "error": str(exc)}
 
 
 def queue_cleanup():

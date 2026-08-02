@@ -271,11 +271,14 @@ def run_scan(
             prepared_track = apply_context_fields_to_track(track_context)
 
             # ── Mature-track freeze ──────────────────────────────────────
-            # Tracks older than 2 years with an existing final_score are
-            # skipped — their popularity is stable and unlikely to change.
+            # Tracks older than 2 years with an existing final_score skip the
+            # popularity API re-fetch — their popularity is stable.  However,
+            # singles detection, cover detection, genre aggregation and star
+            # rating still run (legacy parity): the freeze only reuses the
+            # cached popularity score, it does NOT skip the track entirely.
             if should_freeze_track(prepared_track):
                 logger.debug(
-                    "[scan_runner] Freezing mature track '%s' (has existing score %.1f)",
+                    "[scan_runner] Freezing mature track '%s' (has existing score %.1f) — running singles/cover/genre only",
                     prepared_track.get("title", "?"),
                     prepared_track.get("final_score", 0),
                 )
@@ -300,6 +303,24 @@ def run_scan(
                             prepared_track.get("id"),
                             exc,
                         )
+                # Reuse the cached popularity score but still run the rest of
+                # the per-track pipeline (metadata/cover/singles/genre).
+                frozen_options = dict(options)
+                frozen_options["frozen_track"] = True
+                frozen_result = process_track(
+                    track=prepared_track,
+                    track_context=track_context,
+                    album_context=album_context,
+                    album_result=album_result,
+                    options=frozen_options,
+                    album_lb_data=album_lb_data,
+                    album_lb_listens=album_lb_listens if album_lb_listens else None,
+                    artist_max_lf_listeners=artist_max_lf,
+                    artist_lf_context=artist_lf_context,
+                    mb_cached_singles=mb_cached_singles,
+                )
+                if frozen_result is not None:
+                    results.append(frozen_result)
                 tracks_processed += 1
                 continue
 

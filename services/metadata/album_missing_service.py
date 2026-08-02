@@ -51,11 +51,8 @@ def get_missing_tracks(artist: str, album: str) -> dict:
             (artist, album),
         )
         row = cursor.fetchone()
-        mb_mbid = row[0] if row else None
-        if not hasattr(row, "get"):
-            pass
-        elif row:
-            mb_mbid = row.get("musicbrainz_album_mbid")
+        # Rows are RealDictRow (dict-like); never index by position.
+        mb_mbid = row.get("musicbrainz_album_mbid") if row else None
 
         # Fetch library tracks
         cursor.execute(
@@ -139,9 +136,8 @@ def get_title_mismatches(artist: str, album: str) -> dict:
             (artist, album),
         )
         row = cursor.fetchone()
-        mb_mbid = row[0] if row else None
-        if hasattr(row, "get") and row:
-            mb_mbid = row.get("musicbrainz_album_mbid")
+        # Rows are RealDictRow (dict-like); never index by position.
+        mb_mbid = row.get("musicbrainz_album_mbid") if row else None
 
         cursor.execute(
             "SELECT id, title, track_number, disc_number, duration FROM tracks "

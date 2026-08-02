@@ -556,7 +556,7 @@
     </div>
   </div>
 
-  {% from "components/_album_category_section.html" import render_album_row ignore missing %}
+  {% from "components/_album_category_section.html" import render_album_row %}
 
   {% set total_discovered_albums = albums_by_category.album|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_albums = albums_by_category.album|selectattr('is_missing', 'equalto', True)|list|length %}

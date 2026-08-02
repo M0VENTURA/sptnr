@@ -62,3 +62,54 @@ def clear_slskd_search_logs() -> None:
             session.execute(text("TRUNCATE TABLE slskd_search_logs"))
     except Exception as db_err:
         logger.error(f"[SEARCH_LOG] Could not truncate table: {db_err}")
+
+
+def log_slskd_search(
+    *,
+    search_type: str,
+    query: str,
+    queue_id: int | None = None,
+    artist: str = "",
+    title: str = "",
+    album: str = "",
+    result_count: int = 0,
+    duration_seconds: float | None = None,
+    notes: str | None = None,
+    selected_result: dict | None = None,
+    results: list | None = None,
+) -> None:
+    """Record a Soulseek search event for diagnostics/auditing.
+
+    Mirrors the legacy ``download_queue_manager.log_slskd_search_event``:
+    every automatic/manual search is written to ``slskd_search_logs`` so the
+    UI diagnostics view and ``log_service`` can report what happened.
+    """
+    try:
+        import json as _json
+        with db_session() as session:
+            session.execute(
+                text("""
+                    INSERT INTO slskd_search_logs
+                        (search_type, query, queue_id, artist, title, album,
+                         result_count, duration_seconds, notes, selected_result, results)
+                    VALUES
+                        (:search_type, :query, :queue_id, :artist, :title, :album,
+                         :result_count, :duration_seconds, :notes,
+                         :selected_result::jsonb, :results::jsonb)
+                """),
+                {
+                    "search_type": search_type,
+                    "query": query,
+                    "queue_id": queue_id,
+                    "artist": artist,
+                    "title": title,
+                    "album": album,
+                    "result_count": int(result_count or 0),
+                    "duration_seconds": duration_seconds,
+                    "notes": notes,
+                    "selected_result": _json.dumps(selected_result) if selected_result else None,
+                    "results": _json.dumps(results) if results else None,
+                },
+            )
+    except Exception as db_err:
+        logger.debug("[SEARCH_LOG] Could not record search event: %s", db_err)

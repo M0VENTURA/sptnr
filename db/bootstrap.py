@@ -17,7 +17,7 @@ from db.schema import (
     DOWNLOAD_QUEUE_COLUMNS_TO_ENSURE,
     TRACK_COLUMNS_TO_ENSURE,
 )
-from db.schema_helpers import table_exists, get_table_columns
+from db.schema_helpers import table_exists, get_table_columns, get_postgres_column_types
 from db.utils import get_db_connection, is_transient_pg_startup_error
 
 _SCHEMA_BOOTSTRAP_LOCK_NAME = "popularr_schema_bootstrap"

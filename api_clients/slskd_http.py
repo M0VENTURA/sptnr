@@ -239,3 +239,52 @@ class SlskdHttpClient:
             return bool(server.get("isConnected") or server.get("isLoggedIn"))
         except Exception:
             return False
+
+
+# =============================================================================
+# Client factory (cached)
+# =============================================================================
+
+_slskd_client_cache: SlskdHttpClient | None = None
+
+
+def get_slskd_client() -> SlskdHttpClient | None:
+    """Return a configured, cached ``SlskdHttpClient`` instance.
+
+    Reads ``slskd`` from config (``enabled`` / ``web_url`` / ``api_key``).
+    Returns ``None`` when slskd is disabled or misconfigured so callers can
+    treat it as "Soulseek unavailable" without raising.
+    """
+    global _slskd_client_cache
+    if _slskd_client_cache is not None:
+        return _slskd_client_cache
+
+    try:
+        from helpers.config_helpers import get_slskd_config
+        cfg = get_slskd_config()
+
+        if not cfg.get("enabled"):
+            logger.warning("Soulseek (slskd) is not enabled in config")
+            return None
+
+        web_url = str(cfg.get("web_url") or "").strip() or "http://localhost:5030"
+        api_key = str(cfg.get("api_key") or "").strip()
+
+        # Use a plain session (no automatic 429 retries) for queue processing.
+        # The shared api_clients session retries 429 responses with exponential
+        # backoff, which turns a fast "slot busy" into a long wait per search
+        # attempt. A plain session lets the caller's own retry loop control the
+        # cadence (mirrors the legacy queue_processor factory).
+        import requests as _requests
+        _plain_session = _requests.Session()
+
+        _slskd_client_cache = SlskdHttpClient(
+            web_url=web_url,
+            api_key=api_key,
+            http_session=_plain_session,
+            enabled=True,
+        )
+        return _slskd_client_cache
+    except Exception as exc:
+        logger.error("Error getting SlskdHttpClient: %s", exc)
+        return None

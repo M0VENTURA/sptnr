@@ -175,7 +175,12 @@ async def api_musicbrainz_batch_update():
 
 @mb_bp.route("/search", methods=["POST"])
 async def api_musicbrainz_search():
-    """Search MusicBrainz for releases + local cached missing releases."""
+    """Search MusicBrainz for releases + local cached missing releases.
+
+    When ``artist_only`` is True, the query is treated as an artist name and
+    we return release-groups BY that artist (query ``artist:"<name>"``) so the
+    modal can offer the artist's releases for download.
+    """
     payload = (await request.get_json(silent=True)) or {}
     query = str(payload.get("query", "")).strip()
     artist_only = bool(payload.get("artist_only", False))
@@ -184,8 +189,11 @@ async def api_musicbrainz_search():
     try:
         client = _get_mb_client()
         if artist_only:
-            raw = client.get("artist/", params={"query": f"artist:{query}", "limit": 10})
-            results = raw.get("artists", [])
+            raw = client.get("release-group/", params={
+                "query": f'artist:"{query.replace(chr(34), "")}"',
+                "limit": 50,
+            })
+            results = raw.get("release-groups", [])
         else:
             raw = client.get("release-group/", params={"query": f"releasegroup:{query}", "limit": 20})
             results = raw.get("release-groups", [])

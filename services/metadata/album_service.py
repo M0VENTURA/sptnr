@@ -394,7 +394,8 @@ def get_majority_artist(artist: str, album: str) -> dict:
             "SELECT artist FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
             (artist, album),
         )
-        counts = Counter(row[0] for row in cursor.fetchall() if row[0])
+        # Rows are RealDictRow (dict-like); never index by position.
+        counts = Counter(row.get("artist") for row in cursor.fetchall() if row.get("artist"))
         if not counts:
             return {"success": False, "error": "No tracks found"}
         top = counts.most_common(1)[0]

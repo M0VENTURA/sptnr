@@ -83,15 +83,20 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         cursor = db_connection.cursor()
         placeholder = "%s"
         cursor.execute(f"SELECT id, musicbrainz_artist_id FROM tracks WHERE artist = {placeholder}", (artist,))
-        to_fix = [row[0] for row in cursor.fetchall() if not (row[1] if row[1] is not None else '') or not MUSICBRAINZ_UUID_RE.match(str(row[1]).strip())]
+        # Rows are RealDictRow (dict-like); never index by position.
+        to_fix = [
+            row.get("id") for row in cursor.fetchall()
+            if not (row.get("musicbrainz_artist_id") if row.get("musicbrainz_artist_id") is not None else '')
+            or not MUSICBRAINZ_UUID_RE.match(str(row.get("musicbrainz_artist_id") or "").strip())
+        ]
 
         cursor.execute(f"SELECT id, artist, musicbrainz_artist_id FROM tracks WHERE artist LIKE {placeholder}", (f"{artist} %",))
         feat_re = re.compile(r"\s+(?:feat\.?|featuring|ft\.?)\s+", re.IGNORECASE)
         for row in cursor.fetchall():
-            if feat_re.search(row[1]):
-                existing = row[2] if row[2] is not None else ''
+            if feat_re.search(str(row.get("artist") or "")):
+                existing = row.get("musicbrainz_artist_id") if row.get("musicbrainz_artist_id") is not None else ''
                 if not existing or not MUSICBRAINZ_UUID_RE.match(str(existing).strip()):
-                    to_fix.append(row[0])
+                    to_fix.append(row.get("id"))
 
         to_fix = list(dict.fromkeys(to_fix))
         if to_fix:
