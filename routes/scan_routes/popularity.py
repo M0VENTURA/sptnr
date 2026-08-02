@@ -95,7 +95,7 @@ def _resolve_first_artist_for_letter(letter: str) -> str:
 
 
 @scans_bp.route("/scan/popularity", methods=["POST"])
-def scan_popularity_route():
+async def scan_popularity_route():
     """Run popularity, metadata, or singles scan modes."""
     mode = request.args.get("mode", "all")
     force_start = form_bool(request.args.get("force_start"))
@@ -153,16 +153,16 @@ def scan_popularity_route():
         )
         runtime_state.scan_process_popularity = {"thread": thread, "type": "popularity"}
 
-    flash("✅ Popularity-related scan started", "success")
+    await flash("✅ Popularity-related scan started", "success")
     return redirect(url_for("ui.dashboard"))
 
 
 @scans_bp.route("/scan/singles", methods=["POST"])
-def scan_singles():
+async def scan_singles():
     """Run single detection only."""
     with runtime_state.scan_lock:
         if is_process_alive(runtime_state.scan_process_singles):
-            flash("Single detection scan is already running", "warning")
+            await flash("Single detection scan is already running", "warning")
             return redirect(url_for("ui.dashboard"))
 
         progress_file = progress_path("singles_scan_progress.json")
@@ -174,7 +174,7 @@ def scan_singles():
         )
         runtime_state.scan_process_singles = {"thread": thread, "type": "singles"}
 
-    flash("✅ Singles detection scan started", "success")
+    await flash("✅ Singles detection scan started", "success")
     return redirect(url_for("ui.dashboard"))
 
 

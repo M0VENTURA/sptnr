@@ -379,6 +379,70 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                         log_unified(
                             f"Singles Detection - Detected {len(singles_detected)} single(s) in '{album}'"
                         )
+
+                    # ── Detailed per-track final output ───────────────────
+                    # Mirrors the legacy scanner's album summary: every track
+                    # is listed with its star rating, grouped into detected
+                    # singles, popular tracks, and the rest of the album.
+                    if album_results:
+                        detected_singles: list[tuple[str, int, str, str]] = []
+                        popular_songs: list[tuple[str, int, str, str]] = []
+                        rest_of_album: list[tuple[str, int, str, str]] = []
+                        for t in album_results:
+                            t_stars = int(t.get("stars") or 0)
+                            t_single = bool(t.get("is_single"))
+                            t_conf = str(t.get("single_confidence") or "low").lower()
+                            t_title = str(t.get("title") or "Unknown")
+                            t_artist = str(t.get("artist") or artist)
+                            t_score = float(t.get("popularity_score") or t.get("final_score") or 0)
+                            album_z = _compute_album_z(t_score, album_scores)
+                            artist_z = _compute_artist_z(t_score, artist_scores)
+
+                            reasons: list[str] = []
+                            try:
+                                sources = t.get("single_sources") or ""
+                                if isinstance(sources, str):
+                                    parsed = json.loads(sources) if sources.strip() else []
+                                else:
+                                    parsed = sources
+                                if isinstance(parsed, list):
+                                    reasons.append(", ".join(str(s) for s in parsed[:3]))
+                            except Exception:
+                                pass
+                            if t_single and t_conf == "high" and album_z:
+                                reasons.append(f"album-z-score: {album_z:.2f}")
+                            elif t_stars == 5 and album_z:
+                                reasons.append(f"album-z-score: {album_z:.2f}")
+                            elif album_z:
+                                reasons.append(f"album-z-score: {album_z:.2f}")
+                            reason_str = f" ({'; '.join(r for r in reasons if r)})" if reasons else ""
+
+                            if t_single and t_conf == "high":
+                                detected_singles.append((t_title, t_stars, t_artist, reason_str))
+                            elif t_stars == 5:
+                                popular_songs.append((t_title, t_stars, t_artist, reason_str))
+                            else:
+                                rest_of_album.append((t_title, t_stars, t_artist, reason_str))
+
+                        def _log_track_group(lines: list[tuple[str, int, str, str]]) -> None:
+                            for t_title, t_stars, t_artist, reason in lines:
+                                star_str = "★" * max(0, min(t_stars, 5)) + "☆" * max(0, 5 - min(t_stars, 5))
+                                log_unified(
+                                    f"Single Detection Scan - {star_str:<5} {t_artist} - {t_title}{reason}"
+                                )
+
+                        if detected_singles:
+                            log_unified(f"Single Detection Scan - ===== {album} - Detected Singles =====")
+                            _log_track_group(detected_singles)
+                        if popular_songs:
+                            log_unified(f"Single Detection Scan - ===== {album} - Popular Songs (Not Detected as Single) =====")
+                            _log_track_group(popular_songs)
+                        if rest_of_album:
+                            if detected_singles or popular_songs:
+                                log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
+                            else:
+                                log_unified(f"Single Detection Scan - ===== {album} - All Tracks =====")
+                            _log_track_group(rest_of_album)
                 except Exception as log_exc:
                     logger.debug("[finalise_stage] Album progress log failed: %s", log_exc)
 

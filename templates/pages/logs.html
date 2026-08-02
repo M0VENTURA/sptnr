@@ -59,15 +59,16 @@
     function loadLog() {
         var selected = logSelector.options[logSelector.selectedIndex];
         if (!selected) return;
-        var path = selected.getAttribute('data-path');
         var name = selected.value;
         currentLogLabel.textContent = name;
         logOutput.textContent = 'Loading...';
-        fetch('/api/unified-log?lines=500&verbose=1')
+        fetch('/api/log-file?name=' + encodeURIComponent(name) + '&lines=500')
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (data && data.lines) {
                     logOutput.textContent = data.lines.join('\n');
+                } else if (data && data.error) {
+                    logOutput.textContent = 'Error: ' + data.error;
                 } else {
                     logOutput.textContent = 'No log content available.';
                 }

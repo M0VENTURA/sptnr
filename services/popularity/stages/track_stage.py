@@ -653,5 +653,6 @@ def process_track(
         "listenbrainz_score": float(score_data.get("listenbrainz_score", 0)),
         "is_single": bool(update_payload.get("is_single", False)),
         "single_confidence": str(update_payload.get("single_confidence", "low")),
+        "single_sources": update_payload.get("single_sources", ""),
         "is_live": bool(track.get("is_live") or track.get("album_context_live")),
     }

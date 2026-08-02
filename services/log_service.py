@@ -85,6 +85,51 @@ def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None
         logger.error("[LOG] unified read error: %s", e)
         return {"error": str(e), "lines": []}, 500
 
+def resolve_log_file_path(name: str) -> str | None:
+    """Resolve a log filename to an absolute path, constrained to the log dir.
+
+    Only plain ``.log`` filenames (no path separators, no ``..``) are accepted
+    so the /logs page can never read arbitrary files on the host.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    if "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    if not name.endswith(".log"):
+        return None
+
+    log_dir = resolve_log_dir()
+    full = os.path.realpath(os.path.join(log_dir, name))
+    if not full.startswith(os.path.realpath(log_dir) + os.sep):
+        return None
+    if not os.path.isfile(full):
+        return None
+    return full
+
+
+def get_log_file_content(name: str, lines: int = 500):
+    """Return the tail of an arbitrary log file from the log directory.
+
+    Returns ``{"lines": [...]}`` or an error tuple.
+    """
+    try:
+        lines = max(1, min(int(lines), 2000))
+    except (TypeError, ValueError):
+        lines = 500
+
+    log_path = resolve_log_file_path(name)
+    if not log_path:
+        return {"error": f"Log not found: {name}", "lines": []}, 404
+
+    try:
+        log_lines = _read_last_lines(log_path, lines)
+        return {"lines": log_lines[-lines:]}
+    except Exception as exc:
+        logger.error("[LOG] read error for %s: %s", name, exc)
+        return {"error": str(exc), "lines": []}, 500
+
+
 async def download_log(log_type: str):
     if log_type == "search": return await _generate_search_log()
     if log_type == "queue": return await _generate_queue_log()
@@ -102,9 +147,11 @@ async def _generate_search_log():
     return Response("\n".join(lines) or "No search logs", mimetype="text/plain")
 
 async def _generate_queue_log():
-    from services.queue.queue_diagnostics_service import get_queue_events
+    from services.queue.queue_diagnostics_service import get_queue_events, _tail_queue_log
     events = get_queue_events(limit=500)
-    lines = [f"[{e.get('timestamp')}] {e.get('message')}" for e in events]
+    if not events:
+        events = _tail_queue_log(limit=500)
+    lines = [f"[{e.get('timestamp') or e.get('created_at')}] {e.get('message')}" for e in events]
     return Response("\n".join(lines) or "No queue logs", mimetype="text/plain")
 
 

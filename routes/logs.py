@@ -13,6 +13,7 @@ from quart import (
 
 from services.log_service import (
     get_unified_log,
+    get_log_file_content,
     download_log,
 )
 
@@ -20,6 +21,27 @@ logs_bp = Blueprint(
     "logs",
     __name__,
 )
+
+
+# =============================================================================
+# LOG FILE CONTENT (any file in the log dir)
+# =============================================================================
+
+@logs_bp.route("/api/log-file", methods=["GET"])
+def api_log_file():
+    """Return the tail of an arbitrary log file from the log directory.
+
+    Query params:
+        name  - log filename (e.g. ``info.log``, ``debug.log``)
+        lines - number of lines (1-2000, default 500)
+    """
+    name = request.args.get("name", "").strip()
+    lines = request.args.get("lines", "500")
+    result = get_log_file_content(name, lines)
+    if isinstance(result, tuple) and len(result) == 2:
+        payload, status = result
+        return jsonify(payload), status
+    return jsonify(result)
 
 
 # =============================================================================

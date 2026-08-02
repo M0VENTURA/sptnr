@@ -91,9 +91,9 @@ async def login():
 
 
 @ui_bp.route("/logout")
-def logout():
+async def logout():
     username = session.pop("username", None)
-    flash(f"Goodbye, {username}!", "info")
+    await flash(f"Goodbye, {username}!", "info")
     return redirect(url_for("ui.login"))
 
 

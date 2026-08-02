@@ -40,7 +40,7 @@ def api_get_navidrome_scan_status():
 
 
 @navidrome_bp.route("/scan/navidrome", methods=["POST"])
-def scan_navidrome():
+async def scan_navidrome():
     """Start the local Navidrome import-only scan pipeline."""
     mode = request.args.get("mode", "all")
     restart_requested = form_bool(request.args.get("restart"))
@@ -58,15 +58,15 @@ def scan_navidrome():
         )
         runtime_state.scan_process_navidrome = {"thread": thread, "type": "navidrome"}
 
-    flash("✅ Navidrome import started", "success")
+    await flash("✅ Navidrome import started", "success")
     return redirect(url_for("dashboard"))
 
 
 @navidrome_bp.route("/scan/stop-navidrome", methods=["POST"])
-def scan_stop_navidrome():
+async def scan_stop_navidrome():
     """Request a graceful stop for the local Navidrome import scan."""
     with runtime_state.scan_lock:
         request_scan_stop(progress_path("navidrome_scan_progress.json"), "navidrome_scan")
         runtime_state.scan_process_navidrome = None
-    flash("Navidrome sync scan stop requested", "info")
+    await flash("Navidrome sync scan stop requested", "info")
     return redirect(url_for("dashboard"))

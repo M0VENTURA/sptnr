@@ -122,6 +122,62 @@ def queue_processor_restart():
 # EVENTS
 # =============================================================================
 
+def _tail_queue_log(limit: int = 100) -> list[dict[str, Any]]:
+    """Read the tail of the queue worker's log file as a fallback.
+
+    The queue worker runs as a separate process, so the WebUI process's
+    in-memory event store is empty across restarts.  The worker logs at INFO
+    via the standard logger (which lands in ``info.log``/``unified_scan.log``),
+    so we surface those lines as queue events.
+    """
+    try:
+        from helpers.logging_config import resolve_log_dir
+        import glob as _glob
+
+        log_dir = resolve_log_dir()
+        candidates = []
+        for name in ("unified_scan.log", "info.log"):
+            base = os.path.join(log_dir, name)
+            candidates.extend(sorted(_glob.glob(base + "*"), reverse=True))
+
+        lines: list[str] = []
+        for path in candidates:
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    size = fh.tell()
+                    fh.seek(max(0, size - min(size, 64 * 1024)))
+                    chunk = fh.read()
+                for line in reversed(chunk.splitlines()):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if any(k in line for k in ("[QUEUE", "[QUEUE_WORKER", "download_queue", "Soulseek", "slskd", "[PIPELINE]")):
+                        lines.append(line)
+                    if len(lines) >= limit:
+                        break
+            except Exception:
+                continue
+            if len(lines) >= limit:
+                break
+
+        return [
+            {
+                "created_at": None,
+                "event_type": "info",
+                "message": line,
+                "item_id": None,
+                "details": {},
+            }
+            for line in lines[:limit]
+        ]
+    except Exception as exc:
+        logger.debug("[queue_diagnostics] Log-file fallback failed: %s", exc)
+        return []
+
+
 def queue_events(
     args: Mapping[str, Any],
 ):
@@ -142,6 +198,12 @@ def queue_events(
             event_type=event_type,
         )
 
+        # Fallback: when the in-memory store is empty (separate queue worker
+        # process or after restart), surface recent queue-related log lines
+        # so the viewer is never blank (legacy behaviour).
+        if not events:
+            events = _tail_queue_log(limit=limit)
+
         return _ok(
             events=events,
             total=len(events),
@@ -161,6 +223,14 @@ def queue_events(
 def queue_search_events(
     args: Mapping[str, Any],
 ):
+    """Return recent Soulseek search events.
+
+    Reads from the persistent ``slskd_search_logs`` table (written by
+    ``download_pipeline_service``/``log_slskd_search``), which is the
+    canonical source the diagnostics UI and ``log_service`` consume.  The
+    in-memory queue-event store only carries general queue events and is not
+    where search events are recorded.
+    """
     try:
         query = str(
             args.get("q")
@@ -172,15 +242,15 @@ def queue_search_events(
             args.get("limit"),
             100,
         )
+        limit = max(1, min(limit, 200))
 
-        events = get_queue_events(
-            limit=5000,
-        )
+        from db.repositories.search_logs import get_slskd_search_logs
+        logs = get_slskd_search_logs(limit=max(limit * 3, 50))
 
         matches = [
             event
-            for event in events
-            if query in str(event).lower()
+            for event in logs
+            if not query or query in str(event).lower()
         ]
 
         return _ok(

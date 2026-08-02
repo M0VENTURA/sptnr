@@ -32,13 +32,13 @@ from services.scanning.pipelines.essentia_pipeline import run_essentia_pipeline
 
 
 @scans_bp.route("/scan/mood", methods=["POST"])
-def scan_mood():
+async def scan_mood():
     """Deprecated AcousticBrainz route; forward to Essentia."""
-    flash(
+    await flash(
         "AcousticBrainz mood scan has been retired. Starting Essentia instead.",
         "info",
     )
-    return scan_essentia_mood()
+    return await scan_essentia_mood()
 
 
 @scans_bp.route("/scan/essentia-mood", methods=["POST"])
@@ -87,7 +87,7 @@ async def scan_essentia_mood():
 
     with scan_lock:
         if is_runtime_running("essentia_mood"):
-            flash("Essentia mood scan is already running", "warning")
+            await flash("Essentia mood scan is already running", "warning")
             return redirect(redirect_target)
 
         clear_stop_request(progress_file)
@@ -107,18 +107,18 @@ async def scan_essentia_mood():
         thread = run_async(_worker, daemon=False)
         set_runtime("essentia_mood", {"thread": thread, "type": "essentia_mood"})
 
-    flash("✅ Essentia scan started", "success")
+    await flash("✅ Essentia scan started", "success")
     return redirect(redirect_target)
 
 
 @scans_bp.route("/scan/stop-mood", methods=["POST"])
-def scan_stop_mood():
+async def scan_stop_mood():
     """Deprecated AcousticBrainz stop route; forward to Essentia stop."""
-    return scan_stop_essentia_mood()
+    return await scan_stop_essentia_mood()
 
 
 @scans_bp.route("/scan/stop-essentia-mood", methods=["POST"])
-def scan_stop_essentia_mood():
+async def scan_stop_essentia_mood():
     """Request a graceful Essentia scan stop."""
     request_scan_stop(
         get_scan_progress_path("essentia_mood_scan"),
@@ -127,5 +127,5 @@ def scan_stop_essentia_mood():
 
     clear_runtime("essentia_mood")
 
-    flash("Essentia mood scan stop requested", "info")
+    await flash("Essentia mood scan stop requested", "info")
     return redirect(url_for("ui.dashboard"))

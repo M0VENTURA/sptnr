@@ -42,7 +42,7 @@ async def scan_artist_custom():
     force = form_bool(form.get("force"))
 
     if not artist:
-        flash("Error: No artist name provided", "danger")
+        await flash("Error: No artist name provided", "danger")
         return redirect(url_for("dashboard"))
 
     mode_label = "Forced" if force else "Changes Only"
@@ -65,10 +65,10 @@ async def scan_artist_custom():
         return redirect(url_for("scans.scan_essentia_mood"), code=307)
 
     else:
-        flash(f"Unknown scan type: {scan_type}", "danger")
+        await flash(f"Unknown scan type: {scan_type}", "danger")
         return redirect_for_artist(artist)
 
-    flash(
+    await flash(
         f"{scan_type.title()} scan started for artist: {artist} ({mode_label})",
         "success",
     )
@@ -85,7 +85,7 @@ async def scan_album_custom():
     force = form_bool(form.get("force"))
 
     if not artist or not album:
-        flash("Error: Artist and album name are required", "danger")
+        await flash("Error: Artist and album name are required", "danger")
         return redirect(url_for("dashboard"))
 
     mode_label = "Forced" if force else "Changes Only"
@@ -109,10 +109,10 @@ async def scan_album_custom():
         return redirect(url_for("scans.scan_essentia_mood"), code=307)
 
     else:
-        flash(f"Unknown scan type: {scan_type}", "danger")
+        await flash(f"Unknown scan type: {scan_type}", "danger")
         return redirect_for_album(artist, album)
 
-    flash(
+    await flash(
         f"{scan_type.title()} scan started for album '{album}' by {artist} ({mode_label})",
         "success",
     )
@@ -123,7 +123,7 @@ async def scan_album_custom():
     "/track/<path:artist>/<path:album>/<path:track_id>/rescan",
     methods=["POST"],
 )
-def scan_track_rescan(artist, album, track_id):
+async def scan_track_rescan(artist, album, track_id):
     """
     Trigger a track rescan.
 
@@ -136,5 +136,5 @@ def scan_track_rescan(artist, album, track_id):
 
     run_async(run_artist_pipeline, artist, False)
 
-    flash(f"Track rescan started for {artist}", "info")
+    await flash(f"Track rescan started for {artist}", "info")
     return redirect(url_for("ui.track_detail", track_id=track_id))

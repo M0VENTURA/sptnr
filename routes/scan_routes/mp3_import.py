@@ -42,7 +42,7 @@ async def scan_mp3_import():
 
     with scan_lock:
         if is_runtime_running("mp3_import"):
-            flash("MP3 metadata import scan is already running", "warning")
+            await flash("MP3 metadata import scan is already running", "warning")
             return redirect(url_for("ui.dashboard"))
 
         clear_stop_request(progress_file)
@@ -59,12 +59,12 @@ async def scan_mp3_import():
         thread = run_async(_worker)
         set_runtime("mp3_import", {"thread": thread, "type": "mp3_import"})
 
-    flash("MP3 metadata import scan started", "success")
+    await flash("MP3 metadata import scan started", "success")
     return redirect(url_for("ui.dashboard"))
 
 
 @scans_bp.route("/scan/stop-mp3-import", methods=["POST"])
-def scan_stop_mp3_import():
+async def scan_stop_mp3_import():
     """Request a graceful MP3 import stop."""
     request_scan_stop(
         get_scan_progress_path("mp3_import"),
@@ -73,5 +73,5 @@ def scan_stop_mp3_import():
 
     clear_runtime("mp3_import")
 
-    flash("MP3 import scan stop requested", "info")
+    await flash("MP3 import scan stop requested", "info")
     return redirect(url_for("dashboard"))
