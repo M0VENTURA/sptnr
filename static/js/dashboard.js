@@ -44,12 +44,35 @@ function escapeHtml(str) {
   } catch (_) {}
 })();
 
-async function startPopularityScan(m) {
-  await postJSON("/api/popularity/run", { mode: m || "popularity" });
+async function startPopularityScan(m, force) {
+  await postJSON("/api/popularity/run", { mode: m || "popularity", force: !!force });
 }
 
 async function stopPopularityScan() {
   await fetch("/scan/stop-popularity", { method: "POST" });
+}
+
+// Runs the popularity scan selected in the dashboard selector with the
+// current Force checkbox state.  No scan starts until Run is pressed.
+async function runDashboardPopularityScan() {
+  const mode = document.getElementById("popScanSelector")?.value || "popularity";
+  const force = !!document.getElementById("popScanForce")?.checked;
+  const btn = document.getElementById("popScanRunBtn");
+  const original = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Starting…';
+  }
+  try {
+    await startPopularityScan(mode, force);
+  } catch (e) {
+    console.error("Error starting popularity scan:", e);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = original;
+    }
+  }
 }
 
 async function pollPopularityStatus() {

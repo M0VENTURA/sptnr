@@ -278,19 +278,28 @@ def process_track(
             # Skip API calls if fresh-enough data is already in the DB.
             # Cache duration varies by track age: older tracks change less.
             from datetime import datetime, timezone
+
+            def _as_utc(value):
+                # DB TIMESTAMP columns return NAIVE datetimes; ``now_ts`` is
+                # UTC-aware.  Coerce stored values to aware-UTC so the
+                # subtraction never mixes offset-naive and offset-aware.
+                if isinstance(value, datetime):
+                    if value.tzinfo is None:
+                        return value.replace(tzinfo=timezone.utc)
+                    return value.astimezone(timezone.utc)
+                return None
+
             now_ts = datetime.now(timezone.utc)
             _track_year = effective_track.get("year") or effective_track.get("release_year")
             _cache_ttl = get_cache_duration_hours(_track_year)
-            last_lf_ts = effective_track.get("lastfm_last_updated")
-            last_mb_ts = effective_track.get("musicbrainz_last_updated")
+            last_lf_ts = _as_utc(effective_track.get("lastfm_last_updated"))
+            last_mb_ts = _as_utc(effective_track.get("musicbrainz_last_updated"))
             has_fresh_lf = (
-                last_lf_ts
-                and isinstance(last_lf_ts, datetime)
+                last_lf_ts is not None
                 and (now_ts - last_lf_ts).total_seconds() < _cache_ttl * 3600
             )
             has_fresh_mb = (
-                last_mb_ts
-                and isinstance(last_mb_ts, datetime)
+                last_mb_ts is not None
                 and (now_ts - last_mb_ts).total_seconds() < _cache_ttl * 3600
             )
 
@@ -367,10 +376,9 @@ def process_track(
                 # --- ListenBrainz ---
                 listenbrainz_listens = _as_int(effective_track.get("listenbrainz_listens") or 0)
                 listenbrainz_users = _as_int(effective_track.get("listenbrainz_users") or 0)
-                last_lb_ts = effective_track.get("listenbrainz_last_updated")
+                last_lb_ts = _as_utc(effective_track.get("listenbrainz_last_updated"))
                 has_fresh_lb = (
-                    last_lb_ts
-                    and isinstance(last_lb_ts, datetime)
+                    last_lb_ts is not None
                     and (now_ts - last_lb_ts).total_seconds() < _cache_ttl * 3600
                 )
                 if not has_fresh_lb:

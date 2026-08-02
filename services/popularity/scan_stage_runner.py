@@ -370,7 +370,12 @@ def run_scan(
 
     update(stage="finalising", progress=98, message="Finalising popularity scan...", processed=total_albums, total_items=total_albums)
 
-    finalise_scan(results=results, options=options)
+    # Star-rating assignment, Navidrome rating sync and NSP playlist creation
+    # only run on full / singles passes (legacy parity).  Metadata-only and
+    # popularity-only passes must NOT assign star ratings — scores/singles
+    # haven't been computed yet, so every track would incorrectly get 1★.
+    if not metadata_only and not popularity_only:
+        finalise_scan(results=results, options=options)
 
     update(stage="complete", progress=100, message="Popularity scan complete.", processed=total_albums, total_items=total_albums)
 

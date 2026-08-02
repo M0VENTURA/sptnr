@@ -134,11 +134,18 @@
                     </div>
                 </div>
                 <div class="card-body py-2">
-                    <div class="d-flex gap-1 flex-wrap mb-1">
-                        <button onclick="startPopularityScan('popularity')" class="btn btn-primary btn-sm py-0 px-2"><i class="bi bi-play-fill"></i> Run</button>
-                        <button onclick="startPopularityScan('singles')" class="btn btn-outline-primary btn-sm py-0 px-2">Singles</button>
-                        <button onclick="startPopularityScan('metadata')" class="btn btn-outline-primary btn-sm py-0 px-2">Metadata</button>
-                        <button onclick="startPopularityScan('all')" class="btn btn-outline-primary btn-sm py-0 px-2">All</button>
+                    <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
+                        <select id="popScanSelector" class="form-select form-select-sm" style="min-width: 130px; width: auto;" title="Select popularity scan type">
+                            <option value="all">All</option>
+                            <option value="popularity">Popularity</option>
+                            <option value="singles">Singles</option>
+                            <option value="metadata">Metadata</option>
+                        </select>
+                        <div class="form-check form-check-inline mb-0" title="Force rescan (ignore album-skip/cache)">
+                            <input class="form-check-input" type="checkbox" id="popScanForce" name="force" value="1">
+                            <label class="form-check-label small" for="popScanForce">Forced</label>
+                        </div>
+                        <button id="popScanRunBtn" onclick="runDashboardPopularityScan()" class="btn btn-primary btn-sm py-0 px-2"><i class="bi bi-play-fill"></i> Run</button>
                     </div>
                     <div><span id="pop-status" class="text-muted small">Idle</span></div>
                 </div>

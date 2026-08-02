@@ -250,6 +250,8 @@ async def api_popularity_run_compat():
     elif raw.get("singles_only"):
         mode = "singles"
 
+    force = bool(params.force or raw.get("force", False))
+
     # Record "started" immediately so the dashboard sees it right away
     from services.scanning.scan_history_service import record_scan
     record_scan(mode, "started", message=f"{mode} scan started", artist="_SCAN_SESSION_", album=mode)
@@ -263,7 +265,7 @@ async def api_popularity_run_compat():
 
         def _worker():
             try:
-                run_popularity_mode(mode=mode)
+                run_popularity_mode(mode=mode, force_rescan=force)
             finally:
                 clear_runtime("popularity")
                 runtime_state.scan_process_popularity = None
@@ -275,6 +277,7 @@ async def api_popularity_run_compat():
     return jsonify({
         "success": True,
         "message": f"{mode.capitalize()} scan started",
+        "forced": force,
     })
 
 
