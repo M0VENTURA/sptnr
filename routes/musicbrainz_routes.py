@@ -356,11 +356,14 @@ async def api_musicbrainz_search():
                 parts.append(f'date:{_esc(year)}')
 
             if not parts:
-                # Legacy free-text query path.
+                # Legacy free-text query path.  The old system sent the raw
+                # free-text query (no field prefix) so MusicBrainz matches it
+                # across title AND artist — "Mudvayne" finds releases BY
+                # Mudvayne, not just releases whose title contains "Mudvayne".
                 if not query:
                     return jsonify({"error": "query required"}), 400
                 parts.append(
-                    f'artist:"{_esc(query)}"' if artist_only else f'releasegroup:{query}'
+                    f'artist:"{_esc(query)}"' if artist_only else query
                 )
 
             mb_query = " AND ".join(parts)

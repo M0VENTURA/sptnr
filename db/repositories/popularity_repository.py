@@ -102,15 +102,46 @@ def coerce_track_value_for_pg_type(column: str, value, pg_type: str):
     return value
 
 
+def _is_transient_db_error(exc: Exception) -> bool:
+    """Return True for connection-level DB errors worth retrying.
+
+    PostgreSQL can drop pooled connections (restart, idle timeout, network
+    blip).  ``pool_pre_ping`` only helps on fresh checkouts; a session already
+    holding a stale connection fails at commit with ``OperationalError``.
+    """
+    try:
+        from sqlalchemy.exc import OperationalError as SAOperationalError
+        from sqlalchemy.exc import InterfaceError as SAInterfaceError
+        if isinstance(exc, (SAOperationalError, SAInterfaceError)):
+            return True
+    except Exception:
+        pass
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        cls_name = type(orig).__name__.lower()
+        if any(k in cls_name for k in ("operationalerror", "interfaceerror", "connectionerror")):
+            return True
+    return False
+
+
 def run_with_db_lock_retry(operation):
+    """Run ``operation`` with retries for lock contention AND transient DB errors."""
     for attempt in range(DB_LOCK_MAX_RETRIES):
         try:
             return operation()
         except Exception as exc:
-            if "lock" in str(exc).lower() and attempt < DB_LOCK_MAX_RETRIES - 1:
-                time.sleep(DB_LOCK_BASE_DELAY_SECONDS * (attempt + 1))
-                continue
-            raise
+            transient = _is_transient_db_error(exc) or "lock" in str(exc).lower()
+            if not transient or attempt >= DB_LOCK_MAX_RETRIES - 1:
+                raise
+            # Drop pooled connections so the next attempt uses fresh ones.
+            try:
+                from db.engine import get_engine
+                get_engine().dispose()
+            except Exception:
+                pass
+            time.sleep(DB_LOCK_BASE_DELAY_SECONDS * (attempt + 1))
+            continue
+    raise RuntimeError("retry loop exhausted")
 
 
 def save_to_db(track_data: dict) -> bool:

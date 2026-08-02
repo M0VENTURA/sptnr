@@ -890,21 +890,47 @@ window.addEventListener('beforeunload', () => {
 let mbDownloadRefreshInterval = null;
 
 function performMbSearch() {
-    const query = document.getElementById('mbSearchInput').value.trim();
+    // Read the shared modal's structured fields when present, falling back to
+    // the downloads panel's single free-text input.  Each field maps to its
+    // MusicBrainz index on the backend (artist / releasegroup / recording / date).
+    const artist = document.getElementById('mbSearchArtist')?.value?.trim() || '';
+    const album  = document.getElementById('mbSearchAlbum')?.value?.trim() || '';
+    const track  = document.getElementById('mbSearchTrack')?.value?.trim() || '';
+    const year   = document.getElementById('mbSearchYear')?.value?.trim() || '';
+    const singleInput = document.getElementById('mbSearchInput')?.value?.trim() || '';
+
+    const query = [artist, album, track, year].filter(Boolean).join(' ') || singleInput;
     if (!query) return;
-    
+
+    // Artist-only detection (only the artist field filled → search releases
+    // BY the artist, not releases whose title matches the artist name).
+    let artistOnly = false;
+    if (artist && !album && !track && !year) {
+        artistOnly = true;
+    }
+    if (query.toLowerCase().startsWith('artist:')) {
+        artistOnly = true;
+        artist = query.substring(7).trim();
+    }
+
+    const payload = { artist, album, track, year };
+    if (!artist && !album && !track && !year) {
+        payload.query = query; // legacy single free-text input
+    }
+    if (artistOnly) payload.artist_only = true;
+
     document.getElementById('mbLoading').style.display = 'block';
     document.getElementById('mbResults').innerHTML = '';
-    
+
     fetch('/api/musicbrainz/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query })
+        body: JSON.stringify(payload)
     })
     .then(response => response.json())
     .then(data => {
         document.getElementById('mbLoading').style.display = 'none';
-        
+
         if (data.error) {
             document.getElementById('mbResults').innerHTML = `
                 <div class="alert alert-danger">
@@ -913,9 +939,18 @@ function performMbSearch() {
             `;
             return;
         }
-        
-        const releases = data.releases || [];
-        
+
+        let releases = data.releases || [];
+
+        // Apply the release-type dropdown filter (modal field), if present.
+        const releaseType = document.getElementById('mbReleaseType')?.value || '';
+        if (releaseType) {
+            releases = releases.filter(function(r) {
+                return (r.primary_type && r.primary_type.toLowerCase() === releaseType.toLowerCase()) ||
+                       (r.category && r.category.toLowerCase() === releaseType.toLowerCase());
+            });
+        }
+
         if (releases.length === 0) {
             document.getElementById('mbResults').innerHTML = `
                 <div class="alert alert-info">
@@ -924,13 +959,13 @@ function performMbSearch() {
             `;
             return;
         }
-        
+
         let html = '<div class="list-group">';
         releases.forEach((release, index) => {
             const coverArt = release.cover_art_url || 'https://via.placeholder.com/100x100?text=No+Art';
             const releaseDate = release.first_release_date || 'Unknown';
             const category = release.category || release.primary_type || 'Release';
-            const artist = release.artist || release['artist-credit']?.[0]?.name || 'Unknown Artist';
+            const artistName = release.artist || release['artist-credit']?.[0]?.name || 'Unknown Artist';
             const source = release.source || 'musicbrainz';
             const sourceBadge = source === 'local' 
                 ? '<span class="badge bg-success"><i class="bi bi-database"></i> Cached</span>'
@@ -942,7 +977,7 @@ function performMbSearch() {
                         <img src="${coverArt}" class="rounded" style="width: 80px; height: 80px; object-fit: cover;" alt="${release.title}">
                         <div class="flex-grow-1">
                             <h6 class="mb-1">${release.title}</h6>
-                            <p class="mb-1 text-muted small">${artist}</p>
+                            <p class="mb-1 text-muted small">${artistName}</p>
                             <div class="d-flex gap-2 align-items-center mb-2">
                                 <span class="badge bg-secondary">${category}</span>
                                 ${sourceBadge}
@@ -950,10 +985,10 @@ function performMbSearch() {
                             </div>
                         </div>
                         <div class="btn-group" role="group">
-                            <button class="btn btn-sm btn-success" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'slskd')" title="Download via Soulseek">
+                            <button class="btn btn-sm btn-success" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artistName)}', 'slskd')" title="Download via Soulseek">
                                 <i class="bi bi-music-note-list"></i> Soulseek
                             </button>
-                            <button class="btn btn-sm btn-primary" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'qbittorrent')" title="Download via qBittorrent">
+                            <button class="btn btn-sm btn-primary" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artistName)}', 'qbittorrent')" title="Download via qBittorrent">
                                 <i class="bi bi-cloud-download"></i> qBittorrent
                             </button>
                         </div>
