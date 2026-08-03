@@ -159,11 +159,12 @@ def _assign_stars(
             artist_z >= STAR_5_ARTIST_Z
             or album_z >= STAR_5_ALBUM_Z
             or (
-                # Listener evidence alone can justify 5★, but never for a
-                # track below its own album's average — a negative album
-                # z-score means the blended popularity disagrees with the
-                # listener outlier signal.
-                album_z >= 0
+                # Listener evidence can justify 5★. A negative album z is
+                # only trusted to veto it when Last.fm data is present and
+                # disagrees — when Last.fm is unreliable (missing/weak, and
+                # the LF-weighted blend is therefore distorted), the
+                # ListenBrainz counts are the authoritative signal.
+                (album_z >= 0 or _is_lastfm_unreliable(lf_listeners, lb_listens))
                 and (lf_z >= LISTENER_5STAR_Z or lb_z >= LISTENER_5STAR_Z)
             )
         ):
@@ -206,14 +207,18 @@ def _assign_stars(
     if album_z >= POPULARITY_5STAR_Z and not is_live:
         return 5
 
-    # LB rescue: Last.fm unreliable but ListenBrainz percentile is strong
-    # and the track is a genuine standout within its own album. Top-25%
-    # catalogue position alone is not enough for 5★ (legacy parity).
+    # LB rescue: Last.fm unreliable but ListenBrainz is strong — the track is
+    # a standout within its own album either by blended score (album z ≥ 0.8)
+    # or by raw LB listen z (≥ 1.0, log-scaled). The LB z covers tracks like
+    # "Blackball"/"Beheaded"/"Jennifer Lost the War" where the LF-weighted
+    # blend ranks them last but ListenBrainz shows them as the album's most
+    # listened tracks — with Last.fm missing, the blend is distorted and the
+    # LB counts are the authoritative signal.
     if (
         not is_live
         and _is_lastfm_unreliable(lf_listeners, lb_listens)
         and lb_percentile >= LB_UNRELIABLE_5STAR
-        and album_z >= STAR_4_ALBUM_Z
+        and (album_z >= STAR_4_ALBUM_Z or lb_z >= LISTENER_5STAR_Z)
     ):
         return 5
 

@@ -37,6 +37,7 @@ from helpers.normalization_service import (
     normalize_title_for_lookup,
     normalize_title_for_lucene_query,
     strip_featured_artist,
+    strip_single_release_suffix,
 )
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,7 @@ class MusicBrainzService:
                 return True
 
             mbid, _confidence = self.get_suggested_mbid(title, artist)
-            if mbid and self._recording_has_single_release(mbid):
+            if mbid and self._recording_has_single_release(mbid, title=title):
                 return True
 
             query_title = normalize_title_for_lucene_query(title)
