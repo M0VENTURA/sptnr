@@ -236,6 +236,7 @@ function buildConfigObject() {
         artist_min_tracks: parseInt(getValue('sd_artist_min_tracks', '10')) || 10,
         popularity_5star_z_threshold: parseFloat(getValue('popularity_5star_z_threshold', '2.0')) || 2.0,
         lb_unreliable_5star_threshold: parseFloat(getValue('lb_unreliable_5star_threshold', '0.50')) || 0.50,
+        listener_5star_z_threshold: parseFloat(getValue('listener_5star_z_threshold', '1.0')) || 1.0,
         single_boost: parseFloat(getValue('single_boost', '1.15')) || 1.15,
         metadata_score_floor: parseFloat(getValue('metadata_score_floor', '5.0')) || 5.0,
         live_weight_penalty: parseFloat(getValue('live_weight_penalty', '0.5')) || 0.5,

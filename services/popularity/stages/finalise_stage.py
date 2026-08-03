@@ -41,6 +41,10 @@ STAR_4_ARTIST_PCT = STANDOUT_CONFIG.get("star_4", {}).get("artist_pct", 0.20)
 STAR_3_ALBUM_Z = STANDOUT_CONFIG.get("star_3", {}).get("album_z", 0.0)
 POPULARITY_5STAR_Z = STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
 LB_UNRELIABLE_5STAR = STANDOUT_CONFIG.get("lb_unreliable_5star_threshold", 0.50)
+# Log-scaled listener z-score (within the album) that qualifies a confirmed
+# single as a listener standout — the raw Last.fm/ListenBrainz evidence the
+# blended popularity score compresses.
+LISTENER_5STAR_Z = STANDOUT_CONFIG.get("listener_5star_z_threshold", 1.0)
 UNDERPERFORMING_THRESHOLD = 0.6
 # Percentile-based elite paths need a statistically meaningful catalogue —
 # "top 10%" of a 5-track artist is a single track and means nothing. Below
@@ -80,6 +84,23 @@ def _is_lastfm_unreliable(lastfm_listeners: float, lb_listens: float) -> bool:
     return int(lastfm_listeners) <= 20 and int(lb_listens) >= 75
 
 
+def _listener_z(count: float, counts: list[float]) -> float:
+    """Log-scaled z-score of a track's listener count within its album.
+
+    Listener counts are heavily right-skewed (one hit dominates), so the
+    z-score is computed over ``log1p``-transformed values. This is the "raw"
+    standout signal from Last.fm/ListenBrainz that the blended popularity
+    score compresses — a value >= 1.0 means the track is a clear listener
+    outlier relative to its own album.
+    """
+    logs = [math.log1p(float(c)) for c in counts if float(c) > 0]
+    if len(logs) < 3 or not any(logs):
+        return 0.0
+    mu = mean(logs)
+    sigma = stdev(logs) if len(logs) > 1 else 1.0
+    return (math.log1p(float(count)) - mu) / sigma
+
+
 # ---------------------------------------------------------------------------
 # Star rating assignment
 # ---------------------------------------------------------------------------
@@ -88,6 +109,8 @@ def _assign_stars(
     track: dict[str, Any],
     album_scores: list[float],
     artist_scores: list[float],
+    album_lf_listeners: list[float] | None = None,
+    album_lb_listens: list[float] | None = None,
 ) -> int:
     """Assign 1–5 star rating to a single track."""
     score = float(track.get("popularity_score") or 0)
@@ -105,6 +128,8 @@ def _assign_stars(
     album_z = _compute_album_z(score, album_scores)
     artist_z = _compute_artist_z(score, artist_scores)
     artist_catalogue_size = len(artist_scores)
+    lf_z = _listener_z(lf_listeners, album_lf_listeners or [])
+    lb_z = _listener_z(lb_listens, album_lb_listens or [])
     # Elite = top of the artist catalogue AND a standout within its own album.
     # Without the album check, the least-bad track of a weak album would earn
     # 5★ purely from percentile. Percentile paths also need a meaningful
@@ -126,10 +151,17 @@ def _assign_stars(
             # Live singles reach 5★ only when elite/top-catalogue.
             if is_elite:
                 return 5
-        elif artist_z >= STAR_5_ARTIST_Z or album_z >= STAR_5_ALBUM_Z:
-            # 5★ is reserved for genuine popularity standouts — external
-            # confirmation alone (MB/Discogs) earns the 4★ floor below, not
-            # 5★. "Top 25% of catalogue" is deliberately NOT enough.
+        elif (
+            artist_z >= STAR_5_ARTIST_Z
+            or album_z >= STAR_5_ALBUM_Z
+            or lf_z >= LISTENER_5STAR_Z
+            or lb_z >= LISTENER_5STAR_Z
+        ):
+            # 5★ = genuine standout: a z-score outlier within the album, or a
+            # log-scaled listener outlier on Last.fm/ListenBrainz (the blend
+            # compresses raw listener differences, so the listener z is the
+            # direct evidence from the source data). External confirmation
+            # alone earns the 4★ floor below, not 5★.
             return 5
 
     # 4★/5★: medium-confidence single — 5★ only for genuine z-score
@@ -352,6 +384,10 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
 
             for album, album_results in by_album.items():
                 album_scores = [float(r.get("popularity_score") or 0) for r in album_results if float(r.get("popularity_score") or 0) > 0]
+                # Raw listener counts per album track — used to detect
+                # listener standouts (log-scaled z) for confirmed singles.
+                album_lf_listeners = [float(r.get("lastfm_listeners") or 0) for r in album_results]
+                album_lb_listens = [float(r.get("listenbrainz_listens") or 0) for r in album_results]
                 try:
                     cursor.execute(
                         "SELECT final_score FROM tracks "
@@ -365,7 +401,13 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
 
                 for track in album_results:
                     # Assign star rating
-                    stars = _assign_stars(track, album_scores, artist_scores)
+                    stars = _assign_stars(
+                        track,
+                        album_scores,
+                        artist_scores,
+                        album_lf_listeners,
+                        album_lb_listens,
+                    )
                     track["stars"] = stars
                     total_star_ratings += 1
 

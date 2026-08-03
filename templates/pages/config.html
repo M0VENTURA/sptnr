@@ -945,6 +945,11 @@
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="lb_unreliable_5star_threshold" placeholder="0.50" value="{{ config.get('single_detection', {}).get('lb_unreliable_5star_threshold', 0.50) }}">
           <small class="form-text text-muted">Min ListenBrainz percentile for the Last.fm-unreliable 5★ rescue. Default: <strong>0.50</strong></small>
         </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Listener Standout 5★ Z</label>
+          <input type="number" step="0.1" min="0.1" max="5" class="form-control form-control-sm" id="listener_5star_z_threshold" placeholder="1.0" value="{{ config.get('single_detection', {}).get('listener_5star_z_threshold', 1.0) }}">
+          <small class="form-text text-muted">Log-scaled Last.fm/ListenBrainz listener z-score within the album required for a confirmed single to earn 5★. Default: <strong>1.0</strong></small>
+        </div>
       </div>
     </div>
   </div>
