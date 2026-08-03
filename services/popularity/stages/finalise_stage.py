@@ -39,6 +39,10 @@ STAR_4_ALBUM_Z = STANDOUT_CONFIG.get("star_4", {}).get("album_z", 0.8)
 STAR_4_ARTIST_Z = STANDOUT_CONFIG.get("star_4", {}).get("artist_z", 1.0)
 STAR_4_ARTIST_PCT = STANDOUT_CONFIG.get("star_4", {}).get("artist_pct", 0.20)
 STAR_3_ALBUM_Z = STANDOUT_CONFIG.get("star_3", {}).get("album_z", 0.0)
+# Tracks clearly below the album average (album z below this floor) get 1★ —
+# without it, every track with a valid score defaulted to 2★ and 1★ was
+# unreachable.
+STAR_1_ALBUM_Z = STANDOUT_CONFIG.get("star_1", {}).get("album_z", -1.0)
 POPULARITY_5STAR_Z = STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
 LB_UNRELIABLE_5STAR = STANDOUT_CONFIG.get("lb_unreliable_5star_threshold", 0.50)
 # Log-scaled listener z-score (within the album) that qualifies a confirmed
@@ -154,8 +158,14 @@ def _assign_stars(
         elif (
             artist_z >= STAR_5_ARTIST_Z
             or album_z >= STAR_5_ALBUM_Z
-            or lf_z >= LISTENER_5STAR_Z
-            or lb_z >= LISTENER_5STAR_Z
+            or (
+                # Listener evidence alone can justify 5★, but never for a
+                # track below its own album's average — a negative album
+                # z-score means the blended popularity disagrees with the
+                # listener outlier signal.
+                album_z >= 0
+                and (lf_z >= LISTENER_5STAR_Z or lb_z >= LISTENER_5STAR_Z)
+            )
         ):
             # 5★ = genuine standout: a z-score outlier within the album, or a
             # log-scaled listener outlier on Last.fm/ListenBrainz (the blend
@@ -185,6 +195,13 @@ def _assign_stars(
     if _is_top_artist_percentile(score, artist_scores, STAR_4_ARTIST_PCT):
         return 4
 
+    # 4★: clearly above the album average even when the artist catalogue is
+    # too large to crack the top-20% percentile — album-relative standing is
+    # a first-class signal (an album standout like "Demons" at z=1.17 should
+    # not sit at 3★ merely because the artist has hundreds of tracks).
+    if album_z >= STAR_4_ALBUM_Z and score > 0:
+        return 4
+
     # Popularity-only 5★ (very high z-score, not live)
     if album_z >= POPULARITY_5STAR_Z and not is_live:
         return 5
@@ -204,7 +221,11 @@ def _assign_stars(
     if album_z >= STAR_3_ALBUM_Z and score > 0:
         return 3
 
-    # 2★: has a score but not above average
+    # 1★: clearly below album average
+    if album_z < STAR_1_ALBUM_Z and score > 0:
+        return 1
+
+    # 2★: has a score, around album average
     if score > 0:
         return 2
 

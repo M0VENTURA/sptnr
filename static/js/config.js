@@ -252,6 +252,9 @@ function buildConfigObject() {
         },
         star_3: {
           album_z: parseFloat(getValue('star3_album_z', '0.0')) || 0.0
+        },
+        star_1: {
+          album_z: parseFloat(getValue('star1_album_z', '-1.0')) || -1.0
         }
       }
     ),

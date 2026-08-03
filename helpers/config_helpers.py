@@ -622,7 +622,7 @@ def get_standout_config() -> dict[str, Any]:
         "star_4": {"album_z": 0.8, "artist_z": 1.0, "artist_pct": 0.20},
         "star_3": {"album_z": 0.0},
         "star_2": {"album_mean": True},
-        "star_1": {"default": True},
+        "star_1": {"album_z": -1.0, "default": True},
     }
 
     # Merge user config with defaults
@@ -635,7 +635,7 @@ def get_standout_config() -> dict[str, Any]:
         if key in sd_config:
             result[key] = sd_config[key]
 
-    for star_key in ("star_5", "star_4", "star_3", "star_2"):
+    for star_key in ("star_5", "star_4", "star_3", "star_2", "star_1"):
         if star_key in sd_config and isinstance(sd_config[star_key], dict):
             result.setdefault(star_key, {}).update(sd_config[star_key])
 

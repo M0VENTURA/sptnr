@@ -921,6 +921,15 @@
             </div>
           </div>
         </div>
+        <div class="col-12 col-md-4">
+          <div class="border rounded p-3 h-100">
+            <h6 class="text-muted mb-2">⭐ 1★</h6>
+            <div class="row g-2">
+              <div class="col-6"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="-5" max="0" class="form-control form-control-sm" id="star1_album_z" placeholder="-1.0" value="{{ config.get('single_detection', {}).get('star_1', {}).get('album_z', -1.0) }}"></div>
+              <div class="col-6 d-flex align-items-end"><small class="form-text text-muted">Below this album z → 1★</small></div>
+            </div>
+          </div>
+        </div>
       </div>
       <hr class="my-3">
       <h6 class="mb-3">Scoring Adjustments</h6>
