@@ -446,8 +446,28 @@ def process_queue_item(item: dict[str, Any]) -> dict[str, Any]:
             process_queue_item as _pipeline_process,
         )
         from api_clients.slskd_http import get_slskd_client
+        from services.downloads.slskd_service import SlskdService
 
-        slskd = get_slskd_client()
+        # get_slskd_client() returns the raw HTTP client; the pipeline needs
+        # the higher-level SlskdService (search_and_filter/download_file).
+        http_client = get_slskd_client()
+        if http_client is None:
+            logger.warning(
+                "Soulseek unavailable — marking queue item %s as failed",
+                queue_id,
+            )
+            update_queue_item(
+                queue_id,
+                status="failed",
+                failure_reason="soulseek_unavailable",
+            )
+            return {
+                "success": False,
+                "error": "soulseek_unavailable",
+                "queue_id": queue_id,
+            }
+
+        slskd = SlskdService(http_client=http_client)
         result = _pipeline_process(item, slskd)
         result.setdefault("queue_id", queue_id)
         return result

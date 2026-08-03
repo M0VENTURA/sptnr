@@ -301,6 +301,7 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
         # (album version vs single version being separate MB recordings).
         if artist_mbid and hasattr(mb_client, "search_release_groups"):
             try:
+                from difflib import SequenceMatcher as _SM
                 target = normalize_title_for_lookup(strip_single_release_suffix(title) or title)
                 candidates: list[dict] = []
                 for _pt in ("single", "ep"):
@@ -312,7 +313,10 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                         continue
                 for group in candidates:
                     rg_title = str(group.get("title") or "")
-                    if normalize_title_for_lookup(strip_single_release_suffix(rg_title) or rg_title) == target:
+                    norm_rg = normalize_title_for_lookup(strip_single_release_suffix(rg_title) or rg_title)
+                    # Exact normalized equality first, then fuzzy fallback for
+                    # residual punctuation/case drift between sources.
+                    if norm_rg == target or _SM(None, norm_rg, target).ratio() >= 0.85:
                         matched = True
                         break
             except Exception as exc:

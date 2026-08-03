@@ -32,8 +32,8 @@ def api_queue_cleanup():
 
 
 @queue_cleanup_bp.route("/api/queue/reset-moving", methods=["POST"])
-def api_queue_reset_moving():
-    payload = request.get_json(silent=True) or {}
+async def api_queue_reset_moving():
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_reset_moving(payload))
 
 
@@ -43,24 +43,24 @@ def api_queue_cleanup_copied_sources():
 
 
 @queue_cleanup_bp.route("/api/queue/cleanup-orphaned", methods=["POST"])
-def api_queue_cleanup_orphaned():
-    payload = request.get_json(silent=True) or {}
+async def api_queue_cleanup_orphaned():
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_cleanup_orphaned(payload))
 
 
 @queue_cleanup_bp.route("/api/queue/verify-and-prune", methods=["POST"])
-def api_queue_verify_and_prune():
-    payload = request.get_json(silent=True) or {}
+async def api_queue_verify_and_prune():
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_verify_and_prune(payload))
 
 
 @queue_cleanup_bp.route("/api/queue/folder/delete", methods=["POST"])
-def api_queue_delete_folder():
-    payload = request.get_json(silent=True) or {}
+async def api_queue_delete_folder():
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_delete_folder(payload))
 
 
 @queue_cleanup_bp.route("/api/queue/group/remove", methods=["POST"])
-def api_queue_remove_group():
-    payload = request.get_json(silent=True) or {}
+async def api_queue_remove_group():
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_remove_group(payload))

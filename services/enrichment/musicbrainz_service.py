@@ -94,7 +94,18 @@ class MusicBrainzService:
         try:
             if os.path.exists(CACHE_FILE):
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    raw = json.load(f)
+                # Purge poisoned entries: earlier versions cached failed
+                # lookups as ["", 0.0], which permanently disabled single
+                # detection for that track. Only keep entries with a real MBID.
+                if isinstance(raw, dict):
+                    return {
+                        key: value
+                        for key, value in raw.items()
+                        if isinstance(value, (list, tuple))
+                        and len(value) == 2
+                        and str(value[0] or "").strip()
+                    }
         except Exception:
             pass
         return {}
@@ -119,8 +130,9 @@ class MusicBrainzService:
 
         cache_key = self._cache_key(title, artist)
 
-        if cache_key in self._mbid_cache:
-            return tuple(self._mbid_cache[cache_key])
+        cached = self._mbid_cache.get(cache_key)
+        if isinstance(cached, (list, tuple)) and len(cached) == 2 and str(cached[0] or "").strip():
+            return tuple(cached)
 
         query = f'recording:"{escape_lucene_special_chars(title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
 

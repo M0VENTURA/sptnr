@@ -28,8 +28,8 @@ queue_matching_bp = Blueprint("queue_matching", __name__)
 # -----------------------------------------------------------------------------
 
 @queue_matching_bp.route("/api/queue/move-to-music/<int:queue_id>", methods=["POST"])
-def api_queue_move_to_music(queue_id: int):
-    payload = request.get_json(silent=True) or {}
+async def api_queue_move_to_music(queue_id: int):
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(organize_track(queue_id, payload))
 
 
@@ -38,14 +38,14 @@ def api_queue_move_to_music(queue_id: int):
 # -----------------------------------------------------------------------------
 
 @queue_matching_bp.route("/api/queue/<int:queue_id>/organize", methods=["POST"])
-def api_queue_organize(queue_id: int):
-    payload = request.get_json(silent=True) or {}
+async def api_queue_organize(queue_id: int):
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(organize_track(queue_id, payload))
 
 
 @queue_matching_bp.route("/api/queue/organize-group", methods=["POST"])
-def api_queue_organize_group():
-    payload = request.get_json(silent=True) or {}
+async def api_queue_organize_group():
+    payload = (await request.get_json(silent=True)) or {}
     group_id = payload.get("group_id") or payload.get("import_group")
 
     if not group_id:
@@ -73,8 +73,8 @@ def api_queue_organize_group():
 # -----------------------------------------------------------------------------
 
 @queue_matching_bp.route("/api/queue/match-folder", methods=["POST"])
-def api_match_folder():
-    payload = request.get_json(silent=True) or {}
+async def api_match_folder():
+    payload = (await request.get_json(silent=True)) or {}
     folder_path = payload.get("folder_path")
     if not folder_path:
         return _json_response({
@@ -86,8 +86,8 @@ def api_match_folder():
 
 
 @queue_matching_bp.route("/api/queue/auto-match-folder", methods=["POST"])
-def api_auto_match_folder():
-    payload = request.get_json(silent=True) or {}
+async def api_auto_match_folder():
+    payload = (await request.get_json(silent=True)) or {}
     folder_path = payload.get("folder_path")
     if not folder_path:
         return _json_response({

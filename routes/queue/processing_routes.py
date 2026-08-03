@@ -26,14 +26,14 @@ queue_processing_bp = Blueprint("queue_processing", __name__)
 
 
 @queue_processing_bp.route("/api/queue/add", methods=["POST"])
-def api_queue_add():
-    payload = request.get_json(silent=True) or {}
+async def api_queue_add():
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_add(payload))
 
 
 @queue_processing_bp.route("/api/queue/add-batch", methods=["POST"])
-def api_queue_add_batch():
-    payload = request.get_json(silent=True) or {}
+async def api_queue_add_batch():
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_add_batch(payload))
 
 
@@ -48,8 +48,8 @@ def api_queue_imported():
 
 
 @queue_processing_bp.route("/api/queue/<int:queue_id>/update", methods=["POST"])
-def api_queue_update(queue_id: int):
-    payload = request.get_json(silent=True) or {}
+async def api_queue_update(queue_id: int):
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_update(queue_id, payload))
 
 
@@ -70,8 +70,8 @@ def api_queue_delete(queue_id: int):
 
 
 @queue_processing_bp.route("/api/queue/clear", methods=["POST", "DELETE"])
-def api_queue_clear():
-    payload = request.get_json(silent=True) or {}
+async def api_queue_clear():
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_clear(payload))
 
 
@@ -226,7 +226,7 @@ def api_queue_copy_from_local(queue_id: int):
 # -----------------------------------------------------------------------------
 
 @queue_processing_bp.route("/api/queue/migrate-existing", methods=["POST"])
-def api_queue_migrate_existing():
+async def api_queue_migrate_existing():
     """Backfill legacy queue rows into current grouped/source conventions.
 
     Note: this endpoint requires the migration service module at
@@ -244,7 +244,7 @@ def api_queue_migrate_existing():
         }), 501
 
     try:
-        payload = request.get_json(silent=True) or {}
+        payload = (await request.get_json(silent=True)) or {}
         limit = request.values.get("limit") or payload.get("limit")
         if limit is not None:
             try:
@@ -266,12 +266,12 @@ def api_queue_migrate_existing():
 # -----------------------------------------------------------------------------
 
 @queue_processing_bp.route("/api/queue/update-album-mbid", methods=["POST"])
-def api_queue_update_album_mbid():
+async def api_queue_update_album_mbid():
     """Update all queue items for an album with a new MusicBrainz release ID."""
     import logging as _logging
     conn = None
     try:
-        data = request.get_json(silent=True) or {}
+        data = (await request.get_json(silent=True)) or {}
         old_artist = (data.get("old_artist") or "").strip()
         old_album = (data.get("old_album") or "").strip()
         new_mbid = (data.get("new_mbid") or "").strip()

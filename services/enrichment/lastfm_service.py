@@ -328,7 +328,14 @@ class LastFmService:
         # Try all artist candidate variants with the given (normalised) title
         for candidate_artist in self.build_artist_lookup_candidates(artist):
             candidate = self._get_track_info_once(candidate_artist, title)
-            candidate_tuple = (self.artist_match_score(artist, candidate.get("returned_artist", "")), int(candidate.get("listeners", 0) or 0), int(candidate.get("track_play", 0) or 0))
+            artist_score = self.artist_match_score(artist, candidate.get("returned_artist", ""))
+            # Never accept a result from a DIFFERENT artist. Last.fm autocorrect
+            # can return another band's song that happens to share the title;
+            # without this guard a wrong-artist match with a handful of
+            # listeners gets cached as a "fresh" popularity value for a week.
+            if artist_score < 60:
+                continue
+            candidate_tuple = (artist_score, int(candidate.get("listeners", 0) or 0), int(candidate.get("track_play", 0) or 0))
             if candidate_tuple > best_tuple:
                 best_tuple = candidate_tuple
                 best_result = candidate

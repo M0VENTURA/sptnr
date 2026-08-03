@@ -313,16 +313,20 @@ def process_track(
             # Cached scores with BOTH provider counts at zero are treated as
             # suspect (a failed fetch from a broken scan, missing key, or
             # outage) and re-fetched so scans self-heal instead of caching 0s.
+            # Cached scores with only junk-level provider counts (both sources
+            # below 25) are treated as suspect — a wrong-artist Last.fm match
+            # or a failed fetch from an earlier scan — and re-fetched so scans
+            # self-heal instead of caching garbage for the whole TTL.
             _force = bool(options.get("force"))
-            _has_provider_data = (
-                int(effective_track.get("lastfm_listeners") or 0) > 0
-                or int(effective_track.get("listenbrainz_listens") or 0) > 0
+            _has_credible_data = (
+                int(effective_track.get("lastfm_listeners") or 0) >= 25
+                or int(effective_track.get("listenbrainz_listens") or 0) >= 25
             )
             _cached = (frozen_track or (
                 not _force
                 and should_use_cached_score(effective_track)
             )) and bool(
-                effective_track.get("final_score") and _has_provider_data
+                effective_track.get("final_score") and _has_credible_data
             )
             if _cached:
                 logger.debug(
@@ -345,9 +349,14 @@ def process_track(
                 # --- Last.fm ---
                 lastfm_listeners = _as_int(effective_track.get("lastfm_listeners") or 0)
                 lastfm_playcount = _as_int(effective_track.get("lastfm_playcount") or 0)
-                # Fresh-but-zero is suspect (broken prior scan / missing key):
-                # re-fetch so scans self-heal.
-                if not has_fresh_lf or lastfm_listeners == 0:
+                # Fresh-but-suspect values are re-fetched so scans self-heal:
+                # zero counts (failed fetch / missing key), or both sources
+                # below 25 (wrong-artist match cached by an earlier scan).
+                if (
+                    not has_fresh_lf
+                    or lastfm_listeners == 0
+                    or (lastfm_listeners < 25 and listenbrainz_listens < 25)
+                ):
                     try:
                         from helpers.config_helpers import get_config
                         _lf_cfg = get_config().get("api_integrations", {}).get("lastfm", {})

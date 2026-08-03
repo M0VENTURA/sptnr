@@ -67,7 +67,11 @@ class DiscogsService:
         
         for result in results:
             formats = " ".join(result.get("format", [])).lower()
-            if ("single" in formats or "ep" in formats) and title_key in (result.get("title") or "").lower():
+            # Normalize the RESULT title too — ``title_key`` is punctuation-
+            # stripped ("what s the deal"), so matching it against the raw
+            # lowercased title ("what's the deal?") fails on apostrophes.
+            result_title = self._normalize_title(result.get("title") or "")
+            if ("single" in formats or "ep" in formats) and title_key in result_title:
                 self._single_cache[cache_key] = True
                 return True
         self._single_cache[cache_key] = False

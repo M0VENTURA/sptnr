@@ -43,8 +43,8 @@ def api_queue_search_events():
 
 
 @queue_diagnostics_bp.route("/api/queue/check-collection-batch", methods=["POST"])
-def api_queue_check_collection_batch():
-    payload = request.get_json(silent=True) or {}
+async def api_queue_check_collection_batch():
+    payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_check_collection_batch(payload))
 
 
