@@ -193,6 +193,30 @@ async function loadFolderGroups(options) {
     var badge = document.getElementById('folderGroupsBadge');
     if (!section || !list) return;
     if (groups.length === 0) {
+      // The grouped-folders endpoint only covers MusicBrainz-managed releases.
+      // Fall back to the real download_queue so items added via the search /
+      // download flows still appear in the Download Queue section.
+      try {
+        var qd = await fetchJsonOrThrow('/api/downloads/queue?limit=200');
+        var qItems = (qd && qd.queue) || [];
+        if (qItems.length > 0) {
+          section.style.display = 'block';
+          if (badge) badge.textContent = qItems.length + ' items';
+          list.innerHTML = '<div class="list-group list-group-flush">' +
+            qItems.map(function(item) {
+              var st = item.status || 'queued';
+              var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
+              return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
+                '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
+                (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+                '</div><span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span></div></div>';
+            }).join('') + '</div>';
+          updateQueuePageControls(qItems.length, qItems.length);
+          return;
+        }
+      } catch (e) {
+        console.error('Error loading queue fallback:', e);
+      }
       if (options.keepVisibleOnEmpty !== false) {
         section.style.display = 'block';
         if (badge) badge.textContent = '0 items';
@@ -624,3 +648,15 @@ async function queueMissingTracks(tracksJson, artist) {
     alert(`Error: ${error.message}`);
   }
 }
+
+// ===== Page-load init =====
+// Load the queue summary cards and the Download Queue section as soon as the
+// page is ready. downloads.js (loaded after this file) defines loadQueueStatus.
+document.addEventListener('DOMContentLoaded', function() {
+  if (typeof window.loadQueueStatus === 'function') {
+    window.loadQueueStatus();
+  }
+  if (typeof window.loadFolderGroups === 'function') {
+    window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+  }
+});

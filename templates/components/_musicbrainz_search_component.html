@@ -258,6 +258,13 @@ window.performMbSearch = async function() {
       });
     }
 
+    // Honour the results-limit dropdown (12/25/50) — it was read above but
+    // never applied, so changing it had no visible effect.
+    var max = parseInt(limit, 10) || 25;
+    if (releases.length > max) {
+      releases = releases.slice(0, max);
+    }
+
     if (!releases.length) {
       resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-4"><p>No results found for "' + escHtml(query) + '"</p></div>';
       return;

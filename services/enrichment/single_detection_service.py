@@ -433,14 +433,14 @@ def determine_final_status(
     if max_z > max(0.0, zscore_medium):
         if high >= 1:
             return 'high'
-        if medium >= 2:
+        # A medium-band z-score is medium-confidence single evidence when at
+        # least one weak signal corroborates it (radio edit, duration, ISRC,
+        # …) — a weak signal should help, not block, the z-signal. When no
+        # metadata matched at all, the popularity signal itself is the only
+        # evidence on metadata-poor albums.
+        if medium >= 1:
             return 'medium'
-        # Z-score is the only evidence: when no metadata source matched at all
-        # (and no weak signals fired), a track sitting clearly above the
-        # album/artist median in the medium band is still a medium-confidence
-        # single — the popularity signal itself is the evidence on
-        # metadata-poor albums that would otherwise never produce a single.
-        if not has_metadata and medium == 0 and not is_compilation:
+        if not has_metadata and not is_compilation:
             return 'medium'
         return 'none'
 

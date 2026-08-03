@@ -234,23 +234,23 @@ class MusicBrainzService:
 
             # Secondary pass: the suggested recording may be the album-version
             # recording of the same song (its releases are album-only), so the
-            # single release is missed. Re-run the search and inspect the
-            # embedded release-group info of the remaining candidates — no
-            # extra per-recording lookups.
+            # single release is missed. Search release-groups by title instead
+            # — the single's own release-group (type Single/EP) matches
+            # directly, with no per-recording lookups.
             query_title = normalize_title_for_lucene_query(title)
-            query = (
-                f'recording:"{escape_lucene_special_chars(query_title)}" '
+            rg_query = (
+                f'releasegroup:"{escape_lucene_special_chars(query_title)}" '
                 f'AND artist:"{escape_lucene_special_chars(artist)}"'
             )
-            recordings = self.http.search_recordings(query, limit=10)
-            for rec in recordings:
-                if not rec.get("id") or rec.get("id") == mbid:
-                    continue
-                for release in rec.get("releases") or []:
-                    rg = release.get("release-group") or {}
-                    pt = (rg.get("primary-type") or rg.get("primary_type") or rg.get("type") or "").lower()
-                    if pt in ("single", "ep"):
-                        return True
+            for group in self.http.search_release_groups(rg_query, limit=10):
+                pt = (
+                    group.get("primary-type")
+                    or group.get("primary_type")
+                    or group.get("type")
+                    or ""
+                ).lower()
+                if pt in ("single", "ep"):
+                    return True
             return False
         except Exception as exc:
             logger.debug("MusicBrainz is_single failed for %s / %s: %s", artist, title, exc)

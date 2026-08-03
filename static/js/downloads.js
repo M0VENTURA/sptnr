@@ -691,6 +691,14 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
     resultsEl.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div><p class="mt-2 text-muted">Searching MusicBrainz...</p></div>';
   }
 
+  // Populate the shared modal's 4-field form so the Release Type / Result
+  // Limit dropdowns re-search with the current query instead of no-oping
+  // (performMbSearch builds its query from these fields).
+  const artistField = document.getElementById('mbSearchArtist');
+  const albumField = document.getElementById('mbSearchAlbum');
+  if (artistField && artist) artistField.value = artist;
+  if (albumField && album) albumField.value = album;
+
   // Show the shared modal (included globally by base.html)
   const hasBootstrapModal = !!(window.bootstrap && window.bootstrap.Modal);
   if (hasBootstrapModal) {
@@ -773,6 +781,25 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
     }
   }
 }
+
+// Route the shared modal's card selection back into the queue-page download
+// flow when the modal was opened via the upcoming-releases "Search / Download"
+// button. That flow doesn't set window._mbSearchCallback, so the component's
+// selectMbRelease falls back to this CustomEvent.
+document.addEventListener('mbReleaseSelected', function(evt) {
+  var detail = evt.detail || {};
+  var release = detail.release || window._selectedMusicBrainzRelease;
+  if (!release) return;
+  var id = detail.releaseId || release.id || '';
+  var title = detail.title || release.title || '';
+  var artistName = release.artist
+    || (release['artist-credit'] && release['artist-credit'][0] && release['artist-credit'][0].name)
+    || 'Unknown Artist';
+  window._selectedMusicBrainzRelease = null;
+  if (typeof window.downloadMbRelease === 'function' && id && title) {
+    window.downloadMbRelease(id, title, artistName, 'slskd');
+  }
+});
 
 // Rich accordion renderer used by searchMusicBrainzRelease (original intent).
 function displayMusicBrainzResults(results) {

@@ -247,10 +247,18 @@ def api_queue():
     limit = request.args.get("limit", 100, type=int)
     offset = request.args.get("offset", 0, type=int)
     try:
+        from db.repositories.queue import get_active_queue
         status_counts = get_queue_status_counts()
+        # Return the actual queue rows (queued/searching/downloading/failed),
+        # paginated — this endpoint previously stubbed ``queue`` to [].
+        items = get_active_queue(limit=max(1, min(limit + offset, 500)))
+        if offset:
+            items = items[offset:offset + limit]
+        else:
+            items = items[:limit]
         return jsonify({
             "success": True,
-            "queue": [],
+            "queue": items,
             "status_counts": status_counts or {},
             "total": sum(status_counts.values()) if status_counts else 0,
             "limit": limit,
