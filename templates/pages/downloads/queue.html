@@ -2377,13 +2377,16 @@ async function matchUpcomingRelease(releaseId) {
 // downloads.js is always loaded on this page.
 
 // Load upcoming releases when tab is shown
-document.getElementById('upcomingTab').addEventListener('click', function() {
-  const container = document.getElementById('upcomingReleases');
-  if (container.innerHTML.trim() === '' || 
-      container.querySelector('.text-muted')?.textContent.includes('Click "Update')) {
-    refreshUpcomingReleases();
-  }
-});
+var upcomingTabEl = document.getElementById('upcomingTab');
+if (upcomingTabEl) {
+  upcomingTabEl.addEventListener('click', function() {
+    const container = document.getElementById('upcomingReleases');
+    if (container.innerHTML.trim() === '' || 
+        container.querySelector('.text-muted')?.textContent.includes('Click "Update')) {
+      refreshUpcomingReleases();
+    }
+  });
+}
 
 // Auto-load upcoming releases on page load if data exists
 async function autoLoadUpcomingReleases() {
@@ -2435,8 +2438,10 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Handle hash-based tab navigation (for links from artist/album pages)
   if (window.location.hash === '#upcoming') {
-    const upcomingTab = new bootstrap.Tab(document.getElementById('upcomingTab'));
-    upcomingTab.show();
+    const upcomingTab = document.getElementById('upcomingTab');
+    if (upcomingTab) {
+      new bootstrap.Tab(upcomingTab).show();
+    }
   }
 });
 

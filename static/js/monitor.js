@@ -285,11 +285,11 @@ async function refreshUpcomingReleasesMonitor() {
     sortedMonths.forEach(function(month, idx) {
       var monthReleases = grouped[month];
       var monthLabel = new Date(month + '-01').toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
-      html += '<div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#ucm' + idx + '"><strong>' + escapeHtml(monthLabel) + '</strong><span class="badge bg-primary ms-2">' + monthReleases.length + '</span></button></h2><div id="ucm' + idx + '" class="accordion-collapse collapse"><div class="accordion-body p-0"><div class="table-responsive"><table class="table table-hover table-striped table-dark table-sm mb-0"><thead><tr><th>Artist</th><th>Album</th><th>Date</th><th>MBID</th><th>Action</th></tr></thead><tbody>';
+      html += '<div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#ucm' + idx + '"><strong>' + escapeHtml(monthLabel) + '</strong><span class="badge bg-primary ms-2">' + monthReleases.length + '</span></button></h2><div id="ucm' + idx + '" class="accordion-collapse collapse"><div class="accordion-body p-0"><div class="table-responsive"><table class="table table-hover table-striped table-dark table-sm mb-0"><thead><tr><th>Artist</th><th>Album</th><th>Date</th><th>Source</th><th>MBID</th><th>Action</th></tr></thead><tbody>';
       monthReleases.forEach(function(release) {
         var artistEnc = encodeInlineArg(release.artist_name || '');
         var albumEnc = encodeInlineArg(release.album_name || '');
-        html += '<tr><td>' + escapeHtml(release.artist_name || '') + '</td><td>' + escapeHtml(release.album_name || '') + (release.in_queue ? ' <span class="badge bg-info text-dark ms-1">In Queue</span>' : '') + '</td><td><small>' + escapeHtml(release.release_date || 'TBA') + '</small></td><td>' + (release.release_group_mbid ? '<code class="small">' + escapeHtml(release.release_group_mbid.slice(0, 8)) + '...</code>' : '<span class="text-muted small">unmatched</span>') + '</td><td><button type="button" class="btn btn-sm btn-outline-info" onclick="searchUpcomingReleaseFromEncoded(\'' + artistEnc + '\', \'' + albumEnc + '\', ' + (Number(release.id) || 0) + ')"><i class="bi bi-search"></i> Search / Download</button></td></tr>';
+        html += '<tr><td>' + escapeHtml(release.artist_name || '') + '</td><td>' + escapeHtml(release.album_name || '') + (release.in_queue ? ' <span class="badge bg-info text-dark ms-1">In Queue</span>' : '') + '</td><td><small>' + escapeHtml(release.release_date || 'TBA') + '</small></td><td><span class="badge bg-secondary">' + escapeHtml(release.source || 'Wikipedia') + '</span></td><td>' + (release.release_group_mbid ? '<code class="small">' + escapeHtml(release.release_group_mbid.slice(0, 8)) + '...</code>' : '<span class="text-muted small">unmatched</span>') + '</td><td><button type="button" class="btn btn-sm btn-outline-info" onclick="searchUpcomingReleaseFromEncoded(\'' + artistEnc + '\', \'' + albumEnc + '\', ' + (Number(release.id) || 0) + ')"><i class="bi bi-search"></i> Search / Download</button></td></tr>';
       });
       html += '</tbody></table></div></div></div></div>';
     });
@@ -667,4 +667,7 @@ document.addEventListener('DOMContentLoaded', function() {
   if (typeof window.loadSearchLog === 'function') {
     window.loadSearchLog();
   }
+  // Upcoming releases: read straight from the database (no re-scrape on
+  // page load — the "Update from Wikipedia" button handles that manually).
+  refreshUpcomingReleasesMonitor();
 });

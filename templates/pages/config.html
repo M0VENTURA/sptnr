@@ -90,7 +90,7 @@
       <div class="d-flex justify-content-between align-items-center">
         <div>
           <h5 class="mb-0"><i class="bi bi-people-fill"></i> Music Users</h5>
-          <small class="text-muted">Configure Navidrome plus each user's Spotify, Last.fm, and ListenBrainz identities</small>
+          <small class="text-muted">Configure Navidrome plus each user's Last.fm and ListenBrainz identities</small>
         </div>
         <div class="d-flex gap-2 flex-wrap justify-content-end">
           <button type="button" class="btn btn-sm btn-outline-success" id="syncRatingsNowBtn" onclick="syncRatingsNow()">
@@ -158,28 +158,6 @@
               </div>
             </div>
             
-            <!-- Spotify Configuration -->
-            <div class="mb-3">
-              <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify</h6>
-              <div class="row g-2">
-                <div class="col-12">
-                  <label class="form-label form-label-sm">Spotify Username</label>
-                  <input type="text" class="form-control form-control-sm user-spotify-username" placeholder="spotify_username" value="{{ user.get('spotify_username', '') }}">
-                  <small class="form-text text-muted">Your Spotify profile username (for personalized recommendations)</small>
-                </div>
-                <div class="col-12 col-sm-6">
-                  <label class="form-label form-label-sm">Client ID Override</label>
-                  <input type="text" class="form-control form-control-sm user-spotify-id" placeholder="spotify_client_id" value="{{ user.get('spotify_client_id', '') }}">
-                  <small class="form-text text-muted">Optional. Leave blank to use the shared Spotify app credentials below.</small>
-                </div>
-                <div class="col-12 col-sm-6">
-                  <label class="form-label form-label-sm">Client Secret Override</label>
-                  <input type="password" class="form-control form-control-sm user-spotify-secret" placeholder="••••••••" value="{{ user.get('spotify_client_secret', '') }}">
-                  <small class="form-text text-muted">Optional. Leave blank to use the shared Spotify app credentials below.</small>
-                </div>
-              </div>
-            </div>
-            
             <!-- Last.fm Configuration -->
             <div class="mb-3">
               <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> Last.fm</h6>
@@ -228,33 +206,6 @@
     </div>
     <div class="card-body">
       <div class="row g-4">
-        <div class="col-12 col-xl-6">
-          <div class="border rounded p-3 h-100">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-              <h6 class="mb-0 text-success"><i class="bi bi-spotify"></i> Spotify</h6>
-              <div class="form-check form-switch mb-0">
-                <input class="form-check-input" type="checkbox" id="api_spotify_enabled" {% if config.get('api_integrations', {}).get('spotify', {}).get('enabled') %}checked{% endif %}>
-                <label class="form-check-label" for="api_spotify_enabled">Enabled</label>
-              </div>
-            </div>
-            <div class="row g-2">
-              <div class="col-12 col-md-6">
-                <label class="form-label form-label-sm">Client ID</label>
-                <input type="text" class="form-control form-control-sm" id="api_spotify_client_id" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_id', '') }}">
-              </div>
-              <div class="col-12 col-md-6">
-                <label class="form-label form-label-sm">Client Secret</label>
-                <input type="password" class="form-control form-control-sm" id="api_spotify_client_secret" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_secret', '') }}">
-              </div>
-              <div class="col-12">
-                <label class="form-label form-label-sm">Default Spotify User ID</label>
-                <input type="text" class="form-control form-control-sm" id="api_spotify_user_id" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('user_id', '') }}">
-                <small class="form-text text-muted">Optional fallback user ID for public Spotify playlist browsing when no user-specific value is provided.</small>
-              </div>
-            </div>
-          </div>
-        </div>
-
         <div class="col-12 col-xl-6">
           <div class="border rounded p-3 h-100">
             <div class="d-flex justify-content-between align-items-center mb-2">
@@ -1103,10 +1054,6 @@
           <label class="form-label form-label-sm">Last.fm</label>
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_lastfm" placeholder="0.10" value="{{ config.get('genres', {}).get('weights', {}).get('lastfm', 0.10) }}">
         </div>
-        <div class="col-6 col-md-2">
-          <label class="form-label form-label-sm">Spotify</label>
-          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_spotify" placeholder="0.05" value="{{ config.get('genres', {}).get('weights', {}).get('spotify', 0.05) }}">
-        </div>
       </div>
       <h6 class="mb-3">Genre Synonyms</h6>
       <p class="text-muted small mb-2">Map variant genre names to canonical forms (e.g. "hip hop" → "hip-hop"). One mapping per line as <code>variant: canonical</code>.</p>
@@ -1288,7 +1235,7 @@
     <div class="card-body">
       <div class="alert alert-info mb-3">
         <i class="bi bi-info-circle"></i>
-        <strong>What are search filters?</strong> When searching external APIs (Spotify, MusicBrainz, Last.fm, etc), 
+        <strong>What are search filters?</strong> When searching external APIs (MusicBrainz, Last.fm, etc), 
         track titles often contain edition markers like <code>(Remastered)</code>, <code>(Radio Edit)</code>, etc. 
         These filters remove parenthetical content for <strong>the same song, different cut</strong> (remasters, edits, versions).
         <br><br>
@@ -1421,11 +1368,10 @@
         <div class="row g-3">
           {% set feature_groups = {
             'General Operation': ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'full_scan', 'auto_boot_navidrome_scan', 'artist'],
-            'Spotify Matching': ['strict_spotify_matching', 'spotify_duration_tolerance'],
-            'Single Detection & Scoring': ['album_skip_days', 'album_skip_min_tracks', 'clamp_min', 'clamp_max', 'cap_top4_pct', 'title_sim_threshold', 'short_release_counts_as_match', 'secondary_single_lookup_enabled', 'secondary_lookup_metric', 'secondary_lookup_delta', 'secondary_required_strong_sources', 'median_gate_strategy', 'use_lastfm_single', 'refresh_artist_index_on_start', 'discogs_min_interval_sec', 'include_user_ratings_on_scan', 'scan_worker_threads', 'spotify_prefetch_timeout'],
-            'Single Detection Sources': ['source_discogs_confidence', 'source_spotify_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence']
+            'Single Detection & Scoring': ['album_skip_days', 'album_skip_min_tracks', 'clamp_min', 'clamp_max', 'cap_top4_pct', 'title_sim_threshold', 'short_release_counts_as_match', 'secondary_single_lookup_enabled', 'secondary_lookup_metric', 'secondary_lookup_delta', 'secondary_required_strong_sources', 'median_gate_strategy', 'use_lastfm_single', 'refresh_artist_index_on_start', 'discogs_min_interval_sec', 'include_user_ratings_on_scan', 'scan_worker_threads'],
+            'Single Detection Sources': ['source_discogs_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence']
           } %}
-          {% set source_confidence_fields = ['source_discogs_confidence', 'source_spotify_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence'] %}
+          {% set source_confidence_fields = ['source_discogs_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence'] %}
           {% set feature_explanations = {
             'dry_run': 'Run all operations in test mode without making changes.',
             'sync': 'Enable automatic syncing of music libraries.',
@@ -1436,8 +1382,6 @@
             'full_scan': 'Run full scan pipeline on startup.',
             'auto_boot_navidrome_scan': 'Scan Navidrome metadata on app startup.',
             'artist': 'Comma-separated list of artist names to prioritize.',
-            'strict_spotify_matching': 'Enable strict exact-match rules for Spotify tracks.',
-            'spotify_duration_tolerance': 'Max duration difference (sec) for strict matching.',
             'album_skip_days': 'Days before rescanning an album.',
             'album_skip_min_tracks': 'Minimum tracks for a valid album.',
             'clamp_min': 'Minimum normalization clamp value.',
@@ -1454,8 +1398,28 @@
             'refresh_artist_index_on_start': 'Refresh artist index on startup.',
             'discogs_min_interval_sec': 'Min seconds between Discogs API calls.',
             'include_user_ratings_on_scan': 'Include user ratings during scanning.',
-            'scan_worker_threads': 'Parallel worker threads for scanning.',
-            'spotify_prefetch_timeout': 'Timeout (sec) for Spotify prefetching.'
+            'scan_worker_threads': 'Parallel worker threads for scanning.'
+          } %}
+          {# Defaults mirror the legacy config.yaml `features:` section so the
+             groups render even when the config file omits these keys. Saving
+             persists whatever is shown, which populates config.features. #}
+          {% set feature_defaults = {
+            'dry_run': false, 'sync': true, 'force': false, 'verbose': false,
+            'perpetual': true, 'batchrate': false, 'full_scan': false,
+            'auto_boot_navidrome_scan': false, 'artist': [],
+            'album_skip_days': 7, 'album_skip_min_tracks': 1, 'clamp_min': 0.75,
+            'clamp_max': 1.25, 'cap_top4_pct': 0.25, 'title_sim_threshold': 0.92,
+            'short_release_counts_as_match': false, 'secondary_single_lookup_enabled': true,
+            'secondary_lookup_metric': 'score', 'secondary_lookup_delta': 0.05,
+            'secondary_required_strong_sources': 2, 'median_gate_strategy': 'hard',
+            'use_lastfm_single': true, 'refresh_artist_index_on_start': false,
+            'discogs_min_interval_sec': 0.35, 'include_user_ratings_on_scan': true,
+            'scan_worker_threads': 4,
+            'source_discogs_confidence': 'medium',
+            'source_musicbrainz_confidence': 'high',
+            'source_musicbrainz_compilation_confidence': 'medium',
+            'source_discogs_video_confidence': 'medium', 'source_lastfm_confidence': 'medium',
+            'source_radio_edit_confidence': 'medium'
           } %}
 
           {% for group_name, group_keys in feature_groups.items() %}
@@ -1463,13 +1427,13 @@
             <h5>{{ group_name }}</h5>
           </div>
           {% for key in group_keys %}
-          {% if config.get('features', {}).get(key) is not none or key in source_confidence_fields %}
+          {% set value = config.get('features', {}).get(key, feature_defaults.get(key)) %}
+          {% if value is not none %}
           <div class="col-md-4">
             <label class="form-label">{{ key|replace('_', ' ')|title }}</label>
             {% if feature_explanations.get(key) %}
             <div class="text-muted small mb-1">{{ feature_explanations[key] }}</div>
             {% endif %}
-            {% set value = config.get('features', {}).get(key) %}
             {% if key in source_confidence_fields %}
             <select class="form-select feature-field" name="feature_{{ key }}">
               {% for opt in ['low', 'medium', 'high'] %}

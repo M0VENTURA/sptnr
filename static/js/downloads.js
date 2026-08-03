@@ -604,8 +604,12 @@ async function scrapeUpcomingReleases() {
 }
 
 async function checkForUpdates() {
+  // "Check for Updates" reads the database and reflects any changes already
+  // scraped into it — it must NOT trigger a full Wikipedia re-scrape on
+  // every page load.  Use the explicit "Update from Wikipedia" button
+  // (scrapeUpcomingReleases) to re-scrape the configured sources.
   localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
-  await scrapeUpcomingReleases();
+  await refreshUpcomingReleases();
 }
 
 async function refreshUpcomingReleases() {
@@ -1909,6 +1913,7 @@ function renderQueueList(kind, items) {
     return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center gap-2">' +
       '<div class="text-truncate"><strong>' + escapeHtml(item.title || item.album || 'Unknown') + '</strong>' +
       (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album && item.album !== item.title ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+      (kind === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +
       '</div><div class="d-flex align-items-center gap-2 flex-shrink-0">' +
       '<span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span>' + actions +
       '</div></div></div>';
@@ -1960,6 +1965,11 @@ document.addEventListener('DOMContentLoaded', function() {
       _queuePollInFlight = true;
       try { await loadQueueStatus(); } finally { _queuePollInFlight = false; }
     }, 10000);
+  }
+  // Upcoming releases: read from the database on load instead of waiting
+  // for a manual refresh / re-scrape.
+  if (document.getElementById('upcomingReleases')) {
+    refreshUpcomingReleases();
   }
   if (document.getElementById('queueEventsBody')) {
     loadQueueEvents();

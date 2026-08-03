@@ -414,7 +414,11 @@ function renderUpcomingReleasesTable(releases) {
 
   body.innerHTML = releases.map(r => {
     const releaseDate = r.release_date || "TBA";
-    const isWiki = String(r.source || "").toLowerCase().includes("wiki");
+    // The Wikipedia scraper stores the configured source display names (e.g.
+    // "2026 Albums", "Heavy Metal 2026") — they never contain the literal
+    // "wiki".  Only MusicBrainz-sourced rows should show the MB chip, so
+    // treat anything that isn't explicitly MusicBrainz as Wikipedia.
+    const isWiki = !String(r.source || "").toLowerCase().includes("musicbrainz");
     const sourceBadge = isWiki 
       ? '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>'
       : '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>';

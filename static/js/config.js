@@ -139,9 +139,6 @@ function buildConfigObject() {
       display_name: card.querySelector('.user-display-name').value,
       base_url: card.querySelector('.user-nav-url').value,
       pass: card.querySelector('.user-nav-password').value,
-      spotify_username: card.querySelector('.user-spotify-username').value,
-      spotify_client_id: card.querySelector('.user-spotify-id').value,
-      spotify_client_secret: card.querySelector('.user-spotify-secret').value,
       lastfm_username: card.querySelector('.user-lastfm-username').value,
       listenbrainz_user_token: card.querySelector('.user-listenbrainz-token').value
     };
@@ -286,18 +283,11 @@ function buildConfigObject() {
           musicbrainz: parseFloat(getValue('genre_weight_musicbrainz', '0.40')) || 0.40,
           discogs: parseFloat(getValue('genre_weight_discogs', '0.25')) || 0.25,
           audiodb: parseFloat(getValue('genre_weight_audiodb', '0.20')) || 0.20,
-          lastfm: parseFloat(getValue('genre_weight_lastfm', '0.10')) || 0.10,
-          spotify: parseFloat(getValue('genre_weight_spotify', '0.05')) || 0.05
+          lastfm: parseFloat(getValue('genre_weight_lastfm', '0.10')) || 0.10
         }
       }
     ),
     api_integrations: {
-      spotify: {
-        enabled: getChecked('api_spotify_enabled'),
-        client_id: getValue('api_spotify_client_id'),
-        client_secret: getValue('api_spotify_client_secret'),
-        user_id: getValue('api_spotify_user_id')
-      },
       lastfm: {
         enabled: getChecked('api_lastfm_enabled'),
         api_key: getValue('api_lastfm_api_key')
@@ -525,24 +515,6 @@ function addNewUser() {
         <div class="col-12 col-sm-6">
           <label class="form-label form-label-sm">Password</label>
           <input type="password" class="form-control form-control-sm user-nav-password" placeholder="••••••••">
-        </div>
-      </div>
-    </div>
-    <div class="mb-3">
-      <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify</h6>
-      <div class="row g-2">
-        <div class="col-12">
-          <label class="form-label form-label-sm">Spotify Username</label>
-          <input type="text" class="form-control form-control-sm user-spotify-username" placeholder="spotify_username">
-          <small class="form-text text-muted">Your Spotify profile username (for personalized recommendations)</small>
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label form-label-sm">Client ID</label>
-          <input type="text" class="form-control form-control-sm user-spotify-id" placeholder="spotify_client_id">
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label form-label-sm">Client Secret</label>
-          <input type="password" class="form-control form-control-sm user-spotify-secret" placeholder="••••••••">
         </div>
       </div>
     </div>
