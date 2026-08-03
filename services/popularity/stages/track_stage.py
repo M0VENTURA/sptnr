@@ -405,7 +405,13 @@ def process_track(
                 # this track by the same artist (single vs album version) and
                 # aggregate their ListenBrainz popularity — mirrors the legacy
                 # scanner behaviour and rescues tracks whose MBID is split.
-                if lastfm_listeners < 20 and recording_mbid and title and artist:
+                # Also run when the title/artist carries a "feat." marker —
+                # those variants split listener counts most aggressively.
+                _feat_variant = (
+                    "feat" in str(title or "").lower()
+                    or "feat" in str(artist or "").lower()
+                )
+                if (lastfm_listeners < 20 or _feat_variant) and recording_mbid and title and artist:
                     try:
                         agg_lb = get_aggregated_listenbrainz_popularity(
                             title=title,
@@ -567,6 +573,28 @@ def process_track(
 
             album_track_count = len(album_context.get("tracks") or []) or 1
 
+            # Resolve optional detection inputs the service can use as
+            # corroborating evidence (Discogs token, Last.fm client).
+            sd_discogs_token = ""
+            try:
+                import os as _os
+                from helpers.config_helpers import get_config as _get_cfg
+                sd_discogs_token = _os.environ.get("DISCOGS_TOKEN", "")
+                if not sd_discogs_token:
+                    sd_discogs_token = (_get_cfg().get("api_integrations", {}).get("discogs", {}) or {}).get("token", "") or ""
+                if sd_discogs_token.lower() in ("your_discogs_token", "your_token", "placeholder"):
+                    sd_discogs_token = ""
+            except Exception:
+                sd_discogs_token = ""
+            sd_lastfm_client = None
+            try:
+                from helpers.config_helpers import get_config as _get_cfg
+                _lf_key = (_get_cfg().get("api_integrations", {}).get("lastfm", {}) or {}).get("api_key", "") or ""
+                if _lf_key:
+                    sd_lastfm_client = LastFmClient(_lf_key)
+            except Exception:
+                sd_lastfm_client = None
+
             sd_result = detect_single_for_track(
                 title=sd_title,
                 artist=sd_artist,
@@ -574,6 +602,12 @@ def process_track(
                 popularity=sd_popularity,
                 album_type=sd_album_type or None,
                 album=sd_album,
+                isrc=effective_track.get("isrc") or None,
+                duration=(
+                    float(effective_track["duration"])
+                    if effective_track.get("duration")
+                    else None
+                ),
                 use_advanced_detection=True,
                 persist_result=False,  # We persist via track_stage
                 mb_cached_singles=mb_cached_singles,
@@ -582,6 +616,9 @@ def process_track(
                     or effective_track.get("musicbrainz_artist_id")
                 ),
                 listenbrainz_listens=int(listenbrainz_listens or 0),
+                discogs_token=sd_discogs_token or None,
+                lastfm_client=sd_lastfm_client,
+                mb_client=MusicBrainzHttpClient(),
             )
 
             if sd_result:

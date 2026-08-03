@@ -200,7 +200,7 @@ def _sync_rating_to_navidrome(track_id: str, stars: int) -> bool:
     if not users:
         return False
 
-    from api_clients.http_utils import session
+    from api_clients import session
     any_success = False
     for creds in users:
         params = {

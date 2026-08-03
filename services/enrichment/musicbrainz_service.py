@@ -138,8 +138,13 @@ class MusicBrainzService:
                     best_mbid = rec.get("id", "")
 
             result = (best_mbid, round(best_score, 3))
-            self._mbid_cache[cache_key] = result
-            self._save_cache()
+            # Never persist empty results — a failed lookup (rate limit,
+            # transient error, no match) would otherwise poison the cache for
+            # the lifetime of /tmp/mbid_cache.json and permanently disable
+            # single detection for that track.
+            if best_mbid:
+                self._mbid_cache[cache_key] = result
+                self._save_cache()
 
             return result
         except Exception:

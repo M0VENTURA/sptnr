@@ -293,14 +293,41 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
         if mb_client is None:
             from api_clients.musicbrainz_http import MusicBrainzHttpClient
             mb_client = MusicBrainzHttpClient()
-        # Use the client's is_single method if available, otherwise use the service.
-        if hasattr(mb_client, "is_single"):
-            matched = bool(mb_client.is_single(title, artist, artist_mbid=artist_mbid,
-                                                album_track_count=album_track_count))
-        else:
-            from services.enrichment.musicbrainz_service import MusicBrainzService
-            svc = MusicBrainzService(enabled=True)
-            matched = bool(svc.is_single(title, artist, album_track_count=album_track_count))
+
+        matched = False
+        # Preferred path: scope the search to the artist's own singles/EPs
+        # release-groups when the artist MBID is known. Far more reliable than
+        # fuzzy recording title matching, and immune to recording-split issues
+        # (album version vs single version being separate MB recordings).
+        if artist_mbid and hasattr(mb_client, "search_release_groups"):
+            try:
+                target = normalize_title_for_lookup(strip_single_release_suffix(title) or title)
+                candidates: list[dict] = []
+                for _pt in ("single", "ep"):
+                    try:
+                        candidates += mb_client.search_release_groups(
+                            f"arid:{artist_mbid} AND primarytype:{_pt}", limit=100
+                        ) or []
+                    except Exception:
+                        continue
+                for group in candidates:
+                    rg_title = str(group.get("title") or "")
+                    if normalize_title_for_lookup(strip_single_release_suffix(rg_title) or rg_title) == target:
+                        matched = True
+                        break
+            except Exception as exc:
+                logger.debug("Artist-scoped MB single lookup failed for %s / %s: %s", artist, title, exc)
+
+        # Fallback: per-recording fuzzy match via the service.
+        if not matched:
+            # Use the client's is_single method if available, otherwise use the service.
+            if hasattr(mb_client, "is_single"):
+                matched = bool(mb_client.is_single(title, artist, artist_mbid=artist_mbid,
+                                                    album_track_count=album_track_count))
+            else:
+                from services.enrichment.musicbrainz_service import MusicBrainzService
+                svc = MusicBrainzService(enabled=True)
+                matched = bool(svc.is_single(title, artist, album_track_count=album_track_count))
         release_date = None
         if matched:
             try:
@@ -320,6 +347,13 @@ def _detect_discogs(title: str, artist: str, album: str | None,
                     is_special_edition: bool = False) -> dict[str, Any]:
     token = discogs_token or os.environ.get("DISCOGS_TOKEN", "")
     if not token:
+        try:
+            from helpers.config_helpers import get_config
+            cfg = get_config()
+            token = (cfg.get("api_integrations", {}).get("discogs", {}) or {}).get("token", "") or ""
+        except Exception:
+            token = ""
+    if not token or token.lower() in ("your_discogs_token", "your_token", "placeholder"):
         return {"source": "discogs", "matched": False, "confidence": 0.0, "metadata": {}}
     try:
         from services.enrichment.discogs_service import DiscogsService
@@ -483,9 +517,14 @@ def detect_single_for_track(
         except Exception as exc:
             logger.debug("Z-score calculation failed: %s", exc)
 
-    # Z-score gate
-    if artist_z < -1.0 and not is_compilation and not is_remastered:
-        return {"is_single": False, "confidence": "low", "confidence_score": 0.0, "sources": [], "reasons": ["z_score_below_threshold"]}
+    # Z-score gate (SOFT): a track scoring far below the artist median is no
+    # longer rejected before source lookups — its popularity data may simply be
+    # weak (missing Last.fm/LB counts, split variants). Sources still run; the
+    # low z-score only caps the final confidence below 'high' unless two or
+    # more high-confidence sources independently confirm the single.
+    z_low = artist_z < -1.0 and not is_compilation and not is_remastered
+    if z_low:
+        reasons.append("z_score_low")
 
     # ── Gather source confirmations ──
     discogs_confirmed = False
@@ -683,6 +722,11 @@ def detect_single_for_track(
         high_sources=high_sources,
         medium_sources=medium_sources,
     )
+
+    # Soft z-gate cap: low-scoring tracks need two+ high-confidence sources to
+    # reach 'high'; a single high source lands at 'medium' instead.
+    if z_low and final == "high" and high_sources < 2:
+        final = "medium"
 
     # `confidence` is a STRING LABEL ('high'/'medium'/'low') — every consumer
     # (star-rating stage, templates, edit modal) compares against these labels.
