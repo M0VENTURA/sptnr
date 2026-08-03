@@ -302,18 +302,21 @@ def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
     the legacy API payload).
     """
     from services.queue.queue_constraints import ACTIVE_QUEUE_STATUSES, FAILED_STATUSES
-    statuses = sorted(ACTIVE_QUEUE_STATUSES | FAILED_STATUSES)
+    # Inline the statuses rather than binding a list parameter — psycopg2
+    # cannot adapt a Python list for ``ANY(:statuses)`` and the resulting
+    # exception was silently swallowed, returning an empty list.
+    status_sql = ", ".join(f"'{s}'" for s in sorted(ACTIVE_QUEUE_STATUSES | FAILED_STATUSES))
     try:
         with db_session() as session:
             result = session.execute(
-                text("""
+                text(f"""
                     SELECT *
                     FROM download_queue
-                    WHERE status = ANY(:statuses)
+                    WHERE status IN ({status_sql})
                     ORDER BY created_at ASC
                     LIMIT :limit
                 """),
-                {"statuses": statuses, "limit": limit},
+                {"limit": limit},
             )
             return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
@@ -363,17 +366,21 @@ def get_completed_queue(limit: int = 50) -> List[Dict[str, Any]]:
     - possible_duplicate
     - moving
     """
+    # Inline the statuses — psycopg2 cannot adapt a Python list for
+    # ``ANY(:statuses)``; the exception was silently swallowed and the
+    # completed list always rendered empty.
+    status_sql = ", ".join(f"'{s}'" for s in sorted(COMPLETED_QUEUE_STATUSES))
     try:
         with db_session() as session:
             result = session.execute(
-                text("""
+                text(f"""
                     SELECT *
                     FROM download_queue
-                    WHERE status = ANY(:statuses)
+                    WHERE status IN ({status_sql})
                     ORDER BY updated_at DESC
                     LIMIT :limit
                 """),
-                {"statuses": list(COMPLETED_QUEUE_STATUSES), "limit": limit},
+                {"limit": limit},
             )
 
             return [dict(r._mapping) for r in result.fetchall()]
