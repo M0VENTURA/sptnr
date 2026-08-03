@@ -13,10 +13,36 @@ small while preserving the original workflow:
 from __future__ import annotations
 
 import logging
+import threading
 
 from db.repositories.scan_repository import lookup_artist_id, lookup_track_artist_count
 from helpers.logging_config import log_unified
 from services.scanning.navidrome_import import scan_artist_to_db
+
+# In-process guard: prevents the same album pipeline from running twice
+# concurrently (double form submits, dashboard + album page triggers). Two
+# overlapping runs double the Last.fm/ListenBrainz API load per track, which
+# triggers rate limits and yields inconsistent listener data.
+_pipeline_lock = threading.Lock()
+_running_albums: set[tuple[str, str]] = set()
+
+
+def _try_claim(artist_name: str, album_name: str) -> bool:
+    """Claim the album for this pipeline run. False if already running."""
+    global _running_albums
+    key = (artist_name.strip().lower(), album_name.strip().lower())
+    with _pipeline_lock:
+        if key in _running_albums:
+            return False
+        _running_albums.add(key)
+        return True
+
+
+def _release(artist_name: str, album_name: str) -> None:
+    global _running_albums
+    key = (artist_name.strip().lower(), album_name.strip().lower())
+    with _pipeline_lock:
+        _running_albums.discard(key)
 
 
 def _maybe_auto_detect_album_type(artist_name: str, album_name: str) -> None:
@@ -31,9 +57,14 @@ def _maybe_auto_detect_album_type(artist_name: str, album_name: str) -> None:
 def run_album_pipeline(artist_name: str, album_name: str, force: bool = False) -> None:
     """Run the complete scan pipeline for one album."""
     album_display = f"{artist_name} - {album_name}"
-    log_unified(f"💿 Album scan pipeline started for: {album_display}")
+
+    if not _try_claim(artist_name, album_name):
+        log_unified(f"⏭️ Album scan already running for: {album_display} — skipping duplicate trigger")
+        return
 
     try:
+        log_unified(f"💿 Album scan pipeline started for: {album_display}")
+
         artist_id = lookup_artist_id(artist_name)
 
         if not artist_id:
@@ -88,3 +119,5 @@ def run_album_pipeline(artist_name: str, album_name: str, force: bool = False) -
         log_unified(f"❌ Album scan failed for {album_display}: {exc}")
         logging.error("Album pipeline failed for %s", album_display, exc_info=True)
         raise
+    finally:
+        _release(artist_name, album_name)

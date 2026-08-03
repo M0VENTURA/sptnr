@@ -312,7 +312,14 @@ let folderGroupRefreshInterval = null;
 
 function startFolderGroupRefresh() {
   if (folderGroupRefreshInterval) return;
-  
+  // The modern renderers (monitor.js loadFolderGroups / downloads.js
+  // renderQueueSection) own the queue section on the monitor page.  This
+  // legacy poll must NEVER run alongside them — it used to overwrite the
+  // rendered queue items and hide the section when there was nothing to
+  // show.  Stand down completely instead of relying on the in-function
+  // guard alone.
+  if (typeof window.loadFolderGroups === 'function') return;
+  if (typeof window.loadQueueStatus === 'function') return;
   folderGroupRefreshInterval = setInterval(() => {
     if (document.hidden) return;  // Don't refresh if tab is not visible
     loadFolderGroupsWithMusicBrainz();

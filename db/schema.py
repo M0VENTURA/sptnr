@@ -45,6 +45,15 @@ TABLES_TO_ENSURE: dict[str, str] = {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """,
+    "track_popularity_cache": """
+        CREATE TABLE IF NOT EXISTS track_popularity_cache (
+            id BIGSERIAL PRIMARY KEY, artist TEXT NOT NULL, title TEXT NOT NULL, 
+            lastfm_listeners INTEGER DEFAULT 0, lastfm_playcount BIGINT DEFAULT 0, 
+            listenbrainz_listens INTEGER DEFAULT 0, listenbrainz_users INTEGER DEFAULT 0, 
+            source TEXT DEFAULT 'bulk', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_track_popularity_artist_title UNIQUE (artist, title)
+        )
+    """,
     "slskd_search_logs": """
         CREATE TABLE IF NOT EXISTS slskd_search_logs (
             id BIGSERIAL PRIMARY KEY, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, 

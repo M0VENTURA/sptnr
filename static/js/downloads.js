@@ -1951,6 +1951,15 @@ document.addEventListener('DOMContentLoaded', function() {
   // Active Queue tab on load (loadQueueStatus refreshes counts AND these).
   if (document.getElementById('folderGroupsSection') || document.getElementById('statQueuedNum')) {
     loadQueueStatus();
+    // Self-healing refresh: re-renders the queue section every 10s so it
+    // stays visible and fresh even if something else on the page tries to
+    // hide or overwrite it (legacy renderers, stale polls).
+    let _queuePollInFlight = false;
+    setInterval(async () => {
+      if (_queuePollInFlight) return;
+      _queuePollInFlight = true;
+      try { await loadQueueStatus(); } finally { _queuePollInFlight = false; }
+    }, 10000);
   }
   if (document.getElementById('queueEventsBody')) {
     loadQueueEvents();

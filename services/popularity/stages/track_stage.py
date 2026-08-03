@@ -102,6 +102,7 @@ def process_track(
     artist_max_lf_listeners: int = 0,
     artist_lf_context: dict[str, Any] | None = None,
     mb_cached_singles: set | None = None,
+    prefetched_popularity: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
 
     raw_track_id = track.get("id")
@@ -351,6 +352,14 @@ def process_track(
                 # --- Last.fm ---
                 lastfm_listeners = _as_int(effective_track.get("lastfm_listeners") or 0)
                 lastfm_playcount = _as_int(effective_track.get("lastfm_playcount") or 0)
+                # Bulk-cache fast-path: when the scan prefetched artist-wide
+                # popularity into track_popularity_cache, use it instead of a
+                # per-track API call.  Forced scans always recheck.
+                _prefetch_entry = None
+                if not _force:
+                    _prefetch_entry = (prefetched_popularity or {}).get(
+                        str(title or "").strip().lower()
+                    )
                 # Fresh-but-suspect values are re-fetched so scans self-heal:
                 # zero counts (failed fetch / missing key), or both sources
                 # below 25 (wrong-artist match cached by an earlier scan).
@@ -361,40 +370,47 @@ def process_track(
                     or lastfm_listeners == 0
                     or (lastfm_listeners < 25 and listenbrainz_listens < 25)
                 ):
-                    try:
-                        from helpers.config_helpers import get_config
-                        _lf_cfg = get_config().get("api_integrations", {}).get("lastfm", {})
-                        _lf_api_key = _lf_cfg.get("api_key", "")
-                        if _lf_api_key:
-                            lf = LastFmClient(_lf_api_key)
-                            # Prefer the aggregated fetch which merges split
-                            # Last.fm variants ("Song" vs "Song (Radio Edit)")
-                            # and falls back to a single track.getInfo lookup.
-                            agg = get_aggregated_lastfm_popularity(artist, title, lastfm_client=lf)
-                            if agg and (agg.get("listeners") or 0) > 0:
-                                lastfm_listeners = _as_int(agg.get("listeners") or 0)
-                                lastfm_playcount = _as_int(agg.get("track_play") or agg.get("playcount") or 0)
-                                lf_result = {}
+                    if _prefetch_entry and _prefetch_entry.get("lastfm_listeners"):
+                        lastfm_listeners = _as_int(_prefetch_entry.get("lastfm_listeners") or 0)
+                        lastfm_playcount = _as_int(_prefetch_entry.get("lastfm_playcount") or 0)
+                        update_payload["lastfm_listeners"] = lastfm_listeners
+                        update_payload["lastfm_playcount"] = lastfm_playcount
+                        update_payload["lastfm_last_updated"] = now_ts
+                    else:
+                        try:
+                            from helpers.config_helpers import get_config
+                            _lf_cfg = get_config().get("api_integrations", {}).get("lastfm", {})
+                            _lf_api_key = _lf_cfg.get("api_key", "")
+                            if _lf_api_key:
+                                lf = LastFmClient(_lf_api_key)
+                                # Prefer the aggregated fetch which merges split
+                                # Last.fm variants ("Song" vs "Song (Radio Edit)")
+                                # and falls back to a single track.getInfo lookup.
+                                agg = get_aggregated_lastfm_popularity(artist, title, lastfm_client=lf)
+                                if agg and (agg.get("listeners") or 0) > 0:
+                                    lastfm_listeners = _as_int(agg.get("listeners") or 0)
+                                    lastfm_playcount = _as_int(agg.get("track_play") or agg.get("playcount") or 0)
+                                    lf_result = {}
+                                else:
+                                    lf_result = lf.get_track_info(artist, title)
+                                    lastfm_listeners = _as_int(lf_result.get("listeners") if isinstance(lf_result, dict) else 0)
+                                    lastfm_playcount = _as_int(lf_result.get("track_play") if isinstance(lf_result, dict) else 0)
+                                update_payload["lastfm_listeners"] = lastfm_listeners
+                                update_payload["lastfm_playcount"] = lastfm_playcount
+                                update_payload["lastfm_last_updated"] = now_ts
+                                toptags = lf_result.get("toptags", {}) if isinstance(lf_result, dict) else {}
+                                tag_list = toptags.get("tag", []) if isinstance(toptags, dict) else []
+                                if tag_list:
+                                    import json
+                                    update_payload["lastfm_tags"] = json.dumps(
+                                        [t.get("name", "") for t in tag_list if isinstance(t, dict) and t.get("name")]
+                                    )
                             else:
-                                lf_result = lf.get_track_info(artist, title)
-                                lastfm_listeners = _as_int(lf_result.get("listeners") if isinstance(lf_result, dict) else 0)
-                                lastfm_playcount = _as_int(lf_result.get("track_play") if isinstance(lf_result, dict) else 0)
-                            update_payload["lastfm_listeners"] = lastfm_listeners
-                            update_payload["lastfm_playcount"] = lastfm_playcount
-                            update_payload["lastfm_last_updated"] = now_ts
-                            toptags = lf_result.get("toptags", {}) if isinstance(lf_result, dict) else {}
-                            tag_list = toptags.get("tag", []) if isinstance(toptags, dict) else []
-                            if tag_list:
-                                import json
-                                update_payload["lastfm_tags"] = json.dumps(
-                                    [t.get("name", "") for t in tag_list if isinstance(t, dict) and t.get("name")]
-                                )
-                        else:
+                                lastfm_listeners = 0
+                                lastfm_playcount = 0
+                        except Exception:
                             lastfm_listeners = 0
                             lastfm_playcount = 0
-                    except Exception:
-                        lastfm_listeners = 0
-                        lastfm_playcount = 0
 
                 # --- ListenBrainz ---
                 listenbrainz_listens = _as_int(effective_track.get("listenbrainz_listens") or 0)
@@ -407,20 +423,26 @@ def process_track(
                 # Fresh-but-zero is suspect (broken prior scan): re-fetch.
                 # Forced scans always re-fetch regardless of freshness.
                 if _force or not has_fresh_lb or listenbrainz_listens == 0:
-                    if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
-                        lb_entry = album_lb_data[recording_mbid]
-                        if lb_entry:
-                            listenbrainz_listens = _as_int(lb_entry.get("total_listen_count") or 0)
-                            listenbrainz_users = _as_int(lb_entry.get("total_user_count") or 0)
-                    if listenbrainz_listens == 0 and recording_mbid:
-                        try:
-                            lb = ListenBrainzClient()
-                            lb_result = lb.get_recording_popularity(recording_mbid) if recording_mbid else {}
-                            listenbrainz_listens = _as_int(lb_result.get("listen_count") if isinstance(lb_result, dict) else 0)
-                            listenbrainz_users = _as_int(lb_result.get("user_count") if isinstance(lb_result, dict) else 0)
-                        except Exception:
-                            listenbrainz_listens = 0
-                            listenbrainz_users = 0
+                    # Bulk-cache fast-path first: prefetched artist-wide data
+                    # from track_popularity_cache (non-forced scans only).
+                    if _prefetch_entry and _prefetch_entry.get("listenbrainz_listens"):
+                        listenbrainz_listens = _as_int(_prefetch_entry.get("listenbrainz_listens") or 0)
+                        listenbrainz_users = _as_int(_prefetch_entry.get("listenbrainz_users") or 0)
+                    else:
+                        if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
+                            lb_entry = album_lb_data[recording_mbid]
+                            if lb_entry:
+                                listenbrainz_listens = _as_int(lb_entry.get("total_listen_count") or 0)
+                                listenbrainz_users = _as_int(lb_entry.get("total_user_count") or 0)
+                        if listenbrainz_listens == 0 and recording_mbid:
+                            try:
+                                lb = ListenBrainzClient()
+                                lb_result = lb.get_recording_popularity(recording_mbid) if recording_mbid else {}
+                                listenbrainz_listens = _as_int(lb_result.get("listen_count") if isinstance(lb_result, dict) else 0)
+                                listenbrainz_users = _as_int(lb_result.get("user_count") if isinstance(lb_result, dict) else 0)
+                            except Exception:
+                                listenbrainz_listens = 0
+                                listenbrainz_users = 0
                     update_payload["listenbrainz_listens"] = listenbrainz_listens
                     update_payload["listenbrainz_users"] = listenbrainz_users
                     update_payload["listenbrainz_last_updated"] = now_ts

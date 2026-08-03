@@ -495,6 +495,13 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                                 reasons.append(f"album-z-score: {album_z:.2f}")
                             elif album_z:
                                 reasons.append(f"album-z-score: {album_z:.2f}")
+                            # Surface the raw listener counts alongside the
+                            # scoring so ratings are easy to sanity-check
+                            # against the source data (Last.fm / ListenBrainz).
+                            reasons.append(
+                                f"lf={int(t.get('lastfm_listeners') or 0):,} "
+                                f"lb={int(t.get('listenbrainz_listens') or 0):,}"
+                            )
                             reason_str = f" ({'; '.join(r for r in reasons if r)})" if reasons else ""
 
                             if t_single and t_conf == "high":

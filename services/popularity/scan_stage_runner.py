@@ -14,7 +14,6 @@ from services.popularity.scan_hooks import (
     prepare_tracks_for_album,
 )
 from services.popularity.popularity_sources import (
-    get_listenbrainz_batch_for_tracks,
     get_lastfm_artist_max_listeners,
 )
 from services.popularity.stages.album_stage import enrich_album
@@ -240,20 +239,28 @@ def run_scan(
             options=options,
         )
 
-        # ── Pre-fetch ListenBrainz data for ALL tracks in this album ──────
-        # This lets us compute album-level LB percentiles and avoid N+1
-        # per-track API calls.
-        album_lb_data: dict[str, dict[str, int | None]] = {}
+        # ── Bulk popularity cache prefetch (quick check first) ──────────────
+        # Populates track_popularity_cache for ALL tracks of the album.
+        # Subsequent scans make ZERO API calls when the cache already covers
+        # every title (fresh rows are reused), and only changed counts are
+        # written back.  Forced scans always recheck.
+        track_dicts = [tc["track"] for tc in track_contexts if tc.get("track")]
+        prefetched_popularity: dict[str, dict[str, Any]] = {}
         try:
-            track_dicts = [tc["track"] for tc in track_contexts if tc.get("track")]
-            album_lb_data = get_listenbrainz_batch_for_tracks(track_dicts) or {}
+            from services.popularity.popularity_cache_service import prefetch_artist_popularity
+            prefetched_popularity = prefetch_artist_popularity(
+                artist=artist,
+                tracks=track_dicts,
+                force=bool(options.get("force")),
+            )
         except Exception as exc:
-            logger.debug("[scan_runner] Album LB batch fetch failed: %s", exc)
+            logger.debug("[scan_runner] Popularity cache prefetch failed for %s: %s", artist, exc)
 
-        # Build album-level LB listen-count list for percentile scoring.
+        # Build album-level LB listen-count list for percentile scoring from
+        # the prefetched entries (cache or freshly fetched).
         album_lb_listens: list[int] = []
-        for mbid_key, lb_stats in album_lb_data.items():
-            tc = int(lb_stats.get("total_listen_count") or 0) if lb_stats else 0
+        for _entry in prefetched_popularity.values():
+            tc = int(_entry.get("listenbrainz_listens") or 0)
             if tc > 0:
                 album_lb_listens.append(tc)
 
@@ -314,11 +321,11 @@ def run_scan(
                     album_context=album_context,
                     album_result=album_result,
                     options=frozen_options,
-                    album_lb_data=album_lb_data,
                     album_lb_listens=album_lb_listens if album_lb_listens else None,
                     artist_max_lf_listeners=artist_max_lf,
                     artist_lf_context=artist_lf_context,
                     mb_cached_singles=mb_cached_singles,
+                    prefetched_popularity=prefetched_popularity,
                 )
                 if frozen_result is not None:
                     results.append(frozen_result)
@@ -331,11 +338,11 @@ def run_scan(
                 album_context=album_context,
                 album_result=album_result,
                 options=options,
-                album_lb_data=album_lb_data,
                 album_lb_listens=album_lb_listens if album_lb_listens else None,
                 artist_max_lf_listeners=artist_max_lf,
                 artist_lf_context=artist_lf_context,
                 mb_cached_singles=mb_cached_singles,
+                prefetched_popularity=prefetched_popularity,
             )
 
             if track_result is not None:

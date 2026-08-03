@@ -18,6 +18,7 @@ _EXPORTS = {
     "navidrome": ".navidrome",
     "metadata": ".metadata",
     "tracks": ".tracks",
+    "popularity_cache": ".popularity_cache",
 }
 
 __all__ = list(_EXPORTS)
