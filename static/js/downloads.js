@@ -79,7 +79,10 @@ window.mbDerivedCategory = function(release) {
   for (let i = 0; i < secondaryFirst.length; i++) {
     if (secondary.indexOf(secondaryFirst[i]) !== -1) return secondaryFirst[i];
   }
-  const pt = String(release.primary_type || release.category || '').toLowerCase();
+  // Prefer the server-derived category — primary_type is often stale (e.g.
+  // remixes persisted with a default "Album"), and category already encodes
+  // primary + secondary types.
+  const pt = String(release.category || release.primary_type || '').toLowerCase();
   return pt || 'other';
 };
 

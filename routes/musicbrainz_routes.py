@@ -426,7 +426,11 @@ async def api_musicbrainz_search():
                         "title": str(row["title"] or ""),
                         "primary_type": pt or row_cat,
                         "secondary_types": [],
-                        "category": _normalise_category(pt or row_cat),
+                        # Use the stored derived category when present — the
+                        # primary_type column is often stale (e.g. remixes
+                        # persisted with a default "Album"), and normalising
+                        # it would override the correct "Remix"/"Live" label.
+                        "category": row_cat or _normalise_category(pt or "Other"),
                         "first_release_date": str(row["first_release_date"] or ""),
                         "artist": artist_name,
                         "artist-credit": [{"name": artist_name}],

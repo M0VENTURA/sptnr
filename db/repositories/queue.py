@@ -292,22 +292,28 @@ def get_queue_status_counts() -> Dict[str, int]:
 
 
 def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
-    """Get non-terminal queue items (queued/searching/downloading/failed).
+    """Get non-terminal queue items (active statuses + failed).
 
-    Failed items are included because the queue page splits them out of the
-    active list client-side (mirrors the legacy API payload).
+    Active statuses come from the canonical ``ACTIVE_QUEUE_STATUSES`` set so
+    the list always matches the status counts — items in ``unmatched``,
+    ``queried``, ``copy_recommended`` or ``moving`` used to appear in the
+    counts but never in the rendered list. Failed items are included because
+    the queue page splits them out of the active list client-side (mirrors
+    the legacy API payload).
     """
+    from services.queue.queue_constraints import ACTIVE_QUEUE_STATUSES, FAILED_STATUSES
+    statuses = sorted(ACTIVE_QUEUE_STATUSES | FAILED_STATUSES)
     try:
         with db_session() as session:
             result = session.execute(
                 text("""
                     SELECT *
                     FROM download_queue
-                    WHERE status IN ('queued', 'searching', 'downloading', 'failed')
+                    WHERE status = ANY(:statuses)
                     ORDER BY created_at ASC
                     LIMIT :limit
                 """),
-                {"limit": limit},
+                {"statuses": statuses, "limit": limit},
             )
             return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
