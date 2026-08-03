@@ -289,7 +289,12 @@ class MusicBrainzService:
         The WS/2 recording lookup truncates the embedded ``releases`` list, but
         search results carry each recording's releases (with release-groups),
         so scan those directly before falling back to a lookup.
+
+        The release-group title must ALSO match the track title — a track that
+        merely appears on a single as a b-side ("Out on Patrol" on the "I'll
+        Be Waiting" single) is NOT itself a single.
         """
+        norm_title = normalize_title_for_lookup(title)
         query_title = normalize_title_for_lucene_query(title)
         query = (
             f'recording:"{escape_lucene_special_chars(query_title)}" '
@@ -304,12 +309,35 @@ class MusicBrainzService:
                     or rg.get("type")
                     or ""
                 ).lower()
-                if pt in ("single", "ep"):
+                if pt not in ("single", "ep"):
+                    continue
+                # The single/EP release-group must be FOR this track, not just
+                # contain it (b-sides live on singles too).
+                if self._rg_title_matches(norm_title, rg.get("title") or ""):
                     return True
         return False
 
-    def _recording_has_single_release(self, mbid: str) -> bool:
-        """True when any release of the recording belongs to a Single/EP release-group."""
+    def _rg_title_matches(self, norm_title: str, rg_title: str) -> bool:
+        """True when a release-group title matches the track title.
+
+        Exact normalized equality first, then a similarity fallback for
+        residual punctuation/case drift. Suffix variants ("(Epic Edition)")
+        are stripped on both sides.
+        """
+        if not norm_title or not rg_title:
+            return False
+        norm_rg = normalize_title_for_lookup(strip_single_release_suffix(rg_title) or rg_title)
+        if norm_rg == norm_title:
+            return True
+        return difflib.SequenceMatcher(None, norm_rg, norm_title).ratio() >= 0.85
+
+    def _recording_has_single_release(self, mbid: str, title: str = "") -> bool:
+        """True when any release of the recording belongs to a Single/EP
+        release-group whose title matches the track title.
+
+        Without the title check, b-sides ("Out on Patrol" on the "I'll Be
+        Waiting" single) are falsely detected as singles.
+        """
         recording = self.http.get_recording(
             mbid,
             inc="releases+release-groups",
@@ -317,14 +345,14 @@ class MusicBrainzService:
         )
         if not recording:
             return False
+        norm_title = normalize_title_for_lookup(title) if title else ""
         for release in recording.get("releases") or []:
             rg = release.get("release-group") or {}
             pt = (rg.get("primary-type") or rg.get("primary_type") or "").lower()
-            if pt in ("single", "ep"):
-                return True
-            # Fall back to type if primary-type is absent
             rt = (rg.get("type") or "").lower()
-            if rt in ("single", "ep"):
+            if pt not in ("single", "ep") and rt not in ("single", "ep"):
+                continue
+            if not title or self._rg_title_matches(norm_title, rg.get("title") or ""):
                 return True
         return False
 
