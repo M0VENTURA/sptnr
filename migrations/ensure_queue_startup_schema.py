@@ -114,7 +114,8 @@ def ensure_schema(cursor):
         "release_year": "INTEGER",
         "matched_file_path": "TEXT",
         "music_file_path": "TEXT",
-        "status_changed_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+        "status_changed_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        "source": "TEXT DEFAULT 'soulseek'",
     }
 
     for col, col_type in columns.items():

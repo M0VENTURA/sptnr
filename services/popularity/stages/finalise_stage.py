@@ -42,6 +42,10 @@ STAR_3_ALBUM_Z = STANDOUT_CONFIG.get("star_3", {}).get("album_z", 0.0)
 POPULARITY_5STAR_Z = STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
 LB_UNRELIABLE_5STAR = STANDOUT_CONFIG.get("lb_unreliable_5star_threshold", 0.50)
 UNDERPERFORMING_THRESHOLD = 0.6
+# Percentile-based elite paths need a statistically meaningful catalogue —
+# "top 10%" of a 5-track artist is a single track and means nothing. Below
+# this size, only a genuinely high artist z-score can substitute.
+STAR_5_MIN_CATALOGUE = 20
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +104,18 @@ def _assign_stars(
 
     album_z = _compute_album_z(score, album_scores)
     artist_z = _compute_artist_z(score, artist_scores)
-    is_elite = _is_top_artist_percentile(score, artist_scores, STAR_5_ARTIST_PCT)
+    artist_catalogue_size = len(artist_scores)
+    # Elite = top of the artist catalogue AND a standout within its own album.
+    # Without the album check, the least-bad track of a weak album would earn
+    # 5★ purely from percentile. Percentile paths also need a meaningful
+    # catalogue size; for small catalogues a genuinely high artist z-score is
+    # the only substitute.
+    _album_distribution_valid = len(album_scores) >= 3 and any(album_scores)
+    is_elite = (
+        _is_top_artist_percentile(score, artist_scores, STAR_5_ARTIST_PCT)
+        and (not _album_distribution_valid or album_z >= STAR_4_ALBUM_Z)
+        and (artist_catalogue_size >= STAR_5_MIN_CATALOGUE or artist_z >= STAR_5_ARTIST_Z)
+    )
     is_top_catalog = _is_top_artist_percentile(score, artist_scores, 0.25)
 
     # 5★: elite catalogue track (top 10%) or confirmed high-confidence single
