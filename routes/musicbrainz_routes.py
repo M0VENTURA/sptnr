@@ -408,19 +408,28 @@ async def api_musicbrainz_search():
                     if result_id in seen_ids:
                         continue
                     seen_ids.add(result_id)
-                    pt = str(row["primary_type"] or row["category"] or "Other")
+                    pt = str(row["primary_type"] or "")
+                    row_cat = str(row["category"] or "")
                     # Apply the UI type filter to local results too, so cached
-                    # entries of other types don't leak in when a type is selected.
+                    # entries of other types don't leak in when a type is
+                    # selected. Check BOTH the stored primary type and the
+                    # derived category: stale/mismatched columns (e.g. singles
+                    # persisted with a default primary type of "Album") must
+                    # not leak through when a type is chosen.
                     if release_type and release_type not in ("", "all"):
-                        row_category = _category_from_types(pt, [])
-                        if row_category.lower() != release_type:
+                        row_hits = {
+                            pt.lower(),
+                            row_cat.lower(),
+                            _category_from_types(pt or row_cat or "Other", []).lower(),
+                        }
+                        if release_type not in row_hits:
                             continue
                     releases.append({
                         "id": release_id,
                         "title": str(row["title"] or ""),
-                        "primary_type": pt,
+                        "primary_type": pt or row_cat,
                         "secondary_types": [],
-                        "category": _normalise_category(pt),
+                        "category": _normalise_category(pt or row_cat),
                         "first_release_date": str(row["first_release_date"] or ""),
                         "artist": artist_name,
                         "artist-credit": [{"name": artist_name}],
@@ -520,6 +529,26 @@ async def api_musicbrainz_search():
                     continue
                 seen_ids.add(result_id)
                 releases.append(_enrich_release_group(rg, "musicbrainz"))
+
+        # ── 2b. Unified type post-filter (defence in depth) ─────────────
+        # The Lucene ``primarytype:`` / ``secondarytype:`` terms narrow the
+        # MusicBrainz query, but local rows and edge-case MB data can still
+        # slip through. Re-filter the combined list so the UI type dropdown
+        # is authoritative: primary types (album/single/ep/...) match on the
+        # release-group's primary type; secondary types (compilation/live/
+        # remix/...) match on the derived display category.
+        if release_type and release_type not in ("", "all"):
+            _primary_choices = ("album", "single", "ep", "broadcast", "other")
+            _typed_releases: list[dict[str, Any]] = []
+            for r in releases:
+                _r_pt = str(r.get("primary_type") or r.get("category") or "").lower()
+                _r_cat = str(r.get("category") or "").lower()
+                if release_type in _primary_choices:
+                    if _r_pt == release_type:
+                        _typed_releases.append(r)
+                elif _r_cat == release_type:
+                    _typed_releases.append(r)
+            releases = _typed_releases
 
         # ── 3. Sort (legacy parity): artist asc, then first release date desc
         if artist_only:

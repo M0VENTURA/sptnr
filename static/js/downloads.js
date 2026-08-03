@@ -240,11 +240,18 @@ window.performMbSearch = async function() {
     let releases = data.releases || [];
 
     // Apply the release-type dropdown filter (modal field), if present.
+    // Primary types (album/single/ep/...) match on primary_type so singles
+    // never leak into an "Album" filter; secondary types match on category.
     const releaseType = document.getElementById('mbReleaseType')?.value || '';
     if (releaseType) {
+      const primaryTypes = ['album', 'single', 'ep', 'broadcast', 'other'];
       releases = releases.filter(r => {
+        const pt = (r.primary_type || '').toLowerCase();
         const cat = (r.category || r.primary_type || '').toLowerCase();
         const sec = (r.secondary_types || []).map(s => String(s).toLowerCase());
+        if (primaryTypes.includes(releaseType.toLowerCase())) {
+          return pt === releaseType.toLowerCase() || (pt === '' && cat === releaseType.toLowerCase());
+        }
         return cat === releaseType.toLowerCase() || sec.includes(releaseType.toLowerCase());
       });
     }
