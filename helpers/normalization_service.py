@@ -319,12 +319,20 @@ def normalize_title_for_lucene_query(
     query tokens aligned with the index; the canonical
     :func:`normalize_title_for_lookup` replaces punctuation with spaces and is
     therefore unsuitable for phrase queries.
+
+    Only parenthetical cover annotations ("(PSY Cover)", "(Cover)") are
+    stripped — MusicBrainz titles omit those, so a track titled "Gangnam
+    Style (PSY Cover)" must query for "gangnam style", not the unmatched
+    phrase "gangnam style psy cover". Other annotations such as "(Epic
+    Edition)" are preserved because MusicBrainz release groups carry them in
+    their real titles (e.g. the "Das Elfte Gebot (Epic Edition)" single).
     """
 
     if not title:
         return ""
 
-    value = unicodedata.normalize("NFD", title.lower())
+    value = re.sub(r"\s*\([^)]*\bcover\b[^)]*\)", "", title, flags=re.IGNORECASE)
+    value = unicodedata.normalize("NFD", value.lower())
     value = "".join(c for c in value if not unicodedata.combining(c))
     value = re.sub(r"[^\w\s]", "", value)
     return re.sub(r"\s+", " ", value).strip()

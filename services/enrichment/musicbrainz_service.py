@@ -254,9 +254,12 @@ class MusicBrainzService:
             if not groups:
                 # Phrase query missed it (apostrophe/punctuation tokenisation):
                 # retry with an artist-scoped search and match by similarity.
+                # Use a generous limit — large discographies (50+ release
+                # groups) can otherwise hide the matching single beyond the
+                # first page of results.
                 groups = self.http.search_release_groups(
                     f'artist:"{escape_lucene_special_chars(artist)}"',
-                    limit=25,
+                    limit=50,
                 )
             norm_title = normalize_title_for_lookup(title)
             for group in groups:
