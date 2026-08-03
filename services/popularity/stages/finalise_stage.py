@@ -126,15 +126,19 @@ def _assign_stars(
             # Live singles reach 5★ only when elite/top-catalogue.
             if is_elite:
                 return 5
-        elif artist_z >= STAR_5_ARTIST_Z or album_z >= STAR_5_ALBUM_Z or is_top_catalog:
+        elif artist_z >= STAR_5_ARTIST_Z or album_z >= STAR_5_ALBUM_Z:
+            # 5★ is reserved for genuine popularity standouts — external
+            # confirmation alone (MB/Discogs) earns the 4★ floor below, not
+            # 5★. "Top 25% of catalogue" is deliberately NOT enough.
             return 5
 
-    # 4★/5★: medium-confidence single — 5★ when top catalogue (legacy parity),
-    # 4★ otherwise. Live medium singles are capped at 4★ (3★ if not top).
+    # 4★/5★: medium-confidence single — 5★ only for genuine z-score
+    # standouts, 4★ otherwise. Live medium singles are capped at 4★ (3★ if
+    # not top-catalogue).
     if is_single and single_confidence == "medium":
         if is_live:
             return 4 if is_top_catalog else 3
-        return 5 if is_top_catalog else 4
+        return 5 if (artist_z >= STAR_5_ARTIST_Z or album_z >= STAR_5_ALBUM_Z) else 4
 
     # 4★: high-confidence single — the external confirmation (Discogs /
     # MusicBrainz) IS the evidence, so it rates at least 4★. Local popularity
@@ -154,12 +158,13 @@ def _assign_stars(
         return 5
 
     # LB rescue: Last.fm unreliable but ListenBrainz percentile is strong
-    # and the track is strong within its catalogue (legacy parity).
+    # and the track is a genuine standout within its own album. Top-25%
+    # catalogue position alone is not enough for 5★ (legacy parity).
     if (
         not is_live
         and _is_lastfm_unreliable(lf_listeners, lb_listens)
         and lb_percentile >= LB_UNRELIABLE_5STAR
-        and (is_top_catalog or album_z >= STAR_4_ALBUM_Z)
+        and album_z >= STAR_4_ALBUM_Z
     ):
         return 5
 
