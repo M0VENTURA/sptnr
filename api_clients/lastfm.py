@@ -28,6 +28,9 @@ class LastFmClient:
     def get_track_info(self, artist: str, title: str, track_mbid: str | None = None) -> dict[str, Any]:
         return self.service.get_track_info(artist, title, track_mbid=track_mbid)
 
+    def get_artist_top_tracks(self, artist: str, limit: int = 100) -> list[dict[str, Any]]:
+        return self.service.get_artist_top_tracks(artist, limit=limit)
+
     def search_track(self, artist: str, title: str, limit: int = 10) -> list[dict[str, Any]]:
         return self.service.search_track(artist, title, limit=limit)
 

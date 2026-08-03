@@ -150,6 +150,29 @@ class LastFmService:
 
         self.mb_client = None
 
+    def get_artist_top_tracks(self, artist: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Fetch an artist's top tracks from Last.fm.
+
+        Returns raw track dicts (``name``, ``listeners``, ``playcount``).
+        Used by the popularity pipeline to aggregate listener counts across
+        title variants (e.g. "Song" vs "Song (feat. Guest)").
+        """
+        if not self.api_key or not artist:
+            return []
+        try:
+            data = self.http.get_json(
+                "artist.getTopTracks",
+                artist=artist,
+                limit=max(1, min(int(limit), 200)),
+            )
+            tracks = (data.get("toptracks") or {}).get("track") or []
+            if isinstance(tracks, dict):
+                tracks = [tracks]
+            return [t for t in tracks if isinstance(t, dict)]
+        except Exception as exc:
+            logger.debug("Last.fm artist top tracks failed for %s: %s", artist, exc)
+            return []
+
     @staticmethod
     def clean_spaces(text: str) -> str:
         """Collapse whitespace in a string, preserving everything else."""

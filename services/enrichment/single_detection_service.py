@@ -523,8 +523,6 @@ def detect_single_for_track(
     # low z-score only caps the final confidence below 'high' unless two or
     # more high-confidence sources independently confirm the single.
     z_low = artist_z < -1.0 and not is_compilation and not is_remastered
-    if z_low:
-        reasons.append("z_score_low")
 
     # ── Gather source confirmations ──
     discogs_confirmed = False
@@ -537,6 +535,8 @@ def detect_single_for_track(
 
     reasons: list[str] = []
     sources: list[dict] = []
+    if z_low:
+        reasons.append("z_score_low")
 
     # ── Dynamic z-score standout signal ──────────────────────────────────
     # Legacy behaviour: when a track's z-score exceeds the catalog-size-aware

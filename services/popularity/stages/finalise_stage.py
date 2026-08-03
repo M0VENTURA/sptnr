@@ -121,12 +121,15 @@ def _assign_stars(
             return 4 if is_top_catalog else 3
         return 5 if is_top_catalog else 4
 
-    # 4★: high-confidence single below the 5★ bar
+    # 4★: high-confidence single — the external confirmation (Discogs /
+    # MusicBrainz) IS the evidence, so it rates at least 4★. Local popularity
+    # z-scores gate the 5★ tier above, not the 4★ floor. Live singles keep the
+    # z-score requirement (live recordings are penalised by design).
     if is_single and single_confidence == "high":
         if is_live:
             if artist_z >= STAR_4_ARTIST_Z or album_z >= STAR_4_ALBUM_Z:
                 return 4
-        elif artist_z >= STAR_4_ARTIST_Z or album_z >= STAR_4_ALBUM_Z:
+        else:
             return 4
     if _is_top_artist_percentile(score, artist_scores, STAR_4_ARTIST_PCT):
         return 4

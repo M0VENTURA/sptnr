@@ -310,11 +310,19 @@ def process_track(
             # so the popularity score is reused without API calls while the
             # rest of the pipeline (singles/cover/genre) still runs.
             # Forced scans bypass the cache (legacy ``if not (FORCE_RESCAN or force)``).
+            # Cached scores with BOTH provider counts at zero are treated as
+            # suspect (a failed fetch from a broken scan, missing key, or
+            # outage) and re-fetched so scans self-heal instead of caching 0s.
             _force = bool(options.get("force"))
-            _cached = frozen_track or (
+            _has_provider_data = (
+                int(effective_track.get("lastfm_listeners") or 0) > 0
+                or int(effective_track.get("listenbrainz_listens") or 0) > 0
+            )
+            _cached = (frozen_track or (
                 not _force
                 and should_use_cached_score(effective_track)
-                and effective_track.get("final_score")
+            )) and bool(
+                effective_track.get("final_score") and _has_provider_data
             )
             if _cached:
                 logger.debug(
@@ -337,7 +345,9 @@ def process_track(
                 # --- Last.fm ---
                 lastfm_listeners = _as_int(effective_track.get("lastfm_listeners") or 0)
                 lastfm_playcount = _as_int(effective_track.get("lastfm_playcount") or 0)
-                if not has_fresh_lf:
+                # Fresh-but-zero is suspect (broken prior scan / missing key):
+                # re-fetch so scans self-heal.
+                if not has_fresh_lf or lastfm_listeners == 0:
                     try:
                         from helpers.config_helpers import get_config
                         _lf_cfg = get_config().get("api_integrations", {}).get("lastfm", {})
@@ -381,7 +391,8 @@ def process_track(
                     last_lb_ts is not None
                     and (now_ts - last_lb_ts).total_seconds() < _cache_ttl * 3600
                 )
-                if not has_fresh_lb:
+                # Fresh-but-zero is suspect (broken prior scan): re-fetch.
+                if not has_fresh_lb or listenbrainz_listens == 0:
                     if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
                         lb_entry = album_lb_data[recording_mbid]
                         if lb_entry:
