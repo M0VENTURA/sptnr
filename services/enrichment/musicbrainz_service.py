@@ -229,31 +229,52 @@ class MusicBrainzService:
             return False
         try:
             mbid, _confidence = self.get_suggested_mbid(title, artist)
-            if not mbid:
-                return False
+            if mbid and self._recording_has_single_release(mbid):
+                return True
 
-            recording = self.http.get_recording(
-                mbid,
-                inc="releases+release-groups",
-                timeout=10.0,
+            # Secondary pass: the suggested recording may be the album-version
+            # recording of the same song (its releases are album-only), so the
+            # single release is missed. Re-run the search and inspect the
+            # embedded release-group info of the remaining candidates — no
+            # extra per-recording lookups.
+            query_title = normalize_title_for_lucene_query(title)
+            query = (
+                f'recording:"{escape_lucene_special_chars(query_title)}" '
+                f'AND artist:"{escape_lucene_special_chars(artist)}"'
             )
-            if not recording:
-                return False
-
-            for release in recording.get("releases") or []:
-                rg = release.get("release-group") or {}
-                pt = (rg.get("primary-type") or rg.get("primary_type") or "").lower()
-                if pt in ("single", "ep"):
-                    return True
-                # Fall back to type if primary-type is absent
-                rt = (rg.get("type") or "").lower()
-                if rt in ("single", "ep"):
-                    return True
-
+            recordings = self.http.search_recordings(query, limit=10)
+            for rec in recordings:
+                if not rec.get("id") or rec.get("id") == mbid:
+                    continue
+                for release in rec.get("releases") or []:
+                    rg = release.get("release-group") or {}
+                    pt = (rg.get("primary-type") or rg.get("primary_type") or rg.get("type") or "").lower()
+                    if pt in ("single", "ep"):
+                        return True
             return False
         except Exception as exc:
             logger.debug("MusicBrainz is_single failed for %s / %s: %s", artist, title, exc)
             return False
+
+    def _recording_has_single_release(self, mbid: str) -> bool:
+        """True when any release of the recording belongs to a Single/EP release-group."""
+        recording = self.http.get_recording(
+            mbid,
+            inc="releases+release-groups",
+            timeout=10.0,
+        )
+        if not recording:
+            return False
+        for release in recording.get("releases") or []:
+            rg = release.get("release-group") or {}
+            pt = (rg.get("primary-type") or rg.get("primary_type") or "").lower()
+            if pt in ("single", "ep"):
+                return True
+            # Fall back to type if primary-type is absent
+            rt = (rg.get("type") or "").lower()
+            if rt in ("single", "ep"):
+                return True
+        return False
 
     # -----------------------------------------------------------------------------
     # SIMPLE LOOKUPS
