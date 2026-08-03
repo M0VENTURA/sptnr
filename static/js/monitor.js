@@ -184,65 +184,67 @@ let searchLogPaused = false;
 // ===== Folder Groups =====
 async function loadFolderGroups(options) {
   options = options || {};
+  var section = document.getElementById('folderGroupsSection');
+  var list = document.getElementById('folderGroupsList');
+  var badge = document.getElementById('folderGroupsBadge');
+  if (!section || !list) return;
+  if (options.keepVisibleOnEmpty !== false) section.style.display = 'block';
+
+  var groups = [];
   try {
     var data = await fetchJsonOrThrow('/api/downloads/grouped-folders');
-    if (!data || !data.success) return;
-    var groups = data.folder_groups || [];
-    var section = document.getElementById('folderGroupsSection');
-    var list = document.getElementById('folderGroupsList');
-    var badge = document.getElementById('folderGroupsBadge');
-    if (!section || !list) return;
-    if (groups.length === 0) {
-      // The grouped-folders endpoint only covers MusicBrainz-managed releases.
-      // Fall back to the real download_queue so items added via the search /
-      // download flows still appear in the Download Queue section.
-      try {
-        var qd = await fetchJsonOrThrow('/api/downloads/queue?limit=200');
-        var qItems = (qd && qd.queue) || [];
-        if (qItems.length > 0) {
-          section.style.display = 'block';
-          if (badge) badge.textContent = qItems.length + ' items';
-          list.innerHTML = '<div class="list-group list-group-flush">' +
-            qItems.map(function(item) {
-              var st = item.status || 'queued';
-              var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
-              return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
-                '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
-                (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
-                '</div><span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span></div></div>';
-            }).join('') + '</div>';
-          updateQueuePageControls(qItems.length, qItems.length);
-          return;
-        }
-      } catch (e) {
-        console.error('Error loading queue fallback:', e);
-      }
-      if (options.keepVisibleOnEmpty !== false) {
-        section.style.display = 'block';
-        if (badge) badge.textContent = '0 items';
-        list.innerHTML = '<div class="alert alert-info m-3"><i class="bi bi-info-circle"></i> No items in queue right now.</div>';
-      } else {
-        section.style.display = 'none';
-      }
-      return;
-    }
-    section.style.display = 'block';
-    if (badge) badge.textContent = groups.length + ' items';
-    // Simple render: show folder names
-    list.innerHTML = '<div class="list-group list-group-flush">' +
-      groups.map(function(g) {
-        var name = g.folder_name || g.folder_path || g.name || 'Unknown';
-        var artist = g.artist || '';
-        var album = g.album || '';
-        var trackCount = g.track_count || (g.tracks ? g.tracks.length : 0);
-        return '<div class="list-group-item"><div class="d-flex justify-content-between"><div><strong>' + escapeHtml(name) + '</strong>' +
-          (artist ? '<br><small class="text-muted">' + escapeHtml(artist) + (album ? ' - ' + escapeHtml(album) : '') + '</small>' : '') +
-          '</div><span class="badge bg-info">' + trackCount + ' tracks</span></div></div>';
-      }).join('') + '</div>';
-    updateQueuePageControls(groups.length, groups.length);
+    if (data && data.success) groups = data.folder_groups || [];
   } catch (error) {
-    console.error('Error loading folder groups:', error);
+    console.error('Error loading folder groups, falling back to queue items:', error);
   }
+
+  // The grouped-folders endpoint only covers MusicBrainz-managed releases.
+  // Fall back to the real download_queue so items added via the search /
+  // download flows still appear in the Download Queue section.
+  if (groups.length === 0) {
+    try {
+      var qd = await fetchJsonOrThrow('/api/downloads/queue?limit=200');
+      var qItems = (qd && qd.queue) || [];
+      if (qItems.length > 0) {
+        if (badge) badge.textContent = qItems.length + ' items';
+        list.innerHTML = '<div class="list-group list-group-flush">' +
+          qItems.map(function(item) {
+            var st = item.status || 'queued';
+            var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
+            return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
+              '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
+              (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+              '</div><span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span></div></div>';
+          }).join('') + '</div>';
+        updateQueuePageControls(qItems.length, qItems.length);
+        return;
+      }
+    } catch (error) {
+      console.error('Error loading queue fallback:', error);
+    }
+    if (options.keepVisibleOnEmpty !== false) {
+      if (badge) badge.textContent = '0 items';
+      list.innerHTML = '<div class="alert alert-info m-3"><i class="bi bi-info-circle"></i> No items in queue right now.</div>';
+    } else {
+      section.style.display = 'none';
+    }
+    return;
+  }
+
+  section.style.display = 'block';
+  if (badge) badge.textContent = groups.length + ' items';
+  // Simple render: show folder names
+  list.innerHTML = '<div class="list-group list-group-flush">' +
+    groups.map(function(g) {
+      var name = g.folder_name || g.folder_path || g.name || 'Unknown';
+      var artist = g.artist || '';
+      var album = g.album || '';
+      var trackCount = g.track_count || (g.tracks ? g.tracks.length : 0);
+      return '<div class="list-group-item"><div class="d-flex justify-content-between"><div><strong>' + escapeHtml(name) + '</strong>' +
+        (artist ? '<br><small class="text-muted">' + escapeHtml(artist) + (album ? ' - ' + escapeHtml(album) : '') + '</small>' : '') +
+        '</div><span class="badge bg-info">' + trackCount + ' tracks</span></div></div>';
+    }).join('') + '</div>';
+  updateQueuePageControls(groups.length, groups.length);
 }
 
 // ===== Upcoming Releases =====
@@ -658,5 +660,11 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   if (typeof window.loadFolderGroups === 'function') {
     window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+  }
+  if (typeof window.loadQueueLog === 'function') {
+    window.loadQueueLog();
+  }
+  if (typeof window.loadSearchLog === 'function') {
+    window.loadSearchLog();
   }
 });

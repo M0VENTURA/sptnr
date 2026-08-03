@@ -242,19 +242,13 @@ window.performMbSearch = async function() {
     var releases = data.releases || [];
 
     if (releaseType) {
-      // Primary types (album/single/ep/...) match on the release-group's
-      // primary type — this keeps compilation/live/remix albums visible under
-      // "Album" while guaranteeing singles/EPs never leak in. Secondary types
-      // (compilation/live/remix/...) match on the derived display category.
-      var primaryTypes = ['album', 'single', 'ep', 'broadcast', 'other'];
+      // Filter on the derived display category (primary + secondary types),
+      // so "Album" excludes remix/live/compilation/soundtrack release-groups
+      // (primary type Album + secondary type) and stale primary_type values
+      // can't leak other categories in.
       releases = releases.filter(function(r) {
-        var pt = (r.primary_type || '').toLowerCase();
         var cat = (r.category || r.primary_type || '').toLowerCase();
-        var sec = (r.secondary_types || []).map(function(s) { return String(s).toLowerCase(); });
-        if (primaryTypes.indexOf(releaseType.toLowerCase()) !== -1) {
-          return pt === releaseType.toLowerCase() || (pt === '' && cat === releaseType.toLowerCase());
-        }
-        return cat === releaseType.toLowerCase() || sec.indexOf(releaseType.toLowerCase()) !== -1;
+        return cat === releaseType.toLowerCase();
       });
     }
 

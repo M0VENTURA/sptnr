@@ -412,17 +412,14 @@ async def api_musicbrainz_search():
                     row_cat = str(row["category"] or "")
                     # Apply the UI type filter to local results too, so cached
                     # entries of other types don't leak in when a type is
-                    # selected. Check BOTH the stored primary type and the
-                    # derived category: stale/mismatched columns (e.g. singles
-                    # persisted with a default primary type of "Album") must
-                    # not leak through when a type is chosen.
+                    # selected. Filter on the stored category when present
+                    # (the derived column), falling back to the derived type —
+                    # stale primary_type columns (e.g. singles persisted with
+                    # a default primary type of "Album") must not leak
+                    # through when a type is chosen.
                     if release_type and release_type not in ("", "all"):
-                        row_hits = {
-                            pt.lower(),
-                            row_cat.lower(),
-                            _category_from_types(pt or row_cat or "Other", []).lower(),
-                        }
-                        if release_type not in row_hits:
+                        local_cat = (row_cat or _category_from_types(pt or "Other", [])).lower()
+                        if local_cat != release_type:
                             continue
                     releases.append({
                         "id": release_id,
@@ -538,17 +535,14 @@ async def api_musicbrainz_search():
         # release-group's primary type; secondary types (compilation/live/
         # remix/...) match on the derived display category.
         if release_type and release_type not in ("", "all"):
-            _primary_choices = ("album", "single", "ep", "broadcast", "other")
-            _typed_releases: list[dict[str, Any]] = []
-            for r in releases:
-                _r_pt = str(r.get("primary_type") or r.get("category") or "").lower()
-                _r_cat = str(r.get("category") or "").lower()
-                if release_type in _primary_choices:
-                    if _r_pt == release_type:
-                        _typed_releases.append(r)
-                elif _r_cat == release_type:
-                    _typed_releases.append(r)
-            releases = _typed_releases
+            # Match on the derived display category (primary + secondary
+            # types): "Album" must exclude remix/live/compilation/soundtrack
+            # release-groups (primary type Album + a secondary type) and any
+            # stale rows whose primary_type alone would match.
+            releases = [
+                r for r in releases
+                if str(r.get("category") or r.get("primary_type") or "").lower() == release_type
+            ]
 
         # ── 3. Sort (legacy parity): artist asc, then first release date desc
         if artist_only:

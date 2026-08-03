@@ -222,39 +222,88 @@ class MusicBrainzService:
     def is_single(self, title: str, artist: str, album_track_count: int | None = None) -> bool:
         """Check if a track is a single using MusicBrainz release-group type.
 
-        Looks up the recording, checks its releases' release-group ``primary_type``.
-        Returns ``True`` if the type is ``"Single"`` or ``"EP"``.
+        A track is a single when any release it appears on belongs to a
+        Single/EP release-group. Three passes, in order of reliability:
+
+        1. Recording search — results embed each recording's releases with
+           their release-groups, which surfaces the single release even when
+           the recording lookup truncates the embedded release list.
+        2. Recording lookup — the suggested recording's releases (fallback
+           when search embeds are sparse).
+        3. Release-group search — the RG index tokenises punctuation
+           differently (phrase queries miss "What's the Deal?"), so when the
+           phrase query finds nothing, retry with an artist-scoped search and
+           match by title similarity.
         """
         if not self.enabled or not title or not artist:
             return False
         try:
+            if self._recording_search_has_single_release(title, artist):
+                return True
+
             mbid, _confidence = self.get_suggested_mbid(title, artist)
             if mbid and self._recording_has_single_release(mbid):
                 return True
 
-            # Secondary pass: the suggested recording may be the album-version
-            # recording of the same song (its releases are album-only), so the
-            # single release is missed. Search release-groups by title instead
-            # — the single's own release-group (type Single/EP) matches
-            # directly, with no per-recording lookups.
             query_title = normalize_title_for_lucene_query(title)
             rg_query = (
                 f'releasegroup:"{escape_lucene_special_chars(query_title)}" '
                 f'AND artist:"{escape_lucene_special_chars(artist)}"'
             )
-            for group in self.http.search_release_groups(rg_query, limit=10):
+            groups = self.http.search_release_groups(rg_query, limit=10)
+            if not groups:
+                # Phrase query missed it (apostrophe/punctuation tokenisation):
+                # retry with an artist-scoped search and match by similarity.
+                groups = self.http.search_release_groups(
+                    f'artist:"{escape_lucene_special_chars(artist)}"',
+                    limit=25,
+                )
+            norm_title = normalize_title_for_lookup(title)
+            for group in groups:
                 pt = (
                     group.get("primary-type")
                     or group.get("primary_type")
                     or group.get("type")
                     or ""
                 ).lower()
-                if pt in ("single", "ep"):
+                if pt not in ("single", "ep"):
+                    continue
+                sim = difflib.SequenceMatcher(
+                    None,
+                    norm_title,
+                    normalize_title_for_lookup(group.get("title") or ""),
+                ).ratio()
+                if sim >= 0.7:
                     return True
             return False
         except Exception as exc:
             logger.debug("MusicBrainz is_single failed for %s / %s: %s", artist, title, exc)
             return False
+
+    def _recording_search_has_single_release(self, title: str, artist: str) -> bool:
+        """True when a recording-search result embeds a Single/EP release-group.
+
+        The WS/2 recording lookup truncates the embedded ``releases`` list, but
+        search results carry each recording's releases (with release-groups),
+        so scan those directly before falling back to a lookup.
+        """
+        query_title = normalize_title_for_lucene_query(title)
+        query = (
+            f'recording:"{escape_lucene_special_chars(query_title)}" '
+            f'AND artist:"{escape_lucene_special_chars(artist)}"'
+        )
+        for rec in self.http.search_recordings(query, limit=10):
+            for release in rec.get("releases") or []:
+                rg = release.get("release-group") or {}
+                pt = (
+                    rg.get("primary-type")
+                    or rg.get("primary_type")
+                    or rg.get("type")
+                    or ""
+                ).lower()
+                if pt in ("single", "ep"):
+                    return True
+        return False
 
     def _recording_has_single_release(self, mbid: str) -> bool:
         """True when any release of the recording belongs to a Single/EP release-group."""
