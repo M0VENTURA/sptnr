@@ -710,9 +710,9 @@ def api_get_active_releases():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/download", methods=["POST"])
-def api_musicbrainz_download():
+async def api_musicbrainz_download():
     """Initiate a managed download from a MusicBrainz release with full track integration."""
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     release_id = str(data.get("release_id") or "").strip()
     release_title = str(data.get("release_title") or "").strip()
     artist = str(data.get("artist") or "").strip()
@@ -724,15 +724,15 @@ def api_musicbrainz_download():
     if not all([release_id, release_title, artist]):
         return jsonify({"error": "Missing required parameters"}), 400
 
-    method, method_error = _normalize_download_method(
-        method,
-        default_method="slskd",
-        context=f"MusicBrainz release {release_id}",
-    )
-    if method_error:
-        return jsonify({"error": method_error}), 400
-
     try:
+        method, method_error = _normalize_download_method(
+            method,
+            default_method="slskd",
+            context=f"MusicBrainz release {release_id}",
+        )
+        if method_error:
+            return jsonify({"error": method_error}), 400
+
         result = start_release_download(
             release_id,
             release_title,

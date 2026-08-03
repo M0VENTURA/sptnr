@@ -27,27 +27,48 @@ from db.engine import db_session
 
 logger = logging.getLogger(__name__)
 
-# Default Wikipedia sources for upcoming releases
-# "List_of_upcoming_albums" was deleted — using year-specific "in music" pages instead.
+# Default Wikipedia sources for upcoming releases.
+# "List_of_upcoming_albums" was deleted — the "List of <year> albums" pages
+# (month-by-month release tables) are the canonical source, matching the
+# legacy scraper. The "{year}_in_music" hub pages contain NO release tables
+# (they only link to the List pages), so they are used as fallbacks only.
 _year = datetime.now().year
 DEFAULT_WIKIPEDIA_SOURCES: dict[str, dict[str, Any]] = {
     f"{_year}_albums": {
-        "url": f"https://en.wikipedia.org/wiki/{_year}_in_music",
+        "url": f"https://en.wikipedia.org/wiki/List_of_{_year}_albums",
         "name": f"{_year} Albums",
         "columns": ["day", "artist", "album", "genre"],
-        "fallback_titles": [
-            f"{_year}_in_American_music",
-            f"{_year}_in_British_music",
-            "List_of_upcoming_albums",
-        ],
+        "fallback_titles": [f"{_year}_in_music"],
+    },
+    f"{_year}_heavy_metal": {
+        "url": f"https://en.wikipedia.org/wiki/{_year}_in_heavy_metal_music",
+        "name": f"Heavy Metal {_year}",
+        "columns": ["day", "artist", "album"],
+        "fallback_titles": [],
+    },
+    f"{_year}_rock": {
+        "url": f"https://en.wikipedia.org/wiki/{_year}_in_rock_music",
+        "name": f"Rock Music {_year}",
+        "columns": ["day", "artist", "album"],
+        "fallback_titles": [],
+    },
+    f"{_year}_kpop": {
+        "url": f"https://en.wikipedia.org/wiki/{_year}_in_South_Korean_music",
+        "name": f"K-Pop/Korean Music {_year}",
+        "columns": ["day", "album", "artist"],
+        "fallback_titles": [],
+    },
+    f"{_year}_american": {
+        "url": f"https://en.wikipedia.org/wiki/{_year}_in_American_music",
+        "name": f"American Music {_year}",
+        "columns": ["day", "album", "artist"],
+        "fallback_titles": [],
     },
     f"{_year + 1}_albums": {
-        "url": f"https://en.wikipedia.org/wiki/{_year + 1}_in_music",
+        "url": f"https://en.wikipedia.org/wiki/List_of_{_year + 1}_albums",
         "name": f"{_year + 1} Albums",
         "columns": ["day", "artist", "album", "genre"],
-        "fallback_titles": [
-            "List_of_upcoming_albums",
-        ],
+        "fallback_titles": [f"{_year + 1}_in_music"],
     },
 }
 
@@ -71,8 +92,45 @@ class WikipediaReleaseScraper:
     """Scrapes upcoming album releases from Wikipedia pages."""
 
     def __init__(self, sources: dict[str, dict[str, Any]] | None = None):
-        self.sources = sources or DEFAULT_WIKIPEDIA_SOURCES
+        self.sources = sources or self._load_configured_sources()
         self.http = WikipediaClient()
+
+    def _load_configured_sources(self) -> dict[str, dict[str, Any]]:
+        """Load sources from config (``upcoming_releases_sources``).
+
+        Mirrors the legacy scraper: config entries win, defaults are the
+        fallback when nothing is configured.
+        """
+        try:
+            from helpers.config_helpers import get_upcoming_releases_sources
+            loaded: dict[str, dict[str, Any]] = {}
+            for s in get_upcoming_releases_sources() or []:
+                if not isinstance(s, dict):
+                    continue
+                key = str(s.get("key", "")).strip()
+                url = str(s.get("url", "")).strip()
+                if not key or not url:
+                    continue
+                cols = s.get("columns")
+                if isinstance(cols, str):
+                    cols = [c.strip() for c in cols.split(",") if c.strip()]
+                if not isinstance(cols, list) or not cols:
+                    cols = ["day", "artist", "album"]
+                fallback_titles = s.get("fallback_titles") or []
+                if isinstance(fallback_titles, str):
+                    fallback_titles = [fallback_titles]
+                loaded[key] = {
+                    "url": url,
+                    "name": str(s.get("name", key)),
+                    "columns": list(cols),
+                    "fallback_titles": list(fallback_titles),
+                }
+            if loaded:
+                logger.debug("[SCRAPER] Loaded %d sources from config", len(loaded))
+                return loaded
+        except Exception as exc:
+            logger.warning("[SCRAPER] Could not load configured sources: %s", exc)
+        return DEFAULT_WIKIPEDIA_SOURCES
 
     # ------------------------------------------------------------------
     # Public API

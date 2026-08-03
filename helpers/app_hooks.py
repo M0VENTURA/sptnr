@@ -12,13 +12,30 @@ Called once during app factory setup.
 
 import time
 import logging
+import traceback
 
-from quart import g, redirect, request, url_for
+from quart import g, jsonify, redirect, request, url_for
+from werkzeug.exceptions import HTTPException
 
 logger = logging.getLogger(__name__)
 
 
 def register_app_hooks(app):
+    @app.errorhandler(Exception)
+    def handle_unhandled_exception(exc):
+        """Return JSON for escaped exceptions instead of Quart's default HTML 500 page.
+
+        Without this, API clients receive an HTML error page and report
+        'Server returned HTML instead of JSON (HTTP 500)'. Mirrors the legacy
+        system's handler: HTTP exceptions (404/405/...) keep their default
+        behaviour; anything else becomes a JSON 500 with a logged traceback.
+        """
+        if isinstance(exc, HTTPException):
+            return exc
+        logger.error("Unhandled exception: %s: %s", type(exc).__name__, exc)
+        logger.error(traceback.format_exc())
+        return jsonify({"success": False, "error": "An internal server error occurred. Please try again."}), 500
+
     @app.before_request
     def before_request():
         g.start_time = time.time()
