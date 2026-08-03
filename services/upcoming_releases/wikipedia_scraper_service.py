@@ -96,16 +96,19 @@ class WikipediaReleaseScraper:
         self.http = WikipediaClient()
 
     def _load_configured_sources(self) -> dict[str, dict[str, Any]]:
-        """Load sources from config (``upcoming_releases_sources``).
+        """Load sources from config (``upcoming_releases.sources``).
 
         Mirrors the legacy scraper: config entries win, defaults are the
-        fallback when nothing is configured.
+        fallback when nothing is configured. Sources disabled in the config
+        page (``enabled: false``) are skipped.
         """
         try:
             from helpers.config_helpers import get_upcoming_releases_sources
             loaded: dict[str, dict[str, Any]] = {}
             for s in get_upcoming_releases_sources() or []:
                 if not isinstance(s, dict):
+                    continue
+                if s.get("enabled", True) is False:
                     continue
                 key = str(s.get("key", "")).strip()
                 url = str(s.get("url", "")).strip()
@@ -245,8 +248,11 @@ class WikipediaReleaseScraper:
         last_seen_day: int | None = None
 
         for table in tables:
-            # Detect month from preceding heading
-            current_month, last_seen_day = self._detect_month(table, current_month, last_seen_day)
+            # Detect month from preceding heading; skip tables that are not
+            # under a month heading (award ceremonies, charts, etc.).
+            current_month, last_seen_day, found = self._detect_month(table, current_month, last_seen_day)
+            if not found:
+                continue
 
             rows = table.find_all("tr")
             if not rows:
@@ -277,8 +283,13 @@ class WikipediaReleaseScraper:
 
     def _detect_month(
         self, table: Any, current_month: int, last_seen_day: int | None
-    ) -> tuple[int, int | None]:
-        """Walk backwards from a table to find the month heading."""
+    ) -> tuple[int, int | None, bool]:
+        """Walk backwards from a table to find the month heading.
+
+        Returns ``(month, last_seen_day, found)`` — ``found`` is False when no
+        month heading precedes the table, which marks it as a non-release
+        table (award ceremonies, charts, references, etc.).
+        """
         try:
             prev = table.find_previous()
             depth = 0
@@ -293,14 +304,14 @@ class WikipediaReleaseScraper:
                             d = int(day_match.group(1))
                             if 1 <= d <= 31:
                                 last_seen_day = d
-                        return mnum, last_seen_day
+                        return mnum, last_seen_day, True
                 if prev.name == "table":
                     break
                 prev = prev.find_previous()
                 depth += 1
         except Exception:
             pass
-        return current_month, last_seen_day
+        return current_month, last_seen_day, False
 
     @staticmethod
     def _skip_header_rows(rows: list[Any]) -> list[Any]:
@@ -376,7 +387,7 @@ class WikipediaReleaseScraper:
 
         # Detect if first cell is a date
         first = cells[0] if cells else ""
-        has_date = bool(re.search(r"\b\d{1,2}(?:st|nd|rd|th)?\b", first))
+        has_date = self._looks_like_date_cell(first)
         actual_cols = column_order.copy()
 
         if "day" in actual_cols and not has_date:
@@ -409,19 +420,21 @@ class WikipediaReleaseScraper:
         if not artist or not album:
             return None
 
-        # Parse day
+        # Parse day; if the cell also carries a month name (e.g. "January 9"
+        # or "January9"), prefer it over the heading-detected month.
         day_str = values.get("day")
         day = self._parse_day(day_str, last_seen_day)
         if day is None:
             day = 1
+        row_month = self._month_in_cell(day_str) or current_month
 
         # Build date string
         try:
-            release_dt = datetime(year, current_month, day)
+            release_dt = datetime(year, row_month, day)
         except ValueError:
             day = 1
             try:
-                release_dt = datetime(year, current_month, day)
+                release_dt = datetime(year, row_month, day)
             except ValueError:
                 return None
 
@@ -489,6 +502,30 @@ class WikipediaReleaseScraper:
             if 1 <= d <= 31:
                 return d
         return last_seen
+
+    _MONTH_NAME_RE = re.compile(
+        r"(january|february|march|april|may|june|july|august|"
+        r"september|october|november|december)",
+        re.IGNORECASE,
+    )
+    _BARE_DAY_RE = re.compile(r"\d{1,2}(?:st|nd|rd|th)?\.?")
+
+    @classmethod
+    def _looks_like_date_cell(cls, text: str) -> bool:
+        """True when a cell is a release date: a month name + day, or a bare day number."""
+        if not text:
+            return False
+        if cls._MONTH_NAME_RE.search(text):
+            return True
+        return bool(cls._BARE_DAY_RE.fullmatch(text.strip()))
+
+    @classmethod
+    def _month_in_cell(cls, text: str) -> int | None:
+        """Extract a month number from a date cell (e.g. 'January 9' -> 1)."""
+        m = cls._MONTH_NAME_RE.search(text or "")
+        if m:
+            return _MONTHS[m.group(1).lower()]
+        return None
 
     @staticmethod
     def _is_genre(val: str) -> bool:

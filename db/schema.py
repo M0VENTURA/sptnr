@@ -200,6 +200,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "members": "TEXT", "members_last_updated": "TEXT",
     },
     "download_queue": {
+        "priority": "INTEGER DEFAULT 5",
         "album_artist": "TEXT", "track_number": "TEXT", "disc_number": "TEXT", "year": "TEXT",
         "release_year": "INTEGER", "release_id": "TEXT", "release_source": "TEXT", "release_mbid": "TEXT",
         "recording_mbid": "TEXT", "cover_art_url": "TEXT", "duration": "DOUBLE PRECISION",
@@ -269,10 +270,7 @@ MUSICBRAINZ_RELEASE_TRACKS_COLUMNS_TO_ENSURE = COLUMN_REGISTRY["musicbrainz_rele
 QUEUE_STARTUP_COLUMNS_TO_ENSURE = {
     key: DOWNLOAD_QUEUE_COLUMNS_TO_ENSURE[key]
     for key in (
-        "release_id", "release_source", "track_number", "disc_number", 
-        "album_artist", "year", "release_mbid", "recording_mbid", 
-        "release_year", "duration", "matched_file_path", "music_file_path", 
-        "cover_art_url", "metadata_id", "release_metadata_id", 
+        "priority", "release_id", "release_source", "track_number", "disc_number",
         "status_changed_at", "updated_at",
     )
 }

@@ -723,12 +723,13 @@ function initUpcomingSourcesUI() {
   if (Array.isArray(savedSources) && savedSources.length > 0) {
     upcomingSources = savedSources.map(s => Object.assign({}, s));
   } else {
+    const y = new Date().getFullYear();
     upcomingSources = [
-      { key: '2026_albums',      name: 'General 2026 Albums',        url: 'https://en.wikipedia.org/wiki/List_of_2026_albums',            columns: ['day','artist','album','genre'], enabled: true },
-      { key: '2026_heavy_metal', name: 'Heavy Metal 2026',           url: 'https://en.wikipedia.org/wiki/2026_in_heavy_metal_music',      columns: ['day','artist','album'],         enabled: true },
-      { key: '2026_rock',        name: 'Rock Music 2026',            url: 'https://en.wikipedia.org/wiki/2026_in_rock_music',             columns: ['day','artist','album'],         enabled: true },
-      { key: '2026_kpop',        name: 'K-Pop/Korean Music 2026',    url: 'https://en.wikipedia.org/wiki/2026_in_South_Korean_music',     columns: ['day','album','artist'],         enabled: true },
-      { key: '2026_american',    name: 'American Music 2026',        url: 'https://en.wikipedia.org/wiki/2026_in_American_music',         columns: ['day','album','artist'],         enabled: true },
+      { key: `${y}_albums`,      name: `General ${y} Albums`,        url: `https://en.wikipedia.org/wiki/List_of_${y}_albums`,            columns: ['day','artist','album','genre'], enabled: true },
+      { key: `${y}_heavy_metal`, name: `Heavy Metal ${y}`,           url: `https://en.wikipedia.org/wiki/${y}_in_heavy_metal_music`,      columns: ['day','artist','album'],         enabled: true },
+      { key: `${y}_rock`,        name: `Rock Music ${y}`,            url: `https://en.wikipedia.org/wiki/${y}_in_rock_music`,             columns: ['day','artist','album'],         enabled: true },
+      { key: `${y}_kpop`,        name: `K-Pop/Korean Music ${y}`,    url: `https://en.wikipedia.org/wiki/${y}_in_South_Korean_music`,     columns: ['day','album','artist'],         enabled: true },
+      { key: `${y}_american`,    name: `American Music ${y}`,        url: `https://en.wikipedia.org/wiki/${y}_in_American_music`,         columns: ['day','album','artist'],         enabled: true },
     ];
   }
   renderUpcomingSourcesList();
@@ -754,7 +755,7 @@ function buildUpcomingSourceRow(src, idx) {
     return `<span class="badge bg-primary">${escapeHtml(c)}</span>`;
   }).join(' <i class="bi bi-arrow-right-short text-muted"></i> ');
 
-  return `<div class="border rounded p-3 mb-2" id="srcRow_${idx}" style="background:#f8f9fa;">
+  return `<div class="border rounded p-3 mb-2" id="srcRow_${idx}" style="background: var(--bs-secondary-bg, #2b2b2b);">
     <div class="d-flex flex-column flex-md-row align-items-md-start gap-3">
       <div class="form-check form-switch pt-1 flex-shrink-0">
         <input class="form-check-input" type="checkbox" role="switch" id="srcEnabled_${idx}"

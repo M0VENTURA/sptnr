@@ -1180,19 +1180,25 @@ def get_navidrome_base_config() -> dict[str, Any]:
 def get_upcoming_releases_sources() -> list[dict[str, Any]]:
     """Get Wikipedia scraping sources for upcoming album releases.
 
-    Config section: ``upcoming_releases_sources`` in config.yaml
+    Config section: ``upcoming_releases.sources`` in config.yaml — the same
+    key the config page (``static/js/config.js``) reads and writes. The old
+    top-level ``upcoming_releases_sources`` key is honoured as a fallback.
 
     Each source dict should contain:
         - ``key``: Unique source key (e.g. ``"2026_rock"``)
         - ``name``: Display name
         - ``url``: Wikipedia URL
         - ``columns``: Comma-separated column order (day, artist, album, genre)
+        - ``enabled``: Whether the source should be scraped (default True)
 
     Returns:
         List of source dicts.
     """
     cfg = get_config()
-    return cfg.get("upcoming_releases_sources", [])
+    sources = (cfg.get("upcoming_releases") or {}).get("sources")
+    if not isinstance(sources, list):
+        sources = cfg.get("upcoming_releases_sources", [])
+    return sources
 
 
 # ---------------------------------------------------------------------------
