@@ -291,6 +291,30 @@ def get_queue_status_counts() -> Dict[str, int]:
         return {}
 
 
+def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
+    """Get non-terminal queue items (queued/searching/downloading/failed).
+
+    Failed items are included because the queue page splits them out of the
+    active list client-side (mirrors the legacy API payload).
+    """
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT *
+                    FROM download_queue
+                    WHERE status IN ('queued', 'searching', 'downloading', 'failed')
+                    ORDER BY created_at ASC
+                    LIMIT :limit
+                """),
+                {"limit": limit},
+            )
+            return [dict(r._mapping) for r in result.fetchall()]
+    except Exception as e:
+        logger.error(f"[get_active_queue] {e}")
+        return []
+
+
 def get_processing_snapshot() -> Dict[str, int]:
     counts = get_queue_status_counts()
     return {

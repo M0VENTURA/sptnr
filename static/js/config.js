@@ -755,7 +755,7 @@ function buildUpcomingSourceRow(src, idx) {
     return `<span class="badge bg-primary">${escapeHtml(c)}</span>`;
   }).join(' <i class="bi bi-arrow-right-short text-muted"></i> ');
 
-  return `<div class="border rounded p-3 mb-2" id="srcRow_${idx}" style="background: var(--bs-secondary-bg, #2b2b2b);">
+  return `<div class="border rounded p-3 mb-2" id="srcRow_${idx}" style="background: var(--secondary-bg, #1e1e1e);">
     <div class="d-flex flex-column flex-md-row align-items-md-start gap-3">
       <div class="form-check form-switch pt-1 flex-shrink-0">
         <input class="form-check-input" type="checkbox" role="switch" id="srcEnabled_${idx}"

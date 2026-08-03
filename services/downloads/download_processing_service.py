@@ -272,11 +272,36 @@ def queue_clear(
         }
 
 def queue_status(args: Any = None) -> Dict[str, Any]:
-    """Get queue status counts (wraps DB repository)."""
+    """Get queue items grouped for the queue page.
+
+    Mirrors the legacy ``/api/queue/status`` payload: ``active`` (includes
+    failed items — the UI splits them out), ``completed`` and
+    ``newly_completed`` lists, plus per-status counts for compatibility.
+    """
     try:
-        from db.repositories.queue import get_queue_status_counts
-        result = get_queue_status_counts()
-        return {"success": True, **result}
+        from db.repositories.queue import (
+            get_active_queue,
+            get_completed_queue,
+            get_queue_status_counts,
+        )
+        limit = 200
+        if args and hasattr(args, "get"):
+            try:
+                limit = min(int(args.get("limit", 200)), 500)
+            except (TypeError, ValueError):
+                pass
+        active = get_active_queue(limit=limit)
+        completed = get_completed_queue(limit=min(limit, 50))
+        counts = get_queue_status_counts()
+        return {
+            "success": True,
+            "active": active,
+            "completed": completed,
+            "newly_completed": [],
+            "total_active": len(active),
+            "total_completed": len(completed),
+            **counts,
+        }
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
