@@ -147,52 +147,59 @@ def _assign_stars(
     )
     is_top_catalog = _is_top_artist_percentile(score, artist_scores, 0.25)
 
-    # 5★: elite catalogue track (top 10%) or confirmed high-confidence single
+    # ── 5★ paths (old-system alignment: artist-catalogue standing required) ──
+    # The legacy scanner only granted 5★ to genuine artist-wide standouts:
+    # top-10% elite, or top-25% catalogue for the other 5★ paths. That gate
+    # is restored here (ListenBrainz evidence is kept as an additional
+    # confirmation source, but never removes the catalogue requirement).
+
+    # 5★: elite catalogue track (top 10% artist-wide) — album-relative too.
     if is_elite and not is_live:
         return 5
+
+    # 5★/4★: high-confidence single (old-system path 3 + LB addition).
     if is_single and single_confidence == "high":
         if is_live:
             # Live singles reach 5★ only when elite/top-catalogue.
-            if is_elite:
-                return 5
-        elif (
-            artist_z >= STAR_5_ARTIST_Z
+            return 5 if is_elite else 4
+        if (
+            is_top_catalog
             or album_z >= STAR_5_ALBUM_Z
-            or (
-                # Listener evidence can justify 5★. A negative album z is
-                # only trusted to veto it when Last.fm data is present and
-                # disagrees — when Last.fm is unreliable (missing/weak, and
-                # the LF-weighted blend is therefore distorted), the
-                # ListenBrainz counts are the authoritative signal.
-                (album_z >= 0 or _is_lastfm_unreliable(lf_listeners, lb_listens))
-                and (lf_z >= LISTENER_5STAR_Z or lb_z >= LISTENER_5STAR_Z)
-            )
+            or artist_z >= STAR_5_ARTIST_Z
+            or max(lf_z, lb_z) >= LISTENER_5STAR_Z
         ):
-            # 5★ = genuine standout: a z-score outlier within the album, or a
-            # log-scaled listener outlier on Last.fm/ListenBrainz (the blend
-            # compresses raw listener differences, so the listener z is the
-            # direct evidence from the source data). External confirmation
-            # alone earns the 4★ floor below, not 5★.
             return 5
+        return 4
 
-    # 4★/5★: medium-confidence single — 5★ only for genuine z-score
-    # standouts, 4★ otherwise. Live medium singles are capped at 4★ (3★ if
-    # not top-catalogue).
+    # 4★/5★: medium-confidence single (old-system path 4).
     if is_single and single_confidence == "medium":
         if is_live:
             return 4 if is_top_catalog else 3
-        return 5 if (artist_z >= STAR_5_ARTIST_Z or album_z >= STAR_5_ALBUM_Z) else 4
+        return 5 if is_top_catalog else 4
 
-    # 4★: high-confidence single — the external confirmation (Discogs /
-    # MusicBrainz) IS the evidence, so it rates at least 4★. Local popularity
-    # z-scores gate the 5★ tier above, not the 4★ floor. Live singles keep the
-    # z-score requirement (live recordings are penalised by design).
-    if is_single and single_confidence == "high":
-        if is_live:
-            if artist_z >= STAR_4_ARTIST_Z or album_z >= STAR_4_ALBUM_Z:
-                return 4
-        else:
-            return 4
+    # Non-single popularity 5★ (old-system path 5): album z ≥ 2.0 AND
+    # top-25% catalogue — a huge album-local z alone is not enough.
+    if album_z >= POPULARITY_5STAR_Z and not is_live:
+        return 5 if is_top_catalog else 4
+
+    # Listener standout (non-single): raw Last.fm/ListenBrainz counts make
+    # the track a clear log-scaled outlier within its album — 5★ only when
+    # the track is also top-25% of the artist catalogue (old-system LB gate).
+    if not is_live and max(lf_z, lb_z) >= LISTENER_5STAR_Z:
+        return 5 if is_top_catalog else 4
+
+    # LB rescue (old-system path 6 + lb_z addition): Last.fm unreliable but
+    # ListenBrainz percentile strong and the track stands out by album z or
+    # raw LB listen z — 5★ only if top-25% catalogue, else 4★.
+    if (
+        not is_live
+        and _is_lastfm_unreliable(lf_listeners, lb_listens)
+        and lb_percentile >= LB_UNRELIABLE_5STAR
+        and (album_z >= STAR_4_ALBUM_Z or lb_z >= LISTENER_5STAR_Z)
+    ):
+        return 5 if is_top_catalog else 4
+
+    # ── 4★ ──
     if _is_top_artist_percentile(score, artist_scores, STAR_4_ARTIST_PCT):
         return 4
 
@@ -203,25 +210,7 @@ def _assign_stars(
     if album_z >= STAR_4_ALBUM_Z and score > 0:
         return 4
 
-    # Popularity-only 5★ (very high z-score, not live)
-    if album_z >= POPULARITY_5STAR_Z and not is_live:
-        return 5
-
-    # LB rescue: Last.fm unreliable but ListenBrainz is strong — the track is
-    # a standout within its own album either by blended score (album z ≥ 0.8)
-    # or by raw LB listen z (≥ 1.0, log-scaled). The LB z covers tracks like
-    # "Blackball"/"Beheaded"/"Jennifer Lost the War" where the LF-weighted
-    # blend ranks them last but ListenBrainz shows them as the album's most
-    # listened tracks — with Last.fm missing, the blend is distorted and the
-    # LB counts are the authoritative signal.
-    if (
-        not is_live
-        and _is_lastfm_unreliable(lf_listeners, lb_listens)
-        and lb_percentile >= LB_UNRELIABLE_5STAR
-        and (album_z >= STAR_4_ALBUM_Z or lb_z >= LISTENER_5STAR_Z)
-    ):
-        return 5
-
+    # ── 3★ / 1★ / 2★ ──
     # 3★: above album average
     if album_z >= STAR_3_ALBUM_Z and score > 0:
         return 3

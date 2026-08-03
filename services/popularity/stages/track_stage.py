@@ -322,10 +322,12 @@ def process_track(
                 int(effective_track.get("lastfm_listeners") or 0) >= 25
                 or int(effective_track.get("listenbrainz_listens") or 0) >= 25
             )
-            _cached = (frozen_track or (
+            # Forced scans ALWAYS recheck: bypass the cached score even for
+            # frozen mature tracks (legacy ``FORCE_RESCAN`` behaviour).
+            _cached = (
                 not _force
-                and should_use_cached_score(effective_track)
-            )) and bool(
+                and (frozen_track or should_use_cached_score(effective_track))
+            ) and bool(
                 effective_track.get("final_score") and _has_credible_data
             )
             if _cached:
@@ -352,8 +354,10 @@ def process_track(
                 # Fresh-but-suspect values are re-fetched so scans self-heal:
                 # zero counts (failed fetch / missing key), or both sources
                 # below 25 (wrong-artist match cached by an earlier scan).
+                # Forced scans always re-fetch regardless of freshness.
                 if (
-                    not has_fresh_lf
+                    _force
+                    or not has_fresh_lf
                     or lastfm_listeners == 0
                     or (lastfm_listeners < 25 and listenbrainz_listens < 25)
                 ):
@@ -401,7 +405,8 @@ def process_track(
                     and (now_ts - last_lb_ts).total_seconds() < _cache_ttl * 3600
                 )
                 # Fresh-but-zero is suspect (broken prior scan): re-fetch.
-                if not has_fresh_lb or listenbrainz_listens == 0:
+                # Forced scans always re-fetch regardless of freshness.
+                if _force or not has_fresh_lb or listenbrainz_listens == 0:
                     if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
                         lb_entry = album_lb_data[recording_mbid]
                         if lb_entry:
