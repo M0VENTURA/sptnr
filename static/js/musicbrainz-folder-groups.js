@@ -11,14 +11,20 @@ async function loadFolderGroupsWithMusicBrainz() {
     // Only run on pages that have the folder groups section
     if (!section) return;
 
+    // The Download Queue renderers (monitor.js loadFolderGroups /
+    // downloads.js renderQueueSection) own this section on the monitor page.
+    // This legacy folder-groups view must not race with them: its 5-second
+    // refresh interval kept overwriting the rendered queue items (and
+    // previously hid the section entirely when there were no MB folders).
+    if (typeof window.loadFolderGroups === 'function') {
+      return;
+    }
+
     const response = await fetch('/api/downloads/folder-groups');
     const data = await response.json();
 
     // Don't hide the section when there are no MusicBrainz-managed folders —
-    // the Download Queue renderers (monitor.js loadFolderGroups /
-    // downloads.js renderQueueSection) own the section and show real queue
-    // items (or their own empty state). Hiding it here raced with those
-    // renderers and made the queue flash then disappear.
+    // the queue renderers show real queue items (or their own empty state).
     if (!data.success || data.count === 0) {
       return;
     }

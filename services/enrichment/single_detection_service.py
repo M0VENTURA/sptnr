@@ -423,9 +423,13 @@ def determine_final_status(
         high = sum([discogs, musicbrainz])
         medium = sum([discogs_video, lastfm, mb_video, mb_compilation, radio_edit, date_match])
 
-    # Z-score above the high boundary
+    # Z-score above the high boundary: 'high' confidence REQUIRES at least
+    # one real external confirmation (Discogs/MusicBrainz/ISRC). Two weak
+    # signals (z-standout, duration, radio-edit marker) must never stack into
+    # a high-confidence single — that produced false positives like Tehran /
+    # Crossroads (z ≈ 1.2, zero source matches, still flagged 'high').
     if max_z >= max(0.0, zscore_high):
-        if high >= 1 or medium >= 2:
+        if high >= 1:
             return 'high'
         return 'none'
 
@@ -712,10 +716,12 @@ def detect_single_for_track(
         medium_sources += 1
     if lb_top10:
         medium_sources += 1
-    # A catalog-size-aware z-score standout counts as a high-confidence source
-    # (legacy "z-score alone is strong evidence" behaviour).
+    # A catalog-size-aware z-score standout is popularity evidence, NOT
+    # evidence of a single release — a popular album track is not a single.
+    # It corroborates real sources but can never confirm a single on its own,
+    # so it counts as a medium (weak) source only.
     if z_standout:
-        high_sources += 1
+        medium_sources += 1
 
     final = determine_final_status(
         discogs=discogs_confirmed, musicbrainz=musicbrainz_confirmed,
