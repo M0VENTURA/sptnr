@@ -403,9 +403,9 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     # is listed with its star rating, grouped into detected
                     # singles, popular tracks, and the rest of the album.
                     if album_results:
-                        detected_singles: list[tuple[str, int, str, str]] = []
-                        popular_songs: list[tuple[str, int, str, str]] = []
-                        rest_of_album: list[tuple[str, int, str, str]] = []
+                        detected_singles: list[tuple[str, int, str, float, str]] = []
+                        popular_songs: list[tuple[str, int, str, float, str]] = []
+                        rest_of_album: list[tuple[str, int, str, float, str]] = []
                         for t in album_results:
                             t_stars = int(t.get("stars") or 0)
                             t_single = bool(t.get("is_single"))
@@ -436,14 +436,18 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                             reason_str = f" ({'; '.join(r for r in reasons if r)})" if reasons else ""
 
                             if t_single and t_conf == "high":
-                                detected_singles.append((t_title, t_stars, t_artist, reason_str))
+                                detected_singles.append((t_title, t_stars, t_artist, t_score, reason_str))
                             elif t_stars == 5:
-                                popular_songs.append((t_title, t_stars, t_artist, reason_str))
+                                popular_songs.append((t_title, t_stars, t_artist, t_score, reason_str))
                             else:
-                                rest_of_album.append((t_title, t_stars, t_artist, reason_str))
+                                rest_of_album.append((t_title, t_stars, t_artist, t_score, reason_str))
 
-                        def _log_track_group(lines: list[tuple[str, int, str, str]]) -> None:
-                            for t_title, t_stars, t_artist, reason in lines:
+                        def _log_track_group(lines: list[tuple[str, int, str, float, str]]) -> None:
+                            # List in star-rating order (descending), using the
+                            # track's popularity score as the tie-breaker.
+                            for t_title, t_stars, t_artist, t_score, reason in sorted(
+                                lines, key=lambda item: (-item[1], -item[3])
+                            ):
                                 star_str = "★" * max(0, min(t_stars, 5)) + "☆" * max(0, 5 - min(t_stars, 5))
                                 log_unified(
                                     f"Single Detection Scan - {star_str:<5} {t_artist} - {t_title}{reason}"

@@ -307,6 +307,29 @@ def normalize_title_for_lookup(
     )
 
 
+def normalize_title_for_lucene_query(
+    title: str,
+) -> str:
+    """
+    Punctuation-free title for MusicBrainz Lucene phrase queries.
+
+    Lucene phrase queries are matched against the index's token stream, which
+    is built without punctuation ("What's The Deal?" indexes as
+    "whats the deal"). Removing punctuation without inserting spaces keeps the
+    query tokens aligned with the index; the canonical
+    :func:`normalize_title_for_lookup` replaces punctuation with spaces and is
+    therefore unsuitable for phrase queries.
+    """
+
+    if not title:
+        return ""
+
+    value = unicodedata.normalize("NFD", title.lower())
+    value = "".join(c for c in value if not unicodedata.combining(c))
+    value = re.sub(r"[^\w\s]", "", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
 def normalize_title_for_lastfm(
     title: str,
 ) -> str:

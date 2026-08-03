@@ -34,6 +34,8 @@ from api_clients.musicbrainz_http import (
 
 from helpers.normalization_service import (
     normalize_string,
+    normalize_title_for_lookup,
+    normalize_title_for_lucene_query,
     strip_featured_artist,
 )
 
@@ -134,16 +136,25 @@ class MusicBrainzService:
         if isinstance(cached, (list, tuple)) and len(cached) == 2 and str(cached[0] or "").strip():
             return tuple(cached)
 
-        query = f'recording:"{escape_lucene_special_chars(title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
+        # Punctuation in titles ("What's the Deal?") breaks Lucene phrase
+        # matching — the recording index is tokenised without punctuation.
+        # Normalise the query title the same way, and compare candidates
+        # against the canonical normalisation so both sides are
+        # punctuation-consistent.
+        query_title = normalize_title_for_lucene_query(title)
+        query = f'recording:"{escape_lucene_special_chars(query_title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
 
         try:
             recordings = self.http.search_recordings(query, limit=limit)
 
             best_mbid = ""
             best_score = 0.0
+            norm_title = normalize_title_for_lookup(title)
 
             for rec in recordings:
-                sim = difflib.SequenceMatcher(None, title.lower(), (rec.get("title") or "").lower()).ratio()
+                sim = difflib.SequenceMatcher(
+                    None, norm_title, normalize_title_for_lookup(rec.get("title") or "")
+                ).ratio()
 
                 if sim > best_score:
                     best_score = sim

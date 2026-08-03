@@ -435,6 +435,13 @@ def determine_final_status(
             return 'high'
         if medium >= 2:
             return 'medium'
+        # Z-score is the only evidence: when no metadata source matched at all
+        # (and no weak signals fired), a track sitting clearly above the
+        # album/artist median in the medium band is still a medium-confidence
+        # single — the popularity signal itself is the evidence on
+        # metadata-poor albums that would otherwise never produce a single.
+        if not has_metadata and medium == 0 and not is_compilation:
+            return 'medium'
         return 'none'
 
     # Z-score <= 0: remastered bypass, title-track boost, or metadata evidence
