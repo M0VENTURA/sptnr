@@ -945,22 +945,24 @@ function performMbSearch() {
         let releases = data.releases || [];
 
         // Apply the release-type dropdown filter (modal field), if present.
-        // Primary types (album/single/ep/...) match on primary_type so
-        // singles never leak into an "Album" filter; secondary types match
-        // on the derived display category.
+        // Derive the category client-side (secondary types take precedence)
+        // so "Album" never admits remix/live/compilation release-groups and
+        // stale primary_type values can't leak other types in.
         const releaseType = document.getElementById('mbReleaseType')?.value || '';
         if (releaseType) {
-            const primaryTypes = ['album', 'single', 'ep', 'broadcast', 'other'];
+            const want = releaseType.toLowerCase();
             releases = releases.filter(function(r) {
-                const pt = (r.primary_type || '').toLowerCase();
-                const cat = (r.category || r.primary_type || '').toLowerCase();
-                const sec = (r.secondary_types || []).map(s => String(s).toLowerCase());
-                if (primaryTypes.includes(releaseType.toLowerCase())) {
-                    return pt === releaseType.toLowerCase() || (pt === '' && cat === releaseType.toLowerCase());
-                }
-                return cat === releaseType.toLowerCase() || sec.includes(releaseType.toLowerCase());
+                const cat = (typeof window.mbDerivedCategory === 'function')
+                    ? window.mbDerivedCategory(r)
+                    : (r.category || r.primary_type || '');
+                return String(cat).toLowerCase() === want;
             });
         }
+
+        // Honour the results-limit dropdown (12/25/50).
+        const limitEl = document.getElementById('mbResultLimit');
+        const max = parseInt(limitEl ? limitEl.value : '25', 10) || 25;
+        if (releases.length > max) releases = releases.slice(0, max);
 
         if (releases.length === 0) {
             document.getElementById('mbResults').innerHTML = `

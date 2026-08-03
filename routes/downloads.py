@@ -256,9 +256,12 @@ def api_queue():
             items = items[offset:offset + limit]
         else:
             items = items[:limit]
+        from db.repositories.queue import get_completed_queue
+        completed = get_completed_queue(limit=min(limit, 50))
         return jsonify({
             "success": True,
             "queue": items,
+            "completed": completed,
             "status_counts": status_counts or {},
             "total": sum(status_counts.values()) if status_counts else 0,
             "limit": limit,

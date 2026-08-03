@@ -107,6 +107,21 @@ window.escHtml = function(text) {
   return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 };
 
+// Derives the display category for a MusicBrainz release-group the same way
+// the backend does (secondary types take precedence over primary), so the
+// type dropdown filters correctly even when the server-side category is
+// missing or stale. Redefining it later (e.g. downloads.js) is harmless —
+// the logic is identical.
+window.mbDerivedCategory = function(release) {
+  var secondary = (release.secondary_types || []).map(function(s) { return String(s).toLowerCase(); });
+  var secondaryFirst = ['compilation', 'live', 'remix', 'soundtrack', 'dj-mix', 'mixtape', 'demo', 'spokenword', 'interview', 'audiobook'];
+  for (var i = 0; i < secondaryFirst.length; i++) {
+    if (secondary.indexOf(secondaryFirst[i]) !== -1) return secondaryFirst[i];
+  }
+  var pt = String(release.primary_type || release.category || '').toLowerCase();
+  return pt || 'other';
+};
+
 // ===== API call =====
 
 async function searchMusicBrainzReleases(query, releaseType, limit) {
@@ -127,9 +142,9 @@ async function searchMusicBrainzReleases(query, releaseType, limit) {
     var data = await res.json();
     var releases = data.releases || [];
     if (releaseType) {
+      var want = releaseType.toLowerCase();
       releases = releases.filter(function(r) {
-        return (r.primary_type && r.primary_type.toLowerCase() === releaseType.toLowerCase()) ||
-               (r.category && r.category.toLowerCase() === releaseType.toLowerCase());
+        return window.mbDerivedCategory(r) === want;
       });
     }
     var max = parseInt(limit, 10) || 12;
@@ -246,9 +261,9 @@ window.performMbSearch = async function() {
       // so "Album" excludes remix/live/compilation/soundtrack release-groups
       // (primary type Album + secondary type) and stale primary_type values
       // can't leak other categories in.
+      var want = releaseType.toLowerCase();
       releases = releases.filter(function(r) {
-        var cat = (r.category || r.primary_type || '').toLowerCase();
-        return cat === releaseType.toLowerCase();
+        return window.mbDerivedCategory(r) === want;
       });
     }
 

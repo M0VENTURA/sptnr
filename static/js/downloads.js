@@ -68,6 +68,21 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// Derives the display category for a MusicBrainz release-group the same way
+// the backend does (secondary types take precedence over primary), so the
+// type dropdown filters correctly even when the server-side category is
+// missing or stale. Defined here as well as in the shared modal component —
+// the last-loaded copy wins and both are identical.
+window.mbDerivedCategory = function(release) {
+  const secondary = (release.secondary_types || []).map(s => String(s).toLowerCase());
+  const secondaryFirst = ['compilation', 'live', 'remix', 'soundtrack', 'dj-mix', 'mixtape', 'demo', 'spokenword', 'interview', 'audiobook'];
+  for (let i = 0; i < secondaryFirst.length; i++) {
+    if (secondary.indexOf(secondaryFirst[i]) !== -1) return secondaryFirst[i];
+  }
+  const pt = String(release.primary_type || release.category || '').toLowerCase();
+  return pt || 'other';
+};
+
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B';
   const k = 1024;
@@ -240,21 +255,20 @@ window.performMbSearch = async function() {
     let releases = data.releases || [];
 
     // Apply the release-type dropdown filter (modal field), if present.
-    // Primary types (album/single/ep/...) match on primary_type so singles
-    // never leak into an "Album" filter; secondary types match on category.
+    // Derive the category client-side (secondary types take precedence) so
+    // "Album" never admits remix/live/compilation release-groups and stale
+    // primary_type/category values can't leak other types in.
     const releaseType = document.getElementById('mbReleaseType')?.value || '';
     if (releaseType) {
-      const primaryTypes = ['album', 'single', 'ep', 'broadcast', 'other'];
-      releases = releases.filter(r => {
-        const pt = (r.primary_type || '').toLowerCase();
-        const cat = (r.category || r.primary_type || '').toLowerCase();
-        const sec = (r.secondary_types || []).map(s => String(s).toLowerCase());
-        if (primaryTypes.includes(releaseType.toLowerCase())) {
-          return pt === releaseType.toLowerCase() || (pt === '' && cat === releaseType.toLowerCase());
-        }
-        return cat === releaseType.toLowerCase() || sec.includes(releaseType.toLowerCase());
-      });
+      const want = releaseType.toLowerCase();
+      releases = releases.filter(r => window.mbDerivedCategory(r) === want);
     }
+
+    // Honour the results-limit dropdown (12/25/50) — it was read by the
+    // shared modal but never applied here, so changing it had no effect.
+    const limitEl = document.getElementById('mbResultLimit');
+    const max = parseInt(limitEl ? limitEl.value : '25', 10) || 25;
+    if (releases.length > max) releases = releases.slice(0, max);
 
     if (releases.length === 0) {
       if (resultsEl) resultsEl.innerHTML = `<div class="alert alert-info"><i class="bi bi-info-circle"></i> No releases found for "${escapeHtml(query)}"</div>`;
@@ -1580,6 +1594,11 @@ async function loadQueueStatus() {
   } catch (error) {
     console.error('Error loading queue status:', error);
   }
+  // Refresh the queue item lists and logs on whichever page is active.
+  await renderQueueSection();
+  await renderQueueLog();
+  await renderSearchLog();
+  await renderQueuePage();
 }
 
 async function clearEntireQueue() {
@@ -1589,6 +1608,11 @@ async function clearEntireQueue() {
     alert(`✅ Cleared ${data.deleted || 0} item(s) from queue`);
     await loadQueueStatus();
   } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+// Alias used by the monitor page's "Clear Queue" button.
+async function clearQueue() {
+  return clearEntireQueue();
 }
 
 async function purgeAllQueueAndDownloads() {
@@ -1717,6 +1741,179 @@ async function organizeSelected() { alert('organizeSelected not yet implemented'
 async function batchOrganizeSelected() { alert('batchOrganizeSelected not yet implemented'); }
 
 // ============================================================================
+// QUEUE RENDERING (element-guarded — safe on any page that loads downloads.js)
+// ============================================================================
+
+// Renders the monitor page's Download Queue section: grouped folders first,
+// falling back to the real download_queue rows, then an empty state.
+async function renderQueueSection() {
+  const section = document.getElementById('folderGroupsSection');
+  const list = document.getElementById('folderGroupsList');
+  const badge = document.getElementById('folderGroupsBadge');
+  if (!section || !list) return;
+  section.style.display = 'block';
+
+  let groups = [];
+  try {
+    const data = await fetchJsonOrThrow('/api/downloads/grouped-folders');
+    if (data && data.success) groups = data.folder_groups || [];
+  } catch (error) {
+    console.error('Error loading folder groups, falling back to queue items:', error);
+  }
+
+  if (groups.length === 0) {
+    try {
+      const qd = await fetchJsonOrThrow('/api/downloads/queue?limit=200');
+      const qItems = (qd && qd.queue) || [];
+      if (qItems.length > 0) {
+        if (badge) badge.textContent = qItems.length + ' items';
+        list.innerHTML = '<div class="list-group list-group-flush">' +
+          qItems.map(function(item) {
+            const st = item.status || 'queued';
+            const badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
+            return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
+              '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
+              (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+              '</div><span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span></div></div>';
+          }).join('') + '</div>';
+        if (typeof updateQueuePageControls === 'function') updateQueuePageControls(qItems.length, qItems.length);
+        return;
+      }
+    } catch (error) {
+      console.error('Error loading queue fallback:', error);
+    }
+    if (badge) badge.textContent = '0 items';
+    list.innerHTML = '<div class="alert alert-info m-3"><i class="bi bi-info-circle"></i> No items in queue right now.</div>';
+    return;
+  }
+
+  if (badge) badge.textContent = groups.length + ' items';
+  list.innerHTML = '<div class="list-group list-group-flush">' +
+    groups.map(function(g) {
+      const name = g.folder_name || g.folder_path || g.name || 'Unknown';
+      const artist = g.artist || '';
+      const album = g.album || '';
+      const trackCount = g.track_count || (g.tracks ? g.tracks.length : 0);
+      return '<div class="list-group-item"><div class="d-flex justify-content-between"><div><strong>' + escapeHtml(name) + '</strong>' +
+        (artist ? '<br><small class="text-muted">' + escapeHtml(artist) + (album ? ' - ' + escapeHtml(album) : '') + '</small>' : '') +
+        '</div><span class="badge bg-info">' + trackCount + ' tracks</span></div></div>';
+    }).join('') + '</div>';
+  if (typeof updateQueuePageControls === 'function') updateQueuePageControls(groups.length, groups.length);
+}
+
+// Loads the monitor page's Queue Activity Log.
+async function renderQueueLog() {
+  const logEl = document.getElementById('queueActivityLog');
+  if (!logEl) return;
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/events?limit=100');
+    const events = (data && data.events) || [];
+    const lines = events.slice().reverse().map(function(event) {
+      const ts = event.created_at || event.timestamp || null;
+      const timeLabel = ts ? new Date(ts).toLocaleTimeString([], { hour12: false }) : '--:--:--';
+      return '[' + timeLabel + '] ' + (event.event_type || 'info').toUpperCase() + ' ' + (event.message || '');
+    });
+    logEl.textContent = lines.length ? lines.join('\n') : 'No queue events yet.';
+    logEl.scrollTop = logEl.scrollHeight;
+  } catch (error) {
+    console.error('Error loading queue log:', error);
+  }
+}
+
+// Loads the monitor page's Soulseek Search Log.
+async function renderSearchLog() {
+  const logEl = document.getElementById('soulseekSearchLog');
+  if (!logEl) return;
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/search-events?limit=100');
+    const events = (data && data.events) || [];
+    const chunks = [];
+    events.slice().reverse().forEach(function(event) {
+      const ts = event.timestamp ? new Date(event.timestamp) : null;
+      const timeLabel = ts ? ts.toLocaleTimeString([], { hour12: false }) : '--:--:--';
+      const type = (event.search_type || 'unknown').toUpperCase();
+      chunks.push('[' + type + '] [' + timeLabel + '] Query: "' + (event.query || '') + '"  |  ' + (event.artist || '') + ' - ' + (event.title || ''));
+      chunks.push('    Results: ' + (event.result_count ?? 0) + '  Duration: ' + (event.duration_seconds != null ? event.duration_seconds + 's' : 'n/a'));
+    });
+    logEl.textContent = chunks.length ? chunks.join('\n') : 'No Soulseek search events yet.';
+    logEl.scrollTop = logEl.scrollHeight;
+  } catch (error) {
+    console.error('Error loading search log:', error);
+  }
+}
+
+// Renders the /downloads Active Queue tab (stats bar + lists).
+async function renderQueuePage() {
+  const activeList = document.getElementById('activeQueueList');
+  if (!activeList) return;
+  try {
+    const data = await fetchJsonOrThrow('/api/downloads/queue?limit=500');
+    const statusCounts = (data && data.status_counts) || {};
+    const countFor = (...s) => s.reduce((sum, st) => sum + Number(statusCounts[st] || 0), 0);
+    const setNum = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = String(val); };
+
+    setNum('statQueuedNum', countFor('queued','searching','unmatched','pending_match','discovered','queried','matched'));
+    setNum('statDownloadingNum', countFor('downloading'));
+    setNum('statCompletedNum', countFor('completed'));
+    setNum('statFailedNum', countFor('failed'));
+    setNum('statImportedNum', countFor('imported','moving'));
+    setNum('queueActiveCount', countFor('queued','searching','downloading','failed'));
+    setNum('queueCompletedCount', countFor('completed'));
+    setNum('queueFailedCount', countFor('failed'));
+    const lastRefreshed = document.getElementById('queueLastRefreshed');
+    if (lastRefreshed) lastRefreshed.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour12: false });
+
+    const items = (data && data.queue) || [];
+    const completed = (data && data.completed) || [];
+    renderQueueList('active', items.filter(i => i.status !== 'failed' && i.status !== 'completed'));
+    renderQueueList('completed', completed.filter(i => (i.status || 'completed') !== 'failed'));
+    renderQueueList('failed', items.filter(i => i.status === 'failed'));
+
+    const retryAllBtn = document.getElementById('retryAllBtn');
+    if (retryAllBtn) retryAllBtn.style.display = Number(statusCounts.failed || 0) > 0 ? 'inline-block' : 'none';
+  } catch (error) {
+    console.error('Error rendering queue page:', error);
+  }
+}
+
+function renderQueueList(kind, items) {
+  const idPrefix = kind === 'active' ? 'active' : kind;
+  const listEl = document.getElementById(idPrefix + 'QueueList');
+  const emptyEl = document.getElementById(idPrefix + 'QueueEmpty');
+  const badgeEl = document.getElementById(kind === 'active' ? 'queueActiveCount' : kind + 'Badge');
+  if (!listEl || !emptyEl) return;
+  if (!items.length) {
+    listEl.style.display = 'none';
+    emptyEl.style.display = 'block';
+    if (badgeEl) badgeEl.style.display = 'none';
+    return;
+  }
+  emptyEl.style.display = 'none';
+  listEl.style.display = 'block';
+  if (badgeEl) { badgeEl.textContent = items.length + ' item' + (items.length !== 1 ? 's' : ''); badgeEl.style.display = 'inline-block'; }
+
+  const rows = items.map(function(item) {
+    const st = item.status || 'queued';
+    const badgeCls = st === 'failed' ? 'danger' : st === 'downloading' ? 'warning' : st === 'completed' ? 'success' : 'info';
+    let actions = '';
+    if (kind === 'failed') {
+      actions += '<button class="btn btn-sm btn-outline-warning" title="Retry" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+    }
+    if (kind === 'completed') {
+      actions += '<button class="btn btn-sm btn-outline-primary" title="Copy to library" onclick="organizeFile(' + item.id + ')"><i class="bi bi-folder-plus"></i></button>';
+    }
+    actions += '<button class="btn btn-sm btn-outline-danger" title="Remove" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
+    return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center gap-2">' +
+      '<div class="text-truncate"><strong>' + escapeHtml(item.title || item.album || 'Unknown') + '</strong>' +
+      (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album && item.album !== item.title ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+      '</div><div class="d-flex align-items-center gap-2 flex-shrink-0">' +
+      '<span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span>' + actions +
+      '</div></div></div>';
+  });
+  listEl.innerHTML = '<div class="list-group list-group-flush">' + rows.join('') + '</div>';
+}
+
+// ============================================================================
 // INITIALIZATION
 // ============================================================================
 
@@ -1745,5 +1942,14 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     loadMbSessionSelector();
     refreshMbDownloads();
+  }
+
+  // Populate the monitor page's queue section + logs and the /downloads
+  // Active Queue tab on load (loadQueueStatus refreshes counts AND these).
+  if (document.getElementById('folderGroupsSection') || document.getElementById('statQueuedNum')) {
+    loadQueueStatus();
+  }
+  if (document.getElementById('queueEventsBody')) {
+    loadQueueEvents();
   }
 });
