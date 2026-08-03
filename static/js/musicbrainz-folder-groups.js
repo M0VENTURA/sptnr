@@ -13,9 +13,13 @@ async function loadFolderGroupsWithMusicBrainz() {
 
     const response = await fetch('/api/downloads/folder-groups');
     const data = await response.json();
-    
+
+    // Don't hide the section when there are no MusicBrainz-managed folders —
+    // the Download Queue renderers (monitor.js loadFolderGroups /
+    // downloads.js renderQueueSection) own the section and show real queue
+    // items (or their own empty state). Hiding it here raced with those
+    // renderers and made the queue flash then disappear.
     if (!data.success || data.count === 0) {
-      section.style.display = 'none';
       return;
     }
     
