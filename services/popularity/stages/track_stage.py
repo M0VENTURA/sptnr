@@ -370,12 +370,14 @@ def process_track(
                 lastfm_playcount = _as_int(effective_track.get("lastfm_playcount") or 0)
                 # Bulk-cache fast-path: when the scan prefetched artist-wide
                 # popularity into track_popularity_cache, use it instead of a
-                # per-track API call.  Forced scans always recheck.
-                _prefetch_entry = None
-                if not _force:
-                    _prefetch_entry = (prefetched_popularity or {}).get(
-                        str(title or "").strip().lower()
-                    )
+                # per-track API call.  Forced scans bypass the cache, EXCEPT
+                # for entries freshly resolved from THIS album's tracklist
+                # during this scan — those are authoritative.
+                _prefetch_entry = (prefetched_popularity or {}).get(
+                    str(title or "").strip().lower()
+                )
+                if _force and _prefetch_entry and not _prefetch_entry.get("_album_tracklist"):
+                    _prefetch_entry = None
                 # Fresh-but-suspect values are re-fetched so scans self-heal:
                 # zero counts (failed fetch / missing key), or both sources
                 # below 25 (wrong-artist match cached by an earlier scan).

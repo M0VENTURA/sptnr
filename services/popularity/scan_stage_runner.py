@@ -388,6 +388,9 @@ def run_scan(
                         _cur["listenbrainz_listens"] = int(_entry["listenbrainz_listens"] or 0)
                         _cur["listenbrainz_users"] = int(_entry.get("listenbrainz_users") or 0)
                         _cur["recording_mbid"] = _entry.get("recording_mbid")
+                        # Freshly fetched during THIS scan — authoritative even
+                        # on forced scans (which normally bypass the cache).
+                        _cur["_album_tracklist"] = True
                         _cache_rows.append({
                             "artist": artist,
                             "title": str(_t["title"]),
