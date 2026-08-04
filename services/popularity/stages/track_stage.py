@@ -480,17 +480,17 @@ def process_track(
                     update_payload["listenbrainz_last_updated"] = now_ts
 
                 # ── Cross-release ListenBrainz aggregation ─────────────────
-                # When Last.fm is low/unreliable, search for ALL recordings of
-                # this track by the same artist (single vs album version) and
-                # aggregate their ListenBrainz popularity — mirrors the legacy
-                # scanner behaviour and rescues tracks whose MBID is split.
-                # Also run when the title/artist carries a "feat." marker —
-                # those variants split listener counts most aggressively.
+                # When ListenBrainz came back EMPTY (or Last.fm is weak / a
+                # "feat." split exists), search ALL recordings of this track
+                # by the same artist and sum their ListenBrainz counts —
+                # split recordings (single vs album version) otherwise report
+                # 0 or tiny counts for the resolved MBID while the real
+                # listens sit on another recording.
                 _feat_variant = (
                     "feat" in str(title or "").lower()
                     or "feat" in str(artist or "").lower()
                 )
-                if (lastfm_listeners < 20 or _feat_variant) and recording_mbid and title and artist:
+                if (listenbrainz_listens == 0 or lastfm_listeners < 20 or _feat_variant) and title and artist:
                     try:
                         agg_lb = get_aggregated_listenbrainz_popularity(
                             title=title,
@@ -541,18 +541,25 @@ def process_track(
                     cfg_single_boost, cfg_floor, cfg_live_penalty = 1.15, 5.0, 0.5
 
                 # Album Last.fm listener distribution (legacy parity): score
-                # Last.fm against the album's own listener spread so the track
+                # Last.fm against the ALBUM's own listener spread so the track
                 # with the most listeners ranks accordingly even when the
-                # artist has a bigger hit elsewhere.  The distribution comes
-                # from the bulk artist cache (artist.getTopTracks).
+                # artist has a bigger hit elsewhere.  The values come from the
+                # fresh artist prefetch, filtered to THIS album's tracks —
+                # previously the whole artist catalogue was used, which
+                # crushed every album track below the artist's biggest hits.
                 _album_lf_listeners = None
                 try:
+                    _album_titles = {
+                        str(t.get("title") or "").strip().lower()
+                        for t in (album_context.get("tracks") or [])
+                    }
                     _lf_vals = [
                         int(e.get("lastfm_listeners") or 0)
-                        for e in (prefetched_popularity or {}).values()
-                        if int(e.get("lastfm_listeners") or 0) > 0
+                        for k, e in (prefetched_popularity or {}).items()
+                        if str(k or "").strip().lower() in _album_titles
+                        and int(e.get("lastfm_listeners") or 0) > 0
                     ]
-                    if len(_lf_vals) >= 2:
+                    if len(_lf_vals) >= 3:
                         _album_lf_listeners = _lf_vals
                 except Exception:
                     _album_lf_listeners = None

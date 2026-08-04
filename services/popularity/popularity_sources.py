@@ -317,14 +317,31 @@ def get_aggregated_listenbrainz_popularity(
     lb_client=None,
     mb_client=None,
 ) -> dict:
-    """Aggregate ListenBrainz stats across split MBIDs when possible."""
+    """Aggregate ListenBrainz stats across split MBIDs when possible.
+
+    Searches MusicBrainz for every recording of the track by the same artist
+    (single vs album versions are separate recordings) and sums their
+    ListenBrainz listen counts.
+    """
     logger.debug("[POPULARITY_SOURCES] Fetching aggregated ListenBrainz popularity")
     mbids: set[str] = set()
     if primary_mbid:
         mbids.add(primary_mbid)
-    if mb_client and hasattr(mb_client, "search_recordings_by_artist"):
+    if mb_client is None:
         try:
-            for rec in mb_client.search_recordings_by_artist(title, artist):
+            from api_clients.musicbrainz_http import MusicBrainzHttpClient
+            mb_client = MusicBrainzHttpClient()
+        except Exception:
+            mb_client = None
+    if mb_client and hasattr(mb_client, "search_recordings"):
+        try:
+            from helpers.normalization_service import normalize_title_for_lucene_query
+            from api_clients.musicbrainz_http import escape_lucene_special_chars
+            query = (
+                f'recording:"{escape_lucene_special_chars(normalize_title_for_lucene_query(title))}" '
+                f'AND artist:"{escape_lucene_special_chars(artist)}"'
+            )
+            for rec in mb_client.search_recordings(query, limit=20):
                 if rec.get("id"):
                     mbids.add(rec["id"])
         except Exception:

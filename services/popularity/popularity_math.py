@@ -135,7 +135,7 @@ def calculate_combined_popularity_score(
       a bigger hit elsewhere, so LF-only tracks would rank below LB tracks
       with fewer listeners.
     """
-    if album_lf_listeners:
+    if album_lf_listeners and listenbrainz_listens > 0:
         lastfm_score = calculate_lastfm_zscore_popularity(
             lastfm_listeners,
             lastfm_listeners,  # playcount placeholder (unused by the z path)
@@ -143,7 +143,11 @@ def calculate_combined_popularity_score(
             album_lf_listeners,
         )
     else:
-        lastfm_score = calculate_lastfm_popularity_score(lastfm_listeners, lastfm_artist_max_listeners)
+        # No ListenBrainz evidence: score Last.fm on its absolute log
+        # popularity so a listener-rich track without LB data is not crushed
+        # by the catalogue-relative z-score (which compares against the
+        # artist's biggest hits) — it relies on Last.fm alone.
+        lastfm_score = calculate_lastfm_popularity_score(lastfm_listeners, 0)
     lb_score = calculate_listenbrainz_popularity_score(listenbrainz_listens)
 
     if album_lb_listens:
@@ -228,10 +232,15 @@ def calculate_combined_popularity_score(
 
 
 def is_source_mismatch(lastfm_listeners, lb_listens) -> bool:
-    """Detect large mismatch between Last.fm and ListenBrainz popularity."""
+    """Detect large mismatch between Last.fm and ListenBrainz popularity.
+
+    A zero on either side is missing data, not a disagreement — a track with
+    no ListenBrainz listens is scored on Last.fm alone, so it must not be
+    routed into the dynamic-weight path.
+    """
     lastfm_listeners = int(lastfm_listeners or 0)
     lb_listens = int(lb_listens or 0)
-    if lastfm_listeners == 0:
+    if lastfm_listeners == 0 or lb_listens == 0:
         return False
     return lb_listens >= max(100, lastfm_listeners * 3) or lastfm_listeners >= max(100, lb_listens * 5)
 
