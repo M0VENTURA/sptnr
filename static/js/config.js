@@ -431,7 +431,7 @@ function saveConfig() {
   })
   .finally(() => {
     console.log('[saveConfig] Resetting button state');
-    clearTimeout(fetchTimeout);
+    clearTimeout(saveTimeout);
     clearTimeout(safetyReset);
     // Always reset button to its original state
     saveBtn.disabled = originalDisabled;
