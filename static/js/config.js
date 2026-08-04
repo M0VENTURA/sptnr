@@ -337,18 +337,38 @@ function buildConfigObject() {
 
 function saveConfig() {
   const saveBtn = document.getElementById('saveBtn');
-  saveBtn.disabled = true;
-  const originalText = saveBtn.innerHTML;
-  saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+  const originalText = saveBtn ? saveBtn.innerHTML : '';
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+  }
 
-  const config = buildConfigObject();
+  // The button must ALWAYS be restored — if config collection throws (a
+  // missing input, malformed field) the request never starts and without
+  // this guard the page would sit on "Saving..." forever.
+  let config;
+  try {
+    config = buildConfigObject();
+  } catch (err) {
+    console.error('buildConfigObject failed:', err);
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = originalText; }
+    showToast('Error', 'Could not collect config: ' + (err && err.message ? err.message : err), 'error');
+    return;
+  }
 
   const urlElement = document.querySelector('form#configForm')?.dataset?.saveUrl || '/config/save-json';
+
+  // Give the server a hard deadline so a hung request (e.g. a background
+  // task blocking the worker) surfaces as an error instead of an eternal
+  // spinner.
+  const controller = new AbortController();
+  const saveTimeout = setTimeout(() => controller.abort(), 45000);
 
   fetch(urlElement, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config)
+    body: JSON.stringify(config),
+    signal: controller.signal
   })
   .then(response => {
     const contentType = response.headers.get('content-type');
@@ -370,11 +390,18 @@ function saveConfig() {
     }
   })
   .catch(error => {
-    showToast('Error', error.message || 'Network error', 'error');
+    if (error && error.name === 'AbortError') {
+      showToast('Error', 'Save timed out after 45s — the server did not respond. Check the app logs.', 'error');
+    } else {
+      showToast('Error', error.message || 'Network error', 'error');
+    }
   })
   .finally(() => {
-    saveBtn.disabled = false;
-    saveBtn.innerHTML = originalText;
+    clearTimeout(saveTimeout);
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = originalText;
+    }
   });
 }
 
