@@ -246,18 +246,40 @@ class SlskdHttpClient:
 # =============================================================================
 
 _slskd_client_cache: SlskdHttpClient | None = None
+_slskd_client_cache_mtime: float | None = None
+
+
+def _config_file_mtime() -> float | None:
+    """Return the config.yaml mtime, or None when the file is missing."""
+    try:
+        import os as _os
+        cfg_path = _os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        if _os.path.exists(cfg_path):
+            return _os.path.getmtime(cfg_path)
+    except Exception:
+        pass
+    return None
 
 
 def get_slskd_client() -> SlskdHttpClient | None:
     """Return a configured, cached ``SlskdHttpClient`` instance.
 
     Reads ``slskd`` from config (``enabled`` / ``web_url`` / ``api_key``).
-    Returns ``None`` when slskd is disabled or misconfigured so callers can
-    treat it as "Soulseek unavailable" without raising.
+    The cached client is rebuilt automatically when config.yaml changes, so a
+    URL/API-key edit from the config page takes effect without restarting —
+    including in long-running queue-worker processes that cache their own
+    copy. Returns ``None`` when slskd is disabled or misconfigured so callers
+    can treat it as "Soulseek unavailable" without raising.
     """
-    global _slskd_client_cache
+    global _slskd_client_cache, _slskd_client_cache_mtime
     if _slskd_client_cache is not None:
-        return _slskd_client_cache
+        # Rebuild when the config file changed since the client was built —
+        # otherwise the stale URL from the first-ever call is used forever.
+        if _config_file_mtime() != _slskd_client_cache_mtime:
+            _slskd_client_cache = None
+            _slskd_client_cache_mtime = None
+        else:
+            return _slskd_client_cache
 
     try:
         from helpers.config_helpers import get_slskd_config
@@ -284,6 +306,7 @@ def get_slskd_client() -> SlskdHttpClient | None:
             http_session=_plain_session,
             enabled=True,
         )
+        _slskd_client_cache_mtime = _config_file_mtime()
         return _slskd_client_cache
     except Exception as exc:
         logger.error("Error getting SlskdHttpClient: %s", exc)
