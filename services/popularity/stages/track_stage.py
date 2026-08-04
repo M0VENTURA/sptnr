@@ -695,7 +695,27 @@ def process_track(
                 _sd_ttl_hours = get_cache_duration_hours(
                     track.get("year") or track.get("release_year")
                 )
-                _sd_fresh = (_sd_dt.now(_sd_tz.utc) - _sd_ts).total_seconds() < _sd_ttl_hours * 3600
+                _sd_age_ok = (_sd_dt.now(_sd_tz.utc) - _sd_ts).total_seconds() < _sd_ttl_hours * 3600
+                # Only reuse stored results that actually produced evidence.
+                # A "low / no matched sources" result usually means the last
+                # run hit a transient API failure (rate limit, timeout) —
+                # caching it for the full TTL silently disables single
+                # detection for that track. No-evidence results are retried
+                # on the next scan so detection self-heals.
+                _sd_has_evidence = bool(track.get("is_single"))
+                if not _sd_has_evidence:
+                    try:
+                        import json as _sd_json
+                        _sd_sources = track.get("single_sources") or ""
+                        if isinstance(_sd_sources, str):
+                            _sd_sources = _sd_json.loads(_sd_sources) if _sd_sources.strip() else []
+                        _sd_has_evidence = any(
+                            isinstance(s, dict) and bool(s.get("matched"))
+                            for s in (_sd_sources or [])
+                        )
+                    except Exception:
+                        _sd_has_evidence = True  # unparseable — assume valid
+                _sd_fresh = _sd_age_ok and _sd_has_evidence
                 if _sd_fresh:
                     logger.debug("[track_stage] Singles detection fresh for %s — skipping", track_id)
         except Exception:
