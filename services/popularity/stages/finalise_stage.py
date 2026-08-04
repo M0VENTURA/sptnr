@@ -391,6 +391,48 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
             except Exception as exc:
                 logger.debug("[finalise_stage] Artist DB score merge failed for %s: %s", artist, exc)
 
+            # ── Persist artist_stats (artist-context popularity data) ────
+            # The mean-popularity adjustment reads median_popularity / MAD
+            # from this table — without a write here the adjustment silently
+            # no-ops and the artist page has no catalogue statistics.
+            try:
+                _valid_scores = [float(s) for s in artist_scores if float(s or 0) > 0]
+                if _valid_scores:
+                    _med = median(_valid_scores)
+                    _mads = [abs(s - _med) for s in _valid_scores]
+                    _mad = median(_mads) if _mads else 0.0
+                    _album_count = len({str(r.get("album") or "") for r in artist_results if r.get("album")})
+                    from datetime import datetime as _dt
+                    cursor.execute(
+                        """
+                        INSERT INTO artist_stats
+                            (artist_id, artist_name, album_count, track_count, last_updated,
+                             mean_popularity, median_popularity, popularity_stddev, popularity_mad)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (artist_id) DO UPDATE SET
+                            artist_name = EXCLUDED.artist_name,
+                            album_count = EXCLUDED.album_count,
+                            track_count = EXCLUDED.track_count,
+                            last_updated = EXCLUDED.last_updated,
+                            mean_popularity = EXCLUDED.mean_popularity,
+                            median_popularity = EXCLUDED.median_popularity,
+                            popularity_stddev = EXCLUDED.popularity_stddev,
+                            popularity_mad = EXCLUDED.popularity_mad
+                        """,
+                        (
+                            artist, artist, _album_count, len(_valid_scores), _dt.now().isoformat(),
+                            mean(_valid_scores), _med,
+                            stdev(_valid_scores) if len(_valid_scores) > 1 else 0.0,
+                            _mad,
+                        ),
+                    )
+                    logger.info(
+                        "[FINALISE_STAGE] artist_stats updated for '%s' (tracks=%d, median=%.1f, MAD=%.1f)",
+                        artist, len(_valid_scores), _med, _mad,
+                    )
+            except Exception as exc:
+                logger.debug("[finalise_stage] artist_stats persist failed for %s: %s", artist, exc)
+
             # Group by album for album-level z-scores
             by_album: dict[str, list[dict]] = defaultdict(list)
             for r in artist_results:
@@ -501,6 +543,13 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                             reasons.append(
                                 f"lf={int(t.get('lastfm_listeners') or 0):,} "
                                 f"lb={int(t.get('listenbrainz_listens') or 0):,}"
+                            )
+                            # Show each provider's score contribution so the
+                            # rating can be traced back to the sources.
+                            reasons.append(
+                                f"LF-score={float(t.get('lastfm_score') or 0):.1f} "
+                                f"LB-score={float(t.get('listenbrainz_score') or 0):.1f} "
+                                f"score={t_score:.1f}"
                             )
                             reason_str = f" ({'; '.join(r for r in reasons if r)})" if reasons else ""
 

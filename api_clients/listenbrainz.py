@@ -148,6 +148,23 @@ class ListenBrainzClient:
             logger.debug("Failed to fetch recording metadata: %s", exc)
             return {}
 
+    def get_release_metadata_batch(self, release_mbids: list[str], inc: str = "artist release") -> dict[str, dict[str, Any]]:
+        """Fetch release metadata (incl. tracklists) keyed by release MBID.
+
+        The ``inc`` fields include the tracklist (``media`` → ``tracks`` with
+        ``title`` + ``recording_mbid``), used to match local tracks to
+        ListenBrainz recordings by title when no recording MBID is known.
+        """
+        mbids = [m for m in release_mbids if m]
+        if not self.enabled or not mbids:
+            return {}
+        try:
+            data = self._get("/metadata/release/", params={"release_mbids": ",".join(mbids), "inc": inc}, timeout=20.0)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            logger.debug("Failed to fetch release metadata: %s", exc)
+            return {}
+
     def get_recording_tags(self, mbid: str) -> list[dict[str, Any]]:
         """Get recording tags."""
         if not mbid:

@@ -14,12 +14,50 @@ from typing import Any, Dict
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.repositories.queue import get_ready_for_processing, mark_processing
+from db.repositories.queue import get_ready_for_processing, mark_processing, requeue_due_failed_items
 
 logger = logging.getLogger(__name__)
 
 # When a download fails 3+ times with the same method, switch to fallback.
 _METHOD_FAIL_THRESHOLD = 3
+
+
+# =============================================================================
+# AUTO-RETRY SCHEDULER (failed -> queued with backoff)
+# =============================================================================
+
+def _retry_scheduler_enabled() -> bool:
+    """Honour ``features.retry_scheduler.auto_start`` (default: enabled)."""
+    try:
+        from helpers.config_helpers import get_feature
+        cfg = get_feature("retry_scheduler", {}) or {}
+        return bool(cfg.get("auto_start", True))
+    except Exception:
+        return True
+
+
+def requeue_failed_items(limit: int = 50) -> int:
+    """Requeue failed items that are due for automatic retry.
+
+    Skips entirely when the retry scheduler is disabled in config
+    (``features.retry_scheduler.auto_start: false``).  Manual retry via the
+    Retry buttons is always available regardless of this setting.
+    """
+    if not _retry_scheduler_enabled():
+        return 0
+    try:
+        requeued = requeue_due_failed_items(limit=limit)
+        if requeued:
+            logger.info("[RETRY_SCHEDULER] Requeued %s failed item(s)", len(requeued))
+        return len(requeued)
+    except Exception as exc:
+        logger.error("[RETRY_SCHEDULER] Failed to requeue items: %s", exc)
+        return 0
+
+
+# =============================================================================
+# RETRY MANAGER (method fallback)
+# =============================================================================
 
 # Fallback chain: Soulseek -> qBittorrent -> Soulseek
 _METHOD_FALLBACK: dict[str, str] = {
@@ -37,12 +75,16 @@ def run_retry_manager(
     """
     Process retry queue with automatic method fallback.
 
+    First requeues failed items that are due for an automatic retry
+    (backoff-scheduled), then processes the ready queue.
+
     Returns:
-        ``{"retried": int, "completed": int, "method_switched": int}``
+        ``{"retried": int, "completed": int, "method_switched": int, "requeued": int}``
     """
     retried = 0
     completed = 0
     method_switched = 0
+    requeued = requeue_failed_items()
 
     try:
         items = get_ready_for_processing(limit=50)
@@ -83,6 +125,7 @@ def run_retry_manager(
         "retried": retried,
         "completed": completed,
         "method_switched": method_switched,
+        "requeued": requeued,
     }
 
 

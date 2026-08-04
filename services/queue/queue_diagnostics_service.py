@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from typing import Any, Mapping
 
@@ -129,7 +130,24 @@ def _tail_queue_log(limit: int = 100) -> list[dict[str, Any]]:
     in-memory event store is empty across restarts.  The worker logs at INFO
     via the standard logger (which lands in ``info.log``/``unified_scan.log``),
     so we surface those lines as queue events.
+
+    Only meaningful download/queue lines are kept — scheduler bookkeeping
+    (APScheduler registrations) and SQL parameter dumps are filtered out.
     """
+    # Noise markers: scheduler registrations and SQLAlchemy/psycopg2 dumps
+    # must never surface in the queue activity viewer.
+    _NOISE_MARKERS = (
+        "APScheduler",
+        "registered ",
+        "Added job",
+        "job store",
+        "parameters:",
+        "job_state",
+        "next_run_time",
+        "Binary object",
+        "psycopg2",
+    )
+    _TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
     try:
         from helpers.logging_config import resolve_log_dir
         import glob as _glob
@@ -140,7 +158,7 @@ def _tail_queue_log(limit: int = 100) -> list[dict[str, Any]]:
             base = os.path.join(log_dir, name)
             candidates.extend(sorted(_glob.glob(base + "*"), reverse=True))
 
-        lines: list[str] = []
+        events: list[dict[str, Any]] = []
         for path in candidates:
             if not os.path.exists(path):
                 continue
@@ -154,25 +172,30 @@ def _tail_queue_log(limit: int = 100) -> list[dict[str, Any]]:
                     line = line.strip()
                     if not line:
                         continue
+                    if any(n in line for n in _NOISE_MARKERS):
+                        continue
                     if any(k in line for k in ("[QUEUE", "[QUEUE_WORKER", "download_queue", "Soulseek", "slskd", "[PIPELINE]")):
-                        lines.append(line)
-                    if len(lines) >= limit:
+                        ts_match = _TS_RE.search(line)
+                        created_at = None
+                        if ts_match:
+                            # ISO-ish (T separator) so the browser parses it
+                            # reliably in every engine.
+                            created_at = ts_match.group(1).replace(" ", "T")
+                        events.append({
+                            "created_at": created_at,
+                            "event_type": "info",
+                            "message": line,
+                            "item_id": None,
+                            "details": {},
+                        })
+                    if len(events) >= limit:
                         break
             except Exception:
                 continue
-            if len(lines) >= limit:
+            if len(events) >= limit:
                 break
 
-        return [
-            {
-                "created_at": None,
-                "event_type": "info",
-                "message": line,
-                "item_id": None,
-                "details": {},
-            }
-            for line in lines[:limit]
-        ]
+        return events[:limit]
     except Exception as exc:
         logger.debug("[queue_diagnostics] Log-file fallback failed: %s", exc)
         return []

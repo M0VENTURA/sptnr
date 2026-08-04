@@ -174,7 +174,12 @@ async def api_match_upcoming_release(release_id):
 
 @upcoming_bp.route("/scrape", methods=["POST"])
 def api_scrape_upcoming_releases():
-    """Scrape Wikipedia for upcoming releases and store in DB."""
+    """Scrape Wikipedia for upcoming releases and store in DB.
+
+    Also kicks off the MusicBrainz collection refresh (background thread —
+    large libraries take minutes, so the request returns immediately with
+    the Wikipedia results while the MusicBrainz pass runs and logs progress).
+    """
     from services.upcoming_releases.wikipedia_scraper_service import scrape
 
     try:
@@ -183,14 +188,27 @@ def api_scrape_upcoming_releases():
         new_count = results.get("total_new", 0)
         updated_count = results.get("total_updated", 0)
 
+        # MusicBrainz upcoming/recent releases for collection artists
+        # (augments the Wikipedia sources with direct MB release-groups).
+        mb_started = False
+        try:
+            from services.upcoming_releases.musicbrainz_fetcher_service import start_musicbrainz_refresh
+            mb_started = start_musicbrainz_refresh()
+        except Exception as exc:
+            logger.debug("MusicBrainz upcoming refresh start failed: %s", exc)
+
+        message = f"Scraped {total} releases ({new_count} new, {updated_count} updated)"
+        message += "; MusicBrainz refresh " + ("started" if mb_started else "already running")
+
         logger.info(
             "Scraped %s upcoming releases (%s new, %s updated)",
             total, new_count, updated_count,
         )
         return jsonify({
             "success": True,
-            "message": f"Scraped {total} releases ({new_count} new, {updated_count} updated)",
+            "message": message,
             "results": results,
+            "musicbrainz": {"started": mb_started},
         })
     except Exception as exc:
         logger.error("Failed to scrape Wikipedia: %s", exc, exc_info=True)

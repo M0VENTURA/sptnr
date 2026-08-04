@@ -508,11 +508,29 @@ def process_track(
                 except Exception:
                     cfg_single_boost, cfg_floor, cfg_live_penalty = 1.15, 5.0, 0.5
 
+                # Album Last.fm listener distribution (legacy parity): score
+                # Last.fm against the album's own listener spread so the track
+                # with the most listeners ranks accordingly even when the
+                # artist has a bigger hit elsewhere.  The distribution comes
+                # from the bulk artist cache (artist.getTopTracks).
+                _album_lf_listeners = None
+                try:
+                    _lf_vals = [
+                        int(e.get("lastfm_listeners") or 0)
+                        for e in (prefetched_popularity or {}).values()
+                        if int(e.get("lastfm_listeners") or 0) > 0
+                    ]
+                    if len(_lf_vals) >= 2:
+                        _album_lf_listeners = _lf_vals
+                except Exception:
+                    _album_lf_listeners = None
+
                 score_data = calculate_combined_popularity_score(
                     lastfm_listeners=lastfm_listeners,
                     lastfm_artist_max_listeners=artist_max_lf_listeners,
                     listenbrainz_listens=listenbrainz_listens,
                     album_lb_listens=album_lb_listens,
+                    album_lf_listeners=_album_lf_listeners,
                     age_source_value=listenbrainz_listens,
                     release_date=release_date,
                     is_single=prior_single,
@@ -574,6 +592,20 @@ def process_track(
             # zero scores (→ 1★ for everything) is diagnosable in the unified log.
             logger.warning("[track_stage][SCORING] %s: %s", track_id, e, exc_info=True)
 
+        # ── Per-track step summary (scanning log) ─────────────────────────
+        # One line per track showing whether popularity came from cache or a
+        # fresh fetch, the provider counts, and the resulting score.
+        try:
+            _final_score = float(update_payload.get("final_score") or 0)
+            _src = "cached" if update_payload.get("_cached") else "fresh"
+            log_unified(
+                f"[TRACK_STAGE] {track_artist} - {track_title} → popularity {_src} "
+                f"score={_final_score:.1f} "
+                f"(LF={lastfm_listeners:,} listeners, LB={listenbrainz_listens:,} listens)"
+            )
+        except Exception:
+            pass
+
     # -------------------------------------------------------------------------
     # 3. COVER DETECTION (via enrichment service)
     # -------------------------------------------------------------------------
@@ -600,6 +632,7 @@ def process_track(
                 if is_cover:
                     update_payload["is_cover"] = True
                     update_payload["is_cover_reason"] = reason
+                    log_unified(f"[TRACK_STAGE] {track_artist} - {track_title} → cover detected ({reason})")
         except Exception as e:
             logger.debug("[track_stage][COVER] %s: %s", track_id, e)
 
@@ -676,6 +709,12 @@ def process_track(
                 update_payload["single_status"] = sd_result.get("single_status", "none")
                 update_payload["single_sources"] = _json.dumps(sd_result.get("sources", []), default=str)
                 update_payload["single_detection_last_updated"] = sd_now
+                log_unified(
+                    f"[TRACK_STAGE] {track_artist} - {track_title} → single="
+                    f"{sd_result.get('confidence', 'low')} "
+                    f"(status={sd_result.get('single_status', 'none')}, "
+                    f"sources={len(sd_result.get('sources') or [])})"
+                )
 
         except Exception as e:
             logger.debug("[track_stage][SINGLE] %s: %s", track_id, e)

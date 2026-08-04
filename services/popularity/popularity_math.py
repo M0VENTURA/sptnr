@@ -95,6 +95,7 @@ def calculate_combined_popularity_score(
     lastfm_artist_max_listeners: int = 0,
     listenbrainz_listens: int = 0,
     album_lb_listens: Optional[List[int]] = None,
+    album_lf_listeners: Optional[List[int]] = None,
     age_source_value: float = 0.0,
     release_date: Optional[str] = None,
     is_single: bool = False,
@@ -115,8 +116,21 @@ def calculate_combined_popularity_score(
     - tracks with a confirmed MusicBrainz ID get a ``metadata_score_floor``
       (default 5.0) so a known track never scores near zero when external
       APIs have no data
+    - Last.fm is scored against the ALBUM's listener distribution (z-score)
+      when ``album_lf_listeners`` is provided (legacy parity).  The
+      artist-max-relative scale compresses every track of an artist that has
+      a bigger hit elsewhere, so LF-only tracks would rank below LB tracks
+      with fewer listeners.
     """
-    lastfm_score = calculate_lastfm_popularity_score(lastfm_listeners, lastfm_artist_max_listeners)
+    if album_lf_listeners:
+        lastfm_score = calculate_lastfm_zscore_popularity(
+            lastfm_listeners,
+            lastfm_listeners,  # playcount placeholder (unused by the z path)
+            album_lf_listeners,
+            album_lf_listeners,
+        )
+    else:
+        lastfm_score = calculate_lastfm_popularity_score(lastfm_listeners, lastfm_artist_max_listeners)
     lb_score = calculate_listenbrainz_popularity_score(listenbrainz_listens)
 
     if album_lb_listens:

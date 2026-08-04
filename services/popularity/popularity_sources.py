@@ -46,6 +46,88 @@ def get_listenbrainz_batch_for_tracks(tracks: List[dict]) -> Dict[str, Dict[str,
     return output
 
 
+def get_listenbrainz_album_tracklist(
+    artist: str,
+    album: str,
+    tracks: List[dict],
+) -> Dict[str, Dict[str, Optional[int]]]:
+    """Fetch an album's per-track ListenBrainz popularity matched by title.
+
+    ListenBrainz lists albums with their tracks, so albums whose local tracks
+    lack recording MBIDs can still get LB listen counts: resolve the album's
+    release MBID from the local tracks, fetch the release tracklist, batch
+    the popularity for those recordings, and key the result by normalized
+    title.  Multiple recordings of the same title are aggregated.
+
+    Args:
+        artist: artist name (unused for now, kept for API symmetry).
+        album: album name (unused for now, kept for API symmetry).
+        tracks: local track dicts — used to resolve the release MBID
+            (``musicbrainz_albumid`` / ``musicbrainz_album_mbid``).
+
+    Returns ``{normalized_title: {"listenbrainz_listens", "listenbrainz_users"}}``
+    with only non-zero entries.
+    """
+    if not tracks:
+        return {}
+    release_mbid = ""
+    for t in tracks:
+        release_mbid = str(t.get("musicbrainz_albumid") or t.get("musicbrainz_album_mbid") or "").strip()
+        if release_mbid:
+            break
+    if not release_mbid:
+        return {}
+
+    try:
+        from api_clients.listenbrainz import ListenBrainzClient
+        lb = ListenBrainzClient()
+        meta = lb.get_release_metadata_batch([release_mbid]) or {}
+        release_meta = (meta.get(release_mbid) or {}).get("release") or {}
+    except Exception as exc:
+        logger.debug("[LB_ALBUM] Release metadata failed for %s: %s", release_mbid, exc)
+        return {}
+
+    # Flatten the tracklist: normalized title -> recording MBIDs.
+    titles_to_mbids: Dict[str, List[str]] = {}
+    recording_mbids: List[str] = []
+    for medium in release_meta.get("media") or []:
+        if not isinstance(medium, dict):
+            continue
+        for trk in medium.get("tracks") or []:
+            if not isinstance(trk, dict):
+                continue
+            title = str(trk.get("title") or "").strip()
+            if not title:
+                continue
+            key = title.strip().lower()
+            rec_mbid = str(trk.get("recording_mbid") or "").strip()
+            titles_to_mbids.setdefault(key, [])
+            if rec_mbid:
+                titles_to_mbids[key].append(rec_mbid)
+                recording_mbids.append(rec_mbid)
+
+    if not recording_mbids:
+        return {}
+
+    try:
+        counts = lb_get_recording_popularity_batch(recording_mbids) or {}
+    except Exception as exc:
+        logger.debug("[LB_ALBUM] Recording popularity failed for %s: %s", release_mbid, exc)
+        return {}
+
+    out: Dict[str, Dict[str, Optional[int]]] = {}
+    for key, mbids in titles_to_mbids.items():
+        total = 0
+        users = 0
+        for m in mbids:
+            entry = counts.get(m) or {}
+            total += int(entry.get("total_listen_count") or 0)
+            users += int(entry.get("total_user_count") or 0)
+        if total > 0:
+            out[key] = {"listenbrainz_listens": total, "listenbrainz_users": users}
+    return out
+
+
 def get_listenbrainz_popularity_for_track(track: dict) -> Dict[str, Optional[int]]:
     """Fetch ListenBrainz popularity for one track dict."""
     mbid = extract_recording_mbid(track)

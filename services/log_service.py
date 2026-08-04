@@ -70,6 +70,14 @@ def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None
         if not verbose:
             # Dashboard mode: keep only scan-related lines.
             # Full log is available on the /logs page.
+            # First drop scheduler bookkeeping that the include-pattern below
+            # would otherwise let through (e.g. "registered popularity_scan").
+            noise_pattern = re.compile(
+                r'APScheduler|job store|Added job|registered .* every .* min|'
+                r'Scheduler started|Scheduler shutdown|Scheduler paused|Scheduler resumed',
+                re.I,
+            )
+            log_lines = [l for l in log_lines if not noise_pattern.search(l)]
             scan_pattern = re.compile(
                 r'\[POPULARITY\]|\[TRACK_STAGE\]|\[ALBUM_STAGE\]|\[FINALISE_STAGE\]|'
                 r'\[LOAD_STAGE\]|\[scan_runner\]|\[LIBRARY_SYNC\]|'

@@ -208,6 +208,12 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "lastfm_artist_tags": "TEXT",
         "members": "TEXT", "members_last_updated": "TEXT",
     },
+    "artist_stats": {
+        "mean_popularity": "DOUBLE PRECISION",
+        "median_popularity": "DOUBLE PRECISION",
+        "popularity_stddev": "DOUBLE PRECISION",
+        "popularity_mad": "DOUBLE PRECISION",
+    },
     "download_queue": {
         "priority": "INTEGER DEFAULT 5",
         "album_artist": "TEXT", "track_number": "TEXT", "disc_number": "TEXT", "year": "TEXT",

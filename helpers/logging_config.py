@@ -46,6 +46,11 @@ class UnifiedLogFilter(logging.Filter):
         if record.name.startswith("uvicorn.access") or record.name.startswith("werkzeug"):
             return False
 
+        # Scheduler bookkeeping (APScheduler registrations, job-store adds)
+        # stays in info.log — the scanning log only shows scan activity.
+        if record.name.startswith("apscheduler"):
+            return False
+
         return True
 
 

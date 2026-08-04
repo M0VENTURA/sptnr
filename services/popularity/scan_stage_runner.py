@@ -256,6 +256,34 @@ def run_scan(
         except Exception as exc:
             logger.debug("[scan_runner] Popularity cache prefetch failed for %s: %s", artist, exc)
 
+        # ── Album-tracklist ListenBrainz fallback ───────────────────────────
+        # Tracks without a resolved recording MBID get no LB data from the
+        # per-MBID batch.  ListenBrainz lists albums with their tracks, so
+        # fetch the album's tracklist + per-track popularity and match the
+        # local tracks by normalized title.
+        try:
+            from services.popularity.popularity_sources import get_listenbrainz_album_tracklist
+            _missing_lb_tracks = [
+                t for t in track_dicts
+                if t.get("title")
+                and not (prefetched_popularity.get(str(t["title"]).strip().lower()) or {}).get("listenbrainz_listens")
+            ]
+            if _missing_lb_tracks:
+                _album_lb_by_title = get_listenbrainz_album_tracklist(artist, album, track_dicts) or {}
+                for _t in _missing_lb_tracks:
+                    _key = str(_t["title"]).strip().lower()
+                    _entry = _album_lb_by_title.get(_key)
+                    if _entry and _entry.get("listenbrainz_listens"):
+                        _cur = prefetched_popularity.setdefault(_key, {})
+                        _cur["listenbrainz_listens"] = int(_entry["listenbrainz_listens"] or 0)
+                        _cur["listenbrainz_users"] = int(_entry.get("listenbrainz_users") or 0)
+                        logger.info(
+                            "[scan_runner] Album-tracklist LB match for '%s' (%s - %s): %s listens",
+                            _t.get("title"), artist, album, _cur["listenbrainz_listens"],
+                        )
+        except Exception as exc:
+            logger.debug("[scan_runner] Album-tracklist LB fallback failed for %s - %s: %s", artist, album, exc)
+
         # Build album-level LB listen-count list for percentile scoring from
         # the prefetched entries (cache or freshly fetched).
         album_lb_listens: list[int] = []

@@ -351,6 +351,53 @@ def get_ready_for_processing(limit: int = 100) -> List[Dict]:
     except Exception as e:
         logger.error(f"[get_ready_for_processing] {e}")
         return []
+
+
+def requeue_due_failed_items(limit: int = 50) -> List[Dict[str, Any]]:
+    """Requeue failed items whose retry window has arrived.
+
+    Eligible items: ``status = 'failed'`` with ``retry_count`` below
+    ``max_retries`` and (``next_retry_at`` unset or due).  Each requeued
+    item gets ``retry_count + 1`` and ``next_retry_at = now + delay`` so
+    repeated failures back off (legacy retry-scheduler parity).  Items past
+    ``max_retries`` stay failed and are left for manual retry.
+    """
+    requeued: List[Dict[str, Any]] = []
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT *
+                    FROM download_queue
+                    WHERE status = 'failed'
+                      AND retry_count < COALESCE(max_retries, 5)
+                      AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
+                    ORDER BY updated_at ASC
+                    LIMIT :limit
+                """),
+                {"limit": limit},
+            )
+            rows = [dict(r._mapping) for r in result.fetchall()]
+            for row in rows:
+                qid = row.get("id")
+                delay_minutes = max(1, int(row.get("retry_delay_minutes") or 30))
+                session.execute(
+                    text("""
+                        UPDATE download_queue
+                        SET status = 'queued',
+                            retry_count = retry_count + 1,
+                            failure_reason = NULL,
+                            next_retry_at = CURRENT_TIMESTAMP + (:delay * INTERVAL '1 minute'),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = :qid
+                    """),
+                    {"qid": qid, "delay": delay_minutes},
+                )
+                requeued.append(row)
+        return requeued
+    except Exception as exc:
+        logger.error("[requeue_due_failed_items] %s", exc)
+        return []
     
     # =============================================================================
 # COMPLETED / POST-DOWNLOAD QUEUE
