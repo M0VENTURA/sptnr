@@ -371,16 +371,23 @@ def run_scan(
                 if t.get("title")
                 and not (prefetched_popularity.get(str(t["title"]).strip().lower()) or {}).get("listenbrainz_listens")
             ]
-            if _missing_lb_tracks:
+            if _missing_lb_tracks or bool(options.get("force")):
                 _album_lb_by_title = get_listenbrainz_album_tracklist(artist, album, track_dicts) or {}
                 _cache_rows: list[dict[str, Any]] = []
-                for _t in _missing_lb_tracks:
+                # Apply the album values to ALL of the album's tracks — the
+                # album tracklist is authoritative for per-track counts (it
+                # matches the ListenBrainz album page), so it overrides any
+                # cached value that was resolved from a different recording.
+                for _t in track_dicts:
+                    if not _t.get("title"):
+                        continue
                     _key = str(_t["title"]).strip().lower()
                     _entry = _album_lb_by_title.get(_key)
                     if _entry and _entry.get("listenbrainz_listens"):
                         _cur = prefetched_popularity.setdefault(_key, {})
                         _cur["listenbrainz_listens"] = int(_entry["listenbrainz_listens"] or 0)
                         _cur["listenbrainz_users"] = int(_entry.get("listenbrainz_users") or 0)
+                        _cur["recording_mbid"] = _entry.get("recording_mbid")
                         _cache_rows.append({
                             "artist": artist,
                             "title": str(_t["title"]),

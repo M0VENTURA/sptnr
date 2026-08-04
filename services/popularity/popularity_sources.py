@@ -171,7 +171,13 @@ def get_listenbrainz_album_tracklist(
             total += int(entry.get("total_listen_count") or 0)
             users += int(entry.get("total_user_count") or 0)
         if total > 0:
-            out[key] = {"listenbrainz_listens": total, "listenbrainz_users": users}
+            out[key] = {
+                "listenbrainz_listens": total,
+                "listenbrainz_users": users,
+                # The album's own recording for this title — lets the track
+                # adopt it so LB lookups match the ListenBrainz album page.
+                "recording_mbid": mbids[0] if mbids else None,
+            }
     return out
 
 

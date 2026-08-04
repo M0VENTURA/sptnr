@@ -445,6 +445,16 @@ def process_track(
                     if _prefetch_entry and _prefetch_entry.get("listenbrainz_listens"):
                         listenbrainz_listens = _as_int(_prefetch_entry.get("listenbrainz_listens") or 0)
                         listenbrainz_users = _as_int(_prefetch_entry.get("listenbrainz_users") or 0)
+                        # Adopt the album recording MBID when the prefetch
+                        # came from the album tracklist — keeps the stored
+                        # MBID on the album version so future lookups match
+                        # the ListenBrainz album page instead of a random
+                        # split recording.
+                        _album_rec_mbid = _prefetch_entry.get("recording_mbid")
+                        if _album_rec_mbid and _album_rec_mbid != recording_mbid:
+                            recording_mbid = _album_rec_mbid
+                            update_payload["recording_mbid"] = _album_rec_mbid
+                            update_payload["mbid"] = _album_rec_mbid
                     else:
                         if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
                             lb_entry = album_lb_data[recording_mbid]
