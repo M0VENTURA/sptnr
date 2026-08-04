@@ -15,6 +15,14 @@ from services.popularity.popularity_config import AGE_WEIGHT, LASTFM_WEIGHT, LIS
 Z_SCORE_MIDPOINT = 50.0
 Z_SCORE_TO_POPULARITY_SCALE = 16.7
 
+# Log-scale multiplier mapping raw listener/listen counts to a 0-100 score.
+# The previous 22.0 saturated at ~35k listens — every mid-popularity track
+# capped at 100, so the score stopped reflecting real popularity differences
+# (e.g. 90k vs 120k listens scored identically). 16.0 only saturates at
+# ~1.78M listens, keeping the scale responsive across the typical 10k-1M range:
+#   10k -> 64   50k -> 75   100k -> 80   250k -> 86   1M -> 96
+LOG_SCALE_MULTIPLIER = 16.0
+
 
 def calculate_track_zscore(score: float, mean_value: float, stddev: float) -> float:
     """Calculate z-score for a track relative to a reference distribution."""
@@ -35,7 +43,7 @@ def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int 
         return 0.0
     if artist_max_listeners and artist_max_listeners > 0:
         return min(100.0, max(0.0, (listeners / artist_max_listeners) * 100.0))
-    return min(100.0, math.log10(listeners + 1) * 20.0)
+    return min(100.0, math.log10(listeners + 1) * LOG_SCALE_MULTIPLIER)
 
 
 def calculate_lastfm_zscore_popularity(
@@ -57,10 +65,15 @@ def calculate_lastfm_zscore_popularity(
 
 
 def calculate_listenbrainz_popularity_score(listen_count: int) -> float:
-    """Calculate normalized ListenBrainz popularity from global listen count."""
+    """Calculate normalized ListenBrainz popularity from global listen count.
+
+    Log scale with ``LOG_SCALE_MULTIPLIER`` so the score keeps discriminating
+    between mid-popularity tracks instead of capping at 100 for anything above
+    ~35k listens (the previous 22.0 multiplier's saturation point).
+    """
     if listen_count is None or listen_count <= 0:
         return 0.0
-    return min(100.0, math.log10(listen_count + 1) * 22.0)
+    return min(100.0, math.log10(listen_count + 1) * LOG_SCALE_MULTIPLIER)
 
 
 def calculate_listenbrainz_percentile(lb_listens, album_lb_listens):

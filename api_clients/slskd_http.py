@@ -275,8 +275,8 @@ def get_slskd_client() -> SlskdHttpClient | None:
         # backoff, which turns a fast "slot busy" into a long wait per search
         # attempt. A plain session lets the caller's own retry loop control the
         # cadence (mirrors the legacy queue_processor factory).
-        import requests as _requests
-        _plain_session = _requests.Session()
+        import httpx as _httpx
+        _plain_session = _httpx.Client(timeout=30.0)
 
         _slskd_client_cache = SlskdHttpClient(
             web_url=web_url,
