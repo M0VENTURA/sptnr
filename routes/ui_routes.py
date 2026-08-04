@@ -361,7 +361,7 @@ async def dashboard():
             first_full_scan_done=True,
         )
     except Exception as exc:
-        logger.error("Dashboard error: %s", exc)
+        logger.error("Dashboard error: %s", exc, exc_info=True)
         return await render_template("pages/dashboard.html", recent_scans=[], nav_users=[], error=str(exc))
 
 

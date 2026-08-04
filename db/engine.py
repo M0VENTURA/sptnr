@@ -192,8 +192,15 @@ def db_session(retries: int = 2) -> Iterator[Session]:
     Commits on success, rolls back on exception.
 
     Survives transient PostgreSQL connection drops (restart / idle timeout):
-    the whole block is retried on a fresh session a few times, disposing the
-    engine pool so the next attempt checks out a live connection.
+    session acquisition is retried on a fresh factory a few times, disposing
+    the engine pool so the next attempt checks out a live connection.
+
+    Note: only acquisition (before the single ``yield``) can be retried.
+    A contextmanager generator must yield exactly once — re-yielding after
+    an exception makes ``contextlib`` raise "generator didn't stop after
+    throw".  Failures inside the caller's block therefore surface to the
+    caller, which may retry the whole operation (e.g. the queue worker's
+    next cycle).
 
     Usage::
 
@@ -206,15 +213,13 @@ def db_session(retries: int = 2) -> Iterator[Session]:
     retries = max(1, int(retries))
     last_error: Exception | None = None
 
+    # Retry only session acquisition — the caller's block cannot be re-run.
+    session: Session | None = None
     for attempt in range(retries):
-        factory = get_session_factory()
-        session: Session = factory()
         try:
-            yield session
-            session.commit()
-            return
+            session = get_session_factory()()
+            break
         except Exception as exc:
-            session.rollback()
             last_error = exc
             if not _is_transient_db_error(exc) or attempt >= retries - 1:
                 raise
@@ -222,11 +227,26 @@ def db_session(retries: int = 2) -> Iterator[Session]:
                 _ENGINE and _ENGINE.dispose()
             except Exception:
                 pass
-        finally:
-            session.close()
+    if session is None:
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("db_session: could not acquire a session")
 
-    if last_error is not None:
-        raise last_error
+    try:
+        yield session
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        if _is_transient_db_error(exc):
+            # Dispose the pool so the NEXT call checks out a live connection,
+            # then re-raise — the caller decides whether to retry.
+            try:
+                _ENGINE and _ENGINE.dispose()
+            except Exception:
+                pass
+        raise
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
