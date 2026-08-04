@@ -458,12 +458,23 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                 album_lf_listeners = [float(r.get("lastfm_listeners") or 0) for r in album_results]
                 album_lb_listens = [float(r.get("listenbrainz_listens") or 0) for r in album_results]
                 try:
+                    # Merge DB scores ONLY for tracks not in the current scan.
+                    # Otherwise the distribution double-counts every scanned
+                    # track (raw popularity_score + stored final_score, which
+                    # is decay-adjusted) and the z-scores drift between scans
+                    # as the stored values change.
+                    scanned_titles = {str(r.get("title") or "").strip().lower() for r in album_results}
                     cursor.execute(
-                        "SELECT final_score FROM tracks "
+                        "SELECT title, final_score FROM tracks "
                         "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND final_score > 0",
                         (artist, album),
                     )
-                    db_album_scores = [float(row.get("final_score") or 0) for row in cursor.fetchall() if row.get("final_score")]
+                    db_album_scores = [
+                        float(row.get("final_score") or 0)
+                        for row in cursor.fetchall()
+                        if row.get("final_score")
+                        and str(row.get("title") or "").strip().lower() not in scanned_titles
+                    ]
                     album_scores = list(album_scores) + list(db_album_scores)
                 except Exception as exc:
                     logger.debug("[finalise_stage] Album DB score merge failed for %s - %s: %s", artist, album, exc)

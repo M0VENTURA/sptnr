@@ -136,8 +136,8 @@
 {# The shared MusicBrainz search modal is included globally by base.html — a legacy inline copy used to duplicate the musicBrainzModal id here. #}
 
 <!-- Include existing JavaScript -->
-<script src="{{url_for('static', filename='js/downloads.js')}}"></script>
-<script src="{{url_for('static', filename='js/monitor.js')}}"></script>
+<script src="{{url_for('static', filename='js/downloads.js')}}?v=3"></script>
+<script src="{{url_for('static', filename='js/monitor.js')}}?v=3"></script>
 <script>
   document.addEventListener('DOMContentLoaded', function() {
     const lastChecked = localStorage.getItem('upcomingReleasesLastChecked');

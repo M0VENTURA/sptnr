@@ -19,10 +19,23 @@ window.doLookup = window.doLookup || function(artist, album, track, year, callba
 
 async function fetchJsonOrThrow(url, options = {}, timeoutMs = 30000) {
   const controller = new AbortController();
-  const mergedOptions = { ...options, signal: options?.signal || controller.signal };
-  const timeoutId = setTimeout(() => {
-    if (!options?.signal) controller.abort();
-  }, timeoutMs);
+  const externalSignal = options?.signal || null;
+  const mergedOptions = { ...options };
+
+  // The internal controller enforces the timeout. A caller-supplied signal
+  // (e.g. a page-level AbortController) is forwarded onto it so the timeout
+  // still applies when one is passed — previously it silently disabled
+  // itself, leaving callers stuck on a spinner forever for a hung request.
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal && typeof AbortSignal.any === 'function') {
+    mergedOptions.signal = AbortSignal.any([controller.signal, externalSignal]);
+  } else if (externalSignal) {
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    mergedOptions.signal = controller.signal;
+  } else {
+    mergedOptions.signal = controller.signal;
+  }
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   let response;
   let raw;
@@ -31,12 +44,15 @@ async function fetchJsonOrThrow(url, options = {}, timeoutMs = 30000) {
     raw = await response.text();
   } catch (error) {
     if (error?.name === 'AbortError') {
-      if (options?.signal?.aborted) throw error;
+      if (externalSignal?.aborted) throw error;
       throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
     }
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    if (externalSignal && typeof AbortSignal.any !== 'function') {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
   }
 
   if ([524, 504, 502].includes(response.status)) {
@@ -1283,6 +1299,11 @@ async function _addMbDownloadToSession(releaseId, releaseTitle, artist, method, 
     if (data.session_id) msg += `\n✓ Added to session ID: ${data.session_id}`;
     alert(msg);
     setTimeout(refreshMbDownloads, 1000);
+    // Refresh the Download Queue section too so the added item appears
+    // immediately (refreshMbDownloads only updates the MB downloads list).
+    if (typeof window.loadFolderGroups === 'function') {
+      setTimeout(function () { window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true }); }, 1500);
+    }
   } catch (e) {
     alert('Error initiating download: ' + e.message);
   }

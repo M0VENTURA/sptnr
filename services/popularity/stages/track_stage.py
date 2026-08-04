@@ -451,12 +451,27 @@ def process_track(
                             if lb_entry:
                                 listenbrainz_listens = _as_int(lb_entry.get("total_listen_count") or 0)
                                 listenbrainz_users = _as_int(lb_entry.get("total_user_count") or 0)
+                        # Single-MBID fallback. ListenBrainz popularity is
+                        # keyed by recording MBID — resolve one via the cached
+                        # MusicBrainz suggestion when the track has none,
+                        # otherwise tracks that exist on ListenBrainz read 0
+                        # forever. The resolved MBID is persisted so later
+                        # scans skip the lookup.
+                        if listenbrainz_listens == 0 and not recording_mbid and title and artist:
+                            try:
+                                from services.enrichment.musicbrainz_service import MusicBrainzService
+                                recording_mbid, _conf = MusicBrainzService().get_suggested_mbid(title, artist)
+                                if recording_mbid:
+                                    update_payload["recording_mbid"] = recording_mbid
+                                    update_payload["mbid"] = recording_mbid
+                            except Exception:
+                                recording_mbid = None
                         if listenbrainz_listens == 0 and recording_mbid:
                             try:
                                 lb = ListenBrainzClient()
                                 lb_result = lb.get_recording_popularity(recording_mbid) if recording_mbid else {}
-                                listenbrainz_listens = _as_int(lb_result.get("listen_count") if isinstance(lb_result, dict) else 0)
-                                listenbrainz_users = _as_int(lb_result.get("user_count") if isinstance(lb_result, dict) else 0)
+                                listenbrainz_listens = _as_int(lb_result.get("total_listen_count") if isinstance(lb_result, dict) else 0)
+                                listenbrainz_users = _as_int(lb_result.get("total_user_count") if isinstance(lb_result, dict) else 0)
                             except Exception:
                                 listenbrainz_listens = 0
                                 listenbrainz_users = 0

@@ -180,7 +180,19 @@ class SlskdService:
                 logger.warning("slskd search start failed: %s - %s", resp.status_code, body_preview)
                 return None
             except Exception as exc:
-                logger.error("slskd search failed for query %r: %s", query, exc, exc_info=True)
+                # Include the exception class (ConnectTimeout vs ReadTimeout
+                # vs ConnectionRefused) and the resolved API URL so a failed
+                # search is self-diagnosing: ConnectTimeout = wrong/firewalled
+                # URL, ReadTimeout = slskd reachable but not answering search
+                # requests (usually its Soulseek connection is down).
+                logger.error(
+                    "slskd search failed for query %r: %s (%s) [%s]",
+                    query,
+                    exc,
+                    type(exc).__name__,
+                    getattr(self.http, "base_url", "?"),
+                    exc_info=True,
+                )
                 return None
         return None
 

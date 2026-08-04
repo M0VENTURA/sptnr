@@ -195,33 +195,47 @@ async function loadFolderGroups(options) {
     var data = await fetchJsonOrThrow('/api/downloads/grouped-folders');
     if (data && data.success) groups = data.folder_groups || [];
   } catch (error) {
-    console.error('Error loading folder groups, falling back to queue items:', error);
+    console.error('Error loading folder groups:', error);
   }
 
-  // The grouped-folders endpoint only covers MusicBrainz-managed releases.
-  // Fall back to the real download_queue so items added via the search /
-  // download flows still appear in the Download Queue section.
-  if (groups.length === 0) {
-    try {
-      var qd = await fetchJsonOrThrow('/api/downloads/queue?limit=200');
-      var qItems = (qd && qd.queue) || [];
-      if (qItems.length > 0) {
-        if (badge) badge.textContent = qItems.length + ' items';
-        list.innerHTML = '<div class="list-group list-group-flush">' +
-          qItems.map(function(item) {
-            var st = item.status || 'queued';
-            var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
-            return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
-              '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
-              (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
-              '</div><span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span></div></div>';
-          }).join('') + '</div>';
-        updateQueuePageControls(qItems.length, qItems.length);
-        return;
-      }
-    } catch (error) {
-      console.error('Error loading queue fallback:', error);
-    }
+  // Always fetch the real download_queue rows too — items added via the
+  // search / download modals must be visible even when folder groups exist
+  // (previously they were hidden whenever groups.length > 0).
+  var qItems = [];
+  try {
+    var qd = await fetchJsonOrThrow('/api/downloads/queue?limit=200');
+    qItems = (qd && qd.queue) || [];
+  } catch (error) {
+    console.error('Error loading queue items:', error);
+  }
+
+  var html = '';
+  if (qItems.length > 0) {
+    html += '<h6 class="px-3 pt-3 mb-0 small text-muted text-uppercase">Queue Items</h6>';
+    html += '<div class="list-group list-group-flush">' + qItems.map(function(item) {
+      var st = item.status || 'queued';
+      var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
+      return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
+        '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
+        (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+        '</div><span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span></div></div>';
+    }).join('') + '</div>';
+  }
+  if (groups.length > 0) {
+    html += '<h6 class="px-3 pt-3 mb-0 small text-muted text-uppercase">Folder Groups</h6>';
+    html += '<div class="list-group list-group-flush">' + groups.map(function(g) {
+      var name = g.folder_name || g.folder_path || g.name || 'Unknown';
+      var artist = g.artist || '';
+      var album = g.album || '';
+      var trackCount = g.track_count || (g.tracks ? g.tracks.length : 0);
+      return '<div class="list-group-item"><div class="d-flex justify-content-between"><div><strong>' + escapeHtml(name) + '</strong>' +
+        (artist ? '<br><small class="text-muted">' + escapeHtml(artist) + (album ? ' - ' + escapeHtml(album) : '') + '</small>' : '') +
+        '</div><span class="badge bg-info">' + trackCount + ' tracks</span></div></div>';
+    }).join('') + '</div>';
+  }
+
+  var total = qItems.length + groups.length;
+  if (total === 0) {
     if (options.keepVisibleOnEmpty !== false) {
       if (badge) badge.textContent = '0 items';
       list.innerHTML = '<div class="alert alert-info m-3"><i class="bi bi-info-circle"></i> No items in queue right now.</div>';
@@ -232,19 +246,9 @@ async function loadFolderGroups(options) {
   }
 
   section.style.display = 'block';
-  if (badge) badge.textContent = groups.length + ' items';
-  // Simple render: show folder names
-  list.innerHTML = '<div class="list-group list-group-flush">' +
-    groups.map(function(g) {
-      var name = g.folder_name || g.folder_path || g.name || 'Unknown';
-      var artist = g.artist || '';
-      var album = g.album || '';
-      var trackCount = g.track_count || (g.tracks ? g.tracks.length : 0);
-      return '<div class="list-group-item"><div class="d-flex justify-content-between"><div><strong>' + escapeHtml(name) + '</strong>' +
-        (artist ? '<br><small class="text-muted">' + escapeHtml(artist) + (album ? ' - ' + escapeHtml(album) : '') + '</small>' : '') +
-        '</div><span class="badge bg-info">' + trackCount + ' tracks</span></div></div>';
-    }).join('') + '</div>';
-  updateQueuePageControls(groups.length, groups.length);
+  if (badge) badge.textContent = total + ' items';
+  list.innerHTML = html;
+  updateQueuePageControls(total, total);
 }
 
 // ===== Upcoming Releases =====
@@ -302,8 +306,11 @@ async function refreshUpcomingReleasesMonitor() {
     container.innerHTML = html;
   } catch (error) {
     console.error('Error loading upcoming releases:', error);
+    // A newer refresh has taken over — don't clobber its spinner/render
+    // with a stale error from this (aborted) request.
+    if (window.upcomingReleasesRequestController !== rc) return;
     container.innerHTML = '<div class="text-center py-4"><p class="text-danger mb-2"><i class="bi bi-exclamation-triangle"></i> Error loading upcoming releases.</p><p class="text-muted small mb-0">' + (error.message || 'Unknown error') + '</p><button class="btn btn-sm btn-outline-primary mt-2" onclick="refreshUpcomingReleasesMonitor()"><i class="bi bi-arrow-clockwise"></i> Retry</button></div>';
-    if (window.upcomingReleasesRequestController === rc) window.upcomingReleasesRequestController = null;
+    window.upcomingReleasesRequestController = null;
   }
 }
 
@@ -622,32 +629,35 @@ async function queueMissingTracks(tracksJson, artist) {
       return;
     }
 
-    // Use Promise.all to run requests concurrently instead of one-by-one
-    const queuePromises = missingTracks.map(track =>
-      fetch('/api/downloads/queue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    // Use the real queue-add endpoint. /api/downloads/queue is GET-only —
+    // POSTing there returns 405 and silently added nothing.
+    const response = await fetch('/api/queue/add-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: missingTracks.map(track => ({
           title: track.title || '',
           artist: artist,
           album: track.release_title || '',
-          source: 'musicbrainz',
-          status: 'queued'
-        })
-      }).then(r => r.ok)
-    );
-
-    const results = await Promise.all(queuePromises);
-    const queuedCount = results.filter(Boolean).length;
+          source: 'musicbrainz'
+        }))
+      })
+    });
+    const result = await response.json().catch(() => ({}));
+    const queuedCount = (result && typeof result.added === 'number') ? result.added : 0;
 
     if (queuedCount > 0) {
       alert(`Successfully queued ${queuedCount}/${missingTracks.length} missing tracks`);
-      setTimeout(loadQueueStatus, 500);
+      setTimeout(function() {
+        if (typeof window.loadFolderGroups === 'function') {
+          window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+        }
+      }, 500);
 
       const modal = bootstrap.Modal.getInstance(document.getElementById('releaseTracklistModal'));
       if (modal) modal.hide();
     } else {
-      alert('Failed to queue any tracks');
+      alert('Failed to queue any tracks: ' + ((result && result.error) || 'unknown error'));
     }
   } catch (error) {
     console.error('Error queuing missing tracks:', error);

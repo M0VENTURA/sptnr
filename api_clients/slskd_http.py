@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class SlskdHttpClient:
     """Raw slskd API wrapper."""
 
-    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: Optional[int] = 15):
+    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: Optional[int] = 30):
         self.web_url = (web_url or "").rstrip("/")
         self.api_key = api_key or ""
         self.session = http_session or session
