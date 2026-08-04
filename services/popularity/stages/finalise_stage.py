@@ -147,6 +147,18 @@ def _assign_stars(
     )
     is_top_catalog = _is_top_artist_percentile(score, artist_scores, 0.25)
 
+    # Global 5★ floor: a non-single track must genuinely stand out within its
+    # own album (album-z >= popularity_5star_z_threshold, default 2.0) before
+    # ANY 5★ path may grant it. Previously the catalogue-percentile and
+    # listener-z paths could award 5★ at album-z near zero (e.g. Blackball at
+    # 0.37). Confirmed singles carry external release evidence and are exempt;
+    # albums too small for a valid z distribution are also exempt.
+    five_star_eligible = (
+        (is_single and single_confidence in ("high", "user"))
+        or not _album_distribution_valid
+        or album_z >= POPULARITY_5STAR_Z
+    )
+
     # ── 5★ paths (old-system alignment: artist-catalogue standing required) ──
     # The legacy scanner only granted 5★ to genuine artist-wide standouts:
     # top-10% elite, or top-25% catalogue for the other 5★ paths. That gate
@@ -155,7 +167,7 @@ def _assign_stars(
 
     # 5★: elite catalogue track (top 10% artist-wide) — album-relative too.
     if is_elite and not is_live:
-        return 5
+        return 5 if five_star_eligible else 4
 
     # 5★/4★: high-confidence single (old-system path 3 + LB addition).
     if is_single and single_confidence == "high":
@@ -175,7 +187,7 @@ def _assign_stars(
     if is_single and single_confidence == "medium":
         if is_live:
             return 4 if is_top_catalog else 3
-        return 5 if is_top_catalog else 4
+        return 5 if (five_star_eligible and is_top_catalog) else 4
 
     # Non-single popularity 5★ (old-system path 5): album z ≥ 2.0 AND
     # top-25% catalogue — a huge album-local z alone is not enough.
@@ -186,7 +198,7 @@ def _assign_stars(
     # the track a clear log-scaled outlier within its album — 5★ only when
     # the track is also top-25% of the artist catalogue (old-system LB gate).
     if not is_live and max(lf_z, lb_z) >= LISTENER_5STAR_Z:
-        return 5 if is_top_catalog else 4
+        return 5 if (five_star_eligible and is_top_catalog) else 4
 
     # LB rescue (old-system path 6 + lb_z addition): Last.fm unreliable but
     # ListenBrainz percentile strong and the track stands out by album z or
@@ -197,7 +209,7 @@ def _assign_stars(
         and lb_percentile >= LB_UNRELIABLE_5STAR
         and (album_z >= STAR_4_ALBUM_Z or lb_z >= LISTENER_5STAR_Z)
     ):
-        return 5 if is_top_catalog else 4
+        return 5 if (five_star_eligible and is_top_catalog) else 4
 
     # ── 4★ ──
     if _is_top_artist_percentile(score, artist_scores, STAR_4_ARTIST_PCT):

@@ -770,30 +770,28 @@
     </div>
   </div>
 
-  <!-- Single Detection & Standout Thresholds Section (expanded) -->
+  <!-- Single Detection & Star Ratings Section -->
   <div class="card shadow-sm mb-3" id="single-detection-zscore">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-sliders"></i> Single Detection &amp; Standout Thresholds</h5>
-      <small class="text-muted">Z-score boundaries, standout detection, and star-rating criteria</small>
+      <h5 class="mb-0"><i class="bi bi-sliders"></i> Single Detection &amp; Star Ratings</h5>
+      <small class="text-muted">How tracks become "singles" and how 1–5★ ratings are assigned</small>
     </div>
     <div class="card-body">
       <div class="alert alert-secondary mb-3 py-2">
-        <div class="row text-center gx-0">
-          <div class="col-12 col-md-4 border-end-md mb-2 mb-md-0">
-            <span class="fw-semibold text-warning">z = 0 → 1</span><br>
-            <small class="text-muted">Needs <strong>high confidence</strong><br>2 medium sources <em>or</em> 1 Discogs source</small>
-          </div>
-          <div class="col-12 col-md-4 border-end-md mb-2 mb-md-0">
-            <span class="fw-semibold text-info">z = 1 → 2</span><br>
-            <small class="text-muted">Needs <strong>medium confidence</strong><br>1 medium source <em>or</em> 1 Discogs source</small>
-          </div>
-          <div class="col-12 col-md-4">
-            <span class="fw-semibold text-success">z &gt; 2</span><br>
-            <small class="text-muted"><strong>Popularity-only 5★</strong><br>No source evidence required</small>
-          </div>
-        </div>
+        <small class="text-muted">
+          <strong>How a rating is decided:</strong> ① every track gets a popularity score (blended from the
+          <a href="#popularity-weights">Popularity Weights</a> section) → ② single detection labels it
+          high / medium / low-confidence using the boundaries below → ③ the ★ rating is assigned from the
+          score, single status, and the thresholds below.
+        </small>
       </div>
-      <h6 class="mb-3">Z-Score Boundaries</h6>
+
+      <h6 class="mb-3">1 · Single Detection — Confidence Boundaries</h6>
+      <p class="text-muted small mb-3">
+        A track's album z-score (how far it stands out within its own album) is compared to these boundaries
+        to classify it as a <strong>high</strong>, <strong>medium</strong>, or <strong>low</strong>-confidence
+        single. High-confidence singles are exempt from the 5★ floor in step 2.
+      </p>
       <div class="row g-3 mb-4">
         <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">High↔Medium Confidence Boundary</label>
@@ -805,46 +803,20 @@
           <input type="number" step="0.1" min="0.1" max="3.0" class="form-control form-control-sm" id="zscore_medium_threshold" placeholder="0.6" value="{{ config.get('single_detection', {}).get('zscore_medium_threshold', 0.6) }}">
           <small class="form-text text-muted">Default: <strong>0.6</strong></small>
         </div>
+      </div>
+
+      <hr class="my-3">
+      <h6 class="mb-3">2 · Star Ratings</h6>
+      <div class="row g-3 mb-3">
         <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Popularity-Only 5★ Threshold</label>
+          <label class="form-label form-label-sm">Minimum Album Z-Score for 5★</label>
           <input type="number" step="0.1" min="0.1" max="5.0" class="form-control form-control-sm" id="popularity_5star_z_threshold" placeholder="2.0" value="{{ config.get('single_detection', {}).get('popularity_5star_z_threshold', 2.0) }}">
-          <small class="form-text text-muted">Default: <strong>2.0</strong></small>
-        </div>
-        <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Top Standout Gap Z-Score</label>
-          <input type="number" step="0.1" class="form-control form-control-sm" id="standout_gap_z" placeholder="0.75" value="{{ config.get('single_detection', {}).get('standout_gap_z', 0.75) }}">
-          <small class="form-text text-muted">Default: <strong>0.75</strong></small>
+          <small class="form-text text-muted">Global floor: a non-single track cannot earn 5★ below this album z-score, no matter which path it takes. Confirmed singles are exempt. Default: <strong>2.0</strong></small>
         </div>
       </div>
-      <hr class="my-3">
-      <h6 class="mb-3">Album-Level Standout Detection</h6>
-      <div class="row g-3 mb-4">
-        <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Album Z-Score Threshold</label>
-          <input type="number" step="0.1" min="0.1" max="5.0" class="form-control form-control-sm" id="sd_album_zscore" placeholder="0.8" value="{{ config.get('single_detection', {}).get('album_zscore_threshold', 0.8) }}">
-          <small class="form-text text-muted">Default: <strong>0.8</strong></small>
-        </div>
-        <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Artist Z-Score Threshold</label>
-          <input type="number" step="0.1" min="0.1" max="5.0" class="form-control form-control-sm" id="sd_artist_zscore" placeholder="2.2" value="{{ config.get('single_detection', {}).get('artist_zscore_threshold', 2.2) }}">
-          <small class="form-text text-muted">Default: <strong>2.2</strong></small>
-        </div>
-        <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Artist Top Percentile</label>
-          <input type="number" step="0.01" min="0.01" max="0.50" class="form-control form-control-sm" id="sd_artist_pct" placeholder="0.10" value="{{ config.get('single_detection', {}).get('artist_top_percentile', 0.10) }}">
-          <small class="form-text text-muted">Default: <strong>0.10</strong> (top 10%)</small>
-        </div>
-        <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Artist Min Tracks</label>
-          <input type="number" min="3" max="100" class="form-control form-control-sm" id="sd_artist_min_tracks" placeholder="10" value="{{ config.get('single_detection', {}).get('artist_min_tracks', 10) }}">
-          <small class="form-text text-muted">Default: <strong>10</strong></small>
-        </div>
-      </div>
-      <hr class="my-3">
-      <h6 class="mb-3">Star Rating Criteria</h6>
-      <p class="text-muted small mb-3">Z-score thresholds for each star tier. A track meets the tier if it exceeds <em>any</em> of the three criteria.</p>
+      <p class="text-muted small mb-3">Tier thresholds below apply to <strong>confirmed singles</strong>; non-singles must also pass the 5★ floor above. A track meets a tier if it exceeds <em>any</em> of its criteria.</p>
       <div class="row g-3">
-        <div class="col-12 col-md-4">
+        <div class="col-12 col-md-3">
           <div class="border rounded p-3 h-100">
             <h6 class="text-warning mb-2">⭐⭐⭐⭐⭐ 5★</h6>
             <div class="row g-2">
@@ -854,7 +826,7 @@
             </div>
           </div>
         </div>
-        <div class="col-12 col-md-4">
+        <div class="col-12 col-md-3">
           <div class="border rounded p-3 h-100">
             <h6 class="text-info mb-2">⭐⭐⭐⭐ 4★</h6>
             <div class="row g-2">
@@ -864,7 +836,7 @@
             </div>
           </div>
         </div>
-        <div class="col-12 col-md-4">
+        <div class="col-12 col-md-3">
           <div class="border rounded p-3 h-100">
             <h6 class="text-secondary mb-2">⭐⭐⭐ 3★</h6>
             <div class="row g-2">
@@ -872,7 +844,7 @@
             </div>
           </div>
         </div>
-        <div class="col-12 col-md-4">
+        <div class="col-12 col-md-3">
           <div class="border rounded p-3 h-100">
             <h6 class="text-muted mb-2">⭐ 1★</h6>
             <div class="row g-2">
@@ -882,8 +854,24 @@
           </div>
         </div>
       </div>
+      <div class="border rounded p-3 mt-3">
+        <h6 class="mb-2">Special 5★ paths (non-singles)</h6>
+        <div class="row g-3">
+          <div class="col-12 col-sm-6 col-lg-3">
+            <label class="form-label form-label-sm">Listener Standout 5★ Z</label>
+            <input type="number" step="0.1" min="0.1" max="5" class="form-control form-control-sm" id="listener_5star_z_threshold" placeholder="1.0" value="{{ config.get('single_detection', {}).get('listener_5star_z_threshold', 1.0) }}">
+            <small class="form-text text-muted">Log-scaled listener z-score within the album for the listener-standout 5★ path (still gated by the 5★ floor). Default: <strong>1.0</strong></small>
+          </div>
+          <div class="col-12 col-sm-6 col-lg-3">
+            <label class="form-label form-label-sm">LB Rescue 5★ Percentile</label>
+            <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="lb_unreliable_5star_threshold" placeholder="0.50" value="{{ config.get('single_detection', {}).get('lb_unreliable_5star_threshold', 0.50) }}">
+            <small class="form-text text-muted">Min ListenBrainz percentile for the Last.fm-unreliable 5★ rescue (still gated by the 5★ floor). Default: <strong>0.50</strong></small>
+          </div>
+        </div>
+      </div>
+
       <hr class="my-3">
-      <h6 class="mb-3">Scoring Adjustments</h6>
+      <h6 class="mb-3">3 · Score Adjustments</h6>
       <div class="row g-3">
         <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">Single Boost Multiplier</label>
@@ -899,16 +887,6 @@
           <label class="form-label form-label-sm">Live Weight Penalty</label>
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="live_weight_penalty" placeholder="0.5" value="{{ config.get('single_detection', {}).get('live_weight_penalty', 0.5) }}">
           <small class="form-text text-muted">Fraction applied to the Last.fm weight for live tracks. Default: <strong>0.5</strong> (50% reduction)</small>
-        </div>
-        <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">LB Unreliable 5★ Threshold</label>
-          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="lb_unreliable_5star_threshold" placeholder="0.50" value="{{ config.get('single_detection', {}).get('lb_unreliable_5star_threshold', 0.50) }}">
-          <small class="form-text text-muted">Min ListenBrainz percentile for the Last.fm-unreliable 5★ rescue. Default: <strong>0.50</strong></small>
-        </div>
-        <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Listener Standout 5★ Z</label>
-          <input type="number" step="0.1" min="0.1" max="5" class="form-control form-control-sm" id="listener_5star_z_threshold" placeholder="1.0" value="{{ config.get('single_detection', {}).get('listener_5star_z_threshold', 1.0) }}">
-          <small class="form-text text-muted">Log-scaled Last.fm/ListenBrainz listener z-score within the album required for a confirmed single to earn 5★. Default: <strong>1.0</strong></small>
         </div>
       </div>
     </div>
