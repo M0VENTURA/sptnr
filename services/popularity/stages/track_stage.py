@@ -791,15 +791,20 @@ def process_track(
                 update_payload["single_status"] = sd_result.get("single_status", "none")
                 update_payload["single_sources"] = _json.dumps(sd_result.get("sources", []), default=str)
                 update_payload["single_detection_last_updated"] = sd_now
+                _sd_reasons = sd_result.get("reasons") or []
                 log_unified(
                     f"[TRACK_STAGE] {track_artist} - {track_title} → single="
                     f"{sd_result.get('confidence', 'low')} "
                     f"(status={sd_result.get('single_status', 'none')}, "
-                    f"sources={len(sd_result.get('sources') or [])})"
+                    f"sources={len(sd_result.get('sources') or [])}, "
+                    f"reasons={','.join(str(r) for r in _sd_reasons) or 'none'})"
                 )
 
         except Exception as e:
             logger.debug("[track_stage][SINGLE] %s: %s", track_id, e)
+            log_unified(
+                f"[TRACK_STAGE] {track_artist} - {track_title} → single detection ERROR: {e}"
+            )
 
     # -------------------------------------------------------------------------
     # 5. GENRE AGGREGATION (using enrichment service)
