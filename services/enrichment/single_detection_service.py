@@ -348,7 +348,8 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
 
 def _detect_discogs(title: str, artist: str, album: str | None,
                     discogs_token: str | None, duration: float | None = None,
-                    is_special_edition: bool = False) -> dict[str, Any]:
+                    is_special_edition: bool = False,
+                    cached_single_titles: set | None = None) -> dict[str, Any]:
     token = discogs_token or os.environ.get("DISCOGS_TOKEN", "")
     if not token:
         try:
@@ -359,6 +360,13 @@ def _detect_discogs(title: str, artist: str, album: str | None,
             token = ""
     if not token or token.lower() in ("your_discogs_token", "your_token", "placeholder"):
         return {"source": "discogs", "matched": False, "confidence": 0.0, "metadata": {}}
+    # Fast path: the title is already known to be a Discogs single from the
+    # artist's cached release list (avoids one Discogs API call per track).
+    if cached_single_titles:
+        normalized = (title or "").lower().strip()
+        if normalized in {str(t).lower().strip() for t in cached_single_titles}:
+            return {"source": "discogs", "matched": True, "confidence": 0.8,
+                    "metadata": {}, "cached": True}
     try:
         from services.enrichment.discogs_service import DiscogsService
         svc = DiscogsService(token=token)
@@ -579,7 +587,8 @@ def detect_single_for_track(
     # Discogs
     if use_advanced_detection:
         dr = _detect_discogs(lookup_title, artist, album, discogs_token, duration=duration,
-                             is_special_edition=is_special)
+                             is_special_edition=is_special,
+                             cached_single_titles=discogs_cached_singles)
         sources.append(dr)
         if dr["matched"]:
             discogs_confirmed = True

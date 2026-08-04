@@ -54,6 +54,19 @@ TABLES_TO_ENSURE: dict[str, str] = {
             CONSTRAINT uq_track_popularity_artist_title UNIQUE (artist, title)
         )
     """,
+    "artist_release_cache": """
+        CREATE TABLE IF NOT EXISTS artist_release_cache (
+            id BIGSERIAL PRIMARY KEY,
+            artist TEXT NOT NULL,
+            title TEXT NOT NULL,
+            release_type TEXT,
+            source TEXT NOT NULL,
+            release_id TEXT,
+            year INTEGER,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_artist_release_artist_title_source UNIQUE (artist, title, source)
+        )
+    """,
     "slskd_search_logs": """
         CREATE TABLE IF NOT EXISTS slskd_search_logs (
             id BIGSERIAL PRIMARY KEY, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, 

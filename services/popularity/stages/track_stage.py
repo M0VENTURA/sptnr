@@ -102,6 +102,7 @@ def process_track(
     artist_max_lf_listeners: int = 0,
     artist_lf_context: dict[str, Any] | None = None,
     mb_cached_singles: set | None = None,
+    discogs_cached_singles: set | None = None,
     prefetched_popularity: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
 
@@ -136,8 +137,23 @@ def process_track(
             artist = _as_str(track.get("artist"))
 
             if title and artist:
-                mb_service = MusicBrainzService()
-                mb_data = mb_service.lookup_recording_metadata(title, artist)
+                # The per-track MusicBrainz lookup is the dominant per-track
+                # API cost — skip it when the track already has a resolved
+                # recording MBID and the scan isn't forced (metadata is
+                # stable between scans).
+                _has_mbid = bool(
+                    _as_str(track.get("recording_mbid") or track.get("mbid") or track.get("musicbrainz_trackid"))
+                )
+                _has_genres = bool(
+                    track.get("musicbrainz_genres") or track.get("musicbrainz_tags") or track.get("discogs_genres")
+                )
+                _force_meta = bool(options.get("force"))
+                mb_data = None
+                if _has_mbid and not _force_meta:
+                    logger.debug("[track_stage] Skipping MB metadata lookup for %s (MBID already resolved)", track_id)
+                else:
+                    mb_service = MusicBrainzService()
+                    mb_data = mb_service.lookup_recording_metadata(title, artist)
 
                 if mb_data:
                     recording_mbid = mb_data.get("recording_mbid")
@@ -209,7 +225,7 @@ def process_track(
                         update_payload["year"] = mb_data["year"]
 
             # Also fetch genre/tag data from MusicBrainz via genre-aware endpoint
-            if title and artist:
+            if title and artist and (not _has_genres or _force_meta):
                 try:
                     mb_raw = MusicBrainzHttpClient()
                     recs = mb_raw.search_recordings_with_genres(
@@ -232,7 +248,7 @@ def process_track(
                     logger.debug("[track_stage][MB_GENRE] %s: %s", track_id, e)
 
             # Fetch Discogs genres for the track
-            if title and artist:
+            if title and artist and (not _has_genres or _force_meta):
                 try:
                     from api_clients.discogs_http import DiscogsHttpClient
                     discogs = DiscogsHttpClient(token="")
@@ -376,6 +392,7 @@ def process_track(
                         update_payload["lastfm_listeners"] = lastfm_listeners
                         update_payload["lastfm_playcount"] = lastfm_playcount
                         update_payload["lastfm_last_updated"] = now_ts
+                        update_payload["_from_prefetch"] = True
                     else:
                         try:
                             from helpers.config_helpers import get_config
@@ -597,7 +614,12 @@ def process_track(
         # fresh fetch, the provider counts, and the resulting score.
         try:
             _final_score = float(update_payload.get("final_score") or 0)
-            _src = "cached" if update_payload.get("_cached") else "fresh"
+            if update_payload.get("_cached"):
+                _src = "cached"
+            elif update_payload.get("_from_prefetch"):
+                _src = "prefetched"
+            else:
+                _src = "fresh"
             log_unified(
                 f"[TRACK_STAGE] {track_artist} - {track_title} → popularity {_src} "
                 f"score={_final_score:.1f} "
@@ -640,7 +662,31 @@ def process_track(
     # 4. SINGLES DETECTION
     # -------------------------------------------------------------------------
 
-    if not metadata_only and not popularity_only:
+    # Freshness gate: once singles detection has run for a track and the scan
+    # isn't forced, reuse the stored result until the cache TTL passes — the
+    # per-track Discogs/MusicBrainz searches only run again when the data is
+    # stale (or the scan is forced), matching "update only if changed".
+    _sd_fresh = False
+    if not bool(options.get("force")):
+        try:
+            from datetime import datetime as _sd_dt, timezone as _sd_tz
+            _sd_raw = track.get("single_detection_last_updated")
+            if _sd_raw:
+                _sd_ts = _sd_raw
+                if isinstance(_sd_ts, str):
+                    _sd_ts = _sd_dt.fromisoformat(str(_sd_ts).replace("Z", "+00:00"))
+                if _sd_ts.tzinfo is None:
+                    _sd_ts = _sd_ts.replace(tzinfo=_sd_tz.utc)
+                _sd_ttl_hours = get_cache_duration_hours(
+                    track.get("year") or track.get("release_year")
+                )
+                _sd_fresh = (_sd_dt.now(_sd_tz.utc) - _sd_ts).total_seconds() < _sd_ttl_hours * 3600
+                if _sd_fresh:
+                    logger.debug("[track_stage] Singles detection fresh for %s — skipping", track_id)
+        except Exception:
+            _sd_fresh = False
+
+    if not metadata_only and not popularity_only and not _sd_fresh:
         try:
             from datetime import datetime as _dt, timezone as _tz
             sd_now = _dt.now(_tz.utc)
@@ -691,6 +737,7 @@ def process_track(
                 use_advanced_detection=True,
                 persist_result=False,  # We persist via track_stage
                 mb_cached_singles=mb_cached_singles,
+                discogs_cached_singles=discogs_cached_singles,
                 artist_mbid=(
                     effective_track.get("musicbrainz_artistid")
                     or effective_track.get("musicbrainz_artist_id")

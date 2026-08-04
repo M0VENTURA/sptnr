@@ -46,6 +46,56 @@ def get_listenbrainz_batch_for_tracks(tracks: List[dict]) -> Dict[str, Dict[str,
     return output
 
 
+def _resolve_release_mbid(artist: str, album: str, tracks: List[dict]) -> str:
+    """Resolve the album's release MBID without depending on local tracks.
+
+    Priority:
+      1. Local track columns (``musicbrainz_albumid`` / ``musicbrainz_album_mbid``).
+      2. MusicBrainz release search by artist + album (artist-credit checked,
+         title similarity >= 0.8).
+
+    Returns "" when unresolvable.
+    """
+    for t in tracks:
+        mbid = str(t.get("musicbrainz_albumid") or t.get("musicbrainz_album_mbid") or "").strip()
+        if mbid:
+            return mbid
+    try:
+        from difflib import SequenceMatcher
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient, escape_lucene_special_chars
+        client = MusicBrainzHttpClient(enabled=True)
+        query = (
+            f'artist:"{escape_lucene_special_chars(artist)}" '
+            f'AND release:"{escape_lucene_special_chars(album)}"'
+        )
+        releases = client.search_releases(query, limit=5) or []
+        artist_norm = _normalize_artist(artist)
+        best_mbid = ""
+        best_score = 0.0
+        for rel in releases:
+            if not isinstance(rel, dict):
+                continue
+            title = str(rel.get("title") or "").strip()
+            credits = rel.get("artist-credit") or []
+            names = []
+            for credit in credits:
+                if isinstance(credit, dict):
+                    art = credit.get("artist") or {}
+                    names.append(art.get("name") or credit.get("name") or "")
+            if names and not any(_normalize_artist(n) == artist_norm for n in names):
+                continue
+            score = SequenceMatcher(None, title.lower(), album.lower()).ratio()
+            if score > best_score:
+                best_score = score
+                best_mbid = str(rel.get("id") or "").strip()
+        if best_mbid and best_score >= 0.8:
+            logger.debug("[LB_ALBUM] Resolved release '%s - %s' via MB search -> %s", artist, album, best_mbid)
+            return best_mbid
+    except Exception as exc:
+        logger.debug("[LB_ALBUM] Release search failed for %s - %s: %s", artist, album, exc)
+    return ""
+
+
 def get_listenbrainz_album_tracklist(
     artist: str,
     album: str,
@@ -55,14 +105,15 @@ def get_listenbrainz_album_tracklist(
 
     ListenBrainz lists albums with their tracks, so albums whose local tracks
     lack recording MBIDs can still get LB listen counts: resolve the album's
-    release MBID from the local tracks, fetch the release tracklist, batch
-    the popularity for those recordings, and key the result by normalized
-    title.  Multiple recordings of the same title are aggregated.
+    release MBID (local tracks first, then a MusicBrainz release search),
+    fetch the release tracklist, batch the popularity for those recordings,
+    and key the result by normalized title.  Multiple recordings of the same
+    title are aggregated.
 
     Args:
-        artist: artist name (unused for now, kept for API symmetry).
-        album: album name (unused for now, kept for API symmetry).
-        tracks: local track dicts — used to resolve the release MBID
+        artist: artist name.
+        album: album name (used for the release search fallback).
+        tracks: local track dicts — optionally carry the release MBID
             (``musicbrainz_albumid`` / ``musicbrainz_album_mbid``).
 
     Returns ``{normalized_title: {"listenbrainz_listens", "listenbrainz_users"}}``
@@ -70,11 +121,7 @@ def get_listenbrainz_album_tracklist(
     """
     if not tracks:
         return {}
-    release_mbid = ""
-    for t in tracks:
-        release_mbid = str(t.get("musicbrainz_albumid") or t.get("musicbrainz_album_mbid") or "").strip()
-        if release_mbid:
-            break
+    release_mbid = _resolve_release_mbid(artist, album, tracks)
     if not release_mbid:
         return {}
 
