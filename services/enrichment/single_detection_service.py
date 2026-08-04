@@ -490,6 +490,7 @@ def detect_single_for_track(
     track_repo: Any = None,
     persist_result: bool = True,
     mb_cached_singles: set | None = None,
+    discogs_cached_singles: set | None = None,
     artist_mbid: str | None = None,
     mb_client=None,
     listenbrainz_listens: int | None = None,
