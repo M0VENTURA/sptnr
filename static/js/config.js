@@ -337,11 +337,29 @@ function buildConfigObject() {
 
 function saveConfig() {
   const saveBtn = document.getElementById('saveBtn');
-  const originalText = saveBtn ? saveBtn.innerHTML : '';
-  if (saveBtn) {
-    saveBtn.disabled = true;
-    saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+  
+  if (!saveBtn) {
+    console.error('[saveConfig] Save button not found!');
+    showToast('Error', 'Save button not found in DOM', 'error');
+    return;
   }
+  
+  // Capture original state before any modifications
+  const originalDisabled = saveBtn.disabled;
+  const originalHTML = saveBtn.innerHTML;
+  
+  // Set button to loading state
+  saveBtn.disabled = true;
+  saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+  
+  // Safety timeout to force reset button after 60 seconds (longer than fetch timeout)
+  // This prevents the button from being stuck forever if the promise chain breaks
+  const safetyReset = setTimeout(() => {
+    console.warn('[saveConfig] Safety timeout reached - forcing button reset');
+    saveBtn.disabled = originalDisabled;
+    saveBtn.innerHTML = originalHTML;
+    showToast('Error', 'Save operation timed out. Please check the application logs and try again.', 'error');
+  }, 60000);
 
   // The button must ALWAYS be restored — if config collection throws (a
   // missing input, malformed field) the request never starts and without
@@ -350,13 +368,17 @@ function saveConfig() {
   try {
     config = buildConfigObject();
   } catch (err) {
-    console.error('buildConfigObject failed:', err);
-    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = originalText; }
+    console.error('[saveConfig] buildConfigObject failed:', err);
+    clearTimeout(safetyReset);
+    saveBtn.disabled = originalDisabled;
+    saveBtn.innerHTML = originalHTML;
     showToast('Error', 'Could not collect config: ' + (err && err.message ? err.message : err), 'error');
     return;
   }
 
   const urlElement = document.querySelector('form#configForm')?.dataset?.saveUrl || '/config/save-json';
+
+  console.log('[saveConfig] Sending request to:', urlElement);
 
   // Give the server a hard deadline so a hung request (e.g. a background
   // task blocking the worker) surfaces as an error instead of an eternal
@@ -370,16 +392,26 @@ function saveConfig() {
     body: JSON.stringify(config),
     signal: controller.signal
   })
-  .then(response => {
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      return response.text().then(text => {
-        throw new Error('Server returned non-JSON response: ' + text.substring(0, 100));
-      });
+  .then(async response => {
+    console.log('[saveConfig] Response status:', response.status);
+    const contentType = response.headers.get('content-type') || '';
+    console.log('[saveConfig] Response content-type:', contentType);
+    
+    if (!contentType.includes('application/json')) {
+      const text = await response.text().catch(() => '');
+      console.error('[saveConfig] Non-JSON response:', text.substring(0, 200));
+      throw new Error('Server returned non-JSON response: ' + text.substring(0, 100));
     }
-    return response.json().then(data => ({ status: response.status, data }));
+    
+    const data = await response.json().catch(err => {
+      console.error('[saveConfig] JSON parse failed:', err);
+      throw new Error('Failed to parse server response');
+    });
+    
+    return { status: response.status, data };
   })
   .then(result => {
+    console.log('[saveConfig] Result:', result);
     if (result.status !== 200) {
       showToast('Error', result.data.error || 'Failed to save configuration', 'error');
     } else if (result.data.success) {
@@ -390,18 +422,20 @@ function saveConfig() {
     }
   })
   .catch(error => {
+    console.error('[saveConfig] Fetch error:', error);
     if (error && error.name === 'AbortError') {
       showToast('Error', 'Save timed out after 45s — the server did not respond. Check the app logs.', 'error');
     } else {
-      showToast('Error', error.message || 'Network error', 'error');
+      showToast('Error', 'Network error: ' + (error.message || 'Unknown error'), 'error');
     }
   })
   .finally(() => {
-    clearTimeout(saveTimeout);
-    if (saveBtn) {
-      saveBtn.disabled = false;
-      saveBtn.innerHTML = originalText;
-    }
+    console.log('[saveConfig] Resetting button state');
+    clearTimeout(fetchTimeout);
+    clearTimeout(safetyReset);
+    // Always reset button to its original state
+    saveBtn.disabled = originalDisabled;
+    saveBtn.innerHTML = originalHTML;
   });
 }
 

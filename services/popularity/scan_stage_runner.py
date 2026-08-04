@@ -47,7 +47,8 @@ def _load_mb_single_titles(artist: str) -> set[str]:
     Mirrors the legacy pre-load: singles that MusicBrainz knows about but that
     may not be in the user's library yet. These are used to confirm single
     status without a per-track MusicBrainz API call.
-    """    if not artist:
+    """
+    if not artist:
         return set()
     try:
         from sqlalchemy import text as _text
@@ -234,7 +235,7 @@ def run_scan(
                 logger.debug("[scan_runner] Progress checkpoint write failed: %s", exc)
 
         # ── Per-artist Last.fm listener context (dynamic weight) ────────
-        if artist and artist not in artist_lf_context_cache:
+        if artist and artist not in artist_lf_context_cache and not _is_compilation_artist:
             try:
                 from services.enrichment.single_detection_context_service import get_artist_lastfm_context
                 artist_lf_context_cache[artist] = get_artist_lastfm_context(artist, None, None)
@@ -244,12 +245,12 @@ def run_scan(
         artist_lf_context = artist_lf_context_cache.get(artist) or {}
 
         # ── Per-artist MB single-title cache (missing_releases) ──────────
-        if artist and artist not in artist_mb_singles_cache:
+        if artist and artist not in artist_mb_singles_cache and not _is_compilation_artist:
             artist_mb_singles_cache[artist] = _load_mb_single_titles(artist)
         mb_cached_singles = artist_mb_singles_cache.get(artist) or set()
 
         # ── Per-artist Discogs single-title cache (release cache) ─────────
-        if artist and artist not in artist_discogs_singles_cache:
+        if artist and artist not in artist_discogs_singles_cache and not _is_compilation_artist:
             artist_discogs_singles_cache[artist] = _load_discogs_single_titles(artist)
         discogs_cached_singles = artist_discogs_singles_cache.get(artist) or set()
 
@@ -292,8 +293,17 @@ def run_scan(
         # calls.  All albums of the same artist reuse the same map, and
         # subsequent scans make ZERO calls (fresh cache rows are reused).
         # Forced scans always recheck.
+        #
+        # Skip prefetch for compilation/Various Artists albums — the "artist"
+        # is not a real artist, so prefetching would waste API calls on
+        # irrelevant data. Track-level lookups will still work per-track.
         track_dicts = [tc["track"] for tc in track_contexts if tc.get("track")]
-        if artist and artist != last_prefetch_artist:
+        _is_compilation_artist = artist.lower() in (
+            "various artists", "various artists -", "various", 
+            "compilation", "soundtrack"
+        )
+        
+        if artist and artist != last_prefetch_artist and not _is_compilation_artist:
             last_prefetch_artist = artist
             prefetched_popularity = {}
             try:
@@ -325,15 +335,16 @@ def run_scan(
             # Compares the cached releases against the library (title + year),
             # persists gaps into missing_releases, and caches tracklists for
             # a few of them so they can be queued for download (legacy parity).
-            try:
-                from services.popularity.release_cache_service import (
-                    populate_missing_release_tracklists,
-                    refresh_missing_releases_for_artist,
-                )
-                refresh_missing_releases_for_artist(artist)
-                populate_missing_release_tracklists(artist, limit=3)
-            except Exception as exc:
-                logger.debug("[scan_runner] Missing-releases refresh failed for %s: %s", artist, exc)
+            if not _is_compilation_artist:
+                try:
+                    from services.popularity.release_cache_service import (
+                        populate_missing_release_tracklists,
+                        refresh_missing_releases_for_artist,
+                    )
+                    refresh_missing_releases_for_artist(artist)
+                    populate_missing_release_tracklists(artist, limit=3)
+                except Exception as exc:
+                    logger.debug("[scan_runner] Missing-releases refresh failed for %s: %s", artist, exc)
 
         # ── Album-tracklist ListenBrainz fallback ───────────────────────────
         # Tracks without a resolved recording MBID get no LB data from the
