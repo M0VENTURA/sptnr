@@ -497,10 +497,11 @@ class WikipediaReleaseScraper:
             # Parse date if present
             if "day" in values:
                 day = self._parse_day(values["day"], None)
+                month = self._month_in_cell(values["day"]) or 1
                 if day:
-                    date_str = f"{year}-{1:02d}-{day:02d}"
+                    date_str = f"{year}-{month:02d}-{day:02d}"
                 else:
-                    date_str = f"{year}-01-01"
+                    date_str = f"{year}-{month:02d}-01"
                 had_date = bool(day)
             else:
                 date_str = f"{year}-01-01"

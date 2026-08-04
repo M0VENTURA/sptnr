@@ -318,6 +318,10 @@ def run_scan(
                     artist=artist,
                     tracks=artist_all_tracks.get(artist) or track_dicts,
                     force=bool(options.get("force")),
+                    # Album-scoped scans (no cached data for the artist yet)
+                    # still persist the artist's full top-tracks catalogue in
+                    # one bulk call, so later scans never need per-track calls.
+                    cache_full_catalogue=True,
                 )
             except Exception as exc:
                 logger.debug("[scan_runner] Popularity cache prefetch failed for %s: %s", artist, exc)

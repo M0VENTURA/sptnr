@@ -245,6 +245,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "slskd_state": "TEXT", "slskd_queue_position": "INTEGER", "slskd_last_sync_at": "TIMESTAMP",
         "search_query": "TEXT", "source_id": "TEXT", "source": "TEXT DEFAULT 'soulseek'",
         "status_changed_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        "import_group": "TEXT", "import_type": "TEXT DEFAULT 'song'",
     },
     "musicbrainz_releases": {"album_artist": "TEXT", "genres": "TEXT", "cover_art_url": "TEXT", "release_source": "TEXT"},
     "musicbrainz_release_tracks": {"composer": "TEXT", "album_artist": "TEXT", "year": "TEXT"},

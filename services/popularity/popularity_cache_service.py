@@ -62,6 +62,11 @@ def _row_to_entry(row: Dict[str, Any]) -> Dict[str, Any]:
 # artist share the result instead of repeating the API call.
 _lf_top_tracks_cache: Dict[str, Dict[str, Dict[str, int]]] = {}
 
+# Original (cased) track titles for the same map — used when persisting the
+# full catalogue so rows keep the artist's real title casing, not a lowercased
+# cache key.
+_lf_top_tracks_titles: Dict[str, Dict[str, str]] = {}
+
 
 def _get_lastfm_client() -> Any:
     """Build a LastFmClient from config, or None when no API key is set."""
@@ -87,17 +92,21 @@ def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, i
         logger.debug("[popularity_cache] artist.getTopTracks failed for %s: %s", artist, exc)
         return {}
     out: Dict[str, Dict[str, int]] = {}
+    titles: Dict[str, str] = {}
     for track in top_tracks:
         if not isinstance(track, dict):
             continue
         name = track.get("name")
         if not name:
             continue
-        out[_norm(name)] = {
+        key = _norm(name)
+        out[key] = {
             "lastfm_listeners": int(track.get("listeners") or 0),
             "lastfm_playcount": int(track.get("playcount") or 0),
         }
+        titles[key] = name
     _lf_top_tracks_cache[artist] = out
+    _lf_top_tracks_titles[artist] = titles
     return out
 
 
@@ -111,6 +120,7 @@ def prefetch_artist_popularity(
     lastfm_client: Any = None,
     lb_data: Optional[Dict[str, Dict[str, Optional[int]]]] = None,
     force: bool = False,
+    cache_full_catalogue: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """Populate the cache for an artist's tracks and return fresh entries.
 
@@ -125,6 +135,11 @@ def prefetch_artist_popularity(
       4. Only rows whose counts CHANGED (or are new) are written back —
          unchanged rows keep their ``updated_at`` so they stay fresh.
 
+    When ``cache_full_catalogue`` is True and the artist has NO cached rows
+    at all, the entire ``artist.getTopTracks`` result is persisted (one call,
+    up to 200 titles) so future album scans of the artist never need per-track
+    Last.fm lookups.
+
     Args:
         artist: artist name.
         tracks: ``[{"title": ..., "recording_mbid": ...}]`` — all tracks to cache.
@@ -133,6 +148,8 @@ def prefetch_artist_popularity(
         lb_data: optional precomputed ListenBrainz batch keyed by recording MBID
             (avoids a duplicate batch call when the caller already fetched it).
         force: when True, ignore cached values and refetch from APIs.
+        cache_full_catalogue: when True and the artist has no cached rows,
+            persist the full top-tracks list (quick, single bulk call).
 
     Returns ``{lower_title: {lastfm_listeners, ...}}`` with only non-empty
     entries — callers merge into their own track loop.
@@ -178,6 +195,21 @@ def prefetch_artist_popularity(
             if key not in entries and key in lf_map:
                 entries[key] = dict(lf_map[key])
 
+        # Full-catalogue fast-path: artist has no cached data yet — persist
+        # the ENTIRE top-tracks result from the single call already made,
+        # so later scans of any album by this artist hit the cache instead
+        # of doing per-track Last.fm lookups.
+        if cache_full_catalogue and not force and not cached:
+            title_by_key_lf = _lf_top_tracks_titles.get(artist) or {}
+            for key, counts in lf_map.items():
+                if key in entries:
+                    continue
+                entries[key] = dict(counts)
+            logger.info(
+                "[popularity_cache] Cached full catalogue for '%s' (%d titles, no prior data)",
+                artist, len(lf_map),
+            )
+
     # 3. ListenBrainz: batch fill, only for titles lacking LB data.
     lb_needed = [
         track for track in tracks
@@ -198,6 +230,7 @@ def prefetch_artist_popularity(
     # 4. Persist ONLY new/changed rows — unchanged counts keep their
     #    ``updated_at`` and stay fresh longer.
     title_by_key = {_norm(t["title"]): t["title"] for t in tracks if t.get("title")}
+    lf_titles = _lf_top_tracks_titles.get(artist) or {}
     rows_to_upsert = []
     for key, entry in entries.items():
         if not entry:
@@ -212,7 +245,7 @@ def prefetch_artist_popularity(
             continue  # unchanged — no write
         rows_to_upsert.append({
             "artist": artist,
-            "title": title_by_key.get(key, key),
+            "title": title_by_key.get(key) or lf_titles.get(key) or key,
             **entry,
             "source": "bulk",
         })
