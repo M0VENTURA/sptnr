@@ -418,10 +418,14 @@ function renderUpcomingReleasesTable(releases) {
     // "2026 Albums", "Heavy Metal 2026") — they never contain the literal
     // "wiki".  Only MusicBrainz-sourced rows should show the MB chip, so
     // treat anything that isn't explicitly MusicBrainz as Wikipedia.
-    const isWiki = !String(r.source || "").toLowerCase().includes("musicbrainz");
-    const sourceBadge = isWiki 
-      ? '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>'
-      : '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>';
+    // Determine source: explicitly check for the known MusicBrainz source name
+    // (stored as "MusicBrainz Daily Collection" in the database). Any other source
+    // is treated as Wikipedia (e.g., "2026 Albums", "Heavy Metal 2026").
+    const sourceStr = String(r.source || "").trim();
+    const isMusicBrainz = sourceStr.toLowerCase().includes("musicbrainz daily collection");
+    const sourceBadge = isMusicBrainz
+      ? '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>'
+      : '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>';
 
     const dateBadge = new Date(releaseDate) > new Date() ? '<span class="badge bg-success">Upcoming</span>' : '<span class="badge bg-primary">Recent</span>';
     const colBadge = r.artist_in_collection ? '<span class="badge bg-success ms-1" title="Artist in collection"><i class="bi bi-check"></i></span>' : "";

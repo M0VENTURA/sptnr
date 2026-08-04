@@ -455,22 +455,65 @@ class WikipediaReleaseScraper:
     def _parse_regex_fallback(
         self, html: str, year: int, column_order: list[str]
     ) -> list[dict[str, Any]]:
-        """Simple regex-based table row parsing when BeautifulSoup is unavailable."""
+        """Regex-based table row parsing when BeautifulSoup is unavailable.
+        
+        Respects column_order mapping instead of hardcoded positions.
+        """
         releases: list[dict[str, Any]] = []
+        # Match rows with at least 2 cells
         for match in re.finditer(
-            r"<tr>.*?<td>(.*?)</td>.*?<td><a[^>]*>(.*?)</a>.*?</tr>",
+            r"<tr>(.*?)</tr>",
             html, re.DOTALL,
         ):
-            artist = re.sub(r"<[^>]+>", "", match.group(1)).strip()
-            album = re.sub(r"<[^>]+>", "", match.group(2)).strip()
-            if artist and album and len(artist) < 200:
-                releases.append({
-                    "artist_name": artist,
-                    "album_name": album,
-                    "release_date": f"{year}-01-01",
-                    "release_year": year,
-                    "_had_date": False,
-                })
+            row_html = match.group(1)
+            # Extract all cell contents
+            cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL)
+            # Clean HTML tags and citation brackets
+            cells = [re.sub(r"<[^>]+>", "", c).strip() for c in cells]
+            cells = [re.sub(r"\s*\[\d+\]\s*", " ", c).strip() for c in cells]
+            
+            if len(cells) < 2:
+                continue
+                
+            # Check if first cell is a date
+            has_date = self._looks_like_date_cell(cells[0]) if cells else False
+            actual_cols = column_order.copy()
+            if "day" in actual_cols and not has_date:
+                actual_cols.remove("day")
+            
+            # Map cells to column types
+            values = {}
+            for idx, col_type in enumerate(actual_cols):
+                if idx < len(cells):
+                    values[col_type] = cells[idx]
+            
+            # Extract artist, album, and date
+            artist = values.get("artist", "")
+            album = values.get("album", "")
+            
+            if not artist or not album or len(artist) > 200:
+                continue
+            
+            # Parse date if present
+            if "day" in values:
+                day = self._parse_day(values["day"], None)
+                if day:
+                    date_str = f"{year}-{1:02d}-{day:02d}"
+                else:
+                    date_str = f"{year}-01-01"
+                had_date = bool(day)
+            else:
+                date_str = f"{year}-01-01"
+                had_date = False
+            
+            releases.append({
+                "artist_name": artist,
+                "album_name": album,
+                "release_date": date_str,
+                "release_year": year,
+                "_had_date": had_date,
+            })
+        
         return releases
 
     # ------------------------------------------------------------------

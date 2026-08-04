@@ -234,6 +234,12 @@ def run_scan(
             except Exception as exc:
                 logger.debug("[scan_runner] Progress checkpoint write failed: %s", exc)
 
+        # ── Check if this is a compilation/Various Artists album ──────────
+        _is_compilation_artist = artist.lower() in (
+            "various artists", "various artists -", "various", 
+            "compilation", "soundtrack"
+        )
+
         # ── Per-artist Last.fm listener context (dynamic weight) ────────
         if artist and artist not in artist_lf_context_cache and not _is_compilation_artist:
             try:

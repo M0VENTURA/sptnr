@@ -265,14 +265,19 @@ async function refreshUpcomingReleasesMonitor() {
   container.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary spinner-border-sm" role="status"></div><p class="mt-2 small mb-0">Loading upcoming releases...</p></div>';
   try {
     var data = await fetchJsonOrThrow('/api/upcoming-releases?collection=' + filterCollection + '&include_queue=true', { signal: rc.signal }, 20000);
-    if (!Array.isArray(data.releases) || data.releases.length === 0) {
+    if (!data.releases || data.releases.length === 0) {
       container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0">No upcoming releases found.</p></div>';
+      if (window.upcomingReleasesRequestController === rc) window.upcomingReleasesRequestController = null;
       return;
     }
-    var releases = data.releases.filter(function(r) { return !r.album_in_collection; });
-    if (filterCollection && releases.length === 0) {
-      container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0"><i class="bi bi-check-circle"></i> All upcoming releases from your collection are accounted for.</p></div>';
-      return;
+    var releases = data.releases;
+    if (filterCollection) {
+      releases = releases.filter(function(r) { return !r.album_in_collection; });
+      if (releases.length === 0) {
+        container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0"><i class="bi bi-check-circle"></i> All upcoming releases from your collection are accounted for.</p></div>';
+        if (window.upcomingReleasesRequestController === rc) window.upcomingReleasesRequestController = null;
+        return;
+      }
     }
     var grouped = {};
     releases.forEach(function(r) {
@@ -296,9 +301,8 @@ async function refreshUpcomingReleasesMonitor() {
     html += '</div>';
     container.innerHTML = html;
   } catch (error) {
-    if (error?.name === 'AbortError') return;
-    container.innerHTML = '<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-triangle"></i> <strong>Error loading releases:</strong> ' + escapeHtml(error.message) + '</div>';
-  } finally {
+    console.error('Error loading upcoming releases:', error);
+    container.innerHTML = '<div class="text-center py-4"><p class="text-danger mb-2"><i class="bi bi-exclamation-triangle"></i> Error loading upcoming releases.</p><p class="text-muted small mb-0">' + (error.message || 'Unknown error') + '</p><button class="btn btn-sm btn-outline-primary mt-2" onclick="refreshUpcomingReleasesMonitor()"><i class="bi bi-arrow-clockwise"></i> Retry</button></div>';
     if (window.upcomingReleasesRequestController === rc) window.upcomingReleasesRequestController = null;
   }
 }

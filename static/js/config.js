@@ -677,7 +677,13 @@ function startEssentiaDownload() {
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Starting…';
 
   fetch('/api/essentia/download-models', { method: 'POST' })
-    .then(r => r.json())
+    .then(r => {
+      const contentType = r.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('Server returned non-JSON response (HTML or plain text)');
+      }
+      return r.json();
+    })
     .then(data => {
       if (data.status === 'already_running') {
         _essentiaSetStatusText('Download already in progress…');
@@ -687,8 +693,8 @@ function startEssentiaDownload() {
     })
     .catch(err => {
       btn.disabled = false;
-      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Download Models &amp; Script';
-      showToast('Error', 'Could not start Essentia download: ' + err, 'error');
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Download Models & Script';
+      showToast('Error', 'Could not start Essentia download: ' + err.message, 'error');
     });
 }
 
@@ -699,7 +705,13 @@ function pollEssentiaDownloadStatus() {
   const EXPECTED_FILES = 5;
 
   fetch('/api/essentia/download-status')
-    .then(r => r.json())
+    .then(r => {
+      const contentType = r.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('Server returned non-JSON response (HTML or plain text)');
+      }
+      return r.json();
+    })
     .then(data => {
       const statusDiv = document.getElementById('essentia-download-status');
       const bar = document.getElementById('essentia-download-bar');
@@ -938,7 +950,13 @@ function getUpcomingSourcesForSave() {
 
 function getRetrySchedulerStatus() {
   fetch('/api/downloads/scheduler/status')
-    .then(r => r.json())
+    .then(r => {
+      const contentType = r.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('Server returned non-JSON response (HTML or plain text)');
+      }
+      return r.json();
+    })
     .then(data => {
       const statusIcon = document.getElementById('schedulerStatusIcon');
       const statusText = document.getElementById('schedulerStatusText');
@@ -976,7 +994,13 @@ function startRetryScheduler() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' }
   })
-  .then(r => r.json())
+  .then(r => {
+    const contentType = r.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error('Server returned non-JSON response (HTML or plain text)');
+    }
+    return r.json();
+  })
   .then(data => {
     if (data.success) {
       showToast('Success', 'Retry scheduler started', 'success');
@@ -1002,7 +1026,13 @@ function stopRetryScheduler() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' }
   })
-  .then(r => r.json())
+  .then(r => {
+    const contentType = r.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error('Server returned non-JSON response (HTML or plain text)');
+    }
+    return r.json();
+  })
   .then(data => {
     if (data.success) {
       showToast('Warning', 'Retry scheduler stopped', 'warning');
