@@ -853,7 +853,18 @@ def process_track(
                 except Exception:
                     _sd_eligible = True
 
-            if _sd_eligible:
+            # Manual override (legacy parity): users who explicitly set
+            # is_single via the edit form (or the track page "Force (skip
+            # auto-scan)" checkbox) must not have auto-detection overwrite
+            # their choice — the old scanner filtered these tracks out of
+            # detection entirely (WHERE single_manual_override = 0).
+            _sd_manual_override = False
+            try:
+                _sd_manual_override = bool(track.get("single_manual_override"))
+            except Exception:
+                _sd_manual_override = False
+
+            if _sd_eligible and not _sd_manual_override:
                 sd_result = detect_single_for_track(
                     title=sd_title,
                     artist=sd_artist,
@@ -882,9 +893,25 @@ def process_track(
                 )
             else:
                 sd_result = None
-                log_unified(
-                    f"[TRACK_STAGE] {track_artist} - {track_title} → single=skipped (below top-50% album popularity)"
-                )
+                if _sd_manual_override:
+                    log_unified(
+                        f"[TRACK_STAGE] {track_artist} - {track_title} → single=skipped (manual override)"
+                    )
+                else:
+                    # Detection was skipped for this track (below the
+                    # top-50% album popularity gate) — drop any stale single
+                    # flag so the badge and star rating only reflect
+                    # confirmed detections. Manual overrides are exempt.
+                    # single_detection_last_updated is intentionally kept so
+                    # the track still counts as "assessed" for the album
+                    # no-changes skip check.
+                    update_payload["is_single"] = False
+                    update_payload["single_confidence"] = "low"
+                    update_payload["single_confidence_score"] = 0.0
+                    update_payload["single_sources"] = ""
+                    log_unified(
+                        f"[TRACK_STAGE] {track_artist} - {track_title} → single=cleared (below top-50% album popularity)"
+                    )
 
             if sd_result:
                 import json as _json
