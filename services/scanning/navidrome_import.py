@@ -311,6 +311,26 @@ def scan_artist_to_db(
 
         albums = fetch_artist_albums(artist_id, client=active_client) or []
 
+        # ── Data-loss guard ──────────────────────────────────────────────
+        # ``fetch_artist_albums`` returns [] BOTH when the artist has no
+        # albums AND when the Navidrome call failed (network/timeout).  If we
+        # proceed with an empty album list, ``navidrome_track_ids`` stays
+        # empty and the stale-track cleanup below would DELETE every existing
+        # local track for this artist — emptying the library during a forced
+        # scan and leaving every later popularity scan with "No tracks found".
+        # Treat an empty response as "cannot verify" and preserve local data.
+        if not albums:
+            log_unified(
+                f"Navidrome Import - {artist_name}: Navidrome returned no albums — "
+                "skipping import and stale-track cleanup (existing local tracks "
+                "preserved). Check Navidrome connectivity / artist mapping."
+            )
+            logging.warning(
+                "[NAVIDROME_SCAN] %s: fetch_artist_albums returned empty — skipping import + cleanup to avoid deleting existing tracks",
+                artist_name,
+            )
+            return None
+
         # Only create fallback client for getSong metadata extraction if a real
         # client was not passed and the legacy start.py helpers were used for
         # album/track fetching.
@@ -420,11 +440,22 @@ def scan_artist_to_db(
                 )
 
         if not filter_missing and not album_filter and not diff_mode:
-            cleanup_stale_artist_tracks_if_needed(
-                artist_name=artist_name,
-                existing_track_ids=existing_track_ids,
-                navidrome_track_ids=navidrome_track_ids,
-            )
+            # Only prune stale tracks when we actually confirmed the artist's
+            # current track set from Navidrome.  If every album's track fetch
+            # failed/returned nothing, `navidrome_track_ids` stays empty and a
+            # cleanup would delete the whole artist's local library.
+            if navidrome_track_ids:
+                cleanup_stale_artist_tracks_if_needed(
+                    artist_name=artist_name,
+                    existing_track_ids=existing_track_ids,
+                    navidrome_track_ids=navidrome_track_ids,
+                )
+            else:
+                log_unified(
+                    f"Navidrome Import - {artist_name}: no tracks returned for any "
+                    "album — skipping stale-track cleanup (existing local tracks "
+                    "preserved). Check Navidrome connectivity."
+                )
             cleanup_empty_artist_dirs(
                 artist_name=artist_name,
                 canonical_artist_name=canonical_artist_name,

@@ -59,7 +59,22 @@ def cleanup_stale_album_tracks_if_needed(*, artist_name: str, album_name: str, c
 
 
 def cleanup_stale_artist_tracks_if_needed(*, artist_name: str, existing_track_ids: Set[str], navidrome_track_ids: Set[str]) -> None:
-    """Delete DB tracks that no longer exist in Navidrome for an artist."""
+    """Delete DB tracks that no longer exist in Navidrome for an artist.
+
+    Safety: if Navidrome returned NO track ids at all, we cannot verify what
+    was removed (fetch may have failed).  Deleting ``existing - empty`` would
+    wipe the artist's entire local library, silently leaving every later scan
+    with "No tracks found".  In that case we preserve local tracks.
+    """
+    if not existing_track_ids:
+        return
+    if not navidrome_track_ids:
+        logging.warning(
+            "[NAVIDROME_SCAN] %s: Navidrome returned no track IDs — skipping stale-track cleanup to preserve %s existing local track(s)",
+            artist_name,
+            len(existing_track_ids),
+        )
+        return
     stale_ids = existing_track_ids - navidrome_track_ids
     if not stale_ids:
         return
