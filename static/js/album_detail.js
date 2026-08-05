@@ -2029,9 +2029,9 @@ var _pageData = window._pageData || {};
     function openEditAlbumIdsModal() {
         const artistName = _pageData.artistName;
         const albumName = _pageData.albumName;
-        const spotifyId = (document.getElementById('spotifyAlbumId') || {}).value || '';
-        const musicbrainzId = (document.getElementById('musicbrainzReleaseId') || {}).value || '';
-        const discogsId = (document.getElementById('discogsReleaseId') || {}).value || '';
+        const musicbrainzId = (document.getElementById('album_mbid') || {}).value || '';
+        const releaseGroupId = (document.getElementById('album_release_group_mbid') || {}).value || '';
+        const discogsId = (document.getElementById('discogs_album_id') || {}).value || '';
         
         const modalHtml = `
             <div class="modal fade" id="editAlbumIdsModal" tabindex="-1">
@@ -2043,17 +2043,17 @@ var _pageData = window._pageData || {};
                         </div>
                         <div class="modal-body">
                             <div class="mb-3">
-                                <label for="editSpotifyAlbumId" class="form-label">Spotify Album ID</label>
-                                <input type="text" class="form-control" id="editSpotifyAlbumId" value="${escapeHtml(spotifyId)}" placeholder="e.g., 4aawyAB9vmqN3uQ7FjRGTy">
-                                <div class="form-text">
-                                    <a href="https://open.spotify.com/search/${encodeURIComponent(artistName + ' ' + albumName)}" target="_blank">Search Spotify</a> to find the album ID
-                                </div>
-                            </div>
-                            <div class="mb-3">
                                 <label for="editMusicbrainzReleaseId" class="form-label">MusicBrainz Release ID</label>
                                 <input type="text" class="form-control" id="editMusicbrainzReleaseId" value="${escapeHtml(musicbrainzId)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
                                 <div class="form-text">
                                     <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName + ' ' + albumName)}&type=release" target="_blank">Search MusicBrainz</a> to find the release ID
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editMusicbrainzRgId" class="form-label">MusicBrainz Album (Release Group) ID</label>
+                                <input type="text" class="form-control" id="editMusicbrainzRgId" value="${escapeHtml(releaseGroupId)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
+                                <div class="form-text">
+                                    <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName + ' ' + albumName)}&type=release_group" target="_blank">Search MusicBrainz</a> to find the album ID
                                 </div>
                             </div>
                             <div class="mb-3">
@@ -2087,8 +2087,8 @@ var _pageData = window._pageData || {};
     function saveAlbumIds() {
         const artistName = _pageData.artistName;
         const albumName = _pageData.albumName;
-        const spotifyId = document.getElementById('editSpotifyAlbumId').value.trim();
         const musicbrainzId = document.getElementById('editMusicbrainzReleaseId').value.trim();
+        const releaseGroupId = document.getElementById('editMusicbrainzRgId').value.trim();
         const discogsId = document.getElementById('editDiscogsReleaseId').value.trim();
         
         fetch('/api/album/update-ids', {
@@ -2097,8 +2097,8 @@ var _pageData = window._pageData || {};
             body: JSON.stringify({
                 artist: artistName,
                 album: albumName,
-                spotify_album_id: spotifyId,
                 musicbrainz_release_id: musicbrainzId,
+                musicbrainz_release_group_id: releaseGroupId,
                 discogs_release_id: discogsId
             })
         })
@@ -2106,12 +2106,10 @@ var _pageData = window._pageData || {};
         .then(data => {
             if (data.success) {
                 // Update the readonly fields when present
-                const spotifyAlbumIdEl = document.getElementById('spotifyAlbumId');
-                const musicbrainzReleaseIdEl = document.getElementById('musicbrainzReleaseId');
-                const discogsReleaseIdEl = document.getElementById('discogsReleaseId');
-                if (spotifyAlbumIdEl) spotifyAlbumIdEl.value = spotifyId;
-                if (musicbrainzReleaseIdEl) musicbrainzReleaseIdEl.value = musicbrainzId;
-                if (discogsReleaseIdEl) discogsReleaseIdEl.value = discogsId;
+                const albumMbidEl = document.getElementById('album_mbid');
+                const albumRgMbidEl = document.getElementById('album_release_group_mbid');
+                if (albumMbidEl) albumMbidEl.value = musicbrainzId;
+                if (albumRgMbidEl) albumRgMbidEl.value = releaseGroupId;
                 
                 bootstrap.Modal.getInstance(document.getElementById('editAlbumIdsModal'))?.hide();
                 alert('✅ Album IDs updated successfully!');

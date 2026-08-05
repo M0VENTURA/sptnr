@@ -41,6 +41,9 @@
         <span class="badge bg-secondary flex-shrink-0">
           {{ album.get('track_count') or album.get('total_tracks') or '-' }}
         </span>
+        {% if not is_missing and album.get('musicbrainz_album_mbid') %}
+        <span class="badge bg-warning text-dark album-missing-tracks-badge flex-shrink-0" style="display:none;" title="This album has tracks in MusicBrainz that are not in your library"></span>
+        {% endif %}
         <!-- Stars -->
         <span class="flex-shrink-0" style="min-width: 90px;">
           {% if album.get('avg_stars') is not none %}
@@ -63,6 +66,11 @@
           <a href="/album/{{ artist_name|path_segment }}/{{ (album.get('album') or album.get('title') or '')|path_segment }}" class="btn btn-outline-secondary btn-sm" title="Open album page" onclick="event.stopPropagation();">
             <i class="bi bi-box-arrow-up-right"></i>
           </a>
+          {% if not is_missing and album.get('musicbrainz_album_mbid') %}
+          <a href="/album/{{ artist_name|path_segment }}/{{ (album.get('album') or album.get('title') or '')|path_segment }}#missing-tracks" class="btn btn-outline-warning btn-sm album-search-missing-btn" style="display:none;" title="Search missing tracks on album page" onclick="event.stopPropagation();">
+            <i class="bi bi-search"></i>
+          </a>
+          {% endif %}
           {% if is_missing %}
             <button type="button" class="btn btn-outline-warning btn-sm" title="Search / Download via Soulseek"
                     onclick="searchMusicBrainzReleaseFromEncoded(event, '{{ (artist_name|urlencode|replace('+', '%20')) }}', '{{ ((album.get('title') or '')|urlencode|replace('+', '%20')) }}')">

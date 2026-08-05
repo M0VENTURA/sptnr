@@ -2562,6 +2562,27 @@ function performMusicBrainzSearchForArtist(artistName) {
     });
 }
 
+function searchMusicBrainzRelease(event, artist, album) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  // Canonical shared-modal flow: fills the search fields, opens the modal,
+  // auto-searches, and queues the selected release via Soulseek.
+  if (typeof window.openGlobalMbSearch === 'function') {
+    window.openGlobalMbSearch(artist, album, function(selectedRelease) {
+      if (!selectedRelease) return;
+      if (typeof window.downloadMbRelease === 'function') {
+        window.downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
+      } else if (typeof window.downloadReleaseViaSoulseek === 'function') {
+        window.downloadReleaseViaSoulseek(selectedRelease.id, selectedRelease.title, selectedRelease.artist);
+      }
+    });
+    return;
+  }
+  alert('MusicBrainz search is not available on this page.');
+}
+
 function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
   // Use the MusicBrainz search flow (same as upcoming releases) to find and download the album.
   // This will search MusicBrainz for the specific release and show all available versions

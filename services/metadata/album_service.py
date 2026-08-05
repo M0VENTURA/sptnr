@@ -371,6 +371,140 @@ def apply_discogs_id_to_album(artist, album, discogs_id, is_single):
 
 
 # =============================================================================
+# BULK TRACK OPERATIONS (old-version parity)
+# =============================================================================
+
+def bulk_tag_tracks(payload: dict) -> tuple[dict, int]:
+    """Add genre tags to multiple tracks — DB columns + audio file tags."""
+    from services.metadata.tag_file_service import update_file_tags
+
+    track_ids = [str(t) for t in (payload.get("track_ids") or []) if t]
+    genres = [g.strip() for g in (payload.get("genres") or []) if g and g.strip()]
+    if not track_ids:
+        return {"success": False, "error": "No tracks selected"}, 400
+    if not genres:
+        return {"success": False, "error": "No genres provided"}, 400
+
+    updated_count = 0
+    failed_files: list[str] = []
+
+    with db_cursor(commit=True) as (conn, cursor):
+        for track_id in track_ids:
+            try:
+                cursor.execute(
+                    "SELECT title, genres, manual_genres, file_path FROM tracks WHERE id = %s",
+                    (track_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    continue
+                title = row.get("title") if hasattr(row, "get") else row[0]
+                current = str(row.get("genres") if hasattr(row, "get") else (row[1] or ""))
+                manual = str(row.get("manual_genres") if hasattr(row, "get") else (row[2] or ""))
+                file_path = str(row.get("file_path") if hasattr(row, "get") else (row[3] or ""))
+
+                def _split_genres(raw: str) -> set:
+                    sep = "\\" if "\\" in raw else ","
+                    return {g.strip() for g in raw.split(sep) if g.strip()}
+
+                existing = _split_genres(current)
+                manual_existing = _split_genres(manual)
+                existing.update(genres)
+                manual_existing.update(genres)
+
+                new_genres = ", ".join(sorted(existing))
+                new_manual = ", ".join(sorted(manual_existing))
+
+                if file_path and os.path.exists(file_path):
+                    if not update_file_tags(file_path, {"genres": sorted(existing)}):
+                        failed_files.append(title or f"Track ID: {track_id}")
+
+                cursor.execute(
+                    "UPDATE tracks SET genres = %s, manual_genres = %s WHERE id = %s",
+                    (new_genres, new_manual, track_id),
+                )
+                updated_count += 1
+            except Exception as exc:
+                logger.error("[bulk_tag] Track %s failed: %s", track_id, exc)
+                continue
+
+    return {
+        "success": True,
+        "updated_count": updated_count,
+        "failed_files": failed_files,
+    }, 200
+
+
+def bulk_delete_tracks(payload: dict) -> tuple[dict, int]:
+    """Delete multiple tracks from the database, optionally removing audio files."""
+    track_ids = [str(t) for t in (payload.get("track_ids") or []) if t]
+    delete_files = bool(payload.get("delete_files", True))
+    if not track_ids:
+        return {"success": False, "error": "No tracks selected"}, 400
+
+    deleted_count = 0
+
+    with db_cursor(commit=True) as (conn, cursor):
+        for track_id in track_ids:
+            try:
+                cursor.execute("SELECT file_path FROM tracks WHERE id = %s", (track_id,))
+                row = cursor.fetchone()
+                if not row:
+                    continue
+                file_path = str(row.get("file_path") if hasattr(row, "get") else (row[0] or ""))
+                if delete_files and file_path and os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                    except Exception as exc:
+                        logger.warning("[bulk_delete] Could not delete file %s: %s", file_path, exc)
+                cursor.execute("DELETE FROM tracks WHERE id = %s", (track_id,))
+                deleted_count += 1
+            except Exception as exc:
+                logger.error("[bulk_delete] Track %s failed: %s", track_id, exc)
+                continue
+
+    return {"success": True, "deleted_count": deleted_count}, 200
+
+
+def update_album_ids(payload: dict) -> tuple[dict, int]:
+    """Update release IDs (MusicBrainz release/release-group, Discogs) for an album's tracks."""
+    artist = str(payload.get("artist") or "").strip()
+    album = str(payload.get("album") or "").strip()
+    if not artist or not album:
+        return {"success": False, "error": "artist and album required"}, 400
+
+    musicbrainz_id = str(payload.get("musicbrainz_release_id") or "").strip()
+    release_group_id = str(payload.get("musicbrainz_release_group_id") or "").strip()
+    discogs_id = str(payload.get("discogs_release_id") or "").strip()
+
+    if not (musicbrainz_id or release_group_id or discogs_id):
+        return {"success": False, "error": "No IDs provided"}, 400
+
+    updates: list[str] = []
+    params: list[Any] = []
+    if musicbrainz_id:
+        updates.append("musicbrainz_album_mbid = %s")
+        params.append(musicbrainz_id)
+    if release_group_id:
+        updates.append("musicbrainz_releasegroupid = %s")
+        params.append(release_group_id)
+    if discogs_id:
+        updates.append("discogs_album_id = %s")
+        params.append(discogs_id)
+    params.extend([artist, album])
+
+    with db_cursor(commit=True) as (conn, cursor):
+        cursor.execute(
+            f"UPDATE tracks SET {', '.join(updates)} "
+            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
+            tuple(params),
+        )
+        rows = cursor.rowcount or 0
+
+    return {"success": True, "rows_updated": rows}, 200
+
+
+# =============================================================================
 # IGNORE TRACK
 # =============================================================================
 

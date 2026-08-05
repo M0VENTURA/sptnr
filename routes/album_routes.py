@@ -496,3 +496,30 @@ def api_album_title_mismatches():
         return jsonify(result)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+@album_bp.route("/bulk-tag", methods=["POST"])
+async def api_album_bulk_tag():
+    """Add genre tags to multiple selected tracks (DB + audio files)."""
+    payload = (await request.get_json(silent=True)) or {}
+    from services.metadata.album_service import bulk_tag_tracks
+    result, code = bulk_tag_tracks(payload)
+    return jsonify(result), code
+
+
+@album_bp.route("/bulk-delete", methods=["POST"])
+async def api_album_bulk_delete():
+    """Delete multiple tracks from the DB, optionally removing audio files."""
+    payload = (await request.get_json(silent=True)) or {}
+    from services.metadata.album_service import bulk_delete_tracks
+    result, code = bulk_delete_tracks(payload)
+    return jsonify(result), code
+
+
+@album_bp.route("/update-ids", methods=["POST"])
+async def api_album_update_ids():
+    """Update MusicBrainz/Discogs release IDs for an album's tracks."""
+    payload = (await request.get_json(silent=True)) or {}
+    from services.metadata.album_service import update_album_ids
+    result, code = update_album_ids(payload)
+    return jsonify(result), code

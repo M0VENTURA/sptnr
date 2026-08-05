@@ -257,7 +257,12 @@
 
                         <hr class="my-3">
 
-                        <h6 class="text-muted mb-3">Release IDs and Genres (Applied on Save)</h6>
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h6 class="text-muted mb-0">Release IDs and Genres (Applied on Save)</h6>
+                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="openEditAlbumIdsModal()" title="Open the edit IDs dialog">
+                                <i class="bi bi-pencil"></i> Edit IDs
+                            </button>
+                        </div>
                         <div class="row g-2 mb-3">
                             <div class="col-12 col-md-6">
                                 <label for="album_mbid" class="form-label">MusicBrainz Release ID</label>
@@ -1054,6 +1059,55 @@
   <div class="card-body">
     <div id="albumMissingTracksBody" class="text-muted small">
       Checking the MusicBrainz release tracklist against the library...
+    </div>
+  </div>
+</div>
+
+<!-- Bulk Genre Tagger Modal (used by the Tracks toolbar "Add Tags" button) -->
+<div class="modal fade" id="bulkGenreTaggerModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-tags"></i> Add Genre Tags</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small">Adding genres to <strong id="selectedCountModal">0</strong> selected track(s).</p>
+        <input type="text" class="form-control" id="bulkGenreInput" placeholder="e.g., Rock, Metal, Progressive">
+        <div class="d-flex flex-wrap gap-1 mt-2">
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Rock')">Rock</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Metal')">Metal</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Pop')">Pop</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Jazz')">Jazz</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Electronic')">Electronic</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Hip-Hop')">Hip-Hop</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" onclick="applyBulkGenreTags(event)"><i class="bi bi-check-lg"></i> Apply Tags</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk Delete Modal (used by the Tracks toolbar "Delete Selected" button) -->
+<div class="modal fade" id="bulkDeleteModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-trash"></i> Delete Tracks</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>You are about to delete <strong id="deleteTrackCount">0</strong> track(s).</p>
+        <p class="text-muted small mb-0">Deleting with files will permanently remove the audio files from disk.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-outline-danger" onclick="deleteDatabaseOnly()">Delete from database only</button>
+        <button type="button" class="btn btn-danger" onclick="deleteWithFiles()">Delete with files</button>
+      </div>
     </div>
   </div>
 </div>
