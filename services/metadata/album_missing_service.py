@@ -54,9 +54,10 @@ def get_missing_tracks(artist: str, album: str) -> dict:
         # Rows are RealDictRow (dict-like); never index by position.
         mb_mbid = row.get("musicbrainz_album_mbid") if row else None
 
-        # Fetch library tracks
+        # Fetch library tracks (mbid is the recording MBID column — beets_mbid
+        # does not exist in the current schema).
         cursor.execute(
-            "SELECT id, title, track_number, disc_number, mbid, beets_mbid FROM tracks "
+            "SELECT id, title, track_number, disc_number, mbid FROM tracks "
             "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
             (artist, album),
         )

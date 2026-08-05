@@ -908,7 +908,7 @@
                         <!-- Single Detection -->
                         <h6 class="fw-semibold text-muted small text-uppercase mb-2">Single Detection</h6>
 
-                        <div class="row g-2 align-items-end mb-2">
+                        <div class="row g-2 align-items-end mb-3">
                             <div class="col-6 col-md-3">
                                 <label for="is_single" class="form-label small mb-1">Is Single</label>
                                 <select class="form-select form-select-sm" id="is_single" name="is_single">
@@ -916,7 +916,7 @@
                                     <option value="true" {% if track.is_single %}selected{% endif %}>Yes</option>
                                 </select>
                             </div>
-                            <div class="col-6 col-md-4">
+                            <div class="col-6 col-md-3">
                                 <div class="form-label small text-muted mb-1">Confidence</div>
                                 <div>
                                     {% if track.single_confidence in ('high', 'user') %}
@@ -928,10 +928,22 @@
                                     {% endif %}
                                 </div>
                             </div>
-                            <div class="col-12 col-md-5">
-                                <div class="form-check mb-1">
-                                    <input type="checkbox" class="form-check-input" id="single_manual_override" name="single_manual_override" {% if track.single_manual_override %}checked{% endif %}>
-                                    <label class="form-check-label small" for="single_manual_override">Force (skip auto-scan)</label>
+                            <div class="col-12 col-md-6">
+                                <div class="d-flex align-items-center gap-3 flex-wrap pb-1">
+                                    <div class="form-check mb-0">
+                                        <input type="checkbox" class="form-check-input" id="single_manual_override" name="single_manual_override" {% if track.single_manual_override %}checked{% endif %}>
+                                        <label class="form-check-label small" for="single_manual_override">Force (skip auto-scan)</label>
+                                    </div>
+                                    <div class="d-flex align-items-center gap-2 small">
+                                        <span class="text-muted">Last scan:</span>
+                                        <span>
+                                            {% if track.single_detection_last_updated %}
+                                                {{ (track.single_detection_last_updated|string)[:16].replace('T', ' ') }}
+                                            {% else %}
+                                                Never
+                                            {% endif %}
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -939,7 +951,7 @@
                         <!-- Single Detection Sources -->
                         <div class="mb-2">
                             <div class="small fw-semibold text-muted mb-1">Detection Sources</div>
-                            <table class="table table-sm table-borderless mb-1 align-middle" style="font-size:0.78rem;">
+                            <table class="table table-sm table-borderless mb-0 align-middle" style="font-size:0.78rem;">
                                 <tbody>
                                     {% set detection_sources = [
                                         ('discogs', 'Discogs', 'High'),
@@ -947,12 +959,17 @@
                                         ('musicbrainz', 'MusicBrainz', 'Medium'),
                                         ('musicbrainz_video', 'MusicBrainz Video', 'Medium'),
                                         ('musicbrainz_compilation', 'MusicBrainz Compilation', 'Medium'),
-                                        ('lastfm', 'Last.fm', 'Medium')
+                                        ('lastfm', 'Last.fm', 'Medium'),
+                                        ('isrc', 'ISRC', 'Medium'),
+                                        ('listenbrainz_top10', 'ListenBrainz Top-10%', 'Medium'),
+                                        ('popularity_z_standout', 'Popularity Standout', 'Medium'),
+                                        ('radio_edit', 'Radio Edit / Duration', 'Medium'),
+                                        ('release_date_match', 'Release Date Match', 'Medium')
                                     ] %}
                                     {% for src_key, src_label, src_conf in detection_sources %}
                                     <tr>
-                                        <td style="width:38%; padding:2px 4px;">{{ src_label }}</td>
-                                        <td style="width:22%; padding:2px 4px;">
+                                        <td style="width:40%; padding:2px 4px;">{{ src_label }}</td>
+                                        <td style="padding:2px 4px;">
                                             {% if src_key in (track.single_sources_list or []) %}
                                                 <span class="badge bg-success" style="font-size:0.65rem;">Detected</span>
                                             {% else %}
@@ -971,16 +988,6 @@
                                     {% endfor %}
                                 </tbody>
                             </table>
-                            <div class="d-flex align-items-center gap-2">
-                                <span class="small text-muted">Last Single Scan:</span>
-                                <span class="small">
-                                    {% if track.single_detection_last_updated %}
-                                        {{ (track.single_detection_last_updated|string)[:16].replace('T', ' ') }}
-                                    {% else %}
-                                        Never
-                                    {% endif %}
-                                </span>
-                            </div>
                         </div>
 
                         <hr class="my-3">

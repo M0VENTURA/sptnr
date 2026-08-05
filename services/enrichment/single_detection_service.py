@@ -685,6 +685,24 @@ def detect_single_for_track(
         except Exception:
             pass
 
+    # ── Append corroborating evidence to the sources list (UI visibility) ──
+    # The track page's detection-source table reads `single_sources`; only
+    # Discogs/MusicBrainz entries were stored there, so tracks confirmed via
+    # ISRC, ListenBrainz top-10%, z-standout etc. showed high confidence with
+    # an all-"Not Detected" source table.
+    for _src_flag, _src_name in (
+        (isrc_single_confirmed, "isrc"),
+        (lb_top10, "listenbrainz_top10"),
+        (z_standout, "popularity_z_standout"),
+        (radio_edit_found or duration_support, "radio_edit"),
+        (mb_compilation_confirmed, "musicbrainz_compilation"),
+        (lastfm_confirmed, "lastfm"),
+        (discogs_video_confirmed, "discogs_video"),
+        (single_release_date_match, "release_date_match"),
+    ):
+        if _src_flag:
+            sources.append({"source": _src_name, "matched": True, "confidence": 0.5})
+
     # ── Final decision ──
     max_z = max(album_z, artist_z)
     has_meta = discogs_confirmed or musicbrainz_confirmed

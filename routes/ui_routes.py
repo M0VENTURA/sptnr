@@ -1562,12 +1562,31 @@ async def track_detail(track_id: str):
         if track.get("writer"):
             track["writer"] = stringify_tag_field(track.get("writer"))
 
-        # Single-source list for template checks.
-        track["single_sources_list"] = split_tag_values(
+        # Single-source list for template checks — parse the stored JSON array
+        # of source dicts and keep the `source` keys of matched entries, so
+        # the track page's detection-source table reflects reality.
+        _sources_raw = (
             track.get("single_sources")
             or track.get("single_detection_sources")
             or ""
         )
+        _source_keys: list[str] = []
+        try:
+            import json as _json
+            _parsed = _json.loads(_sources_raw) if isinstance(_sources_raw, str) and _sources_raw.strip() else _sources_raw
+            if isinstance(_parsed, list):
+                for _entry in _parsed:
+                    if isinstance(_entry, dict):
+                        if _entry.get("matched"):
+                            _k = str(_entry.get("source") or "").strip()
+                            if _k:
+                                _source_keys.append(_k)
+                    elif isinstance(_entry, str) and _entry.strip():
+                        _source_keys.append(_entry.strip())
+        except Exception:
+            # Fallback: legacy comma/backslash-separated fragments
+            _source_keys = split_tag_values(_sources_raw)
+        track["single_sources_list"] = _source_keys
 
         # MusicBrainz compatibility aliases.
         if not track.get("musicbrainz_albumid"):
