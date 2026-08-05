@@ -286,6 +286,7 @@ function buildConfigObject() {
           musicbrainz: parseFloat(getValue('genre_weight_musicbrainz', '0.40')) || 0.40,
           discogs: parseFloat(getValue('genre_weight_discogs', '0.25')) || 0.25,
           audiodb: parseFloat(getValue('genre_weight_audiodb', '0.20')) || 0.20,
+          essentia: parseFloat(getValue('genre_weight_essentia', '0.20')) || 0.20,
           lastfm: parseFloat(getValue('genre_weight_lastfm', '0.10')) || 0.10
         }
       }

@@ -14,7 +14,7 @@
                     <a href="javascript:void(0)" onclick="navigateToArtist('{{ artist_name|escapejs }}', event)">{{ artist_name }}</a>{% if not loop.last %} / {% endif %}
                 {% endfor %}
             </li>
-            <li class="breadcrumb-item"><a href="{{ url_for('ui.album_detail', artist=artist_parts[0] if artist_parts else track.artist, album=track.album) }}">{{ track.album }}</a></li>
+            <li class="breadcrumb-item"><a href="/album/{{ (artist_parts[0] if artist_parts else track.artist)|path_segment }}/{{ track.album|path_segment }}">{{ track.album }}</a></li>
             <li class="breadcrumb-item active" aria-current="page">{{ track.title }}</li>
         </ol>
     </nav>
@@ -27,7 +27,7 @@
                     <!-- Album Art -->
                     <div class="col-12 col-md-3 d-flex flex-column align-items-center">
                         <div class="album-art-container position-relative mb-3">
-                            <img id="trackAlbumArtImage" src="{{ url_for('album_routes.api_album_art', artist=track.artist|urlencode, album=track.album|urlencode) }}" 
+                            <img id="trackAlbumArtImage" src="/api/album/{{ track.artist|path_segment }}/{{ track.album|path_segment }}/art" 
                                  alt="{{ track.album }}" 
                                  style="width: 100%; height: 100%; object-fit: cover;"
                                  onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
@@ -47,7 +47,7 @@
                             </div>
                             <div class="col-6">
                                 <small class="text-muted d-block">Album</small>
-                                <strong><a href="{{ url_for('ui.album_detail', artist=artist_parts[0] if artist_parts else track.artist, album=track.album) }}">{{ track.album }}</a></strong>
+                                <strong><a href="/album/{{ (artist_parts[0] if artist_parts else track.artist)|path_segment }}/{{ track.album|path_segment }}">{{ track.album }}</a></strong>
                             </div>
                             {% if track.year %}
                             <div class="col-6">
@@ -901,24 +901,54 @@
                         <!-- Scoring Metrics -->
                         <div class="row g-2 mb-2">
                             <div class="col-4">
-                                <div class="metadata-label small text-muted">Last.fm Total Plays</div>
+                                <div class="metadata-label small text-muted">Last.fm Listeners</div>
                                 <div class="metadata-value small">
-                                    {% if track.lastfm_track_playcount %}
-                                        {{ "{:,}".format(track.lastfm_track_playcount) }}
+                                    {% if track.lastfm_listeners %}
+                                        {{ "{:,.0f}".format(track.lastfm_listeners) }}
+                                    {% else %}—{% endif %}
+                                </div>
+                            </div>
+                            <div class="col-4">
+                                <div class="metadata-label small text-muted">Last.fm Plays</div>
+                                <div class="metadata-value small">
+                                    {% if track.lastfm_playcount %}
+                                        {{ "{:,.0f}".format(track.lastfm_playcount) }}
                                     {% else %}—{% endif %}
                                 </div>
                             </div>
                             <div class="col-4">
                                 <div class="metadata-label small text-muted">Last.fm Score</div>
                                 <div class="metadata-value small">
-                                    {{ track.lastfm_ratio|round(1) if track.lastfm_ratio else '—' }}
+                                    {{ track.lastfm_score|round(1) if track.lastfm_score is not none else '—' }}
                                 </div>
                             </div>
                             <div class="col-4">
-                                <div class="metadata-label small text-muted">Final Zscore</div>
+                                <div class="metadata-label small text-muted">ListenBrainz Listens</div>
+                                <div class="metadata-value small">
+                                    {% if track.listenbrainz_listens %}
+                                        {{ "{:,.0f}".format(track.listenbrainz_listens) }}
+                                    {% else %}—{% endif %}
+                                </div>
+                            </div>
+                            <div class="col-4">
+                                <div class="metadata-label small text-muted">ListenBrainz Users</div>
+                                <div class="metadata-value small">
+                                    {% if track.listenbrainz_users %}
+                                        {{ "{:,.0f}".format(track.listenbrainz_users) }}
+                                    {% else %}—{% endif %}
+                                </div>
+                            </div>
+                            <div class="col-4">
+                                <div class="metadata-label small text-muted">ListenBrainz Score</div>
+                                <div class="metadata-value small">
+                                    {{ track.listenbrainz_score|round(1) if track.listenbrainz_score is not none else '—' }}
+                                </div>
+                            </div>
+                            <div class="col-4">
+                                <div class="metadata-label small text-muted">Popularity</div>
                                 <div class="metadata-value">
-                                    {% if track.artist_z_score is not none and track.artist_z_score != '' %}
-                                        <span class="badge badge-success">{{ track.artist_z_score|round(3) }}</span>
+                                    {% if track.popularity is not none and track.popularity != '' %}
+                                        <span class="badge badge-success">{{ track.popularity|round(1) }}</span>
                                     {% else %}—{% endif %}
                                 </div>
                             </div>
@@ -1307,7 +1337,7 @@
             <button type="submit" class="btn btn-primary">
                 <i class="bi bi-check-circle"></i> Save Changes
             </button>
-            <a href="{{ url_for('ui.album_detail', artist=track.artist, album=track.album) }}" class="btn btn-secondary">
+            <a href="/album/{{ track.artist|path_segment }}/{{ track.album|path_segment }}" class="btn btn-secondary">
                 <i class="bi bi-x-circle"></i> Cancel
             </a>
         </div>

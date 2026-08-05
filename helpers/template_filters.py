@@ -47,6 +47,19 @@ def register_filters(app):
         cleaned = [p.strip() for p in parts if p and p.strip()]
         return cleaned or [str(value).strip()]
 
+    @app.template_filter('path_segment')
+    def path_segment(value):
+        """Percent-encode a value for use as a single URL path segment.
+
+        Unlike ``|urlencode`` (which turns spaces into ``+`` and is meant for
+        query strings), this keeps spaces as ``%20`` and encodes slashes as
+        ``%2F`` so names like ``AC/DC`` survive routing as one segment.
+        """
+        from urllib.parse import quote
+        if value is None:
+            return ""
+        return quote(str(value), safe="")
+
     @app.template_filter('escapejs')
     def escapejs(value):
         """Escape strings for safe embedding in JavaScript contexts.

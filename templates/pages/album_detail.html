@@ -21,7 +21,7 @@
                     <!-- Album Art -->
                     <div class="col-12 col-md-3 d-flex flex-column align-items-center">
                         <div class="album-art-container position-relative mb-3">
-                            <img id="albumArtImage" src="{{ url_for('album_routes.api_album_art', artist=artist_name, album=album_name) }}" 
+                            <img id="albumArtImage" src="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" 
                                  alt="{{ album_name }}" 
                                  style="width: 100%; height: 100%; object-fit: cover;"
                                  onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Album Art%3C/text%3E%3C/svg%3E';">
@@ -176,7 +176,7 @@
     </div>
 
     <!-- Two-Column Layout for Edit & Overview -->
-    <form method="POST" action="{{ url_for('ui.album_detail', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
+    <form method="POST" action="/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}" id="albumMetadataForm">
         <div class="row g-3 mb-4">
             <!-- EDIT FORM -->
             <div class="col-12 order-2">
@@ -207,7 +207,7 @@
                         <div class="row g-2 mb-3">
                             <div class="col-6">
                                 <label for="release_year" class="form-label">Release Year</label>
-                                <input type="number" class="form-control" id="release_year" name="release_year" value="{{ album_data.spotify_release_date[:4] if album_data and album_data.spotify_release_date else '' }}" placeholder="e.g., 2023">
+                                <input type="number" class="form-control" id="release_year" name="release_year" value="{{ album_data.year or album_data.album_year or '' }}" placeholder="e.g., 2023">
                             </div>
                             <div class="col-6">
                                 <label for="album_type" class="form-label">Album Type</label>
@@ -253,10 +253,6 @@
                                 <label for="track_composer" class="form-label">Track Composer (All Tracks)</label>
                                 <input type="text" class="form-control" id="track_composer" name="track_composer" placeholder="Optional composer to apply to all tracks">
                             </div>
-                            <div class="col-12 col-md-6">
-                                <label for="track_comment" class="form-label">Track Comment (All Tracks)</label>
-                                <input type="text" class="form-control" id="track_comment" name="track_comment" placeholder="Optional comment to apply to all tracks">
-                            </div>
                         </div>
 
                         <hr class="my-3">
@@ -273,10 +269,6 @@
                             </div>
                         </div>
                         <div class="row g-2 mb-3">
-                            <div class="col-12 col-md-6">
-                                <label for="album_discogs_id" class="form-label">Discogs Release ID</label>
-                                <input type="text" class="form-control" id="album_discogs_id" name="album_discogs_id" value="{{ album_data.discogs_album_id or '' }}" placeholder="Discogs release ID">
-                            </div>
                             <div class="col-12 col-md-6">
                                 <label for="artist_mbid" class="form-label">MusicBrainz Artist ID</label>
                                 <input type="text" class="form-control" id="artist_mbid" name="artist_mbid" value="{{ album_artist_mbid or '' }}" placeholder="MusicBrainz artist MBID">
@@ -759,7 +751,7 @@
                                             data-track-id="{{ track.id }}"
                                             data-title="{{ track.title|escapejs }}"
                                             data-artist="{{ (track.artist or artist_name)|escapejs }}"
-                                            data-art="{{ url_for('album_routes.api_album_art', artist=artist_name, album=album_name) }}"
+                                            data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art"
                                             onclick="playTrackFromAlbum(this)"
                                             title="Play this track">
                                         <i class="bi bi-play-fill"></i>
@@ -945,7 +937,7 @@
                                         data-track-id="{{ track.id }}"
                                         data-title="{{ track.title|escapejs }}"
                                         data-artist="{{ (track.artist or artist_name)|escapejs }}"
-                                        data-art="{{ url_for('album_routes.api_album_art', artist=artist_name, album=album_name) }}"
+                                        data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art"
                                         onclick="playTrackFromAlbum(this)"
                                         title="Play this track">
                                     <i class="bi bi-play-fill"></i>

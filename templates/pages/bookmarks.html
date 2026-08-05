@@ -85,7 +85,7 @@
               <div class="card-body p-2">
                 <div class="d-flex justify-content-between align-items-start">
                   <div class="flex-grow-1">
-                    <a href="{{ url_for('ui.album_detail', artist=bookmark.artist, album=bookmark.album) }}" class="text-decoration-none">
+                    <a href="/album/{{ bookmark.artist|path_segment }}/{{ bookmark.album|path_segment }}" class="text-decoration-none">
                       <div class="fw-bold text-truncate">{{ bookmark.album }}</div>
                       <div class="text-muted small">{{ bookmark.artist }}</div>
                     </a>

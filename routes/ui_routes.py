@@ -1121,7 +1121,6 @@ async def album_detail(artist: str, album: str):
             # Year — write to all year-related fields for display consistency
             if release_year:
                 payload["year"] = release_year
-                payload["spotify_release_date"] = release_year
                 try:
                     payload["release_year"] = int(release_year)
                 except ValueError:
@@ -1130,16 +1129,15 @@ async def album_detail(artist: str, album: str):
             # Album type
             if album_type:
                 payload["spotify_album_type"] = album_type
-                payload["album_type"] = album_type
                 payload["musicbrainz_albumtype"] = album_type
 
             # Track-level overrides
             if track_artist and track_artist != track.get("artist"):
                 payload["artist"] = track_artist
             if track_composer:
-                payload["composer"] = track_composer
-            if track_comment:
-                payload["comment"] = track_comment
+                # The tracks table has no "composer" column — writer is the
+                # composer/lyricist field.
+                payload["writer"] = track_composer
 
             # MBIDs
             if album_mbid:
@@ -1149,10 +1147,6 @@ async def album_detail(artist: str, album: str):
                 payload["musicbrainz_releasegroupid"] = album_rg_mbid
             if artist_mbid:
                 payload["musicbrainz_artistid"] = artist_mbid
-
-            # Discogs ID
-            if discogs_id:
-                payload["discogs_album_id"] = discogs_id
 
             # Cover art URL
             if cover_url:

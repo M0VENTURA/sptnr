@@ -656,6 +656,7 @@ def get_genre_weights() -> dict[str, float]:
         - musicbrainz: 0.40 (40% weight - most authoritative)
         - discogs: 0.25 (25% weight)
         - audiodb: 0.20 (20% weight)
+        - essentia: 0.20 (20% weight - audio analysis)
         - lastfm: 0.10 (10% weight)
         - spotify: 0.05 (5% weight)
     """
@@ -666,6 +667,7 @@ def get_genre_weights() -> dict[str, float]:
         "musicbrainz": 0.40,
         "discogs": 0.25,
         "audiodb": 0.20,
+        "essentia": 0.20,
         "lastfm": 0.10,
         "spotify": 0.05,
     }

@@ -864,8 +864,10 @@ def process_track(
     # -------------------------------------------------------------------------
     # 5. GENRE AGGREGATION (using enrichment service)
     # -------------------------------------------------------------------------
+    # Genres are metadata — they are assigned during the metadata scan (and
+    # full scans). A pure popularity-only pass skips them.
 
-    if not metadata_only and not popularity_only:
+    if not popularity_only:
         try:
             effective_track = _build_effective_track(track, update_payload)
             source_map = {}
@@ -876,20 +878,35 @@ def process_track(
                 ("lastfm_tags", "lastfm"),
                 ("listenbrainz_genres", "listenbrainz"),
                 ("spotify_genres", "spotify"),
+                ("essentia_genres", "essentia"),
             ]:
                 raw = effective_track.get(key) or track.get(key) or ""
-                if raw:
-                    import json
-                    try:
-                        genres = json.loads(raw) if isinstance(raw, str) else raw
-                    except Exception:
-                        genres = [g.strip() for g in str(raw).split(",") if g.strip()]
-                    if genres:
-                        source_map[source_name] = genres
+                if not raw:
+                    continue
+                import json
+                try:
+                    genres = json.loads(raw) if isinstance(raw, str) else raw
+                except Exception:
+                    genres = [g.strip() for g in str(raw).split(",") if g.strip()]
+                if source_name == "essentia":
+                    # Essentia writes "Parent---Child" style genres (e.g.
+                    # "Rock---Heavy Metal; Rock---Punk") — keep the child part
+                    # of each entry so specific genres win, top 3 only.
+                    parsed: list[str] = []
+                    for g in genres:
+                        g = str(g).strip()
+                        if "---" in g:
+                            g = g.split("---", 1)[-1].strip()
+                        if g and g not in parsed:
+                            parsed.append(g)
+                    genres = parsed[:3]
+                if genres:
+                    source_map[source_name] = genres
 
             if source_map:
                 from services.enrichment.genre_aggregation_service import aggregate_genres
-                aggregated = aggregate_genres(source_map)
+                # Top-3 genres across all sources.
+                aggregated = aggregate_genres(source_map, max_genres=3)
                 if aggregated:
                     update_payload["aggregated_genres"] = aggregated
 

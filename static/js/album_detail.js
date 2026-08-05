@@ -2728,7 +2728,6 @@ var _pageData = window._pageData || {};
         document.getElementById('editTrackSingleField').value = trackData.is_single || 0;
         document.getElementById('editTrackConfidenceField').value = trackData.single_confidence || 'low';
         document.getElementById('editTrackAlbumArtistField').value = trackData.album_artist || '';
-        document.getElementById('editTrackComposerField').value = trackData.composer || '';
         (function() {
             let writerVal = trackData.writer || '';
             if (writerVal) {
@@ -2741,25 +2740,23 @@ var _pageData = window._pageData || {};
             }
             document.getElementById('editTrackWriterField').value = writerVal;
         })();
-        document.getElementById('editTrackArrangerField').value = trackData.arranger || '';
-        document.getElementById('editTrackMixerField').value = trackData.mixer || '';
-        document.getElementById('editTrackProducerField').value = trackData.producer || '';
         document.getElementById('editTrackWorkField').value = trackData.work || '';
         document.getElementById('editTrackTrackNumberField').value = trackData.track_number || '';
         document.getElementById('editTrackDiscNumberField').value = trackData.disc_number || '';
         document.getElementById('editTrackISRCField').value = trackData.isrc || '';
         document.getElementById('editTrackMBIDField').value = trackData.mbid || '';
-        document.getElementById('editTrackBPMField').value = trackData.bpm || '';
-        document.getElementById('editTrackBitrateField').value = trackData.bitrate || '';
-        document.getElementById('editTrackSampleRateField').value = trackData.sample_rate || '';
+        document.getElementById('editTrackMBAlbumIdField').value = trackData.musicbrainz_albumid || '';
+        document.getElementById('editTrackMBArtistIdField').value = trackData.musicbrainz_artistid || '';
+        document.getElementById('editTrackMBAlbumArtistIdField').value = trackData.musicbrainz_albumartistid || '';
+        document.getElementById('editTrackMBReleaseGroupIdField').value = trackData.musicbrainz_releasegroupid || '';
+        document.getElementById('editTrackMBReleaseTrackIdField').value = trackData.musicbrainz_releasetrackid || '';
+        document.getElementById('editTrackMBWorkIdField').value = trackData.musicbrainz_workid || '';
         document.getElementById('editTrackIsCoverField').checked = trackData.is_cover == 1;
         document.getElementById('editTrackAlternateTakeField').checked = trackData.alternate_take == 1;
         document.getElementById('editTrackIsCompilationField').checked = trackData.is_compilation == 1;
         document.getElementById('editTrackIsLiveField').checked = trackData.is_live == 1;
         document.getElementById('editTrackIsAcousticField').checked = trackData.is_acoustic == 1;
         document.getElementById('editTrackIsRemixField').checked = trackData.is_remix == 1;
-        document.getElementById('editTrackCommentField').value = trackData.comment || '';
-        renderAlbumAdvancedTrackFields(trackData || {});
         
         // Handle genres
         editTrackCurrentGenres = [];
@@ -2908,35 +2905,26 @@ var _pageData = window._pageData || {};
             single_confidence: document.getElementById('editTrackConfidenceField').value,
             genres: editTrackCurrentGenres.join('\\'),
             album_artist: document.getElementById('editTrackAlbumArtistField').value.trim() || null,
-            composer: document.getElementById('editTrackComposerField').value.trim() || null,
             writer: document.getElementById('editTrackWriterField').value.trim() || null,
-            arranger: document.getElementById('editTrackArrangerField').value.trim() || null,
-            mixer: document.getElementById('editTrackMixerField').value.trim() || null,
-            producer: document.getElementById('editTrackProducerField').value.trim() || null,
             work: document.getElementById('editTrackWorkField').value.trim() || null,
             track_number: document.getElementById('editTrackTrackNumberField').value.trim() || null,
             disc_number: document.getElementById('editTrackDiscNumberField').value.trim() || null,
             isrc: document.getElementById('editTrackISRCField').value.trim() || null,
             mbid: document.getElementById('editTrackMBIDField').value.trim() || null,
-            bpm: document.getElementById('editTrackBPMField').value.trim() ? parseInt(document.getElementById('editTrackBPMField').value) : null,
-            bitrate: document.getElementById('editTrackBitrateField').value.trim() ? parseInt(document.getElementById('editTrackBitrateField').value) : null,
-            sample_rate: document.getElementById('editTrackSampleRateField').value.trim() ? parseInt(document.getElementById('editTrackSampleRateField').value) : null,
+            musicbrainz_albumid: document.getElementById('editTrackMBAlbumIdField').value.trim() || null,
+            musicbrainz_artistid: document.getElementById('editTrackMBArtistIdField').value.trim() || null,
+            musicbrainz_albumartistid: document.getElementById('editTrackMBAlbumArtistIdField').value.trim() || null,
+            musicbrainz_releasegroupid: document.getElementById('editTrackMBReleaseGroupIdField').value.trim() || null,
+            musicbrainz_releasetrackid: document.getElementById('editTrackMBReleaseTrackIdField').value.trim() || null,
+            musicbrainz_workid: document.getElementById('editTrackMBWorkIdField').value.trim() || null,
             is_cover: document.getElementById('editTrackIsCoverField').checked ? 1 : 0,
             alternate_take: document.getElementById('editTrackAlternateTakeField').checked ? 1 : 0,
             is_compilation: document.getElementById('editTrackIsCompilationField').checked ? 1 : 0,
             is_live: document.getElementById('editTrackIsLiveField').checked ? 1 : 0,
             is_acoustic: document.getElementById('editTrackIsAcousticField').checked ? 1 : 0,
             is_remix: document.getElementById('editTrackIsRemixField').checked ? 1 : 0,
-            comment: document.getElementById('editTrackCommentField').value.trim() || null,
             sync_to_file: true
         };
-
-        ALBUM_MODAL_ADVANCED_FIELDS.forEach(def => {
-            const el = document.getElementById(`editTrackAdv_${def.name}`);
-            if (!el) return;
-            const raw = (el.value || '').trim();
-            payload[def.name] = raw || null;
-        });
         
         // Validate required fields
         if (!payload.title) {

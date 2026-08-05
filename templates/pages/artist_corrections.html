@@ -266,7 +266,7 @@
                         {% for row in mbid_inconsistent_albums %}
                         <tr id="mbid-row-{{ loop.index }}">
                             <td>
-                                <a href="{{ url_for('ui.album_detail', artist=artist_name, album=row.album) }}">{{ row.album }}</a>
+                                <a href="/album/{{ artist_name|path_segment }}/{{ row.album|path_segment }}">{{ row.album }}</a>
                             </td>
                             <td class="text-center">{{ row.track_count }}</td>
                             <td class="text-center"><span class="badge bg-warning text-dark">{{ row.mbid_count }}</span></td>
@@ -321,7 +321,7 @@
                         {% for row in disc_inconsistent_albums %}
                         <tr id="disc-row-{{ loop.index }}">
                             <td>
-                                <a href="{{ url_for('ui.album_detail', artist=artist_name, album=row.album) }}">{{ row.album }}</a>
+                                <a href="/album/{{ artist_name|path_segment }}/{{ row.album|path_segment }}">{{ row.album }}</a>
                             </td>
                             <td class="text-center">{{ row.track_count }}</td>
                             <td class="text-center">
@@ -376,7 +376,7 @@
                             <td>
                                 {% for alb in grp.albums %}
                                 <div>
-                                    <a href="{{ url_for('ui.album_detail', artist=artist_name, album=alb.album) }}">{{ alb.album }}</a>
+                                    <a href="/album/{{ artist_name|path_segment }}/{{ alb.album|path_segment }}">{{ alb.album }}</a>
                                     <span class="badge bg-secondary ms-1">{{ alb.track_count }} track{{ 's' if alb.track_count != 1 else '' }}</span>
                                     {% if alb.album_year %}<span class="text-muted small ms-1">{{ alb.album_year }}</span>{% endif %}
                                     {% if alb.mb_mbid %}<code class="small ms-1 text-muted">{{ alb.mb_mbid[:8] }}…</code>{% endif %}
@@ -473,7 +473,7 @@
                         {% for alb in mb_albums %}
                         <tr id="mb-album-row-{{ loop.index }}">
                             <td>
-                                <a href="{{ url_for('ui.album_detail', artist=artist_name, album=alb.album) }}">{{ alb.album }}</a>
+                                <a href="/album/{{ artist_name|path_segment }}/{{ alb.album|path_segment }}">{{ alb.album }}</a>
                             </td>
                             <td class="text-center">{{ alb.track_count }}</td>
                             <td class="text-center" id="mb-total-{{ loop.index }}">—</td>

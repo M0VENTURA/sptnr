@@ -476,7 +476,7 @@
                     {% endif %}
                   </td>
                   <td data-label="Album">
-                    <a href="{{ url_for('ui.album_detail', artist=artist_name, album=track.album) }}" class="text-decoration-none">
+                    <a href="/album/{{ artist_name|path_segment }}/{{ track.album|path_segment }}" class="text-decoration-none">
                       {{ track.album }}
                     </a>
                   </td>
@@ -826,8 +826,8 @@
               <tr>
                 <td class="text-center" style="width: 100px; padding: 0.5rem;" data-label="Art">
                   {% if entry.album and entry.album_artist %}
-                  <a href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}">
-                    <img src="{{ url_for('album_routes.api_album_art', artist=entry.album_artist, album=entry.album) }}"
+                  <a href="/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}">
+                    <img src="/api/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}/art"
                          alt="{{ entry.album }}"
                          class="img-thumbnail"
                          style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
@@ -843,7 +843,7 @@
                 <td data-label="Release">
                   <div class="d-flex flex-column justify-content-center" style="min-height: 80px;">
                     {% if entry.album and entry.album_artist %}
-                    <a href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}" class="text-decoration-none fw-semibold">
+                    <a href="/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}" class="text-decoration-none fw-semibold">
                       {{ entry.album }}
                     </a>
                     {% else %}
@@ -868,7 +868,7 @@
                   {% endif %}
                 </td>
                 <td class="text-center" data-label="Open">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('ui.album_detail', artist=entry.album_artist, album=entry.album) }}" title="View album">
+                  <a class="btn btn-sm btn-outline-secondary" href="/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}" title="View album">
                     <i class="bi bi-arrow-right"></i>
                   </a>
                 </td>

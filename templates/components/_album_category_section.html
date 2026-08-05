@@ -13,7 +13,7 @@
                  alt="{{ album.get('title') }}" 
                  style="width: 48px; height: 48px; object-fit: cover; border-radius: 4px; background: var(--tertiary-bg);">
           {% else %}
-            <img src="/api/album/{{ artist_name|e }}/{{ (album.get('album') or album.get('title'))|e }}/art?s=48"
+            <img src="/api/album/{{ artist_name|path_segment }}/{{ (album.get('album') or album.get('title') or '')|path_segment }}/art?s=48"
                  alt="{{ album.get('album') or album.get('title') }}"
                  style="width: 48px; height: 48px; object-fit: cover; border-radius: 4px; background: var(--tertiary-bg);"
                  loading="lazy"
@@ -28,7 +28,7 @@
           {% if is_missing %}
             <span class="fw-semibold">{{ album.get('title', '') }}</span>
           {% else %}
-            <a href="{{ url_for('ui.album_detail', artist=artist_name, album=album.get('album') or album.get('title') or '') }}" class="fw-semibold text-decoration-none" onclick="event.stopPropagation();">
+            <a href="/album/{{ artist_name|path_segment }}/{{ (album.get('album') or album.get('title') or '')|path_segment }}" class="fw-semibold text-decoration-none" onclick="event.stopPropagation();">
               {{ album.get('album') or album.get('title') }}
             </a>
           {% endif %}
