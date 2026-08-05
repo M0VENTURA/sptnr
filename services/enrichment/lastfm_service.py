@@ -342,30 +342,52 @@ class LastFmService:
 
         # If all direct lookups returned empty, fall back to track.search
         # which does broader matching (handles cases where Last.fm has the
-        # feat. in the title, e.g. "Herzblut (feat. Melissa Bonny)").
+        # feat. in the title, e.g. "Herzblut (feat. Melissa Bonny)").  Every
+        # matching version of the song is summed — the album version and the
+        # single version are separate Last.fm tracks with separate counts,
+        # and the album one is usually the low-listen entry.
         if best_result is None or (best_result.get("listeners", 0) == 0 and best_result.get("track_play", 0) == 0):
-            search_results = self.search_track(artist, title, limit=10)
+            search_results = self.search_track(artist, title, limit=20)
             if search_results:
-                best_search: dict[str, Any] | None = None
-                best_search_score = -1
+                try:
+                    from services.popularity.popularity_matching import normalize_for_aggregation as _nfa
+                    _target = _nfa(title)
+                except Exception:
+                    _target = None
+                total_listeners = 0
+                total_play = 0
+                best_name = title
+                best_url = ""
+                best_artist = ""
+                _seen_urls: set[str] = set()
                 for track in search_results:
                     track_name = track.get("name", "")
+                    if _target and _nfa(track_name) != _target:
+                        continue
+                    _url = str(track.get("url") or "").strip()
+                    _dedupe_key = _url or f"{track_name.lower()}|{track.get('artist', '')}".strip().lower()
+                    if _dedupe_key in _seen_urls:
+                        continue
+                    _seen_urls.add(_dedupe_key)
                     track_listeners = int(track.get("listeners", 0) or 0)
-                    track_url = track.get("url", "")
-                    if track_listeners > best_search_score:
-                        best_search_score = track_listeners
-                        best_search = {
-                            "track_play": track_listeners,
-                            "listeners": track_listeners,
-                            "toptags": {},
-                            "lookup_artist": artist,
-                            "returned_artist": track.get("artist", ""),
-                            "track_name": track_name,
-                            "url": track_url,
-                            "album": "",
-                        }
-                if best_search and best_search_score > 0:
-                    best_result = best_search
+                    track_play = int(track.get("playcount", 0) or 0)
+                    total_listeners += track_listeners
+                    total_play += track_play
+                    if track_listeners > 0:
+                        best_name = track_name
+                        best_url = _url
+                        best_artist = track.get("artist", "")
+                if total_listeners > 0:
+                    best_result = {
+                        "track_play": total_listeners,
+                        "listeners": total_listeners,
+                        "toptags": {},
+                        "lookup_artist": artist,
+                        "returned_artist": best_artist,
+                        "track_name": best_name,
+                        "url": best_url,
+                        "album": "",
+                    }
 
         return self._normalise_track_result(best_result or self._empty_track_info(artist, title), artist)
 

@@ -19,6 +19,7 @@ from api_clients.listenbrainz import (
 from services.popularity.popularity_matching import (
     choose_best_provider_counts,
     get_artist_lookup_candidates,
+    get_primary_artist_preserve_case,
     normalize_for_aggregation,
 )
 
@@ -168,7 +169,7 @@ def get_listenbrainz_album_tracklist(
             title = str(trk.get("title") or "").strip()
             if not title:
                 continue
-            key = title.strip().lower()
+            key = normalize_for_aggregation(title)
             rec_mbid = str(trk.get("recording_mbid") or "").strip()
             titles_to_mbids.setdefault(key, [])
             if rec_mbid:
@@ -315,13 +316,28 @@ def get_lastfm_artist_max_listeners(
 
 
 def get_aggregated_lastfm_popularity(artist: str, track_title: str, lastfm_client=None) -> dict:
-    """Aggregate Last.fm counts across locally matched title variants."""
+    """Aggregate Last.fm counts across locally matched title variants.
+
+    Featured-artist tracks are handled specially: the album version (usually
+    the low-listen one) is what ``artist.getTopTracks`` and ``track.getInfo``
+    return, while the single version carries the real popularity.  For those
+    tracks we search Last.fm for every published version of the song and keep
+    the higher combined count.
+    """
     if lastfm_client is None:
         return {"listeners": 0, "track_play": 0, "matched_tracks": []}
-    artist_key = artist.casefold().strip()
+    is_featured = (
+        "feat" in str(artist or "").casefold()
+        or "feat" in str(track_title or "").casefold()
+    )
+    # Key the artist catalogue by the PRIMARY artist (feat. suffix stripped) so
+    # "dArtagnan feat. X" tracks share the "dArtagnan" catalogue instead of
+    # issuing a wasted artist.getTopTracks call for a name Last.fm does not know.
+    primary_artist = get_primary_artist_preserve_case(artist)
+    artist_key = primary_artist.casefold().strip()
     try:
         if artist_key not in _lastfm_artist_catalog_cache and hasattr(lastfm_client, "get_artist_top_tracks"):
-            _lastfm_artist_catalog_cache[artist_key] = lastfm_client.get_artist_top_tracks(artist)
+            _lastfm_artist_catalog_cache[artist_key] = lastfm_client.get_artist_top_tracks(primary_artist)
         catalog = _lastfm_artist_catalog_cache.get(artist_key, [])
     except Exception:
         catalog = []
@@ -336,11 +352,107 @@ def get_aggregated_lastfm_popularity(artist: str, track_title: str, lastfm_clien
             matched.append(item)
             listeners += int(item.get("listeners", 0) or 0)
             playcount += int(item.get("playcount", item.get("track_play", 0)) or 0)
+
+    # Featured tracks: search for ALL versions (album + feat. single) and keep
+    # the higher combined count so a low-listen album match can't shadow the
+    # single's real popularity.
+    if is_featured or not matched:
+        search = get_search_aggregated_lastfm_popularity(artist, track_title, lastfm_client=lastfm_client)
+        search_listeners = int(search.get("listeners") or 0)
+        if search_listeners > listeners:
+            listeners = search_listeners
+            playcount = int(search.get("track_play") or 0)
+            matched = search.get("matched_tracks") or matched
+
     if matched:
         return {"listeners": listeners, "track_play": playcount, "matched_tracks": matched}
     try:
         info = lastfm_client.get_track_info(artist, track_title)
         return {"listeners": int(info.get("listeners", 0) or 0), "track_play": int(info.get("track_play", 0) or 0), "matched_tracks": []}
+    except Exception:
+        return {"listeners": 0, "track_play": 0, "matched_tracks": []}
+
+
+def get_search_aggregated_lastfm_popularity(
+    artist: str,
+    track_title: str,
+    lastfm_client=None,
+) -> dict:
+    """Aggregate Last.fm counts across every published version of a song.
+
+    The album version and the single / featured version of a song are separate
+    Last.fm tracks with separate listener counts, and ``artist.getTopTracks``
+    only surfaces the few that chart — the low-listen album version is often
+    what ``track.getInfo`` returns while the high-listen single sits on a
+    different track row.  This searches Last.fm by the main artist name plus
+    the track title (as the user's album-scan single detection does) and sums
+    the counts of every matching version of the same song.
+
+    Returns ``{"listeners", "track_play", "matched_tracks"}``.
+    """
+    if lastfm_client is None:
+        return {"listeners": 0, "track_play": 0, "matched_tracks": []}
+    target = normalize_for_aggregation(track_title)
+    if not target:
+        return {"listeners": 0, "track_play": 0, "matched_tracks": []}
+
+    matched: list[dict] = []
+    seen: set[str] = set()
+
+    def _collect(candidate: str) -> None:
+        try:
+            results = lastfm_client.search_track(candidate, track_title, limit=20)
+        except Exception:
+            results = []
+        for item in results or []:
+            if not isinstance(item, dict):
+                continue
+            item_title = str(item.get("name") or item.get("title") or "")
+            if not item_title:
+                continue
+            # Only keep versions of THIS song — normalised title comparison
+            # correlates "Herzblut", "Herzblut (feat. Melissa Bonny)", etc.
+            if normalize_for_aggregation(item_title) != target:
+                continue
+            url = str(item.get("url") or "").strip()
+            key = url or f"{str(item.get('artist') or '').casefold()}::{item_title.casefold()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            matched.append(item)
+
+    # Search the PRIMARY artist first — "dArtagnan" + "Herzblut" surfaces the
+    # feat. single rows in one call — then the remaining candidates (e.g. the
+    # full "dArtagnan feat. Melissa Bonny" string) for any version only
+    # indexed under the full artist credit.  Results de-dupe by URL.
+    primary = get_primary_artist_preserve_case(artist)
+    ordered_candidates = [primary] + [
+        c for c in get_artist_lookup_candidates(artist)
+        if c.casefold() != primary.casefold()
+    ]
+    for candidate in ordered_candidates:
+        _collect(candidate)
+
+    listeners = sum(int(item.get("listeners") or 0) for item in matched)
+    playcount = sum(
+        int(item.get("playcount") or item.get("track_play") or 0)
+        for item in matched
+    )
+    if matched:
+        logger.info(
+            "[LF_SEARCH] Aggregated %s version(s) of '%s - %s' -> %s listeners / %s plays",
+            len(matched), artist, track_title, listeners, playcount,
+        )
+        return {"listeners": listeners, "track_play": playcount, "matched_tracks": matched}
+
+    # Nothing searchable — fall back to the direct single-track lookup.
+    try:
+        info = lastfm_client.get_track_info(artist, track_title)
+        return {
+            "listeners": int(info.get("listeners") or 0),
+            "track_play": int(info.get("track_play") or 0),
+            "matched_tracks": [],
+        }
     except Exception:
         return {"listeners": 0, "track_play": 0, "matched_tracks": []}
 

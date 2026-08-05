@@ -145,7 +145,7 @@ def get_tracks_for_album(artist: str, album: str) -> List[Dict[str, Any]]:
         result = session.execute(text("""
             SELECT *
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+            WHERE TRIM(COALESCE(NULLIF(album_artist, ''), artist)) = :artist
               AND album = :album
             ORDER BY disc_number NULLS FIRST, track_number NULLS FIRST
         """), {"artist": artist, "album": album})

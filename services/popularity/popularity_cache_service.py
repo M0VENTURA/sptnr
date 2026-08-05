@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from db.repositories import popularity_cache as cache_repo
+from services.popularity.popularity_matching import normalize_for_aggregation
 from services.popularity.popularity_sources import (
     extract_recording_mbid,
     get_listenbrainz_batch_for_tracks,
@@ -83,7 +84,14 @@ def _get_lastfm_client() -> Any:
 
 
 def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, int]]:
-    """One ``artist.getTopTracks`` call -> {normalized title: listeners/playcount}."""
+    """One ``artist.getTopTracks`` call -> {normalized title: listeners/playcount}.
+
+    Versions of the same song that Last.fm lists separately — "Herzblut" vs
+    "Herzblut (feat. Melissa Bonny)" — collapse onto the SAME normalised key
+    and their counts are SUMMED, so a track whose local title matches only the
+    plain title still picks up the high-listen feat. single.  The title kept
+    for display is the version with the most listeners.
+    """
     if artist in _lf_top_tracks_cache:
         return _lf_top_tracks_cache[artist]
     try:
@@ -93,6 +101,8 @@ def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, i
         return {}
     out: Dict[str, Dict[str, int]] = {}
     titles: Dict[str, str] = {}
+    acc: Dict[str, Dict[str, int]] = {}
+    best: Dict[str, tuple[int, str]] = {}
     for track in top_tracks:
         if not isinstance(track, dict):
             continue
@@ -100,18 +110,25 @@ def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, i
         if not name:
             continue
         key = _norm(name)
-        out[key] = {
-            "lastfm_listeners": int(track.get("listeners") or 0),
-            "lastfm_playcount": int(track.get("playcount") or 0),
-        }
-        titles[key] = name
+        if not key:
+            continue
+        listeners = int(track.get("listeners") or 0)
+        playcount = int(track.get("playcount") or 0)
+        entry = acc.setdefault(key, {"lastfm_listeners": 0, "lastfm_playcount": 0})
+        entry["lastfm_listeners"] += listeners
+        entry["lastfm_playcount"] += playcount
+        if key not in best or listeners > best[key][0]:
+            best[key] = (listeners, name)
+    for key, counts in acc.items():
+        out[key] = dict(counts)
+        titles[key] = best.get(key, (0, key))[1]
     _lf_top_tracks_cache[artist] = out
     _lf_top_tracks_titles[artist] = titles
     return out
 
 
 def _norm(title: str) -> str:
-    return (title or "").strip().lower()
+    return normalize_for_aggregation(title or "")
 
 
 def prefetch_artist_popularity(
@@ -151,7 +168,7 @@ def prefetch_artist_popularity(
         cache_full_catalogue: when True and the artist has no cached rows,
             persist the full top-tracks list (quick, single bulk call).
 
-    Returns ``{lower_title: {lastfm_listeners, ...}}`` with only non-empty
+    Returns ``{normalised_title: {lastfm_listeners, ...}}`` with only non-empty
     entries — callers merge into their own track loop.
     """
     if not artist or not tracks:
@@ -165,8 +182,21 @@ def prefetch_artist_popularity(
         lastfm_client = _get_lastfm_client()
 
     # Existing rows are always read — they seed the result AND provide the
-    # baseline for the changed-only upsert below.
+    # baseline for the changed-only upsert below.  Rows are re-keyed by their
+    # NORMALISED title so versions of the same song ("Herzblut" vs
+    # "Herzblut (feat. X)") collapse onto one entry.
     cached = cache_repo.get_cached_popularity_for_titles(artist, titles)
+    cached_by_norm: Dict[str, Dict[str, Any]] = {}
+    for _row in cached.values():
+        _key = _norm(str(_row.get("title") or ""))
+        if not _key:
+            continue
+        _existing = cached_by_norm.get(_key)
+        if _existing is None:
+            cached_by_norm[_key] = _row
+        elif int(_row.get("lastfm_listeners") or 0) > int(_existing.get("lastfm_listeners") or 0):
+            cached_by_norm[_key] = _row
+    cached = cached_by_norm
 
     entries: Dict[str, Dict[str, Any]] = {}
 
@@ -236,17 +266,24 @@ def prefetch_artist_popularity(
         if not entry:
             continue
         prev = cached.get(key) or {}
+        entry_lf_listeners = int(entry.get("lastfm_listeners") or 0)
+        entry_lf_playcount = int(entry.get("lastfm_playcount") or 0)
+        entry_lb_listens = int(entry.get("listenbrainz_listens") or 0)
+        entry_lb_users = int(entry.get("listenbrainz_users") or 0)
         if (
-            int(prev.get("lastfm_listeners") or 0) == entry["lastfm_listeners"]
-            and int(prev.get("lastfm_playcount") or 0) == entry["lastfm_playcount"]
-            and int(prev.get("listenbrainz_listens") or 0) == entry["listenbrainz_listens"]
-            and int(prev.get("listenbrainz_users") or 0) == entry["listenbrainz_users"]
+            int(prev.get("lastfm_listeners") or 0) == entry_lf_listeners
+            and int(prev.get("lastfm_playcount") or 0) == entry_lf_playcount
+            and int(prev.get("listenbrainz_listens") or 0) == entry_lb_listens
+            and int(prev.get("listenbrainz_users") or 0) == entry_lb_users
         ):
             continue  # unchanged — no write
         rows_to_upsert.append({
             "artist": artist,
             "title": title_by_key.get(key) or lf_titles.get(key) or key,
-            **entry,
+            "lastfm_listeners": entry_lf_listeners,
+            "lastfm_playcount": entry_lf_playcount,
+            "listenbrainz_listens": entry_lb_listens,
+            "listenbrainz_users": entry_lb_users,
             "source": "bulk",
         })
     if rows_to_upsert:
