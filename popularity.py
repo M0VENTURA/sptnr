@@ -278,6 +278,30 @@ def normalize_primary_release_type(album_type: str) -> str:
     return 'album'
 
 
+def _heuristic_album_type_from_track_count(track_count: int):
+    """
+    Derive a fallback album type purely from track count when external
+    metadata sources (MusicBrainz/Spotify) cannot classify the album.
+
+    Mirrors the track-count heuristics used elsewhere (single track -> single,
+    3-6 tracks -> EP, otherwise album) so the album page never shows
+    "Unknown" after a scan when all external lookups fail.
+
+    Args:
+        track_count: Number of tracks in the album
+
+    Returns:
+        'single', 'ep', or 'album', or None when the count is not usable
+    """
+    if not track_count or track_count < 1:
+        return None
+    if track_count == 1:
+        return 'single'
+    if 3 <= track_count <= 6:
+        return 'ep'
+    return 'album'
+
+
 def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     """
     Determine if a track should be excluded from album/artist statistics calculations.
@@ -4937,10 +4961,14 @@ def popularity_scan(
                                         all_singles_assessed = singles_assessed >= total_in_album
                                         if all_scored and all_singles_assessed:
                                             if high_conf_singles == 0:
-                                                log_unified(f'Popularity Scan - Skipping album "{album}" (no changes detected)')
-                                                log_info(f'Album "{artist} - {album}" unchanged — all {total_in_album} tracks scored & singles assessed, skipping')
+                                                # All tracks scored & singles assessed, but still run album type
+                                                # detection + singles detection so per-album results are output
+                                                # after each album even in full/artist scans (single-album scans
+                                                # bypass this check entirely).  This keeps the scan output
+                                                # consistent and lets previously-unclassified albums get a type.
+                                                log_info(f'Album "{artist} - {album}" unchanged — all {total_in_album} tracks scored & singles assessed, skipping popularity but running singles detection')
                                                 skipped_count += 1
-                                                continue
+                                                skip_popularity_for_album = True
                                             else:
                                                 # High-confidence single tracks present: run the star rating
                                                 # loop to validate stored confidence against current evidence
@@ -5117,6 +5145,34 @@ def popularity_scan(
                     if tracks_updated > 0:
                         conn.commit()
                         log_info(f'Updated {tracks_updated} track(s) with album type "{detected_album_type}" (source: {type_detection_source})')
+                elif not detected_album_type or detected_album_type == "unknown":
+                    # Fallback: when neither MusicBrainz nor Spotify could classify this
+                    # album, derive a type from the track count so the album page never
+                    # shows "Unknown" after a scan.  A previously-confirmed type is
+                    # always preserved (never clobbered by the fallback).
+                    _current_norm = (current_album_type or '').strip().lower()
+                    if _current_norm and _current_norm != 'unknown':
+                        log_debug(f'Album type "{current_album_type}" already confirmed — preserving it for "{artist} - {album}"')
+                    else:
+                        heuristic_type = _heuristic_album_type_from_track_count(len(album_tracks))
+                        if heuristic_type:
+                            primary_release_type = normalize_primary_release_type(heuristic_type)
+                            for track in album_tracks:
+                                track_id = track["id"]
+                                cursor.execute(f"""
+                                    UPDATE tracks
+                                    SET spotify_album_type = {placeholder},
+                                        releasetype = {placeholder},
+                                        musicbrainz_albumtype = {placeholder}
+                                    WHERE id = {placeholder}
+                                """, (heuristic_type, primary_release_type, heuristic_type, track_id))
+                                track["spotify_album_type"] = heuristic_type
+                                track["releasetype"] = primary_release_type
+                                track["musicbrainz_albumtype"] = heuristic_type
+                            conn.commit()
+                            log_info(f'Fell back to track-count album type "{heuristic_type}" for "{artist} - {album}" ({len(album_tracks)} tracks)')
+                        else:
+                            log_debug(f'Album type unchanged: "{detected_album_type or current_album_type}"')
                 else:
                     log_debug(f'Album type unchanged: "{detected_album_type or current_album_type}"')
 
