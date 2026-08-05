@@ -306,8 +306,12 @@ def process_track(
             artist = _as_str(
                 track_context.get("artist") or effective_track.get("artist")
             )
+            # raw_title keeps any "(feat. Guest)" marker intact — the cleaned
+            # lastfm_title below strips brackets, which would otherwise hide
+            # featured tracks from the feat detection / search correlation.
+            raw_title = _as_str(effective_track.get("title") or track.get("title"))
             title = _as_str(
-                track_context.get("lastfm_title") or effective_track.get("title")
+                track_context.get("lastfm_title") or raw_title
             )
             release_date = _as_str(
                 effective_track.get("year") or effective_track.get("release_year")
@@ -434,7 +438,7 @@ def process_track(
                                 # Prefer the aggregated fetch which merges split
                                 # Last.fm variants ("Song" vs "Song (Radio Edit)")
                                 # and falls back to a single track.getInfo lookup.
-                                agg = get_aggregated_lastfm_popularity(artist, title, lastfm_client=lf)
+                                agg = get_aggregated_lastfm_popularity(artist, raw_title or title, lastfm_client=lf)
                                 if agg and (agg.get("listeners") or 0) > 0:
                                     lastfm_listeners = _as_int(agg.get("listeners") or 0)
                                     lastfm_playcount = _as_int(agg.get("track_play") or agg.get("playcount") or 0)
@@ -469,6 +473,7 @@ def process_track(
                 # of correlating all versions of a song.
                 _is_feat_variant = (
                     "feat" in str(artist or "").casefold()
+                    or "feat" in str(raw_title or "").casefold()
                     or "feat" in str(title or "").casefold()
                 )
                 if _is_feat_variant and (
@@ -481,7 +486,7 @@ def process_track(
                         if _lf_key2:
                             _lf2 = LastFmClient(_lf_key2)
                             _search_agg = get_search_aggregated_lastfm_popularity(
-                                artist, title, lastfm_client=_lf2,
+                                artist, raw_title or title, lastfm_client=_lf2,
                             ) or {}
                             _search_listeners = _as_int(_search_agg.get("listeners") or 0)
                             if _search_listeners > lastfm_listeners:
@@ -574,7 +579,7 @@ def process_track(
                 # 0 or tiny counts for the resolved MBID while the real
                 # listens sit on another recording.
                 _feat_variant = (
-                    "feat" in str(title or "").lower()
+                    "feat" in str(raw_title or title).lower()
                     or "feat" in str(artist or "").lower()
                 )
                 if (listenbrainz_listens == 0 or lastfm_listeners < 20 or _feat_variant) and title and artist:
@@ -599,7 +604,7 @@ def process_track(
                 )
                 is_featured_flag = bool(
                     "feat" in str(artist or "").lower()
-                    or "feat" in str(title or "").lower()
+                    or "feat" in str(raw_title or title).lower()
                 )
                 has_mb_meta = bool(recording_mbid)
                 prior_single = bool(effective_track.get("is_single"))

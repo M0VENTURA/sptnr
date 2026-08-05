@@ -118,9 +118,14 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
                     continue
 
         if not resume_hit:
+            # Punctuation-tolerant resume match: "D'Artagnan" vs "dArtagnan"
+            # must resolve to the same stored artist, otherwise every artist
+            # is skipped and the scan reports "No tracks found" immediately.
+            _resume_key = _artist_key(resume_from)
             if resume_from and (
                 artist.lower() == resume_from.lower()
-                or resume_from.lower() in artist.lower()
+                or _resume_key == _artist_key(artist)
+                or (_resume_key and len(_resume_key) >= 3 and _resume_key in _artist_key(artist))
             ):
                 resume_hit = True
                 # Do NOT skip the matched artist — rescan from this point.

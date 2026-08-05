@@ -246,6 +246,10 @@ def ensure_full_schema(_db_path: str | None = None) -> bool:
         ensure_album_art_schema()
         ensure_single_detection_columns()
         ensure_queue_source_column()
+        # Essentia feature columns (danceability, essentia_* , bpm) — kept as an
+        # explicit call so installs that skipped the COLUMN_REGISTRY loop still
+        # get the columns the Essentia scanner writes.
+        ensure_essentia_feature_columns()
         return True
     except Exception as exc:
         if is_transient_pg_startup_error(exc): return False

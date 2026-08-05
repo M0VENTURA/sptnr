@@ -561,7 +561,7 @@ def run_essentia_mood_scan(
             conn.rollback()
         except Exception:
             pass
-        logger.debug("Could not ensure essentia columns: %s", _col_err)
+        logger.warning("Could not ensure essentia columns: %s", _col_err)
 
     conditions: List[str] = [
         f"COALESCE(file_path, '') NOT LIKE {placeholder}",

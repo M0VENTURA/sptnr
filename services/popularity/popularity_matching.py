@@ -106,6 +106,11 @@ def normalize_for_aggregation(title: str) -> str:
     value = str(title or "").lower()
     value = re.sub(r"\s*[\(\[].*?(feat\.|featuring|ft\.|remaster|remastered|radio edit|single version|album version).*?[\)\]]", "", value, flags=re.IGNORECASE)
     value = re.sub(r"\s*-\s*(remaster(?:ed)?|radio edit|single version|album version).*$", "", value, flags=re.IGNORECASE)
+    # Unparenthesised "feat. Guest" / "featuring Guest" suffixes — the album
+    # version of a song is frequently stored without brackets, and correlating
+    # it with the bracket-carrying single requires both forms to collapse to
+    # the same key (legacy parity with old_system/popularity_helpers.py).
+    value = re.sub(r"\s+(?:feat\.?|ft\.?|featuring)\s+.*$", "", value, flags=re.IGNORECASE)
     value = re.sub(r"[^a-z0-9]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
 

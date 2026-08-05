@@ -49,8 +49,9 @@ def run_scan(artist_filter=None, resume=True, force=False):
             - DB updates beyond progress tracking
     """
 
-    # Determine resume point
-    resume_artist = get_resume_artist() if resume else None
+    # Determine resume point — a forced scan always starts from the top
+    # (legacy: force disables the timestamp/score skips).
+    resume_artist = get_resume_artist() if (resume and not force) else None
 
     # Fetch all artists (DB layer responsibility)
     artists = get_all_artists()

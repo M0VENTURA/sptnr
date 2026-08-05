@@ -76,6 +76,18 @@ def test_normalize_aggregation_correlates_album_and_single_versions():
     assert normalize_for_aggregation("Song (Live)") != normalize_for_aggregation("Song")
 
 
+def test_normalize_aggregation_correlates_unparenthesized_feat():
+    """'Herzblut feat. Melissa Bonny' (no brackets) matches 'Herzblut'."""
+    assert (
+        normalize_for_aggregation("Herzblut feat. Melissa Bonny") == "herzblut"
+    )
+    assert normalize_for_aggregation("Herzblut featuring Melissa Bonny") == "herzblut"
+    assert (
+        normalize_for_aggregation("Herzblut ft. Melissa Bonny")
+        == normalize_for_aggregation("Herzblut")
+    )
+
+
 def test_search_aggregation_sums_all_versions():
     """Search correlation sums the album + single versions and de-dupes."""
     lf = FakeLastFmClient()

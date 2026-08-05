@@ -42,22 +42,24 @@ def get_cached_popularity_for_titles(
 ) -> Dict[str, Dict[str, Any]]:
     """Return cached popularity for all given titles of one artist.
 
-    Returns a dict keyed by lowercased title.
+    Rows are returned for the whole artist (not just the exact requested
+    titles) so feat variants of a song — e.g. a local ``Herzblut`` and a
+    cached ``Herzblut (feat. Melissa Bonny)`` — are both fetched; callers
+    re-key by their NORMALISED title, which collapses such variants onto
+    one entry.  Returns a dict keyed by lowercased title.
     """
     if not titles:
         return {}
     try:
-        # Inline the title list — psycopg2 cannot adapt a Python list for
-        # ``ANY(:titles)`` and the exception would silently return nothing.
-        title_sql = ", ".join(f"'{str(t).lower().replace(chr(39), chr(39)*2)}'" for t in titles)
         with db_session() as session:
             result = session.execute(
-                text(f"""
+                text("""
                     SELECT artist, title, lastfm_listeners, lastfm_playcount,
                            listenbrainz_listens, listenbrainz_users, updated_at
                     FROM track_popularity_cache
                     WHERE LOWER(artist) = LOWER(:artist)
-                      AND LOWER(title) IN ({title_sql})
+                    ORDER BY lastfm_listeners DESC
+                    LIMIT 500
                 """),
                 {"artist": artist},
             )
