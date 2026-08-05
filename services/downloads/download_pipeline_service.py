@@ -130,11 +130,16 @@ def _sanitize_slskd_query(query: str) -> str:
 
 
 def build_search_query(item: dict) -> str:
-    """Build a structured search query for slskd.
+    """Build the primary structured search query for slskd.
 
-    Produces targeted queries that reduce noise:
-    - For album downloads: ``Artist - Album Year``
-    - For track downloads: ``Artist - Title``
+    Matches the legacy queue processor: track-level ``Artist - Title`` search
+    (using the stored ``search_query`` when present) rather than an album-level
+    ``Artist - Album`` search.  Album-level searching misses tracks that peers
+    share as individual files, which is why the manual ``Artist - Title`` scan
+    finds matches the automatic lookup does not.
+
+    - Prefers the stored ``search_query`` (``Artist - Title``) when available.
+    - Falls back to ``Artist - Title`` built from the item fields.
     - Strips problematic punctuation for slskd compatibility.
     - For generic artists (Various Artists, etc.) uses title as the query.
     """
@@ -142,25 +147,96 @@ def build_search_query(item: dict) -> str:
 
     artist = (item.get("artist") or "").strip()
     title = (item.get("title") or "").strip()
-    album = (item.get("album") or "").strip()
-    year = (item.get("year") or item.get("release_year") or "")
+    stored = (item.get("search_query") or "").strip()
 
     # If artist is a generic compilation name, use title as the search query
     # instead of "Various Artists - Song" which returns poor results on slskd.
     if artist.lower() in _GENERIC_COMPILATION_ARTISTS:
-        query = title
+        query = title or stored
     else:
         # Strip "feat." suffixes for a cleaner query
         clean_artist = _FEAT_SUFFIX_RE.sub("", artist).strip()
 
-        if album:
-            query = f"{clean_artist} - {album}"
-            if year:
-                query += f" {year}"
-        else:
+        if stored:
+            query = stored
+        elif clean_artist:
             query = f"{clean_artist} - {title}"
+        else:
+            query = title
 
     return _sanitize_slskd_query(query)
+
+
+def _build_fallback_search_queries(item: dict, primary_query: str) -> list[str]:
+    """Build alternative queries mirroring the legacy ``_build_fallback_search_queries``.
+
+    Soulseek requires every query token to appear in a shared filename/path,
+    so the stored ``Artist - Title`` query can return zero results when peers
+    tag files differently (album artist instead of track artist, feat.-suffixed
+    artists, bracketed title annotations, multi-word artists).  These fallbacks
+    are tried in order until one yields a qualifying match:
+    - bracket-stripped title variants
+    - album-artist + title
+    - feat.-stripped artist + title
+    - first meaningful word of artist + title
+    - title only (broadest, last resort)
+    """
+    from helpers.config_helpers import _FEAT_SUFFIX_RE
+    from helpers.normalization_service import strip_brackets
+
+    artist = (item.get("artist") or "").strip()
+    album_artist = (item.get("album_artist") or "").strip()
+    title = (item.get("title") or "").strip()
+
+    if not title:
+        return []
+
+    fallbacks: list[str] = []
+    seen: set[str] = {primary_query}
+
+    def _add(query: str) -> None:
+        query = _sanitize_slskd_query(query)
+        if query and query not in seen:
+            seen.add(query)
+            fallbacks.append(query)
+
+    # Bracket-stripped title variants (e.g. "(Radio Edit)" annotations absent
+    # from shared filenames).
+    core_title = strip_brackets(title).strip()
+    if core_title and core_title.lower() != title.lower():
+        if artist:
+            _add(f"{artist} - {core_title}")
+        if album_artist and album_artist.lower() != artist.lower():
+            _add(f"{album_artist} - {core_title}")
+        _add(core_title)
+
+    # Album artist + title (peers often tag the album artist only).
+    if album_artist and album_artist.lower() != artist.lower():
+        _add(f"{album_artist} - {title}")
+
+    # Feat.-stripped artist + title (e.g. "KNEECAP feat. Fawzi" -> "KNEECAP").
+    feat_stripped = _FEAT_SUFFIX_RE.sub("", artist).strip()
+    if feat_stripped and feat_stripped.lower() != artist.lower():
+        _add(f"{feat_stripped} - {title}")
+
+    # First meaningful word of artist + title for multi-word artists
+    # ("The Pretty Reckless - Heaven Knows" -> "Pretty - Heaven Knows").
+    _ARTICLE_WORDS = {"the", "a", "an"}
+    effective_artist = feat_stripped or artist
+    first_word = ""
+    for word in effective_artist.split():
+        if word.lower() not in _ARTICLE_WORDS:
+            first_word = word
+            break
+    if not first_word and effective_artist.split():
+        first_word = effective_artist.split()[0]
+    if first_word and first_word.lower() != effective_artist.lower():
+        _add(f"{first_word} - {title}")
+
+    # Title only, as a last resort.
+    _add(title)
+
+    return fallbacks
 
 
 # =============================================================================
@@ -322,18 +398,44 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             expected_duration = None
 
     query = build_search_query(item)
+    fallback_queries = _build_fallback_search_queries(item, query)
     started_at = time.time()
 
     try:
         # ✅ mark processing
         mark_processing(queue_id)
 
-        # ✅ search (allow lower bitrates since scoring handles quality)
-        results = slskd.search_and_filter(query, min_bitrate=192)
+        # ✅ search (allow lower bitrates since scoring handles quality).
+        # Legacy parity: try the primary query first, then fallback queries
+        # (bracket-stripped, album-artist, feat.-stripped, first-word,
+        # title-only) until one yields a qualifying match.  The manual scan
+        # matches on the same broad query variants, so without these the
+        # automatic lookup fails even when results exist on the network.
+        from helpers.config_helpers import _SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS
+
+        best = None
+        all_results: list[dict[str, Any]] = []
+        searched_queries: list[str] = []
+
+        for idx, q in enumerate([query] + fallback_queries):
+            searched_queries.append(q)
+            wait_seconds = None if idx == 0 else _SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS
+            results = slskd.search_and_filter(q, min_bitrate=192, wait_seconds=wait_seconds)
+            all_results.extend(results)
+
+            best = _select_best_result(
+                results,
+                expected_artist=expected_artist,
+                expected_title=expected_title,
+                expected_album=expected_album,
+                expected_duration=expected_duration,
+            )
+            if best:
+                break
 
         elapsed = round(time.time() - started_at, 1)
 
-        if not results:
+        if not all_results:
             _log_search_event(
                 search_type="automatic",
                 query=query,
@@ -347,15 +449,6 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             mark_failed(queue_id, "no_results")
             return {"success": False, "status": "no_results"}
 
-        # ✅ score and pick best match
-        best = _select_best_result(
-            results,
-            expected_artist=expected_artist,
-            expected_title=expected_title,
-            expected_album=expected_album,
-            expected_duration=expected_duration,
-        )
-
         if not best:
             logger.info(
                 "[PIPELINE] No qualifying result for queue %s (%s - %s)",
@@ -366,13 +459,13 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 query=query,
                 queue_id=queue_id,
                 item=item,
-                result_count=len(results),
+                result_count=len(all_results),
                 duration_seconds=elapsed,
-                notes=f"no_qualifying_result: candidates={len(results)}",
+                notes=f"no_qualifying_result: candidates={len(all_results)}, queries={len(searched_queries)}",
                 selected_result=best,
-                results=results,
+                results=all_results,
             )
-            log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: no_qualifying_result ({len(results)} candidates)")
+            log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: no_qualifying_result ({len(all_results)} candidates)")
             mark_failed(queue_id, "no_qualifying_result")
             return {"success": False, "status": "no_qualifying_result"}
 

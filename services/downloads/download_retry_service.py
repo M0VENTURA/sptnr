@@ -9,7 +9,6 @@ re-tried via qBittorrent and vice versa.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
 from typing import Any, Dict
 
 from sqlalchemy import text
@@ -73,10 +72,13 @@ def run_retry_manager(
     navidrome_token: str | None = None,
 ) -> Dict[str, int]:
     """
-    Process retry queue with automatic method fallback.
+    Requeue failed items that are due for an automatic retry.
 
-    First requeues failed items that are due for an automatic retry
-    (backoff-scheduled), then processes the ready queue.
+    Only the ``failed`` → ``queued`` transition happens here; the actual
+    search/download work is left to ``process_next_batch``.  This function
+    must NOT touch items that are already ``queued`` — previously it marked
+    every ready item as ``processing`` without searching, which starved the
+    queue processor and left tracks never dispatched to Soulseek.
 
     Returns:
         ``{"retried": int, "completed": int, "method_switched": int, "requeued": int}``
@@ -85,41 +87,7 @@ def run_retry_manager(
     completed = 0
     method_switched = 0
     requeued = requeue_failed_items()
-
-    try:
-        items = get_ready_for_processing(limit=50)
-        now = datetime.utcnow()
-
-        for item in items:
-            queue_id = item.get("id")
-            if queue_id is None:
-                continue
-
-            try:
-                queue_id = int(queue_id)
-                retry_count = int(item.get("retry_count") or 0)
-                current_source = str(item.get("source") or "soulseek").strip().lower()
-
-                # ── Method fallback logic ──
-                if retry_count >= _METHOD_FAIL_THRESHOLD:
-                    fallback = _METHOD_FALLBACK.get(current_source)
-                    if fallback and fallback != current_source:
-                        _switch_method(queue_id, fallback)
-                        method_switched += 1
-                        logger.info(
-                            "[RETRY] Queue %s: switched method %s -> %s "
-                            "(after %s failures)",
-                            queue_id, current_source, fallback, retry_count,
-                        )
-
-                mark_processing(queue_id)
-                retried += 1
-
-            except Exception as item_err:
-                logger.error("[RETRY] Failed retry for %s: %s", queue_id, item_err)
-
-    except Exception as exc:
-        logger.error("[RETRY] Fatal error: %s", exc)
+    retried = requeued
 
     return {
         "retried": retried,

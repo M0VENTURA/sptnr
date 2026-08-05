@@ -277,8 +277,15 @@ class SlskdService:
         # (~5s), 2s for the next 5 (~15s total), then 5s intervals — for a
         # 150s search this cuts ~150 polls down to ~30 without meaningfully
         # reducing result quality.  Stop early once the search completes.
+        #
+        # Accumulate results across the whole window rather than returning the
+        # first batch that contains a qualifying file: Soulseek responses from
+        # different peers arrive at different times, so the best match may only
+        # appear late in the search (legacy queue_processor parity).
         deadline = time.time() + max(0, int(wait_seconds or 0))
         poll_attempt = 0
+        seen: set[tuple[str, str]] = set()
+        accumulated: list[dict] = []
         while True:
             delay = 1.0 if poll_attempt < 5 else (2.0 if poll_attempt < 10 else 5.0)
             poll_attempt += 1
@@ -286,13 +293,21 @@ class SlskdService:
                 break
             time.sleep(delay)
             responses, _state, is_complete = self.get_search_results(search_id, timeout=timeout)
-            qualified = self.filter_results_by_quality(responses, min_bitrate=min_bitrate)
-            if qualified:
-                return qualified
+            for item in self.filter_results_by_quality(responses, min_bitrate=min_bitrate):
+                key = (item["username"], item["filename"])
+                if key not in seen:
+                    seen.add(key)
+                    accumulated.append(item)
             if is_complete:
                 break
-        responses, _state, _complete = self.get_search_results(search_id, timeout=timeout)
-        return self.filter_results_by_quality(responses, min_bitrate=min_bitrate)
+        if not accumulated:
+            responses, _state, _complete = self.get_search_results(search_id, timeout=timeout)
+            for item in self.filter_results_by_quality(responses, min_bitrate=min_bitrate):
+                key = (item["username"], item["filename"])
+                if key not in seen:
+                    seen.add(key)
+                    accumulated.append(item)
+        return accumulated
 
     def parse_transfers_response(self, raw: list | dict) -> list[dict]:
         if isinstance(raw, dict):
