@@ -64,24 +64,28 @@ def _resolve_first_artist_for_letter(letter: str) -> str:
         if letter_upper == "#":
             result = session.execute(
                 text(f"""
-                    SELECT DISTINCT {artist_expr} AS artist_name
-                    FROM tracks
-                    WHERE {artist_expr} IS NOT NULL
-                      AND {artist_expr} <> ''
-                      AND UPPER(SUBSTR({artist_expr}, 1, 1)) NOT BETWEEN 'A' AND 'Z'
-                    ORDER BY LOWER({artist_expr})
+                    SELECT artist_name FROM (
+                        SELECT DISTINCT {artist_expr} AS artist_name
+                        FROM tracks
+                        WHERE {artist_expr} IS NOT NULL
+                          AND {artist_expr} <> ''
+                          AND UPPER(SUBSTR({artist_expr}, 1, 1)) NOT BETWEEN 'A' AND 'Z'
+                    ) t
+                    ORDER BY LOWER(t.artist_name)
                     LIMIT 1
                 """)
             )
         else:
             result = session.execute(
                 text(f"""
-                    SELECT DISTINCT {artist_expr} AS artist_name
-                    FROM tracks
-                    WHERE {artist_expr} IS NOT NULL
-                      AND {artist_expr} <> ''
-                      AND UPPER({artist_expr}) LIKE :prefix
-                    ORDER BY LOWER({artist_expr})
+                    SELECT artist_name FROM (
+                        SELECT DISTINCT {artist_expr} AS artist_name
+                        FROM tracks
+                        WHERE {artist_expr} IS NOT NULL
+                          AND {artist_expr} <> ''
+                          AND UPPER({artist_expr}) LIKE :prefix
+                    ) t
+                    ORDER BY LOWER(t.artist_name)
                     LIMIT 1
                 """),
                 {"prefix": f"{letter_upper}%"},

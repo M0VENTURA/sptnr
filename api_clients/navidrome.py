@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_RETRIES = 2
 _RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
+# Permanently-unavailable endpoints (e.g. `getSongs`, which Navidrome does not
+# implement) must fail fast instead of retrying and spamming the log.
+_NON_RETRYABLE_STATUSES = frozenset({400, 401, 403, 404, 405, 409, 410})
 
 
 def _md5_hex(value: str) -> str:
@@ -148,6 +151,7 @@ class NavidromeClient:
         """
         url = f"{self.base_url}/rest/{endpoint}"
         last_error: Exception | None = None
+        retry = True
 
         for attempt in range(1 + max(0, retries)):
             try:
@@ -157,6 +161,11 @@ class NavidromeClient:
                     logger.debug("Navidrome %s returned HTTP %s, retrying in %.1fs", endpoint, response.status_code, wait)
                     time.sleep(wait)
                     continue
+                if response.status_code in _NON_RETRYABLE_STATUSES:
+                    # Endpoint does not exist / permanent client error — do not
+                    # waste 3 retries (e.g. `getSongs`, which Navidrome 404s).
+                    retry = False
+                    response.raise_for_status()
                 response.raise_for_status()
                 result = response.json().get("subsonic-response", {}) or {}
                 if not result:
@@ -164,7 +173,7 @@ class NavidromeClient:
                 return result
             except Exception as exc:
                 last_error = exc
-                if attempt < retries:
+                if retry and attempt < retries:
                     wait = 0.5 * (attempt + 1)
                     logger.debug("Navidrome %s failed, retrying in %.1fs: %s", endpoint, wait, exc)
                     time.sleep(wait)

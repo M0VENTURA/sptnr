@@ -28,7 +28,12 @@ from helpers.text_utils import (
 
 
 def lookup_artist_id(artist_name: str) -> str | None:
-    """Return cached Navidrome artist_id for artist_name."""
+    """Return cached Navidrome artist_id for artist_name.
+
+    Tolerates case / punctuation variants (``dArtagnan`` vs ``D'Artagnan``)
+    so a targeted artist scan resolves the stored id even when the requested
+    name differs from the cached spelling.
+    """
     if not artist_name:
         return None
 
@@ -38,18 +43,34 @@ def lookup_artist_id(artist_name: str) -> str | None:
                 text("""
                     SELECT artist_id
                     FROM artist_stats
-                    WHERE artist_name = :artist_name
+                    WHERE LOWER(artist_name) = LOWER(:artist_name)
                     LIMIT 1
                 """),
                 {"artist_name": artist_name},
             )
             row = result.fetchone()
-
-        return row[0] if row else None
-
+            if row and row[0]:
+                return row[0]
     except Exception as exc:
         logging.debug("[SCAN_DB] Artist ID lookup failed for '%s': %s", artist_name, exc)
-        return None
+
+    # Punctuation / spacing variants ("dArtagnan" vs "D'Artagnan").
+    try:
+        from helpers.text_utils import _normalize_artist_key
+        target_key = _normalize_artist_key(artist_name)
+        if not target_key:
+            return None
+        with db_session() as session:
+            rows = session.execute(
+                text("SELECT artist_id, artist_name FROM artist_stats WHERE artist_name IS NOT NULL")
+            ).fetchall() or []
+        for artist_id, stored in rows:
+            if stored and _normalize_artist_key(str(stored)) == target_key:
+                return str(artist_id)
+    except Exception as exc:
+        logging.debug("[SCAN_DB] Artist ID variant lookup failed for '%s': %s", artist_name, exc)
+
+    return None
 
 
 def lookup_track_artist_count(artist_name: str) -> int:

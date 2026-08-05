@@ -93,6 +93,26 @@ def run_artist_scan_pipeline(artist_name: str, force: bool = False):
         # progress_file wires dashboard stop requests into the import loop.
         from db.repositories.scan_repository import lookup_artist_id
         artist_id = lookup_artist_id(artist_name)
+        if not artist_id:
+            # Fallback: the artist_stats cache may be empty (fresh DB / first
+            # scan), so resolve the Navidrome artist id straight from the
+            # Navidrome index instead of skipping the import.  Without this a
+            # forced artist scan silently imports nothing and the popularity
+            # scan then reports "No tracks found".
+            try:
+                from helpers.text_utils import _normalize_artist_key as _norm_key
+                index = build_artist_index() or {}
+                target_key = _norm_key(artist_name)
+                for _name, _info in index.items():
+                    if _info.get("id") and _norm_key(_name) == target_key:
+                        artist_id = str(_info.get("id"))
+                        logger.info(
+                            "[SCAN_PIPELINE] Resolved Navidrome artist id for '%s' from index (artist_stats empty)",
+                            artist_name,
+                        )
+                        break
+            except Exception as _idx_exc:
+                logger.debug("[SCAN_PIPELINE] Navidrome index fallback failed for '%s': %s", artist_name, _idx_exc)
         if artist_id:
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=force, progress_file="navidrome_scan")
         else:

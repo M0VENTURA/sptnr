@@ -191,6 +191,8 @@ class Track(Base):
     # Essentia
     essentia_last_updated = Column(DateTime, nullable=True)
     essentia_model_version = Column(String, nullable=True)
+    essentia_scan_version = Column(String, nullable=True)
+    bpm = Column(Double, nullable=True)
 
     # Verification
     verification_status = Column(String, nullable=True)
