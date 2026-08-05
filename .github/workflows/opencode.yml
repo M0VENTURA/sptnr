@@ -47,5 +47,5 @@ jobs:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          model: opencode-go/kimi-k2.6
+          model: deepseek/deepseek-v4-flash
           use_github_token: true
