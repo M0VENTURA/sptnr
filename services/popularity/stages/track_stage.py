@@ -92,6 +92,28 @@ def _build_effective_track(
     return effective_track
 
 
+# Album-type columns are owned by the album stage (``enrich_album`` /
+# ``ensure_album_type``).  The per-track stage never computes them, so it
+# must not write them back: the in-memory ``track`` dict is loaded before
+# album enrichment runs, and re-saving its stale album-type value would
+# clobber the freshly-detected type (album page shows "Unknown").
+_ALBUM_TYPE_COLUMNS = frozenset({"musicbrainz_albumtype", "spotify_album_type", "releasetype"})
+
+
+def _strip_album_type_columns(
+    track: dict[str, Any],
+    update_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the track dict without album-type columns the track stage didn't update."""
+    result = dict(track)
+    for col in _ALBUM_TYPE_COLUMNS:
+        if col in update_payload:
+            result[col] = update_payload[col]
+        else:
+            result.pop(col, None)
+    return result
+
+
 def process_track(
     *,
     track: dict[str, Any],
@@ -134,6 +156,12 @@ def process_track(
     metadata_only = bool(options.get("metadata_only"))
     popularity_only = bool(options.get("popularity_only"))
     frozen_track = bool(options.get("frozen_track"))
+    # Singles-only pass: used when an album is skipped for popularity (already
+    # scored / recently scanned) but singles detection must still run so the
+    # per-album singles output appears (legacy parity).  The metadata,
+    # popularity, cover and genre sections are skipped; only singles detection
+    # runs, and the stored popularity is carried through unchanged.
+    singles_detection_only = bool(options.get("singles_detection_only"))
 
     update_payload: dict[str, Any] = {}
     score_data: dict[str, Any] = {}
@@ -141,11 +169,24 @@ def process_track(
     lastfm_listeners: int = 0
     listenbrainz_listens: int = 0
 
+    if singles_detection_only:
+        # Carry the stored popularity through so the result dict and star
+        # rating pass see the album's existing scores instead of 0.
+        score_data = {
+            "combined_score": float(track.get("final_score") or track.get("popularity_score") or 0),
+            "lastfm_score": float(track.get("lastfm_score") or 0),
+            "listenbrainz_score": float(track.get("listenbrainz_score") or 0),
+            "age_score": float(track.get("age_score") or 0),
+        }
+        lastfm_listeners = _as_int(track.get("lastfm_listeners") or 0)
+        listenbrainz_listens = _as_int(track.get("listenbrainz_listens") or 0)
+        lb_percentile = float(track.get("lb_percentile") or 0)
+
     # -------------------------------------------------------------------------
     # 1. METADATA - MusicBrainz (via enrichment service for better matching)
     # -------------------------------------------------------------------------
 
-    if not popularity_only and not frozen_track:
+    if not popularity_only and not frozen_track and not singles_detection_only:
         try:
             title = _as_str(track.get("title"))
             artist = _as_str(track.get("artist"))
@@ -299,7 +340,7 @@ def process_track(
     # 2. POPULARITY (via updated api_clients)
     # -------------------------------------------------------------------------
 
-    if not metadata_only:
+    if not metadata_only and not singles_detection_only:
         try:
             effective_track = _build_effective_track(track, update_payload)
 
@@ -746,7 +787,7 @@ def process_track(
     # 3. COVER DETECTION (via enrichment service)
     # -------------------------------------------------------------------------
 
-    if not popularity_only:
+    if not popularity_only and not singles_detection_only:
         try:
             title = _as_str(effective_track.get("title") or track.get("title") or "")
             if title:
@@ -988,7 +1029,7 @@ def process_track(
     # Genres are metadata — they are assigned during the metadata scan (and
     # full scans). A pure popularity-only pass skips them.
 
-    if not popularity_only:
+    if not popularity_only and not singles_detection_only:
         try:
             effective_track = _build_effective_track(track, update_payload)
             source_map = {}
@@ -1074,7 +1115,7 @@ def process_track(
     # 6. PERSISTENCE
     # -------------------------------------------------------------------------
 
-    effective_track = _build_effective_track(track, update_payload)
+    effective_track = _strip_album_type_columns(track, update_payload)
 
     try:
         insert_or_update_track(track_id, effective_track)
@@ -1098,8 +1139,8 @@ def process_track(
         "spotify_score": float(score_data.get("spotify_score", 0)),
         "lastfm_score": float(score_data.get("lastfm_score", 0)),
         "listenbrainz_score": float(score_data.get("listenbrainz_score", 0)),
-        "is_single": bool(update_payload.get("is_single", False)),
-        "single_confidence": str(update_payload.get("single_confidence", "low")),
-        "single_sources": update_payload.get("single_sources", ""),
+        "is_single": bool(update_payload.get("is_single", track.get("is_single", False))),
+        "single_confidence": str(update_payload.get("single_confidence", track.get("single_confidence", "low"))),
+        "single_sources": update_payload.get("single_sources", track.get("single_sources", "")),
         "is_live": bool(track.get("is_live") or track.get("album_context_live")),
     }

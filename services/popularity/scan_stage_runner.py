@@ -224,6 +224,20 @@ def run_scan(
             _last_letter = _letter
             log_unified(f"Popularity Scan - Letter '{_letter}'")
 
+        # ── Per-artist singles-title caches (loaded early so the skip path
+        #    can also run singles detection) ───────────────────────────────
+        _is_compilation_artist = artist.lower() in (
+            "various artists", "various artists -", "various",
+            "compilation", "soundtrack"
+        )
+        if artist and artist not in artist_mb_singles_cache and not _is_compilation_artist:
+            artist_mb_singles_cache[artist] = _load_mb_single_titles(artist)
+        mb_cached_singles = artist_mb_singles_cache.get(artist) or set()
+
+        if artist and artist not in artist_discogs_singles_cache and not _is_compilation_artist:
+            artist_discogs_singles_cache[artist] = _load_discogs_single_titles(artist)
+        discogs_cached_singles = artist_discogs_singles_cache.get(artist) or set()
+
         # ── Album skip (album_skip_days + skip-if-unchanged) ────────────
         # Mirrors the legacy scanner: albums already scanned within the
         # configured window, or whose tracks are all scored + singles
@@ -257,9 +271,54 @@ def run_scan(
             # verdicts; only albums missing a type hit MusicBrainz.
             try:
                 from services.popularity.stages.album_stage import ensure_album_type
-                ensure_album_type(album_row, options)
+                _detected_type = ensure_album_type(album_row, options)
             except Exception as exc:
                 logger.debug("[scan_runner] Album type ensure failed for %s - %s: %s", artist, album, exc)
+                _detected_type = None
+
+            # Singles detection still runs for the album (legacy parity):
+            # skipping the popularity re-fetch must not suppress the per-album
+            # singles output.  A singles-only pass is run so results are
+            # emitted after each album even when the album is otherwise up to
+            # date.
+            if not metadata_only and not popularity_only:
+                try:
+                    _album_context, _track_contexts = prepare_tracks_for_album(
+                        artist=artist,
+                        album=album,
+                        tracks=tracks,
+                        album_artist=album_row.get("album_artist"),
+                        spotify_album_type=album_row.get("spotify_album_type"),
+                        musicbrainz_album_type=album_row.get("musicbrainz_album_type"),
+                    )
+                    _album_result = {
+                        "album_row": album_row,
+                        "album_context": _album_context,
+                        "detected_album_type": _detected_type or "",
+                        "is_heterogeneous": False,
+                    }
+                    _singles_options = dict(options)
+                    _singles_options["singles_detection_only"] = True
+                    for _tc in _track_contexts:
+                        _prepared = apply_context_fields_to_track(_tc)
+                        _tr = process_track(
+                            track=_prepared,
+                            track_context=_tc,
+                            album_context=_album_context,
+                            album_result=_album_result,
+                            options=_singles_options,
+                            album_lb_listens=None,
+                            artist_max_lf_listeners=0,
+                            artist_lf_context={},
+                            mb_cached_singles=mb_cached_singles,
+                            discogs_cached_singles=discogs_cached_singles,
+                            prefetched_popularity={},
+                        )
+                        if _tr is not None:
+                            results.append(_tr)
+                            tracks_processed += 1
+                except Exception as exc:
+                    logger.debug("[scan_runner] Singles-only pass failed for %s - %s: %s", artist, album, exc)
             continue
 
         # ── Per-artist progress checkpoint ───────────────────────────────
@@ -300,16 +359,6 @@ def run_scan(
                 logger.debug("[scan_runner] Last.fm context fetch failed for %s: %s", artist, exc)
                 artist_lf_context_cache[artist] = {"mean": 0, "stdev": 0, "total": 0, "values": []}
         artist_lf_context = artist_lf_context_cache.get(artist) or {}
-
-        # ── Per-artist MB single-title cache (missing_releases) ──────────
-        if artist and artist not in artist_mb_singles_cache and not _is_compilation_artist:
-            artist_mb_singles_cache[artist] = _load_mb_single_titles(artist)
-        mb_cached_singles = artist_mb_singles_cache.get(artist) or set()
-
-        # ── Per-artist Discogs single-title cache (release cache) ─────────
-        if artist and artist not in artist_discogs_singles_cache and not _is_compilation_artist:
-            artist_discogs_singles_cache[artist] = _load_discogs_single_titles(artist)
-        discogs_cached_singles = artist_discogs_singles_cache.get(artist) or set()
 
         progress = 5 + int((album_index / total_albums) * 90)
 

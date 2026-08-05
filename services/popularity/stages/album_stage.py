@@ -469,20 +469,23 @@ def _fetch_artist_lastfm_tags(artist: str, conn) -> None:
         logger.debug("[album_stage] Last.fm artist tags failed for '%s': %s", artist, exc)
 
 
-def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None = None) -> None:
+def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None = None) -> str | None:
     """Lightweight album-type enrichment for SKIPPED albums.
 
     Runs when the popularity diff check skips an album but it still needs its
     album type (re)set during a combined scan. Reuses a consistent stored
     verdict when one exists (zero API cost); only albums missing a type hit
     the MusicBrainz release-group lookup. Forced scans always re-verify.
+
+    Returns the detected album type (e.g. ``"album"``, ``"album+compilation"``,
+    ``"single"``, ``"ep"``) or ``None`` when no type could be determined.
     """
     options = options or {}
     artist = str(album_row.get("artist") or "")
     album = str(album_row.get("album") or "")
     tracks = album_row.get("tracks") or []
     if not artist or not album:
-        return
+        return None
 
     stored = {
         str(t.get("musicbrainz_albumtype") or "").strip()
@@ -491,8 +494,9 @@ def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None 
     }
     stored.discard("")
     if len(stored) == 1 and not options.get("force"):
-        return  # tracks already carry a consistent verdict — nothing to do
+        return next(iter(stored))  # tracks already carry a consistent verdict — reuse it
 
+    detected: str | None = None
     try:
         detected = _detect_album_type(
             artist,
@@ -511,7 +515,7 @@ def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None 
             if detected == "album" or mb_type in ("single", "ep"):
                 detected = mb_type
         if not detected:
-            return
+            return None
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
@@ -519,8 +523,10 @@ def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None 
         finally:
             conn.close()
         logger.info("[album_stage] Ensured album type '%s' for skipped '%s - %s'", detected, artist, album)
+        return detected
     except Exception as exc:
         logger.debug("[album_stage] ensure_album_type failed for '%s - %s': %s", artist, album, exc)
+        return detected
 
 
 def _apply_live_remix_album_tagging(conn, cursor, artist, album, album_type, tracks) -> None:
