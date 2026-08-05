@@ -36,9 +36,11 @@ from services.popularity.popularity_config import (
 )
 
 # Provider aggregation helpers (split-variant merging, cross-release lookups)
+from services.popularity.popularity_matching import normalize_for_aggregation
 from services.popularity.popularity_sources import (
     get_aggregated_lastfm_popularity,
     get_aggregated_listenbrainz_popularity,
+    get_search_aggregated_lastfm_popularity,
 )
 
 # Detection
@@ -398,8 +400,10 @@ def process_track(
                 # per-track API call.  Forced scans bypass the cache, EXCEPT
                 # for entries freshly resolved from THIS album's tracklist
                 # during this scan — those are authoritative.
+                # Keys are NORMALISED titles so a feat. variant of the same
+                # song ("Herzblut (feat. X)" cached as "herzblut") is found.
                 _prefetch_entry = (prefetched_popularity or {}).get(
-                    str(title or "").strip().lower()
+                    normalize_for_aggregation(title or "")
                 )
                 if _force and _prefetch_entry and not _prefetch_entry.get("_album_tracklist"):
                     _prefetch_entry = None
@@ -455,6 +459,43 @@ def process_track(
                         except Exception:
                             lastfm_listeners = 0
                             lastfm_playcount = 0
+
+                # ── Featured-artist search correlation ────────────────────
+                # The album version of a feat. track (few listens) is what the
+                # prefetch / artist top-tracks usually surface, while the
+                # single version carries the real popularity.  For feat.
+                # tracks search Last.fm for every published version of the
+                # song and keep the higher combined count — a separate method
+                # of correlating all versions of a song.
+                _is_feat_variant = (
+                    "feat" in str(artist or "").casefold()
+                    or "feat" in str(title or "").casefold()
+                )
+                if _is_feat_variant and (
+                    bool(update_payload.get("_from_prefetch"))
+                    or lastfm_listeners == 0
+                ):
+                    try:
+                        from helpers.config_helpers import get_config as _get_cfg2
+                        _lf_key2 = (_get_cfg2().get("api_integrations", {}).get("lastfm", {}) or {}).get("api_key", "") or ""
+                        if _lf_key2:
+                            _lf2 = LastFmClient(_lf_key2)
+                            _search_agg = get_search_aggregated_lastfm_popularity(
+                                artist, title, lastfm_client=_lf2,
+                            ) or {}
+                            _search_listeners = _as_int(_search_agg.get("listeners") or 0)
+                            if _search_listeners > lastfm_listeners:
+                                lastfm_listeners = _search_listeners
+                                lastfm_playcount = _as_int(_search_agg.get("track_play") or 0)
+                                update_payload["lastfm_listeners"] = lastfm_listeners
+                                update_payload["lastfm_playcount"] = lastfm_playcount
+                                update_payload["lastfm_last_updated"] = now_ts
+                                logger.info(
+                                    "[track_stage] Featured-artist Last.fm search boost for %s: %s listeners across %s version(s)",
+                                    track_id, lastfm_listeners, len(_search_agg.get("matched_tracks") or []),
+                                )
+                    except Exception as exc:
+                        logger.debug("[track_stage] Last.fm search aggregation failed for %s: %s", track_id, exc)
 
                 # --- ListenBrainz ---
                 listenbrainz_listens = _as_int(effective_track.get("listenbrainz_listens") or 0)
@@ -596,13 +637,13 @@ def process_track(
                 _album_lf_listeners = None
                 try:
                     _album_titles = {
-                        str(t.get("title") or "").strip().lower()
+                        normalize_for_aggregation(str(t.get("title") or ""))
                         for t in (album_context.get("tracks") or [])
                     }
                     _lf_vals = [
                         int(e.get("lastfm_listeners") or 0)
                         for k, e in (prefetched_popularity or {}).items()
-                        if str(k or "").strip().lower() in _album_titles
+                        if normalize_for_aggregation(str(k or "")) in _album_titles
                         and int(e.get("lastfm_listeners") or 0) > 0
                     ]
                     if len(_lf_vals) >= 3:

@@ -104,7 +104,7 @@ def normalize_title_for_lookup(title: str, extra_strip_patterns: list[str] | Non
 def normalize_for_aggregation(title: str) -> str:
     """Aggressively normalise title for local provider-count aggregation."""
     value = str(title or "").lower()
-    value = re.sub(r"\s*[\(\[].*?(feat\.|featuring|ft\.|remaster|remastered|radio edit|single version).*?[\)\]]", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*[\(\[].*?(feat\.|featuring|ft\.|remaster|remastered|radio edit|single version|album version).*?[\)\]]", "", value, flags=re.IGNORECASE)
     value = re.sub(r"\s*-\s*(remaster(?:ed)?|radio edit|single version|album version).*$", "", value, flags=re.IGNORECASE)
     value = re.sub(r"[^a-z0-9]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()

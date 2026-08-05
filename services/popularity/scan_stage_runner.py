@@ -13,6 +13,7 @@ from services.popularity.scan_hooks import (
     get_stat_eligible_tracks,
     prepare_tracks_for_album,
 )
+from services.popularity.popularity_matching import normalize_for_aggregation
 from services.popularity.popularity_sources import (
     get_lastfm_artist_max_listeners,
 )
@@ -140,10 +141,16 @@ def run_scan(
     start(total_items=total_albums)
 
     if not albums:
-        log_unified(
-            "Popularity Scan - No tracks found. All tracks may already have "
-            "popularity data (run in Forced mode to rescan)."
-        )
+        if force:
+            log_unified(
+                "Popularity Scan - No tracks found. No candidate tracks/albums were "
+                "loaded from the library — check the library has been imported."
+            )
+        else:
+            log_unified(
+                "Popularity Scan - No tracks found. All tracks may already have "
+                "popularity data (run in Forced mode to rescan)."
+            )
         update(stage="complete", progress=100, message="No albums to scan.", processed=0, total_items=0)
         finish(success=True)
         return {"success": True, "albums_processed": 0, "tracks_processed": 0}
@@ -419,7 +426,7 @@ def run_scan(
             _missing_lb_tracks = [
                 t for t in track_dicts
                 if t.get("title")
-                and not (prefetched_popularity.get(str(t["title"]).strip().lower()) or {}).get("listenbrainz_listens")
+                and not (prefetched_popularity.get(normalize_for_aggregation(t["title"])) or {}).get("listenbrainz_listens")
             ]
             if _missing_lb_tracks or bool(options.get("force")):
                 _album_lb_by_title = get_listenbrainz_album_tracklist(artist, album, track_dicts) or {}
@@ -431,7 +438,7 @@ def run_scan(
                 for _t in track_dicts:
                     if not _t.get("title"):
                         continue
-                    _key = str(_t["title"]).strip().lower()
+                    _key = normalize_for_aggregation(_t["title"])
                     _entry = _album_lb_by_title.get(_key)
                     if _entry and _entry.get("listenbrainz_listens"):
                         _cur = prefetched_popularity.setdefault(_key, {})
@@ -468,7 +475,7 @@ def run_scan(
         # the prefetched map covers the whole artist catalogue.
         album_lb_listens: list[int] = []
         for _t in track_dicts:
-            _e = (prefetched_popularity or {}).get(str(_t.get("title") or "").strip().lower()) or {}
+            _e = (prefetched_popularity or {}).get(normalize_for_aggregation(_t.get("title") or "")) or {}
             _tc = int(_e.get("listenbrainz_listens") or 0)
             if _tc > 0:
                 album_lb_listens.append(_tc)
