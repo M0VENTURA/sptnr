@@ -108,12 +108,15 @@ def api_artists_corrections():
         rows = result.fetchall()
         corrections_out = {}
         for row in rows:
-            artist_name = row["artist_name"]
+            # SQLAlchemy 2.0 Row does not support string indexing — use the
+            # mapping view (row["col"] raises TypeError → 500).
+            row_dict = dict(row._mapping)
+            artist_name = row_dict.get("artist_name") or ""
             needs_correction = False
-            dup_count = int(row["duplicate_track_count"] or 0)
-            disc_ic = int(row["disc_inconsistent_count"] or 0)
-            mbid_ic = int(row["mbid_inconsistent_count"] or 0)
-            missing_ic = int(row["missing_tracks_count"] or 0)
+            dup_count = int(row_dict.get("duplicate_track_count") or 0)
+            disc_ic = int(row_dict.get("disc_inconsistent_count") or 0)
+            mbid_ic = int(row_dict.get("mbid_inconsistent_count") or 0)
+            missing_ic = int(row_dict.get("missing_tracks_count") or 0)
             if any([dup_count, disc_ic, mbid_ic, missing_ic]):
                 needs_correction = True
             # Store keyed by lowercase for case-insensitive lookup from the frontend
