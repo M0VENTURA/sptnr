@@ -2657,48 +2657,53 @@ var _pageData = window._pageData || {};
 
     // Open comprehensive track edit modal
     function openComprehensiveEditTrackModal(trackId, trackData) {
+        // Null-safe field helpers: a stale cached JS file or a modal template
+        // missing a field must not crash the dialog ("Cannot set properties
+        // of null (setting 'value')") — missing elements are skipped.
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+        const setChecked = (id, val) => { const el = document.getElementById(id); if (el) el.checked = val; };
+
         // Set track ID
-        document.getElementById('editTrackId').value = trackId;
+        setVal('editTrackId', trackId);
         
         // Populate form with track data
-        document.getElementById('editTrackTitle').textContent = trackData.title || 'Unknown';
-        document.getElementById('editTrackTitleField').value = trackData.title || '';
-        document.getElementById('editTrackArtistField').value = trackData.artist || '';
-        document.getElementById('editTrackAlbumField').value = trackData.album || '';
-        document.getElementById('editTrackYearField').value = trackData.year || '';
-        document.getElementById('editTrackStarsField').value = trackData.stars || 0;
-        document.getElementById('editTrackSingleField').value = trackData.is_single || 0;
-        document.getElementById('editTrackConfidenceField').value = trackData.single_confidence || 'low';
-        document.getElementById('editTrackAlbumArtistField').value = trackData.album_artist || '';
-        (function() {
-            let writerVal = trackData.writer || '';
-            if (writerVal) {
-                try {
-                    const parsed = JSON.parse(writerVal);
-                    if (Array.isArray(parsed)) {
-                        writerVal = parsed.filter(w => w && typeof w === 'string' && w.trim()).join(', ');
-                    }
-                } catch (e) { /* keep original value */ }
-            }
-            document.getElementById('editTrackWriterField').value = writerVal;
-        })();
-        document.getElementById('editTrackWorkField').value = trackData.work || '';
-        document.getElementById('editTrackTrackNumberField').value = trackData.track_number || '';
-        document.getElementById('editTrackDiscNumberField').value = trackData.disc_number || '';
-        document.getElementById('editTrackISRCField').value = trackData.isrc || '';
-        document.getElementById('editTrackMBIDField').value = trackData.mbid || '';
-        document.getElementById('editTrackMBAlbumIdField').value = trackData.musicbrainz_albumid || '';
-        document.getElementById('editTrackMBArtistIdField').value = trackData.musicbrainz_artistid || '';
-        document.getElementById('editTrackMBAlbumArtistIdField').value = trackData.musicbrainz_albumartistid || '';
-        document.getElementById('editTrackMBReleaseGroupIdField').value = trackData.musicbrainz_releasegroupid || '';
-        document.getElementById('editTrackMBReleaseTrackIdField').value = trackData.musicbrainz_releasetrackid || '';
-        document.getElementById('editTrackMBWorkIdField').value = trackData.musicbrainz_workid || '';
-        document.getElementById('editTrackIsCoverField').checked = trackData.is_cover == 1;
-        document.getElementById('editTrackAlternateTakeField').checked = trackData.alternate_take == 1;
-        document.getElementById('editTrackIsCompilationField').checked = trackData.is_compilation == 1;
-        document.getElementById('editTrackIsLiveField').checked = trackData.is_live == 1;
-        document.getElementById('editTrackIsAcousticField').checked = trackData.is_acoustic == 1;
-        document.getElementById('editTrackIsRemixField').checked = trackData.is_remix == 1;
+        const titleEl = document.getElementById('editTrackTitle');
+        if (titleEl) titleEl.textContent = trackData.title || 'Unknown';
+        setVal('editTrackTitleField', trackData.title || '');
+        setVal('editTrackArtistField', trackData.artist || '');
+        setVal('editTrackAlbumField', trackData.album || '');
+        setVal('editTrackYearField', trackData.year || '');
+        setVal('editTrackStarsField', trackData.stars || 0);
+        setVal('editTrackSingleField', trackData.is_single || 0);
+        setVal('editTrackConfidenceField', trackData.single_confidence || 'low');
+        setVal('editTrackAlbumArtistField', trackData.album_artist || '');
+        let writerVal = trackData.writer || '';
+        if (writerVal) {
+            try {
+                const parsed = JSON.parse(writerVal);
+                if (Array.isArray(parsed)) {
+                    writerVal = parsed.filter(w => w && typeof w === 'string' && w.trim()).join(', ');
+                }
+            } catch (e) { /* keep original value */ }
+        }
+        setVal('editTrackWriterField', writerVal);
+        setVal('editTrackWorkField', trackData.work || '');
+        setVal('editTrackTrackNumberField', trackData.track_number || '');
+        setVal('editTrackDiscNumberField', trackData.disc_number || '');
+        setVal('editTrackISRCField', trackData.isrc || '');
+        setVal('editTrackMBIDField', trackData.mbid || '');
+        setVal('editTrackMBAlbumIdField', trackData.musicbrainz_albumid || '');
+        setVal('editTrackMBArtistIdField', trackData.musicbrainz_artistid || '');
+        setVal('editTrackMBAlbumArtistIdField', trackData.musicbrainz_albumartistid || '');
+        setVal('editTrackMBReleaseGroupIdField', trackData.musicbrainz_releasegroupid || '');
+        setVal('editTrackMBReleaseTrackIdField', trackData.musicbrainz_releasetrackid || '');
+        setVal('editTrackMBWorkIdField', trackData.musicbrainz_workid || '');
+        setChecked('editTrackIsCoverField', trackData.is_cover == 1);
+        setChecked('editTrackAlternateTakeField', trackData.alternate_take == 1);
+        setChecked('editTrackIsCompilationField', trackData.is_compilation == 1);
+        setChecked('editTrackIsLiveField', trackData.is_live == 1);
+        setChecked('editTrackIsAcousticField', trackData.is_acoustic == 1);
+        setChecked('editTrackIsRemixField', trackData.is_remix == 1);
         
         // Handle genres
         editTrackCurrentGenres = [];
@@ -2711,8 +2716,10 @@ var _pageData = window._pageData || {};
         loadRecommendedGenresForAlbumTrack(trackData.artist, trackId);
         
         // Show modal
+        const modalEl = document.getElementById('editTrackModal');
+        if (!modalEl) return;
         if (!editTrackModalInstance) {
-            editTrackModalInstance = new bootstrap.Modal(document.getElementById('editTrackModal'));
+            editTrackModalInstance = new bootstrap.Modal(modalEl);
         }
         editTrackModalInstance.show();
     }
@@ -2800,7 +2807,8 @@ var _pageData = window._pageData || {};
                 container.appendChild(badge);
             });
         }
-        document.getElementById('editTrackGenresField').value = editTrackCurrentGenres.join('\\');
+        const genresField = document.getElementById('editTrackGenresField');
+        if (genresField) genresField.value = editTrackCurrentGenres.join('\\');
     }
 
     function addEditTrackGenre() {
