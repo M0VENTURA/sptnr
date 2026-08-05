@@ -19,117 +19,113 @@
         </ol>
     </nav>
     
-    <!-- Album Art Section -->
-    <div class="mb-3" id="track-details-section">
-        <div class="card">
-            <div class="card-body">
-                <div class="row g-4">
-                    <!-- Album Art -->
-                    <div class="col-12 col-md-3 d-flex flex-column align-items-center">
-                        <div class="album-art-container position-relative mb-3">
-                            <img id="trackAlbumArtImage" src="/api/album/{{ track.artist|path_segment }}/{{ track.album|path_segment }}/art" 
-                                 alt="{{ track.album }}" 
-                                 style="width: 100%; height: 100%; object-fit: cover;"
-                                 onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
+    <!-- Header: Album Art + Track Summary + Actions -->
+    <div class="card mb-4" id="track-details-section">
+        <div class="card-body">
+            <div class="d-flex flex-column flex-lg-row gap-4">
+                <div class="flex-shrink-0 align-self-center align-self-lg-start">
+                    <div class="album-art-container position-relative" style="width: 160px; height: 160px;">
+                        <img id="trackAlbumArtImage" src="/api/album/{{ track.artist|path_segment }}/{{ track.album|path_segment }}/art?s=160"
+                             alt="{{ track.album }}"
+                             style="width: 100%; height: 100%; object-fit: cover; border-radius: 6px;"
+                             onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
+                    </div>
+                </div>
+                <div class="flex-grow-1">
+                    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start gap-3">
+                        <div>
+                            <h1 class="h3 mb-1">
+                                <i class="bi bi-music-note-list"></i> {{ track.title }}
+                                {% if is_track_favourite %}
+                                    <span class="badge bg-warning text-dark ms-2">Favourite</span>
+                                {% endif %}
+                            </h1>
+                            <p class="text-muted mb-0">by
+                                {% for artist_name in artist_parts %}
+                                    <a href="javascript:void(0)" onclick="navigateToArtist('{{ artist_name|escapejs }}', event)" style="cursor: pointer;">{{ artist_name }}</a>{% if not loop.last %} / {% endif %}
+                                {% endfor %}
+                            </p>
+                        </div>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <div class="btn-group" role="group">
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this track">
+                                    <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    {% if qbit_config.enabled %}
+                                    <li><a class="dropdown-item" onclick="openQbitSearchTrack('{{ track.artist }}', '{{ track.title }}')" href="javascript:void(0)">
+                                        <i class="bi bi-cloud-download"></i> Search qBittorrent
+                                    </a></li>
+                                    {% endif %}
+                                    {% if slskd_config.enabled %}
+                                    <li><a class="dropdown-item" onclick="openSlskdSearchTrack('{{ track.artist }}', '{{ track.title }}')" href="javascript:void(0)">
+                                        <i class="bi bi-music-note-beamed"></i> Search Soulseek
+                                    </a></li>
+                                    {% endif %}
+                                </ul>
+                            </div>
+                            <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" class="d-contents">
+                                <button class="btn btn-outline-info" type="submit" title="Rescan this track (Navidrome + Popularity + Singles)">
+                                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Track</span>
+                                </button>
+                            </form>
+                            <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" class="d-contents">
+                                <input type="hidden" name="track_id" value="{{ track.id }}">
+                                <button class="btn" style="border-color:#6f42c1;color:#6f42c1;" type="submit" title="Run Essentia ML mood/genre scan for this track">
+                                    <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
+                                </button>
+                            </form>
+                            <button type="button" class="btn btn-outline-warning" id="renameFileBtn"
+                                    onclick="renameTrackFile('{{ track.id }}')"
+                                    title="Rename/move the file using the format configured in Settings (downloads.file_name_format)">
+                                <i class="bi bi-pencil-square"></i> <span class="d-none d-sm-inline">Rename File</span>
+                            </button>
                         </div>
                     </div>
-                    <!-- Track Info -->
-                    <div class="col-12 col-md-9">
-                        <h5 class="mb-3"><i class="bi bi-info-circle"></i> Track Details</h5>
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <small class="text-muted d-block">Artist</small>
-                                <strong>
-                                    {% for artist_name in artist_parts %}
-                                        <a href="javascript:void(0)" onclick="navigateToArtist('{{ artist_name|escapejs }}', event)" style="cursor: pointer;">{{ artist_name }}</a>{% if not loop.last %} / {% endif %}
-                                    {% endfor %}
-                                </strong>
-                            </div>
-                            <div class="col-6">
-                                <small class="text-muted d-block">Album</small>
-                                <strong><a href="/album/{{ (artist_parts[0] if artist_parts else track.artist)|path_segment }}/{{ track.album|path_segment }}">{{ track.album }}</a></strong>
-                            </div>
-                            {% if track.year %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Year</small>
-                                <strong>{{ track.year }}</strong>
-                            </div>
-                            {% endif %}
-                            {% if track.duration %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Duration</small>
-                                <strong>{{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}</strong>
-                            </div>
-                            {% endif %}
-                            {% if track.track_number %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Track #</small>
-                                <strong>{{ track.track_number }}</strong>
-                            </div>
-                            {% endif %}
-                            {% if track.disc_number and track.disc_number|int > 1 %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Disc #</small>
-                                <strong>{{ track.disc_number }}</strong>
-                            </div>
-                            {% endif %}
+                    <hr class="my-3">
+                    <div class="row g-2">
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Album</small>
+                            <strong><a href="/album/{{ (artist_parts[0] if artist_parts else track.artist)|path_segment }}/{{ track.album|path_segment }}">{{ track.album }}</a></strong>
                         </div>
+                        {% if track.year %}
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Year</small>
+                            <strong>{{ track.year }}</strong>
+                        </div>
+                        {% endif %}
+                        {% if track.duration %}
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Duration</small>
+                            <strong>{{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}</strong>
+                        </div>
+                        {% endif %}
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Rating</small>
+                            <strong>
+                                {% if track.stars %}
+                                    <span class="badge badge-success">{{ track.stars }}★</span>
+                                    {% if track.is_single == 1 and (track.single_confidence or '')|lower == 'high' %}
+                                        <span class="badge bg-info ms-1">Single</span>
+                                    {% endif %}
+                                {% else %}—{% endif %}
+                            </strong>
+                        </div>
+                        {% if track.track_number %}
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Track #</small>
+                            <strong>{{ track.track_number }}</strong>
+                        </div>
+                        {% endif %}
+                        {% if track.disc_number and track.disc_number|int > 1 %}
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Disc #</small>
+                            <strong>{{ track.disc_number }}</strong>
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
-
-    {# All metadata fields are now editable in the accordion form sections below. #}
-    
-    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
-        <div class="flex-grow-1">
-            <h1 class="h2 mb-1">
-                <i class="bi bi-music-note-list"></i> {{ track.title }}
-                {% if is_track_favourite %}
-                    <span class="badge bg-warning text-dark ms-2">Favourite</span>
-                {% endif %}
-            </h1>
-            <p class="text-muted mb-0">by 
-                {% for artist_name in artist_parts %}
-                    <a href="javascript:void(0)" onclick="navigateToArtist('{{ artist_name|escapejs }}', event)" style="cursor: pointer;">{{ artist_name }}</a>{% if not loop.last %} / {% endif %}
-                {% endfor %}
-            </p>
-        </div>
-        <div class="d-flex gap-2 flex-column flex-md-row w-100 w-md-auto">
-            <div class="btn-group" role="group">
-                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this track">
-                    <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
-                </button>
-                <ul class="dropdown-menu dropdown-menu-end">
-                    {% if qbit_config.enabled %}
-                    <li><a class="dropdown-item" onclick="openQbitSearchTrack('{{ track.artist }}', '{{ track.title }}')" href="javascript:void(0)">
-                        <i class="bi bi-cloud-download"></i> Search qBittorrent
-                    </a></li>
-                    {% endif %}
-                    {% if slskd_config.enabled %}
-                    <li><a class="dropdown-item" onclick="openSlskdSearchTrack('{{ track.artist }}', '{{ track.title }}')" href="javascript:void(0)">
-                        <i class="bi bi-music-note-beamed"></i> Search Soulseek
-                    </a></li>
-                    {% endif %}
-                </ul>
-            </div>
-            <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" class="d-contents">
-                <button class="btn btn-outline-info" type="submit" title="Rescan this track (Navidrome + Popularity + Singles)">
-                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Track</span>
-                </button>
-            </form>
-            <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" class="d-contents">
-                <input type="hidden" name="track_id" value="{{ track.id }}">
-                <button class="btn" style="border-color:#6f42c1;color:#6f42c1;" type="submit" title="Run Essentia ML mood/genre scan for this track">
-                    <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
-                </button>
-            </form>
-            <button type="button" class="btn btn-outline-warning" id="renameFileBtn"
-                    onclick="renameTrackFile('{{ track.id }}')"
-                    title="Rename/move the file using the format configured in Settings (downloads.file_name_format)">
-                <i class="bi bi-pencil-square"></i> <span class="d-none d-sm-inline">Rename File</span>
-            </button>
         </div>
     </div>
 
@@ -777,65 +773,6 @@
 
                         <hr class="my-3">
 
-                        <!-- Detected Genres from All Sources -->
-                        {% if genre_sources %}
-                            <h6 class="mb-2">Detected Genres</h6>
-                            <p class="text-muted small mb-2">All genres detected from external sources for this track. These are kept in the database for reference.</p>
-                            {% set sources = [
-                                                            ('discogs_genres', 'Discogs', '6c757d', 'white', 'bi-vinyl-fill'),
-                                                            ('mood', 'Essentia Moods', 'F59C00', 'black', 'bi-emoji-smile-fill'),
-                                                            ('essentia_genres', 'Essentia Genres', '6f42c1', 'white', 'bi-cpu-fill'),
-                                                            ('navidrome_genres', 'Navidrome', '17A589', 'white', 'bi-music-note-list'),
-                                                            ('musicbrainz_genres', 'MusicBrainz Genres', 'EB743B', 'white', 'bi-hexagon-fill'),
-                                                            ('lastfm_tags', 'Last.fm Genres', 'D51007', 'white', 'bi-music-note-beamed'),
-                                                            ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white', 'bi-headphones')
-                            ] %}
-                            {% set ns = namespace(has_any=False) %}
-                                                        {% for key, label, bgcolor, textcolor, icon in sources %}
-                              {% if genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
-                            {% endfor %}
-                            {% if ns.has_any %}
-                              {% set ns2 = namespace(first=True) %}
-                              <ul class="nav nav-tabs" role="tablist">
-                                                                {% for key, label, bgcolor, textcolor, icon in sources %}
-                                  {% if genre_sources.get(key) %}
-                                    <li class="nav-item" role="presentation">
-                                      <button class="nav-link {{ 'active' if ns2.first else '' }}"
-                                              id="trackGenreTab{{ key }}-tab" data-bs-toggle="tab"
-                                              data-bs-target="#trackGenreTab{{ key }}-content"
-                                              type="button" role="tab" style="color: #{{ bgcolor }};">
-                                                                                <i class="bi {{ icon }}"></i> {{ label }}
-                                        <span class="badge ms-2" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
-                                      </button>
-                                    </li>
-                                    {% set ns2.first = False %}
-                                  {% endif %}
-                                {% endfor %}
-                              </ul>
-                              {% set ns3 = namespace(first=True) %}
-                              <div class="tab-content mt-3">
-                                                                {% for key, label, bgcolor, textcolor, icon in sources %}
-                                  {% if genre_sources.get(key) %}
-                                    <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}"
-                                         id="trackGenreTab{{ key }}-content" role="tabpanel">
-                                      <p class="text-muted small mb-2">Tags/moods from {{ label }} · sorted by frequency</p>
-                                      <div class="d-flex flex-wrap gap-2 mb-3">
-                                        {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
-                                          <span class="badge" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; font-size:0.85rem;">
-                                            {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
-                                          </span>
-                                        {% endfor %}
-                                      </div>
-                                    </div>
-                                    {% set ns3.first = False %}
-                                  {% endif %}
-                                {% endfor %}
-                              </div>
-                            {% endif %}
-                        {% endif %}
-
-                        <hr class="my-3">
-
                         <!-- Genre recommendations & source buttons -->
                         <div>
                             <h6 class="mb-2">Add From Sources</h6>
@@ -891,75 +828,72 @@
             <div class="col-12 col-lg-6">
                 <!-- Track Scoring -->
                 <div class="card mb-4" id="track-scoring-section">
-                    <div class="card-header">
+                    <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-graph-up"></i> Track Scoring
                         </h5>
+                        {% set final_score = track.final_score or track.popularity %}
+                        {% if final_score is not none and final_score != '' %}
+                        <span class="badge badge-success" style="font-size: 0.9rem;">Final Score: {{ final_score|round(1) }}</span>
+                        {% endif %}
                     </div>
                     <div class="card-body">
 
-                        <!-- Scoring Metrics -->
-                        <div class="row g-2 mb-2">
-                            <div class="col-4">
-                                <div class="metadata-label small text-muted">Last.fm Listeners</div>
-                                <div class="metadata-value small">
-                                    {% if track.lastfm_listeners %}
-                                        {{ "{:,.0f}".format(track.lastfm_listeners) }}
-                                    {% else %}—{% endif %}
+                        <!-- Source Metrics -->
+                        <h6 class="fw-semibold text-muted small text-uppercase mb-2">Source Metrics</h6>
+                        <div class="row g-3 mb-3">
+                            <div class="col-12 col-sm-6 col-md-4">
+                                <div class="p-2 border rounded h-100" style="background: var(--tertiary-bg, #2b2b2b);">
+                                    <div class="text-muted small fw-semibold mb-2"><i class="bi bi-stars me-1"></i>Last.fm</div>
+                                    <div class="d-flex justify-content-between small mb-1">
+                                        <span class="text-muted">Listeners</span>
+                                        <strong>{% if track.lastfm_listeners %}{{ "{:,.0f}".format(track.lastfm_listeners) }}{% else %}—{% endif %}</strong>
+                                    </div>
+                                    <div class="d-flex justify-content-between small mb-1">
+                                        <span class="text-muted">Plays</span>
+                                        <strong>{% if track.lastfm_playcount %}{{ "{:,.0f}".format(track.lastfm_playcount) }}{% else %}—{% endif %}</strong>
+                                    </div>
+                                    <div class="d-flex justify-content-between small">
+                                        <span class="text-muted">Score</span>
+                                        <strong>{{ track.lastfm_score|round(1) if track.lastfm_score is not none else '—' }}</strong>
+                                    </div>
                                 </div>
                             </div>
-                            <div class="col-4">
-                                <div class="metadata-label small text-muted">Last.fm Plays</div>
-                                <div class="metadata-value small">
-                                    {% if track.lastfm_playcount %}
-                                        {{ "{:,.0f}".format(track.lastfm_playcount) }}
-                                    {% else %}—{% endif %}
+                            <div class="col-12 col-sm-6 col-md-4">
+                                <div class="p-2 border rounded h-100" style="background: var(--tertiary-bg, #2b2b2b);">
+                                    <div class="text-muted small fw-semibold mb-2"><i class="bi bi-earbuds me-1"></i>ListenBrainz</div>
+                                    <div class="d-flex justify-content-between small mb-1">
+                                        <span class="text-muted">Listens</span>
+                                        <strong>{% if track.listenbrainz_listens %}{{ "{:,.0f}".format(track.listenbrainz_listens) }}{% else %}—{% endif %}</strong>
+                                    </div>
+                                    <div class="d-flex justify-content-between small mb-1">
+                                        <span class="text-muted">Users</span>
+                                        <strong>{% if track.listenbrainz_users %}{{ "{:,.0f}".format(track.listenbrainz_users) }}{% else %}—{% endif %}</strong>
+                                    </div>
+                                    <div class="d-flex justify-content-between small">
+                                        <span class="text-muted">Score</span>
+                                        <strong>{{ track.listenbrainz_score|round(1) if track.listenbrainz_score is not none else '—' }}</strong>
+                                    </div>
                                 </div>
                             </div>
-                            <div class="col-4">
-                                <div class="metadata-label small text-muted">Last.fm Score</div>
-                                <div class="metadata-value small">
-                                    {{ track.lastfm_score|round(1) if track.lastfm_score is not none else '—' }}
-                                </div>
-                            </div>
-                            <div class="col-4">
-                                <div class="metadata-label small text-muted">ListenBrainz Listens</div>
-                                <div class="metadata-value small">
-                                    {% if track.listenbrainz_listens %}
-                                        {{ "{:,.0f}".format(track.listenbrainz_listens) }}
-                                    {% else %}—{% endif %}
-                                </div>
-                            </div>
-                            <div class="col-4">
-                                <div class="metadata-label small text-muted">ListenBrainz Users</div>
-                                <div class="metadata-value small">
-                                    {% if track.listenbrainz_users %}
-                                        {{ "{:,.0f}".format(track.listenbrainz_users) }}
-                                    {% else %}—{% endif %}
-                                </div>
-                            </div>
-                            <div class="col-4">
-                                <div class="metadata-label small text-muted">ListenBrainz Score</div>
-                                <div class="metadata-value small">
-                                    {{ track.listenbrainz_score|round(1) if track.listenbrainz_score is not none else '—' }}
-                                </div>
-                            </div>
-                            <div class="col-4">
-                                <div class="metadata-label small text-muted">Popularity</div>
-                                <div class="metadata-value">
-                                    {% if track.popularity is not none and track.popularity != '' %}
-                                        <span class="badge badge-success">{{ track.popularity|round(1) }}</span>
-                                    {% else %}—{% endif %}
+                            <div class="col-12 col-md-4">
+                                <div class="p-2 border rounded h-100 d-flex flex-column justify-content-center" style="background: var(--tertiary-bg, #2b2b2b);">
+                                    <div class="text-muted small fw-semibold mb-2"><i class="bi bi-activity me-1"></i>Popularity</div>
+                                    <div>
+                                        {% if track.popularity is not none and track.popularity != '' %}
+                                            <span class="badge badge-success" style="font-size: 0.95rem;">{{ track.popularity|round(1) }}</span>
+                                        {% else %}<span class="text-muted">—</span>{% endif %}
+                                    </div>
                                 </div>
                             </div>
                         </div>
 
-                        <hr class="my-2">
+                        <hr class="my-3">
 
                         <!-- Star Rating -->
-                        <div class="mb-2">
-                            <label for="stars" class="form-label small fw-semibold">Star Rating</label>
-                            <select class="form-select form-select-sm" id="stars" name="stars">
+                        <h6 class="fw-semibold text-muted small text-uppercase mb-2">Star Rating</h6>
+                        <div class="mb-3">
+                            <select class="form-select form-select-sm" id="stars" name="stars" style="max-width: 260px;">
                                 <option value="0" {% if track.stars == 0 %}selected{% endif %}>☆☆☆☆☆ — 0 Stars</option>
                                 <option value="1" {% if track.stars == 1 %}selected{% endif %}>★☆☆☆☆ — 1 Star</option>
                                 <option value="2" {% if track.stars == 2 %}selected{% endif %}>★★☆☆☆ — 2 Stars</option>
@@ -969,43 +903,43 @@
                             </select>
                         </div>
 
-                        <hr class="my-2">
+                        <hr class="my-3">
 
                         <!-- Single Detection -->
-                        <h6 class="fw-semibold mb-2" style="font-size:0.85rem;">Single Detection</h6>
+                        <h6 class="fw-semibold text-muted small text-uppercase mb-2">Single Detection</h6>
 
-                        <div class="row g-2 mb-2">
-                            <div class="col-6">
-                                <label for="is_single" class="form-label small">Is Single</label>
+                        <div class="row g-2 align-items-end mb-2">
+                            <div class="col-6 col-md-3">
+                                <label for="is_single" class="form-label small mb-1">Is Single</label>
                                 <select class="form-select form-select-sm" id="is_single" name="is_single">
                                     <option value="false" {% if not track.is_single %}selected{% endif %}>No</option>
                                     <option value="true" {% if track.is_single %}selected{% endif %}>Yes</option>
                                 </select>
                             </div>
-                            <div class="col-6">
-                                <label class="form-label small">Single Override</label>
-                                <div class="form-check mt-1">
+                            <div class="col-6 col-md-4">
+                                <div class="form-label small text-muted mb-1">Confidence</div>
+                                <div>
+                                    {% if track.single_confidence in ('high', 'user') %}
+                                        <span class="badge bg-success">High{% if track.single_confidence == 'user' %} (User){% endif %}</span>
+                                    {% elif track.single_confidence == 'medium' %}
+                                        <span class="badge bg-warning text-dark">Medium</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">None</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div class="col-12 col-md-5">
+                                <div class="form-check mb-1">
                                     <input type="checkbox" class="form-check-input" id="single_manual_override" name="single_manual_override" {% if track.single_manual_override %}checked{% endif %}>
                                     <label class="form-check-label small" for="single_manual_override">Force (skip auto-scan)</label>
                                 </div>
                             </div>
                         </div>
 
-                        <div class="d-flex align-items-center gap-2 mb-2">
-                            <span class="small text-muted">Confidence:</span>
-                            {% if track.single_confidence in ('high', 'user') %}
-                                <span class="badge bg-success">High{% if track.single_confidence == 'user' %} (User){% endif %}</span>
-                            {% elif track.single_confidence == 'medium' %}
-                                <span class="badge bg-warning text-dark">Medium</span>
-                            {% else %}
-                                <span class="badge bg-secondary">None</span>
-                            {% endif %}
-                        </div>
-
                         <!-- Single Detection Sources -->
                         <div class="mb-2">
-                            <div class="small fw-semibold text-muted mb-1">Single Detection Sources</div>
-                            <table class="table table-sm table-borderless mb-0" style="font-size:0.78rem;">
+                            <div class="small fw-semibold text-muted mb-1">Detection Sources</div>
+                            <table class="table table-sm table-borderless mb-1 align-middle" style="font-size:0.78rem;">
                                 <tbody>
                                     {% set detection_sources = [
                                         ('discogs', 'Discogs', 'High'),
@@ -1017,82 +951,71 @@
                                     ] %}
                                     {% for src_key, src_label, src_conf in detection_sources %}
                                     <tr>
-                                        <td style="width:36%; padding:2px 4px;">{{ src_label }}</td>
-                                        <td style="width:18%; padding:2px 4px;">
-                                            <span class="badge {% if src_conf == 'High' %}bg-success{% else %}bg-secondary{% endif %}" style="font-size:0.65rem;">{{ src_conf }}</span>
-                                        </td>
-                                        <td style="width:30%; padding:2px 4px;">
+                                        <td style="width:38%; padding:2px 4px;">{{ src_label }}</td>
+                                        <td style="width:22%; padding:2px 4px;">
                                             {% if src_key in (track.single_sources_list or []) %}
                                                 <span class="badge bg-success" style="font-size:0.65rem;">Detected</span>
                                             {% else %}
                                                 <span class="badge bg-light text-muted border" style="font-size:0.65rem;">Not Detected</span>
                                             {% endif %}
                                         </td>
-                                        <td style="padding:2px 4px;">
+                                        <td style="padding:2px 4px;" class="text-end">
                                             <button type="button" class="btn btn-outline-secondary py-0 px-1"
                                                     style="font-size:0.65rem; line-height:1.2;"
                                                     onclick="rescanSingleSource('{{ track_id }}', '{{ src_key }}', event)"
                                                     title="Re-check this source on next scan">
-                                                <i class="bi bi-arrow-repeat"></i>
+                                                <i class="bi bi-arrow-repeat"></i> Re-check
                                             </button>
                                         </td>
                                     </tr>
                                     {% endfor %}
                                 </tbody>
                             </table>
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="small text-muted">Last Single Scan:</span>
+                                <span class="small">
+                                    {% if track.single_detection_last_updated %}
+                                        {{ (track.single_detection_last_updated|string)[:16].replace('T', ' ') }}
+                                    {% else %}
+                                        Never
+                                    {% endif %}
+                                </span>
+                            </div>
                         </div>
 
-                        <div class="d-flex align-items-center gap-2 mb-2">
-                            <span class="small text-muted">Last Single Scan:</span>
-                            <span class="small">
-                                {% if track.single_detection_last_updated %}
-                                    {{ (track.single_detection_last_updated|string)[:16].replace('T', ' ') }}
-                                {% else %}
-                                    Never
-                                {% endif %}
-                            </span>
-                        </div>
-
-                        <hr class="my-2">
+                        <hr class="my-3">
 
                         <!-- Cover Detection -->
-                        <h6 class="fw-semibold mb-2" style="font-size:0.85rem;">Cover Detection</h6>
+                        <h6 class="fw-semibold text-muted small text-uppercase mb-2">Cover Detection</h6>
 
-                        <div class="row g-2 mb-2">
-                            <div class="col-7">
-                                <div class="d-flex align-items-center gap-2 mb-1">
-                                    <span class="small text-muted">Cover Song Detected:</span>
-                                    {% if track.is_cover %}
-                                        <span class="badge bg-info">Yes</span>
-                                    {% else %}
-                                        <span class="badge bg-secondary">No</span>
-                                    {% endif %}
-                                    <button type="button" class="btn btn-outline-info py-0 px-1"
-                                            style="font-size:0.65rem; line-height:1.2;"
-                                            data-bs-toggle="modal" data-bs-target="#coverSearchModal"
-                                            title="Search for cover match">
-                                        <i class="bi bi-search"></i> Search
-                                    </button>
-                                </div>
-                                <!-- Hidden field so form still submits is_cover -->
-                                <input type="hidden" name="is_cover" value="{% if track.is_cover %}on{% endif %}">
-                                {% if track.original_cover_artist %}
-                                <div class="small text-muted">Original: <strong>{{ track.original_cover_artist }}</strong></div>
+                        <div class="d-flex flex-wrap align-items-center gap-3 mb-2">
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="small text-muted">Cover Song:</span>
+                                {% if track.is_cover %}
+                                    <span class="badge bg-info">Yes</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">No</span>
                                 {% endif %}
-                                {% if track.is_cover_reason %}
-                                <div class="small text-muted">Reason: {{ track.is_cover_reason }}</div>
-                                {% endif %}
+                                <button type="button" class="btn btn-outline-info py-0 px-1"
+                                        style="font-size:0.65rem; line-height:1.2;"
+                                        data-bs-toggle="modal" data-bs-target="#coverSearchModal"
+                                        title="Search for cover match">
+                                    <i class="bi bi-search"></i> Search
+                                </button>
                             </div>
-                            <div class="col-5">
-                                <div class="form-check">
-                                    <input type="checkbox" class="form-check-input" id="cover_manual_override" name="cover_manual_override" {% if track.cover_manual_override %}checked{% endif %}>
-                                    <label class="form-check-label small" for="cover_manual_override">
-                                        Cover Override<br>
-                                        <span class="text-muted" style="font-size:0.7rem;">Force cover, skip auto-detect</span>
-                                    </label>
-                                </div>
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" id="cover_manual_override" name="cover_manual_override" {% if track.cover_manual_override %}checked{% endif %}>
+                                <label class="form-check-label small" for="cover_manual_override">Cover Override <span class="text-muted">(skip auto-detect)</span></label>
                             </div>
                         </div>
+                        <!-- Hidden field so form still submits is_cover -->
+                        <input type="hidden" name="is_cover" value="{% if track.is_cover %}on{% endif %}">
+                        {% if track.original_cover_artist %}
+                        <div class="small text-muted mb-1">Original: <strong>{{ track.original_cover_artist }}</strong></div>
+                        {% endif %}
+                        {% if track.is_cover_reason %}
+                        <div class="small text-muted">Reason: {{ track.is_cover_reason }}</div>
+                        {% endif %}
 
                     </div>
                 </div>
@@ -1182,104 +1105,6 @@
                             <div class="metadata-value monospace" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
                         </div>
                         {% endif %}
-                    </div>
-                </div>
-
-                <!-- Credits & Additional Metadata -->
-                <div class="card mb-4">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-people-fill"></i> Credits & Metadata
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-2">
-                            {% if track.composer %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Composer</div>
-                                    <div class="metadata-value small">{{ track.composer }}</div>
-                                </div>
-                            </div>
-                            {% endif %}
-                            {% if track.writer %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Writer</div>
-                                    <div class="metadata-value small">{{ track.writer }}</div>
-                                </div>
-                            </div>
-                            {% endif %}
-                            {% if track.arranger %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Arranger</div>
-                                    <div class="metadata-value small">{{ track.arranger }}</div>
-                                </div>
-                            </div>
-                            {% endif %}
-                            {% if track.mixer %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Mixer</div>
-                                    <div class="metadata-value small">{{ track.mixer }}</div>
-                                </div>
-                            </div>
-                            {% endif %}
-                            {% if track.producer %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Producer</div>
-                                    <div class="metadata-value small">{{ track.producer }}</div>
-                                </div>
-                            </div>
-                            {% endif %}
-                            {% if track.work %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Work</div>
-                                    <div class="metadata-value small">{{ track.work }}</div>
-                                </div>
-                            </div>
-                            {% endif %}
-                        </div>
-                    </div>
-                </div>
-
-                <!-- External Identifiers -->
-                <div class="card mb-4">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-link-45deg"></i> External Identifiers
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-2" style="font-size: 0.85rem;">
-                            {% if track.discogs_artist_id %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Discogs Artist</div>
-                                    <div class="metadata-value small">{{ track.discogs_artist_id }}</div>
-                                </div>
-                            </div>
-                            {% endif %}
-                            {% if track.discogs_release_id %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Discogs Release</div>
-                                    <div class="metadata-value small">{{ track.discogs_release_id }}</div>
-                                </div>
-                            </div>
-                            {% endif %}
-                            {% if track.lastfm_artist_mbid %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Last.fm MBID</div>
-                                    <div class="metadata-value monospace" style="font-size: 0.7rem; word-break: break-all;">{{ track.lastfm_artist_mbid[:16] }}...</div>
-                                </div>
-                            </div>
-                            {% endif %}
-                        </div>
                     </div>
                 </div>
 

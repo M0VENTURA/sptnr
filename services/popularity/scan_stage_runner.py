@@ -242,6 +242,15 @@ def run_scan(
                         log_unified(f"Popularity Scan - Skipping album \"{album}\" (no changes detected)")
         if skip_album:
             skipped_albums += 1
+            # Skipped albums still get a lightweight album-type pass so the
+            # combined scan (re)sets album types even when the per-track
+            # popularity work is skipped (legacy parity). Reuses stored
+            # verdicts; only albums missing a type hit MusicBrainz.
+            try:
+                from services.popularity.stages.album_stage import ensure_album_type
+                ensure_album_type(album_row, options)
+            except Exception as exc:
+                logger.debug("[scan_runner] Album type ensure failed for %s - %s: %s", artist, album, exc)
             continue
 
         # ── Per-artist progress checkpoint ───────────────────────────────

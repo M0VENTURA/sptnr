@@ -369,7 +369,9 @@ def _persist_album_type_to_tracks(conn, cursor, artist, album, tracks, album_typ
             continue
         # Skip tracks whose stored type already matches — avoids a write
         # storm on every re-scan (legacy behaviour wrote only on change).
-        current_type = str(track.get("musicbrainz_albumtype") or track.get("spotify_album_type") or "")
+        # Compare against musicbrainz_albumtype — the canonical display
+        # column (spotify_album_type is legacy and no longer read).
+        current_type = str(track.get("musicbrainz_albumtype") or "")
         if current_type == album_type:
             continue
         try:
@@ -465,6 +467,60 @@ def _fetch_artist_lastfm_tags(artist: str, conn) -> None:
             logger.info("[album_stage] Stored %d Last.fm tag(s) for '%s'", len(names), artist)
     except Exception as exc:
         logger.debug("[album_stage] Last.fm artist tags failed for '%s': %s", artist, exc)
+
+
+def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None = None) -> None:
+    """Lightweight album-type enrichment for SKIPPED albums.
+
+    Runs when the popularity diff check skips an album but it still needs its
+    album type (re)set during a combined scan. Reuses a consistent stored
+    verdict when one exists (zero API cost); only albums missing a type hit
+    the MusicBrainz release-group lookup. Forced scans always re-verify.
+    """
+    options = options or {}
+    artist = str(album_row.get("artist") or "")
+    album = str(album_row.get("album") or "")
+    tracks = album_row.get("tracks") or []
+    if not artist or not album:
+        return
+
+    stored = {
+        str(t.get("musicbrainz_albumtype") or "").strip()
+        for t in tracks
+        if t.get("id")
+    }
+    stored.discard("")
+    if len(stored) == 1 and not options.get("force"):
+        return  # tracks already carry a consistent verdict — nothing to do
+
+    try:
+        detected = _detect_album_type(
+            artist,
+            album,
+            str(album_row.get("album_artist") or "") or None,
+            str(album_row.get("spotify_album_type") or "") or None,
+        )
+        mb_type, rg_mbid = _lookup_musicbrainz_album_type(artist, album)
+        if mb_type:
+            track_count = len(tracks)
+            # Same single/EP downgrade guards as the full enrich path.
+            if mb_type in ("single", "ep") and track_count > 6:
+                mb_type = "album"
+            elif mb_type == "single" and track_count > 3:
+                mb_type = "ep"
+            if detected == "album" or mb_type in ("single", "ep"):
+                detected = mb_type
+        if not detected:
+            return
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            _persist_album_type_to_tracks(conn, cursor, artist, album, tracks, detected, rg_mbid)
+        finally:
+            conn.close()
+        logger.info("[album_stage] Ensured album type '%s' for skipped '%s - %s'", detected, artist, album)
+    except Exception as exc:
+        logger.debug("[album_stage] ensure_album_type failed for '%s - %s': %s", artist, album, exc)
 
 
 def _apply_live_remix_album_tagging(conn, cursor, artist, album, album_type, tracks) -> None:
@@ -573,7 +629,11 @@ def enrich_album(
     artist = str(album_row.get("artist") or "")
     album = str(album_row.get("album") or "")
     album_artist = str(album_row.get("album_artist") or "")
-    spotify_type = str(album_row.get("spotify_album_type") or "")
+    spotify_type = str(
+        album_row.get("musicbrainz_album_type")
+        or album_row.get("spotify_album_type")
+        or ""
+    )
 
     # Acquire Discogs token from config
     discogs_token: str | None = None

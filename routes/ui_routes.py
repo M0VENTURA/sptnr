@@ -557,7 +557,8 @@ async def artist_detail(name: str):
         import re as _re
 
         raw_type = str(
-            album_row.get("spotify_album_type")
+            album_row.get("musicbrainz_albumtype")
+            or album_row.get("spotify_album_type")
             or album_row.get("album_type")
             or ""
         ).lower()
@@ -639,9 +640,13 @@ async def artist_detail(name: str):
                 "avg_stars": None,
                 "total_duration": 0,
                 "last_updated": track.get("updated_at"),
-                "spotify_album_type": track.get("spotify_album_type")
+                # musicbrainz_albumtype is the canonical album type column
+                # (written by the scan); spotify_album_type is legacy.
+                "spotify_album_type": track.get("musicbrainz_albumtype")
+                    or track.get("spotify_album_type")
                     or track.get("album_type"),
-                "album_type": track.get("album_type")
+                "album_type": track.get("musicbrainz_albumtype")
+                    or track.get("album_type")
                     or track.get("spotify_album_type"),
                 "is_missing": False,
             }
@@ -1305,7 +1310,7 @@ async def album_detail(artist: str, album: str):
         "total_discs": max(disc_values) if disc_values else 1,
         "singles_count": singles_count,
         "spotify_release_date": first_value("spotify_release_date", "release_date", "date"),
-        "spotify_album_type": first_value("spotify_album_type", "album_type"),
+        "spotify_album_type": first_value("musicbrainz_albumtype", "spotify_album_type", "album_type"),
         "record_label": first_value("record_label", "label"),
         "catalog_number": first_value("catalog_number", "catalog"),
         "last_scanned": first_value("last_scanned", "updated_at", "created_at"),

@@ -456,14 +456,20 @@ def determine_final_status(
             return 'medium'
         return 'none'
 
-    # Z-score <= 0: remastered bypass, title-track boost, or metadata evidence
-    if is_remastered_only or is_title_track or high >= 1 or medium >= 2:
+    # Z-score <= 0: remastered bypass, title-track boost, or metadata evidence.
+    # Title-track boost: a track sharing the album name is a classic single —
+    # but ONLY with real confirmation (a MusicBrainz/Discogs/ISRC single
+    # match). Weak signals (duration under 4:30, music video, popularity
+    # standout, album-size heuristics) must never flag a title track without
+    # checking the recording's actual release type — most tracks are under
+    # 4:30, so duration alone would flag nearly every album's title track as
+    # a single.
+    if is_remastered_only or high >= 1 or medium >= 2:
         if high >= 1:
             return 'high'
-        if medium >= 1:
+        if medium >= 1 and not is_title_track:
             return 'medium'
         return 'none'
-
     return 'none'
 
 
