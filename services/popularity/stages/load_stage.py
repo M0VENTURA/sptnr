@@ -7,6 +7,7 @@ artist→album→track structure used by subsequent stages.
 
 from __future__ import annotations
 
+import re
 from typing import Any, List, Dict
 
 from db.repositories.library import (
@@ -14,11 +15,42 @@ from db.repositories.library import (
     get_albums_for_artist,
     get_tracks_for_album,
 )
+from helpers.logging_config import log_unified
 
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _artist_key(value: str) -> str:
+    """Collapse an artist name to a punctuation-free lowercase key.
+
+    "D'Artagnan", "d'Artagnan" and "dArtagnan" all collapse to "dartagnan",
+    so a targeted artist scan resolves the requested name to the stored name
+    even when the library uses an apostrophe or different casing.
+    """
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _resolve_artist_for_scan(artists: list[str], artist_filter: str) -> str | None:
+    """Resolve ``artist_filter`` to a stored artist name.
+
+    Tries an exact case-insensitive match first, then a punctuation-stripped
+    match.  Returns ``None`` when no stored artist corresponds.
+    """
+    if not artist_filter:
+        return None
+    target = artist_filter.strip().lower()
+    for artist in artists:
+        if artist.strip().lower() == target:
+            return artist
+    target_key = _artist_key(artist_filter)
+    if target_key:
+        for artist in artists:
+            if _artist_key(artist) == target_key:
+                return artist
+    return None
 
 
 def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
@@ -46,6 +78,25 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
 
     artists = get_all_artists()
 
+    # Targeted artist scans must never silently no-op.  Resolve the requested
+    # name to a stored artist (tolerating case/punctuation variants such as
+    # "D'Artagnan" vs "dArtagnan") so the filter finds its tracks.
+    resolved_artist: str | None = None
+    if artist_filter:
+        resolved_artist = _resolve_artist_for_scan(artists, artist_filter)
+        if resolved_artist is None:
+            log_unified(
+                f"Popularity Scan - Artist filter '{artist_filter}' matched no artist "
+                f"in the library ({len(artists)} artist(s) present). Check the artist "
+                "name / that the library has been imported."
+            )
+            logger.warning(
+                "[LOAD_STAGE] artist_filter '%s' matched no artist in the library. "
+                "Present artists: %s",
+                artist_filter,
+                ", ".join(repr(a) for a in artists[:10]),
+            )
+
     # Resume support (legacy parity): skip artists before the resume point.
     # A fuzzy match (resume artist contained in the current artist) is also
     # accepted, matching the legacy popularity scanner.
@@ -56,8 +107,15 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
         # queries, so URL casing can differ from the stored name; a
         # case-sensitive filter here silently produces zero candidates
         # ("No tracks found") for such scans.
-        if artist_filter and artist.lower().strip() != artist_filter.lower().strip():
-            continue
+        if artist_filter:
+            if resolved_artist is not None:
+                if artist.strip().lower() != resolved_artist.strip().lower():
+                    continue
+            else:
+                # Resolution failed — fall back to the historical comparison so
+                # behaviour stays predictable (and the diagnostic above shows why).
+                if artist.lower().strip() != artist_filter.lower().strip():
+                    continue
 
         if not resume_hit:
             if resume_from and (
@@ -107,5 +165,12 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
                 "musicbrainz_album_type": None,
                 "tracks": tracks,
             })
+
+    if artist_filter and not candidates:
+        logger.info(
+            "[LOAD_STAGE] Artist '%s' (resolved to %s) produced 0 candidate albums",
+            artist_filter,
+            resolved_artist or repr(artist_filter),
+        )
 
     return candidates
