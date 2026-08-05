@@ -1740,6 +1740,15 @@ async function retryQueueItem(queueId) {
   } catch (e) { alert('❌ Network error: ' + e.message); }
 }
 
+async function cancelQueueItem(queueId) {
+  if (!confirm('Cancel this download? The queue item will be marked failed and can be retried.')) return;
+  try {
+    await fetchJsonOrThrow('/api/queue/' + queueId + '/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    alert('✅ Download cancelled');
+    await loadQueueStatus();
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
 async function organizeFile(queueId) {
   if (!confirm('Copy file to music library?')) return;
   try {
@@ -1922,8 +1931,43 @@ function renderQueueList(kind, items) {
 
   const rows = items.map(function(item) {
     const st = item.status || 'queued';
-    const badgeCls = st === 'failed' ? 'danger' : st === 'downloading' ? 'warning' : st === 'completed' ? 'success' : 'info';
+    const badgeCls = st === 'failed' ? 'danger' : st === 'downloading' ? 'primary' : st === 'completed' ? 'success' : 'info';
+
+    // Per-item detail chips: album, MusicBrainz ID, and track length.
+    const chips = [];
+    if (item.album && item.album !== item.title) {
+      chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-disc me-1"></i>' + escapeHtml(item.album) + '</span>');
+    }
+    const mbid = item.release_mbid || item.release_id || item.recording_mbid || '';
+    if (mbid) {
+      const shortMbid = String(mbid).slice(0, 8);
+      chips.push('<span class="badge bg-secondary-subtle text-dark" title="' + escapeHtml(mbid) + '"><i class="bi bi-fingerprint me-1"></i>' + escapeHtml(shortMbid) + '</span>');
+    }
+    if (item.duration) {
+      chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-clock me-1"></i>' + formatDuration(item.duration) + '</span>');
+    }
+    if (item.track_number) {
+      chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-music-note me-1"></i>Track ' + escapeHtml(String(item.track_number)) + '</span>');
+    }
+    const detailLine = chips.length
+      ? '<div class="d-flex flex-wrap gap-1 mt-1">' + chips.join('') + '</div>'
+      : '';
+
+    // Progress bar for in-flight downloads when progress data is available.
+    let progressHtml = '';
+    if (st === 'downloading' && item.progress != null && Number(item.progress) > 0) {
+      const pct = Math.min(100, Math.max(0, Number(item.progress)));
+      progressHtml = '<div class="progress mt-2" style="height: 6px; max-width: 260px;">' +
+        '<div class="progress-bar bg-primary" role="progressbar" style="width: ' + pct + '%" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100"></div>' +
+        '</div>';
+    }
+
     let actions = '';
+    if (kind === 'active') {
+      if (st === 'downloading' || st === 'searching' || st === 'processing') {
+        actions += '<button class="btn btn-sm btn-outline-danger" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-x-circle"></i></button>';
+      }
+    }
     if (kind === 'failed') {
       actions += '<button class="btn btn-sm btn-outline-warning" title="Retry" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
     }
@@ -1931,9 +1975,11 @@ function renderQueueList(kind, items) {
       actions += '<button class="btn btn-sm btn-outline-primary" title="Copy to library" onclick="organizeFile(' + item.id + ')"><i class="bi bi-folder-plus"></i></button>';
     }
     actions += '<button class="btn btn-sm btn-outline-danger" title="Remove" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
+
     return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center gap-2">' +
       '<div class="text-truncate"><strong>' + escapeHtml(item.title || item.album || 'Unknown') + '</strong>' +
       (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album && item.album !== item.title ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+      detailLine + progressHtml +
       (kind === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +
       '</div><div class="d-flex align-items-center gap-2 flex-shrink-0">' +
       '<span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span>' + actions +

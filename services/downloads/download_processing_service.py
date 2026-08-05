@@ -367,6 +367,56 @@ def queue_delete(queue_id: int, delete_download_file: bool = False) -> Dict[str,
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
+
+def queue_cancel(queue_id: int) -> Dict[str, Any]:
+    """Cancel a queue item: cancel its active slskd transfer and mark failed.
+
+    A cancelled item stays visible under Failed so the user can retry it —
+    the retry button re-queues it for a fresh download.
+    """
+    try:
+        from db.repositories.queue import get_queue_item, update_queue_item
+
+        item = get_queue_item(queue_id)
+        if not item:
+            return {"success": False, "error": "Queue item not found"}
+
+        status = str(item.get("status") or "").lower()
+
+        # Cancel the in-flight slskd transfer (best-effort) when one exists.
+        found_filename = (item.get("found_filename") or "").strip()
+        if found_filename or status in ("downloading", "searching", "processing"):
+            try:
+                from api_clients.slskd_http import get_slskd_client
+                from services.downloads.slskd_service import SlskdService
+
+                client = get_slskd_client()
+                if client is not None:
+                    slskd = SlskdService(http_client=client)
+                    for transfer in slskd.get_active_downloads():
+                        filename = (transfer.get("filename") or "").strip()
+                        if filename and (
+                            filename.replace("\\", "/").lower()
+                            == (found_filename or "").replace("\\", "/").lower()
+                        ):
+                            transfer_id = str(transfer.get("id") or "")
+                            username = str(transfer.get("username") or "")
+                            if transfer_id and username:
+                                slskd.cancel_download(username, transfer_id, remove=True)
+                            break
+            except Exception as exc:
+                logger.debug("[QUEUE] Cancel transfer best-effort failed for %s: %s", queue_id, exc)
+
+        updated = update_queue_item(
+            queue_id,
+            status="failed",
+            failure_reason="Cancelled by user",
+        )
+
+        return {"success": updated is not None, "queue_id": queue_id, "status": "failed"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
 def queue_purge_all() -> Dict[str, Any]:
     return purge_all()
 

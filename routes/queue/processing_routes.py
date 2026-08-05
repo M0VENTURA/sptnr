@@ -19,6 +19,7 @@ from services.downloads.download_processing_service import (
     queue_status,
     queue_update,
     queue_imported,
+    queue_cancel,
 )
 from db.utils import get_db_connection, row_get
 
@@ -61,6 +62,11 @@ def api_queue_send_to_download(queue_id: int):
 @queue_processing_bp.route("/api/queue/<int:queue_id>/requeue", methods=["POST"])
 def api_queue_requeue_item(queue_id: int):
     return _json_response(queue_requeue(queue_id))
+
+
+@queue_processing_bp.route("/api/queue/<int:queue_id>/cancel", methods=["POST"])
+def api_queue_cancel_item(queue_id: int):
+    return _json_response(queue_cancel(queue_id))
 
 
 @queue_processing_bp.route("/api/queue/<int:queue_id>/delete", methods=["DELETE"])
