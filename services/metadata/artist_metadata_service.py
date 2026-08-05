@@ -217,11 +217,139 @@ def set_image(payload: dict) -> tuple[dict, int]:
 
 
 def update_ids(payload: dict) -> tuple[dict, int]:
-    return {"success": False, "error": "Not yet implemented"}, 501
+    """Update artist ID columns (MusicBrainz, Last.fm, Discogs) on all of an artist's tracks."""
+    artist = str(payload.get("artist") or "").strip()
+    if not artist:
+        return {"success": False, "error": "Missing artist name"}, 400
+
+    updates: list[str] = []
+    params: list[str] = []
+    for column, key in (
+        ("musicbrainz_artist_id", "musicbrainz_artist_id"),
+        ("lastfm_artist_mbid", "lastfm_artist_mbid"),
+        ("discogs_artist_id", "discogs_artist_id"),
+        ("spotify_artist_id", "spotify_artist_id"),
+    ):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            updates.append(f"{column} = %s")
+            params.append(value)
+
+    if not updates:
+        return {"success": False, "error": "No IDs provided"}, 400
+
+    params.append(artist)
+    try:
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE tracks SET {', '.join(updates)} "
+                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s",
+                tuple(params),
+            )
+            rows_updated = cursor.rowcount or 0
+            conn.commit()
+        finally:
+            conn.close()
+        return {
+            "success": True,
+            "message": f"Artist IDs updated for {artist}",
+            "rows_updated": rows_updated,
+            "updated": {
+                "musicbrainz_artist_id": str(payload.get("musicbrainz_artist_id") or "").strip() or None,
+                "lastfm_artist_mbid": str(payload.get("lastfm_artist_mbid") or "").strip() or None,
+                "discogs_artist_id": str(payload.get("discogs_artist_id") or "").strip() or None,
+            },
+        }, 200
+    except Exception as exc:
+        logger.error("update_ids failed for %s: %s", artist, exc, exc_info=True)
+        return {"success": False, "error": str(exc)}, 500
 
 
 def lookup_ids(payload: dict) -> tuple[dict, int]:
-    return {"success": False, "error": "Not yet implemented"}, 501
+    """Look up MusicBrainz/Discogs artist IDs and persist them for the artist."""
+    artist = str(payload.get("artist") or "").strip()
+    if not artist:
+        return {"success": False, "error": "Missing artist name"}, 400
+
+    import difflib
+
+    musicbrainz_id = ""
+    discogs_id = ""
+
+    # MusicBrainz lookup (rate-limited client with the proper User-Agent).
+    try:
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient, escape_lucene_special_chars
+        mb = MusicBrainzHttpClient()
+        results = mb.search_artists(f'artist:"{escape_lucene_special_chars(artist)}"', limit=5)
+        if results:
+            best = max(
+                results,
+                key=lambda item: difflib.SequenceMatcher(
+                    None, artist.lower(), str(item.get("name") or "").lower()
+                ).ratio(),
+            )
+            musicbrainz_id = str(best.get("id") or "").strip()
+    except Exception as exc:
+        logger.debug("MusicBrainz artist lookup failed for %s: %s", artist, exc)
+
+    # Discogs lookup (only when a token is configured).
+    try:
+        from helpers.config_helpers import get_config
+        from api_clients.discogs_http import DiscogsHttpClient
+        cfg = get_config() or {}
+        token = str((cfg.get("api_integrations", {}).get("discogs", {}) or {}).get("token") or "").strip()
+        if token:
+            dc = DiscogsHttpClient(token=token)
+            results = dc.search_database({"q": artist, "type": "artist", "per_page": 5})
+            if results:
+                best = max(
+                    results,
+                    key=lambda item: difflib.SequenceMatcher(
+                        None, artist.lower(), str(item.get("title") or "").lower()
+                    ).ratio(),
+                )
+                discogs_id = str(best.get("id") or "").strip()
+    except Exception as exc:
+        logger.debug("Discogs artist lookup failed for %s: %s", artist, exc)
+
+    if not musicbrainz_id and not discogs_id:
+        return {"success": False, "error": "No IDs found from external lookup"}, 404
+
+    updates: list[str] = []
+    params: list[str] = []
+    if musicbrainz_id:
+        updates.extend(["musicbrainz_artist_id = %s", "lastfm_artist_mbid = %s"])
+        params.extend([musicbrainz_id, musicbrainz_id])
+    if discogs_id:
+        updates.append("discogs_artist_id = %s")
+        params.append(discogs_id)
+    params.append(artist)
+
+    try:
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE tracks SET {', '.join(updates)} "
+                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s",
+                tuple(params),
+            )
+            rows_updated = cursor.rowcount or 0
+            conn.commit()
+        finally:
+            conn.close()
+        return {
+            "success": True,
+            "artist": artist,
+            "musicbrainz_artist_id": musicbrainz_id or None,
+            "discogs_artist_id": discogs_id or None,
+            "rows_updated": rows_updated,
+        }, 200
+    except Exception as exc:
+        logger.error("lookup_ids failed for %s: %s", artist, exc, exc_info=True)
+        return {"success": False, "error": str(exc)}, 500
 
 
 def get_similar_artists(artist: str, args) -> tuple[dict, int]:

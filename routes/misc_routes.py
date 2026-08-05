@@ -245,8 +245,9 @@ async def api_fetch_artist_country():
     try:
         from api_clients.musicbrainz_http import MusicBrainzHttpClient
         client = MusicBrainzHttpClient(enabled=True)
-        artists = client.search_artists(f'artist:"{artist}"', limit=1)
-        country = artists[0].get("country", "") if artists else ""
+        # area.name is the readable country (the raw "country" field is an
+        # ISO code and frequently absent from search results).
+        country = client.get_artist_country(artist)
         if country:
             with db_session() as session:
                 session.execute(text("INSERT INTO artists (name, country) VALUES (:artist, :country) ON CONFLICT (name) DO UPDATE SET country = EXCLUDED.country"), {"artist": artist, "country": country})

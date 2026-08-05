@@ -44,6 +44,42 @@ var _pageData = window._pageData || {};
         modal.show();
     }
 
+    // Search button of the album lookup modal — uses the modal's artist/album
+    // inputs (falling back to the page context) and renders MusicBrainz
+    // release matches via displayAlbumResults().
+    function runAlbumLookup() {
+        const artist = (document.getElementById('albumLookupArtist').value || '').trim() || _pageData.artistName;
+        const album = (document.getElementById('albumLookupAlbum').value || '').trim() || _pageData.albumName;
+        if (!artist || !album) {
+            alert('Please enter both artist and album names.');
+            return;
+        }
+        const resultsDiv = document.getElementById('albumLookupResults');
+        resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching MusicBrainz...';
+
+        fetch('/api/album/musicbrainz', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ album: album, artist: artist, existing_mbid: (document.getElementById('album_mbid') || {}).value || null })
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.error) {
+                resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + escapeHtml(data.error) + '</div>';
+                return;
+            }
+            displayAlbumResults(data.results, 'musicbrainz');
+        })
+        .catch(error => {
+            resultsDiv.innerHTML = '<div class="alert alert-danger">Network error: ' + escapeHtml(error.message) + '</div>';
+        });
+    }
+
     function lookupAlbumMusicBrainz() {
         const album = _pageData.albumName;
         const artist = _pageData.artistName;

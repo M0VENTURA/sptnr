@@ -114,6 +114,32 @@ class MusicBrainzHttpClient:
         payload = self.get("artist/", params=params)
         return payload.get("artists", []) if isinstance(payload.get("artists"), list) else []
 
+    def get_artist_country(self, artist: str) -> str:
+        """Return the readable country/area name for an artist (e.g. "United States").
+
+        Uses the MusicBrainz ``area`` field — ``area.name`` is the display
+        name, whereas the plain ``country`` field is only an ISO code and is
+        often missing entirely.
+        """
+        if not self.enabled or not artist:
+            return ""
+        try:
+            results = self.search_artists(
+                f'artist:"{escape_lucene_special_chars(artist)}"',
+                limit=1,
+                inc="area",
+            )
+            if not results:
+                return ""
+            data = results[0]
+            return (
+                (data.get("area") or {}).get("name")
+                or (data.get("begin-area") or {}).get("name")
+                or ""
+            )
+        except Exception:
+            return ""
+
     def get_release(self, release_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not release_mbid:
             return {}
