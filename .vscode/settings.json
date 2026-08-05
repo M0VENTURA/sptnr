@@ -13,5 +13,8 @@
   "[jinja-html]": {
     "css.validate": false,
     "javascript.validate.enable": false
-  }
+  },
+  "githubPullRequests.ignoredPullRequestBranches": [
+    "develop"
+  ]
 }
