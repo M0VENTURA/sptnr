@@ -410,7 +410,7 @@ def determine_final_status(
     radio_edit: bool = False, popularity: float = 0.0,
     album_mean: float = 0.0, has_metadata: bool = False,
     is_remastered_only: bool = False, date_match: bool = False,
-    is_title_track: bool = False,
+    is_title_track: bool = False, is_compilation: bool = False,
     zscore_high: float = 1.0, zscore_medium: float = 0.6,
     high_sources: int | None = None, medium_sources: int | None = None,
 ) -> str:
@@ -768,6 +768,7 @@ def detect_single_for_track(
         is_remastered_only=is_remastered,
         date_match=single_release_date_match,
         is_title_track=is_title,
+        is_compilation=is_compilation,
         zscore_high=zscore_high,
         zscore_medium=zscore_medium,
         high_sources=high_sources,

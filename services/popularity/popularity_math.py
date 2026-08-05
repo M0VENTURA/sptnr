@@ -88,6 +88,61 @@ def calculate_listenbrainz_percentile(lb_listens, album_lb_listens):
     return (below + equal / 2.0) / len(valid)
 
 
+def evaluate_listenbrainz_validity(
+    *,
+    listenbrainz_listens: int = 0,
+    lastfm_listeners: int = 0,
+    album_lb_listens: Optional[List[int]] = None,
+    album_lf_lb_pairs: Optional[List[tuple]] = None,
+    is_single: bool = False,
+) -> tuple[bool, list[str]]:
+    """Decide whether a track's ListenBrainz count is realistic for its album.
+
+    A mismatched recording MBID (a wrong / split / obscure recording) can
+    resolve a tiny LB count for a track whose real popularity is healthy,
+    dragging the album average down.  LB is treated as **invalid** when:
+
+    - it sits more than 2× scaled-MAD below the album's LB median, or
+    - the track's LF/LB ratio is more than 10× the album's median LF/LB
+      ratio (a far bigger LF footprint than LB implies a count mismatch).
+
+    Confirmed singles are exempt: their LB is legitimate standalone evidence
+    and is never dropped.
+
+    Returns ``(lb_valid, reasons)``.
+    """
+    if is_single:
+        return True, []
+    lb = int(listenbrainz_listens or 0)
+    if lb <= 0:
+        return True, []  # missing data is not invalid data
+    reasons: list[str] = []
+
+    # LB vs the album's LB distribution (median + scaled MAD).
+    valid = [int(x) for x in (album_lb_listens or []) if int(x or 0) > 0]
+    if len(valid) >= 5:
+        med = median(valid)
+        mad = median([abs(v - med) for v in valid])
+        spread = mad * 1.4826
+        if spread > 0 and lb < med - 2 * spread:
+            reasons.append("lb_far_below_album_median")
+
+    # LF/LB ratio vs the album's median ratio.
+    lf = int(lastfm_listeners or 0)
+    if lf > 0 and not reasons:
+        ratios = [
+            int(a) / int(b)
+            for a, b in (album_lf_lb_pairs or [])
+            if int(a or 0) > 0 and int(b or 0) > 0
+        ]
+        if len(ratios) >= 5:
+            med_ratio = median(ratios)
+            if med_ratio > 0 and (lf / lb) > 10 * med_ratio:
+                reasons.append("lf_lb_ratio_outlier")
+
+    return not reasons, reasons
+
+
 def score_by_age(playcount: int | float, release_str: str) -> tuple[float, int]:
     """Apply age decay to a playcount-like metric."""
     try:

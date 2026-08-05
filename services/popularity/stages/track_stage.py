@@ -27,6 +27,7 @@ from services.enrichment.musicbrainz_service import MusicBrainzService
 from services.popularity.popularity_math import (
     calculate_combined_popularity_score,
     calculate_listenbrainz_percentile,
+    evaluate_listenbrainz_validity,
 )
 from services.popularity.popularity_config import (
     LASTFM_WEIGHT,
@@ -429,6 +430,9 @@ def process_track(
                 lastfm_playcount = _as_int(effective_track.get("lastfm_playcount") or 0)
                 listenbrainz_listens = _as_int(effective_track.get("listenbrainz_listens") or 0)
                 listenbrainz_users = _as_int(effective_track.get("listenbrainz_users") or 0)
+                # Cached scores reuse the stored LB count as-is — the realism
+                # check only runs on freshly-fetched values.
+                _score_lb = listenbrainz_listens
                 score_data = {
                     "combined_score": float(effective_track.get("final_score", 0)),
                     "lastfm_score": float(effective_track.get("lastfm_score", 0)),
@@ -680,30 +684,65 @@ def process_track(
                 # fresh artist prefetch, filtered to THIS album's tracks —
                 # previously the whole artist catalogue was used, which
                 # crushed every album track below the artist's biggest hits.
+                # The same filter builds the album's LF/LB ratio pairs used by
+                # the ListenBrainz realism check below.
                 _album_lf_listeners = None
+                _album_lf_lb_pairs: list[tuple[int, int]] = []
                 try:
                     _album_titles = {
                         normalize_for_aggregation(str(t.get("title") or ""))
                         for t in (album_context.get("tracks") or [])
                     }
-                    _lf_vals = [
-                        int(e.get("lastfm_listeners") or 0)
-                        for k, e in (prefetched_popularity or {}).items()
-                        if normalize_for_aggregation(str(k or "")) in _album_titles
-                        and int(e.get("lastfm_listeners") or 0) > 0
-                    ]
+                    _lf_vals = []
+                    for _k, _e in (prefetched_popularity or {}).items():
+                        if normalize_for_aggregation(str(_k or "")) not in _album_titles:
+                            continue
+                        _lfv = int(_e.get("lastfm_listeners") or 0)
+                        _lbv = int(_e.get("listenbrainz_listens") or 0)
+                        if _lfv > 0:
+                            _lf_vals.append(_lfv)
+                        if _lfv > 0 and _lbv > 0:
+                            _album_lf_lb_pairs.append((_lfv, _lbv))
                     if len(_lf_vals) >= 3:
                         _album_lf_listeners = _lf_vals
                 except Exception:
                     _album_lf_listeners = None
 
+                # ── ListenBrainz realism check ───────────────────────────
+                # A mismatched recording MBID (wrong / split / obscure
+                # recording) can surface an unrealistically LOW LB count for a
+                # track whose real popularity is healthy, dragging the album
+                # average down.  Compare each track's LB against the album's LB
+                # distribution (median + 2× MAD) and the album's median LF/LB
+                # ratio; when the LB is invalid, score the track on Last.fm
+                # alone.  Confirmed singles are never penalised — their LB is
+                # legitimate evidence.
+                _score_lb = listenbrainz_listens
+                try:
+                    _lb_valid, _lb_reasons = evaluate_listenbrainz_validity(
+                        listenbrainz_listens=listenbrainz_listens,
+                        lastfm_listeners=lastfm_listeners,
+                        album_lb_listens=album_lb_listens,
+                        album_lf_lb_pairs=_album_lf_lb_pairs or None,
+                        is_single=bool(prior_single or effective_track.get("is_single")),
+                    )
+                    if not _lb_valid:
+                        _score_lb = 0
+                        logger.info(
+                            "[track_stage] LB treated as invalid for %s (%s - %s): %s listens (%s) — scoring on Last.fm only",
+                            track_id, artist, title, listenbrainz_listens,
+                            ", ".join(_lb_reasons),
+                        )
+                except Exception as exc:
+                    logger.debug("[track_stage] LB realism check failed for %s: %s", track_id, exc)
+
                 score_data = calculate_combined_popularity_score(
                     lastfm_listeners=lastfm_listeners,
                     lastfm_artist_max_listeners=artist_max_lf_listeners,
-                    listenbrainz_listens=listenbrainz_listens,
+                    listenbrainz_listens=_score_lb,
                     album_lb_listens=album_lb_listens,
                     album_lf_listeners=_album_lf_listeners,
-                    age_source_value=listenbrainz_listens,
+                    age_source_value=_score_lb,
                     release_date=release_date,
                     is_single=prior_single,
                     has_metadata=has_mb_meta,
@@ -715,9 +754,11 @@ def process_track(
                     live_weight_penalty=cfg_live_penalty,
                 )
 
-            # LB percentile within the album (used by star-rating rescue path)
+            # LB percentile within the album (used by star-rating rescue path).
+            # An LB flagged invalid by the realism check is scored as zero so
+            # its percentile cannot rescue the track's rating.
             try:
-                lb_percentile = calculate_listenbrainz_percentile(listenbrainz_listens, album_lb_listens) if album_lb_listens else 0.0
+                lb_percentile = calculate_listenbrainz_percentile(_score_lb, album_lb_listens) if album_lb_listens else 0.0
             except Exception:
                 lb_percentile = 0.0
 
