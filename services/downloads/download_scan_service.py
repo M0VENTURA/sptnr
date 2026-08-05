@@ -101,8 +101,15 @@ def verify_moved_files(_minutes_old: int = 30) -> dict[str, object]:
 
 
 def check_completed_downloads() -> dict[str, object]:
-    """Check for newly completed downloads. Thin wrapper for queue_orchestrator."""
-    return scan_downloads()
+    """Check for newly completed downloads and match them to queue items.
+
+    Delegates to ``services.downloads.download_completion_service`` which
+    reconciles items stuck in ``downloading`` against slskd completed
+    transfers and filesystem matches, then moves matched files into the music
+    library and promotes the queue rows to ``imported``.
+    """
+    from services.downloads.download_completion_service import check_completed_downloads as _check
+    return _check()
 
 
 def discover_files() -> dict[str, object]:

@@ -148,17 +148,57 @@ async def download_log(log_type: str):
 
     return await _build_download_response(log_path, log_type)
 
+
+def _filter_last_hour(events: list[dict], keys: tuple[str, ...] = ("timestamp", "created_at")) -> list[dict]:
+    """Keep only events whose timestamp is within the last 60 minutes.
+
+    The UI labels these exports "Download Last Hour" — enforce that window so
+    the file does not silently contain the entire history.
+    """
+    if not events:
+        return events
+
+    from datetime import timezone, timedelta
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    kept = []
+    for event in events:
+        raw = None
+        for key in keys:
+            raw = event.get(key)
+            if raw:
+                break
+        if not raw:
+            continue
+        try:
+            text = str(raw).replace("Z", "+00:00")
+            ts = datetime.fromisoformat(text)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            else:
+                ts = ts.astimezone(timezone.utc)
+            if ts >= cutoff:
+                kept.append(event)
+        except Exception:
+            # Unparseable timestamp — keep the row (better than dropping data).
+            kept.append(event)
+    return kept
+
+
 async def _generate_search_log():
     from db.repositories.search_logs import get_slskd_search_logs
     logs = get_slskd_search_logs(limit=200)
+    logs = _filter_last_hour(logs, keys=("timestamp", "created_at"))
     lines = [f"[{e.get('timestamp')}] {e.get('query')} → {e.get('result_count')} results" for e in logs]
     return Response("\n".join(lines) or "No search logs", mimetype="text/plain")
+
 
 async def _generate_queue_log():
     from services.queue.queue_diagnostics_service import get_queue_events, _tail_queue_log
     events = get_queue_events(limit=500)
     if not events:
         events = _tail_queue_log(limit=500)
+    events = _filter_last_hour(events)
     lines = [f"[{e.get('timestamp') or e.get('created_at')}] {e.get('message')}" for e in events]
     return Response("\n".join(lines) or "No queue logs", mimetype="text/plain")
 
