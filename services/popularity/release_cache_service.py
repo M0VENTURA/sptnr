@@ -318,58 +318,6 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
 
     return {"missing": len(missing_rows)}
 
-    current_year = datetime.now().year
-    seen: Set[str] = set()
-    missing_rows: list[dict[str, Any]] = []
-    for row in cached:
-        title = str(row.get("title") or "").strip()
-        if not title:
-            continue
-        norm = _norm_release_title(title)
-        if norm in library or norm in seen:
-            continue
-        seen.add(norm)
-        rtype = str(row.get("release_type") or "album").lower()
-        year = row.get("year")
-        if rtype == "single":
-            if not (isinstance(year, int) and year == current_year):
-                continue  # legacy parity: singles only when current-year
-            category = "Single"
-        elif rtype == "ep":
-            category = "EP"
-        else:
-            category = "Album"
-        missing_rows.append({
-            "release_id": str(row.get("release_id") or "").strip() or f"{artist}-{norm}",
-            "title": title,
-            "primary_type": rtype,
-            "first_release_date": str(year) if isinstance(year, int) else None,
-            "category": category,
-            "source": str(row.get("source") or "musicbrainz"),
-        })
-
-    try:
-        with db_session() as session:
-            session.execute(
-                text("DELETE FROM missing_releases WHERE LOWER(artist) = LOWER(:artist)"),
-                {"artist": artist},
-            )
-            for item in missing_rows:
-                session.execute(
-                    text("""
-                        INSERT INTO missing_releases
-                            (artist, release_id, title, primary_type, first_release_date,
-                             category, last_checked)
-                        VALUES (:artist, :release_id, :title, :primary_type, :fdate,
-                                :category, CURRENT_TIMESTAMP)
-                    """),
-                    {**item, "artist": artist, "fdate": item.get("first_release_date")},
-                )
-    except Exception as exc:
-        logger.debug("[RELEASE_CACHE] Missing-releases persist failed for %s: %s", artist, exc)
-
-    return {"missing": len(missing_rows)}
-
 
 def populate_missing_release_tracklists(artist: str, limit: int = 5) -> Dict[str, Any]:
     """Fetch tracklists for missing releases and store them for queue matching.
@@ -435,4 +383,4 @@ def populate_missing_release_tracklists(artist: str, limit: int = 5) -> Dict[str
         except Exception as exc:
             logger.debug("[RELEASE_CACHE] Tracklist fetch failed for %s (%s): %s", artist, release_id, exc)
 
-    return {"fetched": fetched}\n                {\"artist\": artist},\n            )\n            cached = [dict(r._mapping) for r in result.fetchall() or []]\n    except Exception as exc:\n        logger.debug(\"[RELEASE_CACHE] Missing-releases read failed for %s: %s\", artist, exc)\n        return {\"missing\": 0}\n\n    current_year = datetime.now().year\n    seen: Set[str] = set()\n    missing_rows: list[dict[str, Any]] = []\n    for row in cached:\n        title = str(row.get(\"title\") or \"\").strip()\n        if not title:\n            continue\n        norm = _norm_release_title(title)\n        if norm in library or norm in seen:\n            continue\n        seen.add(norm)\n        rtype = str(row.get(\"release_type\") or \"album\").lower()\n        year = row.get(\"year\")\n        if rtype == \"single\":\n            if not (isinstance(year, int) and year == current_year):\n                continue  # legacy parity: singles only when current-year\n            category = \"Single\"\n        elif rtype == \"ep\":\n            category = \"EP\"\n        else:\n            category = \"Album\"\n        missing_rows.append({\n            \"release_id\": str(row.get(\"release_id\") or \"\").strip() or f\"{artist}-{norm}\",\n            \"title\": title,\n            \"primary_type\": rtype,\n            \"first_release_date\": str(year) if isinstance(year, int) else None,\n            \"category\": category,\n            \"source\": str(row.get(\"source\") or \"musicbrainz\"),\n        })\n\n    try:\n        with db_session() as session:\n            session.execute(\n                text(\"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER(:artist)\"),\n                {\"artist\": artist},\n            )\n            for item in missing_rows:\n                session.execute(\n                    text(\"\"\"\n                        INSERT INTO missing_releases\n                            (artist, release_id, title, primary_type, first_release_date,\n                             category, last_checked)\n                        VALUES (:artist, :release_id, :title, :primary_type, :fdate,\n                                :category, CURRENT_TIMESTAMP)\n                    \"\"\"),\n                    {**item, \"artist\": artist, \"fdate\": item.get(\"first_release_date\")},\n                )\n    except Exception as exc:\n        logger.debug(\"[RELEASE_CACHE] Missing-releases persist failed for %s: %s\", artist, exc)\n        return {\"missing\": 0}\n\n    if missing_rows:\n        logger.info(\"[RELEASE_CACHE] Artist '%s': %s missing release(s) detected from cache\", artist, len(missing_rows))\n    return {\"missing\": len(missing_rows), \"rows\": missing_rows}\n\n\ndef populate_missing_release_tracklists(artist: str, limit: int = 5) -> Dict[str, Any]:\n    \"\"\"Fetch tracklists for missing releases and store them for download.\n\n    For each missing release without a cached tracklist: resolve a concrete\n    release from the release-group, fetch its recordings, and persist into\n    ``musicbrainz_releases`` + ``musicbrainz_release_tracks`` (keyed by the\n    release-group id, matching ``missing_releases.release_id``) so the\n    download flows can use them like the legacy system.\n\n    Throttled (two MusicBrainz calls per release); capped by ``limit``.\n    \"\"\"\n    if not artist or limit <= 0:\n        return {\"populated\": 0}\n    try:\n        with db_session() as session:\n            result = session.execute(\n                text(\"\"\"\n                    SELECT release_id, title FROM missing_releases\n                    WHERE LOWER(artist) = LOWER(:artist)\n                      AND release_id IS NOT NULL AND TRIM(release_id) <> ''\n                      AND release_id NOT IN (SELECT DISTINCT release_id FROM musicbrainz_release_tracks)\n                    LIMIT :limit\n                \"\"\"),\n                {\"artist\": artist, \"limit\": max(1, min(limit, 25))},\n            )\n            targets = [dict(r._mapping) for r in result.fetchall() or []]\n    except Exception as exc:\n        logger.debug(\"[RELEASE_CACHE] Tracklist targets failed for %s: %s\", artist, exc)\n        return {\"populated\": 0}\n\n    if not targets:\n        return {\"populated\": 0}\n\n    try:\n        from api_clients.musicbrainz_http import MusicBrainzHttpClient\n        client = MusicBrainzHttpClient(enabled=True)\n    except Exception as exc:\n        logger.debug(\"[RELEASE_CACHE] MB client failed: %s\", exc)\n        return {\"populated\": 0}\n\n    populated = 0\n    for target in targets:\n        rg_id = str(target.get(\"release_id\") or \"\").strip()\n        try:\n            rg = client.get_release_group(rg_id) or {}\n            releases = rg.get(\"releases\") or []\n            release_mbid = \"\"\n            if isinstance(releases, list) and releases:\n                for rel in releases:\n                    if isinstance(rel, dict) and rel.get(\"id\"):\n                        release_mbid = str(rel.get(\"id\") or \"\").strip()\n                        break\n            if not release_mbid:\n                # Fallback: search releases by release-group id.\n                hits = client.search_releases(f\"rgid:{rg_id}\", limit=1) or []\n                if hits and isinstance(hits[0], dict) and hits[0].get(\"id\"):\n                    release_mbid = str(hits[0][\"id\"]).strip()\n            if not release_mbid:\n                continue\n            rel = client.get_release(release_mbid, inc=\"recordings\") or {}\n            tracks: list[dict[str, Any]] = []\n            for medium in rel.get(\"media\") or []:\n                if not isinstance(medium, dict):\n                    continue\n                disc = int(medium.get(\"position\") or 1)\n                for trk in medium.get(\"tracks\") or []:\n                    if not isinstance(trk, dict):\n                        continue\n                    rec = trk.get(\"recording\") or {}\n                    tracks.append({\n                        \"disc_number\": disc,\n                        \"track_number\": trk.get(\"position\"),\n                        \"track_title\": trk.get(\"title\") or rec.get(\"title\") or \"\",\n                        \"duration\": trk.get(\"length\"),\n                        \"isrc\": trk.get(\"isrc\"),\n                        \"recording_mbid\": rec.get(\"id\") or None,\n                        \"recording_title\": rec.get(\"title\") or None,\n                    })\n            if not tracks:\n                continue\n            with db_session() as session:\n                session.execute(\n                    text(\"\"\"\n                        INSERT INTO musicbrainz_releases\n                            (release_id, release_title, artist, release_year, total_tracks,\n                             status, method, album_artist, release_source, updated_at)\n                        VALUES (:release_id, :title, :artist, :year, :total,\n                                'active', 'musicbrainz', :artist, 'missing_releases', CURRENT_TIMESTAMP)\n                        ON CONFLICT (release_id) DO UPDATE SET\n                            release_title = EXCLUDED.release_title,\n                            total_tracks = EXCLUDED.total_tracks,\n                            updated_at = CURRENT_TIMESTAMP\n                    \"\"\"),\n                    {\n                        \"release_id\": rg_id,\n                        \"title\": target.get(\"title\") or rel.get(\"title\") or \"\",\n                        \"artist\": artist,\n                        \"year\": int(str(rel.get(\"date\") or \"\")[:4]) if str(rel.get(\"date\") or \"\")[:4].isdigit() else None,\n                        \"total\": len(tracks),\n                    },\n                )\n                for t in tracks:\n                    session.execute(\n                        text(\"\"\"\n                            INSERT INTO musicbrainz_release_tracks\n                                (release_id, disc_number, track_number, track_title, duration,\n                                 isrc, recording_title, recording_mbid, album_artist, year,\n                                 status, created_at, updated_at)\n                            VALUES (:release_id, :disc, :num, :title, :duration,\n                                    :isrc, :rec_title, :rec_mbid, :album_artist, :year,\n                                    'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)\n                        \"\"\"),\n                        {\n                            \"release_id\": rg_id,\n                            \"disc\": t[\"disc_number\"],\n                            \"num\": t[\"track_number\"],\n                            \"title\": t[\"track_title\"],\n                            \"duration\": t[\"duration\"],\n                            \"isrc\": t[\"isrc\"],\n                            \"rec_title\": t[\"recording_title\"],\n                            \"rec_mbid\": t[\"recording_mbid\"],\n                            \"album_artist\": artist,\n                            \"year\": str(rel.get(\"date\") or \"\")[:4] or None,\n                        },\n                    )\n            populated += 1\n            logger.info(\"[RELEASE_CACHE] Tracklist cached for missing release %s (%s): %s tracks\", rg_id, artist, len(tracks))\n        except Exception as exc:\n            logger.debug(\"[RELEASE_CACHE] Tracklist fetch failed for %s: %s\", rg_id, exc)\n\n    return {\"populated\": populated}"
+    return {"fetched": fetched}
