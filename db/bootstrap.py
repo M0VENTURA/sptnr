@@ -165,7 +165,7 @@ def ensure_musicbrainz_album_mbid_column() -> bool: return _ensure_subset("track
 def ensure_writer_column() -> bool: return _ensure_subset("tracks", ["writer"], TRACK_COLUMNS_TO_ENSURE)
 def ensure_cover_columns() -> bool: return _ensure_subset("tracks", ("is_cover", "is_cover_reason", "original_cover_artist", "cover_manual_override", "is_live", "is_acoustic", "is_remix"), TRACK_COLUMNS_TO_ENSURE)
 def ensure_mood_columns() -> bool: return _ensure_subset("tracks", ("mood", "mood_confidence", "mood_source", "mood_last_updated"), TRACK_COLUMNS_TO_ENSURE)
-def ensure_essentia_feature_columns() -> bool: return _ensure_subset("tracks", ("danceability", "essentia_last_updated", "essentia_model_version"), TRACK_COLUMNS_TO_ENSURE)
+def ensure_essentia_feature_columns() -> bool: return _ensure_subset("tracks", ("danceability", "essentia_last_updated", "essentia_model_version", "essentia_scan_version", "bpm"), TRACK_COLUMNS_TO_ENSURE)
 def ensure_popularity_freeze_columns() -> bool: return _ensure_subset("tracks", ("popularity_frozen", "popularity_frozen_at"), TRACK_COLUMNS_TO_ENSURE)
 
 def ensure_single_detection_columns() -> bool:

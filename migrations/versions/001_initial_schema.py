@@ -116,6 +116,8 @@ def upgrade() -> None:
         sa.Column("danceability", sa.Float(), nullable=True),
         sa.Column("essentia_last_updated", sa.DateTime(), nullable=True),
         sa.Column("essentia_model_version", sa.Text(), nullable=True),
+        sa.Column("essentia_scan_version", sa.Text(), nullable=True),
+        sa.Column("bpm", sa.Float(), nullable=True),
         sa.Column("verification_status", sa.Text(), nullable=True),
         sa.Column("verification_checked_at", sa.DateTime(), nullable=True),
         sa.Column("verification_error", sa.Text(), nullable=True),

@@ -212,6 +212,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "mood": "TEXT", "mood_confidence": "DOUBLE PRECISION", "mood_source": "TEXT",
         "mood_last_updated": "TIMESTAMP", "danceability": "DOUBLE PRECISION",
         "essentia_last_updated": "TIMESTAMP", "essentia_model_version": "TEXT",
+        "essentia_scan_version": "TEXT", "bpm": "DOUBLE PRECISION",
         "verification_status": "TEXT", "verification_checked_at": "TIMESTAMP", "verification_error": "TEXT",
     },
     "artists": {

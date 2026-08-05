@@ -552,13 +552,16 @@ def run_essentia_mood_scan(
 
     try:
         cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS essentia_genres TEXT")
+        cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS essentia_scan_version TEXT")
+        cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS bpm DOUBLE PRECISION")
+        cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS danceability DOUBLE PRECISION")
         conn.commit()
     except Exception as _col_err:
         try:
             conn.rollback()
         except Exception:
             pass
-        logger.debug("Could not ensure essentia_genres column: %s", _col_err)
+        logger.debug("Could not ensure essentia columns: %s", _col_err)
 
     conditions: List[str] = [
         f"COALESCE(file_path, '') NOT LIKE {placeholder}",
