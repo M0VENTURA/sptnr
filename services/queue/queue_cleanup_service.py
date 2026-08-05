@@ -41,6 +41,38 @@ _STUCK_SEARCH_SECONDS = 300
 _STUCK_DOWNLOAD_SECONDS = 6 * 3600
 
 
+def reset_abandoned_items() -> dict[str, int]:
+    """Reset items left in 'searching'/'processing' by a previous worker.
+
+    These statuses only exist while a worker is actively processing the item,
+    so at worker startup any item still in them was abandoned by a dead or
+    restarted worker — without this they would stay invisible and unretryable
+    forever. 'downloading' items are NOT touched: the slskd transfer may still
+    be running server-side.
+    """
+    reset = 0
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = 'queued',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status IN ('searching', 'processing')
+                """)
+            )
+            reset = int(result.rowcount or 0)
+        if reset:
+            logger.warning(
+                "Reset %s abandoned queue item(s) at worker startup",
+                reset,
+            )
+        return {"abandoned_reset": reset}
+    except Exception as exc:
+        logger.exception("reset_abandoned_items failed")
+        return {"abandoned_reset": 0, "error": str(exc)}
+
+
 def cleanup_stuck_items() -> dict[str, int]:
     """Reset queue items stuck in 'searching'/'downloading'.
 

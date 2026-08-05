@@ -1613,8 +1613,8 @@ async function loadQueueStatus() {
     const countFor = (...s) => s.reduce((sum, st) => sum + Number(statusCounts[st] || 0), 0);
     const setNum = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = String(val); };
     
-    setNum('queueTotalCount', countFor('queued','searching','unmatched','pending_match','discovered','queried','matched','downloading','completed','moving','importing','failed','possible_duplicate','duplicate'));
-    setNum('queueQueuedCount', countFor('queued','searching','unmatched','pending_match','discovered','queried','matched'));
+    setNum('queueTotalCount', countFor('queued','searching','processing','unmatched','pending_match','discovered','queried','matched','downloading','completed','moving','importing','failed','possible_duplicate','duplicate'));
+    setNum('queueQueuedCount', countFor('queued','searching','processing','unmatched','pending_match','discovered','queried','matched'));
     setNum('queueActiveCount', countFor('downloading'));
     setNum('queueCompletedCount', countFor('completed'));
     setNum('queueMovingCount', countFor('moving','importing'));

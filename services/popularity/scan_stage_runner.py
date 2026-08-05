@@ -160,6 +160,8 @@ def run_scan(
     # Surface the scan mode up-front so the unified log says what is running
     # (metadata / popularity / singles / combined) and how much is queued.
     log_unified(f"[POPULARITY] Scan mode: {scan_type.capitalize()} — {total_albums} album(s) queued")
+    if force:
+        log_unified("[POPULARITY] Forced mode — album-skip and score-freeze checks are DISABLED")
 
     # Per-artist Last.fm listener-context cache (used for dynamic weighting).
     artist_lf_context_cache: dict[str, dict[str, Any]] = {}

@@ -215,11 +215,22 @@ async function loadFolderGroups(options) {
     html += '<div class="list-group list-group-flush">' + qItems.map(function(item) {
       var st = item.status || 'queued';
       var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
+      // Per-item actions: retry for failed items, delete for everything.
+      var actions = '';
+      if (st === 'failed' && typeof window.retryQueueItem === 'function') {
+        actions += '<button class="btn btn-sm btn-outline-warning py-0 px-1" title="Retry now" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+      }
+      if (typeof window.deleteQueueItem === 'function') {
+        // deleteQueueItem shows its own confirmation dialog.
+        actions += '<button class="btn btn-sm btn-outline-danger py-0 px-1" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
+      }
       return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
         '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
         (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
         (st === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +
-        '</div><span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span></div></div>';
+        '</div><div class="d-flex align-items-center gap-2 flex-shrink-0">' +
+        '<span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span>' + actions +
+        '</div></div></div>';
     }).join('') + '</div>';
   }
   if (groups.length > 0) {

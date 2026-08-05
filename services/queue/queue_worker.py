@@ -86,6 +86,15 @@ def run(interval: int | None = None, batch_size: int | None = None) -> None:
         effective_batch,
     )
 
+    # Startup recovery: items left in 'searching'/'processing' were abandoned
+    # by a previous worker instance (crash/restart) — requeue them so they
+    # are picked up again instead of staying stuck forever.
+    try:
+        from services.queue.queue_cleanup_service import reset_abandoned_items
+        reset_abandoned_items()
+    except Exception as exc:
+        logger.warning("Worker startup recovery failed: %s", exc)
+
     loop_count = 0
 
     while not _SHOULD_STOP:
