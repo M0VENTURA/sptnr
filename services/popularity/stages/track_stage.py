@@ -114,7 +114,19 @@ def process_track(
     track_title = _as_str(track.get("title"))
     track_artist = _as_str(track.get("artist"))
     from helpers.logging_config import log_unified
-    log_unified(f"[TRACK_STAGE] {track_artist} - {track_title}")
+
+    # Scan-phase label so the unified log says what is happening per track
+    # (Metadata / Popularity / Singles / Full) instead of a bare track name.
+    if options.get("metadata_only"):
+        _phase = "Metadata"
+    elif options.get("singles_only") or options.get("singles_with_missing_popularity"):
+        _phase = "Singles"
+    elif options.get("popularity_only"):
+        _phase = "Popularity"
+    else:
+        _phase = "Full"
+
+    log_unified(f"[TRACK_STAGE] {_phase}: {track_artist} - {track_title}")
     logger.debug("[TRACK_STAGE] Processing track: %s - %s (%s)", track_artist, track_title, track_id)
 
     metadata_only = bool(options.get("metadata_only"))
@@ -811,32 +823,68 @@ def process_track(
             except Exception:
                 sd_lastfm_client = None
 
-            sd_result = detect_single_for_track(
-                title=sd_title,
-                artist=sd_artist,
-                album_track_count=album_track_count,
-                popularity=sd_popularity,
-                album_type=sd_album_type or None,
-                album=sd_album,
-                isrc=effective_track.get("isrc") or None,
-                duration=(
-                    float(effective_track["duration"])
-                    if effective_track.get("duration")
-                    else None
-                ),
-                use_advanced_detection=True,
-                persist_result=False,  # We persist via track_stage
-                mb_cached_singles=mb_cached_singles,
-                discogs_cached_singles=discogs_cached_singles,
-                artist_mbid=(
-                    effective_track.get("musicbrainz_artistid")
-                    or effective_track.get("musicbrainz_artist_id")
-                ),
-                listenbrainz_listens=int(listenbrainz_listens or 0),
-                discogs_token=sd_discogs_token or None,
-                lastfm_client=sd_lastfm_client,
-                mb_client=MusicBrainzHttpClient(),
-            )
+            # Top-50% popularity gate: only tracks in the top half of album
+            # popularity are checked for singles — except compilation / Various
+            # Artists albums, where every track is checked (legacy spec).
+            _sd_eligible = True
+            if sd_popularity > 0:
+                try:
+                    _is_comp_album = bool(
+                        "compilation" in str(sd_album_type or "").lower()
+                        or "soundtrack" in str(sd_album_type or "").lower()
+                        or str(sd_artist or "").strip().lower()
+                        in ("various artists", "various", "compilation", "soundtrack")
+                        or "various artists" in str(sd_album or "").lower()
+                    )
+                    if not _is_comp_album:
+                        _album_scores = [
+                            float(t.get("popularity") or t.get("final_score") or 0)
+                            for t in (album_context.get("tracks") or [])
+                            if float(t.get("popularity") or t.get("final_score") or 0) > 0
+                        ]
+                        if len(_album_scores) >= 4:
+                            _below = sum(1 for s in _album_scores if s <= sd_popularity)
+                            if (_below / len(_album_scores)) < 0.5:
+                                _sd_eligible = False
+                                logger.debug(
+                                    "[track_stage] Singles detection skipped for %s (%s) — below top-50%% album popularity",
+                                    track_id, sd_title,
+                                )
+                except Exception:
+                    _sd_eligible = True
+
+            if _sd_eligible:
+                sd_result = detect_single_for_track(
+                    title=sd_title,
+                    artist=sd_artist,
+                    album_track_count=album_track_count,
+                    popularity=sd_popularity,
+                    album_type=sd_album_type or None,
+                    album=sd_album,
+                    isrc=effective_track.get("isrc") or None,
+                    duration=(
+                        float(effective_track["duration"])
+                        if effective_track.get("duration")
+                        else None
+                    ),
+                    use_advanced_detection=True,
+                    persist_result=False,  # We persist via track_stage
+                    mb_cached_singles=mb_cached_singles,
+                    discogs_cached_singles=discogs_cached_singles,
+                    artist_mbid=(
+                        effective_track.get("musicbrainz_artistid")
+                        or effective_track.get("musicbrainz_artist_id")
+                    ),
+                    listenbrainz_listens=int(listenbrainz_listens or 0),
+                    discogs_token=sd_discogs_token or None,
+                    lastfm_client=sd_lastfm_client,
+                    mb_client=MusicBrainzHttpClient(),
+                )
+            else:
+                sd_result = None
+                log_unified(
+                    f"[TRACK_STAGE] {track_artist} - {track_title} → single=skipped (below top-50% album popularity)"
+                )
 
             if sd_result:
                 import json as _json

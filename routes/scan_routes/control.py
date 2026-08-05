@@ -143,6 +143,8 @@ async def scan_stop_all():
         "combined_scan",
         "missing_releases_scan",
         "mp3_import",
+        "library_scan",
+        "metadata_lookup_scan",
     ]:
         request_scan_stop(get_scan_progress_path(scan_type))
 

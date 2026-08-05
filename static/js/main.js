@@ -271,6 +271,31 @@ window.openGlobalMbSearch = function(artist, album, callback, track, year) {
 // Decodes URL-encoded inline arguments and opens the canonical shared modal.
 // Some pages (album_detail.js) render buttons calling this with encoded args.
 
+// Self-contained Soulseek download helper for pages that don't load
+// downloads.js (artist/album pages) — mirrors _addMbDownloadToSession.
+window.downloadReleaseViaSoulseek = function(releaseId, title, artist) {
+    if (!confirm(`Download "${title}" by ${artist} via Soulseek?`)) return;
+    fetch('/api/musicbrainz/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            release_id: releaseId,
+            release_title: title,
+            artist: artist,
+            method: 'slskd',
+            persistent_search: false,
+            max_retries: 3,
+            session_id: null
+        })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.error) { alert('Error: ' + data.error); return; }
+        alert(`Download queued: ${title}\nTracking ID: ${data.tracking_id || 'N/A'}`);
+    })
+    .catch(function(err) { alert('Network error: ' + err.message); });
+};
+
 window.searchMusicBrainzReleaseFromEncoded = function(event, artistEnc, albumEnc) {
     const decode = function(value, fallback) {
         try {
@@ -283,8 +308,11 @@ window.searchMusicBrainzReleaseFromEncoded = function(event, artistEnc, albumEnc
     if (event && event.preventDefault) event.preventDefault();
     if (event && event.stopPropagation) event.stopPropagation();
     window.openGlobalMbSearch(artist, album, function(selectedRelease) {
-        if (selectedRelease && typeof window.downloadMbRelease === 'function') {
+        if (!selectedRelease) return;
+        if (typeof window.downloadMbRelease === 'function') {
             window.downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
+        } else if (typeof window.downloadReleaseViaSoulseek === 'function') {
+            window.downloadReleaseViaSoulseek(selectedRelease.id, selectedRelease.title, selectedRelease.artist);
         }
     });
 };

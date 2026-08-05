@@ -217,6 +217,11 @@ const SCAN_TYPE_DISPLAY_NAMES = {
   essentia_mood_scan: "Essentia Mood Scan",
   combined_scan: "Combined Scan",
   missing_releases_scan: "Missing Releases Scan",
+  artist: "Artist Scan",
+  artist_scan: "Artist Scan",
+  full: "Full Scan",
+  full_scan: "Full Scan",
+  force: "Forced Full Scan",
 };
 
 function parseScanTimestamp(ts) {
@@ -333,16 +338,31 @@ function renderRecentScans(scans) {
       if (st._inProgress) return '<span class="badge bg-primary"><span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span> Scanning…</span>';
       const typeMap = {
         navidrome: '<i class="bi bi-cloud"></i> Navidrome',
+        navidrome_scan: '<i class="bi bi-cloud"></i> Navidrome',
         popularity: '<i class="bi bi-graph-up"></i> Popularity',
+        popularity_scan: '<i class="bi bi-graph-up"></i> Popularity',
         metadata: '<i class="bi bi-info-circle"></i> Metadata',
         metadata_lookup_scan: '<i class="bi bi-info-circle"></i> Metadata',
         singles: '<i class="bi bi-star"></i> Singles',
+        singles_scan: '<i class="bi bi-star"></i> Singles',
+        singles_detection: '<i class="bi bi-star"></i> Singles',
         mood: '<i class="bi bi-emoji-smile"></i> Mood',
+        mood_scan: '<i class="bi bi-emoji-smile"></i> Mood',
         "essentia-mood": '<i class="bi bi-cpu"></i> Essentia',
+        essentia: '<i class="bi bi-cpu"></i> Essentia',
+        essentia_mood_scan: '<i class="bi bi-cpu"></i> Essentia',
         combined: '<i class="bi bi-lightning-fill"></i> Combined',
-        unified: '<i class="bi bi-layers"></i> Unified'
+        combined_scan: '<i class="bi bi-lightning-fill"></i> Combined',
+        unified: '<i class="bi bi-layers"></i> Unified',
+        artist: '<i class="bi bi-person"></i> Artist',
+        artist_scan: '<i class="bi bi-person"></i> Artist',
+        full: '<i class="bi bi-collection"></i> Full',
+        full_scan: '<i class="bi bi-collection"></i> Full',
+        force: '<i class="bi bi-collection"></i> Forced',
+        all: '<i class="bi bi-collection"></i> Full',
+        missing_releases_scan: '<i class="bi bi-calendar-plus"></i> Missing Releases'
       };
-      const badgeClass = { navidrome: 'bg-primary', popularity: 'bg-success', metadata: 'bg-info text-dark', singles: 'bg-warning text-dark', mood: 'bg-secondary', "essentia-mood": 'bg-purple', combined: 'bg-info text-dark', unified: 'bg-secondary' }[st.type] || 'bg-secondary';
+      const badgeClass = { navidrome: 'bg-primary', navidrome_scan: 'bg-primary', popularity: 'bg-success', popularity_scan: 'bg-success', metadata: 'bg-info text-dark', metadata_lookup_scan: 'bg-info text-dark', singles: 'bg-warning text-dark', singles_scan: 'bg-warning text-dark', singles_detection: 'bg-warning text-dark', mood: 'bg-secondary', mood_scan: 'bg-secondary', "essentia-mood": 'bg-purple', essentia: 'bg-purple', essentia_mood_scan: 'bg-purple', combined: 'bg-info text-dark', combined_scan: 'bg-info text-dark', unified: 'bg-secondary', artist: 'bg-primary', artist_scan: 'bg-primary', full: 'bg-secondary', full_scan: 'bg-secondary', force: 'bg-secondary', all: 'bg-secondary', missing_releases_scan: 'bg-info text-dark' }[st.type] || 'bg-secondary';
       return `<span class="badge ${badgeClass}" title="${escapeHtml(st.timestamp || '')}">${typeMap[st.type] || escapeHtml(st.type)}</span>`;
     }).join(" ");
 
@@ -536,7 +556,7 @@ function updateActiveScans() {
         return `
           <div class="mb-2">
             <div class="d-flex justify-content-between align-items-center mb-1">
-              <span><i class="bi bi-activity me-1"></i><strong>${escapeHtml(scan.scan_type)}</strong>
+              <span><i class="bi bi-activity me-1"></i><strong>${escapeHtml(SCAN_TYPE_DISPLAY_NAMES[scan.scan_type] || scan.scan_type)}</strong>
               ${scan.message ? `<span class="text-muted small ms-2">${escapeHtml(scan.message)}</span>` : ''}</span>
               <span class="small text-muted">${scan.processed_items || 0}/${scan.total_items || "?"}</span>
             </div>

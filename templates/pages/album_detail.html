@@ -1040,6 +1040,24 @@
 <script src="{{ url_for('static', filename='js/album_detail.js') }}"></script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 
+<!-- Missing Tracks (MusicBrainz release vs library) -->
+<div class="card mb-4" id="album-missing-tracks-section">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h5 class="card-title mb-0"><i class="bi bi-plus-slash-minus"></i> Missing Tracks</h5>
+    <div class="d-flex align-items-center gap-2">
+      <span id="albumMissingCount" class="badge bg-warning text-dark">–</span>
+      <button type="button" class="btn btn-sm btn-outline-primary" onclick="loadAlbumMissingTracks()">
+        <i class="bi bi-arrow-clockwise"></i> Check
+      </button>
+    </div>
+  </div>
+  <div class="card-body">
+    <div id="albumMissingTracksBody" class="text-muted small">
+      Checking the MusicBrainz release tracklist against the library...
+    </div>
+  </div>
+</div>
+
 {# Component modals #}
 {% include 'components/modals/_track_edit.html' %}
 {% include 'components/modals/_album_lookup.html' %}

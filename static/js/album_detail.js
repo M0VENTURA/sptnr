@@ -2621,98 +2621,6 @@ var _pageData = window._pageData || {};
     let editTrackCurrentGenres = [];
     let editTrackModalInstance = null;
 
-    const ALBUM_MODAL_ADVANCED_FIELDS = [
-        { name: 'titlesort', label: 'Title Sort' },
-        { name: 'albumsort', label: 'Album Sort' },
-        { name: 'artistsort', label: 'Artist Sort' },
-        { name: 'composersort', label: 'Composer Sort' },
-        { name: 'albumartistsort', label: 'Album Artist Sort' },
-        { name: 'lyricistsort', label: 'Lyricist Sort' },
-        { name: 'artistssort', label: 'Artists Sort' },
-        { name: 'albumartistssort', label: 'Album Artists Sort' },
-        { name: 'artists', label: 'Artists (multi)' },
-        { name: 'albumartists', label: 'Album Artists (multi)' },
-        { name: 'conductor', label: 'Conductor' },
-        { name: 'performer', label: 'Performer' },
-        { name: 'director', label: 'Director' },
-        { name: 'djmixer', label: 'DJ Mixer' },
-        { name: 'engineer', label: 'Engineer' },
-        { name: 'remixer', label: 'Remixer' },
-        { name: 'lyricist', label: 'Lyricist' },
-        { name: 'albumversion', label: 'Album Version' },
-        { name: 'recordlabel', label: 'Record Label' },
-        { name: 'copyright', label: 'Copyright' },
-        { name: 'releasedate', label: 'Release Date' },
-        { name: 'releasetype', label: 'Release Type' },
-        { name: 'releasestatus', label: 'Release Status' },
-        { name: 'releasecountry', label: 'Release Country' },
-        { name: 'media', label: 'Media Format' },
-        { name: 'barcode', label: 'Barcode' },
-        { name: 'catalognumber', label: 'Catalog Number' },
-        { name: 'asin', label: 'ASIN' },
-        { name: 'originalyear', label: 'Original Year' },
-        { name: 'originaldate', label: 'Original Date' },
-        { name: 'tracktotal', label: 'Track Total' },
-        { name: 'disctotal', label: 'Disc Total' },
-        { name: 'script', label: 'Script' },
-        { name: 'discsubtitle', label: 'Disc Subtitle' },
-        { name: 'subtitle', label: 'Subtitle' },
-        { name: 'grouping', label: 'Grouping' },
-        { name: 'movement', label: 'Movement' },
-        { name: 'movementname', label: 'Movement Name' },
-        { name: 'movementtotal', label: 'Movement Total' },
-        { name: 'key', label: 'Musical Key' },
-        { name: 'language', label: 'Language' },
-        { name: 'license', label: 'License' },
-        { name: 'website', label: 'Website' },
-        { name: 'encodedby', label: 'Encoded By' },
-        { name: 'encodersettings', label: 'Encoder Settings' },
-        { name: 'explicitstatus', label: 'Explicit Status' },
-        { name: 'musicbrainz_albumid', label: 'MusicBrainz Album ID' },
-        { name: 'musicbrainz_artistid', label: 'MusicBrainz Artist ID' },
-        { name: 'musicbrainz_albumartistid', label: 'MusicBrainz Album Artist ID' },
-        { name: 'musicbrainz_releasegroupid', label: 'MusicBrainz Release Group ID' },
-        { name: 'musicbrainz_releasetrackid', label: 'MusicBrainz Release Track ID' },
-        { name: 'musicbrainz_workid', label: 'MusicBrainz Work ID' },
-        { name: 'replaygain_track_gain', label: 'ReplayGain Track Gain' },
-        { name: 'replaygain_track_peak', label: 'ReplayGain Track Peak' },
-        { name: 'replaygain_album_gain', label: 'ReplayGain Album Gain' },
-        { name: 'replaygain_album_peak', label: 'ReplayGain Album Peak' },
-        { name: 'r128_track_gain', label: 'R128 Track Gain' },
-        { name: 'r128_album_gain', label: 'R128 Album Gain' },
-        { name: 'lyrics', label: 'Lyrics', type: 'textarea' }
-    ];
-
-    function renderAlbumAdvancedTrackFields(trackData) {
-        const container = document.getElementById('editTrackAdvancedFields');
-        if (!container) return;
-
-        container.innerHTML = ALBUM_MODAL_ADVANCED_FIELDS.map(def => {
-            const fieldId = `editTrackAdv_${def.name}`;
-            if (def.type === 'textarea') {
-                return `
-                    <div class="col-12">
-                        <label for="${fieldId}" class="form-label">${def.label}</label>
-                        <textarea class="form-control" id="${fieldId}" rows="4"></textarea>
-                    </div>
-                `;
-            }
-            return `
-                <div class="col-md-6">
-                    <label for="${fieldId}" class="form-label">${def.label}</label>
-                    <input type="text" class="form-control" id="${fieldId}">
-                </div>
-            `;
-        }).join('');
-
-        ALBUM_MODAL_ADVANCED_FIELDS.forEach(def => {
-            const el = document.getElementById(`editTrackAdv_${def.name}`);
-            if (el) {
-                el.value = trackData?.[def.name] || '';
-            }
-        });
-    }
-
     // Open comprehensive track edit modal
     function openComprehensiveEditTrackModal(trackId, trackData) {
         // Set track ID
@@ -2981,11 +2889,72 @@ var _pageData = window._pageData || {};
     // Genre sources are now pre-rendered server-side from database data populated during scans.
     // External source fetching only happens during the popularity/singles detection scan.
 
+    async function loadAlbumMissingTracks() {
+        const body = document.getElementById('albumMissingTracksBody');
+        const countEl = document.getElementById('albumMissingCount');
+        if (!body) return;
+        const artist = (_pageData && _pageData.artistName) || '';
+        const album = (_pageData && _pageData.albumName) || '';
+        if (!artist || !album) {
+            body.innerHTML = '<span class="text-danger">Missing artist/album context.</span>';
+            return;
+        }
+        body.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Checking MusicBrainz tracklist...';
+        try {
+            const resp = await fetch(`/api/album/missing-tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            const missing = data.missing_tracks || [];
+            if (countEl) countEl.textContent = missing.length + ' missing';
+            if (missing.length === 0) {
+                body.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> All tracks from the MusicBrainz release are in your library.</span>';
+                return;
+            }
+            body.innerHTML = '<div class="table-responsive"><table class="table table-sm table-dark table-striped mb-0">' +
+                '<thead><tr><th style="width:50px">#</th><th>Track</th><th class="text-center" style="width:220px">Action</th></tr></thead><tbody>' +
+                missing.map(t => {
+                    return '<tr>' +
+                        '<td class="text-center text-muted">' + escapeHtml(String(t.track_number || '')) + '</td>' +
+                        '<td>' + escapeHtml(t.title || '—') + '</td>' +
+                        '<td class="text-center">' +
+                            '<button class="btn btn-sm btn-outline-warning" onclick="queueMissingAlbumTrack(' +
+                                `'${escapeJsString(t.title || '')}', '${escapeJsString(artist)}', '${escapeJsString(album)}'` +
+                            ')"><i class="bi bi-search"></i> Search / Download (Soulseek)</button>' +
+                        '</td></tr>';
+                }).join('') +
+                '</tbody></table></div>' +
+                `<small class="text-muted">${data.mb_total || 0} tracks on the MusicBrainz release · ${data.library_count || 0} in your library</small>`;
+        } catch (err) {
+            body.innerHTML = '<span class="text-danger">Error: ' + escapeHtml(err.message) + '</span>';
+        }
+    }
+
+    async function queueMissingAlbumTrack(title, artist, album) {
+        if (!confirm(`Queue "${title}" via Soulseek?`)) return;
+        try {
+            const resp = await fetch('/api/queue/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ artist: artist, title: title, album: album, source: 'soulseek', priority: 5 })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (data && data.success) {
+                alert('Queued: ' + title);
+            } else {
+                alert('Error: ' + ((data && data.error) || 'Failed to queue'));
+            }
+        } catch (err) {
+            alert('Network error: ' + err.message);
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         const artist = _pageData.artistName;
         if (artist && artist.length > 0) {
             loadSimilarArtistsForAlbum(artist);
         }
+        // Populate the missing-tracks section on page load (old-system parity).
+        loadAlbumMissingTracks();
     });
 
     // Similar Artists Loading

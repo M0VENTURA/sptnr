@@ -157,6 +157,10 @@ def run_scan(
     # Resolved once up-front (used for history records and skip checks).
     scan_type = _resolve_scan_type(options)
 
+    # Surface the scan mode up-front so the unified log says what is running
+    # (metadata / popularity / singles / combined) and how much is queued.
+    log_unified(f"[POPULARITY] Scan mode: {scan_type.capitalize()} — {total_albums} album(s) queued")
+
     # Per-artist Last.fm listener-context cache (used for dynamic weighting).
     artist_lf_context_cache: dict[str, dict[str, Any]] = {}
 
@@ -189,6 +193,9 @@ def run_scan(
     # follow progress through the alphabet in the unified log.
     _last_letter: str | None = None
 
+    # Album-completion quarter tracking (25/50/75/100% progress logs).
+    _last_quarter = 0
+
     for album_index, album_row in enumerate(albums, start=1):
 
         # ✅ Graceful stop support
@@ -211,7 +218,11 @@ def run_scan(
         # ── Album skip (album_skip_days + skip-if-unchanged) ────────────
         # Mirrors the legacy scanner: albums already scanned within the
         # configured window, or whose tracks are all scored + singles
-        # assessed, are skipped unless forced or explicitly filtered.
+        # assessed, are skipped unless forced or explicitly targeted via
+        # album_filter (a single-album scan always processes).
+        # NOTE: artist-filtered scans (artist page / full library scan) DO
+        # honour the timestamp skip — non-forced runs are incremental and
+        # only re-process albums that changed or were never scored.
         skip_album = False
         if not force and not album_filter and not metadata_only:
             try:
@@ -236,6 +247,9 @@ def run_scan(
         # ── Per-artist progress checkpoint ───────────────────────────────
         # Mirrors the legacy scanner: persist an in-progress checkpoint once
         # per artist so an interrupted scan can resume from this point.
+        # NOTE: the progress write must NOT include stop_requested=False —
+        # that would wipe a dashboard stop request before the loop's next
+        # stop check ever runs.
         if effective_stop_file and artist and artist != last_checkpoint_artist:
             try:
                 write_progress_with_current_artist(
@@ -243,9 +257,12 @@ def run_scan(
                     "popularity_scan",
                     True,
                     current_artist=artist,
-                    extra={"status": "running", "stop_requested": False},
+                    extra={"status": "running"},
                 )
-                save_artist_scan_checkpoint(artist, effective_stop_file)
+                # Only full-library scans persist resume checkpoints —
+                # targeted artist/album scans must not move the resume point.
+                if not artist_filter and not album_filter:
+                    save_artist_scan_checkpoint(artist, effective_stop_file)
                 last_checkpoint_artist = artist
             except Exception as exc:
                 logger.debug("[scan_runner] Progress checkpoint write failed: %s", exc)
@@ -453,7 +470,7 @@ def run_scan(
 
         # ✅ FIXED: Now properly counting track_contexts instead of the empty album_context array
         album_count = len(track_contexts)
-        log_unified(f"[POPULARITY] Album {album_index}/{total_albums}: {artist} - {album} ({album_count} tracks)")
+        log_unified(f"[POPULARITY] Album {album_index}/{total_albums} ({scan_type}): {artist} - {album} ({album_count} tracks)")
 
         for track_context in track_contexts:
             prepared_track = apply_context_fields_to_track(track_context)
@@ -557,6 +574,16 @@ def run_scan(
             pass  # Non-critical — dashboard data is best-effort
 
         albums_processed += 1
+
+        # ── Album-level progress quarters ────────────────────────────────
+        # Log 25/50/75/100% as albums complete, so the unified log shows
+        # overall scan progress (not just "Album N/M").
+        _quarter = (albums_processed * 4) // total_albums
+        if _quarter > _last_quarter:
+            _last_quarter = _quarter
+            log_unified(
+                f"[POPULARITY] {_quarter * 25}% complete ({albums_processed}/{total_albums} albums processed)"
+            )
 
     # Nothing was processed (all albums skipped): surface it so the missing
     # finalise output is explainable, not silent.

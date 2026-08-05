@@ -178,6 +178,10 @@ def _build_targeted_popularity_kwargs(
     kwargs: dict[str, Any] = {
         "verbose": True,
         "force": force,
+        # Targeted scans honour dashboard stop requests: the runner checks
+        # is_stop_requested(progress_file) per album, and the dashboard
+        # stop-all button flags "popularity_scan".
+        "progress_file": "popularity_scan",
     }
 
     if artist:

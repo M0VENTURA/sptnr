@@ -105,13 +105,26 @@ def run_album_pipeline(artist_name: str, album_name: str, force: bool = False) -
         from services.popularity.pipeline import run_popularity_scan as popularity_scan
 
         log_unified(f"Step 2/3: Metadata enrichment for album '{album_display}'")
-        popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name, metadata_only=True)
+        popularity_scan(
+            verbose=True,
+            force=force,
+            artist_filter=artist_name,
+            album_filter=album_name,
+            metadata_only=True,
+            progress_file="popularity_scan",
+        )
 
         # Popularity scoring for THIS album only (album-filtered), so a
         # single-album scan does not walk the artist's entire catalogue.
         # Artist-wide scans are still available from the dashboard.
         log_unified(f"Step 2b/3: Popularity scan for album '{album_display}'")
-        popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
+        popularity_scan(
+            verbose=True,
+            force=force,
+            artist_filter=artist_name,
+            album_filter=album_name,
+            progress_file="popularity_scan",
+        )
 
         log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
         _maybe_auto_detect_album_type(artist_name, album_name)

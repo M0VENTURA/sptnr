@@ -88,22 +88,32 @@ def run_artist_scan_pipeline(artist_name: str, force: bool = False):
     try:
         log_unified(f"Artist scan started: {artist_name}")
 
-        scan_artist_to_db(artist_name, artist_id=None, verbose=True, force=force)
+        # Navidrome import — scoped to THIS artist.  The artist_id is
+        # required: scan_artist_to_db silently no-ops when it is None.
+        # progress_file wires dashboard stop requests into the import loop.
+        from db.repositories.scan_repository import lookup_artist_id
+        artist_id = lookup_artist_id(artist_name)
+        if artist_id:
+            scan_artist_to_db(artist_name, artist_id, verbose=True, force=force, progress_file="navidrome_scan")
+        else:
+            log_unified(f"Navidrome import skipped for '{artist_name}' (no Navidrome artist ID found)")
 
-        # metadata first pass
-        
+        # metadata first pass — scoped to this artist only (artist_filter,
+        # NOT resume_from, which would scan the whole library onwards)
         run_popularity_scan(
             verbose=True,
             force=force,
-            resume_from=artist_name,
+            artist_filter=artist_name,
             metadata_only=True,
+            progress_file="popularity_scan",
         )
 
-        # scoring pass
+        # scoring pass (combined) — scoped to this artist only
         run_popularity_scan(
             verbose=True,
             force=force,
-            resume_from=artist_name,
+            artist_filter=artist_name,
+            progress_file="popularity_scan",
         )
 
         # optional essentia

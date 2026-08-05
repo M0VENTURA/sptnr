@@ -38,7 +38,7 @@ from services.scanning.cleanup import (
 )
 from services.scanning.filters import should_skip_album, should_skip_cached_album
 from services.scanning.metadata_extractor import extract_track_metadata
-from services.scanning.payload_builder import build_track_payload
+from services.scanning.scan_state import is_stop_requestedfrom services.scanning.payload_builder import build_track_payload
 
 VA_ALBUM_ARTIST_VARIANTS = frozenset({
     "various artists", "various", "v/a", "va", "compilation", "original soundtrack",
@@ -317,6 +317,12 @@ def scan_artist_to_db(
 
         for album_index, album in enumerate(albums, 1):
             album_name = album.get("name") or ""
+
+            # Honour dashboard stop requests (stop-all / stop-navidrome) so
+            # the artist import halts cleanly instead of draining every album.
+            if progress_file and is_stop_requested(progress_file):
+                log_unified(f"Navidrome Import - Stop requested — import halted for '{artist_name}'")
+                break
 
             if should_skip_album(
                 album_name=album_name,
