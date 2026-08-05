@@ -52,7 +52,11 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
     resume_hit = False if resume_from else True
 
     for artist in artists:
-        if artist_filter and artist != artist_filter:
+        # Case-insensitive match — the artist/album pages render with LOWER()
+        # queries, so URL casing can differ from the stored name; a
+        # case-sensitive filter here silently produces zero candidates
+        # ("No tracks found") for such scans.
+        if artist_filter and artist.lower().strip() != artist_filter.lower().strip():
             continue
 
         if not resume_hit:
@@ -72,7 +76,7 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
         albums = get_albums_for_artist(artist)
 
         for album in albums:
-            if album_filter and album != album_filter:
+            if album_filter and album.lower().strip() != album_filter.lower().strip():
                 continue
 
             # -----------------------------------------------------------------
