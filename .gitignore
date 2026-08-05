@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+venv/
+
+# Logs
+*.log
+helpers/logs/
+
+# Build / test
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Env / secrets
+.env
+config.yaml

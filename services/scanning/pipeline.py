@@ -176,7 +176,7 @@ def start_library_scan(
     Returns:
         A dict with ``success`` and ``message`` keys.
     """
-    if not resume:
+    if not resume or force:
         from services.scanning.scan_state import clear_scan_checkpoint
         clear_scan_checkpoint()
 
@@ -211,7 +211,10 @@ def run_full_library_scan(force: bool = False):
 
         artists = list((build_artist_index() or {}).items())
 
-        checkpoint = load_scan_checkpoint(checkpoint_path)
+        # A forced scan always starts from the top of the library — a resume
+        # checkpoint left behind by a single-artist scan must never truncate
+        # it (legacy: force disables the timestamp/score skips).
+        checkpoint = load_scan_checkpoint(checkpoint_path) if not force else {}
         resume_from = checkpoint.get("last_scanned_artist")
 
         resume_mode = bool(resume_from)

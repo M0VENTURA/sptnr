@@ -15,7 +15,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from db.repositories import popularity_cache as cache_repo
-from services.popularity.popularity_matching import normalize_for_aggregation
+from services.popularity.popularity_matching import (
+    get_primary_artist_preserve_case,
+    normalize_for_aggregation,
+)
 from services.popularity.popularity_sources import (
     extract_recording_mbid,
     get_listenbrainz_batch_for_tracks,
@@ -92,10 +95,16 @@ def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, i
     plain title still picks up the high-listen feat. single.  The title kept
     for display is the version with the most listeners.
     """
-    if artist in _lf_top_tracks_cache:
-        return _lf_top_tracks_cache[artist]
     try:
-        top_tracks = lastfm_client.get_artist_top_tracks(artist, limit=200) or []
+        # Use the PRIMARY artist for the API call — Last.fm does not recognise
+        # "dArtagnan feat. Melissa Bonny" as an artist name, so calling with
+        # the raw credit returns an empty top-tracks list and the feat.
+        # single's real popularity never reaches the cache.
+        primary = get_primary_artist_preserve_case(artist) or artist
+        cache_key = primary.casefold().strip() or artist
+        if cache_key in _lf_top_tracks_cache:
+            return _lf_top_tracks_cache[cache_key]
+        top_tracks = lastfm_client.get_artist_top_tracks(primary, limit=200) or []
     except Exception as exc:
         logger.debug("[popularity_cache] artist.getTopTracks failed for %s: %s", artist, exc)
         return {}
@@ -122,8 +131,8 @@ def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, i
     for key, counts in acc.items():
         out[key] = dict(counts)
         titles[key] = best.get(key, (0, key))[1]
-    _lf_top_tracks_cache[artist] = out
-    _lf_top_tracks_titles[artist] = titles
+    _lf_top_tracks_cache[cache_key] = out
+    _lf_top_tracks_titles[cache_key] = titles
     return out
 
 
@@ -214,6 +223,10 @@ def prefetch_artist_popularity(
             if t.get("title")
         )
 
+    # The top-tracks call and its module cache are keyed by the PRIMARY artist
+    # (feat. suffix stripped) — mirror the key used in ``_lf_top_tracks_map``.
+    _lf_cache_key = (get_primary_artist_preserve_case(artist) or artist).casefold().strip() or artist
+
     # 2. Last.fm: one bulk call, only when some title lacks LF data.
     if lastfm_client is not None and _missing("lastfm_listeners"):
         lf_map = _lf_top_tracks_map(lastfm_client, artist)
@@ -230,7 +243,7 @@ def prefetch_artist_popularity(
         # so later scans of any album by this artist hit the cache instead
         # of doing per-track Last.fm lookups.
         if cache_full_catalogue and not force and not cached:
-            title_by_key_lf = _lf_top_tracks_titles.get(artist) or {}
+            title_by_key_lf = _lf_top_tracks_titles.get(_lf_cache_key) or {}
             for key, counts in lf_map.items():
                 if key in entries:
                     continue
@@ -260,7 +273,7 @@ def prefetch_artist_popularity(
     # 4. Persist ONLY new/changed rows — unchanged counts keep their
     #    ``updated_at`` and stay fresh longer.
     title_by_key = {_norm(t["title"]): t["title"] for t in tracks if t.get("title")}
-    lf_titles = _lf_top_tracks_titles.get(artist) or {}
+    lf_titles = _lf_top_tracks_titles.get(_lf_cache_key) or {}
     rows_to_upsert = []
     for key, entry in entries.items():
         if not entry:

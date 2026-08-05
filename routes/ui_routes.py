@@ -2097,26 +2097,22 @@ async def track_detail(track_id: str):
                         rec_err,
                     )
 
-            # Favourite status.
+            # Favourite status.  Tracks are favourited as bookmark rows with
+            # type='track_favourite' and name=<track id> (see track_routes.py);
+            # the bookmarks table has no track_id column.
             is_track_favourite = False
             try:
-                if "bookmarks" in {
-                    "bookmarks",
-                }:
-                    fav_result = db.execute(
-                        text("""
-                            SELECT 1
-                            FROM bookmarks
-                            WHERE type = :type
-                              AND CAST(track_id AS TEXT) = :track_id
-                            LIMIT 1
-                        """),
-                        {
-                            "type": "track",
-                            "track_id": str(track_id),
-                        },
-                    )
-                    is_track_favourite = fav_result.fetchone() is not None
+                fav_result = db.execute(
+                    text("""
+                        SELECT 1
+                        FROM bookmarks
+                        WHERE type = 'track_favourite'
+                          AND LOWER(name) = LOWER(:track_id)
+                        LIMIT 1
+                    """),
+                    {"track_id": str(track_id)},
+                )
+                is_track_favourite = fav_result.fetchone() is not None
             except Exception as fav_err:
                 logger.debug(
                     "Track favourite check failed for %s: %s",
