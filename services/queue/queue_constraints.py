@@ -21,6 +21,7 @@ from __future__ import annotations
 ACTIVE_QUEUE_STATUSES: frozenset[str] = frozenset({
     "queued",
     "searching",
+    "processing",
     "downloading",
     "unmatched",
     "queried",
@@ -31,6 +32,7 @@ ACTIVE_QUEUE_STATUSES: frozenset[str] = frozenset({
 PROCESSING_STATUSES: frozenset[str] = frozenset({
     "queued",
     "searching",
+    "processing",
     "downloading",
 })
 
@@ -85,6 +87,7 @@ TERMINAL_QUEUE_STATUSES: frozenset[str] = frozenset({
 ALL_QUEUE_STATUSES: frozenset[str] = frozenset({
     "queued",
     "searching",
+    "processing",
     "downloading",
     "matched",
     "completed",
@@ -119,6 +122,11 @@ STATUS_DISPLAY_CONFIG: dict[str, dict[str, str]] = {
         "label": "Searching",
         "css": "bg-warning text-dark",
         "icon": "search",
+    },
+    "processing": {
+        "label": "Processing",
+        "css": "bg-info",
+        "icon": "arrow-repeat",
     },
     "downloading": {
         "label": "Downloading",

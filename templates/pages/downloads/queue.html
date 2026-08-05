@@ -2510,13 +2510,13 @@ async function loadQueueStatus() {
     const imported = importedData.success ? (importedData.imported || []) : [];
 
     // Separate items by status
-    const active = data.active.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
+    const active = data.active.filter(item => ['queued', 'searching', 'processing', 'downloading'].includes(item.status));
     const completed = data.completed.filter(item => ['completed', 'unmatched', 'possible_duplicate', 'moving'].includes(item.status) && item.file_path);
     const failed = data.active.filter(item => item.status === 'failed');
 
     // ── Update stats bar ──
     const countQueued = active.filter(i => i.status === 'queued').length;
-    const countActive = active.filter(i => ['searching','downloading'].includes(i.status)).length;
+    const countActive = active.filter(i => ['searching','processing','downloading'].includes(i.status)).length;
     const setNum = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
     setNum('statQueuedNum', countQueued);
     setNum('statDownloadingNum', countActive + data.newly_completed.length);

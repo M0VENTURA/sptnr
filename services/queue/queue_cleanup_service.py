@@ -53,6 +53,7 @@ def cleanup_stuck_items() -> dict[str, int]:
     """
     searching_reset = 0
     downloading_reset = 0
+    processing_reset = 0
     try:
         now = datetime.utcnow()
 
@@ -70,6 +71,23 @@ def cleanup_stuck_items() -> dict[str, int]:
             )
             searching_reset = int(result.rowcount or 0)
 
+        # Stuck 'processing' (mid-search, worker crashed) → back to 'queued'.
+        # The pipeline marks items 'processing' for the duration of the
+        # Soulseek search, so a crash leaves them invisible AND unretryable;
+        # the same 5-minute cutoff as 'searching' applies.
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = 'queued',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = 'processing'
+                      AND updated_at < :cutoff
+                """),
+                {"cutoff": (now - timedelta(seconds=_STUCK_SEARCH_SECONDS)).isoformat()},
+            )
+            processing_reset = int(result.rowcount or 0)
+
         # Stuck 'downloading' → failed (the watcher never confirmed it).
         with db_session() as session:
             result = session.execute(
@@ -85,16 +103,16 @@ def cleanup_stuck_items() -> dict[str, int]:
             )
             downloading_reset = int(result.rowcount or 0)
 
-        if searching_reset or downloading_reset:
+        if searching_reset or downloading_reset or processing_reset:
             logger.warning(
-                "Reset stuck queue items — searching=%s, downloading=%s",
-                searching_reset, downloading_reset,
+                "Reset stuck queue items — searching=%s, processing=%s, downloading=%s",
+                searching_reset, processing_reset, downloading_reset,
             )
-        return {"searching_reset": searching_reset, "downloading_reset": downloading_reset}
+        return {"searching_reset": searching_reset, "processing_reset": processing_reset, "downloading_reset": downloading_reset}
 
     except Exception as exc:
         logger.exception("cleanup_stuck_items failed")
-        return {"searching_reset": 0, "downloading_reset": 0, "error": str(exc)}
+        return {"searching_reset": 0, "processing_reset": 0, "downloading_reset": 0, "error": str(exc)}
 
 
 def queue_cleanup():
