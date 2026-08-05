@@ -218,6 +218,7 @@ async function loadFolderGroups(options) {
       return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
         '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
         (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+        (st === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +
         '</div><span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span></div></div>';
     }).join('') + '</div>';
   }

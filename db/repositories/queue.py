@@ -468,11 +468,35 @@ def get_completed_by_group(group_id: str) -> List[Dict[str, Any]]:
 # =============================================================================
 
 def mark_failed(queue_id: int, reason: str) -> Optional[Dict[str, Any]]:
-    return update_queue_item(
-        queue_id,
-        status="failed",
-        failure_reason=reason
-    )
+    """Mark a queue item failed with a reason.
+
+    Also sets ``next_retry_at`` when unset (now + retry_delay_minutes) so the
+    automatic retry scheduler backs off instead of requeueing the item on the
+    very next worker cycle — ``requeue_due_failed_items`` treats a NULL
+    ``next_retry_at`` as immediately due, which made fresh failures churn
+    failed → queued → failed every cycle.
+    """
+    try:
+        with db_session() as session:
+            session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = 'failed',
+                        failure_reason = :reason,
+                        next_retry_at = COALESCE(
+                            next_retry_at,
+                            CURRENT_TIMESTAMP
+                                + (COALESCE(retry_delay_minutes, 30) * INTERVAL '1 minute')
+                        ),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :qid
+                """),
+                {"qid": queue_id, "reason": reason},
+            )
+        return {"success": True, "id": queue_id}
+    except Exception as exc:
+        logger.error("[mark_failed] %s", exc)
+        return None
 
 def mark_imported(queue_id: int, target_path: str) -> Optional[Dict[str, Any]]:
     return update_queue_item(

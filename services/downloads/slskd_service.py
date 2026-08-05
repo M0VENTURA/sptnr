@@ -258,22 +258,39 @@ class SlskdService:
         qualified.sort(key=lambda item: (-item["bitrate"], -item["sample_rate"]))
         return qualified[:max_results]
 
-    def search_and_filter(self, query: str, min_bitrate: int | None = None, wait_seconds: int = 5, poll_interval: float = 1.0, timeout: Optional[int] = None) -> list[dict]:
+    def search_and_filter(self, query: str, min_bitrate: int | None = None, wait_seconds: int | None = None, poll_interval: float = 1.0, timeout: Optional[int] = None) -> list[dict]:
         if min_bitrate is None:
             from helpers.config_helpers import get_search_quality_config
             min_bitrate = get_search_quality_config()["min_bitrate"]
+        if wait_seconds is None:
+            # Legacy parity: Soulseek distributed searches commonly take
+            # 10-30s+ to populate.  The old queue processor waited up to
+            # _SLSKD_SEARCH_MAX_WAIT_SECONDS (150s) — a short wait gives up
+            # before results arrive and fails every queued item instantly
+            # with "no_results".
+            from helpers.config_helpers import _SLSKD_SEARCH_MAX_WAIT_SECONDS
+            wait_seconds = _SLSKD_SEARCH_MAX_WAIT_SECONDS
         search_id = self.start_search(query, timeout=timeout)
         if not search_id:
             return []
-        start = time.time()
-        while time.time() - start < wait_seconds:
+        # Progressive poll backoff (legacy parity): 1s for the first 5 polls
+        # (~5s), 2s for the next 5 (~15s total), then 5s intervals — for a
+        # 150s search this cuts ~150 polls down to ~30 without meaningfully
+        # reducing result quality.  Stop early once the search completes.
+        deadline = time.time() + max(0, int(wait_seconds or 0))
+        poll_attempt = 0
+        while True:
+            delay = 1.0 if poll_attempt < 5 else (2.0 if poll_attempt < 10 else 5.0)
+            poll_attempt += 1
+            if time.time() + delay > deadline:
+                break
+            time.sleep(delay)
             responses, _state, is_complete = self.get_search_results(search_id, timeout=timeout)
             qualified = self.filter_results_by_quality(responses, min_bitrate=min_bitrate)
             if qualified:
                 return qualified
             if is_complete:
                 break
-            time.sleep(poll_interval)
         responses, _state, _complete = self.get_search_results(search_id, timeout=timeout)
         return self.filter_results_by_quality(responses, min_bitrate=min_bitrate)
 

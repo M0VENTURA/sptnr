@@ -481,6 +481,11 @@ def process_queue_item(item: dict[str, Any]) -> dict[str, Any]:
                 "Soulseek unavailable — marking queue item %s as failed",
                 queue_id,
             )
+            try:
+                from helpers.logging_config import log_unified
+                log_unified(f"[QUEUE] {(item.get('artist') or '')} - {(item.get('title') or '')} → failed: soulseek_unavailable (slskd disabled/misconfigured)")
+            except Exception:
+                pass
             update_queue_item(
                 queue_id,
                 status="failed",

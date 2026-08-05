@@ -282,6 +282,12 @@ def add_release_tracks_to_queue(
                     "recording_mbid"
                 )
 
+                # MusicBrainz track length in ms — persisted so the download
+                # pipeline can score candidates by duration (within 10%) and
+                # the post-download matcher can fall back to duration
+                # matching (strict ±2s / lenient ±5s).
+                duration = track.get("duration") or track.get("length")
+
                 # -----------------------------------------------------
                 # Skip tracks already in the collection
                 # -----------------------------------------------------
@@ -319,6 +325,7 @@ def add_release_tracks_to_queue(
                             disc_number,
                             album_artist,
                             recording_mbid,
+                            duration,
                             created_at,
                             updated_at
                         )
@@ -336,6 +343,7 @@ def add_release_tracks_to_queue(
                             :disc_number,
                             :album_artist,
                             :recording_mbid,
+                            :duration,
                             CURRENT_TIMESTAMP,
                             CURRENT_TIMESTAMP
                         )
@@ -353,6 +361,7 @@ def add_release_tracks_to_queue(
                         "disc_number": disc_number,
                         "album_artist": album_artist or artist,
                         "recording_mbid": recording_mbid,
+                        "duration": duration,
                     },
                 )
                 

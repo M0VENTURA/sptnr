@@ -37,6 +37,7 @@ from services.infrastructure.filesystem_service import (
 )
 
 from services.queue.queue_processing_service import add_release_tracks_to_queue
+from helpers.logging_config import log_unified
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +343,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 duration_seconds=elapsed,
                 notes="no_results",
             )
+            log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: no_results ({elapsed:.0f}s)")
             mark_failed(queue_id, "no_results")
             return {"success": False, "status": "no_results"}
 
@@ -370,6 +372,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 selected_result=best,
                 results=results,
             )
+            log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: no_qualifying_result ({len(results)} candidates)")
             mark_failed(queue_id, "no_qualifying_result")
             return {"success": False, "status": "no_qualifying_result"}
 
@@ -400,6 +403,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 selected_result=best,
                 results=results,
             )
+            log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: peer has no free upload slots")
             mark_failed(queue_id, "peer_no_free_slots")
             return {"success": False, "status": "peer_no_free_slots"}
 
@@ -426,6 +430,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
         )
 
         if not success:
+            log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: download_failed ({best.get('username')})")
             mark_failed(queue_id, "download_failed")
             return {"success": False, "status": "download_failed"}
 
@@ -446,6 +451,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
 
     except Exception as e:
         logger.error("[PIPELINE] Error processing %s: %s", queue_id, e, exc_info=True)
+        log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: {e}")
         mark_failed(queue_id, str(e))
         return {"success": False, "error": str(e)}
 
