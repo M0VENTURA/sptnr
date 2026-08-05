@@ -161,6 +161,9 @@ function buildConfigObject() {
       web_url: getValue('slskd_web_url'),
       api_key: getValue('slskd_api_key')
     },
+    playlists: {
+      essential_name_template: getValue('playlists_essential_name_template', '{artist} - Essential Collection')
+    },
     downloads: {
       folder: getValue('downloads_folder'),
       external_export_path: getValue('external_export_path'),

@@ -140,6 +140,10 @@ def run_scan(
     start(total_items=total_albums)
 
     if not albums:
+        log_unified(
+            "Popularity Scan - No tracks found. All tracks may already have "
+            "popularity data (run in Forced mode to rescan)."
+        )
         update(stage="complete", progress=100, message="No albums to scan.", processed=0, total_items=0)
         finish(success=True)
         return {"success": True, "albums_processed": 0, "tracks_processed": 0}
@@ -180,6 +184,11 @@ def run_scan(
     # and progress_file (passed via **extra_kwargs by pipeline)
     effective_stop_file = stop_progress_file or extra_kwargs.get("progress_file")
 
+    # Letter progression headers (legacy parity): a full-library scan logs
+    # each letter group (#-9, A, B, ...) as it advances, so operators can
+    # follow progress through the alphabet in the unified log.
+    _last_letter: str | None = None
+
     for album_index, album_row in enumerate(albums, start=1):
 
         # ✅ Graceful stop support
@@ -191,6 +200,13 @@ def run_scan(
         artist = album_row.get("artist") or ""
         album = album_row.get("album") or ""
         tracks = album_row.get("tracks") or []
+
+        # Letter-section header (fires once per letter group).
+        _first = (artist or " ")[0].upper()
+        _letter = "#" if not _first.isalpha() else _first
+        if _letter != _last_letter:
+            _last_letter = _letter
+            log_unified(f"Popularity Scan - Letter '{_letter}'")
 
         # ── Album skip (album_skip_days + skip-if-unchanged) ────────────
         # Mirrors the legacy scanner: albums already scanned within the
@@ -324,7 +340,10 @@ def run_scan(
                     cache_full_catalogue=True,
                 )
             except Exception as exc:
-                logger.debug("[scan_runner] Popularity cache prefetch failed for %s: %s", artist, exc)
+                logger.warning(
+                    "[scan_runner] Popularity cache prefetch failed for %s: %s (falls back to per-track lookups)",
+                    artist, exc,
+                )
 
             # ── Artist release cache (albums/EPs/singles) ────────────────
             # One MusicBrainz + one Discogs call per artist fills
@@ -339,7 +358,10 @@ def run_scan(
                         break
                 prefetch_artist_releases(artist, _discogs_id)
             except Exception as exc:
-                logger.debug("[scan_runner] Release cache prefetch failed for %s: %s", artist, exc)
+                logger.warning(
+                    "[scan_runner] Release cache prefetch failed for %s: %s (single-title cache unavailable)",
+                    artist, exc,
+                )
 
             # ── Missing-releases gap detection + tracklists (cache-driven) ─
             # Compares the cached releases against the library (title + year),
@@ -535,6 +557,14 @@ def run_scan(
             pass  # Non-critical — dashboard data is best-effort
 
         albums_processed += 1
+
+    # Nothing was processed (all albums skipped): surface it so the missing
+    # finalise output is explainable, not silent.
+    if tracks_processed == 0:
+        log_unified(
+            "Popularity Scan - All albums were skipped (recently scanned or up to "
+            "date). Run in Forced mode to rescan."
+        )
 
     update(stage="finalising", progress=98, message="Finalising popularity scan...", processed=total_albums, total_items=total_albums)
 

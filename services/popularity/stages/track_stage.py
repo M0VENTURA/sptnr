@@ -154,8 +154,21 @@ def process_track(
                 else:
                     mb_service = MusicBrainzService()
                     mb_data = mb_service.lookup_recording_metadata(title, artist)
+                    if not mb_data:
+                        logger.debug(
+                            "[track_stage] MB metadata lookup returned nothing for %s (%s - %s)",
+                            track_id, artist, title,
+                        )
 
                 if mb_data:
+                    logger.debug(
+                        "[track_stage] MB metadata for %s (%s - %s): mbid=%s confidence=%s title=%r album=%r",
+                        track_id, artist, title,
+                        mb_data.get("recording_mbid") or "-",
+                        mb_data.get("confidence"),
+                        mb_data.get("title"),
+                        mb_data.get("album"),
+                    )
                     recording_mbid = mb_data.get("recording_mbid")
                     confidence = mb_data.get("confidence")
 
@@ -442,9 +455,11 @@ def process_track(
                 # Fresh-but-zero is suspect (broken prior scan): re-fetch.
                 # Forced scans always re-fetch regardless of freshness.
                 if _force or not has_fresh_lb or listenbrainz_listens == 0:
+                    _lb_source = "none"
                     # Bulk-cache fast-path first: prefetched artist-wide data
                     # from track_popularity_cache (non-forced scans only).
                     if _prefetch_entry and _prefetch_entry.get("listenbrainz_listens"):
+                        _lb_source = "prefetch"
                         listenbrainz_listens = _as_int(_prefetch_entry.get("listenbrainz_listens") or 0)
                         listenbrainz_users = _as_int(_prefetch_entry.get("listenbrainz_users") or 0)
                         # Adopt the album recording MBID when the prefetch
@@ -459,6 +474,7 @@ def process_track(
                             update_payload["mbid"] = _album_rec_mbid
                     else:
                         if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
+                            _lb_source = "album_batch"
                             lb_entry = album_lb_data[recording_mbid]
                             if lb_entry:
                                 listenbrainz_listens = _as_int(lb_entry.get("total_listen_count") or 0)
@@ -474,11 +490,13 @@ def process_track(
                                 from services.enrichment.musicbrainz_service import MusicBrainzService
                                 recording_mbid, _conf = MusicBrainzService().get_suggested_mbid(title, artist)
                                 if recording_mbid:
+                                    _lb_source = "mbid_resolved"
                                     update_payload["recording_mbid"] = recording_mbid
                                     update_payload["mbid"] = recording_mbid
                             except Exception:
                                 recording_mbid = None
                         if listenbrainz_listens == 0 and recording_mbid:
+                            _lb_source = "single_lookup"
                             try:
                                 lb = ListenBrainzClient()
                                 lb_result = lb.get_recording_popularity(recording_mbid) if recording_mbid else {}
@@ -490,6 +508,10 @@ def process_track(
                     update_payload["listenbrainz_listens"] = listenbrainz_listens
                     update_payload["listenbrainz_users"] = listenbrainz_users
                     update_payload["listenbrainz_last_updated"] = now_ts
+                    logger.debug(
+                        "[track_stage] LB for %s (%s - %s): %s listens / %s users (source=%s, mbid=%s)",
+                        track_id, artist, title, listenbrainz_listens, listenbrainz_users, _lb_source, recording_mbid or "-",
+                    )
 
                 # ── Cross-release ListenBrainz aggregation ─────────────────
                 # When ListenBrainz came back EMPTY (or Last.fm is weak / a
@@ -688,6 +710,20 @@ def process_track(
                 if is_cover:
                     update_payload["is_cover"] = True
                     update_payload["is_cover_reason"] = reason
+                    # Legacy parity: confirmed covers get the "Cover" genre
+                    # prepended to their genre list (the old scanner injected
+                    # it into musicbrainz_genres during the scan).
+                    _mbg = update_payload.get("musicbrainz_genres")
+                    if isinstance(_mbg, str):
+                        try:
+                            import json as _json
+                            _mbg = _json.loads(_mbg)
+                        except Exception:
+                            _mbg = []
+                    if isinstance(_mbg, list):
+                        update_payload["musicbrainz_genres"] = ["Cover"] + [g for g in _mbg if g != "Cover"]
+                    else:
+                        update_payload["musicbrainz_genres"] = ["Cover"]
                     log_unified(f"[TRACK_STAGE] {track_artist} - {track_title} → cover detected ({reason})")
         except Exception as e:
             logger.debug("[track_stage][COVER] %s: %s", track_id, e)
@@ -856,6 +892,42 @@ def process_track(
                 aggregated = aggregate_genres(source_map)
                 if aggregated:
                     update_payload["aggregated_genres"] = aggregated
+
+                # Legacy parity: inject special genre tags (Christmas, Cover,
+                # Live, Acoustic, Remix, ...) detected from the title/album —
+                # the old scanner injected these during the scan and the
+                # source APIs rarely provide them.
+                try:
+                    from services.metadata.genre_detector import detect_special_tags
+                    _special = detect_special_tags(
+                        track_name=_as_str(effective_track.get("title") or track.get("title") or ""),
+                        album_name=_as_str(album_context.get("album") or track.get("album") or ""),
+                        artist_genres=None,
+                        audio_features=None,
+                        album_type=_as_str(album_result.get("detected_album_type") or options.get("album_type") or "") or None,
+                    )
+                except Exception:
+                    _special = set()
+                if _special:
+                    _existing = update_payload.get("aggregated_genres") or []
+                    if isinstance(_existing, str):
+                        try:
+                            import json as _json
+                            _existing = _json.loads(_existing)
+                        except Exception:
+                            _existing = []
+                    if isinstance(_existing, list):
+                        _merged = list(_existing)
+                        for _tag in sorted(_special):
+                            if _tag not in _merged:
+                                _merged.append(_tag)
+                        update_payload["aggregated_genres"] = _merged
+                    else:
+                        update_payload["aggregated_genres"] = sorted(_special)
+                    logger.debug(
+                        "[track_stage] Special genre tags for %s: %s",
+                        track_id, sorted(_special),
+                    )
 
         except Exception as e:
             logger.debug("[track_stage][GENRE] %s: %s", track_id, e)

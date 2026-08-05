@@ -763,6 +763,16 @@ def detect_single_for_track(
     score_map = {"high": 1.0, "medium": 0.67, "none": 0.0}
     is_single = final in ("high", "medium")
 
+    logger.debug(
+        "[SINGLE_DETECTION] %s - %s: z=(album=%.2f, artist=%.2f) "
+        "discogs=%s mb=%s lastfm=%s radio=%s isrc=%s lb_top10=%s z_standout=%s "
+        "high_sources=%d medium_sources=%d → final=%s",
+        artist, title, album_z, artist_z,
+        discogs_confirmed, musicbrainz_confirmed, lastfm_confirmed,
+        radio_edit_found, isrc_single_confirmed, lb_top10, z_standout,
+        high_sources, medium_sources, final,
+    )
+
     result = {
         "is_single": is_single,
         "confidence": label_map.get(final, "low"),

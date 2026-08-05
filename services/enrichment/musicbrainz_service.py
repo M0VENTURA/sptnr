@@ -170,8 +170,13 @@ class MusicBrainzService:
                 self._mbid_cache[cache_key] = result
                 self._save_cache()
 
+            logger.debug(
+                "[MB_LOOKUP] '%s - %s' → mbid=%s (sim=%.3f, %d candidate(s))",
+                artist, title, best_mbid or "-", best_score, len(recordings),
+            )
             return result
         except Exception:
+            logger.debug("[MB_LOOKUP] Search failed for '%s - %s'", artist, title, exc_info=True)
             return "", 0.0
 
     def lookup_recording_metadata(self, title: str, artist: str) -> Dict[str, Any]:

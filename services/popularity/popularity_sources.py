@@ -7,6 +7,7 @@ normalization. It should not decide star ratings or single status.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Dict, List, Optional
 
 from api_clients.lastfm import LastFmClient
@@ -25,6 +26,27 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LISTENBRAINZ_BATCH_SIZE = 100
 _lastfm_artist_catalog_cache: dict[str, list[dict]] = {}
+
+# Version annotations that denote a DIFFERENT performance of the song — live
+# recordings, acoustic takes, remixes, etc. have their own listen audiences
+# and must never be summed into the studio track's count. Version splits of
+# the SAME performance ("(Single Version)", "(Radio Edit)") are kept.
+_ALTERNATE_PERFORMANCE_RE = re.compile(
+    r"\([^)]*\b(?:live|unplugged|acoustic|orchestral|symphonic|demo|instrumental|"
+    r"karaoke|remix|alternate|alt|take|session|rehearsal)\b[^)]*\)"
+    r"|\s+-\s*(?:live|unplugged|acoustic|orchestral|symphonic|demo|instrumental|"
+    r"karaoke|remix|alternate|alt|take|session|rehearsal)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_alternate_performance_title(rec_title: str) -> bool:
+    """True when a recording title is a different performance (live/remix/…).
+
+    Markers are only matched inside parentheses or as a dash suffix so plain
+    song titles containing the word (e.g. "Live and Let Die") are kept.
+    """
+    return bool(_ALTERNATE_PERFORMANCE_RE.search(rec_title or ""))
 
 
 def extract_recording_mbid(track: dict) -> Optional[str]:
@@ -178,6 +200,13 @@ def get_listenbrainz_album_tracklist(
                 # adopt it so LB lookups match the ListenBrainz album page.
                 "recording_mbid": mbids[0] if mbids else None,
             }
+    if out:
+        logger.info(
+            "[LB_ALBUM] Preloaded %d track(s) for '%s - %s' (release %s)",
+            len(out), artist, album, release_mbid,
+        )
+    else:
+        logger.debug("[LB_ALBUM] No ListenBrainz data for '%s - %s'", artist, album)
     return out
 
 
@@ -341,15 +370,31 @@ def get_aggregated_listenbrainz_popularity(
             mb_client = None
     if mb_client and hasattr(mb_client, "search_recordings"):
         try:
-            from helpers.normalization_service import normalize_title_for_lucene_query
+            from difflib import SequenceMatcher as _SM
+            from helpers.normalization_service import (
+                normalize_title_for_lucene_query,
+                normalize_title_for_lookup,
+                strip_single_release_suffix,
+            )
             from api_clients.musicbrainz_http import escape_lucene_special_chars
             query = (
                 f'recording:"{escape_lucene_special_chars(normalize_title_for_lucene_query(title))}" '
                 f'AND artist:"{escape_lucene_special_chars(artist)}"'
             )
+            norm_target = normalize_title_for_lookup(strip_single_release_suffix(title) or title)
             for rec in mb_client.search_recordings(query, limit=20):
-                if rec.get("id"):
-                    mbids.add(rec["id"])
+                rec_id = rec.get("id")
+                rec_title = str(rec.get("title") or "")
+                if not rec_id or not rec_title:
+                    continue
+                # Only sum recordings of the SAME studio performance — live,
+                # acoustic, remix and alternate takes are separate
+                # performances and must not inflate the track's count.
+                if _is_alternate_performance_title(rec_title):
+                    continue
+                norm_rec = normalize_title_for_lookup(strip_single_release_suffix(rec_title) or rec_title)
+                if norm_rec == norm_target or _SM(None, norm_rec, norm_target).ratio() >= 0.85:
+                    mbids.add(rec_id)
         except Exception:
             pass
     if not mbids:
@@ -358,8 +403,15 @@ def get_aggregated_listenbrainz_popularity(
         batch = lb_get_recording_popularity_batch(list(mbids))
         listen_count = sum(int((batch.get(mbid) or {}).get("total_listen_count") or 0) for mbid in mbids)
         user_count = sum(int((batch.get(mbid) or {}).get("total_user_count") or 0) for mbid in mbids)
+        logger.debug(
+            "[POPULARITY_SOURCES] Aggregated LB for '%s - %s': %s listens / %s users across %d recording(s) %s",
+            artist, title, listen_count, user_count, len(mbids), sorted(mbids),
+        )
         return {"total_listen_count": listen_count, "total_user_count": user_count, "mbids": sorted(mbids)}
     except Exception:
+        logger.debug(
+            "[POPULARITY_SOURCES] Aggregated LB failed for '%s - %s'", artist, title, exc_info=True,
+        )
         return {"total_listen_count": 0, "total_user_count": 0, "mbids": sorted(mbids)}
 
 
