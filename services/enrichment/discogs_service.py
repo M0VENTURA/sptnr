@@ -137,7 +137,17 @@ class DiscogsService:
         # Primary: match against the artist's OWN release list. A single/EP
         # release with a matching title on the artist's release list is
         # authoritative confirmation, independent of search-result ranking.
-        status = self._scan_releases(title_key, self._get_artist_releases(artist) or [])
+        artist_releases = self._get_artist_releases(artist) or []
+        status = self._scan_releases(title_key, artist_releases)
+
+        if status is None:
+            # Self-diagnosing miss: how many releases were scanned and what
+            # formats they carried helps distinguish "not on Discogs" from
+            # "window too small / artist page incomplete".
+            logger.debug(
+                "[DISCOGS] No single/EP match for '%s' by '%s' across %d artist release(s)",
+                title, artist, len(artist_releases),
+            )
 
         # Fallback: use search_database with specific params. A wider window
         # (25 vs 5) because the album edition outranks the single and the
