@@ -141,7 +141,9 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
         if not token or token.lower() in ("your_discogs_token", "your_token", "placeholder"):
             return []
         client = DiscogsHttpClient(token=token)
-        releases = client.get_artist_releases(discogs_artist_id, per_page=100) or []
+        # All pages — a single page of 100 can miss older singles of
+        # catalogue-heavy artists (Discogs caps pages at 100 releases).
+        releases = client.get_artist_releases_all(discogs_artist_id, max_pages=10) or []
         out: list[dict[str, Any]] = []
         for rel in releases:
             if not isinstance(rel, dict):

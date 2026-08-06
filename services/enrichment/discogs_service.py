@@ -68,7 +68,10 @@ class DiscogsService:
             releases: list[dict[str, Any]] = []
             artist_id = self.get_artist_id(artist)
             if artist_id:
-                releases = self.http.get_artist_releases(artist_id, per_page=100) or []
+                # Fetch ALL pages — a single page of 100 can miss older
+                # singles of catalogue-heavy artists (Discogs caps pages at
+                # 100 releases each).
+                releases = self.http.get_artist_releases_all(artist_id, max_pages=10) or []
             self._artist_releases_cache[key] = releases
         return self._artist_releases_cache[key]
 
@@ -136,9 +139,12 @@ class DiscogsService:
         # authoritative confirmation, independent of search-result ranking.
         status = self._scan_releases(title_key, self._get_artist_releases(artist) or [])
 
-        # Fallback: use search_database with specific params.
+        # Fallback: use search_database with specific params. A wider window
+        # (25 vs 5) because the album edition outranks the single and the
+        # single can sit outside a tiny top-N (e.g. "+44 - When Your Heart
+        # Stops Beating").
         if status is None:
-            results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 5})
+            results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 25})
             status = self._scan_releases(title_key, results or [])
 
         if status is None:

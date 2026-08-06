@@ -686,6 +686,11 @@ def check_completed_downloads() -> dict[str, Any]:
 
         downloads_dir = resolve_downloads_dir()
 
+        from helpers.logging_config import log_unified
+        log_unified(
+            f"[QUEUE] Checking {downloading_count} completed download(s) — downloads dir: {downloads_dir}"
+        )
+
         # 1. Completed transfers from slskd: remote filename -> localFilePath.
         slskd_completed: dict[str, str] = {}
         if slskd is not None:
@@ -783,6 +788,7 @@ def check_completed_downloads() -> dict[str, Any]:
                         copied_individually_at=datetime.now().isoformat(),
                     )
                     stats["imported"] += 1
+                    log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → already in library, promoted to imported")
                     continue
 
                 match_found: str | None = None
@@ -808,6 +814,7 @@ def check_completed_downloads() -> dict[str, Any]:
                             _delete_mismatched_download(abs_path, queue_id, f"metadata mismatch ({match_source})")
                             mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
                             stats["failed"] += 1
+                            log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)")
                             continue
 
                 # 2. Exact filename match against filesystem files.
@@ -878,6 +885,7 @@ def check_completed_downloads() -> dict[str, Any]:
                         logger.warning("[COMPLETE] Queue %s: no file found and stale in downloading — scheduling retry", queue_id)
                         mark_failed(queue_id, "No file found while marked downloading")
                         stats["failed"] += 1
+                        log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: no file found while marked downloading (stale)")
                         continue
                     stats["skipped"] += 1
                     continue
@@ -902,6 +910,7 @@ def check_completed_downloads() -> dict[str, Any]:
                         _delete_mismatched_download(abs_path, queue_id, f"duration mismatch: expected {expected_dur}s, got {actual_dur}s")
                         mark_failed(queue_id, f"Pre-copy duration mismatch: expected {expected_dur}s, got {actual_dur}s")
                         stats["failed"] += 1
+                        log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: duration mismatch (expected {expected_dur}s, got {actual_dur}s)")
                         continue
 
                 # Persist found_filename/file_path now that a file is confirmed.
@@ -913,8 +922,10 @@ def check_completed_downloads() -> dict[str, Any]:
                 move_result = _move_and_import(item, abs_path, match_source)
                 if move_result.get("success"):
                     stats["imported"] += 1
+                    log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → imported to library (match={match_source})")
                 else:
                     stats["errors"] += 1
+                    log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → import failed: {move_result.get('error') or 'unknown error'}")
 
             except Exception as exc:
                 logger.error("[COMPLETE] Unhandled error processing queue %s: %s", item.get("id"), exc, exc_info=True)

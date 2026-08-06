@@ -524,15 +524,21 @@ function toggleLog() {
 
 function updateUnifiedLog() {
   if (logPaused) return;
-  fetch("/api/unified-log?lines=150")
+  // Self-healing poll: a hung request must not freeze the log panel forever.
+  // Abort after 8s so the next poll tick recovers on its own.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  fetch("/api/unified-log?lines=150", { signal: controller.signal })
     .then(r => r.json())
     .then(data => {
       const logEl = document.getElementById("unifiedLog");
-      if (logEl && data?.lines) {
+      if (logEl && Array.isArray(data && data.lines)) {
         logEl.textContent = data.lines.join("\n");
         logEl.scrollTop = logEl.scrollHeight;
       }
-    }).catch(() => {});
+    })
+    .catch(() => {})
+    .finally(() => clearTimeout(timer));
 }
 
 // ===== Active Scans Progress Panel =====
