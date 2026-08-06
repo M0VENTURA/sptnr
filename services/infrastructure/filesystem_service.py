@@ -203,8 +203,10 @@ def _safe_str(value: Any) -> str:
 
 
 def create_monitoring_folder(artist, album, year):
-    cfg = get_config()
-    base_dir = Path(cfg.get("downloads", {}).get("monitor_folder", "/downloads"))
+    # Same resolution as everything else (DOWNLOADS_DIR env var first),
+    # otherwise stored monitoring_folder_path won't match the real
+    # downloads dir and folder groups show up empty.
+    base_dir = Path(resolve_downloads_dir())
 
     year_text = str(year).strip() if year not in (None, '') else ''
     year_match = re.search(r"(19|20)\d{2}", year_text)
