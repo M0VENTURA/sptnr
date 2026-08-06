@@ -96,6 +96,30 @@ def _db_now_naive() -> datetime:
     return datetime.utcnow()
 
 
+def _remember_failed_peer(transfer: dict) -> None:
+    """Tell the download pipeline to avoid this peer for the failed file.
+
+    A transfer that errored (``Completed, Errored``) or that reports success
+    while its file is unfindable will otherwise be re-searched on every retry
+    and land on the same peer repeatedly. The pipeline keeps a short TTL
+    block so retries prefer a different peer when one exists.
+    """
+    try:
+        from services.downloads.download_pipeline_service import _block_peer
+        _block_peer(transfer.get("username"), transfer.get("filename"))
+    except Exception:
+        pass
+
+
+def _monitored_downloads_dir() -> str:
+    """The downloads directory the completion service scans, for diagnostics."""
+    try:
+        from services.downloads.download_scan_service import resolve_downloads_dir
+        return resolve_downloads_dir()
+    except Exception:
+        return "?"
+
+
 def _is_stale_queue_item(
     item: dict,
     stale_minutes: int = 10,
@@ -537,15 +561,30 @@ def _reconcile_transfer_state(
 
     if state in failed_states:
         logger.warning("[COMPLETE] Queue %s: slskd reports failed state %r — scheduling retry", queue_id, state)
+        _remember_failed_peer(transfer)
         from db.repositories.queue import mark_failed
         mark_failed(queue_id, f"slskd transfer failed: {state}")
         return True
 
     if slskd.is_success_state(state):
         # slskd reports success but no file was found — the file was likely
-        # deleted before the queue processor could match it. Remove the stale
-        # completed entry so a fresh retry queues a new download.
-        logger.warning("[COMPLETE] Queue %s: slskd succeeded but no file found — removing stale transfer and retrying", queue_id)
+        # deleted before the queue processor could match it, or (more common)
+        # it was saved somewhere outside the monitored downloads folder (the
+        # slskd container's download path vs Popularr's DOWNLOADS_DIR).
+        # Log the exact paths so a path mismatch is self-diagnosing instead
+        # of an endless silent fail→retry loop.
+        local = str(transfer.get("localFilePath") or "")
+        logger.warning(
+            "[COMPLETE] Queue %s: slskd succeeded but no file found — removing stale transfer and retrying. "
+            "slskd localFilePath=%r; queue found_filename=%r; monitored downloads dir=%r. "
+            "If the file exists at the localFilePath but is not in the monitored dir, "
+            "align DOWNLOADS_DIR / downloads.monitor_folder with slskd's download directory.",
+            queue_id,
+            local or "(empty)",
+            found_fn,
+            _monitored_downloads_dir(),
+        )
+        _remember_failed_peer(transfer)
         try:
             transfer_id = str(transfer.get("id") or "")
             username = str(transfer.get("username") or "")
@@ -567,6 +606,7 @@ def _reconcile_transfer_state(
                     slskd.cancel_download(username, transfer_id, remove=True)
             except Exception:
                 pass
+            _remember_failed_peer(transfer)
             from db.repositories.queue import mark_failed
             mark_failed(queue_id, "Remotely queued too long")
             return True
@@ -582,6 +622,7 @@ def _reconcile_transfer_state(
                     slskd.cancel_download(username, transfer_id, remove=True)
             except Exception:
                 pass
+            _remember_failed_peer(transfer)
             from db.repositories.queue import mark_failed
             mark_failed(queue_id, f"slskd download timed out ({state})")
             return True
