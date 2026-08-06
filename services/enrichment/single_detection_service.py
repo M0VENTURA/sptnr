@@ -856,6 +856,19 @@ def detect_single_for_track(
         "sources": sources,
         "reasons": reasons or ["no_source_match"],
         "single_status": final,
+        # Diagnostic breadcrumb so the track-stage log line can show WHY a
+        # verdict was reached (z-scores, source counts, title-track state).
+        "decision": {
+            "album_z": round(album_z, 2),
+            "artist_z": round(artist_z, 2),
+            "z_low": bool(z_low),
+            "high_sources": high_sources,
+            "medium_sources": medium_sources,
+            "is_title_track": is_title,
+            "source_levels": {
+                k: _levels.get(k) for k in ("discogs", "musicbrainz")
+            },
+        },
     }
 
     if persist_result and track_repo and track_id:

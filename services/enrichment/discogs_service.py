@@ -72,6 +72,36 @@ class DiscogsService:
                 # singles of catalogue-heavy artists (Discogs caps pages at
                 # 100 releases each).
                 releases = self.http.get_artist_releases_all(artist_id, max_pages=10) or []
+                # Discogs returns the artist's singles/EPs as MASTER entries,
+                # which carry NO ``format`` field — the format check in
+                # ``_scan_releases`` would skip every one of them (the
+                # "When Your Heart Stops Beating" single missed for this
+                # reason). Resolve each main release's format so singles are
+                # detectable straight from the artist page, independent of
+                # database-search ranking.
+                for rel in releases:
+                    if (
+                        rel.get("type") == "master"
+                        and not rel.get("format")
+                        and str(rel.get("role") or "Main").lower() == "main"
+                        and rel.get("main_release")
+                    ):
+                        try:
+                            main = self.http.get_release(rel["main_release"], timeout=8.0)
+                            rel["format"] = [
+                                " ".join(
+                                    part for part in (
+                                        str(f.get("name") or ""),
+                                        " ".join(str(d) for d in (f.get("descriptions") or [])),
+                                    ) if part
+                                )
+                                for f in (main.get("formats") or [])
+                            ]
+                        except Exception as exc:
+                            logger.debug(
+                                "[DISCOGS] Master format lookup failed for %s: %s",
+                                rel.get("title"), exc,
+                            )
             self._artist_releases_cache[key] = releases
         return self._artist_releases_cache[key]
 

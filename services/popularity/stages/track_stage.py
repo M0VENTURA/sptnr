@@ -1067,12 +1067,21 @@ def process_track(
                 update_payload["single_sources"] = _json.dumps(sd_result.get("sources", []), default=str)
                 update_payload["single_detection_last_updated"] = sd_now
                 _sd_reasons = sd_result.get("reasons") or []
+                _sd_d = sd_result.get("decision") or {}
+                _sd_levels = _sd_d.get("source_levels") or {}
+                _sd_diag = (
+                    f", z=({_sd_d.get('album_z')},{_sd_d.get('artist_z')}), "
+                    f"hi={_sd_d.get('high_sources')}, med={_sd_d.get('medium_sources')}, "
+                    f"title={_sd_d.get('is_title_track')}, "
+                    f"levels=(discogs={_sd_levels.get('discogs')},mb={_sd_levels.get('musicbrainz')})"
+                    if _sd_d else ""
+                )
                 log_unified(
                     f"[TRACK_STAGE] {track_artist} - {track_title} → single="
                     f"{sd_result.get('confidence', 'low')} "
                     f"(status={sd_result.get('single_status', 'none')}, "
                     f"sources={len(sd_result.get('sources') or [])}, "
-                    f"reasons={','.join(str(r) for r in _sd_reasons) or 'none'})"
+                    f"reasons={','.join(str(r) for r in _sd_reasons) or 'none'}{_sd_diag})"
                 )
 
         except Exception as e:
