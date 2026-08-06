@@ -36,6 +36,41 @@ def _read_last_lines(path, max_lines, chunk_size=65536, max_bytes=4 * 1024 * 102
             data = fh.read(read_size) + data
     return data.decode("utf-8", errors="ignore").splitlines()[-max_lines:]
 
+
+def _filter_lines_last_hour(lines: list[str]) -> list[str]:
+    """Keep only lines whose leading timestamp falls within the last hour.
+
+    The dashboard's scanning panel should only show the last hour of activity
+    (the /logs page reads the file directly and shows the full history).  Lines
+    without a parseable ``YYYY-MM-DD HH:MM:SS`` prefix are kept as-is.
+    """
+    if not lines:
+        return lines
+    from datetime import datetime as _dt, timezone, timedelta
+
+    cutoff = _dt.now(timezone.utc) - timedelta(hours=1)
+    _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
+    kept = []
+    for line in lines:
+        match = _TS_RE.match(line)
+        if not match:
+            kept.append(line)
+            continue
+        try:
+            text = match.group(1).replace(" ", "T")
+            ts = _dt.fromisoformat(text)
+            if ts.tzinfo is None:
+                # Log timestamps are written in the host's local time — treat
+                # naive stamps as local time rather than UTC.
+                ts = ts.astimezone()
+            else:
+                ts = ts.astimezone(timezone.utc)
+            if ts >= cutoff:
+                kept.append(line)
+        except Exception:
+            kept.append(line)
+    return kept
+
 def _resolve_log_path(log_type: str) -> str | None:
     log_dir = resolve_log_dir()
     mapping = {
@@ -58,7 +93,7 @@ def _resolve_log_path(log_type: str) -> str | None:
 # ✅ LOG ACCESS
 # =============================================================================
 
-def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None = None):
+def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None = None, last_hour: bool = False):
     path_candidates = path_candidates or [] # Handle default
     log_path = next((p for p in path_candidates if p and os.path.exists(p)), _resolve_log_path("unified"))
 
@@ -88,6 +123,9 @@ def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None
                 re.I,
             )
             log_lines = [l for l in log_lines if scan_pattern.search(l)]
+        if last_hour:
+            # Dashboard scanning panel: only surface the last hour of activity.
+            log_lines = _filter_lines_last_hour(log_lines)
         return {"lines": log_lines[-lines:]}
     except Exception as e:
         logger.error("[LOG] unified read error: %s", e)

@@ -57,8 +57,9 @@ def api_unified_log():
     Return unified log content.
 
     Query parameters:
-        lines    - number of lines to return (1-2000)
-        verbose  - include verbose/debug entries (0 or 1)
+        lines     - number of lines to return (1-2000)
+        verbose   - include verbose/debug entries (0 or 1)
+        last_hour - only return lines within the last hour (0 or 1)
     """
 
     try:
@@ -68,11 +69,13 @@ def api_unified_log():
         lines = 400
 
     verbose = request.args.get("verbose", "0") == "1"
+    last_hour = request.args.get("last_hour", "0") == "1"
 
     # Now calling with just lines and verbose, as service resolves paths internally
     result = get_unified_log(
         lines=lines,
         verbose=verbose,
+        last_hour=last_hour,
     )
 
     if isinstance(result, tuple) and len(result) == 2:

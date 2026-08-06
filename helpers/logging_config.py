@@ -64,6 +64,25 @@ def log_unified(message: str) -> None:
     logging.getLogger("popularr.unified").info(message)
 
 
+def log_queue(message: str) -> None:
+    """Write a download-queue event to ``queue.log``.
+
+    Only queue activity (searching/downloading/completing/failing queue items)
+    belongs in this log.  Soulseek searches are kept separate in ``search.log``.
+    """
+    logging.getLogger("popularr.queue").info(message)
+
+
+def log_search(message: str) -> None:
+    """Write a Soulseek search event to ``search.log``.
+
+    Records every automatic and manual Soulseek search so the full history can
+    be reviewed under the /logs page while the dashboard/monitor only surface
+    the last hour.
+    """
+    logging.getLogger("popularr.search").info(message)
+
+
 class SafePrefixFormatter(logging.Formatter):
     """Appends a service prefix safely without mutating the shared LogRecord."""
     
@@ -157,6 +176,24 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
                 "formatter": "verbose",
                 "level": "DEBUG",
             },
+            "queue_file": {
+                "class": "logging.handlers.TimedRotatingFileHandler",
+                "filename": os.path.join(log_dir, "queue.log"),
+                "when": "midnight",
+                "backupCount": 7,
+                "encoding": "utf-8",
+                "formatter": "unified",
+                "level": "INFO",
+            },
+            "search_file": {
+                "class": "logging.handlers.TimedRotatingFileHandler",
+                "filename": os.path.join(log_dir, "search.log"),
+                "when": "midnight",
+                "backupCount": 7,
+                "encoding": "utf-8",
+                "formatter": "unified",
+                "level": "INFO",
+            },
         },
         "loggers": {
             # Root logger: sends to unified + info + debug files.
@@ -172,6 +209,20 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
             # for human-readable scan progress.
             "popularr.unified": {
                 "handlers": ["unified_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            # Queue logger: only writes to queue.log.  Use log_queue() for
+            # download-queue activity (distinct from Soulseek searches).
+            "popularr.queue": {
+                "handlers": ["queue_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            # Search logger: only writes to search.log.  Use log_search() for
+            # Soulseek search activity (automatic and manual).
+            "popularr.search": {
+                "handlers": ["search_file"],
                 "level": "INFO",
                 "propagate": False,
             },

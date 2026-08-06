@@ -383,6 +383,15 @@ def add_release_tracks_to_queue(
                     f"[QUEUE] Queued {len(queue_ids)} track(s): {artist} - {album} "
                     f"(release {release_id})"
                 )
+                try:
+                    from services.queue.queue_diagnostics_service import log_queue_event
+                    log_queue_event(
+                        "queued",
+                        f"Queued {len(queue_ids)} track(s): {artist} - {album} (release {release_id})",
+                        queue_id=None,
+                    )
+                except Exception:
+                    pass
 
         return queue_ids
 
