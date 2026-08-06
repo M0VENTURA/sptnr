@@ -212,25 +212,17 @@ async function loadFolderGroups(options) {
   var html = '';
   if (qItems.length > 0) {
     html += '<h6 class="px-3 pt-3 mb-0 small text-muted text-uppercase">Queue Items</h6>';
-    html += '<div class="list-group list-group-flush">' + qItems.map(function(item) {
-      var st = item.status || 'queued';
-      var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
-      // Per-item actions: retry for failed items, delete for everything.
-      var actions = '';
-      if (st === 'failed' && typeof window.retryQueueItem === 'function') {
-        actions += '<button class="btn btn-sm btn-outline-warning py-0 px-1" title="Retry now" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+    // Group tracks into album folders (legacy parity — old_system grouped by
+    // artist+album / import_group and rendered each album as a collapsible
+    // folder with every song as a queue item below). Tracks added together
+    // from a MusicBrainz release share an ``import_group`` (mbid_<release_id>);
+    // other batch-added tracks fall back to artist+album grouping.
+    var groups = buildMonitorQueueGroups(qItems);
+    html += '<div class="list-group list-group-flush">' + groups.map(function(group, index) {
+      if (group.items.length === 1) {
+        return renderMonitorQueueItemRow(group.items[0]);
       }
-      if (typeof window.deleteQueueItem === 'function') {
-        // deleteQueueItem shows its own confirmation dialog.
-        actions += '<button class="btn btn-sm btn-outline-danger py-0 px-1" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
-      }
-      return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
-        '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
-        (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
-        (st === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +
-        '</div><div class="d-flex align-items-center gap-2 flex-shrink-0">' +
-        '<span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span>' + actions +
-        '</div></div></div>';
+      return renderMonitorQueueGroupRow(group, index);
     }).join('') + '</div>';
   }
   if (groups.length > 0) {
@@ -260,7 +252,119 @@ async function loadFolderGroups(options) {
   section.style.display = 'block';
   if (badge) badge.textContent = total + ' items';
   list.innerHTML = html;
+  attachMonitorQueueGroupToggles(list);
   updateQueuePageControls(total, total);
+}
+
+function attachMonitorQueueGroupToggles(listEl) {
+  if (!listEl) return;
+  listEl.querySelectorAll('.queue-group-toggle').forEach(function(btn) {
+    // Downloads.js (loaded after this file) also binds these — guard against
+    // double-binding by checking a marker.
+    if (btn.getAttribute('data-toggle-bound')) return;
+    btn.setAttribute('data-toggle-bound', '1');
+    btn.addEventListener('click', function() {
+      var body = document.getElementById(btn.getAttribute('data-target'));
+      var chevron = btn.querySelector('.queue-group-chevron');
+      if (!body) return;
+      var show = body.style.display === 'none' || body.style.display === '';
+      body.style.display = show ? 'block' : 'none';
+      if (chevron) chevron.classList.toggle('rotated', show);
+    });
+  });
+}
+
+// ===== Album-folder grouping for the Download Queue section =====
+// Legacy parity: albums added from a MusicBrainz release share an
+// ``import_group`` (mbid_<release_id>); other batch-added tracks group by
+// artist+album. Albums render as an expandable folder with each song a queue
+// item below, matching old_system's downloads page layout.
+
+function buildMonitorQueueGroups(items) {
+  var groups = [];
+  var map = {};
+  items.forEach(function(item) {
+    var album = (item.album || '').trim();
+    var artist = (item.album_artist || item.artist || '').trim();
+    var title = (item.title || '').trim();
+
+    var key, label, sublabel;
+    if (item.import_group) {
+      key = 'grp_' + String(item.import_group);
+      label = album || String(item.import_group);
+      sublabel = artist;
+    } else if (album && album !== title) {
+      key = 'alb_' + artist.toLowerCase() + '|' + album.toLowerCase();
+      label = album;
+      sublabel = artist;
+    } else {
+      key = 'solo_' + item.id;
+      label = null;
+      sublabel = null;
+    }
+
+    if (!map[key]) {
+      map[key] = { key: key, label: label, sublabel: sublabel, items: [] };
+      groups.push(map[key]);
+    }
+    map[key].items.push(item);
+  });
+  return groups;
+}
+
+function renderMonitorQueueItemRow(item) {
+  var st = item.status || 'queued';
+  var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
+  var actions = '';
+  if (st === 'failed' && typeof window.retryQueueItem === 'function') {
+    actions += '<button class="btn btn-sm btn-outline-warning py-0 px-1" title="Retry now" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+  }
+  if (typeof window.deleteQueueItem === 'function') {
+    actions += '<button class="btn btn-sm btn-outline-danger py-0 px-1" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
+  }
+  return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
+    '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
+    (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+    (st === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +
+    '</div><div class="d-flex align-items-center gap-2 flex-shrink-0">' +
+    '<span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span>' + actions +
+    '</div></div></div>';
+}
+
+function renderMonitorQueueGroupRow(group, index) {
+  var bodyId = 'monQueueGroupBody_' + index;
+  var items = group.items;
+  var total = items.length;
+
+  var counts = {};
+  items.forEach(function(item) {
+    var st = item.status || 'queued';
+    counts[st] = (counts[st] || 0) + 1;
+  });
+  var summary = Object.keys(counts).map(function(st) {
+    return counts[st] + ' ' + st;
+  }).join(' · ');
+
+  var subline = group.sublabel
+    ? ' <small class="text-muted">' + escapeHtml(group.sublabel) + '</small>'
+    : '';
+
+  var children = items.map(function(item) {
+    return renderMonitorQueueItemRow(item);
+  }).join('');
+
+  return '<div class="list-group-item">' +
+    '<div class="d-flex justify-content-between align-items-center gap-2">' +
+    '<button type="button" class="btn btn-sm btn-outline-secondary queue-group-toggle" data-target="' + bodyId + '" title="Expand album">' +
+      '<i class="bi bi-chevron-down queue-group-chevron"></i>' +
+    '</button>' +
+    '<div class="text-truncate flex-grow-1">' +
+      '<strong><i class="bi bi-folder2-open me-1"></i>' + escapeHtml(group.label) + '</strong>' + subline +
+      '<br><small class="text-muted">' + total + ' track' + (total !== 1 ? 's' : '') + ' · ' + escapeHtml(summary) + '</small>' +
+    '</div>' +
+    '</div>' +
+    '<div id="' + bodyId + '" class="queue-group-body ps-3 border-start ms-2 mt-2" style="display:none;">' + children + '</div>' +
+    '</div>';
 }
 
 // ===== Upcoming Releases =====

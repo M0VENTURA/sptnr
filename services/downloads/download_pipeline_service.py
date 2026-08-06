@@ -26,6 +26,7 @@ from services.downloads.slskd_service import SlskdService
 from services.enrichment.musicbrainz_service import (
     fetch_musicbrainz_release_metadata,
     fetch_release_metadata,
+    resolve_release_id,
 )
 from db.repositories.queue import (
     update_queue_item,
@@ -784,8 +785,16 @@ def start_release_download(release_id, release_title, artist, method='slskd'):
     try:
         logger.info(f"[START_DOWNLOAD] {release_id}")
 
+        # The MB search UI hands over a release-group MBID (the search endpoint
+        # returns release-groups). /ws/2/release/{id} 404s for a release-group
+        # id, which would fail the fetch below and collapse the whole album
+        # into a single "album as one track" queue entry. Resolve it to a
+        # concrete release MBID first (legacy parity — old_system's
+        # _fetch_release_payload did the same browse fallback).
+        resolved_release_id = resolve_release_id(release_id)
+
         # Primary fetch via the raw WS/2 endpoint (rate-limited, sleeps 1s).
-        mb_data = fetch_musicbrainz_release_metadata(release_id)
+        mb_data = fetch_musicbrainz_release_metadata(resolved_release_id)
 
         # Fallback: the service-based fetch (MusicBrainzHttpClient) uses the
         # same WS/2 inc set and can succeed when the raw-httpx call was
@@ -793,7 +802,7 @@ def start_release_download(release_id, release_title, artist, method='slskd'):
         # failure degrades the whole album into a single un-downloadable
         # "album as one track" queue entry.
         if not mb_data:
-            mb_data = fetch_release_metadata(release_id)
+            mb_data = fetch_release_metadata(resolved_release_id)
 
         if not mb_data:
             return {"success": False, "error": "MusicBrainz fetch failed"}
@@ -809,7 +818,7 @@ def start_release_download(release_id, release_title, artist, method='slskd'):
         )
 
         mb_release_db_id = upsert_musicbrainz_release(
-            release_id,
+            resolved_release_id,
             release_title,
             artist,
             release_year,
@@ -823,7 +832,7 @@ def start_release_download(release_id, release_title, artist, method='slskd'):
         queue_source = 'soulseek' if method.lower() == 'slskd' else 'qbittorrent'
 
         queue_ids = add_release_tracks_to_queue(
-            release_id,
+            resolved_release_id,
             tracks,
             artist,
             release_title,

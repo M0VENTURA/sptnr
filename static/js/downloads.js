@@ -1804,15 +1804,19 @@ async function renderQueueSection() {
       const qItems = (qd && qd.queue) || [];
       if (qItems.length > 0) {
         if (badge) badge.textContent = qItems.length + ' items';
-        list.innerHTML = '<div class="list-group list-group-flush">' +
-          qItems.map(function(item) {
-            const st = item.status || 'queued';
-            const badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
-            return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
-              '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
-              (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
-              '</div><span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span></div></div>';
-          }).join('') + '</div>';
+        // Group tracks into album folders so this fallback matches the
+        // renderQueueList grouping used on the /downloads page and the
+        // legacy folder+tracks layout.
+        const groups2 = buildQueueGroups(qItems);
+        window.__queueGroupsArr = groups2;
+        const rows = groups2.map(function(group, index) {
+          if (group.items.length === 1) {
+            return renderQueueItemRow(group.items[0], 'active');
+          }
+          return renderQueueGroupRow(group, 'active', index);
+        });
+        list.innerHTML = '<div class="list-group list-group-flush">' + rows.join('') + '</div>';
+        attachQueueGroupToggles(list);
         if (typeof updateQueuePageControls === 'function') updateQueuePageControls(qItems.length, qItems.length);
         return;
       }
@@ -2021,7 +2025,7 @@ function renderQueueItemRow(item, kind) {
       actions += '<button class="btn btn-sm btn-outline-danger" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-x-circle"></i></button>';
     }
   }
-  if (kind === 'failed') {
+  if (kind === 'failed' || st === 'failed') {
     actions += '<button class="btn btn-sm btn-outline-warning" title="Retry" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
   }
   if (kind === 'completed') {

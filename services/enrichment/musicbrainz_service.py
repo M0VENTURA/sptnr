@@ -690,6 +690,51 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
         return None
 
 
+def resolve_release_id(release_id: str) -> str:
+    """Return a concrete release MBID for a release or release-group MBID.
+
+    The download/search UI often hands over a *release-group* MBID (the search
+    endpoint returns ``release-group`` results).  ``/ws/2/release/{id}`` 404s
+    for a release-group id, which previously made ``start_release_download``
+    fail and collapse the whole album into a single "album as one track" queue
+    row.  Legacy parity: browse the release-group to its first release and
+    return that concrete release MBID so per-track rows can be created.
+
+    Returns the input unchanged when it is already a valid release lookup or
+    when no release can be resolved.
+    """
+    if not release_id:
+        return release_id
+
+    try:
+        http = _get_service().http
+        data = http.get_release(release_id, inc="")
+        if data and data.get("id"):
+            return release_id
+    except Exception:
+        pass
+
+    try:
+        releases = http.get(
+            "release/",
+            params={"fmt": "json", "release-group": release_id, "limit": 1},
+            timeout=10.0,
+        )
+        releases = releases.get("releases") if isinstance(releases, dict) else []
+        if releases and releases[0].get("id"):
+            resolved = releases[0]["id"]
+            logger.info(
+                "[MB_RESOLVE] Release-group %s resolved to release %s",
+                release_id,
+                resolved,
+            )
+            return resolved
+    except Exception as exc:
+        logger.warning("[MB_RESOLVE] Failed to resolve release-group %s: %s", release_id, exc)
+
+    return release_id
+
+
 def fetch_release_metadata(release_id: str):
     try:
         service = _get_service()
