@@ -14,9 +14,28 @@ from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection, row_get, get_table_columns  # TODO: migrate
+from db.utils import get_db_connection, row_get  # TODO: migrate
 
 logger = logging.getLogger(__name__)
+
+
+def _table_columns(cursor: Any, table_name: str) -> set[str]:
+    """Return the column names of a table via a psycopg2 cursor.
+
+    ``db.utils`` has no ``get_table_columns`` (it lives in
+    ``db.schema_helpers`` and takes a SQLAlchemy session, not a cursor) —
+    importing it raised ImportError and took the whole corrections page
+    down with a silent "Database error" banner.
+    """
+    try:
+        cursor.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = %s",
+            (table_name,),
+        )
+        return {str(row[0]) for row in cursor.fetchall() if row[0]}
+    except Exception:
+        return set()
 
 
 # Fields whose values MUST be consistent across all tracks of the same album.
@@ -57,7 +76,7 @@ def get_album_tag_inconsistencies(artist_filter: str | None = None) -> list[dict
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        track_columns = get_table_columns(cursor, "tracks")
+        track_columns = _table_columns(cursor, "tracks")
         has_album_artist = "album_artist" in track_columns
         artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)" if has_album_artist else "artist"
 

@@ -249,7 +249,7 @@
                             <td class="fw-semibold align-middle">{{ inc.field_label }}</td>
                             <td>
                                 <div class="d-flex flex-wrap gap-2 align-items-center">
-                                    {% for v in inc.values %}
+                                    {% for v in inc['values'] %}
                                     <span class="badge bg-secondary value-badge"
                                           title="{{ v.track_ids | length }} track{% if v.track_ids | length != 1 %}s{% endif %}">
                                         {{ v.value if v.value else '(empty)' }}
@@ -260,7 +260,7 @@
                             </td>
                             <td class="text-end align-middle">
                                 <div class="d-flex flex-wrap gap-1 justify-content-end">
-                                    {% for v in inc.values %}
+                                    {% for v in inc['values'] %}
                                     <button class="btn btn-sm btn-outline-primary fix-btn apply-field-btn"
                                             data-album-artist="{{ item.album_artist | e }}"
                                             data-album="{{ item.album | e }}"
