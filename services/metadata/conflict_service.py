@@ -34,6 +34,20 @@ from db.engine import db_session
 logger = logging.getLogger(__name__)
 
 
+def _conflicts_table_available() -> bool:
+    """True when the ``metadata_conflicts`` table exists.
+
+    Older databases predate the table; the corrections page must render
+    (empty conflict sections) instead of 500ing on every query.
+    """
+    try:
+        from db.schema_helpers import table_exists
+        with db_session() as session:
+            return bool(table_exists(session, "metadata_conflicts"))
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Protected fields — never auto-overwrite by an external provider
 # ---------------------------------------------------------------------------
@@ -229,6 +243,8 @@ def fetch_pending_conflicts(
     artist: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return unresolved conflicts, newest first."""
+    if not _conflicts_table_available():
+        return []
     clauses: list[str] = ["status = 'pending'"]
     params: dict[str, Any] = {"limit": limit, "offset": offset}
 
@@ -263,6 +279,8 @@ def count_pending_conflicts(
     artist: str | None = None,
 ) -> int:
     """Return the number of unresolved conflicts."""
+    if not _conflicts_table_available():
+        return 0
     clauses: list[str] = ["status = 'pending'"]
     params: dict[str, Any] = {}
 
@@ -286,6 +304,8 @@ def count_pending_conflicts(
 
 def get_conflict_stats() -> dict[str, Any]:
     """Return aggregate stats about pending conflicts for the corrections page."""
+    if not _conflicts_table_available():
+        return {"total_pending": 0, "by_provider": [], "by_field": []}
     with db_session() as session:
         total = session.execute(
             text("SELECT COUNT(*) FROM metadata_conflicts WHERE status = 'pending'")
