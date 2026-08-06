@@ -25,6 +25,32 @@ logger = logging.getLogger(__name__)
 STUCK_SEARCH_TIMEOUT_MS = 3 * 60 * 1000
 EMPTY_TERMINAL_STATES = frozenset({"Completed, Cancelled", "Completed, Errored", "Cancelled", "Errored"})
 
+# Transient httpx exception names that warrant a retry rather than an
+# immediate queue-item failure. slskd serialises API operations, so a busy
+# or overloaded slskd can take a while to answer a search/download request —
+# a single ReadTimeout must not kill the whole queue item.
+_TRANSIENT_ERROR_NAMES = frozenset({
+    "ReadTimeout",
+    "ConnectTimeout",
+    "ConnectError",
+    "ConnectionError",
+    "ReadError",
+    "RemoteProtocolError",
+    "TimeoutException",
+    "TimeoutError",
+    "WriteTimeout",
+})
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """Return True when ``exc`` looks like a retryable network/timeout error."""
+    if type(exc).__name__ in _TRANSIENT_ERROR_NAMES:
+        return True
+    # Wrap the common httpx root classes defensively (avoid hard dependency).
+    if any(base.__name__ in _TRANSIENT_ERROR_NAMES for base in type(exc).__mro__):
+        return True
+    return False
+
 
 @dataclass
 class SearchFile:
@@ -185,6 +211,23 @@ class SlskdService:
                 # search is self-diagnosing: ConnectTimeout = wrong/firewalled
                 # URL, ReadTimeout = slskd reachable but not answering search
                 # requests (usually its Soulseek connection is down).
+                #
+                # Transient network errors (timeouts) are retried with a short
+                # backoff before giving up: slskd serialises operations, so a
+                # busy instance can momentarily take longer than the HTTP
+                # timeout without the search being broken.
+                if _is_transient_error(exc) and attempt < max_attempts:
+                    wait_seconds = min(2.0, 0.4 * attempt)
+                    logger.warning(
+                        "slskd search start transient error (attempt %d/%d): %s (%s) — retrying in %.1fs",
+                        attempt,
+                        max_attempts,
+                        exc,
+                        type(exc).__name__,
+                        wait_seconds,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
                 logger.error(
                     "slskd search failed for query %r: %s (%s) [%s]",
                     query,
@@ -204,7 +247,15 @@ class SlskdService:
             state_data = self.http.get_json(f"searches/{search_id}", timeout=timeout, default={})
             state = state_data.get("state", "InProgress")
         except Exception as exc:
-            logger.error("slskd get state failed for search %s: %s", search_id, exc, exc_info=True)
+            # A timeout fetching search state is transient — the poll loop
+            # keeps waiting, so log at warning (not error) and report the
+            # search as still in progress rather than abandoning it.
+            logger.warning(
+                "slskd get state failed for search %s: %s (%s)",
+                search_id,
+                exc,
+                type(exc).__name__,
+            )
             return [], state, False
         if state in EMPTY_TERMINAL_STATES:
             return [], state, True
@@ -228,12 +279,25 @@ class SlskdService:
     def download_file(self, username: str, filename: str, size: int = 0, timeout: Optional[int] = None) -> bool:
         if not self.http.enabled:
             return False
-        try:
-            resp = self.http.post_json(f"transfers/downloads/{username}", [{"filename": filename, "size": int(size or 0)}], timeout=timeout)
-            return resp.status_code in [200, 201, 204]
-        except Exception as exc:
-            logger.error("slskd download exception for %s/%s: %s", username, filename[:50], exc, exc_info=True)
-            return False
+        for attempt in range(1, 3):
+            try:
+                resp = self.http.post_json(f"transfers/downloads/{username}", [{"filename": filename, "size": int(size or 0)}], timeout=timeout)
+                return resp.status_code in [200, 201, 204]
+            except Exception as exc:
+                if _is_transient_error(exc) and attempt < 2:
+                    wait_seconds = 1.0
+                    logger.warning(
+                        "slskd download transient error (attempt %d/2): %s (%s) — retrying in %.1fs",
+                        attempt,
+                        exc,
+                        type(exc).__name__,
+                        wait_seconds,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+                logger.error("slskd download exception for %s/%s: %s", username, filename[:50], exc, exc_info=True)
+                return False
+        return False
 
     def filter_results_by_quality(self, responses: list[SearchResponse], min_bitrate: int = 192, min_sample_rate: int = 44100, max_results: int = 50) -> list[dict]:
         qualified = []
