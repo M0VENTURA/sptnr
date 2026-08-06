@@ -26,6 +26,7 @@ from sqlalchemy import text
 from db.engine import db_session
 from db.repositories.queue import get_completed_group_queue_items, update_queue_item
 from db.repositories.tracks import find_library_track
+from helpers.logging_config import log_unified
 from helpers.metadata_reader import read_mp3_metadata
 from helpers.normalization_service import normalize_artist
 from services.downloads.download_processing_service import add_to_queue
@@ -377,6 +378,11 @@ def add_release_tracks_to_queue(
                 len(queue_ids),
                 release_id,
             )
+            if queue_ids:
+                log_unified(
+                    f"[QUEUE] Queued {len(queue_ids)} track(s): {artist} - {album} "
+                    f"(release {release_id})"
+                )
 
         return queue_ids
 

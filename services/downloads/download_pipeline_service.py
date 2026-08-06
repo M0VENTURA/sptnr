@@ -588,6 +588,10 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             found_filename=best["filename"],
             status="downloading",
         )
+        log_unified(
+            f"[QUEUE] {expected_artist} - {expected_title} → downloading from {best.get('username')} "
+            f"({best.get('filename') or ''})"
+        )
 
         return {
             "success": True,

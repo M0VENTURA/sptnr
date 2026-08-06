@@ -1782,7 +1782,11 @@ async function batchOrganizeSelected() { alert('batchOrganizeSelected not yet im
 // ============================================================================
 
 // Renders the monitor page's Download Queue section: grouped folders first,
-// falling back to the real download_queue rows, then an empty state.
+// Renders the monitor page's Download Queue card: the real download_queue
+// rows grouped by album (Queue Items) AND the MusicBrainz folder groups
+// (Folder Groups). Both must render together — a folder-groups-only render
+// made newly added albums vanish under bare folder names whenever this
+// function's 10s poll ran after monitor.js had shown the items.
 async function renderQueueSection() {
   const section = document.getElementById('folderGroupsSection');
   const list = document.getElementById('folderGroupsList');
@@ -1795,42 +1799,32 @@ async function renderQueueSection() {
     const data = await fetchJsonOrThrow('/api/downloads/grouped-folders');
     if (data && data.success) groups = data.folder_groups || [];
   } catch (error) {
-    console.error('Error loading folder groups, falling back to queue items:', error);
+    console.error('Error loading folder groups:', error);
   }
 
-  if (groups.length === 0) {
-    try {
-      const qd = await fetchJsonOrThrow('/api/downloads/queue?limit=200');
-      const qItems = (qd && qd.queue) || [];
-      if (qItems.length > 0) {
-        if (badge) badge.textContent = qItems.length + ' items';
-        // Group tracks into album folders so this fallback matches the
-        // renderQueueList grouping used on the /downloads page and the
-        // legacy folder+tracks layout.
-        const groups2 = buildQueueGroups(qItems);
-        window.__queueGroupsArr = groups2;
-        const rows = groups2.map(function(group, index) {
-          if (group.items.length === 1) {
-            return renderQueueItemRow(group.items[0], 'active');
-          }
-          return renderQueueGroupRow(group, 'active', index);
-        });
-        list.innerHTML = '<div class="list-group list-group-flush">' + rows.join('') + '</div>';
-        attachQueueGroupToggles(list);
-        if (typeof updateQueuePageControls === 'function') updateQueuePageControls(qItems.length, qItems.length);
-        return;
+  let qItems = [];
+  try {
+    const qd = await fetchJsonOrThrow('/api/downloads/queue?limit=200');
+    qItems = (qd && qd.queue) || [];
+  } catch (error) {
+    console.error('Error loading queue items:', error);
+  }
+
+  let html = '';
+  if (qItems.length > 0) {
+    html += '<h6 class="px-3 pt-3 mb-0 small text-muted text-uppercase">Queue Items</h6>';
+    const queueGroups = buildQueueGroups(qItems);
+    window.__queueGroupsArr = queueGroups;
+    html += '<div class="list-group list-group-flush">' + queueGroups.map(function(group, index) {
+      if (group.items.length === 1) {
+        return renderQueueItemRow(group.items[0], 'active');
       }
-    } catch (error) {
-      console.error('Error loading queue fallback:', error);
-    }
-    if (badge) badge.textContent = '0 items';
-    list.innerHTML = '<div class="alert alert-info m-3"><i class="bi bi-info-circle"></i> No items in queue right now.</div>';
-    return;
+      return renderQueueGroupRow(group, 'active', index);
+    }).join('') + '</div>';
   }
-
-  if (badge) badge.textContent = groups.length + ' items';
-  list.innerHTML = '<div class="list-group list-group-flush">' +
-    groups.map(function(g) {
+  if (groups.length > 0) {
+    html += '<h6 class="px-3 pt-3 mb-0 small text-muted text-uppercase">Folder Groups</h6>';
+    html += '<div class="list-group list-group-flush">' + groups.map(function(g) {
       // API shape: {name, display_name, total_tracks, discovered_count,
       // organized_count, progress_percent, status, files[], metadata{artist,album,year}}
       const name = g.display_name || g.name || 'Unknown';
@@ -1854,7 +1848,19 @@ async function renderQueueSection() {
         fileHtml +
         '</div><span class="badge bg-info flex-shrink-0">' + trackCount + ' track' + (trackCount !== 1 ? 's' : '') + '</span></div></div>';
     }).join('') + '</div>';
-  if (typeof updateQueuePageControls === 'function') updateQueuePageControls(groups.length, groups.length);
+  }
+
+  const total = qItems.length + groups.length;
+  if (total === 0) {
+    if (badge) badge.textContent = '0 items';
+    list.innerHTML = '<div class="alert alert-info m-3"><i class="bi bi-info-circle"></i> No items in queue right now.</div>';
+    return;
+  }
+
+  if (badge) badge.textContent = total + ' items';
+  list.innerHTML = html;
+  attachQueueGroupToggles(list);
+  if (typeof updateQueuePageControls === 'function') updateQueuePageControls(total, total);
 }
 
 // Loads the monitor page's Queue Activity Log.

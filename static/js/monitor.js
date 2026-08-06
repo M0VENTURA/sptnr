@@ -217,8 +217,8 @@ async function loadFolderGroups(options) {
     // folder with every song as a queue item below). Tracks added together
     // from a MusicBrainz release share an ``import_group`` (mbid_<release_id>);
     // other batch-added tracks fall back to artist+album grouping.
-    var groups = buildMonitorQueueGroups(qItems);
-    html += '<div class="list-group list-group-flush">' + groups.map(function(group, index) {
+    var queueGroups = buildMonitorQueueGroups(qItems);
+    html += '<div class="list-group list-group-flush">' + queueGroups.map(function(group, index) {
       if (group.items.length === 1) {
         return renderMonitorQueueItemRow(group.items[0]);
       }

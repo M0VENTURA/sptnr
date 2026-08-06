@@ -147,6 +147,25 @@ def _tail_queue_log(limit: int = 100) -> list[dict[str, Any]]:
         "Binary object",
         "psycopg2",
     )
+    # Queue-relevant line markers. Keep the set tight enough to exclude
+    # popularity/scan chatter but broad enough to cover every worker prefix.
+    _QUEUE_MARKERS = (
+        "[QUEUE",
+        "[QUEUE_WORKER",
+        "[PIPELINE]",
+        "[COMPLETE]",
+        "[MONITOR_FOLDER]",
+        "[SEARCH]",
+        "[IMPORT]",
+        "[START_DOWNLOAD]",
+        "download_queue",
+        "Soulseek",
+        "slskd",
+    )
+    # Read more than 64KB: a busy popularity scan can push queue lines out of
+    # a small tail window, leaving the viewer "stale" even though fresh
+    # queue activity exists further up the file.
+    _TAIL_BYTES = 256 * 1024
     _TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
     try:
         from helpers.logging_config import resolve_log_dir
@@ -156,7 +175,14 @@ def _tail_queue_log(limit: int = 100) -> list[dict[str, Any]]:
         candidates = []
         for name in ("unified_scan.log", "info.log"):
             base = os.path.join(log_dir, name)
-            candidates.extend(sorted(_glob.glob(base + "*"), reverse=True))
+            candidates.extend(_glob.glob(base + "*"))
+        # Newest file first by mtime — lexicographic reverse puts rotated
+        # ``.log.1`` files ahead of the live log, so the viewer read OLD
+        # events and looked permanently stale.
+        candidates.sort(
+            key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
+            reverse=True,
+        )
 
         events: list[dict[str, Any]] = []
         for path in candidates:
@@ -166,15 +192,16 @@ def _tail_queue_log(limit: int = 100) -> list[dict[str, Any]]:
                 with open(path, "r", encoding="utf-8", errors="ignore") as fh:
                     fh.seek(0, os.SEEK_END)
                     size = fh.tell()
-                    fh.seek(max(0, size - min(size, 64 * 1024)))
+                    fh.seek(max(0, size - min(size, _TAIL_BYTES)))
                     chunk = fh.read()
+                file_events = 0
                 for line in reversed(chunk.splitlines()):
                     line = line.strip()
                     if not line:
                         continue
                     if any(n in line for n in _NOISE_MARKERS):
                         continue
-                    if any(k in line for k in ("[QUEUE", "[QUEUE_WORKER", "download_queue", "Soulseek", "slskd", "[PIPELINE]")):
+                    if any(k in line for k in _QUEUE_MARKERS):
                         ts_match = _TS_RE.search(line)
                         created_at = None
                         if ts_match:
@@ -188,8 +215,14 @@ def _tail_queue_log(limit: int = 100) -> list[dict[str, Any]]:
                             "item_id": None,
                             "details": {},
                         })
+                        file_events += 1
                     if len(events) >= limit:
                         break
+                # Only fall through to rotated/older files when the newest
+                # file has no queue lines at all — mixing in old logs makes
+                # the viewer look out of date.
+                if file_events > 0:
+                    break
             except Exception:
                 continue
             if len(events) >= limit:
