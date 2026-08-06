@@ -401,10 +401,50 @@ def _detect_discogs(title: str, artist: str, album: str | None,
         return {"source": "discogs", "matched": False, "confidence": 0.0, "metadata": {}}
 
 
-def _detect_lastfm(artist: str, album: str, lastfm_client=None) -> bool:
-    """Medium-confidence check: Last.fm album track count 1-3 suggests a single."""
+def _detect_discogs_video(title: str, artist: str,
+                          discogs_token: str | None = None) -> dict[str, Any]:
+    """Medium-confidence check: official/promo music video on Discogs.
+
+    Legacy parity — the old scanner confirmed singles via the track's
+    official video on Discogs (``has_official_video``). Video presence is
+    corroborating evidence, never primary: it counts as a medium source.
+    """
+    token = discogs_token or os.environ.get("DISCOGS_TOKEN", "")
+    if not token:
+        try:
+            from helpers.config_helpers import get_config
+            cfg = get_config()
+            token = (cfg.get("api_integrations", {}).get("discogs", {}) or {}).get("token", "") or ""
+        except Exception:
+            token = ""
+    if not token or token.lower() in ("your_discogs_token", "your_token", "placeholder"):
+        return {"source": "discogs_video", "matched": False, "confidence": 0.0, "metadata": {}}
+    try:
+        from services.enrichment.discogs_service import _get_service
+        svc = _get_service(token)
+        matched = bool(svc.has_official_video(title, artist)) if hasattr(svc, "has_official_video") else False
+        return {"source": "discogs_video", "matched": matched,
+                "confidence": 0.5 if matched else 0.0, "metadata": {}}
+    except Exception as exc:
+        logger.debug("Discogs video detection failed for %s / %s: %s", artist, title, exc)
+        return {"source": "discogs_video", "matched": False, "confidence": 0.0, "metadata": {}}
+
+
+def _detect_lastfm(artist: str, album: str, title: str, lastfm_client=None) -> bool:
+    """Medium-confidence check: Last.fm release evidence for a single.
+
+    Legacy parity: (1) the track itself exists as a single/EP release on
+    Last.fm (album payload named after the track with < 6 tracks), or
+    (2) the track's album has 1-3 tracks (single), or 4-6 tracks with a
+    title track (EP).
+    """
     if not lastfm_client:
         return False
+    try:
+        if lastfm_client.check_track_as_single(artist, title):
+            return True
+    except Exception:
+        pass
     try:
         count = lastfm_client.get_album_track_count(artist, album)
         if 1 <= count <= 3:
@@ -660,6 +700,16 @@ def detect_single_for_track(
         musicbrainz_confirmed = True
         reasons.append("musicbrainz_matched")
 
+    # Discogs official-video evidence (MEDIUM confidence, legacy parity): a
+    # track with an official/promo music video on Discogs was issued as a
+    # single. Runs only when neither Discogs nor MusicBrainz confirmed — it
+    # corroborates weak evidence, it is not a primary source.
+    if use_advanced_detection and not discogs_confirmed and not musicbrainz_confirmed:
+        dv = _detect_discogs_video(lookup_title, artist, discogs_token)
+        if dv.get("matched"):
+            discogs_video_confirmed = True
+            reasons.append("discogs_video")
+
     # ── ListenBrainz top-10% evidence ───────────────────────────────────
     # When the artist's ListenBrainz top-10% listen threshold is available and
     # the track's own listen count meets it, that is strong community evidence
@@ -683,7 +733,7 @@ def detect_single_for_track(
 
     # Last.fm
     if lastfm_client:
-        lastfm_confirmed = _detect_lastfm(artist, album or "", lastfm_client)
+        lastfm_confirmed = _detect_lastfm(artist, album or "", lookup_title, lastfm_client)
         if lastfm_confirmed:
             reasons.append("lastfm_confirmed")
 
@@ -866,7 +916,9 @@ def detect_single_for_track(
             "medium_sources": medium_sources,
             "is_title_track": is_title,
             "source_levels": {
-                k: _levels.get(k) for k in ("discogs", "musicbrainz")
+                k: _levels.get(k) for k in (
+                    "discogs", "musicbrainz", "discogs_video", "lastfm"
+                )
             },
         },
     }

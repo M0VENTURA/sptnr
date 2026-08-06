@@ -1073,7 +1073,8 @@ def process_track(
                     f", z=({_sd_d.get('album_z')},{_sd_d.get('artist_z')}), "
                     f"hi={_sd_d.get('high_sources')}, med={_sd_d.get('medium_sources')}, "
                     f"title={_sd_d.get('is_title_track')}, "
-                    f"levels=(discogs={_sd_levels.get('discogs')},mb={_sd_levels.get('musicbrainz')})"
+                    f"levels=(discogs={_sd_levels.get('discogs')},mb={_sd_levels.get('musicbrainz')},"
+                    f"video={_sd_levels.get('discogs_video')},lastfm={_sd_levels.get('lastfm')})"
                     if _sd_d else ""
                 )
                 log_unified(

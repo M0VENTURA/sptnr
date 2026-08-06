@@ -51,6 +51,9 @@ class FakeDiscogsHttp:
             {"title": "Lycanthrope", "format": ["CD", "Single", "Promo"], "role": "Main", "year": 2006},
         ]
 
+    def get_artist_releases_all(self, artist_id, max_pages=10):
+        return self.get_artist_releases(artist_id)
+
 
 class TestDiscogsServiceIsSingle:
     def test_single_found_via_artist_release_list(self):

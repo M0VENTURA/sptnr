@@ -47,6 +47,7 @@ class DiscogsService:
         self.enabled = enabled
         self.http = http_client or DiscogsHttpClient(token=token)
         self._single_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._video_cache: dict[tuple[str, str], bool] = {}
         self._artist_releases_cache: dict[str, list[dict[str, Any]]] = {}
 
     def _normalize_title(self, title: str) -> str:
@@ -192,6 +193,94 @@ class DiscogsService:
 
         self._single_cache[cache_key] = status
         return status
+
+    @staticmethod
+    def _is_official_video_for_track(video: dict, track_title_lower: str) -> bool:
+        """True when a Discogs video is the official/promo clip for the track.
+
+        Ported from the legacy scanner: the video title (or description) must
+        contain the word ``official`` or ``promo`` (whole word, so
+        "unofficial" never counts) AND match the track title exactly after
+        stripping video-suffix noise ("official video", "music video", "hd",
+        "4k", ...) and any "Artist - " prefix.
+        """
+        video_title = (video.get("title") or "").lower()
+        video_desc = (video.get("description") or "").lower()
+
+        official_pattern = re.compile(r"\b(official|promo)\b")
+        is_official_or_promo = bool(
+            official_pattern.search(video_title) or official_pattern.search(video_desc)
+        )
+
+        # Canonical comparison key — punctuation/apostrophe-insensitive, so
+        # the Discogs title "No, It Isnt" confirms "No, It Isn't".
+        # (normalize_title_for_lookup turns the apostrophe into a space, so
+        # it must be dropped first.)
+        def _canonical(value: str) -> str:
+            return normalize_title_for_lookup(
+                value.replace("'", "").replace("’", "")
+            )
+
+        video_title_cleaned = re.sub(
+            r"\s*[\(\[]?(official|music|promo)?\s*(video|music video|mv|hd|4k|lyric video)[\)\]]?\s*$",
+            "", video_title, flags=re.IGNORECASE,
+        ).strip()
+        if " - " in video_title_cleaned:
+            parts = video_title_cleaned.split(" - ", 1)
+            if len(parts) == 2:
+                video_title_cleaned = parts[1].strip()
+
+        matches_title = _canonical(track_title_lower) == _canonical(video_title_cleaned)
+
+        if not matches_title and video_desc:
+            desc_cleaned = re.sub(
+                r"\s*[\(\[]?(official|music|promo)?\s*(video|music video|mv|hd|4k|lyric video)[\)\]]?\s*",
+                "", video_desc, flags=re.IGNORECASE,
+            ).strip()
+            if " - " in desc_cleaned:
+                parts = desc_cleaned.split(" - ", 1)
+                if len(parts) == 2:
+                    desc_cleaned = parts[1].strip()
+            matches_title = _canonical(track_title_lower) == _canonical(desc_cleaned)
+
+        return is_official_or_promo and matches_title
+
+    def has_official_video(self, title: str, artist: str) -> bool:
+        """Return True when Discogs lists an official/promo video for the track.
+
+        Legacy parity (``has_official_video``): search master releases for
+        ``<artist> <title>``, inspect the first five masters' ``videos`` lists
+        and require an official/promo video whose cleaned title matches the
+        track. Results are cached per (artist, title) — a track appears once
+        per album scan, and repeated scans reuse the verdict.
+        """
+        if not self.enabled or not self.token or not title or not artist:
+            return False
+        cache_key = (artist.lower(), self._normalize_title(title))
+        if cache_key in self._video_cache:
+            return self._video_cache[cache_key]
+        matched = False
+        try:
+            results = self.http.search_database(
+                {"q": f"{artist} {title}", "type": "master", "per_page": 10}
+            ) or []
+            for rel in results[:5]:
+                master_id = rel.get("id")
+                if not master_id:
+                    continue
+                master = self.http.get_master(master_id, timeout=8.0)
+                if not master:
+                    continue
+                for video in (master.get("videos") or []):
+                    if self._is_official_video_for_track(video, title.lower()):
+                        matched = True
+                        break
+                if matched:
+                    break
+        except Exception as exc:
+            logger.debug("[DISCOGS_VIDEO] Check failed for %s / %s: %s", artist, title, exc)
+        self._video_cache[cache_key] = matched
+        return matched
 
     def is_single(self, title: str, artist: str, album_context: dict[str, Any] | None = None) -> bool:
         return bool(self.get_single_status(title, artist, album_context=album_context).get("is_single"))

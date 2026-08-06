@@ -35,6 +35,9 @@ class FakeDiscogsHttp:
             {"title": "155", "format": ["CD", "Single", "Limited Edition"], "role": "Main", "year": 2006},
         ]
 
+    def get_artist_releases_all(self, artist_id, max_pages=10):
+        return self.get_artist_releases(artist_id)
+
 
 class TestDiscogsServiceGetSingleStatus:
     def _svc(self, http=None):
@@ -197,6 +200,9 @@ class TestReleaseCachePromoPersistence:
                     {"title": "Normal Single", "format": ["Vinyl", "7\"", "Single"], "role": "Main", "year": 2006},
                     {"title": "Appearance", "format": ["CD", "Single"], "role": "Appearance", "year": 2006},
                 ]
+
+            def get_artist_releases_all(self, artist_id, max_pages=10):
+                return self.get_artist_releases(artist_id)
 
         monkeypatch.setattr("api_clients.discogs_http.DiscogsHttpClient", lambda **kw: FakeHttp())
         monkeypatch.setattr(
