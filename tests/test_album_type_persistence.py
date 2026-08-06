@@ -254,3 +254,71 @@ class TestSinglesOnlyPass:
         assert result["single_sources"]
         assert result["popularity_score"] == 50.0
 
+
+class TestAlbumTypeProtectedFromNavidromeSync:
+    """A Navidrome metadata sync must never wipe album-type columns.
+
+    The album type is owned by the album stage's enrichment pass (detected via
+    MusicBrainz release-group + name heuristics).  A Navidrome import/sync
+    reads ``releasetype``/``albumtype`` from file tags, which are usually
+    empty, so writing them back would clobber the type the scan just persisted
+    and the album page would fall back to "Unknown" after the next library
+    sync / boot import / navidrome scan.
+    """
+
+    def test_album_type_columns_are_navidrome_protected(self):
+        from db.repositories.popularity_repository import _POPULARITY_PROTECTED_COLUMNS
+
+        for col in ("musicbrainz_albumtype", "spotify_album_type", "releasetype"):
+            assert col in _POPULARITY_PROTECTED_COLUMNS, (
+                f"{col} must be protected from _navidrome_sync overwrites"
+            )
+
+    def test_save_to_db_builds_navidrome_update_set_without_album_type(self):
+        # ``_execute_save`` builds the UPDATE SET clause by skipping protected
+        # columns when ``_navidrome_sync`` is True.  Verify the album-type
+        # columns are now excluded so the stored value survives.
+        import db.repositories.popularity_repository as repo
+
+        payload = {
+            "_navidrome_sync": True,
+            "id": "t1",
+            "title": "Song",
+            "musicbrainz_albumtype": "",   # empty tag value
+            "releasetype": "",
+        }
+
+        seen = {}
+
+        class _FakeResult:
+            def fetchall(self):
+                return []
+
+        class _FakeCursor:
+            pass
+
+        class _FakeSession:
+            def execute(self, statement, params):
+                seen["statement"] = str(statement)
+                seen["params"] = params
+                return _FakeResult()
+
+        # get_tracks_table_columns/types are cached and read via the real
+        # session; monkeypatch them so the test is self-contained.
+        repo._TRACKS_COLUMN_CACHE = {"id", "title", "musicbrainz_albumtype", "releasetype"}
+        repo._TRACKS_COLUMN_TYPES_CACHE = {
+            "id": "text", "title": "text",
+            "musicbrainz_albumtype": "text", "releasetype": "text",
+        }
+
+        try:
+            repo._execute_save(_FakeSession(), dict(payload))
+        finally:
+            repo._TRACKS_COLUMN_CACHE = None
+            repo._TRACKS_COLUMN_TYPES_CACHE = None
+
+        statement = seen.get("statement", "")
+        # The UPDATE SET clause must not touch the album-type columns.
+        assert "musicbrainz_albumtype=EXCLUDED.musicbrainz_albumtype" not in statement
+        assert "releasetype=EXCLUDED.releasetype" not in statement
+
