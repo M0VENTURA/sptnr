@@ -15,6 +15,7 @@ and ``db/repositories``.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 
@@ -24,6 +25,7 @@ from typing import Any, Dict
 from services.downloads.slskd_service import SlskdService
 from services.enrichment.musicbrainz_service import (
     fetch_musicbrainz_release_metadata,
+    fetch_release_metadata,
 )
 from db.repositories.queue import (
     update_queue_item,
@@ -40,6 +42,50 @@ from services.queue.queue_processing_service import add_release_tracks_to_queue
 from helpers.logging_config import log_unified
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# PEER FAILURE MEMORY
+# =============================================================================
+
+# Peers that recently rejected/failed a download request. Failed queue items
+# are retried on a schedule; without remembering which peer+file failed, the
+# retry re-searches and picks the exact same peer that just rejected the
+# download, failing again in a loop ("the transfers keep failing").
+# ``(username, filename) -> blocked-until`` (unix time).
+_BLOCKED_PEER_TTL_SECONDS = int(
+    os.environ.get("SLSKD_BLOCKED_PEER_TTL_SECONDS", "7200")
+)
+_blocked_peers: dict[tuple[str, str], float] = {}
+
+
+def _block_peer(username: str | None, filename: str | None) -> None:
+    """Remember that *username* rejected/failed this file for *ttl* seconds."""
+    if not username or not filename:
+        return
+    _blocked_peers[(str(username), str(filename))] = time.time() + _BLOCKED_PEER_TTL_SECONDS
+
+
+def _is_peer_blocked(username: str | None, filename: str | None) -> bool:
+    if not username or not filename:
+        return False
+    key = (str(username), str(filename))
+    blocked_until = _blocked_peers.get(key)
+    if blocked_until is None:
+        return False
+    if blocked_until < time.time():
+        _blocked_peers.pop(key, None)
+        return False
+    return True
+
+
+def _filter_blocked_peers(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop search results from peers that recently failed this download."""
+    if not _blocked_peers:
+        return results
+    return [
+        r for r in results
+        if not _is_peer_blocked(r.get("username"), r.get("filename"))
+    ]
 
 
 # =============================================================================
@@ -421,6 +467,9 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             searched_queries.append(q)
             wait_seconds = None if idx == 0 else _SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS
             results = slskd.search_and_filter(q, min_bitrate=192, wait_seconds=wait_seconds)
+            # Skip peers that recently rejected/failed this file so a retry picks
+            # a different peer instead of failing on the same one repeatedly.
+            results = _filter_blocked_peers(results)
             all_results.extend(results)
 
             best = _select_best_result(
@@ -485,6 +534,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 "[PIPELINE] Best match peer %s has 0 free slots — skipping download",
                 best.get("username"),
             )
+            _block_peer(best.get("username"), best.get("filename"))
             _log_search_event(
                 search_type="automatic",
                 query=query,
@@ -523,6 +573,9 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
         )
 
         if not success:
+            # Remember this peer so the retry does not immediately pick the
+            # same peer that just rejected the download.
+            _block_peer(best.get("username"), best.get("filename"))
             log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: download_failed ({best.get('username')})")
             mark_failed(queue_id, "download_failed")
             return {"success": False, "status": "download_failed"}
@@ -731,7 +784,16 @@ def start_release_download(release_id, release_title, artist, method='slskd'):
     try:
         logger.info(f"[START_DOWNLOAD] {release_id}")
 
+        # Primary fetch via the raw WS/2 endpoint (rate-limited, sleeps 1s).
         mb_data = fetch_musicbrainz_release_metadata(release_id)
+
+        # Fallback: the service-based fetch (MusicBrainzHttpClient) uses the
+        # same WS/2 inc set and can succeed when the raw-httpx call was
+        # rate-limited or hiccupped. Without this, a single transient fetch
+        # failure degrades the whole album into a single un-downloadable
+        # "album as one track" queue entry.
+        if not mb_data:
+            mb_data = fetch_release_metadata(release_id)
 
         if not mb_data:
             return {"success": False, "error": "MusicBrainz fetch failed"}

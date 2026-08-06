@@ -15,3 +15,21 @@
 .status-badge-incomplete {
     background-color: var(--brand-lastfm, #d51007) !important;
 }
+
+/* Album-folder queue groups (legacy downloads-manager parity) */
+.queue-group-toggle .queue-group-chevron {
+    transition: transform 0.15s ease;
+}
+
+.queue-group-toggle .queue-group-chevron.rotated {
+    transform: rotate(180deg);
+}
+
+.queue-group-body .list-group-item {
+    border: none;
+    border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+}
+
+.queue-group-body .list-group-item:last-child {
+    border-bottom: none;
+}

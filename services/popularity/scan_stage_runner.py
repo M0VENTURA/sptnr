@@ -94,6 +94,23 @@ def _load_discogs_single_titles(artist: str) -> set[str]:
         return set()
 
 
+def _load_discogs_promo_titles(artist: str) -> set[str]:
+    """Return Discogs promo single/EP titles from the artist release cache.
+
+    Promo-only releases confirm a track was issued as a (promotional) single,
+    but they are weaker evidence than a commercial single — detection treats a
+    promo-only Discogs match as a medium-confidence source.
+    """
+    if not artist:
+        return set()
+    try:
+        from services.popularity.release_cache_service import get_artist_promo_titles
+        return get_artist_promo_titles(artist, source="discogs") or set()
+    except Exception as exc:
+        logger.debug("[scan_runner] Could not pre-load Discogs promos for '%s': %s", artist, exc)
+        return set()
+
+
 def run_scan(
     *,
     verbose: bool = False,
@@ -179,6 +196,12 @@ def run_scan(
 
     # Per-artist Discogs single-title cache (from the artist release cache).
     artist_discogs_singles_cache: dict[str, set[str]] = {}
+
+    # Per-artist Discogs promo-title cache — promo-only releases are real
+    # confirmation the track was issued as a (promotional) single, but a promo
+    # is weaker evidence than a commercial single and is capped at medium
+    # confidence during singles detection.
+    artist_discogs_promo_cache: dict[str, set[str]] = {}
 
     # All candidate tracks grouped by artist — the popularity cache prefetch
     # runs ONCE per artist (one getTopTracks + LB batches for the whole
@@ -305,6 +328,10 @@ def run_scan(
             artist_discogs_singles_cache[artist] = _load_discogs_single_titles(artist)
         discogs_cached_singles = artist_discogs_singles_cache.get(artist) or set()
 
+        if artist and artist not in artist_discogs_promo_cache and not _is_compilation_artist:
+            artist_discogs_promo_cache[artist] = _load_discogs_promo_titles(artist)
+        discogs_cached_promos = artist_discogs_promo_cache.get(artist) or set()
+
         # ── Album skip (album_skip_days + skip-if-unchanged) ────────────
         # Mirrors the legacy scanner: albums already scanned within the
         # configured window, or whose tracks are all scored + singles
@@ -379,6 +406,7 @@ def run_scan(
                             artist_lf_context={},
                             mb_cached_singles=mb_cached_singles,
                             discogs_cached_singles=discogs_cached_singles,
+                            discogs_cached_promos=discogs_cached_promos,
                             prefetched_popularity={},
                         )
                         if _tr is not None:
@@ -514,6 +542,20 @@ def run_scan(
                     _discogs_id = str(_t.get("discogs_artist_id") or "").strip()
                     if _discogs_id:
                         break
+                if not _discogs_id:
+                    # First-ever scan: ``enrich_album`` persists the Discogs
+                    # artist id AFTER the in-memory track dicts were loaded, so
+                    # it is not in them yet. Resolve it here so the Discogs
+                    # release cache (and hence Discogs single confirmation) is
+                    # populated on the first pass instead of a week later.
+                    try:
+                        from services.enrichment.discogs_service import DiscogsService
+                        from helpers.config_helpers import get_config
+                        _tok = ((get_config().get("api_integrations") or {}).get("discogs") or {}).get("token") or ""
+                        if _tok and _tok.lower() not in ("your_discogs_token", "your_token", "placeholder"):
+                            _discogs_id = str(DiscogsService(token=_tok).get_artist_id(artist) or "").strip()
+                    except Exception as exc:
+                        logger.debug("[scan_runner] Discogs artist id resolution failed for %s: %s", artist, exc)
                 prefetch_artist_releases(artist, _discogs_id)
             except Exception as exc:
                 logger.warning(
@@ -665,6 +707,7 @@ def run_scan(
                     artist_lf_context=artist_lf_context,
                     mb_cached_singles=mb_cached_singles,
                     discogs_cached_singles=discogs_cached_singles,
+                    discogs_cached_promos=discogs_cached_promos,
                     prefetched_popularity=prefetched_popularity,
                 )
                 if frozen_result is not None:
@@ -683,6 +726,7 @@ def run_scan(
                 artist_lf_context=artist_lf_context,
                 mb_cached_singles=mb_cached_singles,
                 discogs_cached_singles=discogs_cached_singles,
+                discogs_cached_promos=discogs_cached_promos,
                 prefetched_popularity=prefetched_popularity,
             )
 

@@ -176,6 +176,7 @@ class TestSinglesOnlyPass:
                         album_type=None, album=None, isrc=None, duration=None,
                         use_advanced_detection=True, persist_result=False,
                         mb_cached_singles=None, discogs_cached_singles=None,
+                        discogs_cached_promos=None,
                         artist_mbid=None, listenbrainz_listens=0,
                         discogs_token=None, lastfm_client=None, mb_client=None):
             calls["singles"] += 1

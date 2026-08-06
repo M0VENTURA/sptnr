@@ -134,6 +134,7 @@ def process_track(
     artist_lf_context: dict[str, Any] | None = None,
     mb_cached_singles: set | None = None,
     discogs_cached_singles: set | None = None,
+    discogs_cached_promos: set | None = None,
     prefetched_popularity: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
 
@@ -1024,6 +1025,7 @@ def process_track(
                     persist_result=False,  # We persist via track_stage
                     mb_cached_singles=mb_cached_singles,
                     discogs_cached_singles=discogs_cached_singles,
+                    discogs_cached_promos=discogs_cached_promos,
                     artist_mbid=(
                         effective_track.get("musicbrainz_artistid")
                         or effective_track.get("musicbrainz_artist_id")

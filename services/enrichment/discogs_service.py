@@ -46,36 +46,109 @@ class DiscogsService:
         self.token = token or ""
         self.enabled = enabled
         self.http = http_client or DiscogsHttpClient(token=token)
-        self._single_cache: dict[tuple[str, str], bool] = {}
+        self._single_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._artist_releases_cache: dict[str, list[dict[str, Any]]] = {}
 
     def _normalize_title(self, title: str) -> str:
         base = strip_parentheses(title)
         return normalize_title_for_lookup(base or title)
 
-    def is_single(self, title: str, artist: str, album_context: dict[str, Any] | None = None) -> bool:
-        if not self.enabled or not self.token or not title or not artist: return False
-        if album_context and album_context.get("is_special_edition"): return False
+    def _get_artist_releases(self, artist: str) -> list[dict[str, Any]]:
+        """Fetch (and cache per artist) the artist's own Discogs releases.
 
-        artist_key = artist.lower()
-        title_key = self._normalize_title(title)
-        cache_key = (artist_key, title_key)
+        The artist-releases endpoint lists every release for the artist with
+        its format and role, which is authoritative for single detection. The
+        free-text database search ranks the full-length album editions above
+        the 7"/promo single, so the single routinely misses a small top-N
+        window even when it is genuinely on Discogs (e.g. "+44 - When Your
+        Heart Stops Beating").
+        """
+        key = artist.lower()
+        if key not in self._artist_releases_cache:
+            releases: list[dict[str, Any]] = []
+            artist_id = self.get_artist_id(artist)
+            if artist_id:
+                releases = self.http.get_artist_releases(artist_id, per_page=100) or []
+            self._artist_releases_cache[key] = releases
+        return self._artist_releases_cache[key]
 
-        if cache_key in self._single_cache: return self._single_cache[cache_key]
+    @staticmethod
+    def _release_is_promo(rel: dict[str, Any]) -> bool:
+        """True when a Discogs release's format marks it as a promo."""
+        formats = " ".join(str(f).lower() for f in (rel.get("format") or []) if f)
+        return "promo" in formats
 
-        # FIXED: Use search_database with specific params
-        results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 5})
-        
-        for result in results:
-            formats = " ".join(result.get("format", [])).lower()
-            # Normalize the RESULT title too — ``title_key`` is punctuation-
+    def _scan_releases(self, title_key: str, releases: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Find the best single/EP match in *releases* for *title_key*.
+
+        Returns a status dict, or None when nothing matches. A commercial
+        single/EP match is preferred over a promo-only one, so a track that
+        was BOTH a promo and a proper single is reported as a (high-confidence)
+        commercial single.
+        """
+        best: dict[str, Any] | None = None
+        for rel in releases:
+            if str(rel.get("role") or "Main").strip().lower() != "main":
+                continue
+            formats = " ".join(str(f).lower() for f in (rel.get("format") or []) if f)
+            if "single" not in formats and "ep" not in formats:
+                continue
+            # Normalize the RELEASE title too — ``title_key`` is punctuation-
             # stripped ("what s the deal"), so matching it against the raw
             # lowercased title ("what's the deal?") fails on apostrophes.
-            result_title = self._normalize_title(result.get("title") or "")
-            if ("single" in formats or "ep" in formats) and title_key in result_title:
-                self._single_cache[cache_key] = True
-                return True
-        self._single_cache[cache_key] = False
-        return False
+            rel_title = self._normalize_title(str(rel.get("title") or ""))
+            if not rel_title or not (rel_title == title_key or title_key in rel_title):
+                continue
+            is_promo = "promo" in formats
+            status: dict[str, Any] = {
+                "is_single": True,
+                "is_promo": is_promo,
+                "release_year": rel.get("year") if isinstance(rel.get("year"), int) else None,
+                "release_id": str(rel.get("id") or "") or None,
+                "format": formats,
+            }
+            if not is_promo:
+                return status  # commercial single is the strongest possible match
+            if best is None:
+                best = status
+        return best
+
+    def get_single_status(self, title: str, artist: str,
+                          album_context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return the Discogs single verdict with promo/release detail.
+
+        Returns ``{is_single, is_promo, release_year, release_id, format}``.
+        A promo-only release confirms the track WAS issued as a single, but a
+        promo is promotional evidence — weaker than a commercial single.
+        """
+        if not self.enabled or not self.token or not title or not artist:
+            return {"is_single": False, "is_promo": False, "release_year": None, "release_id": None, "format": ""}
+        if album_context and album_context.get("is_special_edition"):
+            return {"is_single": False, "is_promo": False, "release_year": None, "release_id": None, "format": ""}
+
+        title_key = self._normalize_title(title)
+        cache_key = (artist.lower(), title_key)
+        if cache_key in self._single_cache:
+            return self._single_cache[cache_key]
+
+        # Primary: match against the artist's OWN release list. A single/EP
+        # release with a matching title on the artist's release list is
+        # authoritative confirmation, independent of search-result ranking.
+        status = self._scan_releases(title_key, self._get_artist_releases(artist) or [])
+
+        # Fallback: use search_database with specific params.
+        if status is None:
+            results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 5})
+            status = self._scan_releases(title_key, results or [])
+
+        if status is None:
+            status = {"is_single": False, "is_promo": False, "release_year": None, "release_id": None, "format": ""}
+
+        self._single_cache[cache_key] = status
+        return status
+
+    def is_single(self, title: str, artist: str, album_context: dict[str, Any] | None = None) -> bool:
+        return bool(self.get_single_status(title, artist, album_context=album_context).get("is_single"))
 
     def get_artist_id(self, artist: str, timeout: float = 10.0) -> str | None:
         """Resolve a Discogs artist ID via database search (type=artist).

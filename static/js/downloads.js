@@ -1929,63 +1929,262 @@ function renderQueueList(kind, items) {
   listEl.style.display = 'block';
   if (badgeEl) { badgeEl.textContent = items.length + ' item' + (items.length !== 1 ? 's' : ''); badgeEl.style.display = 'inline-block'; }
 
-  const rows = items.map(function(item) {
-    const st = item.status || 'queued';
-    const badgeCls = st === 'failed' ? 'danger' : st === 'downloading' ? 'primary' : st === 'completed' ? 'success' : 'info';
+  // Group tracks into album folders (legacy parity): tracks added together
+  // from a MusicBrainz release share an ``import_group`` (mbid_<release_id>),
+  // so they render as an expandable album with each song a queue item below.
+  // Fall back to artist+album grouping for other batch-added tracks.
+  const groups = buildQueueGroups(items);
+  window.__queueGroupsArr = groups;
 
-    // Per-item detail chips: album, MusicBrainz ID, and track length.
-    const chips = [];
-    if (item.album && item.album !== item.title) {
-      chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-disc me-1"></i>' + escapeHtml(item.album) + '</span>');
+  const rows = groups.map(function(group, index) {
+    if (group.items.length === 1) {
+      return renderQueueItemRow(group.items[0], kind);
     }
-    const mbid = item.release_mbid || item.release_id || item.recording_mbid || '';
-    if (mbid) {
-      const shortMbid = String(mbid).slice(0, 8);
-      chips.push('<span class="badge bg-secondary-subtle text-dark" title="' + escapeHtml(mbid) + '"><i class="bi bi-fingerprint me-1"></i>' + escapeHtml(shortMbid) + '</span>');
-    }
-    if (item.duration) {
-      chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-clock me-1"></i>' + formatDuration(item.duration) + '</span>');
-    }
-    if (item.track_number) {
-      chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-music-note me-1"></i>Track ' + escapeHtml(String(item.track_number)) + '</span>');
-    }
-    const detailLine = chips.length
-      ? '<div class="d-flex flex-wrap gap-1 mt-1">' + chips.join('') + '</div>'
-      : '';
-
-    // Progress bar for in-flight downloads when progress data is available.
-    let progressHtml = '';
-    if (st === 'downloading' && item.progress != null && Number(item.progress) > 0) {
-      const pct = Math.min(100, Math.max(0, Number(item.progress)));
-      progressHtml = '<div class="progress mt-2" style="height: 6px; max-width: 260px;">' +
-        '<div class="progress-bar bg-primary" role="progressbar" style="width: ' + pct + '%" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100"></div>' +
-        '</div>';
-    }
-
-    let actions = '';
-    if (kind === 'active') {
-      if (st === 'downloading' || st === 'searching' || st === 'processing') {
-        actions += '<button class="btn btn-sm btn-outline-danger" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-x-circle"></i></button>';
-      }
-    }
-    if (kind === 'failed') {
-      actions += '<button class="btn btn-sm btn-outline-warning" title="Retry" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
-    }
-    if (kind === 'completed') {
-      actions += '<button class="btn btn-sm btn-outline-primary" title="Copy to library" onclick="organizeFile(' + item.id + ')"><i class="bi bi-folder-plus"></i></button>';
-    }
-    actions += '<button class="btn btn-sm btn-outline-danger" title="Remove" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
-
-    return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center gap-2">' +
-      '<div class="text-truncate"><strong>' + escapeHtml(item.title || item.album || 'Unknown') + '</strong>' +
-      (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album && item.album !== item.title ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
-      detailLine + progressHtml +
-      (kind === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +
-      '</div><div class="d-flex align-items-center gap-2 flex-shrink-0">' +
-      '<span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span>' + actions +
-      '</div></div></div>';
+    return renderQueueGroupRow(group, kind, index);
   });
   listEl.innerHTML = '<div class="list-group list-group-flush">' + rows.join('') + '</div>';
+  attachQueueGroupToggles(listEl);
+}
+
+// Build album groups from a flat list of queue items.
+function buildQueueGroups(items) {
+  const groups = [];
+  const map = {};
+  items.forEach(function(item) {
+    const album = (item.album || '').trim();
+    const artist = (item.album_artist || item.artist || '').trim();
+    const title = (item.title || '').trim();
+
+    let key;
+    let label;
+    let sublabel;
+    if (item.import_group) {
+      key = 'grp_' + String(item.import_group);
+      label = album || String(item.import_group);
+      sublabel = artist;
+    } else if (album && album !== title) {
+      key = 'alb_' + artist.toLowerCase() + '|' + album.toLowerCase();
+      label = album;
+      sublabel = artist;
+    } else {
+      key = 'solo_' + item.id;
+      label = null;
+      sublabel = null;
+    }
+
+    if (!map[key]) {
+      map[key] = { key: key, label: label, sublabel: sublabel, items: [] };
+      groups.push(map[key]);
+    }
+    map[key].items.push(item);
+  });
+  return groups;
+}
+
+// Render a single (ungrouped) queue item row.
+function renderQueueItemRow(item, kind) {
+  const st = item.status || 'queued';
+  const badgeCls = st === 'failed' ? 'danger' : st === 'downloading' ? 'primary' : st === 'completed' ? 'success' : 'info';
+
+  // Per-item detail chips: album, MusicBrainz ID, and track length.
+  const chips = [];
+  if (item.album && item.album !== item.title) {
+    chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-disc me-1"></i>' + escapeHtml(item.album) + '</span>');
+  }
+  const mbid = item.release_mbid || item.release_id || item.recording_mbid || '';
+  if (mbid) {
+    const shortMbid = String(mbid).slice(0, 8);
+    chips.push('<span class="badge bg-secondary-subtle text-dark" title="' + escapeHtml(mbid) + '"><i class="bi bi-fingerprint me-1"></i>' + escapeHtml(shortMbid) + '</span>');
+  }
+  if (item.duration) {
+    chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-clock me-1"></i>' + formatDuration(item.duration) + '</span>');
+  }
+  if (item.track_number) {
+    chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-music-note me-1"></i>Track ' + escapeHtml(String(item.track_number)) + '</span>');
+  }
+  const detailLine = chips.length
+    ? '<div class="d-flex flex-wrap gap-1 mt-1">' + chips.join('') + '</div>'
+    : '';
+
+  // Progress bar for in-flight downloads when progress data is available.
+  let progressHtml = '';
+  if (st === 'downloading' && item.progress != null && Number(item.progress) > 0) {
+    const pct = Math.min(100, Math.max(0, Number(item.progress)));
+    progressHtml = '<div class="progress mt-2" style="height: 6px; max-width: 260px;">' +
+      '<div class="progress-bar bg-primary" role="progressbar" style="width: ' + pct + '%" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100"></div>' +
+      '</div>';
+  }
+
+  let actions = '';
+  if (kind === 'active') {
+    if (st === 'downloading' || st === 'searching' || st === 'processing') {
+      actions += '<button class="btn btn-sm btn-outline-danger" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-x-circle"></i></button>';
+    }
+  }
+  if (kind === 'failed') {
+    actions += '<button class="btn btn-sm btn-outline-warning" title="Retry" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+  }
+  if (kind === 'completed') {
+    actions += '<button class="btn btn-sm btn-outline-primary" title="Copy to library" onclick="organizeFile(' + item.id + ')"><i class="bi bi-folder-plus"></i></button>';
+  }
+  actions += '<button class="btn btn-sm btn-outline-danger" title="Remove" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
+
+  return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center gap-2">' +
+    '<div class="text-truncate"><strong>' + escapeHtml(item.title || item.album || 'Unknown') + '</strong>' +
+    (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album && item.album !== item.title ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+    detailLine + progressHtml +
+    (kind === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +
+    '</div><div class="d-flex align-items-center gap-2 flex-shrink-0">' +
+    '<span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span>' + actions +
+    '</div></div></div>';
+}
+
+// Render an album folder header with its tracks as child queue items.
+function renderQueueGroupRow(group, kind, index) {
+  const bodyId = 'queueGroupBody_' + kind + '_' + index;
+  const items = group.items;
+  const total = items.length;
+
+  // Status summary for the folder header (e.g. "5 queued · 3 downloading").
+  const counts = {};
+  items.forEach(function(item) {
+    const st = item.status || 'queued';
+    counts[st] = (counts[st] || 0) + 1;
+  });
+  const summary = Object.keys(counts).map(function(st) {
+    return counts[st] + ' ' + st;
+  }).join(' · ');
+
+  const subline = group.sublabel
+    ? ' <small class="text-muted">' + escapeHtml(group.sublabel) + '</small>'
+    : '';
+
+  let actions = '';
+  if (kind === 'active') {
+    const hasActive = items.some(function(i) {
+      return i.status === 'downloading' || i.status === 'searching' || i.status === 'processing';
+    });
+    if (hasActive) {
+      actions += '<button class="btn btn-sm btn-outline-danger" title="Cancel all active downloads" onclick="cancelGroup(' + index + ')"><i class="bi bi-x-circle"></i> Cancel</button>';
+    }
+  }
+  if (kind === 'completed') {
+    actions += '<button class="btn btn-sm btn-outline-success" title="Copy all tracks to music library" onclick="organizeGroup(' + index + ')"><i class="bi bi-folder-check"></i> Copy All</button>';
+  }
+  if (kind === 'failed') {
+    actions += '<button class="btn btn-sm btn-outline-warning" title="Retry all failed tracks" onclick="retryGroup(' + index + ')"><i class="bi bi-arrow-clockwise"></i> Retry</button>';
+  }
+  actions += '<button class="btn btn-sm btn-outline-danger" title="Remove all tracks in this album" onclick="deleteGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
+
+  const children = items.map(function(item) {
+    return renderQueueItemRow(item, kind);
+  }).join('');
+
+  return '<div class="list-group-item">' +
+    '<div class="d-flex justify-content-between align-items-center gap-2">' +
+    '<button type="button" class="btn btn-sm btn-outline-secondary queue-group-toggle" data-target="' + bodyId + '" title="Expand album">' +
+      '<i class="bi bi-chevron-down queue-group-chevron"></i>' +
+    '</button>' +
+    '<div class="text-truncate flex-grow-1">' +
+      '<strong><i class="bi bi-folder2-open me-1"></i>' + escapeHtml(group.label) + '</strong>' + subline +
+      '<br><small class="text-muted">' + total + ' track' + (total !== 1 ? 's' : '') + ' · ' + escapeHtml(summary) + '</small>' +
+    '</div>' +
+    '<div class="d-flex align-items-center gap-2 flex-shrink-0">' + actions + '</div>' +
+    '</div>' +
+    '<div id="' + bodyId + '" class="queue-group-body ps-3 border-start ms-2 mt-2" style="display:none;">' + children + '</div>' +
+    '</div>';
+}
+
+function attachQueueGroupToggles(listEl) {
+  if (!listEl) return;
+  listEl.querySelectorAll('.queue-group-toggle').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      const body = document.getElementById(btn.getAttribute('data-target'));
+      const chevron = btn.querySelector('.queue-group-chevron');
+      if (!body) return;
+      const show = body.style.display === 'none' || body.style.display === '';
+      body.style.display = show ? 'block' : 'none';
+      if (chevron) chevron.classList.toggle('rotated', show);
+    });
+  });
+}
+
+function queueGroupByIndex(index) {
+  const groups = window.__queueGroupsArr || [];
+  return groups[index] || null;
+}
+
+async function organizeGroup(index) {
+  const group = queueGroupByIndex(index);
+  if (!group || !group.items.length) return;
+  const copyable = group.items.filter(function(i) {
+    return i.status === 'completed' || i.status === 'moving';
+  });
+  if (!copyable.length) { alert('No completed tracks in this album to copy.'); return; }
+  if (!confirm('Copy ' + copyable.length + ' completed track(s) in "' + (group.label || '') + '" to the music library?')) return;
+  try {
+    const ig = group.items.find(function(i) { return i.import_group; });
+    if (ig) {
+      // MusicBrainz-backed groups use the group endpoint so the MusicBrainz
+      // release metadata is applied while organising.
+      await fetchJsonOrThrow('/api/queue/organize-group', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group_id: ig.import_group })
+      }, 300000);
+    } else {
+      for (const item of copyable) {
+        await fetchJsonOrThrow('/api/queue/' + item.id + '/organize', { method: 'POST' }, 120000);
+      }
+    }
+    alert('✅ Album organized successfully!');
+    await loadQueueStatus();
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function retryGroup(index) {
+  const group = queueGroupByIndex(index);
+  if (!group || !group.items.length) return;
+  const failed = group.items.filter(function(i) { return i.status === 'failed'; });
+  if (!failed.length) { alert('No failed tracks in this album to retry.'); return; }
+  if (!confirm('Re-queue ' + failed.length + ' failed track(s) in "' + (group.label || '') + '"?')) return;
+  try {
+    for (const item of failed) {
+      await fetchJsonOrThrow('/api/queue/' + item.id + '/requeue', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    }
+    alert('✅ Retrying ' + failed.length + ' track(s)...');
+    await loadQueueStatus();
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function cancelGroup(index) {
+  const group = queueGroupByIndex(index);
+  if (!group || !group.items.length) return;
+  const active = group.items.filter(function(i) {
+    return i.status === 'downloading' || i.status === 'searching' || i.status === 'processing';
+  });
+  if (!active.length) { alert('No active downloads in this album.'); return; }
+  if (!confirm('Cancel ' + active.length + ' active download(s) in "' + (group.label || '') + '"?')) return;
+  try {
+    for (const item of active) {
+      await fetchJsonOrThrow('/api/queue/' + item.id + '/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    }
+    alert('✅ Downloads cancelled');
+    await loadQueueStatus();
+  } catch (e) { alert('❌ Network error: ' + e.message); }
+}
+
+async function deleteGroup(index) {
+  const group = queueGroupByIndex(index);
+  if (!group || !group.items.length) return;
+  if (!confirm('Remove all ' + group.items.length + ' track(s) in "' + (group.label || '') + '" from the queue?')) return;
+  try {
+    for (const item of group.items) {
+      await fetchJsonOrThrow('/api/queue/' + item.id + '/delete', { method: 'DELETE' });
+    }
+    alert('✅ Album removed from queue');
+    await loadQueueStatus();
+  } catch (e) { alert('❌ Network error: ' + e.message); }
 }
 
 // ============================================================================

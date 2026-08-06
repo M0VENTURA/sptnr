@@ -30,6 +30,22 @@ CACHE_FRESH_HOURS = 24 * 7
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _cache_has_source(artist: str, source: str) -> bool:
+    """True when the artist's release cache holds rows from ``source``."""
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text(
+                    "SELECT 1 FROM artist_release_cache "
+                    "WHERE LOWER(artist) = LOWER(:artist) AND source = :source LIMIT 1"
+                ),
+                {"artist": artist, "source": source},
+            )
+            return result.fetchone() is not None
+    except Exception:
+        return False
+
+
 def _artist_cache_fresh(artist: str) -> bool:
     """True when the artist was cached within the TTL."""
     try:
@@ -62,15 +78,16 @@ def _upsert_releases(artist: str, rows: list[dict[str, Any]]) -> None:
                 session.execute(
                     text("""
                         INSERT INTO artist_release_cache
-                            (artist, title, release_type, source, release_id, year, updated_at)
-                        VALUES (:artist, :title, :rtype, :source, :release_id, :year, CURRENT_TIMESTAMP)
+                            (artist, title, release_type, source, release_id, year, is_promo, updated_at)
+                        VALUES (:artist, :title, :rtype, :source, :release_id, :year, :is_promo, CURRENT_TIMESTAMP)
                         ON CONFLICT (artist, title, source) DO UPDATE SET
                             release_type = EXCLUDED.release_type,
                             release_id = EXCLUDED.release_id,
                             year = EXCLUDED.year,
+                            is_promo = EXCLUDED.is_promo,
                             updated_at = CURRENT_TIMESTAMP
                     """),
-                    {**row, "artist": artist},
+                    {**row, "artist": artist, "is_promo": bool(row.get("is_promo", False))},
                 )
     except Exception as exc:
         logger.debug("[RELEASE_CACHE] Upsert failed for %s: %s", artist, exc)
@@ -151,6 +168,7 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
                 "source": "discogs",
                 "release_id": str(rel.get("id") or "").strip() or None,
                 "year": year,
+                "is_promo": "promo" in " ".join(low),
             })
         return out
     except Exception as exc:
@@ -169,7 +187,11 @@ def prefetch_artist_releases(artist: str, discogs_artist_id: str = "") -> Dict[s
     """
     if not artist:
         return {"musicbrainz": 0, "discogs": 0}
-    if _artist_cache_fresh(artist):
+    # A "fresh" cache is only trusted when it contains the Discogs source — a
+    # cache written before the artist's Discogs id was resolved (first-ever
+    # scan) would otherwise stay Discogs-free until the 7-day TTL expires,
+    # silently disabling Discogs single confirmation and gap detection.
+    if _artist_cache_fresh(artist) and (_cache_has_source(artist, "discogs") or not discogs_artist_id):
         return {"musicbrainz": 0, "discogs": 0, "skipped": "fresh"}
 
     mb_rows = _fetch_musicbrainz_releases(artist)
@@ -208,6 +230,31 @@ def get_artist_single_titles(artist: str, source: str | None = None) -> Set[str]
                       {source_clause}
                 """),
                 params,
+            )
+            return {str(r[0]).strip().lower() for r in result.fetchall() or [] if r[0]}
+    except Exception:
+        return set()
+
+
+def get_artist_promo_titles(artist: str, source: str = "discogs") -> Set[str]:
+    """Promotional single/EP titles known for the artist, lowercased.
+
+    A promo-only release is real Discogs confirmation that the track was
+    issued as a (promotional) single, but it is weaker evidence than a
+    commercial single — the caller should treat it as a medium-confidence
+    source rather than a high-confidence one.
+    """
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT DISTINCT title FROM artist_release_cache
+                    WHERE LOWER(artist) = LOWER(:artist)
+                      AND source = :source
+                      AND release_type IN ('single', 'ep')
+                      AND COALESCE(is_promo, FALSE) = TRUE
+                """),
+                {"artist": artist, "source": source},
             )
             return {str(r[0]).strip().lower() for r in result.fetchall() or [] if r[0]}
     except Exception:
