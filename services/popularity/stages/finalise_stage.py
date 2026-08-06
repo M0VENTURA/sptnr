@@ -105,6 +105,48 @@ def _listener_z(count: float, counts: list[float]) -> float:
     return (math.log1p(float(count)) - mu) / sigma
 
 
+def _resolve_navidrome_artist_id(cursor, artist: str) -> str | None:
+    """Return the real Navidrome artist id for ``artist``, or None.
+
+    ``artist_stats.artist_id`` is the PRIMARY KEY — writing the artist NAME
+    into it (as an earlier version of this stage did) pollutes the table so
+    ``lookup_artist_id`` returns the name and the Navidrome import then calls
+    ``getArtist?id=<name>``, which returns no albums and silently skips the
+    import.  Prefer an existing real id (a name-keyed row is never a real id),
+    then fall back to the tracks table's stored Navidrome id.
+    """
+    try:
+        cursor.execute(
+            "SELECT artist_id FROM artist_stats "
+            "WHERE LOWER(artist_name) = LOWER(%s) "
+            "  AND LOWER(artist_id) <> LOWER(%s) "
+            "LIMIT 1",
+            (artist, artist),
+        )
+        row = cursor.fetchone()
+        found = row_get(row, "artist_id") if row else None
+        if found and str(found).strip() and str(found).casefold() != str(artist).casefold():
+            return str(found).strip()
+    except Exception as exc:
+        logger.debug("[finalise_stage] artist_stats id lookup failed for %s: %s", artist, exc)
+    try:
+        cursor.execute(
+            "SELECT artist_id FROM tracks "
+            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
+            "  AND artist_id IS NOT NULL AND artist_id <> '' "
+            "  AND LOWER(artist_id) <> LOWER(%s) "
+            "LIMIT 1",
+            (artist, artist),
+        )
+        row = cursor.fetchone()
+        found = row_get(row, "artist_id") if row else None
+        if found and str(found).strip() and str(found).casefold() != str(artist).casefold():
+            return str(found).strip()
+    except Exception as exc:
+        logger.debug("[finalise_stage] tracks id lookup failed for %s: %s", artist, exc)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Star rating assignment
 # ---------------------------------------------------------------------------
@@ -724,6 +766,12 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     _mads = [abs(s - _med) for s in _valid_scores]
                     _mad = median(_mads) if _mads else 0.0
                     _album_count = len({str(r.get("album") or "") for r in artist_results if r.get("album")})
+                    # artist_id is the PRIMARY KEY and must be the real
+                    # Navidrome id — writing the artist name here made the
+                    # artist import resolve "id = name" and skip (getArtist
+                    # with a name returns no albums).  Resolve an existing
+                    # real id when possible.
+                    _artist_id = _resolve_navidrome_artist_id(cursor, artist) or artist
                     from datetime import datetime as _dt
                     cursor.execute(
                         """
@@ -742,15 +790,15 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                             popularity_mad = EXCLUDED.popularity_mad
                         """,
                         (
-                            artist, artist, _album_count, len(_valid_scores), _dt.now().isoformat(),
+                            _artist_id, artist, _album_count, len(_valid_scores), _dt.now().isoformat(),
                             mean(_valid_scores), _med,
                             stdev(_valid_scores) if len(_valid_scores) > 1 else 0.0,
                             _mad,
                         ),
                     )
                     logger.info(
-                        "[FINALISE_STAGE] artist_stats updated for '%s' (tracks=%d, median=%.1f, MAD=%.1f)",
-                        artist, len(_valid_scores), _med, _mad,
+                        "[FINALISE_STAGE] artist_stats updated for '%s' (id=%s, tracks=%d, median=%.1f, MAD=%.1f)",
+                        artist, _artist_id, len(_valid_scores), _med, _mad,
                     )
             except Exception as exc:
                 logger.debug("[finalise_stage] artist_stats persist failed for %s: %s", artist, exc)

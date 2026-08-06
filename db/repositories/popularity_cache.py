@@ -63,11 +63,16 @@ def get_cached_popularity_for_titles(
                 """),
                 {"artist": artist},
             )
-            return {
-                str(row["title"]).lower(): dict(row._mapping)
-                for row in result.fetchall() or []
-                if row["title"]
-            }
+            rows = result.fetchall() or []
+            out: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                # SQLAlchemy 2.0 Row objects do NOT support string indexing
+                # (``row["title"]`` raises ``TypeError: tuple indices must be
+                # integers or slices, not str``) — read through ``_mapping``.
+                title = row._mapping["title"]
+                if title:
+                    out[str(title).lower()] = dict(row._mapping)
+            return out
     except Exception as exc:
         logger.error("[track_popularity_cache] bulk get failed for %s: %s", artist, exc)
         return {}

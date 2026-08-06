@@ -50,7 +50,14 @@ def lookup_artist_id(artist_name: str) -> str | None:
             )
             row = result.fetchone()
             if row and row[0]:
-                return row[0]
+                found = str(row[0])
+                # Guard against name-keyed rows: an earlier version of the
+                # popularity finalise wrote the artist NAME into artist_id,
+                # which made this return the name and broke the Navidrome
+                # import (getArtist?id=<name> returns no albums).  Only accept
+                # values that are clearly not the name.
+                if found.casefold() != artist_name.casefold():
+                    return found
     except Exception as exc:
         logging.debug("[SCAN_DB] Artist ID lookup failed for '%s': %s", artist_name, exc)
 
@@ -66,7 +73,10 @@ def lookup_artist_id(artist_name: str) -> str | None:
             ).fetchall() or []
         for artist_id, stored in rows:
             if stored and _normalize_artist_key(str(stored)) == target_key:
-                return str(artist_id)
+                found = str(artist_id)
+                # Same name-keyed guard as above.
+                if found.casefold() != artist_name.casefold():
+                    return found
     except Exception as exc:
         logging.debug("[SCAN_DB] Artist ID variant lookup failed for '%s': %s", artist_name, exc)
 
