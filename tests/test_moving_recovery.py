@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -277,3 +278,146 @@ class TestReconcileStaleMoving:
         imported = [kwargs for qid, kwargs in updates if qid == 12]
         assert imported and imported[0]["status"] == "imported"
         assert imported[0]["music_file_path"] == str(existing)
+
+    def test_staleness_uses_db_clock_not_python_cutoff(self, monkeypatch, tmp_path):
+        """The recovery must evaluate staleness against the DB's own clock.
+
+        ``updated_at`` is a naive TIMESTAMP written from Postgres
+        ``CURRENT_TIMESTAMP``.  A Python-side ``datetime.utcnow()`` cutoff is
+        wrong by the timezone offset whenever the DB session timezone is not
+        UTC, so the SQL must subtract the interval from ``CURRENT_TIMESTAMP``
+        (the legacy recovery did exactly this).
+        """
+        session = _install_fake_db(monkeypatch, rows=[self._row(20)])
+        _install_update_recorder(monkeypatch)
+        monkeypatch.setattr(dcs, "_MUSIC_ROOT", str(tmp_path))
+
+        dcs._reconcile_stale_moving(stale_minutes=7)
+
+        sqls = [c[0] for c in session.calls]
+        select_sql = next(s for s in sqls if "SELECT * FROM download_queue" in s)
+        assert "CURRENT_TIMESTAMP" in select_sql
+        assert "make_interval(mins => :stale_minutes)" in select_sql
+        # No Python-computed ISO cutoff string may be bound to the query.
+        params = [c[1] for c in session.calls if c[1] and "stale_minutes" in (c[1] or {})]
+        assert params and all(isinstance(p["stale_minutes"], int) for p in params)
+
+
+# ---------------------------------------------------------------------------
+# DB-clock staleness helpers
+# ---------------------------------------------------------------------------
+
+class TestDbClockStaleness:
+    def test_is_stale_with_db_clock_now(self):
+        # updated_at is stored as a naive wall-clock in the DB session tz
+        # (e.g. AEST); the DB clock is the same wall-clock 12 minutes later.
+        item = {"updated_at": "2026-08-06 20:16:13"}
+        now = datetime(2026, 8, 6, 20, 28, 13)
+        assert dcs._is_stale_queue_item(item, stale_minutes=10, now=now) is True
+
+    def test_not_stale_when_recent_under_db_clock(self):
+        item = {"updated_at": "2026-08-06 20:20:13"}
+        now = datetime(2026, 8, 6, 20, 28, 13)
+        assert dcs._is_stale_queue_item(item, stale_minutes=10, now=now) is False
+
+    def test_db_now_naive_strips_session_offset(self, monkeypatch):
+        # psycopg2 returns timestamptz in the session timezone; the helper must
+        # drop the offset (keeping the wall-clock) so it is comparable with the
+        # naive updated_at column — even for a non-UTC session timezone.
+        aware = datetime(2026, 8, 6, 20, 16, 13, tzinfo=timezone(timedelta(hours=10)))
+
+        class _Result:
+            def scalar(self):
+                return aware
+
+        class _Session:
+            def execute(self, stmt, params=None):
+                return _Result()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr(dcs, "db_session", lambda: _Session())
+        assert dcs._db_now_naive() == datetime(2026, 8, 6, 20, 16, 13)
+
+    def test_db_now_naive_parses_sqlite_string(self, monkeypatch):
+        class _Result:
+            def scalar(self):
+                return "2026-08-06 20:16:13"
+
+        class _Session:
+            def execute(self, stmt, params=None):
+                return _Result()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr(dcs, "db_session", lambda: _Session())
+        assert dcs._db_now_naive() == datetime(2026, 8, 6, 20, 16, 13)
+
+
+# ---------------------------------------------------------------------------
+# cleanup_stuck_items ('moving' recovery in the maintenance hook)
+# ---------------------------------------------------------------------------
+
+class TestCleanupStuckMoving:
+    def test_resets_stale_moving_to_downloading(self, monkeypatch):
+        from services.queue import queue_cleanup_service as qcs
+
+        executed: list[str] = []
+
+        class _Result:
+            rowcount = 1
+
+        class _Session:
+            def execute(self, stmt, params=None):
+                executed.append(str(stmt))
+                return _Result()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr(qcs, "db_session", lambda: _Session())
+
+        result = qcs.cleanup_stuck_items()
+        assert result["moving_reset"] == 1
+
+        moving_sql = next(s for s in executed if "status = 'moving'" in s)
+        assert "status = 'downloading'" in moving_sql
+        assert "CURRENT_TIMESTAMP" in moving_sql
+        assert "make_interval(mins => :minutes)" in moving_sql
+
+    def test_searching_cutoffs_are_db_clock(self, monkeypatch):
+        from services.queue import queue_cleanup_service as qcs
+
+        executed: list[str] = []
+
+        class _Result:
+            rowcount = 0
+
+        class _Session:
+            def execute(self, stmt, params=None):
+                executed.append(str(stmt))
+                return _Result()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr(qcs, "db_session", lambda: _Session())
+
+        qcs.cleanup_stuck_items()
+        searching_sql = next(s for s in executed if "status = 'searching'" in s)
+        assert "CURRENT_TIMESTAMP - make_interval(secs => :seconds)" in searching_sql
+        assert ":cutoff" not in searching_sql

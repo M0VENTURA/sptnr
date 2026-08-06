@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import text
@@ -65,8 +65,48 @@ def _normalize_transfer_key(value: str) -> Optional[str]:
     return norm.lower() or None
 
 
-def _is_stale_queue_item(item: dict, stale_minutes: int = 10) -> bool:
-    """True when a queue row's ``updated_at`` is older than *stale_minutes*."""
+def _db_now_naive() -> datetime:
+    """Return the DB server's current time as a *naive* datetime in the DB
+    session's wall-clock.
+
+    ``download_queue.updated_at`` is a naive ``TIMESTAMP`` written by Postgres
+    ``CURRENT_TIMESTAMP`` (cast to the session's local wall-clock). Staleness
+    must therefore be computed against the DB's own clock in that same
+    wall-clock — comparing against Python's ``datetime.utcnow()`` breaks when
+    the DB session timezone is not UTC (the two disagree by the timezone
+    offset and stale recovery silently never fires, leaving items stuck in
+    ``moving`` forever). Mirrors the old_system recovery which used SQL
+    ``CURRENT_TIMESTAMP - INTERVAL``.
+    """
+    try:
+        with db_session() as session:
+            value = session.execute(text("SELECT CURRENT_TIMESTAMP")).scalar()
+        if value is not None:
+            if isinstance(value, str):
+                # SQLite returns CURRENT_TIMESTAMP as an ISO string.
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+            if getattr(value, "tzinfo", None) is not None:
+                # psycopg2 returns timestamptz in the session timezone; dropping
+                # the offset keeps the same wall-clock that was stored in the
+                # naive updated_at column, so the difference is the true age.
+                value = value.replace(tzinfo=None)
+            return value
+    except Exception:
+        pass
+    return datetime.utcnow()
+
+
+def _is_stale_queue_item(
+    item: dict,
+    stale_minutes: int = 10,
+    now: datetime | None = None,
+) -> bool:
+    """True when a queue row's ``updated_at`` is older than *stale_minutes*.
+
+    *now* should be the DB clock (``_db_now_naive()``) computed once per
+    reconciliation cycle; when omitted it is fetched lazily. Comparing against
+    the DB clock keeps the check correct regardless of the app/DB timezone.
+    """
     updated_at = item.get("updated_at")
     if not updated_at:
         return False
@@ -75,7 +115,9 @@ def _is_stale_queue_item(item: dict, stale_minutes: int = 10) -> bool:
         updated_dt = datetime.fromisoformat(updated_text)
         if updated_dt.tzinfo is not None:
             updated_dt = updated_dt.astimezone(timezone.utc).replace(tzinfo=None)
-        return (datetime.utcnow() - updated_dt).total_seconds() >= (stale_minutes * 60)
+        if now is None:
+            now = _db_now_naive()
+        return (now - updated_dt).total_seconds() >= (stale_minutes * 60)
     except Exception:
         return False
 
@@ -372,14 +414,18 @@ def _reconcile_stale_moving(stale_minutes: int = 10) -> dict[str, int]:
     except Exception:
         return stats
 
-    cutoff = (datetime.utcnow() - timedelta(minutes=stale_minutes)).isoformat()
+    # Staleness is evaluated against the DB's own clock (CURRENT_TIMESTAMP)
+    # rather than a Python-computed UTC cutoff: ``updated_at`` is a naive
+    # TIMESTAMP written from CURRENT_TIMESTAMP, so comparing to the same clock
+    # in SQL is immune to app/DB timezone mismatch (the reason an item could
+    # remain stuck in 'moving' indefinitely).
     try:
         with db_session() as session:
             rows = session.execute(text("""
                 SELECT * FROM download_queue
                 WHERE status = 'moving'
-                  AND updated_at < :cutoff
-            """), {"cutoff": cutoff}).fetchall() or []
+                  AND updated_at < CURRENT_TIMESTAMP - make_interval(mins => :stale_minutes)
+            """), {"stale_minutes": stale_minutes}).fetchall() or []
             items = [dict(r._mapping) for r in rows]
     except Exception as exc:
         logger.error("[COMPLETE] Could not fetch stale 'moving' items: %s", exc)
@@ -437,7 +483,12 @@ def _reconcile_stale_moving(stale_minutes: int = 10) -> dict[str, int]:
     return stats
 
 
-def _reconcile_transfer_state(item: dict, slskd, active: list[dict] | None = None) -> bool:
+def _reconcile_transfer_state(
+    item: dict,
+    slskd,
+    active: list[dict] | None = None,
+    now: datetime | None = None,
+) -> bool:
     """Reconcile a 'downloading' item against live slskd transfers.
 
     Returns True when the item was moved to a terminal state (failed) and
@@ -455,7 +506,7 @@ def _reconcile_transfer_state(item: dict, slskd, active: list[dict] | None = Non
 
     if not active:
         # slskd has no record of the transfer at all.
-        if _is_stale_queue_item(item, stale_minutes=10):
+        if _is_stale_queue_item(item, stale_minutes=10, now=now):
             logger.warning("[COMPLETE] Queue %s: missing from slskd transfers and stale — scheduling retry", queue_id)
             from db.repositories.queue import mark_failed
             mark_failed(queue_id, "Transfer missing from slskd API while marked downloading")
@@ -474,7 +525,7 @@ def _reconcile_transfer_state(item: dict, slskd, active: list[dict] | None = Non
             break
 
     if transfer is None:
-        if _is_stale_queue_item(item, stale_minutes=10):
+        if _is_stale_queue_item(item, stale_minutes=10, now=now):
             logger.warning("[COMPLETE] Queue %s: transfer not found and item stale — scheduling retry", queue_id)
             from db.repositories.queue import mark_failed
             mark_failed(queue_id, "Transfer missing from slskd API while marked downloading")
@@ -507,7 +558,7 @@ def _reconcile_transfer_state(item: dict, slskd, active: list[dict] | None = Non
         return True
 
     if state == slskd.STATE_QUEUED_REMOTELY:
-        if _is_stale_queue_item(item, stale_minutes=_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES):
+        if _is_stale_queue_item(item, stale_minutes=_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES, now=now):
             logger.warning("[COMPLETE] Queue %s: remotely queued too long — cancelling and retrying", queue_id)
             try:
                 transfer_id = str(transfer.get("id") or "")
@@ -522,7 +573,7 @@ def _reconcile_transfer_state(item: dict, slskd, active: list[dict] | None = Non
         return False
 
     if state in slskd.ACTIVE_STATES:
-        if _is_stale_queue_item(item, stale_minutes=_SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES):
+        if _is_stale_queue_item(item, stale_minutes=_SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES, now=now):
             logger.warning("[COMPLETE] Queue %s: download timed out (state=%r) — cancelling and retrying", queue_id, state)
             try:
                 transfer_id = str(transfer.get("id") or "")
@@ -567,6 +618,10 @@ def check_completed_downloads() -> dict[str, Any]:
         stats["moving_skipped"] = moving_stats.get("skipped", 0)
     except Exception as exc:
         logger.warning("[COMPLETE] Stale 'moving' reconciliation failed: %s", exc)
+
+    # One DB-clock snapshot per cycle so every staleness decision below uses
+    # the same reference and the check stays correct across app/DB timezones.
+    db_now = _db_now_naive()
 
     try:
         from db.repositories.queue import get_queue_status_counts
@@ -774,11 +829,11 @@ def check_completed_downloads() -> dict[str, Any]:
                 # stale 'downloading' rows do not remain stuck forever.
                 if match_found is None or abs_path is None:
                     if slskd is not None:
-                        was_failed = _reconcile_transfer_state(item, slskd, active=active_transfers)
+                        was_failed = _reconcile_transfer_state(item, slskd, active=active_transfers, now=db_now)
                         if was_failed:
                             stats["failed"] += 1
                             continue
-                    if _is_stale_queue_item(item, stale_minutes=_STALE_DOWNLOADING_MINUTES):
+                    if _is_stale_queue_item(item, stale_minutes=_STALE_DOWNLOADING_MINUTES, now=db_now):
                         logger.warning("[COMPLETE] Queue %s: no file found and stale in downloading — scheduling retry", queue_id)
                         mark_failed(queue_id, "No file found while marked downloading")
                         stats["failed"] += 1

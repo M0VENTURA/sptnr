@@ -14,7 +14,6 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 from sqlalchemy import text
@@ -39,6 +38,11 @@ _STUCK_SEARCH_SECONDS = 300
 # Items stuck in 'downloading' for longer than 6 hours are presumed dead —
 # the downloads watcher normally completes them within minutes.
 _STUCK_DOWNLOAD_SECONDS = 6 * 3600
+
+# Items stuck in 'moving' for longer than 10 minutes are presumed abandoned —
+# a move is a short-lived atomic claim (see _move_and_import), so anything
+# still 'moving' after 10 minutes was left by a crashed/restarted worker.
+_STUCK_MOVING_MINUTES = 10
 
 
 def reset_abandoned_items() -> dict[str, int]:
@@ -74,21 +78,30 @@ def reset_abandoned_items() -> dict[str, int]:
 
 
 def cleanup_stuck_items() -> dict[str, int]:
-    """Reset queue items stuck in 'searching'/'downloading'.
+    """Reset queue items stuck in 'searching'/'downloading'/'moving'.
 
-    Mirrors the legacy ``cleanup_stuck_searching_items`` behaviour:
+    Mirrors the legacy ``cleanup_stuck_searching_items`` / ``cleanup_stuck_moving_items``:
     - ``searching`` items older than 5 minutes are reset to ``queued`` for retry.
+    - ``processing`` items older than 5 minutes are reset to ``queued`` for retry.
     - ``downloading`` items older than 6 hours are reset to ``failed``.
+    - ``moving`` items older than 10 minutes are reset to ``downloading`` so the
+      completion service can re-match / promote them instead of leaving them
+      stuck forever (crashed move claim).
+
+    All staleness cutoffs are evaluated against the DB clock
+    (``CURRENT_TIMESTAMP``) so the comparison stays correct regardless of the
+    app/DB session timezone — matching the legacy recovery which used SQL
+    ``CURRENT_TIMESTAMP - INTERVAL``.
 
     Returns:
-        ``{"searching_reset": int, "downloading_reset": int}``
+        ``{"searching_reset": int, "processing_reset": int,
+          "downloading_reset": int, "moving_reset": int}``
     """
     searching_reset = 0
     downloading_reset = 0
     processing_reset = 0
+    moving_reset = 0
     try:
-        now = datetime.utcnow()
-
         # Stuck 'searching' → back to 'queued' so the worker retries it.
         with db_session() as session:
             result = session.execute(
@@ -97,9 +110,9 @@ def cleanup_stuck_items() -> dict[str, int]:
                     SET status = 'queued',
                         updated_at = CURRENT_TIMESTAMP
                     WHERE status = 'searching'
-                      AND updated_at < :cutoff
+                      AND updated_at < CURRENT_TIMESTAMP - make_interval(secs => :seconds)
                 """),
-                {"cutoff": (now - timedelta(seconds=_STUCK_SEARCH_SECONDS)).isoformat()},
+                {"seconds": _STUCK_SEARCH_SECONDS},
             )
             searching_reset = int(result.rowcount or 0)
 
@@ -114,9 +127,9 @@ def cleanup_stuck_items() -> dict[str, int]:
                     SET status = 'queued',
                         updated_at = CURRENT_TIMESTAMP
                     WHERE status = 'processing'
-                      AND updated_at < :cutoff
+                      AND updated_at < CURRENT_TIMESTAMP - make_interval(secs => :seconds)
                 """),
-                {"cutoff": (now - timedelta(seconds=_STUCK_SEARCH_SECONDS)).isoformat()},
+                {"seconds": _STUCK_SEARCH_SECONDS},
             )
             processing_reset = int(result.rowcount or 0)
 
@@ -129,22 +142,49 @@ def cleanup_stuck_items() -> dict[str, int]:
                         failure_reason = 'Stuck in downloading state',
                         updated_at = CURRENT_TIMESTAMP
                     WHERE status = 'downloading'
-                      AND updated_at < :cutoff
+                      AND updated_at < CURRENT_TIMESTAMP - make_interval(secs => :seconds)
                 """),
-                {"cutoff": (now - timedelta(seconds=_STUCK_DOWNLOAD_SECONDS)).isoformat()},
+                {"seconds": _STUCK_DOWNLOAD_SECONDS},
             )
             downloading_reset = int(result.rowcount or 0)
 
-        if searching_reset or downloading_reset or processing_reset:
-            logger.warning(
-                "Reset stuck queue items — searching=%s, processing=%s, downloading=%s",
-                searching_reset, processing_reset, downloading_reset,
+        # Stuck 'moving' → back to 'downloading' so the next completion cycle
+        # re-matches the file (and promotes to imported when it is already in
+        # /music) instead of leaving the row stuck in a crashed move claim.
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = 'downloading',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = 'moving'
+                      AND updated_at < CURRENT_TIMESTAMP - make_interval(mins => :minutes)
+                """),
+                {"minutes": _STUCK_MOVING_MINUTES},
             )
-        return {"searching_reset": searching_reset, "processing_reset": processing_reset, "downloading_reset": downloading_reset}
+            moving_reset = int(result.rowcount or 0)
+
+        if searching_reset or downloading_reset or processing_reset or moving_reset:
+            logger.warning(
+                "Reset stuck queue items — searching=%s, processing=%s, downloading=%s, moving=%s",
+                searching_reset, processing_reset, downloading_reset, moving_reset,
+            )
+        return {
+            "searching_reset": searching_reset,
+            "processing_reset": processing_reset,
+            "downloading_reset": downloading_reset,
+            "moving_reset": moving_reset,
+        }
 
     except Exception as exc:
         logger.exception("cleanup_stuck_items failed")
-        return {"searching_reset": 0, "processing_reset": 0, "downloading_reset": 0, "error": str(exc)}
+        return {
+            "searching_reset": 0,
+            "processing_reset": 0,
+            "downloading_reset": 0,
+            "moving_reset": 0,
+            "error": str(exc),
+        }
 
 
 def queue_cleanup():
