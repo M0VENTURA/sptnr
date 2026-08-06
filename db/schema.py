@@ -63,6 +63,7 @@ TABLES_TO_ENSURE: dict[str, str] = {
             source TEXT NOT NULL,
             release_id TEXT,
             year INTEGER,
+            is_promo BOOLEAN DEFAULT FALSE,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT uq_artist_release_artist_title_source UNIQUE (artist, title, source)
         )
@@ -251,6 +252,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
     },
     "musicbrainz_releases": {"album_artist": "TEXT", "genres": "TEXT", "cover_art_url": "TEXT", "release_source": "TEXT"},
     "musicbrainz_release_tracks": {"composer": "TEXT", "album_artist": "TEXT", "year": "TEXT"},
+    "artist_release_cache": {"is_promo": "BOOLEAN DEFAULT FALSE"},
     "upcoming_releases": {
         "release_year": "INTEGER",
         "artist_in_collection": "BOOLEAN DEFAULT FALSE",

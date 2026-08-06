@@ -349,7 +349,8 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
 def _detect_discogs(title: str, artist: str, album: str | None,
                     discogs_token: str | None, duration: float | None = None,
                     is_special_edition: bool = False,
-                    cached_single_titles: set | None = None) -> dict[str, Any]:
+                    cached_single_titles: set | None = None,
+                    cached_promo_titles: set | None = None) -> dict[str, Any]:
     token = discogs_token or os.environ.get("DISCOGS_TOKEN", "")
     if not token:
         try:
@@ -365,8 +366,12 @@ def _detect_discogs(title: str, artist: str, album: str | None,
     if cached_single_titles:
         normalized = (title or "").lower().strip()
         if normalized in {str(t).lower().strip() for t in cached_single_titles}:
-            return {"source": "discogs", "matched": True, "confidence": 0.8,
-                    "metadata": {}, "cached": True}
+            is_promo = bool(cached_promo_titles) and normalized in {
+                str(t).lower().strip() for t in cached_promo_titles
+            }
+            return {"source": "discogs", "matched": True,
+                    "confidence": 0.5 if is_promo else 0.8,
+                    "metadata": {"is_promo": is_promo}, "cached": True}
     try:
         from services.enrichment.discogs_service import _get_service as _get_discogs_service
         # Use the shared per-token service so the per-artist release list and
@@ -374,12 +379,23 @@ def _detect_discogs(title: str, artist: str, album: str | None,
         # track would re-fetch the artist's releases for EVERY track (N+1).
         svc = _get_discogs_service(token)
         ctx = {"album": album, "is_special_edition": is_special_edition} if album else {"is_special_edition": is_special_edition}
-        matched = bool(svc.is_single(title, artist, album_context=ctx))
-        year = None
-        if matched and hasattr(svc, "get_single_release_year"):
-            year = svc.get_single_release_year(title, artist)
-        return {"source": "discogs", "matched": matched, "confidence": 0.8 if matched else 0.0,
-                "metadata": {"release_year": year} if year else {}}
+        if hasattr(svc, "get_single_status"):
+            st = svc.get_single_status(title, artist, album_context=ctx)
+            matched = bool(st.get("is_single"))
+            is_promo = bool(st.get("is_promo"))
+            year = st.get("release_year")
+        else:
+            matched = bool(svc.is_single(title, artist, album_context=ctx))
+            is_promo = False
+            year = None
+            if matched and hasattr(svc, "get_single_release_year"):
+                year = svc.get_single_release_year(title, artist)
+        metadata: dict[str, Any] = {"is_promo": is_promo}
+        if year:
+            metadata["release_year"] = year
+        return {"source": "discogs", "matched": matched,
+                "confidence": 0.5 if (matched and is_promo) else (0.8 if matched else 0.0),
+                "metadata": metadata}
     except Exception as exc:
         logger.debug("Discogs single detection failed for %s / %s: %s", artist, title, exc)
         return {"source": "discogs", "matched": False, "confidence": 0.0, "metadata": {}}
@@ -416,6 +432,7 @@ def determine_final_status(
     is_title_track: bool = False, is_compilation: bool = False,
     zscore_high: float = 1.0, zscore_medium: float = 0.6,
     high_sources: int | None = None, medium_sources: int | None = None,
+    discogs_promo: bool = False,
 ) -> str:
     """Final single status based on source detection and z-score analysis.
 
@@ -423,8 +440,11 @@ def determine_final_status(
     boundaries (``single_detection.zscore_high_threshold`` /
     ``zscore_medium_threshold``). ``high_sources`` / ``medium_sources``
     optionally override the source-confidence counts (used to honour the
-    per-source ``source_*_confidence`` config knobs). Returns ``'high'``,
-    ``'medium'``, or ``'none'``.
+    per-source ``source_*_confidence`` config knobs). ``discogs_promo`` marks
+    a Discogs confirmation that came from a promo-only release — promotional
+    evidence caps the verdict at 'medium' unless an independent
+    high-confidence source also confirms. Returns ``'high'``, ``'medium'``,
+    or ``'none'``.
     """
     max_z = max(album_z, artist_z)
     if high_sources is not None and medium_sources is not None:
@@ -433,6 +453,13 @@ def determine_final_status(
     else:
         high = sum([discogs, musicbrainz])
         medium = sum([discogs_video, lastfm, mb_video, mb_compilation, radio_edit, date_match])
+
+    # A promo-only Discogs match is genuine confirmation the track was issued
+    # as a (promotional) single, but never high-confidence on its own — legacy
+    # parity: promo releases resolved to medium. With no independent high
+    # source the verdict is capped at 'medium' regardless of z-score band.
+    if discogs_promo and high == 0:
+        return 'medium'
 
     # Z-score above the high boundary. 'high' needs real external
     # confirmation (Discogs/MusicBrainz/ISRC); two corroborating weak signals
@@ -513,6 +540,7 @@ def detect_single_for_track(
     persist_result: bool = True,
     mb_cached_singles: set | None = None,
     discogs_cached_singles: set | None = None,
+    discogs_cached_promos: set | None = None,
     artist_mbid: str | None = None,
     mb_client=None,
     listenbrainz_listens: int | None = None,
@@ -608,14 +636,21 @@ def detect_single_for_track(
         logger.debug("Dynamic z-score standout check failed for %s / %s: %s", artist, title, exc)
 
     # Discogs
+    dr: dict[str, Any] = {"source": "discogs", "matched": False, "confidence": 0.0, "metadata": {}}
     if use_advanced_detection:
         dr = _detect_discogs(lookup_title, artist, album, discogs_token, duration=duration,
                              is_special_edition=is_special,
-                             cached_single_titles=discogs_cached_singles)
+                             cached_single_titles=discogs_cached_singles,
+                             cached_promo_titles=discogs_cached_promos)
         sources.append(dr)
         if dr["matched"]:
             discogs_confirmed = True
             reasons.append("discogs_matched")
+    # A promo-only Discogs release is weaker evidence than a commercial single
+    # (legacy parity: promos resolved to medium confidence). It still confirms
+    # the track was issued as a single, so it stays a confirmed source — it is
+    # simply counted as a medium source below and capped at 'medium'.
+    discogs_promo = bool((dr.get("metadata") or {}).get("is_promo"))
 
     # MusicBrainz
     mr = _detect_musicbrainz(lookup_title, artist, artist_mbid, album_track_count, mb_client=mb_client,
@@ -732,7 +767,9 @@ def detect_single_for_track(
 
     # Per-source confidence levels (features.source_*_confidence) decide which
     # sources count as high / medium evidence. Defaults preserve the legacy
-    # behaviour (Discogs + MusicBrainz = high, others = medium).
+    # behaviour (Discogs + MusicBrainz = high, others = medium). A promo-only
+    # Discogs match is downgraded to a MEDIUM source — promotional evidence,
+    # not commercial-single confirmation (legacy parity).
     _levels = _source_confidence_levels()
     high_sources = 0
     medium_sources = 0
@@ -740,11 +777,15 @@ def detect_single_for_track(
         ("discogs", discogs_confirmed),
         ("musicbrainz", musicbrainz_confirmed),
     ):
-        if _confirmed and _levels.get(_src, "high") != "low":
-            if _levels.get(_src, "high") == "high":
-                high_sources += 1
-            else:
-                medium_sources += 1
+        if not _confirmed or _levels.get(_src, "high") == "low":
+            continue
+        _level = _levels.get(_src, "high")
+        if _src == "discogs" and discogs_promo and _level == "high":
+            _level = "medium"
+        if _level == "high":
+            high_sources += 1
+        else:
+            medium_sources += 1
     if discogs_video_confirmed and _levels.get("discogs_video", "medium") != "low":
         medium_sources += 1
     if lastfm_confirmed and _levels.get("lastfm", "medium") != "low":
@@ -782,6 +823,7 @@ def detect_single_for_track(
         zscore_medium=zscore_medium,
         high_sources=high_sources,
         medium_sources=medium_sources,
+        discogs_promo=discogs_promo,
     )
 
     # Soft z-gate cap: low-scoring tracks need two+ high-confidence sources to
