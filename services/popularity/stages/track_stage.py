@@ -254,6 +254,14 @@ def process_track(
                                 logger.debug("[track_stage][WRITER] %s: %s", track_id, exc)
                     if mb_data.get("title"):
                         update_payload["musicbrainz_title"] = mb_data["title"]
+                    # Persist the resolved artist MBID (from the recording's
+                    # artist-credit) so the single-detection service can use the
+                    # reliable artist-scoped release-group search instead of
+                    # falling back to fuzzier per-recording matching. Only set
+                    # when the track doesn't already carry one — user edits win.
+                    _artist_mbid = mb_data.get("artist_mbid")
+                    if _artist_mbid and not _as_str(track.get("musicbrainz_artistid") or track.get("musicbrainz_artist_id")):
+                        update_payload["musicbrainz_artistid"] = _artist_mbid
                     if mb_data.get("album"):
                         # Use the folder name from file_path as the primary
                         # reference for album matching — it reflects the actual
@@ -1019,6 +1027,7 @@ def process_track(
                     artist_mbid=(
                         effective_track.get("musicbrainz_artistid")
                         or effective_track.get("musicbrainz_artist_id")
+                        or effective_track.get("lastfm_artist_mbid")
                     ),
                     listenbrainz_listens=int(listenbrainz_listens or 0),
                     discogs_token=sd_discogs_token or None,

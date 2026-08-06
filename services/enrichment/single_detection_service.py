@@ -431,13 +431,16 @@ def determine_final_status(
         high = sum([discogs, musicbrainz])
         medium = sum([discogs_video, lastfm, mb_video, mb_compilation, radio_edit, date_match])
 
-    # Z-score above the high boundary: 'high' confidence REQUIRES at least
-    # one real external confirmation (Discogs/MusicBrainz/ISRC). Two weak
-    # signals (z-standout, duration, radio-edit marker) must never stack into
-    # a high-confidence single — that produced false positives like Tehran /
-    # Crossroads (z ≈ 1.2, zero source matches, still flagged 'high').
+    # Z-score above the high boundary. 'high' needs real external
+    # confirmation (Discogs/MusicBrainz/ISRC); two corroborating weak signals
+    # (z-standout + duration/radio-edit marker, etc.) also reach 'high' — the
+    # legacy rule was ``high >= 1 OR medium >= 2``. A single weak signal with
+    # no other evidence still returns 'none' (that produced false positives
+    # like Tehran / Crossroads, z ≈ 1.2, zero source matches).
     if max_z >= max(0.0, zscore_high):
         if high >= 1:
+            return 'high'
+        if medium >= 2:
             return 'high'
         return 'none'
 
@@ -470,6 +473,15 @@ def determine_final_status(
         if medium >= 1 and not is_title_track:
             return 'medium'
         return 'none'
+    # Title-track boost (legacy parity): a title track corroborated by ANY
+    # weak source (duration under 4:30, radio-edit marker, ISRC, Last.fm
+    # track count, ...) reaches 'medium' even when its popularity sits at or
+    # below the album median. The single version of a title track routinely
+    # has a smaller stream share than the album version, so a low z-score
+    # reflects that split rather than the absence of single status. With no
+    # weak evidence at all it still requires real metadata confirmation above.
+    if is_title_track and medium >= 1:
+        return 'medium'
     return 'none'
 
 
