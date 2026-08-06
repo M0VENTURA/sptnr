@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class SlskdHttpClient:
     """Raw slskd API wrapper."""
 
-    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: Optional[int] = 30):
+    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: Optional[int] = 60):
         self.web_url = (web_url or "").rstrip("/")
         self.api_key = api_key or ""
         self.session = http_session or session
@@ -298,7 +298,7 @@ def get_slskd_client() -> SlskdHttpClient | None:
         # attempt. A plain session lets the caller's own retry loop control the
         # cadence (mirrors the legacy queue_processor factory).
         import httpx as _httpx
-        _plain_session = _httpx.Client(timeout=30.0)
+        _plain_session = _httpx.Client(timeout=60.0)
 
         _slskd_client_cache = SlskdHttpClient(
             web_url=web_url,
