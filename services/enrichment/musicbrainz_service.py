@@ -196,16 +196,24 @@ class MusicBrainzService:
 
             credits = recording.get("artist-credit", [])
             rec_artist = ""
+            rec_artist_mbid = ""
 
             if credits:
                 first = credits[0]
                 rec_artist = first.get("name") if isinstance(first, dict) else str(first)
+                if isinstance(first, dict):
+                    rec_artist_mbid = (
+                        (first.get("artist") or {}).get("id")
+                        if isinstance(first.get("artist"), dict)
+                        else ""
+                    ) or ""
 
             release = (recording.get("releases") or [None])[0]
 
             return {
                 "title": recording.get("title"),
                 "artist": rec_artist,
+                "artist_mbid": rec_artist_mbid or None,
                 "album": release.get("title") if release else None,
                 "album_artist": (
                     release.get("artist-credit", [{}])[0].get("name")

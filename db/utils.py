@@ -265,9 +265,15 @@ def convert_row_to_json_serializable(obj: Any) -> Any:
     try:
         from jinja2 import Undefined
     except ImportError:
-        pass
+        Undefined = None
 
     if obj is None:
+        return None
+    # Jinja2 template Undefined objects (a missing context variable leaked into
+    # data that gets JSON-serialised) are not JSON-serializable — the previous
+    # import of ``Undefined`` here was never used, so ``json.dumps`` raised
+    # "Object of type Undefined is not JSON serializable".
+    if Undefined is not None and isinstance(obj, Undefined):
         return None
     if hasattr(obj, "keys") and not isinstance(obj, dict):
         obj = dict(obj)

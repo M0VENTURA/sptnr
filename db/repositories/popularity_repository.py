@@ -186,6 +186,10 @@ _POPULARITY_PROTECTED_COLUMNS: frozenset[str] = frozenset({
     # Genres / tags (owned by the popularity pipeline's enrichment pass)
     "spotify_genres", "lastfm_tags", "listenbrainz_genres",
     "discogs_genres", "musicbrainz_genres", "audiodb_genres", "essentia_genres",
+    # Album type (owned by the album stage's enrichment pass — a Navidrome
+    # sync reads albumtype/releasetype from file tags, which are usually
+    # empty, and would otherwise wipe the type the scan just detected)
+    "musicbrainz_albumtype", "spotify_album_type", "releasetype",
     # Popularity meta
     "spotify_popularity", "lastfm_ratio", "lastfm_track_playcount",
     "popularity_frozen",

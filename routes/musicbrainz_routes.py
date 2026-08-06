@@ -402,14 +402,17 @@ async def api_musicbrainz_search():
                         {"term": term},
                     )
                 for row in result.fetchall() or []:
-                    artist_name = str(row["artist"] or "")
-                    release_id = str(row["release_id"] or "")
+                    # SQLAlchemy 2.0 Row objects do not support string indexing
+                    # (``row["col"]`` raises TypeError) — read via ``_mapping``.
+                    _m = row._mapping
+                    artist_name = str(_m["artist"] or "")
+                    release_id = str(_m["release_id"] or "")
                     result_id = f"{artist_name}_{release_id}"
                     if result_id in seen_ids:
                         continue
                     seen_ids.add(result_id)
-                    pt = str(row["primary_type"] or "")
-                    row_cat = str(row["category"] or "")
+                    pt = str(_m["primary_type"] or "")
+                    row_cat = str(_m["category"] or "")
                     # Apply the UI type filter to local results too, so cached
                     # entries of other types don't leak in when a type is
                     # selected. Filter on the stored category when present
@@ -423,7 +426,7 @@ async def api_musicbrainz_search():
                             continue
                     releases.append({
                         "id": release_id,
-                        "title": str(row["title"] or ""),
+                        "title": str(_m["title"] or ""),
                         "primary_type": pt or row_cat,
                         "secondary_types": [],
                         # Use the stored derived category when present — the
@@ -431,10 +434,10 @@ async def api_musicbrainz_search():
                         # persisted with a default "Album"), and normalising
                         # it would override the correct "Remix"/"Live" label.
                         "category": row_cat or _normalise_category(pt or "Other"),
-                        "first_release_date": str(row["first_release_date"] or ""),
+                        "first_release_date": str(_m["first_release_date"] or ""),
                         "artist": artist_name,
                         "artist-credit": [{"name": artist_name}],
-                        "cover_art_url": str(row["cover_art_url"] or ""),
+                        "cover_art_url": str(_m["cover_art_url"] or ""),
                         "source": "local",
                     })
         except Exception as exc:

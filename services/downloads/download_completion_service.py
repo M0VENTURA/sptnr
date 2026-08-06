@@ -65,8 +65,48 @@ def _normalize_transfer_key(value: str) -> Optional[str]:
     return norm.lower() or None
 
 
-def _is_stale_queue_item(item: dict, stale_minutes: int = 10) -> bool:
-    """True when a queue row's ``updated_at`` is older than *stale_minutes*."""
+def _db_now_naive() -> datetime:
+    """Return the DB server's current time as a *naive* datetime in the DB
+    session's wall-clock.
+
+    ``download_queue.updated_at`` is a naive ``TIMESTAMP`` written by Postgres
+    ``CURRENT_TIMESTAMP`` (cast to the session's local wall-clock). Staleness
+    must therefore be computed against the DB's own clock in that same
+    wall-clock — comparing against Python's ``datetime.utcnow()`` breaks when
+    the DB session timezone is not UTC (the two disagree by the timezone
+    offset and stale recovery silently never fires, leaving items stuck in
+    ``moving`` forever). Mirrors the old_system recovery which used SQL
+    ``CURRENT_TIMESTAMP - INTERVAL``.
+    """
+    try:
+        with db_session() as session:
+            value = session.execute(text("SELECT CURRENT_TIMESTAMP")).scalar()
+        if value is not None:
+            if isinstance(value, str):
+                # SQLite returns CURRENT_TIMESTAMP as an ISO string.
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+            if getattr(value, "tzinfo", None) is not None:
+                # psycopg2 returns timestamptz in the session timezone; dropping
+                # the offset keeps the same wall-clock that was stored in the
+                # naive updated_at column, so the difference is the true age.
+                value = value.replace(tzinfo=None)
+            return value
+    except Exception:
+        pass
+    return datetime.utcnow()
+
+
+def _is_stale_queue_item(
+    item: dict,
+    stale_minutes: int = 10,
+    now: datetime | None = None,
+) -> bool:
+    """True when a queue row's ``updated_at`` is older than *stale_minutes*.
+
+    *now* should be the DB clock (``_db_now_naive()``) computed once per
+    reconciliation cycle; when omitted it is fetched lazily. Comparing against
+    the DB clock keeps the check correct regardless of the app/DB timezone.
+    """
     updated_at = item.get("updated_at")
     if not updated_at:
         return False
@@ -75,7 +115,9 @@ def _is_stale_queue_item(item: dict, stale_minutes: int = 10) -> bool:
         updated_dt = datetime.fromisoformat(updated_text)
         if updated_dt.tzinfo is not None:
             updated_dt = updated_dt.astimezone(timezone.utc).replace(tzinfo=None)
-        return (datetime.utcnow() - updated_dt).total_seconds() >= (stale_minutes * 60)
+        if now is None:
+            now = _db_now_naive()
+        return (now - updated_dt).total_seconds() >= (stale_minutes * 60)
     except Exception:
         return False
 
@@ -148,10 +190,47 @@ def _extract_duration_seconds(file_path: str) -> Optional[int]:
 # MOVE / IMPORT
 # =============================================================================
 
+def _apply_stored_metadata(item: dict, file_path: str) -> None:
+    """Best-effort write of the queue item's (MusicBrainz-matched) metadata.
+
+    Mirrors the old_system finalizer so files copied into /music carry the
+    corrected title/artist/album/year and MusicBrainz IDs rather than whatever
+    tags the download source embedded. Only non-empty fields are written so a
+    partial queue row never wipes existing tags. Never raises — tag failures
+    are non-fatal and must not block the move.
+    """
+    meta: dict[str, Any] = {
+        "title": item.get("title"),
+        "artist": item.get("artist"),
+        "album": item.get("album"),
+        "album_artist": item.get("album_artist") or item.get("artist"),
+        "year": item.get("year"),
+        "track_number": item.get("track_number"),
+        "disc_number": item.get("disc_number"),
+    }
+    meta = {k: v for k, v in meta.items() if v not in (None, "")}
+    recording_mbid = item.get("recording_mbid")
+    if recording_mbid:
+        meta["recording_mbid"] = recording_mbid
+    release_mbid = item.get("release_mbid") or item.get("release_id")
+    if release_mbid:
+        meta["release_mbid"] = release_mbid
+    if not meta:
+        return
+
+    try:
+        from services.metadata.tag_file_service import update_file_metadata
+        update_file_metadata(file_path, meta)
+    except Exception as exc:
+        logger.debug("[COMPLETE] Queue %s: could not apply stored metadata to %s: %s", item.get("id"), file_path, exc)
+
+
 def _move_and_import(item: dict, abs_path: str, match_source: str) -> dict[str, Any]:
     """Move *abs_path* into the music library and promote the item to imported.
 
     Guards against double-moves with an atomic ``downloading -> moving`` claim.
+    Any failure after the claim resets the row back to ``downloading`` so the
+    next cycle retries it instead of leaving it stuck in ``moving`` forever.
     """
     queue_id = item.get("id")
 
@@ -174,82 +253,99 @@ def _move_and_import(item: dict, abs_path: str, match_source: str) -> dict[str, 
         logger.error("[COMPLETE] Queue %s: could not claim move: %s", queue_id, exc)
         return {"success": False, "error": str(exc)}
 
-    from services.downloads.download_organize_helpers import move_track_to_library
-    from services.downloads.download_verification_service import (
-        verify_file_in_music,
-        mark_queue_item_moved,
-    )
-    from db.repositories.queue import update_queue_item
-
-    track = {
-        "file_path": abs_path,
-        "artist": item.get("artist"),
-        "title": item.get("title"),
-        "track_number": item.get("track_number"),
-    }
-    release_metadata = {
-        "album_artist": item.get("album_artist") or item.get("artist"),
-        "album": item.get("album"),
-        "year": item.get("year"),
-    }
-
-    move_result = move_track_to_library(track, release_metadata, _MUSIC_ROOT)
-    if not move_result.get("success"):
-        logger.warning("[COMPLETE] Queue %s: move failed (%s) — resetting to downloading", queue_id, move_result.get("error"))
+    def _reset_to_downloading(reason: str) -> None:
         try:
+            from db.repositories.queue import update_queue_item
             update_queue_item(queue_id, status="downloading")
         except Exception:
             pass
-        return move_result
+        logger.warning("[COMPLETE] Queue %s: reset to downloading (%s)", queue_id, reason)
 
-    target_path = move_result.get("target_path")
-
-    # Persist the duration if the row lacks it (added without MusicBrainz data).
-    if not item.get("duration"):
-        duration = _extract_duration_seconds(abs_path)
-        if duration:
-            try:
-                update_queue_item(queue_id, duration=duration)
-            except Exception:
-                pass
-
-    verify_result = verify_file_in_music(queue_id, target_path)
-    file_exists = bool(target_path) and os.path.isfile(target_path)
-
-    if verify_result.get("success") or file_exists:
-        try:
-            mark_queue_item_moved(queue_id, target_path)
-            update_queue_item(
-                queue_id,
-                status="imported",
-                music_file_path=target_path,
-                file_path=target_path,
-                found_filename=os.path.basename(target_path),
-                copied_individually=1,
-                copied_individually_at=datetime.now().isoformat(),
-            )
-        except Exception as exc:
-            logger.error("[COMPLETE] Queue %s: status update failed (%s) — resetting to downloading", queue_id, exc)
-            try:
-                update_queue_item(queue_id, status="downloading")
-            except Exception:
-                pass
-            return {"success": False, "error": str(exc)}
-        logger.info(
-            "[AUTO_MOVE] Queue %s: verified and imported to %s (source=%s)",
-            queue_id, target_path, match_source,
-        )
-        return {"success": True, "target_path": target_path}
-
-    # Verification failed and the file is not present at the target — the move
-    # may have been partial. Requeue so a fresh download can be attempted.
-    logger.error("[COMPLETE] Queue %s: verification failed (%s)", queue_id, verify_result.get("error"))
     try:
-        from db.repositories.queue import mark_failed
-        mark_failed(queue_id, f"Move verification failed: {verify_result.get('error')}")
-    except Exception:
-        pass
-    return {"success": False, "error": verify_result.get("error")}
+        from services.downloads.download_organize_helpers import move_track_to_library
+        from services.downloads.download_verification_service import (
+            verify_file_in_music,
+            mark_queue_item_moved,
+        )
+        from db.repositories.queue import update_queue_item
+
+        # Apply the stored MusicBrainz metadata to the file before moving so
+        # the copy in /music arrives with the corrected name and information.
+        _apply_stored_metadata(item, abs_path)
+
+        track = {
+            "file_path": abs_path,
+            "artist": item.get("artist"),
+            "title": item.get("title"),
+            "track_number": item.get("track_number"),
+        }
+        release_metadata = {
+            "album_artist": item.get("album_artist") or item.get("artist"),
+            "album": item.get("album"),
+            "year": item.get("year"),
+        }
+
+        move_result = move_track_to_library(track, release_metadata, _MUSIC_ROOT)
+        if not move_result.get("success"):
+            logger.warning("[COMPLETE] Queue %s: move failed (%s) — resetting to downloading", queue_id, move_result.get("error"))
+            _reset_to_downloading(f"move failed: {move_result.get('error')}")
+            return move_result
+
+        target_path = move_result.get("target_path")
+        if not target_path:
+            _reset_to_downloading("move returned no target path")
+            return {"success": False, "error": "missing target path"}
+
+        # Persist the duration if the row lacks it (added without MusicBrainz data).
+        if not item.get("duration"):
+            duration = _extract_duration_seconds(abs_path)
+            if duration:
+                try:
+                    update_queue_item(queue_id, duration=duration)
+                except Exception:
+                    pass
+
+        verify_result = verify_file_in_music(queue_id, target_path)
+        file_exists = bool(target_path) and os.path.isfile(target_path)
+
+        if verify_result.get("success") or file_exists:
+            try:
+                mark_queue_item_moved(queue_id, target_path)
+                update_queue_item(
+                    queue_id,
+                    status="imported",
+                    music_file_path=target_path,
+                    file_path=target_path,
+                    found_filename=os.path.basename(target_path),
+                    copied_individually=1,
+                    copied_individually_at=datetime.now().isoformat(),
+                )
+            except Exception as exc:
+                logger.error("[COMPLETE] Queue %s: status update failed (%s) — resetting to downloading", queue_id, exc)
+                _reset_to_downloading(f"status update failed: {exc}")
+                return {"success": False, "error": str(exc)}
+            logger.info(
+                "[AUTO_MOVE] Queue %s: verified and imported to %s (source=%s)",
+                queue_id, target_path, match_source,
+            )
+            return {"success": True, "target_path": target_path}
+
+        # Verification failed and the file is not present at the target — the move
+        # may have been partial. Requeue so a fresh download can be attempted.
+        logger.error("[COMPLETE] Queue %s: verification failed (%s)", queue_id, verify_result.get("error"))
+        try:
+            from db.repositories.queue import mark_failed
+            mark_failed(queue_id, f"Move verification failed: {verify_result.get('error')}")
+        except Exception:
+            pass
+        return {"success": False, "error": verify_result.get("error")}
+
+    except Exception as exc:
+        # An unexpected error after the claim must not leave the row stuck in
+        # 'moving' — drop it back to 'downloading' so the next cycle retries.
+        logger.error("[COMPLETE] Queue %s: unhandled error during move — resetting to downloading: %s", queue_id, exc, exc_info=True)
+        _reset_to_downloading(f"unhandled error: {exc}")
+        return {"success": False, "error": str(exc)}
 
 
 def _sync_download_progress(active: list[dict], downloading: list[dict]) -> None:
@@ -295,7 +391,104 @@ def _sync_download_progress(active: list[dict], downloading: list[dict]) -> None
 # TRANSFER STATE RECONCILIATION
 # =============================================================================
 
-def _reconcile_transfer_state(item: dict, slskd, active: list[dict] | None = None) -> bool:
+def _reconcile_stale_moving(stale_minutes: int = 10) -> dict[str, int]:
+    """Recover queue items left in ``moving`` by a crashed/restarted worker.
+
+    ``_move_and_import`` atomically claims ``downloading -> moving`` before the
+    file is transferred and only promotes to ``imported`` after the file is
+    verified in /music. A worker killed mid-move therefore leaves the row stuck
+    in ``moving`` with no automatic recovery (the old system required a manual
+    "reset moving" click). Reconcile stale ``moving`` rows:
+
+    - target file present in /music          -> promote to ``imported``
+    - source file still in /downloads        -> reset to ``downloading`` (retry move)
+    - neither present                        -> reset to ``downloading`` so the
+                                               normal download reconciliation marks
+                                               it failed instead of leaving it stuck
+    """
+    stats = {"imported": 0, "reset": 0, "skipped": 0}
+
+    try:
+        from services.downloads.download_organize_helpers import _build_target_path
+        from db.repositories.queue import update_queue_item
+    except Exception:
+        return stats
+
+    # Staleness is evaluated against the DB's own clock (CURRENT_TIMESTAMP)
+    # rather than a Python-computed UTC cutoff: ``updated_at`` is a naive
+    # TIMESTAMP written from CURRENT_TIMESTAMP, so comparing to the same clock
+    # in SQL is immune to app/DB timezone mismatch (the reason an item could
+    # remain stuck in 'moving' indefinitely).
+    try:
+        with db_session() as session:
+            rows = session.execute(text("""
+                SELECT * FROM download_queue
+                WHERE status = 'moving'
+                  AND updated_at < CURRENT_TIMESTAMP - make_interval(mins => :stale_minutes)
+            """), {"stale_minutes": stale_minutes}).fetchall() or []
+            items = [dict(r._mapping) for r in rows]
+    except Exception as exc:
+        logger.error("[COMPLETE] Could not fetch stale 'moving' items: %s", exc)
+        return stats
+
+    for item in items:
+        queue_id = item.get("id")
+        try:
+            # 1. The file may already have reached /music before the crash.
+            target = item.get("music_file_path")
+            if not (target and os.path.isfile(str(target))):
+                try:
+                    target = _build_target_path(
+                        _MUSIC_ROOT,
+                        item.get("album_artist") or item.get("artist"),
+                        item.get("year"),
+                        item.get("album"),
+                        item.get("artist"),
+                        item.get("title"),
+                        item.get("track_number"),
+                        item.get("file_path") or "track.mp3",
+                    )
+                except Exception:
+                    target = None
+
+            if target and os.path.isfile(str(target)):
+                update_queue_item(
+                    queue_id,
+                    status="imported",
+                    music_file_path=str(target),
+                    file_path=str(target),
+                    found_filename=os.path.basename(str(target)),
+                    copied_individually=1,
+                    copied_individually_at=datetime.now().isoformat(),
+                )
+                stats["imported"] += 1
+                logger.info(
+                    "[COMPLETE] Queue %s: recovered stale 'moving' item — file found in library at %s",
+                    queue_id, target,
+                )
+            else:
+                # File not yet in /music: put the item back into the normal
+                # 'downloading' flow so matching/moving is retried (or the
+                # download reconciliation marks it failed if it is truly gone).
+                update_queue_item(queue_id, status="downloading")
+                stats["reset"] += 1
+                logger.info(
+                    "[COMPLETE] Queue %s: recovered stale 'moving' item — reset to downloading for re-match",
+                    queue_id,
+                )
+        except Exception as exc:
+            logger.warning("[COMPLETE] Queue %s: stale 'moving' recovery failed: %s", queue_id, exc)
+            stats["skipped"] += 1
+
+    return stats
+
+
+def _reconcile_transfer_state(
+    item: dict,
+    slskd,
+    active: list[dict] | None = None,
+    now: datetime | None = None,
+) -> bool:
     """Reconcile a 'downloading' item against live slskd transfers.
 
     Returns True when the item was moved to a terminal state (failed) and
@@ -313,7 +506,7 @@ def _reconcile_transfer_state(item: dict, slskd, active: list[dict] | None = Non
 
     if not active:
         # slskd has no record of the transfer at all.
-        if _is_stale_queue_item(item, stale_minutes=10):
+        if _is_stale_queue_item(item, stale_minutes=10, now=now):
             logger.warning("[COMPLETE] Queue %s: missing from slskd transfers and stale — scheduling retry", queue_id)
             from db.repositories.queue import mark_failed
             mark_failed(queue_id, "Transfer missing from slskd API while marked downloading")
@@ -332,7 +525,7 @@ def _reconcile_transfer_state(item: dict, slskd, active: list[dict] | None = Non
             break
 
     if transfer is None:
-        if _is_stale_queue_item(item, stale_minutes=10):
+        if _is_stale_queue_item(item, stale_minutes=10, now=now):
             logger.warning("[COMPLETE] Queue %s: transfer not found and item stale — scheduling retry", queue_id)
             from db.repositories.queue import mark_failed
             mark_failed(queue_id, "Transfer missing from slskd API while marked downloading")
@@ -365,7 +558,7 @@ def _reconcile_transfer_state(item: dict, slskd, active: list[dict] | None = Non
         return True
 
     if state == slskd.STATE_QUEUED_REMOTELY:
-        if _is_stale_queue_item(item, stale_minutes=_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES):
+        if _is_stale_queue_item(item, stale_minutes=_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES, now=now):
             logger.warning("[COMPLETE] Queue %s: remotely queued too long — cancelling and retrying", queue_id)
             try:
                 transfer_id = str(transfer.get("id") or "")
@@ -380,7 +573,7 @@ def _reconcile_transfer_state(item: dict, slskd, active: list[dict] | None = Non
         return False
 
     if state in slskd.ACTIVE_STATES:
-        if _is_stale_queue_item(item, stale_minutes=_SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES):
+        if _is_stale_queue_item(item, stale_minutes=_SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES, now=now):
             logger.warning("[COMPLETE] Queue %s: download timed out (state=%r) — cancelling and retrying", queue_id, state)
             try:
                 transfer_id = str(transfer.get("id") or "")
@@ -414,6 +607,21 @@ def check_completed_downloads() -> dict[str, Any]:
         "skipped": 0,
         "errors": 0,
     }
+
+    # Recover items a previous worker left stuck in 'moving' (crash/restart
+    # between the move claim and the final status update). Without this they
+    # stay 'moving' forever and never get reconciled.
+    try:
+        moving_stats = _reconcile_stale_moving()
+        stats["imported"] += moving_stats.get("imported", 0)
+        stats["moving_reset"] = moving_stats.get("reset", 0)
+        stats["moving_skipped"] = moving_stats.get("skipped", 0)
+    except Exception as exc:
+        logger.warning("[COMPLETE] Stale 'moving' reconciliation failed: %s", exc)
+
+    # One DB-clock snapshot per cycle so every staleness decision below uses
+    # the same reference and the check stays correct across app/DB timezones.
+    db_now = _db_now_naive()
 
     try:
         from db.repositories.queue import get_queue_status_counts
@@ -621,11 +829,11 @@ def check_completed_downloads() -> dict[str, Any]:
                 # stale 'downloading' rows do not remain stuck forever.
                 if match_found is None or abs_path is None:
                     if slskd is not None:
-                        was_failed = _reconcile_transfer_state(item, slskd, active=active_transfers)
+                        was_failed = _reconcile_transfer_state(item, slskd, active=active_transfers, now=db_now)
                         if was_failed:
                             stats["failed"] += 1
                             continue
-                    if _is_stale_queue_item(item, stale_minutes=_STALE_DOWNLOADING_MINUTES):
+                    if _is_stale_queue_item(item, stale_minutes=_STALE_DOWNLOADING_MINUTES, now=db_now):
                         logger.warning("[COMPLETE] Queue %s: no file found and stale in downloading — scheduling retry", queue_id)
                         mark_failed(queue_id, "No file found while marked downloading")
                         stats["failed"] += 1

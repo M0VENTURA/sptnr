@@ -27,6 +27,7 @@ from services.enrichment.musicbrainz_service import MusicBrainzService
 from services.popularity.popularity_math import (
     calculate_combined_popularity_score,
     calculate_listenbrainz_percentile,
+    evaluate_listenbrainz_validity,
 )
 from services.popularity.popularity_config import (
     LASTFM_WEIGHT,
@@ -92,6 +93,34 @@ def _build_effective_track(
     return effective_track
 
 
+# Album-type columns are owned by the album stage (``enrich_album`` /
+# ``ensure_album_type``).  The per-track stage never computes them, so it
+# must not write them back: the in-memory ``track`` dict is loaded before
+# album enrichment runs, and re-saving its stale album-type value would
+# clobber the freshly-detected type (album page shows "Unknown").
+_ALBUM_TYPE_COLUMNS = frozenset({"musicbrainz_albumtype", "spotify_album_type", "releasetype"})
+
+
+def _strip_album_type_columns(
+    track: dict[str, Any],
+    update_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the effective track dict to persist.
+
+    All of ``update_payload`` (fresh scores, listener counts, MBIDs, single
+    detection, ...) is applied over the loaded ``track``, then any album-type
+    column the track stage did NOT update is dropped so the stale in-memory
+    value (loaded before album enrichment ran) never clobbers the type the
+    album stage just persisted.
+    """
+    result = dict(track)
+    result.update(update_payload)
+    for col in _ALBUM_TYPE_COLUMNS:
+        if col not in update_payload:
+            result.pop(col, None)
+    return result
+
+
 def process_track(
     *,
     track: dict[str, Any],
@@ -134,6 +163,12 @@ def process_track(
     metadata_only = bool(options.get("metadata_only"))
     popularity_only = bool(options.get("popularity_only"))
     frozen_track = bool(options.get("frozen_track"))
+    # Singles-only pass: used when an album is skipped for popularity (already
+    # scored / recently scanned) but singles detection must still run so the
+    # per-album singles output appears (legacy parity).  The metadata,
+    # popularity, cover and genre sections are skipped; only singles detection
+    # runs, and the stored popularity is carried through unchanged.
+    singles_detection_only = bool(options.get("singles_detection_only"))
 
     update_payload: dict[str, Any] = {}
     score_data: dict[str, Any] = {}
@@ -141,11 +176,24 @@ def process_track(
     lastfm_listeners: int = 0
     listenbrainz_listens: int = 0
 
+    if singles_detection_only:
+        # Carry the stored popularity through so the result dict and star
+        # rating pass see the album's existing scores instead of 0.
+        score_data = {
+            "combined_score": float(track.get("final_score") or track.get("popularity_score") or 0),
+            "lastfm_score": float(track.get("lastfm_score") or 0),
+            "listenbrainz_score": float(track.get("listenbrainz_score") or 0),
+            "age_score": float(track.get("age_score") or 0),
+        }
+        lastfm_listeners = _as_int(track.get("lastfm_listeners") or 0)
+        listenbrainz_listens = _as_int(track.get("listenbrainz_listens") or 0)
+        lb_percentile = float(track.get("lb_percentile") or 0)
+
     # -------------------------------------------------------------------------
     # 1. METADATA - MusicBrainz (via enrichment service for better matching)
     # -------------------------------------------------------------------------
 
-    if not popularity_only and not frozen_track:
+    if not popularity_only and not frozen_track and not singles_detection_only:
         try:
             title = _as_str(track.get("title"))
             artist = _as_str(track.get("artist"))
@@ -206,6 +254,14 @@ def process_track(
                                 logger.debug("[track_stage][WRITER] %s: %s", track_id, exc)
                     if mb_data.get("title"):
                         update_payload["musicbrainz_title"] = mb_data["title"]
+                    # Persist the resolved artist MBID (from the recording's
+                    # artist-credit) so the single-detection service can use the
+                    # reliable artist-scoped release-group search instead of
+                    # falling back to fuzzier per-recording matching. Only set
+                    # when the track doesn't already carry one — user edits win.
+                    _artist_mbid = mb_data.get("artist_mbid")
+                    if _artist_mbid and not _as_str(track.get("musicbrainz_artistid") or track.get("musicbrainz_artist_id")):
+                        update_payload["musicbrainz_artistid"] = _artist_mbid
                     if mb_data.get("album"):
                         # Use the folder name from file_path as the primary
                         # reference for album matching — it reflects the actual
@@ -299,7 +355,7 @@ def process_track(
     # 2. POPULARITY (via updated api_clients)
     # -------------------------------------------------------------------------
 
-    if not metadata_only:
+    if not metadata_only and not singles_detection_only:
         try:
             effective_track = _build_effective_track(track, update_payload)
 
@@ -388,6 +444,9 @@ def process_track(
                 lastfm_playcount = _as_int(effective_track.get("lastfm_playcount") or 0)
                 listenbrainz_listens = _as_int(effective_track.get("listenbrainz_listens") or 0)
                 listenbrainz_users = _as_int(effective_track.get("listenbrainz_users") or 0)
+                # Cached scores reuse the stored LB count as-is — the realism
+                # check only runs on freshly-fetched values.
+                _score_lb = listenbrainz_listens
                 score_data = {
                     "combined_score": float(effective_track.get("final_score", 0)),
                     "lastfm_score": float(effective_track.get("lastfm_score", 0)),
@@ -639,30 +698,65 @@ def process_track(
                 # fresh artist prefetch, filtered to THIS album's tracks —
                 # previously the whole artist catalogue was used, which
                 # crushed every album track below the artist's biggest hits.
+                # The same filter builds the album's LF/LB ratio pairs used by
+                # the ListenBrainz realism check below.
                 _album_lf_listeners = None
+                _album_lf_lb_pairs: list[tuple[int, int]] = []
                 try:
                     _album_titles = {
                         normalize_for_aggregation(str(t.get("title") or ""))
                         for t in (album_context.get("tracks") or [])
                     }
-                    _lf_vals = [
-                        int(e.get("lastfm_listeners") or 0)
-                        for k, e in (prefetched_popularity or {}).items()
-                        if normalize_for_aggregation(str(k or "")) in _album_titles
-                        and int(e.get("lastfm_listeners") or 0) > 0
-                    ]
+                    _lf_vals = []
+                    for _k, _e in (prefetched_popularity or {}).items():
+                        if normalize_for_aggregation(str(_k or "")) not in _album_titles:
+                            continue
+                        _lfv = int(_e.get("lastfm_listeners") or 0)
+                        _lbv = int(_e.get("listenbrainz_listens") or 0)
+                        if _lfv > 0:
+                            _lf_vals.append(_lfv)
+                        if _lfv > 0 and _lbv > 0:
+                            _album_lf_lb_pairs.append((_lfv, _lbv))
                     if len(_lf_vals) >= 3:
                         _album_lf_listeners = _lf_vals
                 except Exception:
                     _album_lf_listeners = None
 
+                # ── ListenBrainz realism check ───────────────────────────
+                # A mismatched recording MBID (wrong / split / obscure
+                # recording) can surface an unrealistically LOW LB count for a
+                # track whose real popularity is healthy, dragging the album
+                # average down.  Compare each track's LB against the album's LB
+                # distribution (median + 2× MAD) and the album's median LF/LB
+                # ratio; when the LB is invalid, score the track on Last.fm
+                # alone.  Confirmed singles are never penalised — their LB is
+                # legitimate evidence.
+                _score_lb = listenbrainz_listens
+                try:
+                    _lb_valid, _lb_reasons = evaluate_listenbrainz_validity(
+                        listenbrainz_listens=listenbrainz_listens,
+                        lastfm_listeners=lastfm_listeners,
+                        album_lb_listens=album_lb_listens,
+                        album_lf_lb_pairs=_album_lf_lb_pairs or None,
+                        is_single=bool(prior_single or effective_track.get("is_single")),
+                    )
+                    if not _lb_valid:
+                        _score_lb = 0
+                        logger.info(
+                            "[track_stage] LB treated as invalid for %s (%s - %s): %s listens (%s) — scoring on Last.fm only",
+                            track_id, artist, title, listenbrainz_listens,
+                            ", ".join(_lb_reasons),
+                        )
+                except Exception as exc:
+                    logger.debug("[track_stage] LB realism check failed for %s: %s", track_id, exc)
+
                 score_data = calculate_combined_popularity_score(
                     lastfm_listeners=lastfm_listeners,
                     lastfm_artist_max_listeners=artist_max_lf_listeners,
-                    listenbrainz_listens=listenbrainz_listens,
+                    listenbrainz_listens=_score_lb,
                     album_lb_listens=album_lb_listens,
                     album_lf_listeners=_album_lf_listeners,
-                    age_source_value=listenbrainz_listens,
+                    age_source_value=_score_lb,
                     release_date=release_date,
                     is_single=prior_single,
                     has_metadata=has_mb_meta,
@@ -674,9 +768,11 @@ def process_track(
                     live_weight_penalty=cfg_live_penalty,
                 )
 
-            # LB percentile within the album (used by star-rating rescue path)
+            # LB percentile within the album (used by star-rating rescue path).
+            # An LB flagged invalid by the realism check is scored as zero so
+            # its percentile cannot rescue the track's rating.
             try:
-                lb_percentile = calculate_listenbrainz_percentile(listenbrainz_listens, album_lb_listens) if album_lb_listens else 0.0
+                lb_percentile = calculate_listenbrainz_percentile(_score_lb, album_lb_listens) if album_lb_listens else 0.0
             except Exception:
                 lb_percentile = 0.0
 
@@ -746,7 +842,7 @@ def process_track(
     # 3. COVER DETECTION (via enrichment service)
     # -------------------------------------------------------------------------
 
-    if not popularity_only:
+    if not popularity_only and not singles_detection_only:
         try:
             title = _as_str(effective_track.get("title") or track.get("title") or "")
             if title:
@@ -931,6 +1027,7 @@ def process_track(
                     artist_mbid=(
                         effective_track.get("musicbrainz_artistid")
                         or effective_track.get("musicbrainz_artist_id")
+                        or effective_track.get("lastfm_artist_mbid")
                     ),
                     listenbrainz_listens=int(listenbrainz_listens or 0),
                     discogs_token=sd_discogs_token or None,
@@ -988,7 +1085,7 @@ def process_track(
     # Genres are metadata — they are assigned during the metadata scan (and
     # full scans). A pure popularity-only pass skips them.
 
-    if not popularity_only:
+    if not popularity_only and not singles_detection_only:
         try:
             effective_track = _build_effective_track(track, update_payload)
             source_map = {}
@@ -1074,7 +1171,7 @@ def process_track(
     # 6. PERSISTENCE
     # -------------------------------------------------------------------------
 
-    effective_track = _build_effective_track(track, update_payload)
+    effective_track = _strip_album_type_columns(track, update_payload)
 
     try:
         insert_or_update_track(track_id, effective_track)
@@ -1098,8 +1195,8 @@ def process_track(
         "spotify_score": float(score_data.get("spotify_score", 0)),
         "lastfm_score": float(score_data.get("lastfm_score", 0)),
         "listenbrainz_score": float(score_data.get("listenbrainz_score", 0)),
-        "is_single": bool(update_payload.get("is_single", False)),
-        "single_confidence": str(update_payload.get("single_confidence", "low")),
-        "single_sources": update_payload.get("single_sources", ""),
+        "is_single": bool(update_payload.get("is_single", track.get("is_single", False))),
+        "single_confidence": str(update_payload.get("single_confidence", track.get("single_confidence", "low"))),
+        "single_sources": update_payload.get("single_sources", track.get("single_sources", "")),
         "is_live": bool(track.get("is_live") or track.get("album_context_live")),
     }

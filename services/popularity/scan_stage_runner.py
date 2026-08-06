@@ -18,7 +18,7 @@ from services.popularity.popularity_sources import (
     get_lastfm_artist_max_listeners,
 )
 from services.popularity.stages.album_stage import enrich_album
-from services.popularity.stages.finalise_stage import finalise_scan
+from services.popularity.stages.finalise_stage import finalise_scan, post_album_star_ratings
 from services.popularity.stages.load_stage import load_candidates
 from services.popularity.stages.track_stage import process_track
 from services.scanning.scan_state import (
@@ -205,6 +205,68 @@ def run_scan(
     # Album-completion quarter tracking (25/50/75/100% progress logs).
     _last_quarter = 0
 
+    # ── Per-album star-rating posting (legacy parity) ───────────────────
+    # The legacy scanner assigned, persisted and logged each album's star
+    # ratings right after the album completed.  The staged runner previously
+    # deferred ALL of that to finalise_scan at the end of the run, so a full
+    # artist scan showed no per-album star output until everything finished.
+    # We track each artist's accumulated results + existing DB scores so the
+    # per-album z-score context matches the end-of-scan pass, and set
+    # ``_per_album_posted`` so finalise_scan skips the (now redundant) per-album
+    # work and only does artist_stats / playlists / summary.
+    _artist_scan_results: dict[str, list[dict[str, Any]]] = {}
+    _artist_db_scores: dict[str, list[float]] = {}
+    _per_album_posted_keys: set[tuple[str, str]] = set()
+
+    def _load_artist_db_scores(artist: str) -> list[float]:
+        if not artist or artist in _artist_db_scores:
+            return _artist_db_scores.get(artist, [])
+        _artist_db_scores[artist] = []
+        try:
+            from sqlalchemy import text as _text
+            from db.engine import db_session as _db_session
+            with _db_session() as session:
+                rows = session.execute(
+                    _text(
+                        "SELECT final_score FROM tracks "
+                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND final_score > 0"
+                    ),
+                    {"artist": artist},
+                ).fetchall()
+                _artist_db_scores[artist] = [float(r[0]) for r in rows or [] if r[0]]
+        except Exception as exc:
+            logger.debug("[scan_runner] Artist DB score fetch failed for %s: %s", artist, exc)
+        return _artist_db_scores[artist]
+
+    def _post_album_stars(artist: str, album_results: list[dict[str, Any]]) -> bool:
+        """Assign/persist/log/sync star ratings for ONE completed album.
+
+        Returns True only when star ratings were actually assigned/persisted —
+        the album key is then recorded so the end-of-scan finalise skips it.
+        Albums that failed to post stay un-recorded so finalise still handles
+        them (no star rating is silently lost).
+        """
+        if not album_results or metadata_only or popularity_only:
+            return False
+        scan_scores = [
+            float(r.get("popularity_score") or 0)
+            for r in _artist_scan_results.get(artist, [])
+        ]
+        artist_scores = scan_scores + _load_artist_db_scores(artist)
+        try:
+            _outcome = post_album_star_ratings(
+                album_results=album_results,
+                artist=artist,
+                artist_scores=artist_scores,
+                options=options,
+            )
+            if int(_outcome.get("star_ratings") or 0) > 0:
+                _per_album_posted_keys.add((artist, str(album_results[0].get("album") or "")))
+                return True
+        except Exception as exc:
+            logger.debug("[scan_runner] Per-album star posting failed for %s: %s", artist, exc)
+        return False
+
     for album_index, album_row in enumerate(albums, start=1):
 
         # ✅ Graceful stop support
@@ -217,12 +279,31 @@ def run_scan(
         album = album_row.get("album") or ""
         tracks = album_row.get("tracks") or []
 
+        # Marker into the accumulated results so this album's result dicts can
+        # be posted individually once the album completes (see skip + normal
+        # paths below).
+        _album_start = len(results)
+
         # Letter-section header (fires once per letter group).
         _first = (artist or " ")[0].upper()
         _letter = "#" if not _first.isalpha() else _first
         if _letter != _last_letter:
             _last_letter = _letter
             log_unified(f"Popularity Scan - Letter '{_letter}'")
+
+        # ── Per-artist singles-title caches (loaded early so the skip path
+        #    can also run singles detection) ───────────────────────────────
+        _is_compilation_artist = artist.lower() in (
+            "various artists", "various artists -", "various",
+            "compilation", "soundtrack"
+        )
+        if artist and artist not in artist_mb_singles_cache and not _is_compilation_artist:
+            artist_mb_singles_cache[artist] = _load_mb_single_titles(artist)
+        mb_cached_singles = artist_mb_singles_cache.get(artist) or set()
+
+        if artist and artist not in artist_discogs_singles_cache and not _is_compilation_artist:
+            artist_discogs_singles_cache[artist] = _load_discogs_single_titles(artist)
+        discogs_cached_singles = artist_discogs_singles_cache.get(artist) or set()
 
         # ── Album skip (album_skip_days + skip-if-unchanged) ────────────
         # Mirrors the legacy scanner: albums already scanned within the
@@ -257,9 +338,61 @@ def run_scan(
             # verdicts; only albums missing a type hit MusicBrainz.
             try:
                 from services.popularity.stages.album_stage import ensure_album_type
-                ensure_album_type(album_row, options)
+                _detected_type = ensure_album_type(album_row, options)
             except Exception as exc:
                 logger.debug("[scan_runner] Album type ensure failed for %s - %s: %s", artist, album, exc)
+                _detected_type = None
+
+            # Singles detection still runs for the album (legacy parity):
+            # skipping the popularity re-fetch must not suppress the per-album
+            # singles output.  A singles-only pass is run so results are
+            # emitted after each album even when the album is otherwise up to
+            # date.
+            if not metadata_only and not popularity_only:
+                try:
+                    _album_context, _track_contexts = prepare_tracks_for_album(
+                        artist=artist,
+                        album=album,
+                        tracks=tracks,
+                        album_artist=album_row.get("album_artist"),
+                        spotify_album_type=album_row.get("spotify_album_type"),
+                        musicbrainz_album_type=album_row.get("musicbrainz_album_type"),
+                    )
+                    _album_result = {
+                        "album_row": album_row,
+                        "album_context": _album_context,
+                        "detected_album_type": _detected_type or "",
+                        "is_heterogeneous": False,
+                    }
+                    _singles_options = dict(options)
+                    _singles_options["singles_detection_only"] = True
+                    for _tc in _track_contexts:
+                        _prepared = apply_context_fields_to_track(_tc)
+                        _tr = process_track(
+                            track=_prepared,
+                            track_context=_tc,
+                            album_context=_album_context,
+                            album_result=_album_result,
+                            options=_singles_options,
+                            album_lb_listens=None,
+                            artist_max_lf_listeners=0,
+                            artist_lf_context={},
+                            mb_cached_singles=mb_cached_singles,
+                            discogs_cached_singles=discogs_cached_singles,
+                            prefetched_popularity={},
+                        )
+                        if _tr is not None:
+                            results.append(_tr)
+                            tracks_processed += 1
+                    # Post this (skipped) album's star ratings right away so the
+                    # per-album "Star Ratings - Album ..." summary appears as the
+                    # scan passes it (legacy parity), carrying stored scores.
+                    _album_skip_results = results[_album_start:]
+                    if _album_skip_results:
+                        _artist_scan_results.setdefault(artist, []).extend(_album_skip_results)
+                        _post_album_stars(artist, _album_skip_results)
+                except Exception as exc:
+                    logger.debug("[scan_runner] Singles-only pass failed for %s - %s: %s", artist, album, exc)
             continue
 
         # ── Per-artist progress checkpoint ───────────────────────────────
@@ -300,16 +433,6 @@ def run_scan(
                 logger.debug("[scan_runner] Last.fm context fetch failed for %s: %s", artist, exc)
                 artist_lf_context_cache[artist] = {"mean": 0, "stdev": 0, "total": 0, "values": []}
         artist_lf_context = artist_lf_context_cache.get(artist) or {}
-
-        # ── Per-artist MB single-title cache (missing_releases) ──────────
-        if artist and artist not in artist_mb_singles_cache and not _is_compilation_artist:
-            artist_mb_singles_cache[artist] = _load_mb_single_titles(artist)
-        mb_cached_singles = artist_mb_singles_cache.get(artist) or set()
-
-        # ── Per-artist Discogs single-title cache (release cache) ─────────
-        if artist and artist not in artist_discogs_singles_cache and not _is_compilation_artist:
-            artist_discogs_singles_cache[artist] = _load_discogs_single_titles(artist)
-        discogs_cached_singles = artist_discogs_singles_cache.get(artist) or set()
 
         progress = 5 + int((album_index / total_albums) * 90)
 
@@ -591,6 +714,16 @@ def run_scan(
         except Exception:
             pass  # Non-critical — dashboard data is best-effort
 
+        # ── Per-album star rating posting ────────────────────────────────
+        # Assign, persist, log and sync THIS album's star ratings right after
+        # it completes (legacy parity) instead of batching them for the end of
+        # the scan.  For a full artist scan each album's "Star Ratings - Album"
+        # summary appears as the album finishes.
+        _album_results_this = results[_album_start:]
+        if _album_results_this:
+            _artist_scan_results.setdefault(artist, []).extend(_album_results_this)
+            _post_album_stars(artist, _album_results_this)
+
         albums_processed += 1
 
         # ── Album-level progress quarters ────────────────────────────────
@@ -618,6 +751,13 @@ def run_scan(
     # popularity-only passes must NOT assign star ratings — scores/singles
     # haven't been computed yet, so every track would incorrectly get 1★.
     if not metadata_only and not popularity_only:
+        # When per-album star ratings were posted during the scan loop, tell
+        # finalise to skip those albums (it still does artist_stats, the
+        # essential playlist and the summary).  Only albums that were actually
+        # posted are recorded, so a failed post is never silently dropped.
+        if _per_album_posted_keys:
+            options["_per_album_posted"] = True
+            options["_per_album_posted_keys"] = _per_album_posted_keys
         finalise_scan(results=results, options=options)
 
     update(stage="complete", progress=100, message="Popularity scan complete.", processed=total_albums, total_items=total_albums)

@@ -96,13 +96,62 @@ def _listener_z(count: float, counts: list[float]) -> float:
     standout signal from Last.fm/ListenBrainz that the blended popularity
     score compresses — a value >= 1.0 means the track is a clear listener
     outlier relative to its own album.
+
+    Zero-variance distributions (an album whose positive counts are all the
+    same value, e.g. a tracklist fallback that resolved every track to the
+    same count) carry no outlier signal — return 0.0 instead of dividing by
+    zero, which would crash the whole album's star-rating pass.
     """
     logs = [math.log1p(float(c)) for c in counts if float(c) > 0]
     if len(logs) < 3 or not any(logs):
         return 0.0
     mu = mean(logs)
     sigma = stdev(logs) if len(logs) > 1 else 1.0
+    if not sigma or sigma <= 0:
+        return 0.0
     return (math.log1p(float(count)) - mu) / sigma
+
+
+def _resolve_navidrome_artist_id(cursor, artist: str) -> str | None:
+    """Return the real Navidrome artist id for ``artist``, or None.
+
+    ``artist_stats.artist_id`` is the PRIMARY KEY — writing the artist NAME
+    into it (as an earlier version of this stage did) pollutes the table so
+    ``lookup_artist_id`` returns the name and the Navidrome import then calls
+    ``getArtist?id=<name>``, which returns no albums and silently skips the
+    import.  Prefer an existing real id (a name-keyed row is never a real id),
+    then fall back to the tracks table's stored Navidrome id.
+    """
+    try:
+        cursor.execute(
+            "SELECT artist_id FROM artist_stats "
+            "WHERE LOWER(artist_name) = LOWER(%s) "
+            "  AND LOWER(artist_id) <> LOWER(%s) "
+            "LIMIT 1",
+            (artist, artist),
+        )
+        row = cursor.fetchone()
+        found = row_get(row, "artist_id") if row else None
+        if found and str(found).strip() and str(found).casefold() != str(artist).casefold():
+            return str(found).strip()
+    except Exception as exc:
+        logger.debug("[finalise_stage] artist_stats id lookup failed for %s: %s", artist, exc)
+    try:
+        cursor.execute(
+            "SELECT artist_id FROM tracks "
+            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
+            "  AND artist_id IS NOT NULL AND artist_id <> '' "
+            "  AND LOWER(artist_id) <> LOWER(%s) "
+            "LIMIT 1",
+            (artist, artist),
+        )
+        row = cursor.fetchone()
+        found = row_get(row, "artist_id") if row else None
+        if found and str(found).strip() and str(found).casefold() != str(artist).casefold():
+            return str(found).strip()
+    except Exception as exc:
+        logger.debug("[finalise_stage] tracks id lookup failed for %s: %s", artist, exc)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +441,286 @@ def _create_nsp_playlist(artist: str, stars_data: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-album star rating posting
+# ---------------------------------------------------------------------------
+
+def compute_artist_scores(
+    artist: str,
+    scan_scores: list[float],
+    conn,
+    cursor,
+) -> list[float]:
+    """Artist-wide score distribution = scan results so far + existing DB scores.
+
+    Mirrors the merge used at the end of the scan so per-album star ratings
+    posted during the scan use the same artist context the final pass would.
+    """
+    artist_scores = [float(s) for s in scan_scores if float(s or 0) > 0]
+    try:
+        cursor.execute(
+            "SELECT final_score FROM tracks "
+            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND final_score > 0",
+            (artist,),
+        )
+        db_artist_scores = [
+            float(row.get("final_score") or 0)
+            for row in cursor.fetchall()
+            if row.get("final_score")
+        ]
+        artist_scores = list(artist_scores) + list(db_artist_scores)
+    except Exception as exc:
+        logger.debug("[finalise_stage] Artist DB score merge failed for %s: %s", artist, exc)
+    return artist_scores
+
+
+def post_album_star_ratings(
+    *,
+    album_results: list[dict[str, Any]],
+    artist: str,
+    artist_scores: list[float],
+    options: dict[str, Any],
+    conn=None,
+    cursor=None,
+) -> dict[str, int]:
+    """Assign, persist, log and sync star ratings for ONE album.
+
+    Mirrors the legacy scanner, which posted the per-album star-rating summary
+    right after each album completed.  During a full artist/library scan the
+    ratings are written to the DB and surfaced in the unified log as each
+    album finishes, instead of all being batched for the end of the scan.
+
+    ``conn``/``cursor`` are optional — when omitted a connection is opened and
+    closed for this album (safe to call standalone from the scan loop).
+    """
+    if not album_results:
+        return {"star_ratings": 0, "navidrome_synced": 0}
+
+    owns_conn = conn is None or cursor is None
+    if owns_conn:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+    total_star_ratings = 0
+    navidrome_synced = 0
+
+    try:
+        album = str(album_results[0].get("album") or "Unknown")
+
+        album_scores = [
+            float(r.get("popularity_score") or 0)
+            for r in album_results
+            if float(r.get("popularity_score") or 0) > 0
+        ]
+        # Raw listener counts per album track — used to detect listener
+        # standouts (log-scaled z) for confirmed singles.
+        album_lf_listeners = [float(r.get("lastfm_listeners") or 0) for r in album_results]
+        album_lb_listens = [float(r.get("listenbrainz_listens") or 0) for r in album_results]
+
+        try:
+            # Merge DB scores ONLY for tracks not in the current scan.
+            # Otherwise the distribution double-counts every scanned track
+            # (raw popularity_score + stored final_score, which is
+            # decay-adjusted) and the z-scores drift between scans.
+            scanned_titles = {str(r.get("title") or "").strip().lower() for r in album_results}
+            cursor.execute(
+                "SELECT title, final_score FROM tracks "
+                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND final_score > 0",
+                (artist, album),
+            )
+            db_album_scores = [
+                float(row.get("final_score") or 0)
+                for row in cursor.fetchall()
+                if row.get("final_score")
+                and str(row.get("title") or "").strip().lower() not in scanned_titles
+            ]
+            album_scores = list(album_scores) + list(db_album_scores)
+        except Exception as exc:
+            logger.debug("[finalise_stage] Album DB score merge failed for %s - %s: %s", artist, album, exc)
+
+        for track in album_results:
+            # Assign star rating — one track's edge case (e.g. a degenerate
+            # distribution) must never abort the whole album's rating pass and
+            # silently leave every track unrated.  Surface it, skip it, and let
+            # the rest of the album proceed.
+            try:
+                stars = _assign_stars(
+                    track,
+                    album_scores,
+                    artist_scores,
+                    album_lf_listeners,
+                    album_lb_listens,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[finalise_stage] Star assignment failed for %s - %s: %s",
+                    artist, track.get("title"), exc,
+                )
+                continue
+            track["stars"] = stars
+            total_star_ratings += 1
+            logger.debug(
+                "[finalise_stage] %s - %s → %d★ (score=%.1f, album_z=%.2f, artist_z=%.2f, single=%s/%s)",
+                artist, track.get("title"), stars,
+                float(track.get("popularity_score") or 0),
+                _compute_album_z(float(track.get("popularity_score") or 0), album_scores),
+                _compute_artist_z(float(track.get("popularity_score") or 0), artist_scores),
+                track.get("is_single"), track.get("single_confidence"),
+            )
+
+            # Persist to database
+            track_id = str(track.get("track_id") or "")
+            if track_id:
+                try:
+                    cursor.execute(
+                        "UPDATE tracks SET stars = %s WHERE id = %s",
+                        (stars, track_id)
+                    )
+                except Exception as exc:
+                    logger.debug("[finalise_stage] DB update failed for %s: %s", track_id, exc)
+
+        conn.commit()
+
+        # ── Per-album progress (dashboard unified log) ──────────
+        # Mirrors the legacy scanner: emit a human-readable per-album
+        # star-rating summary so operators can follow progress in the
+        # dashboard log while the scan is running.
+        try:
+            star_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+            for t in album_results:
+                s = int(t.get("stars") or 0)
+                if 1 <= s <= 5:
+                    star_counts[s] += 1
+            log_unified(
+                f"Star Ratings - Album '{album}' by {artist}: "
+                f"5★: {star_counts[5]}, 4★: {star_counts[4]}, 3★: {star_counts[3]}, "
+                f"2★: {star_counts[2]}, 1★: {star_counts[1]}"
+            )
+            singles_detected = [t for t in album_results if t.get("is_single")]
+            if singles_detected:
+                log_unified(
+                    f"Singles Detection - Detected {len(singles_detected)} single(s) in '{album}'"
+                )
+
+            # ── Detailed per-track final output ───────────────────
+            # Mirrors the legacy scanner's album summary: every track
+            # is listed with its star rating, grouped into detected
+            # singles, popular tracks, and the rest of the album.
+            if album_results:
+                detected_singles: list[tuple[str, int, str, float, str]] = []
+                popular_songs: list[tuple[str, int, str, float, str]] = []
+                rest_of_album: list[tuple[str, int, str, float, str]] = []
+                for t in album_results:
+                    t_stars = int(t.get("stars") or 0)
+                    t_single = bool(t.get("is_single"))
+                    t_conf = str(t.get("single_confidence") or "low").lower()
+                    t_title = str(t.get("title") or "Unknown")
+                    t_artist = str(t.get("artist") or artist)
+                    t_score = float(t.get("popularity_score") or t.get("final_score") or 0)
+                    album_z = _compute_album_z(t_score, album_scores)
+                    artist_z = _compute_artist_z(t_score, artist_scores)
+
+                    reasons: list[str] = []
+                    try:
+                        sources = t.get("single_sources") or ""
+                        if isinstance(sources, str):
+                            parsed = json.loads(sources) if sources.strip() else []
+                        else:
+                            parsed = sources
+                        if isinstance(parsed, list):
+                            reasons.append(", ".join(str(s) for s in parsed[:3]))
+                    except Exception:
+                        pass
+                    if t_single and t_conf == "high" and album_z:
+                        reasons.append(f"album-z-score: {album_z:.2f}")
+                    elif t_stars == 5 and album_z:
+                        reasons.append(f"album-z-score: {album_z:.2f}")
+                    elif album_z:
+                        reasons.append(f"album-z-score: {album_z:.2f}")
+                    # Surface the raw listener counts alongside the
+                    # scoring so ratings are easy to sanity-check
+                    # against the source data (Last.fm / ListenBrainz).
+                    reasons.append(
+                        f"lf={int(t.get('lastfm_listeners') or 0):,} "
+                        f"lb={int(t.get('listenbrainz_listens') or 0):,}"
+                    )
+                    # Show each provider's score contribution so the
+                    # rating can be traced back to the sources.
+                    reasons.append(
+                        f"LF-score={float(t.get('lastfm_score') or 0):.1f} "
+                        f"LB-score={float(t.get('listenbrainz_score') or 0):.1f} "
+                        f"score={t_score:.1f}"
+                    )
+                    reason_str = f" ({'; '.join(r for r in reasons if r)})" if reasons else ""
+
+                    if t_single and t_conf == "high":
+                        detected_singles.append((t_title, t_stars, t_artist, t_score, reason_str))
+                    elif t_stars == 5:
+                        popular_songs.append((t_title, t_stars, t_artist, t_score, reason_str))
+                    else:
+                        rest_of_album.append((t_title, t_stars, t_artist, t_score, reason_str))
+
+                def _log_track_group(lines: list[tuple[str, int, str, float, str]]) -> None:
+                    # List in star-rating order (descending), using the
+                    # track's popularity score as the tie-breaker.
+                    for t_title, t_stars, t_artist, t_score, reason in sorted(
+                        lines, key=lambda item: (-item[1], -item[3])
+                    ):
+                        star_str = "★" * max(0, min(t_stars, 5)) + "☆" * max(0, 5 - min(t_stars, 5))
+                        log_unified(
+                            f"Single Detection Scan - {star_str:<5} {t_artist} - {t_title}{reason}"
+                        )
+
+                if detected_singles:
+                    log_unified(f"Single Detection Scan - ===== {album} - Detected Singles =====")
+                    _log_track_group(detected_singles)
+                if popular_songs:
+                    log_unified(f"Single Detection Scan - ===== {album} - Popular Songs (Not Detected as Single) =====")
+                    _log_track_group(popular_songs)
+                if rest_of_album:
+                    if detected_singles or popular_songs:
+                        log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
+                    else:
+                        log_unified(f"Single Detection Scan - ===== {album} - All Tracks =====")
+                    _log_track_group(rest_of_album)
+        except Exception as log_exc:
+            logger.debug("[finalise_stage] Album progress log failed: %s", log_exc)
+
+        # Sync to Navidrome — every rated track (old-system parity:
+        # 1★/2★ ratings and downgrades must propagate too).
+        if options.get("sync_navidrome", True):
+            _attempted = 0
+            _synced = 0
+            for track in album_results:
+                stars = track.get("stars", 0)
+                if stars < 1:
+                    continue  # unrated
+                track_id = str(track.get("track_id") or "")
+                if track_id:
+                    _attempted += 1
+                    if _sync_rating_to_navidrome(track_id, stars):
+                        navidrome_synced += 1
+                        _synced += 1
+            _failed = _attempted - _synced
+            if _failed > 0:
+                logger.warning(
+                    "[finalise_stage] %d/%d Navidrome rating syncs failed for %s — check credentials / Subsonic API",
+                    _failed, _attempted, artist,
+                )
+
+    except Exception as exc:
+        logger.error("[finalise_stage] Album finalisation failed for %s - %s: %s", artist, album, exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        if owns_conn:
+            conn.close()
+
+    return {"star_ratings": total_star_ratings, "navidrome_synced": navidrome_synced}
+
+
+# ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
@@ -421,26 +750,27 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
     total_star_ratings = 0
     navidrome_synced = 0
 
+    # When the scan runner posted star ratings after each album (legacy
+    # behaviour), finalise skips those albums — it still does the remaining
+    # artist-level work (stats, essential playlist, summary).  Re-assigning
+    # already-posted albums would duplicate the per-album output/log lines.
+    per_album_posted = bool(options.get("_per_album_posted"))
+    posted_keys: set[tuple[str, str]] = set(options.get("_per_album_posted_keys") or set())
+
     try:
         for artist, artist_results in by_artist.items():
             if artist.lower() in ("various artists", "various", "compilation", "soundtrack"):
                 continue
 
-            # Collect artist-wide scores
-            artist_scores = [float(r.get("popularity_score") or 0) for r in artist_results if float(r.get("popularity_score") or 0) > 0]
-
-            # Merge in existing DB scores so mature/frozen tracks (skipped by
-            # the runner) still anchor the album/artist distributions.
-            try:
-                cursor.execute(
-                    "SELECT final_score FROM tracks "
-                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND final_score > 0",
-                    (artist,),
-                )
-                db_artist_scores = [float(row.get("final_score") or 0) for row in cursor.fetchall() if row.get("final_score")]
-                artist_scores = list(artist_scores) + list(db_artist_scores)
-            except Exception as exc:
-                logger.debug("[finalise_stage] Artist DB score merge failed for %s: %s", artist, exc)
+            # Collect artist-wide scores, merging in existing DB scores so
+            # mature/frozen tracks (skipped by the runner) still anchor the
+            # album/artist distributions.
+            artist_scores = compute_artist_scores(
+                artist,
+                [float(r.get("popularity_score") or 0) for r in artist_results],
+                conn,
+                cursor,
+            )
 
             # ── Persist artist_stats (artist-context popularity data) ────
             # The mean-popularity adjustment reads median_popularity / MAD
@@ -453,6 +783,12 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     _mads = [abs(s - _med) for s in _valid_scores]
                     _mad = median(_mads) if _mads else 0.0
                     _album_count = len({str(r.get("album") or "") for r in artist_results if r.get("album")})
+                    # artist_id is the PRIMARY KEY and must be the real
+                    # Navidrome id — writing the artist name here made the
+                    # artist import resolve "id = name" and skip (getArtist
+                    # with a name returns no albums).  Resolve an existing
+                    # real id when possible.
+                    _artist_id = _resolve_navidrome_artist_id(cursor, artist) or artist
                     from datetime import datetime as _dt
                     cursor.execute(
                         """
@@ -471,15 +807,15 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                             popularity_mad = EXCLUDED.popularity_mad
                         """,
                         (
-                            artist, artist, _album_count, len(_valid_scores), _dt.now().isoformat(),
+                            _artist_id, artist, _album_count, len(_valid_scores), _dt.now().isoformat(),
                             mean(_valid_scores), _med,
                             stdev(_valid_scores) if len(_valid_scores) > 1 else 0.0,
                             _mad,
                         ),
                     )
                     logger.info(
-                        "[FINALISE_STAGE] artist_stats updated for '%s' (tracks=%d, median=%.1f, MAD=%.1f)",
-                        artist, len(_valid_scores), _med, _mad,
+                        "[FINALISE_STAGE] artist_stats updated for '%s' (id=%s, tracks=%d, median=%.1f, MAD=%.1f)",
+                        artist, _artist_id, len(_valid_scores), _med, _mad,
                     )
             except Exception as exc:
                 logger.debug("[finalise_stage] artist_stats persist failed for %s: %s", artist, exc)
@@ -491,192 +827,20 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                 by_album[album].append(r)
 
             for album, album_results in by_album.items():
-                album_scores = [float(r.get("popularity_score") or 0) for r in album_results if float(r.get("popularity_score") or 0) > 0]
-                # Raw listener counts per album track — used to detect
-                # listener standouts (log-scaled z) for confirmed singles.
-                album_lf_listeners = [float(r.get("lastfm_listeners") or 0) for r in album_results]
-                album_lb_listens = [float(r.get("listenbrainz_listens") or 0) for r in album_results]
-                try:
-                    # Merge DB scores ONLY for tracks not in the current scan.
-                    # Otherwise the distribution double-counts every scanned
-                    # track (raw popularity_score + stored final_score, which
-                    # is decay-adjusted) and the z-scores drift between scans
-                    # as the stored values change.
-                    scanned_titles = {str(r.get("title") or "").strip().lower() for r in album_results}
-                    cursor.execute(
-                        "SELECT title, final_score FROM tracks "
-                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND final_score > 0",
-                        (artist, album),
-                    )
-                    db_album_scores = [
-                        float(row.get("final_score") or 0)
-                        for row in cursor.fetchall()
-                        if row.get("final_score")
-                        and str(row.get("title") or "").strip().lower() not in scanned_titles
-                    ]
-                    album_scores = list(album_scores) + list(db_album_scores)
-                except Exception as exc:
-                    logger.debug("[finalise_stage] Album DB score merge failed for %s - %s: %s", artist, album, exc)
-
-                for track in album_results:
-                    # Assign star rating
-                    stars = _assign_stars(
-                        track,
-                        album_scores,
-                        artist_scores,
-                        album_lf_listeners,
-                        album_lb_listens,
-                    )
-                    track["stars"] = stars
-                    total_star_ratings += 1
-                    logger.debug(
-                        "[finalise_stage] %s - %s → %d★ (score=%.1f, album_z=%.2f, artist_z=%.2f, single=%s/%s)",
-                        artist, track.get("title"), stars,
-                        float(track.get("popularity_score") or 0),
-                        _compute_album_z(float(track.get("popularity_score") or 0), album_scores),
-                        _compute_artist_z(float(track.get("popularity_score") or 0), artist_scores),
-                        track.get("is_single"), track.get("single_confidence"),
-                    )
-
-                    # Persist to database
-                    track_id = str(track.get("track_id") or "")
-                    if track_id:
-                        try:
-                            cursor.execute(
-                                "UPDATE tracks SET stars = %s WHERE id = %s",
-                                (stars, track_id)
-                            )
-                        except Exception as exc:
-                            logger.debug("[finalise_stage] DB update failed for %s: %s", track_id, exc)
-
-                conn.commit()
-
-                # ── Per-album progress (dashboard unified log) ──────────
-                # Mirrors the legacy scanner: emit a human-readable per-album
-                # star-rating summary so operators can follow progress in the
-                # dashboard log while the scan is running.
-                try:
-                    star_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-                    for t in album_results:
-                        s = int(t.get("stars") or 0)
-                        if 1 <= s <= 5:
-                            star_counts[s] += 1
-                    log_unified(
-                        f"Star Ratings - Album '{album}' by {artist}: "
-                        f"5★: {star_counts[5]}, 4★: {star_counts[4]}, 3★: {star_counts[3]}, "
-                        f"2★: {star_counts[2]}, 1★: {star_counts[1]}"
-                    )
-                    singles_detected = [t for t in album_results if t.get("is_single")]
-                    if singles_detected:
-                        log_unified(
-                            f"Singles Detection - Detected {len(singles_detected)} single(s) in '{album}'"
-                        )
-
-                    # ── Detailed per-track final output ───────────────────
-                    # Mirrors the legacy scanner's album summary: every track
-                    # is listed with its star rating, grouped into detected
-                    # singles, popular tracks, and the rest of the album.
-                    if album_results:
-                        detected_singles: list[tuple[str, int, str, float, str]] = []
-                        popular_songs: list[tuple[str, int, str, float, str]] = []
-                        rest_of_album: list[tuple[str, int, str, float, str]] = []
-                        for t in album_results:
-                            t_stars = int(t.get("stars") or 0)
-                            t_single = bool(t.get("is_single"))
-                            t_conf = str(t.get("single_confidence") or "low").lower()
-                            t_title = str(t.get("title") or "Unknown")
-                            t_artist = str(t.get("artist") or artist)
-                            t_score = float(t.get("popularity_score") or t.get("final_score") or 0)
-                            album_z = _compute_album_z(t_score, album_scores)
-                            artist_z = _compute_artist_z(t_score, artist_scores)
-
-                            reasons: list[str] = []
-                            try:
-                                sources = t.get("single_sources") or ""
-                                if isinstance(sources, str):
-                                    parsed = json.loads(sources) if sources.strip() else []
-                                else:
-                                    parsed = sources
-                                if isinstance(parsed, list):
-                                    reasons.append(", ".join(str(s) for s in parsed[:3]))
-                            except Exception:
-                                pass
-                            if t_single and t_conf == "high" and album_z:
-                                reasons.append(f"album-z-score: {album_z:.2f}")
-                            elif t_stars == 5 and album_z:
-                                reasons.append(f"album-z-score: {album_z:.2f}")
-                            elif album_z:
-                                reasons.append(f"album-z-score: {album_z:.2f}")
-                            # Surface the raw listener counts alongside the
-                            # scoring so ratings are easy to sanity-check
-                            # against the source data (Last.fm / ListenBrainz).
-                            reasons.append(
-                                f"lf={int(t.get('lastfm_listeners') or 0):,} "
-                                f"lb={int(t.get('listenbrainz_listens') or 0):,}"
-                            )
-                            # Show each provider's score contribution so the
-                            # rating can be traced back to the sources.
-                            reasons.append(
-                                f"LF-score={float(t.get('lastfm_score') or 0):.1f} "
-                                f"LB-score={float(t.get('listenbrainz_score') or 0):.1f} "
-                                f"score={t_score:.1f}"
-                            )
-                            reason_str = f" ({'; '.join(r for r in reasons if r)})" if reasons else ""
-
-                            if t_single and t_conf == "high":
-                                detected_singles.append((t_title, t_stars, t_artist, t_score, reason_str))
-                            elif t_stars == 5:
-                                popular_songs.append((t_title, t_stars, t_artist, t_score, reason_str))
-                            else:
-                                rest_of_album.append((t_title, t_stars, t_artist, t_score, reason_str))
-
-                        def _log_track_group(lines: list[tuple[str, int, str, float, str]]) -> None:
-                            # List in star-rating order (descending), using the
-                            # track's popularity score as the tie-breaker.
-                            for t_title, t_stars, t_artist, t_score, reason in sorted(
-                                lines, key=lambda item: (-item[1], -item[3])
-                            ):
-                                star_str = "★" * max(0, min(t_stars, 5)) + "☆" * max(0, 5 - min(t_stars, 5))
-                                log_unified(
-                                    f"Single Detection Scan - {star_str:<5} {t_artist} - {t_title}{reason}"
-                                )
-
-                        if detected_singles:
-                            log_unified(f"Single Detection Scan - ===== {album} - Detected Singles =====")
-                            _log_track_group(detected_singles)
-                        if popular_songs:
-                            log_unified(f"Single Detection Scan - ===== {album} - Popular Songs (Not Detected as Single) =====")
-                            _log_track_group(popular_songs)
-                        if rest_of_album:
-                            if detected_singles or popular_songs:
-                                log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
-                            else:
-                                log_unified(f"Single Detection Scan - ===== {album} - All Tracks =====")
-                            _log_track_group(rest_of_album)
-                except Exception as log_exc:
-                    logger.debug("[finalise_stage] Album progress log failed: %s", log_exc)
-
-                # Sync to Navidrome — every rated track (old-system parity:
-                # 1★/2★ ratings and downgrades must propagate too).
-                if options.get("sync_navidrome", True):
-                    _attempted = 0
-                    _synced = 0
-                    for track in album_results:
-                        stars = track.get("stars", 0)
-                        if stars < 1:
-                            continue  # unrated
-                        track_id = str(track.get("track_id") or "")
-                        if track_id:
-                            _attempted += 1
-                            if _sync_rating_to_navidrome(track_id, stars):
-                                navidrome_synced += 1
-                                _synced += 1
-                    _failed = _attempted - _synced
-                    if _failed > 0:
-                        logger.warning(
-                            "[finalise_stage] %d/%d Navidrome rating syncs failed for %s — check credentials / Subsonic API",
-                            _failed, _attempted, artist,
-                        )
+                if (artist, album) in posted_keys:
+                    # The runner already assigned, persisted, logged and synced
+                    # star ratings for this album during the scan loop.
+                    continue
+                _posted = post_album_star_ratings(
+                    album_results=album_results,
+                    artist=artist,
+                    artist_scores=artist_scores,
+                    options=options,
+                    conn=conn,
+                    cursor=cursor,
+                )
+                total_star_ratings += _posted.get("star_ratings", 0)
+                navidrome_synced += _posted.get("navidrome_synced", 0)
 
             # Create essential playlist
             if options.get("create_playlists", True):
@@ -692,6 +856,10 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         conn.close()
 
     # Log summary
+    if per_album_posted:
+        # Star ratings were assigned/persisted during the scan loop — count
+        # them from the results for the summary instead of 0.
+        total_star_ratings = sum(1 for r in results if (r.get("stars") or 0) > 0)
     logger.info("[FINALISE_STAGE] Star ratings assigned: %d", total_star_ratings)
     logger.info("[FINALISE_STAGE] Navidrome syncs: %d", navidrome_synced)
 

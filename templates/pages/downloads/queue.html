@@ -2511,7 +2511,10 @@ async function loadQueueStatus() {
 
     // Separate items by status
     const active = data.active.filter(item => ['queued', 'searching', 'processing', 'downloading'].includes(item.status));
-    const completed = data.completed.filter(item => ['completed', 'unmatched', 'possible_duplicate', 'moving'].includes(item.status) && item.file_path);
+    // A stuck 'moving' item must always be visible so the user can reset it —
+    // it may have lost its file_path reference during a crashed move.
+    const completed = data.completed.filter(item => item.status === 'moving'
+      || (['completed', 'unmatched', 'possible_duplicate'].includes(item.status) && item.file_path));
     const failed = data.active.filter(item => item.status === 'failed');
 
     // ── Update stats bar ──
@@ -2760,7 +2763,7 @@ function renderCompletedQueue(completed) {
                       <i class="bi bi-pencil"></i>
                     </button>
                     ${isMoving
-                      ? '<button class="btn btn-sm btn-secondary" disabled title="Move in progress"><span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span></button>'
+                      ? '<button class="btn btn-sm btn-warning" onclick="resetMovingItem(' + item.id + ')" title="Stuck in moving — reset so it can be transferred again"><i class="bi bi-arrow-counterclockwise"></i> Reset</button>'
                       : (alreadyCopied
                           ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
                           : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})"
@@ -2830,7 +2833,7 @@ function renderCompletedQueue(completed) {
                   <i class="bi bi-pencil"></i>
                 </button>
                 ${isMoving
-                  ? '<button class="btn btn-sm btn-secondary" disabled title="Move in progress"><span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span></button>'
+                  ? '<button class="btn btn-sm btn-warning" onclick="resetMovingItem(' + item.id + ')" title="Stuck in moving — reset so it can be transferred again"><i class="bi bi-arrow-counterclockwise"></i> Reset</button>'
                   : (alreadyCopied
                       ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
                       : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})"
@@ -2975,9 +2978,10 @@ function renderQueueItem(item, statusColor) {
 
   const hasFile = item.file_path || item.found_filename;
   const isMoving = item.status === 'moving';
+  const isActiveTransfer = ['downloading', 'searching', 'processing'].includes(item.status);
   const copyBtn = isMoving
-    ? `<button class="btn btn-sm btn-outline-secondary" disabled title="Move in progress">
-         <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+    ? `<button class="btn btn-sm btn-warning" onclick="resetMovingItem(${item.id})" title="Stuck in moving — reset so it can be transferred again">
+         <i class="bi bi-arrow-counterclockwise"></i> Reset
        </button>`
     : (!item.copied_individually
         ? `<button class="btn btn-sm btn-outline-success" onclick="organizeFile(${item.id})"
@@ -2985,6 +2989,11 @@ function renderQueueItem(item, statusColor) {
              <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i>
            </button>`
         : '');
+  const cancelBtn = isActiveTransfer
+    ? `<button class="btn btn-sm btn-outline-danger" onclick="cancelQueueItem(${item.id})" title="Cancel download">
+         <i class="bi bi-x-circle"></i>
+       </button>`
+    : '';
 
   return `
     <div class="list-group-item">
@@ -3002,6 +3011,7 @@ function renderQueueItem(item, statusColor) {
             ${sourceBadge}${priBadge}${yearBadge}${tnBadge}
           </div>
           <div class="d-flex gap-1 mt-1">
+            ${cancelBtn}
             ${copyBtn}
             <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
               <i class="bi bi-x"></i>
@@ -3179,10 +3189,9 @@ async function deleteGroup(groupId) {
 
 async function retryQueueItem(queueId) {
   try {
-    const response = await fetch(`/api/queue/${queueId}/update`, {
+    const response = await fetch(`/api/queue/${queueId}/requeue`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'queued' })
+      headers: { 'Content-Type': 'application/json' }
     });
     
     if (!response.ok) {
@@ -3201,6 +3210,37 @@ async function retryQueueItem(queueId) {
     }
   } catch (error) {
     console.error('Error retrying item:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function resetMovingItem(queueId) {
+  if (!confirm('Reset this stuck "moving" item back to completed so it can be transferred again?')) {
+    return;
+  }
+  try {
+    const response = await fetch('/api/queue/reset-moving', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ queue_ids: [queueId] })
+    });
+    
+    if (!response.ok) {
+      console.error(`HTTP Error ${response.status}: ${response.statusText}`);
+      alert('❌ Server error: ' + response.statusText);
+      return;
+    }
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      alert('✅ Reset moving item — you can now transfer it.');
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to reset'));
+    }
+  } catch (error) {
+    console.error('Error resetting moving item:', error);
     alert('❌ Network error: ' + error.message);
   }
 }
