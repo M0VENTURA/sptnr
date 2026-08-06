@@ -224,9 +224,9 @@ def check_high_confidence_dynamic(
 def _source_confidence_levels() -> dict[str, str]:
     """Load per-source confidence levels from the ``features`` config.
 
-    Mirrors the legacy ``source_*_confidence`` knobs. Defaults match current
-    behaviour: Discogs + MusicBrainz are high-confidence sources; the rest
-    are medium. ``low`` excludes a source from the confidence decision.
+    Mirrors the legacy ``source_*_confidence`` knobs. Defaults match legacy:
+    Discogs is a high-confidence source; MusicBrainz and the rest are medium.
+    ``low`` excludes a source from the confidence decision.
     """
     feats: dict = {}
     try:
@@ -237,7 +237,7 @@ def _source_confidence_levels() -> dict[str, str]:
         feats = {}
     defaults = {
         "discogs": "high",
-        "musicbrainz": "high",
+        "musicbrainz": "medium",
         "discogs_video": "medium",
         "musicbrainz_compilation": "medium",
         "lastfm": "medium",
@@ -449,11 +449,12 @@ def determine_final_status(
         if high >= 1:
             return 'high'
         # A medium-band z-score is medium-confidence single evidence when at
-        # least one weak signal corroborates it (radio edit, duration, ISRC,
-        # …) — a weak signal should help, not block, the z-signal. When no
-        # metadata matched at all, the popularity signal itself is the only
-        # evidence on metadata-poor albums.
-        if medium >= 1:
+        # least two weak signals corroborate it (legacy parity: the legacy
+        # engine required ``medium >= 2`` in this band). A single weak signal
+        # (radio edit, ISRC, …) must not flag every mid-album track as a
+        # single. When no metadata matched at all, the popularity signal
+        # itself is the only evidence on metadata-poor albums.
+        if medium >= 2:
             return 'medium'
         if not has_metadata and not is_compilation:
             return 'medium'
@@ -474,12 +475,12 @@ def determine_final_status(
             return 'medium'
         return 'none'
     # Title-track boost (legacy parity): a title track corroborated by ANY
-    # weak source (duration under 4:30, radio-edit marker, ISRC, Last.fm
-    # track count, ...) reaches 'medium' even when its popularity sits at or
-    # below the album median. The single version of a title track routinely
-    # has a smaller stream share than the album version, so a low z-score
-    # reflects that split rather than the absence of single status. With no
-    # weak evidence at all it still requires real metadata confirmation above.
+    # weak source (radio-edit marker, ISRC, Last.fm track count, ...) reaches
+    # 'medium' even when its popularity sits at or below the album median. The
+    # single version of a title track routinely has a smaller stream share
+    # than the album version, so a low z-score reflects that split rather than
+    # the absence of single status. With no weak evidence at all it still
+    # requires real metadata confirmation above.
     if is_title_track and medium >= 1:
         return 'medium'
     return 'none'
@@ -681,13 +682,6 @@ def detect_single_for_track(
         except Exception as exc:
             logger.debug("ISRC single lookup failed for %s: %s", isrc, exc)
 
-    # ── Duration-based signal (weak supporting evidence) ──
-    # Only used when other signals are absent. A typical single/radio-edit
-    # duration under 4:30 is a weak corroborating signal.
-    duration_support = False
-    if duration and duration > 0 and duration < 270:  # < 4:30 minutes
-        duration_support = True
-
     # ── Compilation check via MusicBrainz ──
     if musicbrainz_confirmed and mb_client and hasattr(mb_client, "appears_on_various_artists"):
         try:
@@ -706,7 +700,7 @@ def detect_single_for_track(
         (isrc_single_confirmed, "isrc"),
         (lb_top10, "listenbrainz_top10"),
         (z_standout, "popularity_z_standout"),
-        (radio_edit_found or duration_support, "radio_edit"),
+        (radio_edit_found, "radio_edit"),
         (mb_compilation_confirmed, "musicbrainz_compilation"),
         (lastfm_confirmed, "lastfm"),
         (discogs_video_confirmed, "discogs_video"),
@@ -754,7 +748,7 @@ def detect_single_for_track(
         medium_sources += 1
     if mb_compilation_confirmed and _levels.get("musicbrainz_compilation", "medium") != "low":
         medium_sources += 1
-    if (radio_edit_found or duration_support) and _levels.get("radio_edit", "medium") != "low":
+    if radio_edit_found and _levels.get("radio_edit", "medium") != "low":
         medium_sources += 1
     if single_release_date_match:
         medium_sources += 1
@@ -774,7 +768,7 @@ def detect_single_for_track(
         album_z=album_z, artist_z=artist_z,
         discogs_video=discogs_video_confirmed, lastfm=lastfm_confirmed,
         mb_compilation=mb_compilation_confirmed,
-        radio_edit=radio_edit_found or duration_support,
+        radio_edit=radio_edit_found,
         popularity=popularity or 0,
         album_mean=0, has_metadata=has_meta or isrc_single_confirmed,
         is_remastered_only=is_remastered,
