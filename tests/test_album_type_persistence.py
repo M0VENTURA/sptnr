@@ -38,7 +38,11 @@ class TestAlbumTypeNotClobbered:
         assert "releasetype" not in stripped
         assert stripped["id"] == "t1"
         assert stripped["title"] == "Song"
-        assert stripped["final_score"] == 50.0
+        # Fresh scoring updates ARE applied — the original implementation only
+        # copied album-type columns from the payload, silently dropping every
+        # freshly-computed score/listener/single-detection value the track
+        # stage produced (regression introduced alongside the album-type fix).
+        assert stripped["final_score"] == 55.0
 
     def test_strip_album_type_columns_keeps_explicit_updates(self):
         from services.popularity.stages.track_stage import _strip_album_type_columns
@@ -50,6 +54,35 @@ class TestAlbumTypeNotClobbered:
 
         # If the track stage explicitly produced an album type, it is kept.
         assert stripped["musicbrainz_albumtype"] == "single"
+
+    def test_strip_album_type_columns_applies_fresh_scan_fields(self):
+        from services.popularity.stages.track_stage import _strip_album_type_columns
+
+        # Track loaded from DB carries stale scan data; the track stage's
+        # update_payload holds the freshly-computed values which must win.
+        track = {
+            "id": "t1", "title": "Song",
+            "final_score": 0.0, "lastfm_listeners": 0,
+            "listenbrainz_listens": 0, "is_single": False,
+            "single_confidence": "", "recording_mbid": "",
+            "musicbrainz_albumtype": "",
+        }
+        payload = {
+            "final_score": 67.2, "lastfm_listeners": 2653,
+            "listenbrainz_listens": 386, "is_single": True,
+            "single_confidence": "high", "recording_mbid": "rec-mbid",
+        }
+
+        stripped = _strip_album_type_columns(track, payload)
+
+        assert stripped["final_score"] == 67.2
+        assert stripped["lastfm_listeners"] == 2653
+        assert stripped["listenbrainz_listens"] == 386
+        assert stripped["is_single"] is True
+        assert stripped["single_confidence"] == "high"
+        assert stripped["recording_mbid"] == "rec-mbid"
+        # Stale album-type column (not in payload) is dropped, not clobbered.
+        assert "musicbrainz_albumtype" not in stripped
 
 
 class TestEnsureAlbumTypeReturnsVerdict:

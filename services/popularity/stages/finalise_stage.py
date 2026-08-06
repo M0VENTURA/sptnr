@@ -96,12 +96,19 @@ def _listener_z(count: float, counts: list[float]) -> float:
     standout signal from Last.fm/ListenBrainz that the blended popularity
     score compresses — a value >= 1.0 means the track is a clear listener
     outlier relative to its own album.
+
+    Zero-variance distributions (an album whose positive counts are all the
+    same value, e.g. a tracklist fallback that resolved every track to the
+    same count) carry no outlier signal — return 0.0 instead of dividing by
+    zero, which would crash the whole album's star-rating pass.
     """
     logs = [math.log1p(float(c)) for c in counts if float(c) > 0]
     if len(logs) < 3 or not any(logs):
         return 0.0
     mu = mean(logs)
     sigma = stdev(logs) if len(logs) > 1 else 1.0
+    if not sigma or sigma <= 0:
+        return 0.0
     return (math.log1p(float(count)) - mu) / sigma
 
 
@@ -531,14 +538,24 @@ def post_album_star_ratings(
             logger.debug("[finalise_stage] Album DB score merge failed for %s - %s: %s", artist, album, exc)
 
         for track in album_results:
-            # Assign star rating
-            stars = _assign_stars(
-                track,
-                album_scores,
-                artist_scores,
-                album_lf_listeners,
-                album_lb_listens,
-            )
+            # Assign star rating — one track's edge case (e.g. a degenerate
+            # distribution) must never abort the whole album's rating pass and
+            # silently leave every track unrated.  Surface it, skip it, and let
+            # the rest of the album proceed.
+            try:
+                stars = _assign_stars(
+                    track,
+                    album_scores,
+                    artist_scores,
+                    album_lf_listeners,
+                    album_lb_listens,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[finalise_stage] Star assignment failed for %s - %s: %s",
+                    artist, track.get("title"), exc,
+                )
+                continue
             track["stars"] = stars
             total_star_ratings += 1
             logger.debug(

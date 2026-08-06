@@ -105,12 +105,18 @@ def _strip_album_type_columns(
     track: dict[str, Any],
     update_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Return the track dict without album-type columns the track stage didn't update."""
+    """Return the effective track dict to persist.
+
+    All of ``update_payload`` (fresh scores, listener counts, MBIDs, single
+    detection, ...) is applied over the loaded ``track``, then any album-type
+    column the track stage did NOT update is dropped so the stale in-memory
+    value (loaded before album enrichment ran) never clobbers the type the
+    album stage just persisted.
+    """
     result = dict(track)
+    result.update(update_payload)
     for col in _ALBUM_TYPE_COLUMNS:
-        if col in update_payload:
-            result[col] = update_payload[col]
-        else:
+        if col not in update_payload:
             result.pop(col, None)
     return result
 
