@@ -514,6 +514,20 @@ def run_scan(
                     _discogs_id = str(_t.get("discogs_artist_id") or "").strip()
                     if _discogs_id:
                         break
+                if not _discogs_id:
+                    # First-ever scan: ``enrich_album`` persists the Discogs
+                    # artist id AFTER the in-memory track dicts were loaded, so
+                    # it is not in them yet. Resolve it here so the Discogs
+                    # release cache (and hence Discogs single confirmation) is
+                    # populated on the first pass instead of a week later.
+                    try:
+                        from services.enrichment.discogs_service import DiscogsService
+                        from helpers.config_helpers import get_config
+                        _tok = ((get_config().get("api_integrations") or {}).get("discogs") or {}).get("token") or ""
+                        if _tok and _tok.lower() not in ("your_discogs_token", "your_token", "placeholder"):
+                            _discogs_id = str(DiscogsService(token=_tok).get_artist_id(artist) or "").strip()
+                    except Exception as exc:
+                        logger.debug("[scan_runner] Discogs artist id resolution failed for %s: %s", artist, exc)
                 prefetch_artist_releases(artist, _discogs_id)
             except Exception as exc:
                 logger.warning(

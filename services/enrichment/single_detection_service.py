@@ -368,8 +368,11 @@ def _detect_discogs(title: str, artist: str, album: str | None,
             return {"source": "discogs", "matched": True, "confidence": 0.8,
                     "metadata": {}, "cached": True}
     try:
-        from services.enrichment.discogs_service import DiscogsService
-        svc = DiscogsService(token=token)
+        from services.enrichment.discogs_service import _get_service as _get_discogs_service
+        # Use the shared per-token service so the per-artist release list and
+        # single verdicts are cached across tracks — a fresh DiscogsService per
+        # track would re-fetch the artist's releases for EVERY track (N+1).
+        svc = _get_discogs_service(token)
         ctx = {"album": album, "is_special_edition": is_special_edition} if album else {"is_special_edition": is_special_edition}
         matched = bool(svc.is_single(title, artist, album_context=ctx))
         year = None

@@ -47,10 +47,30 @@ class DiscogsService:
         self.enabled = enabled
         self.http = http_client or DiscogsHttpClient(token=token)
         self._single_cache: dict[tuple[str, str], bool] = {}
+        self._artist_releases_cache: dict[str, list[dict[str, Any]]] = {}
 
     def _normalize_title(self, title: str) -> str:
         base = strip_parentheses(title)
         return normalize_title_for_lookup(base or title)
+
+    def _get_artist_releases(self, artist: str) -> list[dict[str, Any]]:
+        """Fetch (and cache per artist) the artist's own Discogs releases.
+
+        The artist-releases endpoint lists every release for the artist with
+        its format and role, which is authoritative for single detection. The
+        free-text database search ranks the full-length album editions above
+        the 7"/promo single, so the single routinely misses a small top-N
+        window even when it is genuinely on Discogs (e.g. "+44 - When Your
+        Heart Stops Beating").
+        """
+        key = artist.lower()
+        if key not in self._artist_releases_cache:
+            releases: list[dict[str, Any]] = []
+            artist_id = self.get_artist_id(artist)
+            if artist_id:
+                releases = self.http.get_artist_releases(artist_id, per_page=100) or []
+            self._artist_releases_cache[key] = releases
+        return self._artist_releases_cache[key]
 
     def is_single(self, title: str, artist: str, album_context: dict[str, Any] | None = None) -> bool:
         if not self.enabled or not self.token or not title or not artist: return False
@@ -62,14 +82,28 @@ class DiscogsService:
 
         if cache_key in self._single_cache: return self._single_cache[cache_key]
 
-        # FIXED: Use search_database with specific params
+        # Primary: match against the artist's OWN release list. A single/EP
+        # release with a matching title on the artist's release list is
+        # authoritative confirmation, independent of search-result ranking.
+        for rel in self._get_artist_releases(artist) or []:
+            if str(rel.get("role") or "Main").strip().lower() != "main":
+                continue
+            formats = " ".join(str(f).lower() for f in (rel.get("format") or []) if f)
+            if "single" not in formats and "ep" not in formats:
+                continue
+            # Normalize the RELEASE title too — ``title_key`` is punctuation-
+            # stripped ("what s the deal"), so matching it against the raw
+            # lowercased title ("what's the deal?") fails on apostrophes.
+            rel_title = self._normalize_title(str(rel.get("title") or ""))
+            if rel_title and (rel_title == title_key or title_key in rel_title):
+                self._single_cache[cache_key] = True
+                return True
+
+        # Fallback: use search_database with specific params.
         results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 5})
         
         for result in results:
             formats = " ".join(result.get("format", [])).lower()
-            # Normalize the RESULT title too — ``title_key`` is punctuation-
-            # stripped ("what s the deal"), so matching it against the raw
-            # lowercased title ("what's the deal?") fails on apostrophes.
             result_title = self._normalize_title(result.get("title") or "")
             if ("single" in formats or "ep" in formats) and title_key in result_title:
                 self._single_cache[cache_key] = True

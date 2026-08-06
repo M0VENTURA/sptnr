@@ -30,6 +30,22 @@ CACHE_FRESH_HOURS = 24 * 7
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _cache_has_source(artist: str, source: str) -> bool:
+    """True when the artist's release cache holds rows from ``source``."""
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text(
+                    "SELECT 1 FROM artist_release_cache "
+                    "WHERE LOWER(artist) = LOWER(:artist) AND source = :source LIMIT 1"
+                ),
+                {"artist": artist, "source": source},
+            )
+            return result.fetchone() is not None
+    except Exception:
+        return False
+
+
 def _artist_cache_fresh(artist: str) -> bool:
     """True when the artist was cached within the TTL."""
     try:
@@ -169,7 +185,11 @@ def prefetch_artist_releases(artist: str, discogs_artist_id: str = "") -> Dict[s
     """
     if not artist:
         return {"musicbrainz": 0, "discogs": 0}
-    if _artist_cache_fresh(artist):
+    # A "fresh" cache is only trusted when it contains the Discogs source — a
+    # cache written before the artist's Discogs id was resolved (first-ever
+    # scan) would otherwise stay Discogs-free until the 7-day TTL expires,
+    # silently disabling Discogs single confirmation and gap detection.
+    if _artist_cache_fresh(artist) and (_cache_has_source(artist, "discogs") or not discogs_artist_id):
         return {"musicbrainz": 0, "discogs": 0, "skipped": "fresh"}
 
     mb_rows = _fetch_musicbrainz_releases(artist)
