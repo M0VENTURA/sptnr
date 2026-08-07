@@ -247,7 +247,16 @@ def _unique_path(root, filename):
     return path
 
 
-def _get_files_in_folder(folder_path: str) -> list[dict]:
+def _get_files_in_folder(folder_path: str, max_depth: int = 3, max_files: int = 500) -> list[dict]:
+    """List files in *folder_path*, recursing into subfolders.
+
+    Downloads often land nested (``Album/CD1/01 Track.flac``), so a flat
+    ``iterdir`` missed everything below the top level — the monitor page
+    then showed folder groups with no items. Walks up to ``max_depth``
+    levels (bounded, the monitor page polls this every few seconds) and
+    returns up to ``max_files`` entries; ``name`` carries the path
+    relative to the folder root so the UI can show where each file lives.
+    """
     files = []
 
     try:
@@ -256,19 +265,28 @@ def _get_files_in_folder(folder_path: str) -> list[dict]:
         if not folder.exists():
             return []
 
-        for file_path in folder.iterdir():
-            if not file_path.is_file():
-                continue
-
-            files.append({
-                "name": file_path.name,
-                "size": file_path.stat().st_size,
-                "extension": file_path.suffix.lower(),
-                "modified": datetime.fromtimestamp(
-                    file_path.stat().st_mtime
-                ).isoformat(),
-                "is_audio": file_path.suffix.lower() in SUPPORTED_AUDIO_FORMATS,
-            })
+        root_depth = len(folder.parts)
+        for root, dirs, names in os.walk(folder):
+            depth = len(Path(root).parts) - root_depth
+            if depth >= max_depth:
+                dirs[:] = []  # do not descend further
+            for name in names:
+                full = Path(root) / name
+                try:
+                    stat = full.stat()
+                except OSError:
+                    continue
+                files.append({
+                    "name": str(full.relative_to(folder)),
+                    "size": stat.st_size,
+                    "extension": full.suffix.lower(),
+                    "modified": datetime.fromtimestamp(
+                        stat.st_mtime
+                    ).isoformat(),
+                    "is_audio": full.suffix.lower() in SUPPORTED_AUDIO_FORMATS,
+                })
+                if len(files) >= max_files:
+                    return files
 
         files.sort(key=lambda x: x["modified"], reverse=True)
         return files
