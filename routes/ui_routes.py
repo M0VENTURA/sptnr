@@ -462,7 +462,7 @@ async def artists():
     )
 
 
-@ui_bp.route("/artist/<path:name>")
+@ui_bp.route("/artist/<string:name>")
 async def artist_detail(name: str):
     name = unquote(name or "").strip()
     cfg = get_config()
