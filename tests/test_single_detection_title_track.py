@@ -45,7 +45,13 @@ class TestTitleTrackBoost:
         )
         assert result == "medium"
 
-    def test_title_track_medium_z_with_weak_source_is_medium(self):
+    def test_title_track_medium_z_single_weak_source_not_single(self):
+        # Medium-band z (0.8) with ONE weak source is not single evidence —
+        # the rule is one high source OR two medium sources. The title-track
+        # boost only applies at/below the album median where the single
+        # version's stream share is split; at z 0.8 the track is already
+        # popular on its own (the old metadata-poor fallback granted
+        # 'medium' here with zero confirmation).
         from services.enrichment.single_detection_service import determine_final_status
 
         result = determine_final_status(
@@ -60,7 +66,7 @@ class TestTitleTrackBoost:
             zscore_high=1.0,
             zscore_medium=0.6,
         )
-        assert result == "medium"
+        assert result == "none"
 
     def test_title_track_zero_z_with_weak_source_is_medium(self):
         from services.enrichment.single_detection_service import determine_final_status
