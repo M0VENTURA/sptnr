@@ -25,8 +25,8 @@ import os
 from dataclasses import dataclass
 from typing import List, Dict
 
-from helpers.config_helpers import get_config, get_supported_audio_formats
-from services.infrastructure.filesystem_service import _prefer_music_subfolder
+from helpers.config_helpers import get_supported_audio_formats
+from services.infrastructure.filesystem_service import resolve_downloads_dir
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +40,10 @@ class DiscoveredFile:
     extension: str
     folder: str
 
-def resolve_downloads_dir() -> str:
-    env_dir = os.environ.get("DOWNLOADS_DIR")
-    if env_dir: return _prefer_music_subfolder(env_dir)
-    try:
-        cfg = get_config()
-        configured = (cfg.get("downloads") or {}).get("monitor_folder")
-        if configured: return _prefer_music_subfolder(configured)
-    except Exception as exc:
-        logger.warning("Could not resolve downloads folder: %s", exc)
-    return "/downloads/Music"
+# resolve_downloads_dir is re-exported from services.infrastructure.filesystem_service
+# (single source of truth: DOWNLOADS_DIR env → downloads.monitor_folder →
+# downloads.folder (config.html) → /downloads/Music). Kept here so existing
+# callers (watcher, completion service, queue repos) import it from one place.
 
 def resolve_torrents_dir() -> str:
     root = os.environ.get("DOWNLOADS_DIR", "/downloads")
