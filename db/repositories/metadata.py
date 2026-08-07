@@ -347,8 +347,7 @@ def fetch_artist_mbid(conn: Any = None, artist: str = "") -> str | None:
         result = session.execute(text("""
             SELECT COALESCE(
                 NULLIF(TRIM(musicbrainz_albumartistid), ''),
-                NULLIF(TRIM(musicbrainz_artistid), ''),
-                NULLIF(TRIM(musicbrainz_artist_id), '')
+                NULLIF(TRIM(musicbrainz_artistid), '')
             )
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist

@@ -216,15 +216,13 @@ def _resolve_artist_mbid(artist: str, conn) -> str | None:
         cursor.execute("""
             SELECT COALESCE(
                 NULLIF(TRIM(musicbrainz_albumartistid), ''),
-                NULLIF(TRIM(musicbrainz_artistid), ''),
-                NULLIF(TRIM(musicbrainz_artist_id), '')
+                NULLIF(TRIM(musicbrainz_artistid), '')
             ) AS mbid
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
               AND COALESCE(
                 NULLIF(TRIM(musicbrainz_albumartistid), ''),
-                NULLIF(TRIM(musicbrainz_artistid), ''),
-                NULLIF(TRIM(musicbrainz_artist_id), '')
+                NULLIF(TRIM(musicbrainz_artistid), '')
               ) IS NOT NULL
         """, (artist,))
         mbids = []

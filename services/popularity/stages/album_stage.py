@@ -248,9 +248,9 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
             try:
                 artist_mbid = None
                 cursor.execute(
-                    "SELECT COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), NULLIF(TRIM(musicbrainz_artist_id), '')) AS mbid "
+                    "SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
                     "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
-                    "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), NULLIF(TRIM(musicbrainz_artist_id), '')) <> '' LIMIT 1",
+                    "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' LIMIT 1",
                     (artist,),
                 )
                 row = cursor.fetchone()
@@ -344,9 +344,9 @@ def _fetch_musicbrainz_artist_id(artist: str, conn, options: dict) -> None:
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), NULLIF(TRIM(musicbrainz_artist_id), '')) AS mbid "
+            "SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
             "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
-            "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), NULLIF(TRIM(musicbrainz_artist_id), '')) <> '' LIMIT 1",
+            "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' LIMIT 1",
             (artist,),
         )
         row = cursor.fetchone()

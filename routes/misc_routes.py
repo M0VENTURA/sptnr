@@ -309,9 +309,9 @@ def api_get_duplicate_artists(artist):
     try:
         with db_session() as session:
             result = session.execute(
-                text("SELECT musicbrainz_artist_id, COUNT(DISTINCT artist) as names FROM tracks "
-                "WHERE musicbrainz_artist_id IS NOT NULL AND musicbrainz_artist_id != '' "
-                "GROUP BY musicbrainz_artist_id HAVING COUNT(DISTINCT artist) > 1")
+                text("SELECT musicbrainz_artistid, COUNT(DISTINCT artist) as names FROM tracks "
+                "WHERE musicbrainz_artistid IS NOT NULL AND musicbrainz_artistid != '' "
+                "GROUP BY musicbrainz_artistid HAVING COUNT(DISTINCT artist) > 1")
             )
             rows = result.fetchall()
         return jsonify({"success": True, "duplicates": [dict(r._mapping) for r in rows]})
