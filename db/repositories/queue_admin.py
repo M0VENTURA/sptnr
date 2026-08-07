@@ -46,6 +46,9 @@ def clear_queue(filters: Optional[dict] = None) -> dict:
             session.execute(text("DELETE FROM folder_track_matches"))
             session.execute(text("DELETE FROM folder_album_matches"))
             session.execute(text("DELETE FROM download_queue"))
+            # Release tracking drives the monitor page's folder groups — a
+            # cleared queue must not leave orphaned groups behind.
+            session.execute(text("DELETE FROM musicbrainz_releases"))
             return {"success": True}
     except Exception as e:
         logger.error(f"[clear_queue] {e}", exc_info=True)
@@ -53,13 +56,64 @@ def clear_queue(filters: Optional[dict] = None) -> dict:
 
 
 def purge_all() -> dict:
+    """Hard purge the download pipeline (legacy parity with the old scanner).
+
+    Deletes every queue row, the release-tracking rows (monitor page folder
+    groups), match tables and search logs, then removes ALL files/folders
+    under the configured downloads directory. The filesystem-root safety
+    rail from the legacy purge is preserved.
+    """
     try:
+        import shutil as _shutil
+
+        downloads_dir = resolve_downloads_dir()
+        downloads_abs = os.path.abspath(downloads_dir or "")
+        drive_root = os.path.splitdrive(downloads_abs)[1]
+        if not downloads_abs or drive_root in (os.sep, "", "\\"):
+            logger.error("[purge_all] Unsafe downloads path for purge: %s", downloads_abs or downloads_dir)
+            return {"success": False, "error": f"Unsafe downloads path for purge: {downloads_abs or downloads_dir}"}
+
+        queue_deleted = 0
         with db_session() as session:
-            session.execute(text("DELETE FROM download_queue"))
+            result = session.execute(text("DELETE FROM download_queue"))
+            queue_deleted = result.rowcount or 0
             session.execute(text("DELETE FROM slskd_search_logs"))
-            return {"success": True}
+            for tbl in ("folder_track_matches", "folder_album_matches", "musicbrainz_releases"):
+                try:
+                    session.execute(text(f"DELETE FROM {tbl}"))
+                except Exception as exc:
+                    logger.debug("[purge_all] %s delete skipped: %s", tbl, exc)
+
+        deleted_files = 0
+        deleted_dirs = 0
+        if os.path.isdir(downloads_abs):
+            for child_name in os.listdir(downloads_abs):
+                child_path = os.path.join(downloads_abs, child_name)
+                try:
+                    if os.path.isdir(child_path):
+                        for _root, _dirs, files in os.walk(child_path):
+                            deleted_files += len(files)
+                        _shutil.rmtree(child_path)
+                        deleted_dirs += 1
+                    else:
+                        os.remove(child_path)
+                        deleted_files += 1
+                except Exception as fs_err:
+                    logger.warning("[purge_all] Could not remove %s: %s", child_path, fs_err)
+
+        logger.info(
+            "[purge_all] Purged %s queue item(s), %s file(s), %s folder(s) from %s",
+            queue_deleted, deleted_files, deleted_dirs, downloads_abs,
+        )
+        return {
+            "success": True,
+            "queue_items_deleted": queue_deleted,
+            "deleted_files": deleted_files,
+            "deleted_dirs": deleted_dirs,
+            "downloads_dir": downloads_abs,
+        }
     except Exception as e:
-        logger.error(f"[purge_all] {e}")
+        logger.error(f"[purge_all] {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
