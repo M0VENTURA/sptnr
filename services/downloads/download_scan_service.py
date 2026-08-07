@@ -62,6 +62,9 @@ def resolve_downloads_monitor_dir(_config: object | None = None) -> str:
     return resolve_downloads_dir()
 
 
+_last_discovered_count: int | None = None
+
+
 def discover_audio_files() -> list[DiscoveredFile]:
     """Filesystem-only scan for audio files."""
     downloads_dir = resolve_torrents_dir()
@@ -83,7 +86,14 @@ def discover_audio_files() -> list[DiscoveredFile]:
                     extension=ext,
                     folder=root
                 ))
-    logger.info("[SCAN] Discovered %s audio files", len(discovered))
+    # Only log when the count CHANGES — the queue worker's maintenance cycle
+    # calls this every ~30s and the repeated identical lines flooded the
+    # unified log / dashboard scanning panel ("[SCAN] Discovered N audio
+    # files" every 30 seconds).
+    global _last_discovered_count
+    if _last_discovered_count != len(discovered):
+        logger.info("[SCAN] Discovered %s audio files", len(discovered))
+        _last_discovered_count = len(discovered)
     return discovered
 
 

@@ -94,10 +94,17 @@ def _resolve_log_path(log_type: str) -> str | None:
 # =============================================================================
 
 def _scheduler_noise_filter() -> re.Pattern:
-    """Scheduler bookkeeping that must never surface in the dashboard log."""
+    """Bookkeeping that must never surface in the dashboard log.
+
+    Scheduler registrations plus the downloads watcher's periodic
+    ``[SCAN] Discovered N audio files`` line (the queue worker's
+    maintenance cycle scans the downloads folder every ~30s — the dashboard
+    panel is for popularity/singles scanning activity, not watcher churn).
+    """
     return re.compile(
         r'APScheduler|job store|Added job|registered .* every .* min|'
-        r'Scheduler started|Scheduler shutdown|Scheduler paused|Scheduler resumed',
+        r'Scheduler started|Scheduler shutdown|Scheduler paused|Scheduler resumed|'
+        r'\[SCAN\] Discovered \d+ audio files',
         re.I,
     )
 
