@@ -503,16 +503,6 @@ def determine_final_status(
     if discogs_promo and high == 0:
         return 'medium'
 
-    # Discogs/MusicBrainz/ISRC confirming the track as a single is
-    # authoritative — the track IS a single. The z-score bands below only
-    # refine high vs medium and must never demote a confirmed single to
-    # 'none' (MB-only singles with low z-scores were vanishing entirely,
-    # e.g. Unleash the Archers / +44 scans where only the z-standout tracks
-    # surfaced). Weak signals (radio-edit marker, LB top-10, ...) without a
-    # real metadata confirmation are still gated below.
-    if (discogs or musicbrainz) and (high >= 1 or medium >= 1):
-        return 'high' if high >= 1 else 'medium'
-
     # Z-score above the high boundary. 'high' needs real external
     # confirmation (Discogs/MusicBrainz/ISRC); two corroborating weak signals
     # (z-standout + duration/radio-edit marker, etc.) also reach 'high' — the
@@ -520,27 +510,28 @@ def determine_final_status(
     # no other evidence still returns 'none' (that produced false positives
     # like Tehran / Crossroads, z ≈ 1.2, zero source matches).
     if max_z >= max(0.0, zscore_high):
-        if high >= 1:
-            return 'high'
-        if medium >= 2:
-            return 'high'
-        return 'none'
+        if high >= 1 or medium >= 2:
+            verdict = 'high'
+        else:
+            verdict = 'none'
 
     # Z-score between the medium and high boundaries
-    if max_z > max(0.0, zscore_medium):
+    elif max_z > max(0.0, zscore_medium):
         if high >= 1:
-            return 'high'
+            verdict = 'high'
         # A medium-band z-score is medium-confidence single evidence when at
         # least two weak signals corroborate it (legacy parity: the legacy
         # engine required ``medium >= 2`` in this band). A single weak signal
         # (radio edit, ISRC, …) must not flag every mid-album track as a
-        # single. When no metadata matched at all, the popularity signal
-        # itself is the only evidence on metadata-poor albums.
-        if medium >= 2:
-            return 'medium'
-        if not has_metadata and not is_compilation:
-            return 'medium'
-        return 'none'
+        # single. Popularity alone is NEVER single evidence — the old
+        # metadata-poor fallback here flagged every mid-album track with a
+        # z-score in the 0.6-1.0 band as a single (Human Era / Ph4/NT0mA /
+        # Buried in Code on Unleash the Archers - Phantoma all got 'medium'
+        # with zero sources).
+        elif medium >= 2:
+            verdict = 'medium'
+        else:
+            verdict = 'none'
 
     # Z-score <= 0: remastered bypass, title-track boost, or metadata evidence.
     # Title-track boost: a track sharing the album name is a classic single —
@@ -550,22 +541,37 @@ def determine_final_status(
     # checking the recording's actual release type — most tracks are under
     # 4:30, so duration alone would flag nearly every album's title track as
     # a single.
-    if is_remastered_only or high >= 1 or medium >= 2:
-        if high >= 1:
-            return 'high'
-        if medium >= 1 and not is_title_track:
-            return 'medium'
-        return 'none'
-    # Title-track boost (legacy parity): a title track corroborated by ANY
-    # weak source (radio-edit marker, ISRC, Last.fm track count, ...) reaches
-    # 'medium' even when its popularity sits at or below the album median. The
-    # single version of a title track routinely has a smaller stream share
-    # than the album version, so a low z-score reflects that split rather than
-    # the absence of single status. With no weak evidence at all it still
-    # requires real metadata confirmation above.
-    if is_title_track and medium >= 1:
-        return 'medium'
-    return 'none'
+    else:
+        if is_remastered_only or high >= 1 or medium >= 2:
+            if high >= 1:
+                verdict = 'high'
+            elif medium >= 1 and not is_title_track:
+                verdict = 'medium'
+            else:
+                verdict = 'none'
+        # Title-track boost (legacy parity): a title track corroborated by
+        # ANY weak source (radio-edit marker, ISRC, Last.fm track count, ...)
+        # reaches 'medium' even when its popularity sits at or below the
+        # album median. The single version of a title track routinely has a
+        # smaller stream share than the album version, so a low z-score
+        # reflects that split rather than the absence of single status. With
+        # no weak evidence at all it still requires real metadata
+        # confirmation above.
+        elif is_title_track and medium >= 1:
+            verdict = 'medium'
+        else:
+            verdict = 'none'
+
+    # Authoritative floor: Discogs/MusicBrainz/ISRC confirming the track as a
+    # single means the track IS a single — the z-score bands above only
+    # refine high vs medium and must never demote a confirmed single to
+    # 'none' (MB-only singles with low z-scores were vanishing entirely,
+    # e.g. Unleash the Archers / +44 scans where only the z-standout tracks
+    # surfaced). Weak signals (radio-edit marker, LB top-10, ...) without a
+    # real metadata confirmation are still gated above.
+    if verdict == 'none' and (discogs or musicbrainz) and (high >= 1 or medium >= 1):
+        return 'high' if high >= 1 else 'medium'
+    return verdict
 
 
 # ── Main entry point ──────────────────────────────────────────────────────
