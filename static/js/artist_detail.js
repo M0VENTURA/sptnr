@@ -997,9 +997,13 @@ function checkMissingReleases(artistName, silent = false, background = false) {
 
       initializeMissingToggle();
       if (!silent) {
-        alert(addedCount > 0
-          ? `✅ Added ${addedCount} missing release(s) inline from MusicBrainz`
-          : '✅ No new missing releases found.');
+        if (addedCount > 0) {
+          alert(`✅ Added ${addedCount} missing release(s) inline from MusicBrainz`);
+        } else if (data.info) {
+          alert('ℹ️ ' + data.info);
+        } else {
+          alert('✅ No new missing releases found.');
+        }
       }
     })
     .catch(err => {

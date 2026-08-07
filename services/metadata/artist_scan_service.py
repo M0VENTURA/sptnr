@@ -214,11 +214,18 @@ def _resolve_artist_mbid(artist: str, conn) -> str | None:
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT musicbrainz_albumartistid AS mbid
+            SELECT COALESCE(
+                NULLIF(TRIM(musicbrainz_albumartistid), ''),
+                NULLIF(TRIM(musicbrainz_artistid), ''),
+                NULLIF(TRIM(musicbrainz_artist_id), '')
+            ) AS mbid
             FROM tracks
-            WHERE album_artist = %s
-              AND musicbrainz_albumartistid IS NOT NULL
-              AND musicbrainz_albumartistid != ''
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+              AND COALESCE(
+                NULLIF(TRIM(musicbrainz_albumartistid), ''),
+                NULLIF(TRIM(musicbrainz_artistid), ''),
+                NULLIF(TRIM(musicbrainz_artist_id), '')
+              ) IS NOT NULL
         """, (artist,))
         mbids = []
         for row in cursor.fetchall():

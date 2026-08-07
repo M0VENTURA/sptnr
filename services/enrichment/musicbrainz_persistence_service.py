@@ -34,6 +34,12 @@ def _build_artist_credit_string(artist_credit):
 
 
 
+def _has_valid_artist_mbid(value) -> bool:
+    """True when *value* is a non-empty MusicBrainz UUID."""
+    raw = str(value or "").strip()
+    return bool(raw) and bool(MUSICBRAINZ_UUID_RE.match(raw))
+
+
 def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
     """Lookup an artist MBID and update matching track rows missing artist MBIDs."""
     if not artist or db_connection is None:
@@ -82,20 +88,23 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
 
         cursor = db_connection.cursor()
         placeholder = "%s"
-        cursor.execute(f"SELECT id, musicbrainz_artist_id FROM tracks WHERE artist = {placeholder}", (artist,))
+        # Fill BOTH artist-MBID columns (musicbrainz_artist_id and
+        # musicbrainz_artistid) — different consumers read different ones
+        # (artist page, similar artists, missing releases, single detection).
+        cursor.execute(f"SELECT id, musicbrainz_artist_id, musicbrainz_artistid FROM tracks WHERE artist = {placeholder}", (artist,))
         # Rows are RealDictRow (dict-like); never index by position.
         to_fix = [
             row.get("id") for row in cursor.fetchall()
-            if not (row.get("musicbrainz_artist_id") if row.get("musicbrainz_artist_id") is not None else '')
-            or not MUSICBRAINZ_UUID_RE.match(str(row.get("musicbrainz_artist_id") or "").strip())
+            if not _has_valid_artist_mbid(row.get("musicbrainz_artist_id"))
+            or not _has_valid_artist_mbid(row.get("musicbrainz_artistid"))
         ]
 
-        cursor.execute(f"SELECT id, artist, musicbrainz_artist_id FROM tracks WHERE artist LIKE {placeholder}", (f"{artist} %",))
+        cursor.execute(f"SELECT id, artist, musicbrainz_artist_id, musicbrainz_artistid FROM tracks WHERE artist LIKE {placeholder}", (f"{artist} %",))
         feat_re = re.compile(r"\s+(?:feat\.?|featuring|ft\.?)\s+", re.IGNORECASE)
         for row in cursor.fetchall():
             if feat_re.search(str(row.get("artist") or "")):
-                existing = row.get("musicbrainz_artist_id") if row.get("musicbrainz_artist_id") is not None else ''
-                if not existing or not MUSICBRAINZ_UUID_RE.match(str(existing).strip()):
+                if (not _has_valid_artist_mbid(row.get("musicbrainz_artist_id"))
+                        or not _has_valid_artist_mbid(row.get("musicbrainz_artistid"))):
                     to_fix.append(row.get("id"))
 
         to_fix = list(dict.fromkeys(to_fix))
@@ -103,7 +112,18 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
             for index in range(0, len(to_fix), 500):
                 chunk = to_fix[index:index + 500]
                 placeholders = ','.join([placeholder] * len(chunk))
-                cursor.execute(f"UPDATE tracks SET musicbrainz_artist_id = {placeholder} WHERE id IN ({placeholders})", (mbid, *chunk))
+                # Only fill columns that are empty — a user-edited ID wins.
+                cursor.execute(
+                    f"""UPDATE tracks SET
+                        musicbrainz_artist_id = CASE
+                            WHEN musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '' THEN {placeholder}
+                            ELSE musicbrainz_artist_id END,
+                        musicbrainz_artistid = CASE
+                            WHEN musicbrainz_artistid IS NULL OR musicbrainz_artistid = '' THEN {placeholder}
+                            ELSE musicbrainz_artistid END
+                        WHERE id IN ({placeholders})""",
+                    (mbid, mbid, *chunk),
+                )
         db_connection.commit()
         return mbid
     except Exception:

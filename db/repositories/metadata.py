@@ -345,13 +345,17 @@ def fetch_artist_albums(conn: Any = None, artist: str = "") -> list[str]:
 def fetch_artist_mbid(conn: Any = None, artist: str = "") -> str | None:
     with db_session() as session:
         result = session.execute(text("""
-            SELECT musicbrainz_albumartistid
+            SELECT COALESCE(
+                NULLIF(TRIM(musicbrainz_albumartistid), ''),
+                NULLIF(TRIM(musicbrainz_artistid), ''),
+                NULLIF(TRIM(musicbrainz_artist_id), '')
+            )
             FROM tracks
-            WHERE album_artist = :artist
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
             LIMIT 1
         """), {"artist": artist})
         row = result.fetchone()
-        return str(row[0]) if row else None
+        return str(row[0]) if row and str(row[0] or "").strip() else None
 
 
 def fetch_all_distinct_artists(conn: Any = None) -> list[str]:

@@ -248,17 +248,22 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
             try:
                 artist_mbid = None
                 cursor.execute(
-                    "SELECT musicbrainz_artistid FROM tracks "
-                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
-                    "AND musicbrainz_artistid IS NOT NULL AND TRIM(musicbrainz_artistid) <> '' LIMIT 1",
+                    "SELECT COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), NULLIF(TRIM(musicbrainz_artist_id), '')) AS mbid "
+                    "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
+                    "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), NULLIF(TRIM(musicbrainz_artist_id), '')) <> '' LIMIT 1",
                     (artist,),
                 )
                 row = cursor.fetchone()
-                if row and row_get(row, "musicbrainz_artistid"):
-                    artist_mbid = row_get(row, "musicbrainz_artistid")
+                if row and row_get(row, "mbid"):
+                    artist_mbid = row_get(row, "mbid")
                 if not artist_mbid:
-                    from services.enrichment.musicbrainz_service import MusicBrainzService
-                    artist_mbid, _conf = MusicBrainzService(enabled=True).get_suggested_mbid(artist, "")
+                    # Proper artist search (NOT a recording search — the
+                    # previous get_suggested_mbid(artist, "") call searched
+                    # for a recording titled after the artist and returned a
+                    # recording MBID, which the LB similar-artists API
+                    # rejected).
+                    from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
+                    artist_mbid = lookup_and_save_artist_mbid(artist, conn)
                 if artist_mbid:
                     from api_clients.listenbrainz import ListenBrainzClient
                     lb_similar = ListenBrainzClient().get_similar_artists(artist_mbid, limit=10) or []
@@ -322,6 +327,39 @@ def _fetch_discogs_artist_id(artist: str, conn, options: dict) -> None:
 # ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
+
+def _fetch_musicbrainz_artist_id(artist: str, conn, options: dict) -> None:
+    """Resolve and persist the MusicBrainz artist ID (legacy parity).
+
+    Mirrors ``_fetch_discogs_artist_id``: skips compilation groups, resolves
+    the ID via a scored MusicBrainz artist search when the artist's tracks
+    carry none, and stores it on all of the artist's tracks. The artist page
+    ID field, ListenBrainz similar artists, missing-releases detection and
+    single detection all depend on this value — the per-recording lookup in
+    track_stage alone never populates it for tracks that already have a
+    recording MBID (the metadata lookup is skipped for those).
+    """
+    if artist.lower() in ("various artists", "various", "compilation", "soundtrack"):
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), NULLIF(TRIM(musicbrainz_artist_id), '')) AS mbid "
+            "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
+            "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), NULLIF(TRIM(musicbrainz_artist_id), '')) <> '' LIMIT 1",
+            (artist,),
+        )
+        row = cursor.fetchone()
+        if row and row_get(row, "mbid"):
+            return
+
+        from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
+        mbid = lookup_and_save_artist_mbid(artist, conn)
+        if mbid:
+            logger.info("[album_stage] MusicBrainz artist ID for '%s': %s", artist, mbid)
+    except Exception as exc:
+        logger.debug("[album_stage] MusicBrainz artist ID lookup failed for '%s': %s", artist, exc)
+
 
 def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None, str | None]:
     """Query MusicBrainz release-group for a confident album-type match.
@@ -817,17 +855,21 @@ def enrich_album(
             except Exception as exc:
                 logger.debug("[album_stage] releasecountry backfill failed: %s", exc)
 
-        # 4. Similar artists
+        # 4. MusicBrainz artist ID — run BEFORE similar artists so the LB
+        #    similar-artists lookup can use the freshly resolved MBID.
+        _fetch_musicbrainz_artist_id(artist, conn, options)
+
+        # 5. Similar artists
         similar = _fetch_similar_artists(artist, conn, options)
 
-        # 5. Discogs artist ID (legacy parity)
+        # 6. Discogs artist ID (legacy parity)
         _fetch_discogs_artist_id(artist, conn, options)
 
-        # 6. Live/remix album tagging + alternate-take persistence
+        # 7. Live/remix album tagging + alternate-take persistence
         _apply_live_remix_album_tagging(conn, cursor, artist, album, detected_type, album_tracks)
         _persist_alternate_takes(conn, cursor, album_context)
 
-        # 7. Cover song detection (legacy parity — full CoverDetector).
+        # 8. Cover song detection (legacy parity — full CoverDetector).
         # The per-track check in track_stage only matches title/composer
         # patterns; this album-level pass runs the full pipeline (ISRC →
         # MusicBrainz cover relations → writer analysis → heuristics →
