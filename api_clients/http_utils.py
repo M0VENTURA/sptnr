@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import ssl
+import time
 from typing import Any
 
 import httpx
@@ -119,11 +120,29 @@ def create_retry_client(
     if user_agent:
         headers["User-Agent"] = user_agent
 
-    def _log_request(request: httpx.Request) -> None:
+    # Request identity -> monotonic start time, used by the response hook.
+    _request_start_times: dict[int, float] = {}
+
+    def _log_request_start(request: httpx.Request) -> None:
         logger.debug("[HTTP] >>> %s %s", request.method, request.url)
+        _request_start_times[id(request)] = time.monotonic()
 
     def _log_response(response: httpx.Response) -> None:
-        logger.debug("[HTTP] <<< %s %s → %s (%.1fs)", response.request.method, response.request.url, response.status_code, response.elapsed.total_seconds())
+        # ``response.elapsed`` raises RuntimeError until the body has been
+        # read/closed — the "response" event hook fires on headers, so
+        # reading it there made every request fail with "'.elapsed' may only
+        # be accessed after the response has been read or closed" and get
+        # retried 3 times. Track the duration from the request hook instead.
+        start = _request_start_times.pop(id(response.request), None)
+        duration = (time.monotonic() - start) if start is not None else None
+        duration_suffix = f" ({duration:.1f}s)" if duration is not None else ""
+        logger.debug(
+            "[HTTP] <<< %s %s → %s%s",
+            response.request.method,
+            response.request.url,
+            response.status_code,
+            duration_suffix,
+        )
 
     client = httpx.Client(
         transport=transport,
@@ -131,7 +150,7 @@ def create_retry_client(
         headers=headers,
         verify=verify,
         event_hooks={
-            "request": [_log_request],
+            "request": [_log_request_start],
             "response": [_log_response],
         },
     )
