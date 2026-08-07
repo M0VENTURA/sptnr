@@ -77,6 +77,23 @@ def calculate_match_score(mb_title, mb_artist_credit, local_album, local_artist)
     return (title_sim * 0.6) + (artist_sim * 0.4)
 
 
+def _artist_lookup_candidates(artist: str) -> list[str]:
+    """Full credit first, then the feat.-stripped primary artist.
+
+    MusicBrainz has no artist named "Feuerschwanz feat. Dag von SDP" — the
+    single is credited to "Feuerschwanz".  Dedupes case-insensitively so a
+    plain artist name yields a single candidate.
+    """
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for candidate in (artist or "", strip_featured_artist(artist or "")):
+        key = (candidate or "").casefold().strip()
+        if candidate and key not in seen:
+            candidates.append(candidate)
+            seen.add(key)
+    return candidates
+
+
 # =============================================================================
 # MAIN SERVICE
 # =============================================================================
@@ -248,54 +265,69 @@ class MusicBrainzService:
            differently (phrase queries miss "What's the Deal?"), so when the
            phrase query finds nothing, retry with an artist-scoped search and
            match by title similarity.
+
+        Featured-artist credits ("Feuerschwanz feat. Dag von SDP") are not
+        MusicBrainz artist names — every pass retries with the feat.-stripped
+        primary artist so a single credited to "Feuerschwanz" alone is still
+        found (e.g. "Knightclub" is a single by Feuerschwanz, not by
+        "Feuerschwanz feat. Dag von SDP").
         """
         if not self.enabled or not title or not artist:
             return False
         try:
-            if self._recording_search_has_single_release(title, artist):
-                return True
+            for lookup_artist in _artist_lookup_candidates(artist):
+                if self._recording_search_has_single_release(title, lookup_artist):
+                    return True
 
-            mbid, _confidence = self.get_suggested_mbid(title, artist)
-            if mbid and self._recording_has_single_release(mbid, title=title):
-                return True
+                mbid, _confidence = self.get_suggested_mbid(title, lookup_artist)
+                if mbid and self._recording_has_single_release(mbid, title=title):
+                    return True
 
-            query_title = normalize_title_for_lucene_query(title)
-            rg_query = (
-                f'releasegroup:"{escape_lucene_special_chars(query_title)}" '
-                f'AND artist:"{escape_lucene_special_chars(artist)}"'
-            )
-            groups = self.http.search_release_groups(rg_query, limit=10)
-            if not groups:
-                # Phrase query missed it (apostrophe/punctuation tokenisation):
-                # retry with an artist-scoped search and match by similarity.
-                # Use a generous limit — large discographies (50+ release
-                # groups) can otherwise hide the matching single beyond the
-                # first page of results.
-                groups = self.http.search_release_groups(
-                    f'artist:"{escape_lucene_special_chars(artist)}"',
-                    limit=50,
-                )
-            norm_title = normalize_title_for_lookup(title)
-            for group in groups:
-                pt = (
-                    group.get("primary-type")
-                    or group.get("primary_type")
-                    or group.get("type")
-                    or ""
-                ).lower()
-                if pt not in ("single", "ep"):
-                    continue
-                sim = difflib.SequenceMatcher(
-                    None,
-                    norm_title,
-                    normalize_title_for_lookup(group.get("title") or ""),
-                ).ratio()
-                if sim >= 0.7:
+                if self._release_group_has_single_release(title, lookup_artist):
                     return True
             return False
         except Exception as exc:
             logger.debug("MusicBrainz is_single failed for %s / %s: %s", artist, title, exc)
             return False
+
+    def _release_group_has_single_release(self, title: str, artist: str) -> bool:
+        """True when the artist has a Single/EP release-group titled like the track.
+
+        Phrase queries tokenise punctuation differently (they miss "What's
+        the Deal?"), so when the ``releasegroup:`` query finds nothing the
+        search falls back to an artist-scoped query matched by title
+        similarity.  A generous limit keeps large discographies (50+ release
+        groups) from hiding the matching single beyond the first page.
+        """
+        query_title = normalize_title_for_lucene_query(title)
+        rg_query = (
+            f'releasegroup:"{escape_lucene_special_chars(query_title)}" '
+            f'AND artist:"{escape_lucene_special_chars(artist)}"'
+        )
+        groups = self.http.search_release_groups(rg_query, limit=10)
+        if not groups:
+            groups = self.http.search_release_groups(
+                f'artist:"{escape_lucene_special_chars(artist)}"',
+                limit=50,
+            )
+        norm_title = normalize_title_for_lookup(title)
+        for group in groups:
+            pt = (
+                group.get("primary-type")
+                or group.get("primary_type")
+                or group.get("type")
+                or ""
+            ).lower()
+            if pt not in ("single", "ep"):
+                continue
+            sim = difflib.SequenceMatcher(
+                None,
+                norm_title,
+                normalize_title_for_lookup(group.get("title") or ""),
+            ).ratio()
+            if sim >= 0.7:
+                return True
+        return False
 
     def _recording_search_has_single_release(self, title: str, artist: str) -> bool:
         """True when a recording-search result embeds a Single/EP release-group.

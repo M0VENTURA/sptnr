@@ -28,14 +28,27 @@ from typing import Any
 from helpers.normalization_service import (
     strip_single_release_suffix,
     normalize_title_for_lookup,
+    normalize_title_for_lucene_query,
     strip_remaster_suffix,
     is_remastered_only_variant,
 )
+
+from api_clients.musicbrainz_http import escape_lucene_special_chars
 
 logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
+# Alternate/version markers that strip a track from single detection.
+# Matched as WHOLE WORDS (word-boundary, optional plural) so ordinary titles
+# never trip them — "edit" must not flag "(Epic Edition)".  "(Epic Edition)"
+# versions are deliberately NOT stripped: they run detection with their full
+# title so MusicBrainz release groups carrying the annotation still match
+# (e.g. "Das Elfte Gebot (Epic Edition)" is a single on MB).  Same for cover
+# annotations ("(PSY Cover)") — MB titles omit them, so the plain-title
+# lookup already matches the cover's own single.  Remastered variants are
+# intentionally NOT listed — same song as the original, remain
+# single-eligible.
 IGNORE_SINGLE_KEYWORDS = frozenset({
     "intro", "outro", "jam",
     "live", "unplugged",
@@ -43,6 +56,13 @@ IGNORE_SINGLE_KEYWORDS = frozenset({
     "acoustic", "orchestral",
     "demo", "instrumental", "karaoke",
 })
+
+_IGNORE_KEYWORD_RE = re.compile(
+    r"\b(?:" + "|".join(
+        re.escape(kw) + r"(?:es|s)?" for kw in sorted(IGNORE_SINGLE_KEYWORDS, key=len, reverse=True)
+    ) + r")\b",
+    re.IGNORECASE,
+)
 
 # Suffixes that can be stripped during title normalisation (radio edit etc.)
 _STRIPPABLE_SUFFIXES = [
@@ -164,12 +184,18 @@ def is_special_edition_album(album_title: str) -> bool:
 def should_skip_single_detection(title: str, album_type: str | None = None) -> bool:
     """Return True for obvious non-single alternate/live/demo versions.
 
-    Remastered variants are intentionally NOT skipped — they are the same
-    song as the original and remain eligible for single detection.
+    Only genuine version markers strip a track (whole-word keywords from
+    ``_IGNORE_KEYWORD_RE``: live, remix, edit, acoustic, ...).  "(Epic
+    Edition)" and cover annotations like "(PSY Cover)" do NOT strip — those
+    versions run detection with their full title so MusicBrainz release
+    groups that carry the annotation (e.g. "Das Elfte Gebot (Epic Edition)"
+    is a single) still match.  Remastered variants are intentionally NOT
+    skipped either — they are the same song as the original and remain
+    eligible for single detection.
     """
     t = (title or "").lower()
     at = (album_type or "").lower()
-    if any(kw in t for kw in IGNORE_SINGLE_KEYWORDS):
+    if _IGNORE_KEYWORD_RE.search(t):
         return True
     if any(kw in at for kw in ["live", "compilation"]):
         return True
@@ -303,14 +329,31 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
             try:
                 from difflib import SequenceMatcher as _SM
                 target = normalize_title_for_lookup(strip_single_release_suffix(title) or title)
+                lucene_title = normalize_title_for_lucene_query(strip_single_release_suffix(title) or title)
                 candidates: list[dict] = []
                 for _pt in ("single", "ep"):
+                    # Title-scoped query first — an artist with 25+ singles
+                    # can otherwise hide the target beyond the client's page
+                    # cap (search_release_groups caps at 25).
                     try:
-                        candidates += mb_client.search_release_groups(
-                            f"arid:{artist_mbid} AND primarytype:{_pt}", limit=100
+                        _found = mb_client.search_release_groups(
+                            f'arid:{artist_mbid} AND primarytype:{_pt} '
+                            f'AND releasegroup:"{escape_lucene_special_chars(lucene_title)}"',
+                            limit=25,
                         ) or []
                     except Exception:
-                        continue
+                        _found = []
+                    if not _found:
+                        # Tokenisation drift (punctuation, apostrophes) — fall
+                        # back to the artist-scoped list and match by title
+                        # similarity.
+                        try:
+                            _found = mb_client.search_release_groups(
+                                f"arid:{artist_mbid} AND primarytype:{_pt}", limit=100
+                            ) or []
+                        except Exception:
+                            continue
+                    candidates += _found
                 for group in candidates:
                     rg_title = str(group.get("title") or "")
                     norm_rg = normalize_title_for_lookup(strip_single_release_suffix(rg_title) or rg_title)
