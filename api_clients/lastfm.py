@@ -34,6 +34,9 @@ class LastFmClient:
     def search_track(self, artist: str, title: str, limit: int = 10) -> list[dict[str, Any]]:
         return self.service.search_track(artist, title, limit=limit)
 
+    def search_album(self, album: str, artist: str = "", limit: int = 10) -> list[dict[str, Any]]:
+        return self.service.search_album(album, artist=artist, limit=limit)
+
     def get_album_track_count(self, artist: str, album: str) -> int:
         return self.service.get_album_track_count(artist, album)
 

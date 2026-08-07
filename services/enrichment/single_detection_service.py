@@ -482,12 +482,34 @@ def _detect_lastfm(artist: str, album: str, title: str, lastfm_client=None) -> b
     Last.fm (album payload named after the track with < 6 tracks), or
     (2) the track's album has 1-3 tracks (single), or 4-6 tracks with a
     title track (EP).
+
+    Fallback: Last.fm often stores the single under a suffixed release name
+    ("Knightclub - Single") while ``album.getInfo`` with the track title
+    resolves to the full LP (a 20-track "Knightclub") — ``album.search``
+    surfaces those Single/EP rows directly.
     """
     if not lastfm_client:
         return False
     try:
         if lastfm_client.check_track_as_single(artist, title):
             return True
+    except Exception:
+        pass
+    # Search-based fallback: match Single/EP releases by the same artist
+    # whose title normalises to the track (suffix "- Single"/"- EP" stripped;
+    # brackets are stripped by the normaliser).
+    try:
+        if hasattr(lastfm_client, "search_album"):
+            target = normalize_title_for_lookup(title)
+            for alb in lastfm_client.search_album(title, artist=artist, limit=30) or []:
+                alb_name = str(alb.get("name") or "").strip()
+                if not alb_name:
+                    continue
+                base = re.sub(
+                    r"\s*[-–—]?\s*(?:single|ep)\s*$", "", alb_name, flags=re.IGNORECASE
+                ).strip()
+                if normalize_title_for_lookup(base) == target:
+                    return True
     except Exception:
         pass
     try:
