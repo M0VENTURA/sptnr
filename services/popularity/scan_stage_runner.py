@@ -111,6 +111,72 @@ def _load_discogs_promo_titles(artist: str) -> set[str]:
         return set()
 
 
+def _run_album_cover_detection(
+    *,
+    artist: str,
+    album: str,
+    tracks: list[dict[str, Any]],
+    options: dict[str, Any],
+) -> None:
+    """Run the full CoverDetector pass for ONE album after per-track detection.
+
+    Runs AFTER the per-track singles/cover detection loop so it never blocks
+    the album enrichment section (album art caching / artist metadata). Uses
+    the full pipeline (ISRC → MusicBrainz cover relations → writer analysis
+    → heuristics → work-history fallback), resolves the ORIGINAL artist and
+    renames confirmed covers to "Title (Artist Cover)" in the DB and file
+    tags (legacy parity — same behaviour the album stage previously ran
+    serially right after art caching).
+
+    Skipped for singles / popularity-only passes; disable via
+    ``features.cover_detection_enabled``.
+    """
+    if not artist or not tracks:
+        return
+    if (
+        options.get("singles_only")
+        or options.get("singles_with_missing_popularity")
+        or options.get("popularity_only")
+    ):
+        return
+    try:
+        from helpers.config_helpers import get_feature
+        _covers_enabled = bool(get_feature("cover_detection_enabled", True))
+    except Exception:
+        _covers_enabled = True
+    if not _covers_enabled:
+        return
+
+    conn = None
+    try:
+        from db.utils import get_db_connection
+        from services.enrichment.cover_detection_service import detect_covers_for_album
+        conn = get_db_connection()
+        _cover_results = detect_covers_for_album(
+            album=album,
+            artist=artist,
+            tracks=tracks,
+            conn=conn,
+            force=bool(options.get("force")),
+        )
+        if _cover_results:
+            logger.info(
+                "[COVER_DETECT] %s - %s: %d cover(s) found",
+                artist, album, len(_cover_results),
+            )
+    except Exception as exc:
+        logger.debug(
+            "[scan_runner] Cover detection failed for '%s - %s': %s",
+            artist, album, exc,
+        )
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def run_scan(
     *,
     verbose: bool = False,
@@ -751,6 +817,23 @@ def run_scan(
                     )
 
             tracks_processed += 1
+
+        # ── Full cover detection stage (after per-track singles/cover
+        #    detection) ────────────────────────────────────────────────
+        # The per-track ``detect_cover_song`` check above only matches
+        # title/composer patterns. This album-level pass runs the full
+        # pipeline (ISRC → MusicBrainz cover relations → writer analysis →
+        # heuristics → work-history fallback), resolves the ORIGINAL artist
+        # and renames confirmed covers to "Title (Artist Cover)" in the DB
+        # and file tags. Run AFTER singles detection so the album enrichment
+        # section (art caching / artist metadata) never blocks on serial
+        # cover API lookups.
+        _run_album_cover_detection(
+            artist=artist,
+            album=album,
+            tracks=tracks,
+            options=options,
+        )
 
         # Record completion for this album scan
         try:
