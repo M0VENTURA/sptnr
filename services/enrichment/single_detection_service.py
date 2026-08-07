@@ -503,6 +503,16 @@ def determine_final_status(
     if discogs_promo and high == 0:
         return 'medium'
 
+    # Discogs/MusicBrainz/ISRC confirming the track as a single is
+    # authoritative — the track IS a single. The z-score bands below only
+    # refine high vs medium and must never demote a confirmed single to
+    # 'none' (MB-only singles with low z-scores were vanishing entirely,
+    # e.g. Unleash the Archers / +44 scans where only the z-standout tracks
+    # surfaced). Weak signals (radio-edit marker, LB top-10, ...) without a
+    # real metadata confirmation are still gated below.
+    if (discogs or musicbrainz) and (high >= 1 or medium >= 1):
+        return 'high' if high >= 1 else 'medium'
+
     # Z-score above the high boundary. 'high' needs real external
     # confirmation (Discogs/MusicBrainz/ISRC); two corroborating weak signals
     # (z-standout + duration/radio-edit marker, etc.) also reach 'high' — the

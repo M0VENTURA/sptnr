@@ -80,9 +80,13 @@ class TestPlus44AlbumScenario:
             has_metadata=True,
         ) == "high"
 
-    def test_cliffdiving_lone_mb_match_low_z_none(self):
-        # NOT a single. Only a MusicBrainz match (medium source), album-z 0.33.
-        # Previously a lone MB match counted as high-confidence -> 'high'.
+    def test_cliffdiving_lone_mb_match_low_z_medium(self):
+        # Only a MusicBrainz match (medium source), album-z 0.33. MB
+        # confirming the track as a single is authoritative: the track IS a
+        # single. A lone medium source can never be 'high', but it must be
+        # marked as a single ('medium') rather than dropped to 'none' —
+        # low z-scores only refine high vs medium, they never demote a
+        # confirmed single.
         assert _final(
             musicbrainz=True,
             album_z=0.33,
@@ -90,7 +94,7 @@ class TestPlus44AlbumScenario:
             high_sources=0,
             medium_sources=1,
             has_metadata=True,
-        ) == "none"
+        ) == "medium"
 
     def test_title_track_low_z_medium_not_high(self):
         # Title track IS a single (title-track boost -> 'medium'), but at

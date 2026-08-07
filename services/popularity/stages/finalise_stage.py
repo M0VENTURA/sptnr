@@ -208,15 +208,10 @@ def _assign_stars(
         or album_z >= POPULARITY_5STAR_Z
     )
 
-    # ── 5★ paths (old-system alignment: artist-catalogue standing required) ──
-    # The legacy scanner only granted 5★ to genuine artist-wide standouts:
-    # top-10% elite, or top-25% catalogue for the other 5★ paths. That gate
-    # is restored here (ListenBrainz evidence is kept as an additional
-    # confirmation source, but never removes the catalogue requirement).
-
-    # 5★: elite catalogue track (top 10% artist-wide) — album-relative too.
-    if is_elite and not is_live:
-        return 5 if five_star_eligible else 4
+    # ── 5★ paths ──
+    # 5★ is reserved for standout CONFIRMED singles (legacy alignment); other
+    # singles and popular album tracks cap at 4★, so a single with a low
+    # z-score is still marked as a single and rated 4★, never dropped.
 
     # 5★/4★: high-confidence single (old-system path 3 + LB addition).
     if is_single and single_confidence == "high":
@@ -232,33 +227,25 @@ def _assign_stars(
             return 5
         return 4
 
-    # 4★/5★: medium-confidence single (old-system path 4).
+    # 4★/5★: medium-confidence single (old-system path 4). Always at least
+    # 4★ — a confirmed single is never rated below its single status.
     if is_single and single_confidence == "medium":
-        if is_live:
-            return 4 if is_top_catalog else 3
         return 5 if (five_star_eligible and is_top_catalog) else 4
 
-    # Non-single popularity 5★ (old-system path 5): album z ≥ 2.0 AND
-    # top-25% catalogue — a huge album-local z alone is not enough.
-    if album_z >= POPULARITY_5STAR_Z and not is_live:
-        return 5 if is_top_catalog else 4
-
-    # Listener standout (non-single): raw Last.fm/ListenBrainz counts make
-    # the track a clear log-scaled outlier within its album — 5★ only when
-    # the track is also top-25% of the artist catalogue (old-system LB gate).
-    if not is_live and max(lf_z, lb_z) >= LISTENER_5STAR_Z:
-        return 5 if (five_star_eligible and is_top_catalog) else 4
-
-    # LB rescue (old-system path 6 + lb_z addition): Last.fm unreliable but
-    # ListenBrainz percentile strong and the track stands out by album z or
-    # raw LB listen z — 5★ only if top-25% catalogue, else 4★.
-    if (
-        not is_live
-        and _is_lastfm_unreliable(lf_listeners, lb_listens)
-        and lb_percentile >= LB_UNRELIABLE_5STAR
-        and (album_z >= STAR_4_ALBUM_Z or lb_z >= LISTENER_5STAR_Z)
+    # Non-singles cap at 4★: elite catalogue standouts, huge album-z
+    # outliers, listener standouts and the LB rescue path all rate 4★ —
+    # 5★ requires a confirmed standout single.
+    if not is_live and (
+        is_elite
+        or album_z >= POPULARITY_5STAR_Z
+        or max(lf_z, lb_z) >= LISTENER_5STAR_Z
+        or (
+            _is_lastfm_unreliable(lf_listeners, lb_listens)
+            and lb_percentile >= LB_UNRELIABLE_5STAR
+            and (album_z >= STAR_4_ALBUM_Z or lb_z >= LISTENER_5STAR_Z)
+        )
     ):
-        return 5 if (five_star_eligible and is_top_catalog) else 4
+        return 4
 
     # ── 4★ ──
     if _is_top_artist_percentile(score, artist_scores, STAR_4_ARTIST_PCT):
@@ -652,7 +639,11 @@ def post_album_star_ratings(
                     )
                     reason_str = f" ({'; '.join(r for r in reasons if r)})" if reasons else ""
 
-                    if t_single and t_conf == "high":
+                    # Both high- and medium-confidence singles belong in the
+                    # Detected Singles list — a medium single (e.g. MB-only
+                    # confirmation with a low z-score) is still a single and
+                    # must not vanish into "Rest of Album".
+                    if t_single and t_conf in ("high", "medium"):
                         detected_singles.append((t_title, t_stars, t_artist, t_score, reason_str))
                     elif t_stars == 5:
                         popular_songs.append((t_title, t_stars, t_artist, t_score, reason_str))
