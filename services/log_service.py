@@ -58,40 +58,87 @@ def _resolve_log_path(log_type: str) -> str | None:
 # ✅ LOG ACCESS
 # =============================================================================
 
-def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None = None):
+def _scheduler_noise_filter() -> re.Pattern:
+    """Scheduler bookkeeping that must never surface in the dashboard log."""
+    return re.compile(
+        r'APScheduler|job store|Added job|registered .* every .* min|'
+        r'Scheduler started|Scheduler shutdown|Scheduler paused|Scheduler resumed',
+        re.I,
+    )
+
+
+def _filter_lines_last_hour(lines: list[str]) -> list[str]:
+    """Keep only lines whose leading timestamp falls within the last hour.
+
+    The dashboard's scanning panel should only show the last hour of activity
+    (the /logs page reads the file directly and shows the full history).  Lines
+    without a parseable ``YYYY-MM-DD HH:MM:SS`` prefix are kept as-is.
+    """
+    if not lines:
+        return lines
+    from datetime import datetime as _dt, timezone, timedelta
+
+    cutoff = _dt.now(timezone.utc) - timedelta(hours=1)
+    _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
+    kept = []
+    for line in lines:
+        match = _TS_RE.match(line)
+        if not match:
+            kept.append(line)
+            continue
+        try:
+            text = match.group(1).replace(" ", "T")
+            ts = _dt.fromisoformat(text)
+            if ts.tzinfo is None:
+                # Log timestamps are written in the host's local time — treat
+                # naive stamps as local time rather than UTC.
+                ts = ts.astimezone()
+            else:
+                ts = ts.astimezone(timezone.utc)
+            if ts >= cutoff:
+                kept.append(line)
+        except Exception:
+            kept.append(line)
+    return kept
+
+
+def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None = None, last_hour: bool = False):
     path_candidates = path_candidates or [] # Handle default
     log_path = next((p for p in path_candidates if p and os.path.exists(p)), _resolve_log_path("unified"))
 
-    if not log_path:
-        return {"error": "Unified log not found", "lines": []}, 404
+    if not log_path or not os.path.exists(log_path):
+        # The file may not exist yet on a fresh volume — the dashboard must
+        # render an empty panel, not a 404/500 it silently swallows.
+        return {"lines": [], "message": "unified_scan.log not found yet — it appears after the first log write."}
 
     try:
         log_lines = _read_last_lines(log_path, lines)
         if not verbose:
-            # Dashboard mode: keep only scan-related lines.
-            # Full log is available on the /logs page.
-            # First drop scheduler bookkeeping that the include-pattern below
-            # would otherwise let through (e.g. "registered popularity_scan").
-            noise_pattern = re.compile(
-                r'APScheduler|job store|Added job|registered .* every .* min|'
-                r'Scheduler started|Scheduler shutdown|Scheduler paused|Scheduler resumed',
-                re.I,
-            )
+            # Dashboard mode: drop scheduler bookkeeping only. The unified
+            # log is the activity feed (scans, queue, imports); narrowing it
+            # to scan-pattern lines made the panel blank whenever the last
+            # hour held only queue activity (and right after boot).
+            noise_pattern = _scheduler_noise_filter()
             log_lines = [l for l in log_lines if not noise_pattern.search(l)]
-            scan_pattern = re.compile(
-                r'\[POPULARITY\]|\[TRACK_STAGE\]|\[ALBUM_STAGE\]|\[FINALISE_STAGE\]|'
-                r'\[LOAD_STAGE\]|\[scan_runner\]|\[LIBRARY_SYNC\]|'
-                r'\[SINGLE\]|Navidrome Import|Artist scan|'
-                r'popularity scan|Popularity |popularity_scan|'
-                r'Full library scan|Boot scan|Scan complete|Scan failed|'
-                r'Scan stopped|single detection|star ratings',
-                re.I,
-            )
-            log_lines = [l for l in log_lines if scan_pattern.search(l)]
+        if last_hour:
+            # Dashboard scanning panel: only surface the last hour of activity.
+            log_lines = _filter_lines_last_hour(log_lines)
+        if not log_lines:
+            # Old-system parity: when the unified log has nothing (fresh
+            # boot, queue-only runs), surface info.log's tail so the panel
+            # is never blank.
+            info_path = _resolve_log_path("info")
+            if info_path and os.path.exists(info_path):
+                info_lines = _read_last_lines(info_path, lines)
+                if not verbose:
+                    info_lines = [l for l in info_lines if not _scheduler_noise_filter().search(l)]
+                if last_hour:
+                    info_lines = _filter_lines_last_hour(info_lines)
+                log_lines = info_lines
         return {"lines": log_lines[-lines:]}
     except Exception as e:
         logger.error("[LOG] unified read error: %s", e)
-        return {"error": str(e), "lines": []}, 500
+        return {"lines": [], "message": f"unified log read failed: {e}"}
 
 def resolve_log_file_path(name: str) -> str | None:
     """Resolve a log filename to an absolute path, constrained to the log dir.
