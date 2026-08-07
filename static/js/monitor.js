@@ -262,6 +262,7 @@ async function loadFolderGroups(options) {
     } else {
       section.style.display = 'none';
     }
+    await renderUnmatchedFolders(options);
     return;
   }
 
@@ -270,6 +271,114 @@ async function loadFolderGroups(options) {
   list.innerHTML = html;
   attachMonitorQueueGroupToggles(list);
   updateQueuePageControls(total, total);
+  await renderUnmatchedFolders(options);
+}
+
+// ===== Unmatched Folders (folders in /downloads not tied to a release) =====
+async function renderUnmatchedFolders(options) {
+  var section = document.getElementById('unmatchedFoldersSection');
+  var list = document.getElementById('unmatchedFoldersList');
+  var badge = document.getElementById('unmatchedFoldersBadge');
+  if (!section || !list) return;
+  var folders = [];
+  try {
+    var data = await fetchJsonOrThrow('/api/downloads/unmatched-folders');
+    if (data && data.success) folders = data.folders || [];
+  } catch (error) {
+    console.error('Error loading unmatched folders:', error);
+  }
+  if (folders.length === 0) {
+    section.style.display = 'none';
+    list.innerHTML = '';
+    if (badge) badge.textContent = '0 items';
+    return;
+  }
+  section.style.display = 'block';
+  if (badge) badge.textContent = folders.length + ' item' + (folders.length !== 1 ? 's' : '');
+  list.innerHTML = folders.map(function(f) {
+    var matched = f.status === 'matched';
+    var files = Array.isArray(f.files) ? f.files : [];
+    var fileHtml = '';
+    if (files.length > 0) {
+      fileHtml = '<ul class="list-unstyled mb-0 mt-1" style="max-height:160px;overflow-y:auto;">' +
+        files.slice(0, 30).map(function(file) {
+          var base = file && file.name ? file.name : String(file || '').split(/[\\/]/).pop();
+          return '<li style="font-size:0.75rem;" class="text-muted"><i class="bi bi-file-earmark-music me-1"></i>' + escapeHtml(base) + '</li>';
+        }).join('') +
+        (files.length > 30 ? '<li class="fst-italic small text-muted">+' + (files.length - 30) + ' more</li>' : '') +
+        '</ul>';
+    }
+    var statusBadge = matched
+      ? '<span class="badge bg-success flex-shrink-0" title="All files were imported to the library">Matched ✓</span>'
+      : '<span class="badge bg-secondary flex-shrink-0">' + (f.audio_count || 0) + ' audio</span>';
+    return '<div class="list-group-item">' +
+      '<div class="d-flex justify-content-between align-items-start gap-2">' +
+      '<div class="flex-grow-1"><strong>' + escapeHtml(f.display_name || f.name || 'Unknown') + '</strong>' + fileHtml + '</div>' +
+      statusBadge +
+      '</div>' +
+      '<div class="d-flex gap-2 mt-2">' +
+      '<button class="btn btn-sm btn-outline-primary unmatched-match-btn" data-path="' + escapeHtml(f.name) + '" title="Copy into the library as a MusicBrainz release (uses the naming convention from Settings)"><i class="bi bi-link-45deg me-1"></i>Match to MusicBrainz</button>' +
+      '<button class="btn btn-sm btn-outline-danger unmatched-delete-btn" data-path="' + escapeHtml(f.name) + '" title="Delete this folder from the downloads folder"><i class="bi bi-trash3 me-1"></i>Delete</button>' +
+      '</div></div>';
+  }).join('');
+  attachUnmatchedFolderActions(list);
+}
+
+function attachUnmatchedFolderActions(listEl) {
+  if (!listEl) return;
+  listEl.querySelectorAll('.unmatched-match-btn').forEach(function(btn) {
+    if (btn.getAttribute('data-bound')) return;
+    btn.setAttribute('data-bound', '1');
+    btn.addEventListener('click', async function() {
+      var folderPath = btn.getAttribute('data-path');
+      var mbId = prompt('Paste a MusicBrainz release or release-group URL/ID for this folder (e.g. https://musicbrainz.org/release/xxxx or release-group/xxxx):');
+      if (!mbId) return;
+      btn.disabled = true;
+      try {
+        var data = await fetchJsonOrThrow('/api/downloads/folder/match', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folder_path: folderPath, mb_id: mbId.trim() }),
+        });
+        if (data.success) {
+          alert('✅ Matched ' + data.moved + ' file(s) to "' + (data.album_artist || '') + ' - ' + (data.album || '') + '" (' + (data.year || '') + ')\nFolder deleted from downloads.');
+        } else {
+          alert('❌ ' + (data.error || 'Match failed'));
+        }
+      } catch (error) {
+        alert('❌ Network error: ' + error.message);
+      } finally {
+        btn.disabled = false;
+        if (typeof window.loadFolderGroups === 'function') {
+          window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+        }
+      }
+    });
+  });
+  listEl.querySelectorAll('.unmatched-delete-btn').forEach(function(btn) {
+    if (btn.getAttribute('data-bound')) return;
+    btn.setAttribute('data-bound', '1');
+    btn.addEventListener('click', async function() {
+      var folderPath = btn.getAttribute('data-path');
+      if (!confirm('Delete this folder and ALL its files from the downloads folder?\n\n' + folderPath)) return;
+      btn.disabled = true;
+      try {
+        var data = await fetchJsonOrThrow('/api/downloads/folder/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folder_path: folderPath }),
+        });
+        alert(data.success ? '✅ Folder deleted.' : '❌ ' + (data.error || 'Delete failed'));
+      } catch (error) {
+        alert('❌ Network error: ' + error.message);
+      } finally {
+        btn.disabled = false;
+        if (typeof window.loadFolderGroups === 'function') {
+          window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+        }
+      }
+    });
+  });
 }
 
 function attachMonitorQueueGroupToggles(listEl) {

@@ -72,6 +72,37 @@ def api_get_grouped_folders():
     return jsonify(get_folder_groups_with_musicbrainz())
 
 
+@downloads_bp.route("/api/downloads/unmatched-folders")
+def api_get_unmatched_folders():
+    """Folders under the downloads dir not tracked as MusicBrainz releases."""
+    from services.downloads.download_folder_service import get_unmatched_folders
+    return jsonify(get_unmatched_folders())
+
+
+@downloads_bp.route("/api/downloads/folder/match", methods=["POST"])
+async def api_match_folder_to_release():
+    """Copy an unmatched folder into the library as a MusicBrainz release."""
+    payload = (await request.get_json(silent=True)) or {}
+    folder_path = (payload.get("folder_path") or "").strip()
+    mb_id = (payload.get("mb_id") or payload.get("mbid") or "").strip()
+    if not folder_path or not mb_id:
+        return jsonify({"success": False, "error": "folder_path and mb_id (release/release-group URL or ID) are required"}), 400
+    from services.downloads.download_folder_service import match_folder_to_release
+    return jsonify(match_folder_to_release(folder_path, mb_id))
+
+
+@downloads_bp.route("/api/downloads/folder/delete", methods=["POST"])
+async def api_delete_download_folder():
+    """Delete a folder under the downloads directory (safety-railed)."""
+    payload = (await request.get_json(silent=True)) or {}
+    folder_path = (payload.get("folder_path") or "").strip()
+    if not folder_path:
+        return jsonify({"success": False, "error": "folder_path required"}), 400
+    from services.downloads.download_folder_service import delete_download_folder
+    return jsonify(delete_download_folder(folder_path))
+    return jsonify(get_folder_groups_with_musicbrainz())
+
+
 @downloads_bp.route("/api/downloads/folder-status")
 def api_get_folder_status():
     """Return folder status summary (stub for now)."""

@@ -53,7 +53,19 @@ def cleanup_stale_downloads() -> dict[str, int]:
     """Clean up stale/orphaned download entries."""
     from services.downloads.download_scan_service import discover_files
     result = discover_files()
-    return {"scanned": len(result) if isinstance(result, (list, dict)) else 1}
+    # Legacy parity: download folders whose files were all imported into the
+    # library (queue rows matched/moved) are stale — delete them so the
+    # monitor page's folder lists stay clean.
+    auto_deleted = 0
+    try:
+        from services.downloads.download_folder_service import auto_delete_imported_folders
+        auto_deleted = auto_delete_imported_folders()
+    except Exception as exc:
+        logger.debug("[CLEANUP] Auto-delete imported folders failed: %s", exc)
+    return {
+        "scanned": len(result) if isinstance(result, (list, dict)) else 1,
+        "folders_deleted": auto_deleted,
+    }
 
 
 def cleanup_sibling_downloads(
