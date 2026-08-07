@@ -109,6 +109,23 @@ def _scheduler_noise_filter() -> re.Pattern:
     )
 
 
+def _scan_activity_filter() -> re.Pattern:
+    """Dashboard scanning panel: ONLY popularity/singles scan activity.
+
+    Queue/download/retry/slskd lines belong to the Queue Activity and
+    Soulseek Search logs, not the dashboard's scanning panel.
+    """
+    return re.compile(
+        r'\[POPULARITY\]|\[TRACK_STAGE\]|\[ALBUM_STAGE\]|\[FINALISE_STAGE\]|'
+        r'\[LOAD_STAGE\]|\[scan_runner\]|\[LIBRARY_SYNC\]|'
+        r'\[SINGLE\]|Navidrome Import|Artist scan|'
+        r'popularity scan|Popularity |popularity_scan|'
+        r'Full library scan|Boot scan|Scan complete|Scan failed|'
+        r'Scan stopped|single detection|star ratings',
+        re.I,
+    )
+
+
 def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None = None, last_hour: bool = False):
     path_candidates = path_candidates or [] # Handle default
     log_path = next((p for p in path_candidates if p and os.path.exists(p)), _resolve_log_path("unified"))
@@ -121,24 +138,31 @@ def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None
     try:
         log_lines = _read_last_lines(log_path, lines)
         if not verbose:
-            # Dashboard mode: drop scheduler bookkeeping only. The unified
-            # log is the activity feed (scans, queue, imports); narrowing it
-            # to scan-pattern lines made the panel blank whenever the last
-            # hour held only queue activity (and right after boot).
+            # Dashboard mode: only popularity/singles scanning activity.
+            # Queue/download/retry/slskd lines are visible in the Queue
+            # Activity and Soulseek Search logs instead.
             noise_pattern = _scheduler_noise_filter()
-            log_lines = [l for l in log_lines if not noise_pattern.search(l)]
+            scan_pattern = _scan_activity_filter()
+            log_lines = [
+                l for l in log_lines
+                if not noise_pattern.search(l) and scan_pattern.search(l)
+            ]
         if last_hour:
             # Dashboard scanning panel: only surface the last hour of activity.
             log_lines = _filter_lines_last_hour(log_lines)
         if not log_lines:
             # Old-system parity: when the unified log has nothing (fresh
-            # boot, queue-only runs), surface info.log's tail so the panel
-            # is never blank.
+            # boot), surface info.log's tail — filtered the same way so the
+            # panel only ever shows scan activity.
             info_path = _resolve_log_path("info")
             if info_path and os.path.exists(info_path):
                 info_lines = _read_last_lines(info_path, lines)
                 if not verbose:
-                    info_lines = [l for l in info_lines if not _scheduler_noise_filter().search(l)]
+                    info_lines = [
+                        l for l in info_lines
+                        if not _scheduler_noise_filter().search(l)
+                        and _scan_activity_filter().search(l)
+                    ]
                 if last_hour:
                     info_lines = _filter_lines_last_hour(info_lines)
                 log_lines = info_lines

@@ -176,6 +176,10 @@ def _tail_queue_log(limit: int = 100) -> list[dict[str, Any]]:
         "[MONITOR_FOLDER]",
         "[IMPORT]",
         "[START_DOWNLOAD]",
+        "[RETRY_SCHEDULER]",
+        "[AUTO_DISCOVERY]",
+        "Soulseek",
+        "slskd",
         "download_queue",
     )
     # Read more than 64KB: a busy popularity scan can push queue lines out of
