@@ -99,6 +99,11 @@ def _build_effective_track(
 # album enrichment runs, and re-saving its stale album-type value would
 # clobber the freshly-detected type (album page shows "Unknown").
 _ALBUM_TYPE_COLUMNS = frozenset({"musicbrainz_albumtype", "spotify_album_type", "releasetype"})
+# Columns the track stage must NEVER write back from stale in-memory values:
+# album-type columns (the album stage owns those) and ``title`` — the album
+# stage renames covers to "Title (Artist Cover)" and live/acoustic tracks
+# AFTER the track contexts were prepared, so the loaded title here is stale.
+_STALE_PROTECTED_COLUMNS = frozenset({"title"}) | _ALBUM_TYPE_COLUMNS
 
 
 def _strip_album_type_columns(
@@ -108,14 +113,14 @@ def _strip_album_type_columns(
     """Return the effective track dict to persist.
 
     All of ``update_payload`` (fresh scores, listener counts, MBIDs, single
-    detection, ...) is applied over the loaded ``track``, then any album-type
-    column the track stage did NOT update is dropped so the stale in-memory
-    value (loaded before album enrichment ran) never clobbers the type the
-    album stage just persisted.
+    detection, ...) is applied over the loaded ``track``, then any column the
+    track stage did NOT update is dropped so the stale in-memory value
+    (loaded before album enrichment ran) never clobbers what the album stage
+    just persisted (album type, cover/live title renames).
     """
     result = dict(track)
     result.update(update_payload)
-    for col in _ALBUM_TYPE_COLUMNS:
+    for col in _STALE_PROTECTED_COLUMNS:
         if col not in update_payload:
             result.pop(col, None)
     return result
