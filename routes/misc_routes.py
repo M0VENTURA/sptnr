@@ -303,20 +303,71 @@ async def api_apply_country_as_genre():
 
 @misc_api_bp.route("/duplicate-artists/<path:artist>", methods=["GET"])
 def api_get_duplicate_artists(artist):
-    """Get duplicate artists for a specific artist."""
+    """Get duplicate artists for a specific artist.
+
+    Returns ``{duplicates: [{mbid, canonical_mb, variations[], track_counts{}}],
+    artist_info}`` — the shape the corrections page's merge UI expects.
+    Uses the track artist (not album_artist) so compilation appearances
+    don't contaminate detection.
+    """
     from urllib.parse import unquote
     artist = unquote(artist)
     try:
         with db_session() as session:
-            result = session.execute(
-                text("SELECT musicbrainz_artistid, COUNT(DISTINCT artist) as names FROM tracks "
-                "WHERE musicbrainz_artistid IS NOT NULL AND musicbrainz_artistid != '' "
-                "GROUP BY musicbrainz_artistid HAVING COUNT(DISTINCT artist) > 1")
-            )
-            rows = result.fetchall()
-        return jsonify({"success": True, "duplicates": [dict(r._mapping) for r in rows]})
+            # MBID for the current artist.
+            row = session.execute(text("""
+                SELECT DISTINCT musicbrainz_artistid
+                FROM tracks
+                WHERE artist = :artist
+                  AND musicbrainz_artistid IS NOT NULL
+                  AND musicbrainz_artistid != ''
+                LIMIT 1
+            """), {"artist": artist}).fetchone()
+            artist_mbid = str(row[0]) if row else None
+
+            duplicates = []
+            if artist_mbid:
+                # All artist-name variations sharing this MBID.
+                rows = session.execute(text("""
+                    SELECT artist, COUNT(*) AS track_count
+                    FROM tracks
+                    WHERE musicbrainz_artistid = :mbid
+                    GROUP BY artist
+                    ORDER BY track_count DESC
+                """), {"mbid": artist_mbid}).fetchall()
+                variations_data = [dict(r._mapping) for r in rows]
+
+                if len(variations_data) > 1:
+                    # Canonical display name: MB artist name when resolvable,
+                    # else the most common local variation.
+                    canonical_mb = variations_data[0].get("artist") or ""
+                    try:
+                        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+                        mb_artist = MusicBrainzHttpClient().get_artist(artist_mbid) or {}
+                        if (mb_artist.get("name") or "").strip():
+                            canonical_mb = str(mb_artist["name"]).strip()
+                    except Exception:
+                        pass
+                    variations = [v.get("artist") for v in variations_data if v.get("artist")]
+                    track_counts = {
+                        v.get("artist"): int(v.get("track_count") or 0)
+                        for v in variations_data if v.get("artist")
+                    }
+                    duplicates.append({
+                        "mbid": artist_mbid,
+                        "canonical_mb": canonical_mb,
+                        "variations": variations,
+                        "track_counts": track_counts,
+                        "current_artist": artist,
+                    })
+
+        return jsonify({
+            "success": True,
+            "duplicates": duplicates,
+            "artist_info": {"name": artist, "mbid": artist_mbid},
+        })
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"success": False, "error": str(exc), "duplicates": []}), 500
 
 
 @misc_api_bp.route("/duplicate-artists/merge", methods=["POST"])
