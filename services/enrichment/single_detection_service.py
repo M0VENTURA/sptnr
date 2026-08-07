@@ -343,7 +343,8 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                 "metadata": {"release_date": release_date} if release_date else {}}
     except Exception as exc:
         logger.debug("MusicBrainz single detection failed for %s / %s: %s", artist, title, exc)
-        return {"source": "musicbrainz", "matched": False, "confidence": 0.0, "metadata": {}}
+        return {"source": "musicbrainz", "matched": False, "confidence": 0.0,
+                "metadata": {}, "error": True}
 
 
 def _detect_discogs(title: str, artist: str, album: str | None,
@@ -398,7 +399,8 @@ def _detect_discogs(title: str, artist: str, album: str | None,
                 "metadata": metadata}
     except Exception as exc:
         logger.debug("Discogs single detection failed for %s / %s: %s", artist, title, exc)
-        return {"source": "discogs", "matched": False, "confidence": 0.0, "metadata": {}}
+        return {"source": "discogs", "matched": False, "confidence": 0.0,
+                "metadata": {}, "error": True}
 
 
 def _detect_discogs_video(title: str, artist: str,
@@ -699,6 +701,14 @@ def detect_single_for_track(
     if mr["matched"]:
         musicbrainz_confirmed = True
         reasons.append("musicbrainz_matched")
+    elif mr.get("error"):
+        reasons.append("mb_unavailable")
+
+    # Surface source-API failures so a flaky scan's zero-single verdict is
+    # distinguishable from a genuine miss (the track-stage log shows the
+    # reasons list).
+    if dr.get("error"):
+        reasons.append("discogs_unavailable")
 
     # Discogs official-video evidence (MEDIUM confidence, legacy parity): a
     # track with an official/promo music video on Discogs was issued as a
