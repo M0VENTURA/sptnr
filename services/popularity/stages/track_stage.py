@@ -1193,7 +1193,16 @@ def process_track(
     try:
         insert_or_update_track(track_id, effective_track)
     except Exception as e:
-        logger.debug("[track_stage][DB] %s: %s", track_id, e)
+        # Surface persistence failures — a silent drop here means scores,
+        # single status and metadata never reach the DB while the unified
+        # log still looks healthy (results are returned from memory).
+        logger.warning("[track_stage][DB] Persist failed for %s: %s", track_id, e)
+        try:
+            log_unified(
+                f"[TRACK_STAGE] {track_artist} - {track_title} → DB persist FAILED: {e}"
+            )
+        except Exception:
+            pass
 
     # -------------------------------------------------------------------------
     # 7. RETURN RESULT
