@@ -29,6 +29,22 @@ def register_filters(app):
             return ""
         return re.sub(pattern, replacement, str(value))
 
+    @app.template_filter('safe_id')
+    def safe_id(value):
+        """Sanitize a value into a CSS/HTML id-safe token.
+
+        Keeps letters, digits, underscore and hyphen; every other character
+        (parentheses, slashes, dots, ampersands, ...) becomes an underscore
+        and runs are collapsed — so album names like "MMXX (Hypa Hypa
+        Edition)" yield valid selectors instead of breaking
+        ``querySelector('#collapse-...')``.
+        """
+        import re
+        if value is None:
+            return ""
+        cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value))
+        return re.sub(r"_+", "_", cleaned).strip("_")
+
     @app.template_filter('split_artist_collabs')
     def split_artist_collabs(value):
         """Split collaboration artist strings into individual artist names.

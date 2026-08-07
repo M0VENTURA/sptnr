@@ -2455,7 +2455,11 @@ async def downloads_discover_upcoming():
 
 @ui_bp.route("/artist/<path:name>/corrections")
 async def artist_corrections(name):
-    return await render_template("pages/artist_corrections.html", artist_name=name)
+    from services.metadata.artist_service import get_artist_corrections
+    data, code = get_artist_corrections(unquote(name or "").strip())
+    if code != 200:
+        return jsonify(data), code
+    return await render_template("pages/artist_corrections.html", **data)
 
 
 @ui_bp.route("/artist/<path:name>/genre-management")
