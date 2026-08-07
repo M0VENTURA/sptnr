@@ -37,7 +37,11 @@ class TestAlbumTypeNotClobbered:
         assert "spotify_album_type" not in stripped
         assert "releasetype" not in stripped
         assert stripped["id"] == "t1"
-        assert stripped["title"] == "Song"
+        # Title is dropped too when the track stage didn't rename it: the
+        # album stage renames covers ("Song (Artist Cover)") and live tracks
+        # AFTER track contexts are prepared, so the loaded title is stale and
+        # the upsert would clobber the rename.
+        assert "title" not in stripped
         # Fresh scoring updates ARE applied — the original implementation only
         # copied album-type columns from the payload, silently dropping every
         # freshly-computed score/listener/single-detection value the track
@@ -47,13 +51,15 @@ class TestAlbumTypeNotClobbered:
     def test_strip_album_type_columns_keeps_explicit_updates(self):
         from services.popularity.stages.track_stage import _strip_album_type_columns
 
-        track = {"id": "t1", "musicbrainz_albumtype": ""}
-        payload = {"musicbrainz_albumtype": "single"}
+        track = {"id": "t1", "title": "Old Name", "musicbrainz_albumtype": ""}
+        payload = {"musicbrainz_albumtype": "single", "title": "New Name"}
 
         stripped = _strip_album_type_columns(track, payload)
 
         # If the track stage explicitly produced an album type, it is kept.
         assert stripped["musicbrainz_albumtype"] == "single"
+        # An explicit title rename from the track stage is kept as well.
+        assert stripped["title"] == "New Name"
 
     def test_strip_album_type_columns_applies_fresh_scan_fields(self):
         from services.popularity.stages.track_stage import _strip_album_type_columns
