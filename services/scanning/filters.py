@@ -55,7 +55,7 @@ def should_skip_cached_album(
         return False
     if len(cached_ids_for_album) >= len(tracks):
         if verbose:
-            print(f"   Skipping cached album: {album_name}")
+            logging.getLogger(__name__).info("Skipping cached album: %s", album_name)
         logging.debug("Skipping cached album '%s - %s' by count", artist_name, album_name)
         return True
     if cached_ids_for_album:

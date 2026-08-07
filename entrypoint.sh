@@ -178,6 +178,42 @@ start_web_app() {
     log "  Debug:   /config/debug.log"
     log "  Info:    /config/info.log"
     log "  Scan:    /config/unified_scan.log"
+
+    # Hypercorn writes access/error logs directly (no built-in rotation), so a
+    # long-running instance can grow access.log without bound.  Run a small
+    # background rotator that copytruncates oversized files and keeps a few
+    # numbered backups.  copytruncate is safe here because hypercorn keeps the
+    # file descriptor open across truncation.
+    _rotate_log_if_large() {
+        local file="$1" max_bytes="$2" keep="$3"
+        [ -f "$file" ] || return 0
+        local size
+        size=$(stat -c %s "$file" 2>/dev/null || echo 0)
+        if [ "${size:-0}" -gt "$max_bytes" ]; then
+            local i
+            for i in $(seq $((keep - 1)) -1 1); do
+                if [ -f "$file.$i" ]; then
+                    mv -f "$file.$i" "$file.$((i + 1))" 2>/dev/null || true
+                fi
+            done
+            cp -f "$file" "$file.1" 2>/dev/null || true
+            : > "$file" 2>/dev/null || true
+            log "Rotated oversized log: $file (${size} bytes)"
+        fi
+    }
+    start_log_rotation() {
+        local max_bytes="${SPTNR_ACCESS_LOG_MAX_SIZE:-52428800}"
+        local keep="${SPTNR_ACCESS_LOG_BACKUPS:-3}"
+        (
+            while true; do
+                sleep 300
+                _rotate_log_if_large "${SPTNR_ACCESS_LOG:-/config/access.log}" "$max_bytes" "$keep"
+                _rotate_log_if_large "${SPTNR_ERROR_LOG:-/config/error.log}" "$max_bytes" "$keep"
+            done
+        ) &
+    }
+    start_log_rotation
+
     exec hypercorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class asyncio             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile "${_error_log}"             --log-level "${SPTNR_LOG_LEVEL:-info}"             "app:app"
 }
 

@@ -528,7 +528,7 @@ function updateUnifiedLog() {
   // Abort after 8s so the next poll tick recovers on its own.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
-  fetch("/api/unified-log?lines=150", { signal: controller.signal })
+  fetch("/api/unified-log?lines=200&last_hour=1", { signal: controller.signal })
     .then(r => r.json())
     .then(data => {
       const logEl = document.getElementById("unifiedLog");

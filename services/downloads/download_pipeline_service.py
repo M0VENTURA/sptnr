@@ -40,7 +40,7 @@ from services.infrastructure.filesystem_service import (
 )
 
 from services.queue.queue_processing_service import add_release_tracks_to_queue
-from helpers.logging_config import log_unified
+from helpers.logging_config import log_unified, log_search
 
 logger = logging.getLogger(__name__)
 
@@ -451,6 +451,11 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
     try:
         # ✅ mark processing
         mark_processing(queue_id)
+        _log_queue_event(
+            "searching",
+            f"{expected_artist} - {expected_title} → searching Soulseek",
+            queue_id,
+        )
 
         # ✅ search (allow lower bitrates since scoring handles quality).
         # Legacy parity: try the primary query first, then fallback queries
@@ -496,6 +501,11 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 notes="no_results",
             )
             log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: no_results ({elapsed:.0f}s)")
+            _log_queue_event(
+                "failed",
+                f"{expected_artist} - {expected_title} → failed: no_results ({elapsed:.0f}s)",
+                queue_id,
+            )
             mark_failed(queue_id, "no_results")
             return {"success": False, "status": "no_results"}
 
@@ -516,6 +526,11 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 results=all_results,
             )
             log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: no_qualifying_result ({len(all_results)} candidates)")
+            _log_queue_event(
+                "failed",
+                f"{expected_artist} - {expected_title} → failed: no_qualifying_result ({len(all_results)} candidates)",
+                queue_id,
+            )
             mark_failed(queue_id, "no_qualifying_result")
             return {"success": False, "status": "no_qualifying_result"}
 
@@ -548,6 +563,11 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 results=results,
             )
             log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: peer has no free upload slots")
+            _log_queue_event(
+                "failed",
+                f"{expected_artist} - {expected_title} → failed: peer has no free upload slots",
+                queue_id,
+            )
             mark_failed(queue_id, "peer_no_free_slots")
             return {"success": False, "status": "peer_no_free_slots"}
 
@@ -578,6 +598,11 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             # same peer that just rejected the download.
             _block_peer(best.get("username"), best.get("filename"))
             log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: download_failed ({best.get('username')})")
+            _log_queue_event(
+                "failed",
+                f"{expected_artist} - {expected_title} → failed: download_failed ({best.get('username')})",
+                queue_id,
+            )
             mark_failed(queue_id, "download_failed")
             return {"success": False, "status": "download_failed"}
 
@@ -592,6 +617,11 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             f"[QUEUE] {expected_artist} - {expected_title} → downloading from {best.get('username')} "
             f"({best.get('filename') or ''})"
         )
+        _log_queue_event(
+            "downloading",
+            f"{expected_artist} - {expected_title} → downloading from {best.get('username')} ({best.get('filename') or ''})",
+            queue_id,
+        )
 
         return {
             "success": True,
@@ -603,6 +633,11 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
     except Exception as e:
         logger.error("[PIPELINE] Error processing %s: %s", queue_id, e, exc_info=True)
         log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: {e}")
+        _log_queue_event(
+            "failed",
+            f"{expected_artist} - {expected_title} → failed: {e}",
+            queue_id,
+        )
         mark_failed(queue_id, str(e))
         return {"success": False, "error": str(e)}
 
@@ -642,6 +677,33 @@ def _log_search_event(
         )
     except Exception as exc:
         logger.debug("[PIPELINE] Could not log slskd search event: %s", exc)
+
+    # Persist a compact, human-readable line to search.log so the full search
+    # history can be reviewed under the /logs page.  Kept intentionally small:
+    # the detailed JSON (results/selected) lives in slskd_search_logs.
+    try:
+        artist = (item.get("artist") or "").strip()
+        title = (item.get("title") or "").strip()
+        context = " | ".join(p for p in (artist, title) if p)
+        suffix = ""
+        if notes:
+            suffix = f" ({notes})"
+        log_search(
+            f"[{search_type.upper()}] {query}"
+            + (f" :: {context}" if context else "")
+            + f" → {result_count} results in {round(duration_seconds or 0, 1)}s{suffix}"
+        )
+    except Exception:
+        pass
+
+
+def _log_queue_event(event_type: str, message: str, queue_id: int | None) -> None:
+    """Record a queue event to the in-memory store and ``queue.log``."""
+    try:
+        from services.queue.queue_diagnostics_service import log_queue_event
+        log_queue_event(event_type, message, queue_id=queue_id)
+    except Exception:
+        pass
 
 
 def _queue_item_exists(queue_id: int | None) -> bool:

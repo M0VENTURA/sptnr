@@ -44,6 +44,15 @@ logger = logging.getLogger(__name__)
 
 _MUSIC_ROOT = os.environ.get("MUSIC_ROOT", "/music")
 
+
+def _log_queue_event(event_type: str, message: str, queue_id: int | None) -> None:
+    """Record a queue event to the in-memory store and ``queue.log``."""
+    try:
+        from services.queue.queue_diagnostics_service import log_queue_event
+        log_queue_event(event_type, message, queue_id=queue_id)
+    except Exception:
+        pass
+
 # Files that have been downloading for longer than this with no progress and
 # no file are considered abandoned.
 _STALE_DOWNLOADING_MINUTES = 60
@@ -789,6 +798,7 @@ def check_completed_downloads() -> dict[str, Any]:
                     )
                     stats["imported"] += 1
                     log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → already in library, promoted to imported")
+                    _log_queue_event("imported", f"{item.get('artist') or ''} - {item.get('title') or ''} → already in library, promoted to imported", queue_id)
                     continue
 
                 match_found: str | None = None
@@ -815,6 +825,7 @@ def check_completed_downloads() -> dict[str, Any]:
                             mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
                             stats["failed"] += 1
                             log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)")
+                            _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)", queue_id)
                             continue
 
                 # 2. Exact filename match against filesystem files.
@@ -886,6 +897,7 @@ def check_completed_downloads() -> dict[str, Any]:
                         mark_failed(queue_id, "No file found while marked downloading")
                         stats["failed"] += 1
                         log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: no file found while marked downloading (stale)")
+                        _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: no file found while marked downloading (stale)", queue_id)
                         continue
                     stats["skipped"] += 1
                     continue
@@ -911,6 +923,7 @@ def check_completed_downloads() -> dict[str, Any]:
                         mark_failed(queue_id, f"Pre-copy duration mismatch: expected {expected_dur}s, got {actual_dur}s")
                         stats["failed"] += 1
                         log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: duration mismatch (expected {expected_dur}s, got {actual_dur}s)")
+                        _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: duration mismatch (expected {expected_dur}s, got {actual_dur}s)", queue_id)
                         continue
 
                 # Persist found_filename/file_path now that a file is confirmed.
@@ -923,9 +936,11 @@ def check_completed_downloads() -> dict[str, Any]:
                 if move_result.get("success"):
                     stats["imported"] += 1
                     log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → imported to library (match={match_source})")
+                    _log_queue_event("imported", f"{item.get('artist') or ''} - {item.get('title') or ''} → imported to library (match={match_source})", queue_id)
                 else:
                     stats["errors"] += 1
                     log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → import failed: {move_result.get('error') or 'unknown error'}")
+                    _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → import failed: {move_result.get('error') or 'unknown error'}", queue_id)
 
             except Exception as exc:
                 logger.error("[COMPLETE] Unhandled error processing queue %s: %s", item.get("id"), exc, exc_info=True)

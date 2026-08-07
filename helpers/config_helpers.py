@@ -1495,6 +1495,28 @@ def get_search_quality_config() -> dict[str, Any]:
 # Queue Worker Configuration
 # =============================================================================
 
+def get_logging_config() -> dict[str, Any]:
+    """Get logging configuration.
+
+    Config section: ``logging`` in config.yaml (with a legacy fallback to the
+    top-level ``log_level`` key / ``LOG_LEVEL`` env var).
+
+    Returns:
+        Dict with key ``level`` — one of ``debug``, ``info``, ``warning``,
+        ``error``.  Defaults to ``info`` (debug off).
+    """
+    cfg = get_config()
+    logging_cfg = cfg.get("logging", {}) or {}
+    raw = logging_cfg.get("level") or cfg.get("log_level")
+    if not raw:
+        raw = os.environ.get("LOG_LEVEL") or os.environ.get("SPTNR_LOG_LEVEL") or "info"
+    level = str(raw).strip().lower()
+    valid = {"debug", "info", "warning", "error", "critical"}
+    if level not in valid:
+        level = "info"
+    return {"level": level}
+
+
 def get_queue_worker_config() -> dict[str, Any]:
     """Get background queue worker configuration.
 

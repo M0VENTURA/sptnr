@@ -9,6 +9,46 @@ import logging.config
 from helpers.config_helpers import get_config
 
 
+_VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+
+def _resolve_log_level() -> str:
+    """Resolve the configured root log level (default ``INFO``).
+
+    Debug logging is off by default — it is very verbose and grows ``debug.log``
+    quickly.  The level can be raised from the config page (``logging.level``),
+    the legacy top-level ``log_level`` key, or the ``LOG_LEVEL``/``SPTNR_LOG_LEVEL``
+    env vars.  Anything unrecognised falls back to ``INFO``.
+    """
+    try:
+        cfg = get_config()
+        level = (cfg.get("logging", {}) or {}).get("level") or cfg.get("log_level")
+    except Exception:
+        level = None
+    if not level:
+        level = os.environ.get("LOG_LEVEL") or os.environ.get("SPTNR_LOG_LEVEL") or "INFO"
+    level = str(level).strip().upper()
+    if level not in _VALID_LEVELS:
+        level = "INFO"
+    return level
+
+
+def set_log_level(level: str) -> str:
+    """Update the root logger level at runtime (no restart required).
+
+    Used by the config page so a log-level change applies immediately rather
+    than waiting for the next app restart.
+
+    Returns:
+        The normalized level that was applied (e.g. ``"INFO"``).
+    """
+    level = str(level or "").strip().upper()
+    if level not in _VALID_LEVELS:
+        level = "INFO"
+    logging.getLogger().setLevel(level)
+    return level
+
+
 def resolve_log_dir() -> str:
     """Resolve the directory path for log files safely."""
     try:
@@ -64,6 +104,25 @@ def log_unified(message: str) -> None:
     logging.getLogger("popularr.unified").info(message)
 
 
+def log_queue(message: str) -> None:
+    """Write a download-queue event to ``queue.log``.
+
+    Only queue activity (searching/downloading/completing/failing queue items)
+    belongs in this log.  Soulseek searches are kept separate in ``search.log``.
+    """
+    logging.getLogger("popularr.queue").info(message)
+
+
+def log_search(message: str) -> None:
+    """Write a Soulseek search event to ``search.log``.
+
+    Records every automatic and manual Soulseek search so the full history can
+    be reviewed under the /logs page while the dashboard/monitor only surface
+    the last hour.
+    """
+    logging.getLogger("popularr.search").info(message)
+
+
 class SafePrefixFormatter(logging.Formatter):
     """Appends a service prefix safely without mutating the shared LogRecord."""
     
@@ -103,6 +162,7 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
     """Configure standard dictConfig-based logging."""
     fmt = "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s"
     date_fmt = "%Y-%m-%d %H:%M:%S"
+    root_level = _resolve_log_level()
 
     config = {
         "version": 1,
@@ -157,6 +217,24 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
                 "formatter": "verbose",
                 "level": "DEBUG",
             },
+            "queue_file": {
+                "class": "logging.handlers.TimedRotatingFileHandler",
+                "filename": os.path.join(log_dir, "queue.log"),
+                "when": "midnight",
+                "backupCount": 7,
+                "encoding": "utf-8",
+                "formatter": "unified",
+                "level": "INFO",
+            },
+            "search_file": {
+                "class": "logging.handlers.TimedRotatingFileHandler",
+                "filename": os.path.join(log_dir, "search.log"),
+                "when": "midnight",
+                "backupCount": 7,
+                "encoding": "utf-8",
+                "formatter": "unified",
+                "level": "INFO",
+            },
         },
         "loggers": {
             # Root logger: sends to unified + info + debug files.
@@ -165,13 +243,30 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
             # messages routed to it.
             "": {
                 "handlers": ["unified_file", "info_file", "debug_file"],
-                "level": "DEBUG",
+                # Root level is config-driven and defaults to INFO so verbose
+                # DEBUG output is off by default (debug.log stays quiet until
+                # the operator enables it via config.html / LOG_LEVEL env).
+                "level": root_level,
             },
             # Unified logger: only writes to unified_scan.log, does NOT propagate
             # to root.  Use log_unified() or logging.getLogger("popularr.unified")
             # for human-readable scan progress.
             "popularr.unified": {
                 "handlers": ["unified_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            # Queue logger: only writes to queue.log.  Use log_queue() for
+            # download-queue activity (distinct from Soulseek searches).
+            "popularr.queue": {
+                "handlers": ["queue_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            # Search logger: only writes to search.log.  Use log_search() for
+            # Soulseek search activity (automatic and manual).
+            "popularr.search": {
+                "handlers": ["search_file"],
                 "level": "INFO",
                 "propagate": False,
             },
@@ -212,4 +307,4 @@ def _setup_structlog(service_name: str, log_dir: str) -> None:
     )
 
     # Redirect standard logging to structlog for unified output
-    structlog.stdlib.recreate_defaults(log_level=logging.DEBUG)
+    structlog.stdlib.recreate_defaults(log_level=logging.getLevelName(_resolve_log_level()))
