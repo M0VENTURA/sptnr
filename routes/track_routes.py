@@ -230,6 +230,17 @@ async def api_track_update_metadata():
             set_clause = ", ".join(f"{k} = :{k}" for k in updates)
             params = {**updates, "id": track_id}
             session.execute(text(f"UPDATE tracks SET {set_clause} WHERE CAST(id AS TEXT) = :id"), params)
+
+            # Legacy parity undo: clearing is_live/is_acoustic strips the
+            # "(Live)"/"(Acoustic)" suffix the album stage appended, so
+            # wrongly-detected live tracks can be fixed from the UI.
+            if any(f in updates for f in ("is_live", "is_acoustic")) \
+                    and not (updates.get("is_live") or updates.get("is_acoustic")):
+                try:
+                    from services.popularity.stages.album_stage import revert_track_live_state
+                    revert_track_live_state(track_id)
+                except Exception as revert_err:
+                    logger.debug("Live-state revert failed for %s: %s", track_id, revert_err)
             return jsonify({"success": True, "updated": list(updates.keys())})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

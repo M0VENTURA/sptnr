@@ -1107,6 +1107,7 @@ async def album_detail(artist: str, album: str):
         cover_url = (form.get("cover_art_url") or "").strip()
 
         updated_count = 0
+        reverted_live_count = 0
 
         for track in tracks:
             track_id = track.get("id")
@@ -1178,9 +1179,30 @@ async def album_detail(artist: str, album: str):
                 except Exception as db_err:
                     logger.debug("[album_detail] DB update failed for %s: %s", track_id, db_err)
 
+            # Album type corrected away from live: undo the live/acoustic
+            # tagging (suffix, flags, injected genre) the album stage may
+            # have applied — wrongly-detected live albums keep "(Live)"
+            # titles otherwise. Only an explicit non-live type reverts;
+            # "Unknown" (empty) leaves the state alone.
+            if album_type and "+live" not in album_type.lower() and "(live)" not in album_type.lower():
+                try:
+                    from services.popularity.stages.album_stage import revert_track_live_state
+                    if revert_track_live_state(str(track_id)):
+                        reverted_live_count += 1
+                except Exception as revert_err:
+                    logger.debug(
+                        "[album_detail] Live-state revert failed for %s: %s",
+                        track_id, revert_err,
+                    )
+
         if updated_count > 0:
             await flash(f"Album metadata saved — {updated_count} track(s) updated.", "success")
-        else:
+        if reverted_live_count > 0:
+            await flash(
+                f"Removed \"(Live)\"/\"(Acoustic)\" suffixes from {reverted_live_count} track(s).",
+                "info",
+            )
+        if updated_count == 0 and reverted_live_count == 0:
             await flash("No changes were made.", "info")
 
         # Redirect to the new album name if changed
@@ -2011,6 +2033,25 @@ async def track_detail(track_id: str):
                         params,
                     )
                     db.commit()
+
+                    # Legacy parity undo: un-marking a track as live/acoustic
+                    # must strip the "(Live)"/"(Acoustic)" suffix the album
+                    # stage appended (wrongly-detected live tracks keep the
+                    # suffix otherwise).
+                    if any(f in update_values for f in ("is_live", "is_acoustic")) \
+                            and not (update_values.get("is_live") or update_values.get("is_acoustic")):
+                        try:
+                            from services.popularity.stages.album_stage import revert_track_live_state
+                            if revert_track_live_state(str(track_id)):
+                                await flash(
+                                    "Removed \"(Live)\"/\"(Acoustic)\" suffix from the track title.",
+                                    "info",
+                                )
+                        except Exception as revert_err:
+                            logger.debug(
+                                "Live-state revert failed for %s: %s",
+                                track_id, revert_err,
+                            )
 
                     file_path = track.get("file_path")
                     resolved_path = resolve_music_file_path(file_path)

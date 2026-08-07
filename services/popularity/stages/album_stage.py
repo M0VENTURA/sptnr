@@ -593,6 +593,105 @@ def _apply_live_remix_album_tagging(conn, cursor, artist, album, album_type, tra
         logger.info("[album_stage] Tagged '%s - %s' as remix album", artist, album)
 
 
+# Trailing live/acoustic suffix the album stage appends when tagging live
+# albums ("Song (Live)", "Song (Acoustic)").
+_LIVE_SUFFIX_RE = re.compile(r"\s*\((?:Live|Acoustic)[^)]*\)\s*$", re.IGNORECASE)
+
+
+def strip_live_acoustic_suffix(title: str) -> str:
+    """Remove a trailing ``(Live ...)`` / ``(Acoustic ...)`` suffix."""
+    return _LIVE_SUFFIX_RE.sub("", title or "").strip()
+
+
+def _drop_live_genres_from_json(raw: Any) -> str | None:
+    """Remove injected ``Live``/``Acoustic`` entries from a JSON genre list.
+
+    Returns the new JSON string, or None when nothing changed.
+    """
+    try:
+        if not raw:
+            return None
+        parsed = json.loads(raw) if isinstance(raw, str) else list(raw)
+        kept = [g for g in parsed if str(g).strip().lower() not in ("live", "acoustic")]
+        return json.dumps(kept) if kept != parsed else None
+    except Exception:
+        return None
+
+
+def _drop_live_genres_from_csv(raw: Any) -> str | None:
+    """Remove injected ``Live``/``Acoustic`` entries from a comma list."""
+    try:
+        if not raw:
+            return None
+        parts = [g.strip() for g in str(raw).split(",") if g.strip()]
+        kept = [g for g in parts if g.lower() not in ("live", "acoustic")]
+        return ", ".join(kept) if kept != parts else None
+    except Exception:
+        return None
+
+
+def revert_track_live_state(track_id: str) -> bool:
+    """Undo album-stage live/acoustic tagging for a single track.
+
+    Called when a track is un-marked live (track edit) or its album type
+    changes away from live (album edit): strips the appended
+    ``(Live)``/``(Acoustic)`` suffix, clears ``is_live`` / ``is_acoustic`` /
+    ``album_context_live``, removes the injected ``Live``/``Acoustic`` genre
+    and rewrites the audio file tags. Returns True when anything changed.
+    """
+    try:
+        import os as _os
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT title, file_path, genres, musicbrainz_genres "
+                     "FROM tracks WHERE CAST(id AS TEXT) = :id"),
+                {"id": str(track_id)},
+            ).fetchone()
+            if not row:
+                return False
+            r = row._mapping
+            old_title = str(r.get("title") or "")
+            new_title = strip_live_acoustic_suffix(old_title)
+            new_mb = _drop_live_genres_from_json(r.get("musicbrainz_genres"))
+            new_genres = _drop_live_genres_from_csv(r.get("genres"))
+            session.execute(
+                text("""
+                    UPDATE tracks
+                    SET title = :title, is_live = 0, is_acoustic = 0,
+                        album_context_live = 0,
+                        musicbrainz_genres = COALESCE(:mb, musicbrainz_genres),
+                        genres = COALESCE(:genres, genres)
+                    WHERE CAST(id AS TEXT) = :id
+                """),
+                {"id": str(track_id), "title": new_title or old_title,
+                 "mb": new_mb, "genres": new_genres},
+            )
+            file_path = r.get("file_path")
+
+        if new_title != old_title and file_path:
+            try:
+                from services.metadata.tag_file_service import update_file_tags
+                resolved = str(file_path)
+                if not _os.path.isabs(resolved):
+                    from helpers.config_helpers import get_config
+                    music_root = (get_config().get("music", {}) or {}).get("root") or _os.environ.get("MUSIC_ROOT", "/music")
+                    resolved = _os.path.join(music_root, resolved)
+                if _os.path.exists(resolved):
+                    tags: dict[str, Any] = {"title": new_title or old_title}
+                    if new_genres is not None:
+                        tags["genres"] = [g.strip() for g in new_genres.split(",") if g.strip()]
+                    update_file_tags(resolved, tags)
+            except Exception as tag_err:
+                logger.debug("[album_stage] Live revert tag write failed for %s: %s", track_id, tag_err)
+
+        logger.info("[album_stage] Reverted live/acoustic tagging for track %s ('%s' → '%s')",
+                    track_id, old_title, new_title or old_title)
+        return True
+    except Exception as exc:
+        logger.debug("[album_stage] Live-state revert failed for %s: %s", track_id, exc)
+        return False
+
+
 def _persist_alternate_takes(conn, cursor, album_context) -> None:
     """Mark alternate takes (``alternate_take`` / ``base_track_id``)."""
     alternate_takes = (album_context or {}).get("alternate_takes") or {}
