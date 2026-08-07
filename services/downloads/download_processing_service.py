@@ -22,6 +22,7 @@ from db.engine import db_session
 from db.repositories.queue import (
     insert_queue_item,
     update_queue_item,
+    mark_failed,
     get_completed_queue,
     purge_all,
 )
@@ -551,11 +552,10 @@ def process_queue_item(item: dict[str, Any]) -> dict[str, Any]:
                 log_unified(f"[QUEUE] {(item.get('artist') or '')} - {(item.get('title') or '')} → failed: soulseek_unavailable (slskd disabled/misconfigured)")
             except Exception:
                 pass
-            update_queue_item(
-                queue_id,
-                status="failed",
-                failure_reason="soulseek_unavailable",
-            )
+            # mark_failed (not a raw status update) sets next_retry_at so the
+            # retry scheduler backs off instead of requeueing this item on
+            # every worker cycle while slskd stays down.
+            mark_failed(queue_id, "soulseek_unavailable")
             return {
                 "success": False,
                 "error": "soulseek_unavailable",

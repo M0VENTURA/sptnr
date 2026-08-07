@@ -270,6 +270,7 @@ async function loadFolderGroups(options) {
   if (badge) badge.textContent = total + ' items';
   list.innerHTML = html;
   attachMonitorQueueGroupToggles(list);
+  restoreQueueGroupExpansion(list);
   updateQueuePageControls(total, total);
   await renderUnmatchedFolders(options);
 }
@@ -381,6 +382,34 @@ function attachUnmatchedFolderActions(listEl) {
   });
 }
 
+// ===== Queue group expansion state (shared with downloads.js) =====
+// The auto-refresh poll re-renders the queue list every few seconds; without
+// persisted expansion state every re-render collapses any opened folder.
+window.__expandedQueueGroups = window.__expandedQueueGroups || new Set();
+
+function sanitizeQueueGroupKey(key) {
+  return String(key || 'x').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+window.__sanitizeQueueGroupKey = window.__sanitizeQueueGroupKey || sanitizeQueueGroupKey;
+
+function restoreQueueGroupExpansion(listEl) {
+  if (!listEl) return;
+  var expanded = window.__expandedQueueGroups;
+  var found = new Set();
+  listEl.querySelectorAll('.queue-group-body').forEach(function(body) {
+    found.add(body.id);
+    if (!expanded.has(body.id)) return;
+    body.style.display = 'block';
+    var item = body.closest('.list-group-item');
+    var btn = item && item.querySelector('.queue-group-toggle');
+    var chevron = btn && btn.querySelector('.queue-group-chevron');
+    if (chevron) chevron.classList.add('rotated');
+  });
+  // Drop ids that no longer exist so the set never grows unbounded.
+  expanded.forEach(function(id) { if (!found.has(id)) expanded.delete(id); });
+}
+window.__restoreQueueGroupExpansion = window.__restoreQueueGroupExpansion || restoreQueueGroupExpansion;
+
 function attachMonitorQueueGroupToggles(listEl) {
   if (!listEl) return;
   listEl.querySelectorAll('.queue-group-toggle').forEach(function(btn) {
@@ -395,6 +424,11 @@ function attachMonitorQueueGroupToggles(listEl) {
       var show = body.style.display === 'none' || body.style.display === '';
       body.style.display = show ? 'block' : 'none';
       if (chevron) chevron.classList.toggle('rotated', show);
+      if (show) {
+        window.__expandedQueueGroups.add(body.id);
+      } else {
+        window.__expandedQueueGroups.delete(body.id);
+      }
     });
   });
 }
@@ -457,7 +491,7 @@ function renderMonitorQueueItemRow(item) {
 }
 
 function renderMonitorQueueGroupRow(group, index) {
-  var bodyId = 'monQueueGroupBody_' + index;
+  var bodyId = 'monQueueGroupBody_' + sanitizeQueueGroupKey(group.key);
   var items = group.items;
   var total = items.length;
 

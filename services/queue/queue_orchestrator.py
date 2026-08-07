@@ -62,8 +62,6 @@ class MaintenanceCandidate:
 
 CLAIM_STATUS = "searching"
 
-DEFAULT_FAILURE_STATUS = "failed"
-
 # These are terminal-ish statuses that should not be processed by the worker
 # even if a repository query accidentally returns them.
 DO_NOT_PROCESS_STATUSES = {
@@ -303,22 +301,25 @@ def _mark_failed(
 ) -> dict[str, Any] | None:
     """
     Mark an item failed through the repository.
+
+    Delegates to ``mark_failed`` (not a raw status update) so the retry
+    scheduler's backoff field (``next_retry_at``) is always set — items
+    failed without it are requeued on the very next maintenance cycle,
+    producing a failed → queued → failed churn loop.
     """
     queue_id = _item_id(item)
 
     if not queue_id:
         return None
 
-    update_fields: dict[str, Any] = {
-        "status": DEFAULT_FAILURE_STATUS,
-        "failure_reason": reason,
-    }
-
-    if clear_file_path:
-        update_fields["file_path"] = None
-
     try:
-        return _as_dict(queue_repository.update_queue_item(queue_id, **update_fields))
+        failed = queue_repository.mark_failed(
+            int(queue_id),
+            str(reason or "Queue item processor failed"),
+        )
+        if failed and clear_file_path:
+            queue_repository.update_queue_item(int(queue_id), file_path=None)
+        return _as_dict(failed) if failed else None
     except Exception:
         logger.exception("Failed to mark queue item %s as failed", queue_id)
         return None

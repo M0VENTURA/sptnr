@@ -1860,6 +1860,7 @@ async function renderQueueSection() {
   if (badge) badge.textContent = total + ' items';
   list.innerHTML = html;
   attachQueueGroupToggles(list);
+  restoreQueueGroupExpansion(list);
   if (typeof updateQueuePageControls === 'function') updateQueuePageControls(total, total);
 }
 
@@ -1969,6 +1970,7 @@ function renderQueueList(kind, items) {
   });
   listEl.innerHTML = '<div class="list-group list-group-flush">' + rows.join('') + '</div>';
   attachQueueGroupToggles(listEl);
+  restoreQueueGroupExpansion(listEl);
 }
 
 // Build album groups from a flat list of queue items.
@@ -2066,7 +2068,7 @@ function renderQueueItemRow(item, kind) {
 
 // Render an album folder header with its tracks as child queue items.
 function renderQueueGroupRow(group, kind, index) {
-  const bodyId = 'queueGroupBody_' + kind + '_' + index;
+  const bodyId = 'queueGroupBody_' + kind + '_' + sanitizeQueueGroupKey(group.key);
   const items = group.items;
   const total = items.length;
 
@@ -2120,6 +2122,34 @@ function renderQueueGroupRow(group, kind, index) {
     '</div>';
 }
 
+// ===== Queue group expansion state (shared with monitor.js) =====
+// The auto-refresh poll re-renders the queue list; without persisted
+// expansion state every re-render collapses any opened folder.
+window.__expandedQueueGroups = window.__expandedQueueGroups || new Set();
+
+function sanitizeQueueGroupKey(key) {
+  return String(key || 'x').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+window.__sanitizeQueueGroupKey = window.__sanitizeQueueGroupKey || sanitizeQueueGroupKey;
+
+function restoreQueueGroupExpansion(listEl) {
+  if (!listEl) return;
+  const expanded = window.__expandedQueueGroups;
+  const found = new Set();
+  listEl.querySelectorAll('.queue-group-body').forEach(function(body) {
+    found.add(body.id);
+    if (!expanded.has(body.id)) return;
+    body.style.display = 'block';
+    const item = body.closest('.list-group-item');
+    const btn = item && item.querySelector('.queue-group-toggle');
+    const chevron = btn && btn.querySelector('.queue-group-chevron');
+    if (chevron) chevron.classList.add('rotated');
+  });
+  // Drop ids that no longer exist so the set never grows unbounded.
+  expanded.forEach(function(id) { if (!found.has(id)) expanded.delete(id); });
+}
+window.__restoreQueueGroupExpansion = window.__restoreQueueGroupExpansion || restoreQueueGroupExpansion;
+
 function attachQueueGroupToggles(listEl) {
   if (!listEl) return;
   listEl.querySelectorAll('.queue-group-toggle').forEach(function(btn) {
@@ -2130,6 +2160,11 @@ function attachQueueGroupToggles(listEl) {
       const show = body.style.display === 'none' || body.style.display === '';
       body.style.display = show ? 'block' : 'none';
       if (chevron) chevron.classList.toggle('rotated', show);
+      if (show) {
+        window.__expandedQueueGroups.add(body.id);
+      } else {
+        window.__expandedQueueGroups.delete(body.id);
+      }
     });
   });
 }
