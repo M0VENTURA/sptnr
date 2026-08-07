@@ -38,38 +38,7 @@ def run_auto_discovery_cycle() -> Dict[str, Any]:
     """
     # 1. Get files from the scan service (no DB logic here)
     discovered = download_scan_service.discover_audio_files()
-    
-    # 2. Get state for deduplication
-    existing_signatures = queue_repo.get_active_queue_signatures()
-    
-    stats = {'queued': 0, 'already_in_queue': 0}
-    
-    for file_info in discovered:
-        # Check against DB using repo helpers
-        existing = queue_repo.find_existing_discovered_file(
-            file_path=file_info.full_path,
-            filename=file_info.filename,
-            rel_path=file_info.rel_path
-        )
-        
-        if existing:
-            stats['already_in_queue'] += 1
-            continue
-            
-        # Add new item via repo
-        queue_repo.insert_discovered_file(
-            artist="Unknown", # Extract via metadata_reader in your loop
-            title=file_info.filename,
-            album="Unknown",
-            album_artist=None,
-            track_number=None,
-            disc_number=None,
-            year=None,
-            duration=None,
-            file_path=file_info.full_path,
-            filename=file_info.filename,
-            import_group="default"
-        )
-        stats['queued'] += 1
-        
-    return stats
+
+    # 2. Dedupe against the queue and insert new items (shared with the
+    #    manual "Discover Files" action).
+    return download_scan_service.enqueue_discovered_files(discovered)
