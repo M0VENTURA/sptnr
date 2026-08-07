@@ -2377,10 +2377,12 @@ async def discover():
 @ui_bp.route("/downloads/monitor")
 async def downloads_monitor():
     cfg = get_config()
+    from services.infrastructure.filesystem_service import resolve_downloads_dir
     return await render_template(
         "pages/downloads/monitor.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
+        downloads_dir=resolve_downloads_dir(prefer_music_subfolder=False),
     )
 
 

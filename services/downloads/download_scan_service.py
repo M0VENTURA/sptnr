@@ -60,8 +60,14 @@ _last_discovered_count: int | None = None
 
 
 def discover_audio_files() -> list[DiscoveredFile]:
-    """Filesystem-only scan for audio files."""
-    downloads_dir = resolve_torrents_dir()
+    """Filesystem-only scan for audio files across the configured downloads root.
+
+    Scans the configured root directly — NOT the ``Music``/``torrents``
+    subfolder preferences — so albums landing anywhere under the downloads
+    folder are discovered.  The recursive walk covers subfolders including
+    ``Music`` anyway.
+    """
+    downloads_dir = resolve_downloads_dir(prefer_music_subfolder=False)
     if not os.path.isdir(downloads_dir):
         logger.warning("Downloads directory not found: %s", downloads_dir)
         return []
