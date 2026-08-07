@@ -1202,8 +1202,11 @@ def process_track(
     return {
         "track_id": track_id,
         "artist": track_artist,
-        "album": effective_track.get("album", ""),
-        "title": effective_track.get("title", ""),
+        "album": track.get("album") or effective_track.get("album", ""),
+        # ``_strip_album_type_columns`` drops the stale title (the album
+        # stage owns renames), but the in-memory loaded title is the correct
+        # display value for the result/summary.
+        "title": track.get("title") or effective_track.get("title") or "",
         "lastfm_listeners": int(lastfm_listeners or 0),
         "listenbrainz_listens": int(listenbrainz_listens or 0),
         "lb_percentile": float(lb_percentile or 0.0),
