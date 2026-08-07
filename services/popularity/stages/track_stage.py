@@ -196,169 +196,7 @@ def process_track(
         lb_percentile = float(track.get("lb_percentile") or 0)
 
     # -------------------------------------------------------------------------
-    # 1. METADATA - MusicBrainz (via enrichment service for better matching)
-    # -------------------------------------------------------------------------
-
-    if not popularity_only and not frozen_track and not singles_detection_only:
-        try:
-            title = _as_str(track.get("title"))
-            artist = _as_str(track.get("artist"))
-
-            if title and artist:
-                # The per-track MusicBrainz lookup is the dominant per-track
-                # API cost — skip it when the track already has a resolved
-                # recording MBID and the scan isn't forced (metadata is
-                # stable between scans).
-                _has_mbid = bool(
-                    _as_str(track.get("recording_mbid") or track.get("mbid") or track.get("musicbrainz_trackid"))
-                )
-                _has_genres = bool(
-                    track.get("musicbrainz_genres") or track.get("musicbrainz_tags") or track.get("discogs_genres")
-                )
-                _force_meta = bool(options.get("force"))
-                mb_data = None
-                if _has_mbid and not _force_meta:
-                    logger.debug("[track_stage] Skipping MB metadata lookup for %s (MBID already resolved)", track_id)
-                else:
-                    mb_service = MusicBrainzService()
-                    mb_data = mb_service.lookup_recording_metadata(title, artist)
-                    if not mb_data:
-                        logger.debug(
-                            "[track_stage] MB metadata lookup returned nothing for %s (%s - %s)",
-                            track_id, artist, title,
-                        )
-
-                if mb_data:
-                    logger.debug(
-                        "[track_stage] MB metadata for %s (%s - %s): mbid=%s confidence=%s title=%r album=%r",
-                        track_id, artist, title,
-                        mb_data.get("recording_mbid") or "-",
-                        mb_data.get("confidence"),
-                        mb_data.get("title"),
-                        mb_data.get("album"),
-                    )
-                    recording_mbid = mb_data.get("recording_mbid")
-                    confidence = mb_data.get("confidence")
-
-                    if recording_mbid:
-                        update_payload["recording_mbid"] = recording_mbid
-                        update_payload["mbid"] = recording_mbid
-                    if confidence is not None:
-                        update_payload["musicbrainz_confidence"] = confidence
-
-                    # Writer backfill from MusicBrainz work relationships
-                    # (legacy composer lookup parity) — only when missing.
-                    if recording_mbid:
-                        _existing_writer = _as_str(track.get("writer") or "")
-                        if not _existing_writer or _existing_writer.strip().lower() in ("[]", "null", "none", ""):
-                            try:
-                                writers = mb_service.get_composers_for_recording(recording_mbid)
-                                if writers:
-                                    import json
-                                    update_payload["writer"] = json.dumps(writers)
-                            except Exception as exc:
-                                logger.debug("[track_stage][WRITER] %s: %s", track_id, exc)
-                    if mb_data.get("title"):
-                        update_payload["musicbrainz_title"] = mb_data["title"]
-                    # Persist the resolved artist MBID (from the recording's
-                    # artist-credit) so the single-detection service can use the
-                    # reliable artist-scoped release-group search instead of
-                    # falling back to fuzzier per-recording matching. Only set
-                    # when the track doesn't already carry one — user edits win.
-                    _artist_mbid = mb_data.get("artist_mbid")
-                    if _artist_mbid and not _as_str(track.get("musicbrainz_artistid") or track.get("musicbrainz_artist_id")):
-                        update_payload["musicbrainz_artistid"] = _artist_mbid
-                    if mb_data.get("album"):
-                        # Use the folder name from file_path as the primary
-                        # reference for album matching — it reflects the actual
-                        # file structure and is more reliable than the `album`
-                        # column (which may have been overwritten by a previous
-                        # bad MusicBrainz match). Falls back to the existing
-                        # `album` column if file_path is not available.
-                        existing_album = _as_str(track.get("album") or "")
-                        fp = _as_str(track.get("file_path") or "")
-                        folder_name = ""
-                        if fp:
-                            import os as _os
-                            # Extract parent folder name from file path
-                            # e.g. "/music/Artist/Album/track.flac" → "Album"
-                            parts = _os.path.normpath(fp).split(_os.sep)
-                            if len(parts) >= 2:
-                                folder_name = parts[-2]
-                        primary_ref = folder_name or existing_album
-
-                        mb_album = _as_str(mb_data["album"])
-                        match_ratio = 0.0
-                        if primary_ref and mb_album:
-                            from difflib import SequenceMatcher
-                            match_ratio = SequenceMatcher(None, primary_ref.lower(), mb_album.lower()).ratio()
-                            if match_ratio >= 0.6:
-                                update_payload["album"] = mb_album
-                            elif folder_name and existing_album:
-                                # If MB doesn't match the folder, check if old
-                                # album column is closer — keep existing if so
-                                old_ratio = SequenceMatcher(None, existing_album.lower(), mb_album.lower()).ratio()
-                                if old_ratio >= 0.6:
-                                    update_payload["album"] = mb_album
-                        elif mb_album:
-                            update_payload["album"] = mb_album
-
-                        if not update_payload.get("album"):
-                            logger.debug(
-                                "[track_stage] Skipping album rename (folder='%s', album='%s') → '%s' (ratio=%.2f)",
-                                folder_name or "?", existing_album, mb_album, match_ratio,
-                            )
-                    if mb_data.get("artist"):
-                        update_payload["artist"] = mb_data["artist"]
-                    if mb_data.get("year"):
-                        update_payload["year"] = mb_data["year"]
-
-            # Also fetch genre/tag data from MusicBrainz via genre-aware endpoint
-            if title and artist and (not _has_genres or _force_meta):
-                try:
-                    mb_raw = MusicBrainzHttpClient()
-                    recs = mb_raw.search_recordings_with_genres(
-                        f'artist:"{artist.replace(chr(34), "")}" AND recording:"{title.replace(chr(34), "")}"',
-                        limit=3,
-                    )
-                    if recs:
-                        rec = recs[0]
-                        mb_genres = rec.get("genres") or []
-                        mb_tags = rec.get("tags") or []
-                        if mb_genres:
-                            update_payload["musicbrainz_genres"] = [
-                                g.get("name", "") for g in mb_genres if g.get("name")
-                            ]
-                        if mb_tags:
-                            update_payload["musicbrainz_tags"] = [
-                                t.get("name", "") for t in mb_tags if t.get("name")
-                            ]
-                except Exception as e:
-                    logger.debug("[track_stage][MB_GENRE] %s: %s", track_id, e)
-
-            # Fetch Discogs genres for the track
-            if title and artist and (not _has_genres or _force_meta):
-                try:
-                    from api_clients.discogs_http import DiscogsHttpClient
-                    discogs = DiscogsHttpClient(token="")
-                    results = discogs.search_database({
-                        "q": f'{artist} {title}',
-                        "type": "release",
-                        "per_page": 3,
-                    })
-                    if results and len(results) > 0:
-                        genres = results[0].get("genre", []) or []
-                        styles = results[0].get("style", []) or []
-                        if genres or styles:
-                            update_payload["discogs_genres"] = list(set(genres + styles))
-                except Exception as e:
-                    logger.debug("[track_stage][DISCOGS_GENRE] %s: %s", track_id, e)
-
-        except Exception as e:
-            logger.debug("[track_stage][MB] %s: %s", track_id, e)
-
-    # -------------------------------------------------------------------------
-    # 2. POPULARITY (via updated api_clients)
+    # 1. POPULARITY (via updated api_clients)
     # -------------------------------------------------------------------------
 
     if not metadata_only and not singles_detection_only:
@@ -845,51 +683,7 @@ def process_track(
             pass
 
     # -------------------------------------------------------------------------
-    # 3. COVER DETECTION (via enrichment service)
-    # -------------------------------------------------------------------------
-
-    if not popularity_only and not singles_detection_only:
-        try:
-            title = _as_str(effective_track.get("title") or track.get("title") or "")
-            if title:
-                # Pass existing DB cover state so already-confirmed covers
-                # are skipped on subsequent scans (unless the scan options
-                # indicate a forced re-check).
-                raw_track = track_context.get("track", {}) if isinstance(track_context, dict) else {}
-                cover_data = {
-                    "is_cover": raw_track.get("is_cover") or track.get("is_cover"),
-                    "original_cover_artist": raw_track.get("original_cover_artist") or "",
-                    "cover_manual_override": raw_track.get("cover_manual_override") or track.get("cover_manual_override") or False,
-                }
-                force_cover = bool(options.get("force_cover_detection"))
-                is_cover, reason = detect_cover_song(
-                    title, track_artist,
-                    track_data=cover_data,
-                    force=force_cover,
-                )
-                if is_cover:
-                    update_payload["is_cover"] = True
-                    update_payload["is_cover_reason"] = reason
-                    # Legacy parity: confirmed covers get the "Cover" genre
-                    # prepended to their genre list (the old scanner injected
-                    # it into musicbrainz_genres during the scan).
-                    _mbg = update_payload.get("musicbrainz_genres")
-                    if isinstance(_mbg, str):
-                        try:
-                            import json as _json
-                            _mbg = _json.loads(_mbg)
-                        except Exception:
-                            _mbg = []
-                    if isinstance(_mbg, list):
-                        update_payload["musicbrainz_genres"] = ["Cover"] + [g for g in _mbg if g != "Cover"]
-                    else:
-                        update_payload["musicbrainz_genres"] = ["Cover"]
-                    log_unified(f"[TRACK_STAGE] {track_artist} - {track_title} → cover detected ({reason})")
-        except Exception as e:
-            logger.debug("[track_stage][COVER] %s: %s", track_id, e)
-
-    # -------------------------------------------------------------------------
-    # 4. SINGLES DETECTION
+    # 2. SINGLES DETECTION
     # -------------------------------------------------------------------------
 
     # Freshness gate: once singles detection has run for a track and the scan
@@ -1095,6 +889,212 @@ def process_track(
             log_unified(
                 f"[TRACK_STAGE] {track_artist} - {track_title} → single detection ERROR: {e}"
             )
+
+    # -------------------------------------------------------------------------
+    # 3. METADATA - MusicBrainz (via enrichment service for better matching)
+    # -------------------------------------------------------------------------
+
+    if not popularity_only and not frozen_track and not singles_detection_only:
+        try:
+            title = _as_str(track.get("title"))
+            artist = _as_str(track.get("artist"))
+
+            if title and artist:
+                # The per-track MusicBrainz lookup is the dominant per-track
+                # API cost — skip it when the track already has a resolved
+                # recording MBID and the scan isn't forced (metadata is
+                # stable between scans).
+                _has_mbid = bool(
+                    _as_str(track.get("recording_mbid") or track.get("mbid") or track.get("musicbrainz_trackid"))
+                )
+                _has_genres = bool(
+                    track.get("musicbrainz_genres") or track.get("musicbrainz_tags") or track.get("discogs_genres")
+                )
+                _force_meta = bool(options.get("force"))
+                mb_data = None
+                if _has_mbid and not _force_meta:
+                    logger.debug("[track_stage] Skipping MB metadata lookup for %s (MBID already resolved)", track_id)
+                else:
+                    mb_service = MusicBrainzService()
+                    mb_data = mb_service.lookup_recording_metadata(title, artist)
+                    if not mb_data:
+                        logger.debug(
+                            "[track_stage] MB metadata lookup returned nothing for %s (%s - %s)",
+                            track_id, artist, title,
+                        )
+
+                if mb_data:
+                    logger.debug(
+                        "[track_stage] MB metadata for %s (%s - %s): mbid=%s confidence=%s title=%r album=%r",
+                        track_id, artist, title,
+                        mb_data.get("recording_mbid") or "-",
+                        mb_data.get("confidence"),
+                        mb_data.get("title"),
+                        mb_data.get("album"),
+                    )
+                    recording_mbid = mb_data.get("recording_mbid")
+                    confidence = mb_data.get("confidence")
+
+                    if recording_mbid:
+                        update_payload["recording_mbid"] = recording_mbid
+                        update_payload["mbid"] = recording_mbid
+                    if confidence is not None:
+                        update_payload["musicbrainz_confidence"] = confidence
+
+                    # Writer backfill from MusicBrainz work relationships
+                    # (legacy composer lookup parity) — only when missing.
+                    if recording_mbid:
+                        _existing_writer = _as_str(track.get("writer") or "")
+                        if not _existing_writer or _existing_writer.strip().lower() in ("[]", "null", "none", ""):
+                            try:
+                                writers = mb_service.get_composers_for_recording(recording_mbid)
+                                if writers:
+                                    import json
+                                    update_payload["writer"] = json.dumps(writers)
+                            except Exception as exc:
+                                logger.debug("[track_stage][WRITER] %s: %s", track_id, exc)
+                    if mb_data.get("title"):
+                        update_payload["musicbrainz_title"] = mb_data["title"]
+                    # Persist the resolved artist MBID (from the recording's
+                    # artist-credit) so the single-detection service can use the
+                    # reliable artist-scoped release-group search instead of
+                    # falling back to fuzzier per-recording matching. Only set
+                    # when the track doesn't already carry one — user edits win.
+                    _artist_mbid = mb_data.get("artist_mbid")
+                    if _artist_mbid and not _as_str(track.get("musicbrainz_artistid") or track.get("musicbrainz_artist_id")):
+                        update_payload["musicbrainz_artistid"] = _artist_mbid
+                    if mb_data.get("album"):
+                        # Use the folder name from file_path as the primary
+                        # reference for album matching — it reflects the actual
+                        # file structure and is more reliable than the `album`
+                        # column (which may have been overwritten by a previous
+                        # bad MusicBrainz match). Falls back to the existing
+                        # `album` column if file_path is not available.
+                        existing_album = _as_str(track.get("album") or "")
+                        fp = _as_str(track.get("file_path") or "")
+                        folder_name = ""
+                        if fp:
+                            import os as _os
+                            # Extract parent folder name from file path
+                            # e.g. "/music/Artist/Album/track.flac" → "Album"
+                            parts = _os.path.normpath(fp).split(_os.sep)
+                            if len(parts) >= 2:
+                                folder_name = parts[-2]
+                        primary_ref = folder_name or existing_album
+
+                        mb_album = _as_str(mb_data["album"])
+                        match_ratio = 0.0
+                        if primary_ref and mb_album:
+                            from difflib import SequenceMatcher
+                            match_ratio = SequenceMatcher(None, primary_ref.lower(), mb_album.lower()).ratio()
+                            if match_ratio >= 0.6:
+                                update_payload["album"] = mb_album
+                            elif folder_name and existing_album:
+                                # If MB doesn't match the folder, check if old
+                                # album column is closer — keep existing if so
+                                old_ratio = SequenceMatcher(None, existing_album.lower(), mb_album.lower()).ratio()
+                                if old_ratio >= 0.6:
+                                    update_payload["album"] = mb_album
+                        elif mb_album:
+                            update_payload["album"] = mb_album
+
+                        if not update_payload.get("album"):
+                            logger.debug(
+                                "[track_stage] Skipping album rename (folder='%s', album='%s') → '%s' (ratio=%.2f)",
+                                folder_name or "?", existing_album, mb_album, match_ratio,
+                            )
+                    if mb_data.get("artist"):
+                        update_payload["artist"] = mb_data["artist"]
+                    if mb_data.get("year"):
+                        update_payload["year"] = mb_data["year"]
+
+            # Also fetch genre/tag data from MusicBrainz via genre-aware endpoint
+            if title and artist and (not _has_genres or _force_meta):
+                try:
+                    mb_raw = MusicBrainzHttpClient()
+                    recs = mb_raw.search_recordings_with_genres(
+                        f'artist:"{artist.replace(chr(34), "")}" AND recording:"{title.replace(chr(34), "")}"',
+                        limit=3,
+                    )
+                    if recs:
+                        rec = recs[0]
+                        mb_genres = rec.get("genres") or []
+                        mb_tags = rec.get("tags") or []
+                        if mb_genres:
+                            update_payload["musicbrainz_genres"] = [
+                                g.get("name", "") for g in mb_genres if g.get("name")
+                            ]
+                        if mb_tags:
+                            update_payload["musicbrainz_tags"] = [
+                                t.get("name", "") for t in mb_tags if t.get("name")
+                            ]
+                except Exception as e:
+                    logger.debug("[track_stage][MB_GENRE] %s: %s", track_id, e)
+
+            # Fetch Discogs genres for the track
+            if title and artist and (not _has_genres or _force_meta):
+                try:
+                    from api_clients.discogs_http import DiscogsHttpClient
+                    discogs = DiscogsHttpClient(token="")
+                    results = discogs.search_database({
+                        "q": f'{artist} {title}',
+                        "type": "release",
+                        "per_page": 3,
+                    })
+                    if results and len(results) > 0:
+                        genres = results[0].get("genre", []) or []
+                        styles = results[0].get("style", []) or []
+                        if genres or styles:
+                            update_payload["discogs_genres"] = list(set(genres + styles))
+                except Exception as e:
+                    logger.debug("[track_stage][DISCOGS_GENRE] %s: %s", track_id, e)
+
+        except Exception as e:
+            logger.debug("[track_stage][MB] %s: %s", track_id, e)
+
+    # -------------------------------------------------------------------------
+    # 4. COVER DETECTION (via enrichment service)
+    # -------------------------------------------------------------------------
+
+    if not popularity_only and not singles_detection_only:
+        try:
+            title = _as_str(effective_track.get("title") or track.get("title") or "")
+            if title:
+                # Pass existing DB cover state so already-confirmed covers
+                # are skipped on subsequent scans (unless the scan options
+                # indicate a forced re-check).
+                raw_track = track_context.get("track", {}) if isinstance(track_context, dict) else {}
+                cover_data = {
+                    "is_cover": raw_track.get("is_cover") or track.get("is_cover"),
+                    "original_cover_artist": raw_track.get("original_cover_artist") or "",
+                    "cover_manual_override": raw_track.get("cover_manual_override") or track.get("cover_manual_override") or False,
+                }
+                force_cover = bool(options.get("force_cover_detection"))
+                is_cover, reason = detect_cover_song(
+                    title, track_artist,
+                    track_data=cover_data,
+                    force=force_cover,
+                )
+                if is_cover:
+                    update_payload["is_cover"] = True
+                    update_payload["is_cover_reason"] = reason
+                    # Legacy parity: confirmed covers get the "Cover" genre
+                    # prepended to their genre list (the old scanner injected
+                    # it into musicbrainz_genres during the scan).
+                    _mbg = update_payload.get("musicbrainz_genres")
+                    if isinstance(_mbg, str):
+                        try:
+                            import json as _json
+                            _mbg = _json.loads(_mbg)
+                        except Exception:
+                            _mbg = []
+                    if isinstance(_mbg, list):
+                        update_payload["musicbrainz_genres"] = ["Cover"] + [g for g in _mbg if g != "Cover"]
+                    else:
+                        update_payload["musicbrainz_genres"] = ["Cover"]
+                    log_unified(f"[TRACK_STAGE] {track_artist} - {track_title} → cover detected ({reason})")
+        except Exception as e:
+            logger.debug("[track_stage][COVER] %s: %s", track_id, e)
 
     # -------------------------------------------------------------------------
     # 5. GENRE AGGREGATION (using enrichment service)

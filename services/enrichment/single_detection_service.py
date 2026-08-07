@@ -495,23 +495,7 @@ def _detect_lastfm(artist: str, album: str, title: str, lastfm_client=None) -> b
             return True
     except Exception:
         pass
-    # Search-based fallback: match Single/EP releases by the same artist
-    # whose title normalises to the track (suffix "- Single"/"- EP" stripped;
-    # brackets are stripped by the normaliser).
-    try:
-        if hasattr(lastfm_client, "search_album"):
-            target = normalize_title_for_lookup(title)
-            for alb in lastfm_client.search_album(title, artist=artist, limit=30) or []:
-                alb_name = str(alb.get("name") or "").strip()
-                if not alb_name:
-                    continue
-                base = re.sub(
-                    r"\s*[-–—]?\s*(?:single|ep)\s*$", "", alb_name, flags=re.IGNORECASE
-                ).strip()
-                if normalize_title_for_lookup(base) == target:
-                    return True
-    except Exception:
-        pass
+    # Album-track-count evidence: 1-3 tracks = single, 4-6 = EP (title-track).
     try:
         count = lastfm_client.get_album_track_count(artist, album)
         if 1 <= count <= 3:
@@ -522,7 +506,27 @@ def _detect_lastfm(artist: str, album: str, title: str, lastfm_client=None) -> b
             except Exception:
                 return True  # borderline EP — treat as single
     except Exception:
-        pass
+        count = 0
+    # Search-based fallback — only when the cheap album-count evidence did
+    # not settle it: Last.fm often stores the single under a suffixed release
+    # name ("Knightclub - Single") while ``album.getInfo`` with the track
+    # title resolves to the full LP (a 20-track "Knightclub").  ``album.search``
+    # surfaces those Single/EP rows directly.
+    if count == 0 or count >= 7:
+        try:
+            if hasattr(lastfm_client, "search_album"):
+                target = normalize_title_for_lookup(title)
+                for alb in lastfm_client.search_album(title, artist=artist, limit=30) or []:
+                    alb_name = str(alb.get("name") or "").strip()
+                    if not alb_name:
+                        continue
+                    base = re.sub(
+                        r"\s*[-–—]?\s*(?:single|ep)\s*$", "", alb_name, flags=re.IGNORECASE
+                    ).strip()
+                    if normalize_title_for_lookup(base) == target:
+                        return True
+        except Exception:
+            pass
     return False
 
 

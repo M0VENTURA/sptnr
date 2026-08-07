@@ -752,6 +752,56 @@ def run_scan(
 
             tracks_processed += 1
 
+        # ── Cover song detection (metadata enrichment, post-track) ───────
+        # The full CoverDetector pipeline (ISRC → MusicBrainz cover relations
+        # → writer analysis → heuristics → work-history fallback) runs AFTER
+        # the per-track pipeline — including singles detection — so the heavy
+        # per-track MusicBrainz work (throttled at 1 req/sec) never stalls
+        # the album-art / popularity phase.  Verdicts are cached per track
+        # via ``cover_last_checked`` (re-checked after 90 days or when
+        # forced).  Skipped in singles/popularity-only passes; disable via
+        # ``features.cover_detection_enabled``.
+        _run_covers = (
+            not options.get("singles_only")
+            and not options.get("singles_with_missing_popularity")
+            and not options.get("popularity_only")
+        )
+        if _run_covers and track_dicts:
+            try:
+                from helpers.config_helpers import get_feature
+                _covers_enabled = bool(get_feature("cover_detection_enabled", True))
+            except Exception:
+                _covers_enabled = True
+            if _covers_enabled:
+                _cover_conn = None
+                try:
+                    from db.utils import get_db_connection
+                    from services.enrichment.cover_detection_service import detect_covers_for_album
+                    _cover_conn = get_db_connection()
+                    _cover_results = detect_covers_for_album(
+                        album=album,
+                        artist=artist,
+                        tracks=track_dicts,
+                        conn=_cover_conn,
+                        force=bool(options.get("force")),
+                    )
+                    if _cover_results:
+                        logger.info(
+                            "[COVER_DETECT] %s - %s: %d cover(s) found",
+                            artist, album, len(_cover_results),
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "[scan_runner] Cover detection failed for '%s - %s': %s",
+                        artist, album, exc,
+                    )
+                finally:
+                    if _cover_conn is not None:
+                        try:
+                            _cover_conn.close()
+                        except Exception:
+                            pass
+
         # Record completion for this album scan
         try:
             record_scan(scan_type, "completed", message=f"{scan_type} scan: {artist} - {album}", artist=artist, album=album)

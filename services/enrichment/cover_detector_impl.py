@@ -17,10 +17,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from api_clients.musicbrainz_http import MusicBrainzHttpClient
+from db.utils import row_get
 from db.repositories.cover_detection_repository import (
     apply_cover_metadata_batch,
     get_track_genres,
@@ -51,6 +53,26 @@ _COVER_SUFFIX_RE = re.compile(r'\s*\([^)]+\s+cover\)\s*$', re.IGNORECASE)
 _COMPILATION_ARTIST_NAMES = frozenset({
     'various artists', 'various', 'v/a', 'va', 'compilation', 'soundtrack',
 })
+
+# How long a "cover checked" verdict is trusted before the heavy per-track
+# MusicBrainz pipeline re-runs (each MB call is throttled to 1/sec, so a
+# 20-track album costs minutes of wall time).  Cover relations rarely
+# change; a forced scan bypasses the cache entirely.
+COVER_RECHECK_DAYS = 90
+
+
+def _checked_fresh(checked_ts: Any) -> bool:
+    """True when the cover-verdict timestamp is within the recheck window."""
+    if not checked_ts:
+        return False
+    try:
+        if isinstance(checked_ts, str):
+            checked_ts = datetime.fromisoformat(str(checked_ts).replace("Z", "+00:00"))
+        if checked_ts.tzinfo is None:
+            checked_ts = checked_ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - checked_ts).days < COVER_RECHECK_DAYS
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -130,17 +152,27 @@ class CoverDetector:
         # every track when doing release-level fallback lookups.
         _release_cache: Dict[str, dict] = {}
 
-        # Step 0: skip tracks already fully confirmed (unless forced).
+        # Step 0: skip tracks already fully confirmed, and tracks assessed
+        # recently (unless forced).  The cover-verdict cache avoids re-running
+        # the per-track MusicBrainz pipeline (throttled at 1 req/sec) on every
+        # scan — cover status rarely changes.
+        _fresh_skipped: Set[str] = set()
         if not force:
+            checked_map = self._load_cover_checked_map([t.get("id") for t in tracks])
             for track in tracks:
                 tid = track.get("id")
                 if not tid:
                     continue
+                if _checked_fresh(track.get("cover_last_checked") or checked_map.get(tid)):
+                    _fresh_skipped.add(tid)
+                    seen_track_ids.add(tid)
+                    continue
                 if self._is_already_confirmed_cover(track) or self._cover_has_original_artist(track):
                     seen_track_ids.add(tid)
 
-        # Step 1: collect writer info for all tracks.
-        track_writers = self._collect_track_writers(tracks, artist)
+        # Step 1: collect writer info for all tracks (confirmed covers need no
+        # writer data — their writers are only consumed by steps 4/5).
+        track_writers = self._collect_track_writers(tracks, artist, seen_track_ids)
 
         # Step 2: ISRC-based matching (fastest, highest confidence).
         for track in tracks:
@@ -332,6 +364,26 @@ class CoverDetector:
                         update.get("title", ""), update.get("original_artist")
                     )
                     self._update_file_metadata(fp, new_title, ["Cover"])
+
+        # Persist the assessment marker for every track this pass actually
+        # assessed (fresh-cache skips are already up to date) so subsequent
+        # scans skip the heavy per-track MB pipeline until the recheck window.
+        if self.db_conn:
+            try:
+                assessed = [
+                    str(t.get("id")) for t in tracks
+                    if t.get("id") and str(t.get("id")) not in _fresh_skipped
+                ]
+                if assessed:
+                    cur = self.db_conn.cursor()
+                    cur.execute(
+                        "UPDATE tracks SET cover_last_checked = %s WHERE id IN (%s)"
+                        % ("%s", ",".join(["%s"] * len(assessed))),
+                        [datetime.now(timezone.utc).isoformat()] + assessed,
+                    )
+                    self.db_conn.commit()
+            except Exception as exc:
+                logger.debug("cover_last_checked persist failed: %s", exc)
 
         logger.info("Cover detection complete: %d covers found in '%s'", len(cover_results), album)
         return cover_results
@@ -707,12 +759,40 @@ class CoverDetector:
     # Writer & band-member helpers
     # ------------------------------------------------------------------
 
-    def _collect_track_writers(self, tracks: List[Dict], album_artist: str) -> Dict[str, Dict]:
-        """Collect writer/composer info for all tracks in an album."""
+    def _load_cover_checked_map(self, track_ids: List[Any]) -> Dict[str, Any]:
+        """Load ``cover_last_checked`` for the album's tracks (one DB query)."""
+        ids = [str(t) for t in track_ids if t]
+        if not ids or not self.db_conn:
+            return {}
+        try:
+            cur = self.db_conn.cursor()
+            cur.execute(
+                "SELECT id, cover_last_checked FROM tracks WHERE id IN (%s)"
+                % ",".join(["%s"] * len(ids)),
+                ids,
+            )
+            return {
+                str(row_get(row, "id", 0, "")): row_get(row, "cover_last_checked", 1)
+                for row in cur.fetchall() or []
+            }
+        except Exception as exc:
+            logger.debug("cover_last_checked load failed: %s", exc)
+            return {}
+
+    def _collect_track_writers(
+        self, tracks: List[Dict], album_artist: str, seen_track_ids: Optional[Set[str]] = None,
+    ) -> Dict[str, Dict]:
+        """Collect writer/composer info for all tracks in an album.
+
+        Tracks already resolved (confirmed covers, fresh cover-verdict cache)
+        are skipped — their writers are only consumed by the writer-based
+        detection steps, which skip them too.
+        """
+        seen_track_ids = seen_track_ids or set()
         result: Dict[str, Dict] = {}
         for track in tracks:
             tid = track.get("id")
-            if not tid:
+            if not tid or tid in seen_track_ids:
                 continue
             writers = self._get_track_writers(track)
             title = track.get("title", "Unknown")

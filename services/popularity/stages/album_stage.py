@@ -873,41 +873,11 @@ def enrich_album(
         # The per-track check in track_stage only matches title/composer
         # patterns; this album-level pass runs the full pipeline (ISRC →
         # MusicBrainz cover relations → writer analysis → heuristics →
-        # work-history fallback), resolves the ORIGINAL artist and renames
-        # confirmed covers to "Title (Artist Cover)" in the DB and file
-        # tags. Skipped in singles/popularity-only passes; disable via
-        # ``features.cover_detection_enabled``.
-        _run_covers = (
-            not options.get("singles_only")
-            and not options.get("singles_with_missing_popularity")
-            and not options.get("popularity_only")
-        )
-        if _run_covers and album_tracks:
-            try:
-                from helpers.config_helpers import get_feature
-                _covers_enabled = bool(get_feature("cover_detection_enabled", True))
-            except Exception:
-                _covers_enabled = True
-            if _covers_enabled:
-                try:
-                    from services.enrichment.cover_detection_service import detect_covers_for_album
-                    _cover_results = detect_covers_for_album(
-                        album=album,
-                        artist=artist,
-                        tracks=album_tracks,
-                        conn=conn,
-                        force=bool(options.get("force")),
-                    )
-                    if _cover_results:
-                        logger.info(
-                            "[COVER_DETECT] %s - %s: %d cover(s) found",
-                            artist, album, len(_cover_results),
-                        )
-                except Exception as exc:
-                    logger.debug(
-                        "[album_stage] Cover detection failed for '%s - %s': %s",
-                        artist, album, exc,
-                    )
+        # work-history fallback) — MOVED to the scan runner's post-track
+        # phase (runs after the per-track singles detection) so the heavy
+        # per-track MusicBrainz pipeline (throttled at 1 req/sec) never
+        # stalls the album-art / popularity phase.  Verdicts are cached per
+        # track via ``cover_last_checked``.
 
         conn.commit()
     except Exception as exc:
