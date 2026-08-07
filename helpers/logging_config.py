@@ -9,6 +9,46 @@ import logging.config
 from helpers.config_helpers import get_config
 
 
+_VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+
+def _resolve_log_level() -> str:
+    """Resolve the configured root log level (default ``INFO``).
+
+    Debug logging is off by default — it is very verbose and grows ``debug.log``
+    quickly.  The level can be raised from the config page (``logging.level``),
+    the legacy top-level ``log_level`` key, or the ``LOG_LEVEL``/``SPTNR_LOG_LEVEL``
+    env vars.  Anything unrecognised falls back to ``INFO``.
+    """
+    try:
+        cfg = get_config()
+        level = (cfg.get("logging", {}) or {}).get("level") or cfg.get("log_level")
+    except Exception:
+        level = None
+    if not level:
+        level = os.environ.get("LOG_LEVEL") or os.environ.get("SPTNR_LOG_LEVEL") or "INFO"
+    level = str(level).strip().upper()
+    if level not in _VALID_LEVELS:
+        level = "INFO"
+    return level
+
+
+def set_log_level(level: str) -> str:
+    """Update the root logger level at runtime (no restart required).
+
+    Used by the config page so a log-level change applies immediately rather
+    than waiting for the next app restart.
+
+    Returns:
+        The normalized level that was applied (e.g. ``"INFO"``).
+    """
+    level = str(level or "").strip().upper()
+    if level not in _VALID_LEVELS:
+        level = "INFO"
+    logging.getLogger().setLevel(level)
+    return level
+
+
 def resolve_log_dir() -> str:
     """Resolve the directory path for log files safely."""
     try:
@@ -122,6 +162,7 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
     """Configure standard dictConfig-based logging."""
     fmt = "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s"
     date_fmt = "%Y-%m-%d %H:%M:%S"
+    root_level = _resolve_log_level()
 
     config = {
         "version": 1,
@@ -202,7 +243,10 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
             # messages routed to it.
             "": {
                 "handlers": ["unified_file", "info_file", "debug_file"],
-                "level": "DEBUG",
+                # Root level is config-driven and defaults to INFO so verbose
+                # DEBUG output is off by default (debug.log stays quiet until
+                # the operator enables it via config.html / LOG_LEVEL env).
+                "level": root_level,
             },
             # Unified logger: only writes to unified_scan.log, does NOT propagate
             # to root.  Use log_unified() or logging.getLogger("popularr.unified")
@@ -263,4 +307,4 @@ def _setup_structlog(service_name: str, log_dir: str) -> None:
     )
 
     # Redirect standard logging to structlog for unified output
-    structlog.stdlib.recreate_defaults(log_level=logging.DEBUG)
+    structlog.stdlib.recreate_defaults(log_level=logging.getLevelName(_resolve_log_level()))

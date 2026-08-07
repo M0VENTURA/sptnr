@@ -77,6 +77,21 @@ def add_to_queue(
             **kwargs,
         )
 
+        # Record the queue-add to queue.log + the in-memory store so the
+        # monitor's Queue Activity view captures every enqueue.
+        try:
+            from services.queue.queue_diagnostics_service import log_queue_event
+            queue_id = item.get("id") if isinstance(item, dict) else None
+            log_queue_event(
+                "queued",
+                f"{artist.strip()} - {title.strip()}"
+                + (f" [{album.strip()}]" if album and album.strip() else ""),
+                queue_id=queue_id,
+                source=source,
+            )
+        except Exception:
+            pass
+
         # If it was a duplicate, skip the wake-up signal
         if item.get("already_queued"):
             return {"success": True, "already_queued": True, "item": item}

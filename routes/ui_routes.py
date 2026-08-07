@@ -2208,6 +2208,16 @@ async def config_save_json():
         return jsonify({"success": False, "error": "Invalid JSON body"}), 400
     success = save_config(data)
     if success:
+        # Apply a changed log level immediately (no restart required).
+        try:
+            from helpers.logging_config import set_log_level
+            log_cfg = data.get("logging") or {}
+            level = log_cfg.get("level") or data.get("log_level")
+            if level:
+                applied = set_log_level(level)
+                logger.info("[CONFIG] Log level set to %s", applied)
+        except Exception as exc:
+            logger.warning("[CONFIG] Could not apply log level at runtime: %s", exc)
         return jsonify({"success": True})
     return jsonify({"error": "Failed to save config"}), 500
 

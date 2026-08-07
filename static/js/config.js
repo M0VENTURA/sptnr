@@ -149,6 +149,9 @@ function buildConfigObject() {
 
   return {
     navidrome_users: navidrome_users,
+    logging: {
+      level: getValue('log_level', 'info').toLowerCase()
+    },
     qbittorrent: {
       enabled: getChecked('qbit_enabled'),
       web_url: getValue('qbit_web_url'),

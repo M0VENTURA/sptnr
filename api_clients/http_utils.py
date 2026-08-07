@@ -10,10 +10,13 @@ compatibility.
 
 from __future__ import annotations
 
+import logging
 import ssl
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class _RetryTransport(httpx.BaseTransport):
@@ -116,11 +119,21 @@ def create_retry_client(
     if user_agent:
         headers["User-Agent"] = user_agent
 
+    def _log_request(request: httpx.Request) -> None:
+        logger.debug("[HTTP] >>> %s %s", request.method, request.url)
+
+    def _log_response(response: httpx.Response) -> None:
+        logger.debug("[HTTP] <<< %s %s → %s (%.1fs)", response.request.method, response.request.url, response.status_code, response.elapsed.total_seconds())
+
     client = httpx.Client(
         transport=transport,
         timeout=httpx.Timeout(timeout),
         headers=headers,
         verify=verify,
+        event_hooks={
+            "request": [_log_request],
+            "response": [_log_response],
+        },
     )
 
     return client

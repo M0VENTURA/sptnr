@@ -93,7 +93,9 @@ class Settings(BaseSettings):
     # ── Gunicorn / Hypercorn ──────────────────────────────────────────────
     bind: str = Field(default="0.0.0.0:5000")
     workers: int = Field(default=4)
-    log_level: str = Field(default="debug")
+    # Root log level. Debug is intentionally off by default (verbose + large
+    # debug.log); enable via config.html or POPULARLR_LOG_LEVEL for troubleshooting.
+    log_level: str = Field(default="info")
 
     # ── Scan ──────────────────────────────────────────────────────────────
     scan_interval: int = Field(default=360, description="Scan interval in minutes")
