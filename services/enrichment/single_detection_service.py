@@ -305,6 +305,24 @@ def _get_lb_artist_context_cached(artist_mbid: str) -> dict:
     return _lb_artist_context_cache[artist_mbid]
 
 
+def _is_promo_only_group(group: dict[str, Any]) -> bool:
+    """True when EVERY release of a release-group is promotional.
+
+    MusicBrainz editors tag promo-only releases with status "Promotion"
+    (e.g. "+44 - Cliff Diving").  A promo-only single is genuine
+    confirmation the track was issued as a single, but it is promotional
+    evidence — weaker than a commercial single (mirrors the Discogs
+    promo downgrade).
+    """
+    releases = group.get("releases") or []
+    statuses = [
+        str(r.get("status") or "").strip().lower()
+        for r in releases
+        if isinstance(r, dict) and r.get("status")
+    ]
+    return bool(statuses) and all(s == "promotion" for s in statuses)
+
+
 def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                         album_track_count: int | None, mb_client=None,
                         mb_cached_singles: set | None = None) -> dict[str, Any]:
@@ -321,6 +339,7 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
             mb_client = MusicBrainzHttpClient()
 
         matched = False
+        promo_only = False
         # Preferred path: scope the search to the artist's own singles/EPs
         # release-groups when the artist MBID is known. Far more reliable than
         # fuzzy recording title matching, and immune to recording-split issues
@@ -361,6 +380,7 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                     # residual punctuation/case drift between sources.
                     if norm_rg == target or _SM(None, norm_rg, target).ratio() >= 0.85:
                         matched = True
+                        promo_only = _is_promo_only_group(group)
                         break
             except Exception as exc:
                 logger.debug("Artist-scoped MB single lookup failed for %s / %s: %s", artist, title, exc)
@@ -382,8 +402,13 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                     release_date = mb_client.get_single_release_date(title, artist, artist_mbid=artist_mbid)
             except Exception:
                 pass
+        metadata: dict[str, Any] = {}
+        if release_date:
+            metadata["release_date"] = release_date
+        if matched and promo_only:
+            metadata["is_promo"] = True
         return {"source": "musicbrainz", "matched": matched, "confidence": 0.9 if matched else 0.0,
-                "metadata": {"release_date": release_date} if release_date else {}}
+                "metadata": metadata}
     except Exception as exc:
         logger.debug("MusicBrainz single detection failed for %s / %s: %s", artist, title, exc)
         return {"source": "musicbrainz", "matched": False, "confidence": 0.0,
@@ -543,7 +568,7 @@ def determine_final_status(
     is_title_track: bool = False, is_compilation: bool = False,
     zscore_high: float = 1.0, zscore_medium: float = 0.6,
     high_sources: int | None = None, medium_sources: int | None = None,
-    discogs_promo: bool = False,
+    discogs_promo: bool = False, musicbrainz_promo: bool = False,
 ) -> str:
     """Final single status based on source detection and z-score analysis.
 
@@ -551,11 +576,11 @@ def determine_final_status(
     boundaries (``single_detection.zscore_high_threshold`` /
     ``zscore_medium_threshold``). ``high_sources`` / ``medium_sources``
     optionally override the source-confidence counts (used to honour the
-    per-source ``source_*_confidence`` config knobs). ``discogs_promo`` marks
-    a Discogs confirmation that came from a promo-only release — promotional
-    evidence caps the verdict at 'medium' unless an independent
-    high-confidence source also confirms. Returns ``'high'``, ``'medium'``,
-    or ``'none'``.
+    per-source ``source_*_confidence`` config knobs). ``discogs_promo`` /
+    ``musicbrainz_promo`` mark a confirmation that came from a promo-only
+    release — promotional evidence caps the verdict at 'medium' unless an
+    independent high-confidence source also confirms. Returns ``'high'``,
+    ``'medium'``, or ``'none'``.
     """
     max_z = max(album_z, artist_z)
     if high_sources is not None and medium_sources is not None:
@@ -570,6 +595,11 @@ def determine_final_status(
     # parity: promo releases resolved to medium. With no independent high
     # source the verdict is capped at 'medium' regardless of z-score band.
     if discogs_promo and high == 0:
+        return 'medium'
+    # Same for MusicBrainz promo-only release groups (status "Promotion",
+    # e.g. "+44 - Cliff Diving"): promotional evidence caps at 'medium' unless
+    # an independent high-confidence source also confirms.
+    if musicbrainz_promo and high == 0:
         return 'medium'
 
     # Z-score above the high boundary. 'high' needs real external
@@ -788,6 +818,9 @@ def detect_single_for_track(
         reasons.append("musicbrainz_matched")
     elif mr.get("error"):
         reasons.append("mb_unavailable")
+    # Promo-only release groups (status "Promotion") are weaker evidence than
+    # a commercial single — downgraded to a MEDIUM source below.
+    musicbrainz_promo = bool((mr.get("metadata") or {}).get("is_promo"))
 
     # Surface source-API failures so a flaky scan's zero-single verdict is
     # distinguishable from a genuine miss (the track-stage log shows the
@@ -927,6 +960,8 @@ def detect_single_for_track(
         _level = _levels.get(_src, "high")
         if _src == "discogs" and discogs_promo and _level == "high":
             _level = "medium"
+        if _src == "musicbrainz" and musicbrainz_promo and _level == "high":
+            _level = "medium"
         if _level == "high":
             high_sources += 1
         else:
@@ -969,6 +1004,7 @@ def detect_single_for_track(
         high_sources=high_sources,
         medium_sources=medium_sources,
         discogs_promo=discogs_promo,
+        musicbrainz_promo=musicbrainz_promo,
     )
 
     # Soft z-gate cap: low-scoring tracks need two+ high-confidence sources to
