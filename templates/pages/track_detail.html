@@ -105,7 +105,7 @@
                             <strong>
                                 {% if track.stars %}
                                     <span class="badge badge-success">{{ track.stars }}★</span>
-                                    {% if track.is_single == 1 and (track.single_confidence or '')|lower == 'high' %}
+                                    {% if track.is_single == 1 %}
                                         <span class="badge bg-info ms-1">Single</span>
                                     {% endif %}
                                 {% else %}—{% endif %}

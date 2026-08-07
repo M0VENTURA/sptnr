@@ -709,9 +709,9 @@
                                     {% endif %}
                                 </td>
                                 <td class="d-none d-lg-table-cell text-center">
-                                    {% if track.is_single == 1 and (track.single_confidence or '')|lower == 'high' %}
+                                    {% if track.is_single == 1 %}
                                         <span class="badge bg-info">Single</span>
-                                    {% elif track.stars == 5 and (track.is_single == 0 or (track.single_confidence or '')|lower != 'high') %}
+                                    {% elif track.stars == 5 and track.is_single == 0 %}
                                         <span class="badge bg-success">Popular</span>
                                     {% else %}
                                         <span class="text-muted">—</span>
@@ -895,9 +895,9 @@
                                 {% endif %}
                             </td>
                             <td class="d-none d-lg-table-cell text-center">
-                                {% if track.is_single == 1 and (track.single_confidence or '')|lower == 'high' %}
+                                {% if track.is_single == 1 %}
                                     <span class="badge bg-info">Single</span>
-                                {% elif track.stars == 5 and (track.is_single == 0 or (track.single_confidence or '')|lower != 'high') %}
+                                {% elif track.stars == 5 and track.is_single == 0 %}
                                     <span class="badge bg-success">Popular</span>
                                 {% else %}
                                     <span class="text-muted">—</span>
