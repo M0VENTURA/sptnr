@@ -2208,6 +2208,16 @@ async def config_save_json():
         return jsonify({"success": False, "error": "Invalid JSON body"}), 400
     success = save_config(data)
     if success:
+        # Apply a changed log level immediately (no restart required).
+        try:
+            from helpers.logging_config import set_log_level
+            log_cfg = data.get("logging") or {}
+            level = log_cfg.get("level") or data.get("log_level")
+            if level:
+                applied = set_log_level(level)
+                logger.info("[CONFIG] Log level set to %s", applied)
+        except Exception as exc:
+            logger.warning("[CONFIG] Could not apply log level at runtime: %s", exc)
         return jsonify({"success": True})
     return jsonify({"error": "Failed to save config"}), 500
 
@@ -2220,11 +2230,23 @@ def config_migrate_postgres():
 @ui_bp.route("/logs")
 async def logs():
     from helpers.logging_config import resolve_log_dir
+    # Only surface logs that are actively written to.  Unused leftovers
+    # (app.log, queue_processor.log) and unrelated files are hidden so the
+    # /logs page stays a clean list of what the system actually produces.
+    _USED_LOG_FILES = {
+        "unified_scan.log",  # scanning progress
+        "info.log",
+        "debug.log",
+        "queue.log",         # download queue activity
+        "search.log",        # soulseek searches
+        "access.log",        # hypercorn access log
+        "error.log",         # hypercorn / app errors
+    }
     log_dir = resolve_log_dir()
     log_files = []
     if os.path.isdir(log_dir):
         for f in sorted(os.listdir(log_dir)):
-            if f.endswith(".log"):
+            if f.endswith(".log") and f in _USED_LOG_FILES:
                 full = os.path.join(log_dir, f)
                 size = os.path.getsize(full) if os.path.isfile(full) else 0
                 log_files.append({"name": f, "path": full, "size": size})

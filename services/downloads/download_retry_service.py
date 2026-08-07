@@ -184,9 +184,13 @@ def run_retry_manager_with_navidrome_check(
                                     )
                                 result["already_in_navidrome"] += 1
                                 result["completed"] += 1
+                                logger.info(
+                                    "[RETRY] Queue %s (%s - %s) already in Navidrome — marked completed",
+                                    queue_id, artist, title,
+                                )
                                 continue
-                    except Exception:
-                        pass
+                    except Exception as nav_err:
+                        logger.debug("[RETRY] Navidrome check failed for %s: %s", queue_id, nav_err)
 
                 # Apply the standard retry logic.
                 retry_count = int(item.get("retry_count") or 0)
@@ -208,5 +212,14 @@ def run_retry_manager_with_navidrome_check(
     except Exception as exc:
         logger.error("[RETRY] Fatal error: %s", exc)
         result["errors"].append(str(exc))
+
+    logger.info(
+        "[RETRY] Pass complete: retried=%s completed=%s already_in_navidrome=%s method_switched=%s errors=%s",
+        result["retried"],
+        result["completed"],
+        result["already_in_navidrome"],
+        result["method_switched"],
+        len(result["errors"]),
+    )
 
     return result

@@ -52,6 +52,19 @@ except Exception:
 
 setup_logging("WebUI")
 
+# Log the effective logging configuration so operators can confirm where logs
+# land and whether debug is enabled.
+try:
+    import logging
+    from helpers.logging_config import resolve_log_dir, _resolve_log_level
+    logging.getLogger(__name__).info(
+        "Logging ready: dir=%s level=%s",
+        resolve_log_dir(),
+        _resolve_log_level(),
+    )
+except Exception:
+    pass
+
 # Initialise the SQLAlchemy engine early so the pool is ready before any
 # request or background worker needs it.
 if _sqlalchemy_available:

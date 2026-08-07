@@ -20,6 +20,54 @@ qbit_bp = Blueprint("qbit_api", __name__, url_prefix="/api/qbittorrent")
 slsk_bp = Blueprint("slsk_api", __name__, url_prefix="/api/slsk")
 
 
+# =============================================================================
+# MANUAL SEARCH LOGGING
+# =============================================================================
+
+# Tracks the most recently reported result count per search so the manual
+# search log does not spam a line for every poll of the same search.
+_manual_search_state: dict = {}
+_manual_search_lock = threading.Lock()
+
+
+def _log_manual_search_event(
+    *,
+    search_type: str,
+    query: str,
+    result_count: int = 0,
+    duration_seconds: float | None = None,
+    notes: str | None = None,
+    selected_result: dict | None = None,
+) -> None:
+    """Record a manual Soulseek search to ``search.log`` and the search DB.
+
+    Keeps manual searches visible in the monitor's Soulseek Search Log and
+    the /logs page alongside automatic pipeline searches.
+    """
+    try:
+        from helpers.logging_config import log_search
+        suffix = f" ({notes})" if notes else ""
+        log_search(
+            f"[{search_type.upper()}] {query} → {result_count} results"
+            + (f" in {round(duration_seconds or 0, 1)}s" if duration_seconds else "")
+            + suffix
+        )
+    except Exception:
+        pass
+    try:
+        from db.repositories.search_logs import log_slskd_search
+        log_slskd_search(
+            search_type=search_type,
+            query=query,
+            result_count=result_count,
+            duration_seconds=duration_seconds,
+            notes=notes,
+            selected_result=selected_result,
+        )
+    except Exception:
+        pass
+
+
 def _normalize_slskd_query(value: str) -> str:
     text = str(value or "")
     text = text.replace("\\u0026", " ").replace("&amp;", " ").replace("&", " ")
@@ -67,8 +115,21 @@ async def slskd_search():
     try:
         from api_clients.slskd_http import SlskdHttpClient
         client = SlskdHttpClient(web_url, api_key)
+        started = time.time()
         search_id = client.start_search(query, timeout=20)
         if search_id:
+            with _manual_search_lock:
+                _manual_search_state[search_id] = {
+                    "query": query,
+                    "last_result_count": -1,
+                }
+            _log_manual_search_event(
+                search_type="manual",
+                query=query,
+                result_count=0,
+                duration_seconds=round(time.time() - started, 1),
+                notes="search_started",
+            )
             return jsonify({"success": True, "search_id": search_id})
         return jsonify({"success": False, "error": "Search failed to start"}), 500
     except Exception as exc:
@@ -112,6 +173,21 @@ def slskd_search_results(search_id):
         from api_clients.slskd_http import SlskdHttpClient
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
         results = client.get_search_results(search_id, timeout=10)
+        count = len(results or [])
+
+        # Log manual search results when the count first settles, without
+        # spamming a line for every 1s poll of the same search.
+        with _manual_search_lock:
+            state = _manual_search_state.get(search_id)
+            if state is not None and count != state.get("last_result_count", -1):
+                state["last_result_count"] = count
+                _log_manual_search_event(
+                    search_type="manual",
+                    query=state.get("query") or search_id,
+                    result_count=count,
+                    notes="results_returned",
+                )
+
         return jsonify({"success": True, "results": results or []})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -133,6 +209,13 @@ async def slskd_download():
         from api_clients.slskd_http import SlskdHttpClient
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
         result = client.enqueue_download(username, filename)
+        _log_manual_search_event(
+            search_type="manual",
+            query=f"{username} - {filename}",
+            result_count=1,
+            notes="selected_for_download",
+            selected_result={"username": username, "filename": filename},
+        )
         return jsonify({"success": True, "result": result})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

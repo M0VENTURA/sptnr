@@ -36,36 +36,6 @@ def _read_last_lines(path, max_lines, chunk_size=65536, max_bytes=4 * 1024 * 102
             data = fh.read(read_size) + data
     return data.decode("utf-8", errors="ignore").splitlines()[-max_lines:]
 
-def _resolve_log_path(log_type: str) -> str | None:
-    log_dir = resolve_log_dir()
-    mapping = {
-        "unified": "unified_scan.log",
-        "info": "info.log",
-        "debug": "debug.log",
-    }
-    base_name = mapping.get(log_type)
-    if not base_name:
-        return None
-        
-    full_path = os.path.join(log_dir, base_name)
-    # Check for rotated files too
-    for p in [full_path] + glob.glob(full_path + "*"):
-        if os.path.exists(p):
-            return p
-    return None
-
-# =============================================================================
-# ✅ LOG ACCESS
-# =============================================================================
-
-def _scheduler_noise_filter() -> re.Pattern:
-    """Scheduler bookkeeping that must never surface in the dashboard log."""
-    return re.compile(
-        r'APScheduler|job store|Added job|registered .* every .* min|'
-        r'Scheduler started|Scheduler shutdown|Scheduler paused|Scheduler resumed',
-        re.I,
-    )
-
 
 def _filter_lines_last_hour(lines: list[str]) -> list[str]:
     """Keep only lines whose leading timestamp falls within the last hour.
@@ -100,6 +70,36 @@ def _filter_lines_last_hour(lines: list[str]) -> list[str]:
         except Exception:
             kept.append(line)
     return kept
+
+def _resolve_log_path(log_type: str) -> str | None:
+    log_dir = resolve_log_dir()
+    mapping = {
+        "unified": "unified_scan.log",
+        "info": "info.log",
+        "debug": "debug.log",
+    }
+    base_name = mapping.get(log_type)
+    if not base_name:
+        return None
+        
+    full_path = os.path.join(log_dir, base_name)
+    # Check for rotated files too
+    for p in [full_path] + glob.glob(full_path + "*"):
+        if os.path.exists(p):
+            return p
+    return None
+
+# =============================================================================
+# ✅ LOG ACCESS
+# =============================================================================
+
+def _scheduler_noise_filter() -> re.Pattern:
+    """Scheduler bookkeeping that must never surface in the dashboard log."""
+    return re.compile(
+        r'APScheduler|job store|Added job|registered .* every .* min|'
+        r'Scheduler started|Scheduler shutdown|Scheduler paused|Scheduler resumed',
+        re.I,
+    )
 
 
 def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None = None, last_hour: bool = False):

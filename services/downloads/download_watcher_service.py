@@ -88,6 +88,19 @@ def scan_downloads_folder() -> list[dict[str, Any]]:
             logger.error("Error processing %s: %s", file_info.filename, exc)
             results.append({"status": "error", "filename": file_info.filename, "error": str(exc)})
 
+    summary = {"success": 0, "queued": 0, "skipped": 0, "error": 0}
+    for r in results:
+        key = r.get("status")
+        if key in summary:
+            summary[key] += 1
+    logger.info(
+        "Downloads scan complete: %s (success=%s queued=%s skipped=%s error=%s)",
+        downloads_dir,
+        summary["success"],
+        summary["queued"],
+        summary["skipped"],
+        summary["error"],
+    )
     return results
 
 

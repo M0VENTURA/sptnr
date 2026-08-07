@@ -193,6 +193,30 @@
     </div>
   </div>
 
+  <!-- Logging Section -->
+  <div class="card shadow-sm mb-3" id="logging">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-bug-fill"></i> Logging</h5>
+      <small class="text-muted">Control application log verbosity. Log files are viewable on the <a href="/logs" target="_blank">/logs</a> page.</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="form-label" for="log_level">Log Level</label>
+          {% set log_cfg = config.get('logging', {}) %}
+          {% set current_level = (log_cfg.get('level') or config.get('log_level') or 'info') | lower %}
+          <select class="form-select" id="log_level">
+            <option value="debug" {% if current_level == 'debug' %}selected{% endif %}>Debug — most verbose (writes debug.log)</option>
+            <option value="info" {% if current_level == 'info' %}selected{% endif %}>Info (default)</option>
+            <option value="warning" {% if current_level == 'warning' %}selected{% endif %}>Warning</option>
+            <option value="error" {% if current_level == 'error' %}selected{% endif %}>Error only</option>
+          </select>
+          <div class="form-text">Debug is off by default. Enable it only when troubleshooting — it produces large, detailed logs and applies immediately on save.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
         </div><!-- /tab-system -->
 
         <!-- ===== TAB 2: INTEGRATIONS ===== -->
