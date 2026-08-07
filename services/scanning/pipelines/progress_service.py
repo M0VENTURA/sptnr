@@ -19,9 +19,10 @@ import os
 from typing import Any
 
 from services.scanning.scan_state import (
-    get_database_dir,
     read_progress_file,
 )
+
+from helpers.config_helpers import get_state_directory
 
 from services.popularity.progress_tracker import get_state as get_tracker_state
 
@@ -46,8 +47,7 @@ SCAN_TYPES = [
 # -------------------------------------------------------------------------
 
 def _build_progress_path(scan_type: str) -> str:
-    db_dir = get_database_dir()
-    return os.path.join(db_dir, f"{scan_type}_progress.json")
+    return os.path.join(get_state_directory(), f"{scan_type}_progress.json")
 
 
 def _normalise_entry(scan_type: str, state: dict[str, Any]) -> dict[str, Any]:
