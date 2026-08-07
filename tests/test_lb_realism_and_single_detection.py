@@ -18,11 +18,14 @@ import pytest
 class TestDetermineFinalStatusIsCompilation:
     """determine_final_status must not raise NameError on is_compilation."""
 
-    def test_metadata_poor_medium_band_returns_medium(self):
+    def test_metadata_poor_medium_band_returns_none(self):
         from services.enrichment.single_detection_service import determine_final_status
 
-        # Medium-band z-score with no metadata and no compilation previously
-        # raised "name 'is_compilation' is not defined".
+        # Medium-band z-score with NO sources is not single evidence — the
+        # old metadata-poor fallback flagged every mid-album track in the
+        # 0.6-1.0 band (Human Era / Ph4/NT0mA / Buried in Code on Unleash
+        # the Archers - Phantoma). This also guards the original NameError
+        # regression: is_compilation must be handled without raising.
         result = determine_final_status(
             album_z=0.7,
             artist_z=0.7,
@@ -31,7 +34,7 @@ class TestDetermineFinalStatusIsCompilation:
             has_metadata=False,
             is_compilation=False,
         )
-        assert result == "medium"
+        assert result == "none"
 
     def test_compilation_not_flagged_by_medium_band(self):
         from services.enrichment.single_detection_service import determine_final_status
