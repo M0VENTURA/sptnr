@@ -534,11 +534,12 @@ def determine_final_status(
         # least two weak signals corroborate it (legacy parity: the legacy
         # engine required ``medium >= 2`` in this band). A single weak signal
         # (radio edit, ISRC, …) must not flag every mid-album track as a
-        # single. When no metadata matched at all, the popularity signal
-        # itself is the only evidence on metadata-poor albums.
+        # single. Popularity alone is NEVER single evidence — the old
+        # metadata-poor fallback here flagged every mid-album track with a
+        # z-score in the 0.6-1.0 band as a single (Human Era / Ph4/NT0mA /
+        # Buried in Code on Unleash the Archers - Phantoma all got 'medium'
+        # with zero sources).
         if medium >= 2:
-            return 'medium'
-        if not has_metadata and not is_compilation:
             return 'medium'
         return 'none'
 

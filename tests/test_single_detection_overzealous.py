@@ -145,15 +145,18 @@ class TestMediumBandNeedsTwoSources:
             has_metadata=True,
         ) == "high"
 
-    def test_metadata_poor_medium_band_still_medium(self):
-        # Metadata-poor albums keep the popularity-signal fallback.
+    def test_metadata_poor_medium_band_not_single(self):
+        # Medium-band z-score (0.6-1.0) with NO sources at all is NOT single
+        # evidence — the old "metadata-poor" fallback flagged every mid-album
+        # track in the band (Human Era / Ph4/NT0mA / Buried in Code on
+        # Unleash the Archers - Phantoma all got 'medium' with hi=0, med=0).
         assert _final(
             album_z=0.7,
             artist_z=0.7,
             high_sources=0,
             medium_sources=0,
             has_metadata=False,
-        ) == "medium"
+        ) == "none"
 
 
 class TestDurationNotASource:
