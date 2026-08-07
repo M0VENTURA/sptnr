@@ -477,11 +477,11 @@ def api_recent_genre_updates():
 # ===========================================================================
 
 @misc_api_bp.route("/correcting/fix-album-field", methods=["POST"])
-def api_correcting_fix_album_field():
+async def api_correcting_fix_album_field():
     """Apply a single field value to all tracks in an album."""
     try:
         from services.metadata.correction_service import fix_album_field
-        payload = request.get_json(silent=True) or {}
+        payload = (await request.get_json(silent=True)) or {}
         album_artist = (payload.get("album_artist") or "").strip()
         album = (payload.get("album") or "").strip()
         field = (payload.get("field") or "").strip()
@@ -556,10 +556,10 @@ def api_correcting_mb_suggestions():
 
 
 @misc_api_bp.route("/correcting/ignore", methods=["POST"])
-def api_correcting_ignore():
+async def api_correcting_ignore():
     """Persist an ignore rule for a specific (album_artist, album, field)."""
     try:
-        payload = request.get_json(silent=True) or {}
+        payload = (await request.get_json(silent=True)) or {}
         album_artist = (payload.get("album_artist") or "").strip()
         album = (payload.get("album") or "").strip()
         field = (payload.get("field") or "").strip()
@@ -581,16 +581,21 @@ def api_correcting_ignore():
 
 
 @misc_api_bp.route("/correcting/unignore", methods=["POST"])
-def api_correcting_unignore():
+async def api_correcting_unignore():
     """Remove an ignore rule."""
     try:
-        payload = request.get_json(silent=True) or {}
+        payload = (await request.get_json(silent=True)) or {}
         album_artist = (payload.get("album_artist") or "").strip()
         album = (payload.get("album") or "").strip()
         field = (payload.get("field") or "").strip()
         if not album or not field:
             return jsonify({"error": "album and field required"}), 400
         with db_session() as session:
+            session.execute(
+                text("CREATE TABLE IF NOT EXISTS correction_ignores (id SERIAL PRIMARY KEY, "
+                "album_artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL, field TEXT NOT NULL, "
+                "ignored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE (album_artist, album, field))")
+            )
             session.execute(
                 text("DELETE FROM correction_ignores WHERE album = :album AND field = :field AND COALESCE(album_artist, '') = :artist"),
                 {"album": album, "field": field, "artist": album_artist},
@@ -601,10 +606,15 @@ def api_correcting_unignore():
 
 
 @misc_api_bp.route("/correcting/ignores")
-def api_correcting_list_ignores():
+async def api_correcting_list_ignores():
     """Return all active ignore rules."""
     try:
         with db_session() as session:
+            session.execute(
+                text("CREATE TABLE IF NOT EXISTS correction_ignores (id SERIAL PRIMARY KEY, "
+                "album_artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL, field TEXT NOT NULL, "
+                "ignored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE (album_artist, album, field))")
+            )
             result = session.execute(text("SELECT album_artist, album, field, ignored_at FROM correction_ignores"))
             rows = result.fetchall()
         ignores = [{"album_artist": str(r[0] or ""), "album": str(r[1] or ""),

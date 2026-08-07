@@ -33,7 +33,15 @@ def _table_columns(cursor: Any, table_name: str) -> set[str]:
             "WHERE table_schema = current_schema() AND table_name = %s",
             (table_name,),
         )
-        return {str(row[0]) for row in cursor.fetchall() if row[0]}
+        # psycopg2 RealDictRow rows are dict-like — ``row[0]`` raises KeyError,
+        # which made this always return an empty set and silently disable the
+        # whole inconsistency scan. Use ``row_get`` which handles dict-like and
+        # tuple rows.
+        return {
+            str(row_get(row, "column_name"))
+            for row in cursor.fetchall()
+            if row_get(row, "column_name")
+        }
     except Exception:
         return set()
 
@@ -80,9 +88,12 @@ def get_album_tag_inconsistencies(artist_filter: str | None = None) -> list[dict
         has_album_artist = "album_artist" in track_columns
         artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)" if has_album_artist else "artist"
 
+        # Only check fields whose columns actually exist — on a fresh bootstrap
+        # many album-level columns are missing and the whole query would fail
+        # with "column does not exist" (silently swallowed -> page shows nothing).
         effective_fields = [
             (f, lbl) for f, lbl in ALBUM_CONSISTENCY_FIELDS
-            if f != "album_artist" or has_album_artist
+            if f in track_columns
         ]
 
         having_parts = []
