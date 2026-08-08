@@ -14,6 +14,10 @@ from services.popularity.popularity_config import AGE_WEIGHT, LASTFM_WEIGHT, LIS
 
 Z_SCORE_MIDPOINT = 50.0
 Z_SCORE_TO_POPULARITY_SCALE = 16.7
+# Logistic growth rate for the soft-ceiling z-score→popularity mapping.
+# Chosen so the slope at z=0 matches the legacy linear scale (16.7 per z):
+# the derivative of 100/(1+e^{-kz}) at 0 is 25k, so k = 16.7/25 = 0.668.
+Z_SCORE_LOGISTIC_K = Z_SCORE_TO_POPULARITY_SCALE / 25.0
 
 # Log-scale multiplier mapping raw listener/listen counts to a 0-100 score.
 # The previous 22.0 saturated at ~35k listens — every mid-popularity track
@@ -32,8 +36,20 @@ def calculate_track_zscore(score: float, mean_value: float, stddev: float) -> fl
 
 
 def zscore_to_popularity(z_score: float) -> float:
-    """Convert z-score to a 0-100 popularity score."""
-    score = Z_SCORE_MIDPOINT + (z_score * Z_SCORE_TO_POPULARITY_SCALE)
+    """Convert z-score to a 0-100 popularity score with a soft ceiling.
+
+    The legacy linear mapping (``50 + z * 16.7``) clamped at 100 for any
+    z >= 3, so every track well above its artist's median saturated to 100
+    and lost all discrimination (e.g. 128k vs 156k listeners both scored
+    100.0).  Below the midpoint the linear map is kept (it already floors at
+    0 for far-below-median tracks); above it a logistic curve keeps the same
+    slope at z=0 but approaches 100 asymptotically, so genuinely more popular
+    tracks keep a higher score instead of collapsing onto the same ceiling:
+    z=1→66, z=2→79, z=3→88, z=4→93, z=6→98.
+    """
+    if z_score <= 0:
+        return min(100.0, max(0.0, Z_SCORE_MIDPOINT + (z_score * Z_SCORE_TO_POPULARITY_SCALE)))
+    score = 100.0 / (1.0 + math.exp(-Z_SCORE_LOGISTIC_K * z_score))
     return min(100.0, max(0.0, score))
 
 
