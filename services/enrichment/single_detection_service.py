@@ -1078,8 +1078,13 @@ def detect_single_for_track(
     )
 
     # Soft z-gate cap: low-scoring tracks need two+ high-confidence sources to
-    # reach 'high'; a single high source lands at 'medium' instead.
-    if z_low and final == "high" and high_sources < 2:
+    # reach 'high'; a single high source with NO independent corroboration
+    # lands at 'medium' instead.  Medium sources are real metadata
+    # confirmations (MusicBrainz, Last.fm, ISRC, ...), so a high source backed
+    # by any of them keeps the verdict 'high' regardless of z-score — a
+    # confirmed single (e.g. Discogs + MusicBrainz + Last.fm) was demoted to
+    # 'medium'/4★ purely because its score sat below the artist median.
+    if z_low and final == "high" and high_sources < 2 and medium_sources == 0:
         final = "medium"
 
     # `confidence` is a STRING LABEL ('high'/'medium'/'low') — every consumer
