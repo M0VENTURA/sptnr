@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 from typing import Any
 
 from helpers.logging_config import log_unified
@@ -14,6 +16,10 @@ from services.popularity.scan_hooks import (
     prepare_tracks_for_album,
 )
 from services.popularity.popularity_matching import normalize_for_aggregation
+from services.popularity.popularity_math import (
+    apply_album_relative_popularity,
+    apply_track_artist_relative_popularity,
+)
 from services.popularity.popularity_sources import (
     get_lastfm_artist_max_listeners,
 )
@@ -175,6 +181,212 @@ def _run_album_cover_detection(
                 conn.close()
             except Exception:
                 pass
+
+
+def _artist_top_marked_cutoff(scan_scores: list[float], db_scores: list[float]) -> tuple[float | None, int]:
+    """Return ``(cutoff_score, top_n)`` for the artist's top-10% marking.
+
+    The artist's catalogue = this scan's results so far + stored DB scores.
+    ``top_n = ceil(total * 0.10)``; a track whose popularity score is at or
+    above the ``top_n``-th score is ``popularity_marked``.  Returns
+    ``(None, 0)`` when there is no score data to rank.
+    """
+    all_scores = [float(s) for s in scan_scores if float(s or 0) > 0]
+    all_scores.extend(float(s) for s in db_scores if float(s or 0) > 0)
+    if not all_scores:
+        return None, 0
+    all_scores.sort(reverse=True)
+    top_n = max(1, math.ceil(len(all_scores) * 0.10))
+    cutoff = all_scores[min(top_n - 1, len(all_scores) - 1)]
+    return cutoff, top_n
+
+
+def _apply_popularity_marking_bump(album_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Upgrade medium-confidence singles that are ``popularity_marked`` to high.
+
+    Spec rule 3: a track detected as a MEDIUM-confidence single whose popularity
+    score is in the artist's top 10% becomes HIGH confidence.  The flag is
+    surfaced in ``single_sources`` (``popularity_marked``) so the track page's
+    source table shows WHY, and the star-rating pass sees the upgraded
+    confidence.  Returns the (possibly mutated) list.
+    """
+    for tr in album_results:
+        if not bool(tr.get("popularity_marked")):
+            continue
+        if not bool(tr.get("is_single")):
+            continue
+        if str(tr.get("single_confidence") or "low") != "medium":
+            continue
+        tr["single_confidence"] = "high"
+        try:
+            raw = tr.get("single_sources") or ""
+            sources = json.loads(raw) if isinstance(raw, str) and raw.strip() else raw
+            if not isinstance(sources, list):
+                sources = []
+        except Exception:
+            sources = []
+        sources = [
+            s for s in sources
+            if isinstance(s, dict) and str(s.get("source") or "") != "popularity_marked"
+        ]
+        sources.append({"source": "popularity_marked", "matched": True, "confidence": 0.5})
+        tr["single_sources"] = json.dumps(sources, default=str)
+        logger.info(
+            "[scan_runner] Popularity marking upgraded '%s' to high-confidence single (top 10%% of catalogue)",
+            tr.get("title"),
+        )
+    return album_results
+
+
+def _load_track_artist_scores(track_artist: str) -> list[float]:
+    """Stored popularity scores for a track artist's own catalogue.
+
+    The reference is the artist's OWN albums (``album_artist == artist``),
+    never the compilation track itself (which is stored under the
+    compilation's album artist).  Used to re-map a compilation track's raw
+    popularity relative to its track artist instead of the compilation album.
+    """
+    if not track_artist:
+        return []
+    try:
+        from services.popularity.popularity_stats_service import calculate_artist_stats
+        _, _, values = calculate_artist_stats(None, track_artist)
+        return [float(v) for v in (values or []) if float(v or 0) > 0]
+    except Exception as exc:
+        logger.debug("[scan_runner] Track artist score load failed for %s: %s", track_artist, exc)
+        return []
+
+
+def _apply_album_relative_normalization(
+    album_results: list[dict[str, Any]],
+    is_compilation: bool = False,
+) -> int:
+    """Re-map freshly-scored album tracks onto the relative 0-100 scale.
+
+    Regular albums: album-relative only (spec rule 1) — the album's freshly
+    computed RAW combined scores are re-mapped via
+    ``apply_album_relative_popularity`` (album median + scaled-MAD, robust
+    z → 0-100) so scores spread within the album and never clump on the
+    ceiling.  Artist-wide stats are ignored.
+
+    Compilation / Various-Artists albums: every track has a different artist,
+    so the album distribution (the "album artist" reference) is meaningless.
+    Each track is instead re-mapped against ITS OWN track artist's catalogue
+    distribution via ``apply_track_artist_relative_popularity`` — the score
+    answers "how popular is this track within its artist's discography".
+
+    Tracks without a fresh raw score (cached/frozen tracks carrying a stored
+    score, or singles-only passes that never scored) are left untouched.
+    Returns the number of tracks re-mapped.
+    """
+    if is_compilation:
+        return _apply_track_artist_relative_normalization(album_results)
+    raw_scores = [
+        float(r.get("_raw_combined") or 0)
+        for r in album_results
+        if float(r.get("_raw_combined") or 0) > 0
+    ]
+    if len(raw_scores) < 3:
+        return 0
+    changed = 0
+    rows: list[dict[str, Any]] = []
+    for tr in album_results:
+        raw = float(tr.get("_raw_combined") or 0)
+        if raw <= 0:
+            continue
+        remapped = apply_album_relative_popularity(raw, raw_scores)
+        if abs(remapped - float(tr.get("popularity_score") or 0)) > 0.001:
+            tr["popularity_score"] = remapped
+            tr["final_score"] = remapped
+            tr["popularity_adjusted"] = True
+            rows.append(tr)
+            changed += 1
+    if rows:
+        _persist_album_relative_scores(rows)
+    return changed
+
+
+def _apply_track_artist_relative_normalization(album_results: list[dict[str, Any]]) -> int:
+    """Re-map compilation tracks onto their track artist's 0-100 scale.
+
+    Each compilation track is re-mapped relative to ITS OWN track artist's
+    stored catalogue popularity (median + scaled-MAD via
+    ``apply_track_artist_relative_popularity``) — not the compilation album's
+    distribution.  Artists without enough stored catalogue scores keep their
+    raw score.  Returns the number of tracks re-mapped.
+    """
+    changed = 0
+    rows: list[dict[str, Any]] = []
+    artist_scores_cache: dict[str, list[float]] = {}
+    for tr in album_results:
+        raw = float(tr.get("_raw_combined") or 0)
+        if raw <= 0:
+            continue
+        track_artist = str(tr.get("artist") or "").strip()
+        if not track_artist:
+            continue
+        if track_artist not in artist_scores_cache:
+            artist_scores_cache[track_artist] = _load_track_artist_scores(track_artist)
+        artist_scores = artist_scores_cache[track_artist]
+        remapped = apply_track_artist_relative_popularity(raw, artist_scores)
+        if abs(remapped - float(tr.get("popularity_score") or 0)) > 0.001:
+            tr["popularity_score"] = remapped
+            tr["final_score"] = remapped
+            tr["popularity_adjusted"] = True
+            rows.append(tr)
+            changed += 1
+    if rows:
+        _persist_album_relative_scores(rows)
+    return changed
+
+
+def _persist_album_relative_scores(rows: list[dict[str, Any]]) -> None:
+    """Persist the album-relative re-mapped popularity scores for one album."""
+    if not rows:
+        return
+    try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            for tr in rows:
+                tid = str(tr.get("track_id") or "")
+                if not tid:
+                    continue
+                session.execute(
+                    _text("UPDATE tracks SET final_score = :s, popularity = :s WHERE id = :id"),
+                    {"s": float(tr.get("final_score") or 0), "id": tid},
+                )
+    except Exception as exc:
+        logger.debug("[scan_runner] Album-relative score persist failed: %s", exc)
+
+
+def _persist_popularity_marking(rows: list[dict[str, Any]]) -> None:
+    """Persist ``popularity_marked`` + bumped single status for one album's tracks."""
+    if not rows:
+        return
+    try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            for tr in rows:
+                tid = str(tr.get("track_id") or "")
+                if not tid:
+                    continue
+                session.execute(
+                    _text(
+                        "UPDATE tracks SET popularity_marked = :marked, "
+                        "single_confidence = :conf, single_sources = :sources "
+                        "WHERE id = :id"
+                    ),
+                    {
+                        "marked": bool(tr.get("popularity_marked")),
+                        "conf": str(tr.get("single_confidence") or "low"),
+                        "sources": tr.get("single_sources") or "",
+                        "id": tid,
+                    },
+                )
+    except Exception as exc:
+        logger.debug("[scan_runner] Popularity marking persist failed: %s", exc)
 
 
 def run_scan(
@@ -346,7 +558,11 @@ def run_scan(
             logger.debug("[scan_runner] Artist DB score fetch failed for %s: %s", artist, exc)
         return db_scores
 
-    def _post_album_stars(artist: str, album_results: list[dict[str, Any]]) -> bool:
+    def _post_album_stars(
+        artist: str,
+        album_results: list[dict[str, Any]],
+        is_compilation: bool = False,
+    ) -> bool:
         """Assign/persist/log/sync star ratings for ONE completed album.
 
         Returns True only when star ratings were actually assigned/persisted —
@@ -360,6 +576,25 @@ def run_scan(
         """
         if not album_results or metadata_only:
             return False
+
+        # ── Relative popularity (spec step 1) ─────────────────────────────
+        # The final popularity score is the robust-z re-map of the freshly
+        # computed raw scores.  This MUST run before the artist score
+        # distribution and star ratings so they all see the relative scale.
+        # Regular albums re-map against the ALBUM's distribution; compilation /
+        # Various-Artists albums re-map each track against its OWN track
+        # artist's catalogue instead (the compilation's distribution — the
+        # "album artist" reference — is meaningless when every track has a
+        # different artist).  Singles-only passes carry no fresh raw scores
+        # and are skipped (self-guarded by the helper).
+        try:
+            _apply_album_relative_normalization(
+                album_results,
+                is_compilation=is_compilation,
+            )
+        except Exception as exc:
+            logger.debug("[scan_runner] Album-relative normalization failed: %s", exc)
+
         _artist_results = _artist_scan_results.get(artist, [])
         scan_scores = [
             float(r.get("popularity_score") or 0)
@@ -370,7 +605,27 @@ def run_scan(
             str(r.get("title") or "").strip().lower()
             for r in _artist_results
         }
-        artist_scores = scan_scores + _load_artist_db_scores(artist, scanned_titles)
+        _db_scores = _load_artist_db_scores(artist, scanned_titles)
+        artist_scores = scan_scores + _db_scores
+
+        # ── Artist top-10% popularity marking + medium→high bump ─────────
+        # Spec steps 3-4: mark the top 10% of the artist's catalogue by
+        # popularity (``popularity_marked``), then upgrade any MEDIUM-confidence
+        # single in that range to HIGH.  Both are persisted before star ratings
+        # run so the 5★ bump (step 5) sees the upgraded confidence.
+        _cutoff, _top_n = _artist_top_marked_cutoff(scan_scores, _db_scores)
+        if _cutoff is not None and not options.get("popularity_only"):
+            for _tr in album_results:
+                _tr["popularity_marked"] = bool(
+                    (float(_tr.get("popularity_score") or 0) >= _cutoff)
+                    and float(_tr.get("popularity_score") or 0) > 0
+                )
+            _apply_popularity_marking_bump(album_results)
+            try:
+                _persist_popularity_marking(album_results)
+            except Exception:
+                pass
+
         try:
             _outcome = post_album_star_ratings(
                 album_results=album_results,
@@ -513,7 +768,11 @@ def run_scan(
                     _album_skip_results = results[_album_start:]
                     if _album_skip_results:
                         _artist_scan_results.setdefault(artist, []).extend(_album_skip_results)
-                        _post_album_stars(artist, _album_skip_results)
+                        _post_album_stars(
+                            artist,
+                            _album_skip_results,
+                            is_compilation=bool(_album_context.get("is_compilation")),
+                        )
                 except Exception as exc:
                     logger.debug("[scan_runner] Singles-only pass failed for %s - %s: %s", artist, album, exc)
             continue
@@ -888,7 +1147,11 @@ def run_scan(
         _album_results_this = results[_album_start:]
         if _album_results_this:
             _artist_scan_results.setdefault(artist, []).extend(_album_results_this)
-            _post_album_stars(artist, _album_results_this)
+            _post_album_stars(
+                artist,
+                _album_results_this,
+                is_compilation=bool(album_context.get("is_compilation")),
+            )
 
         albums_processed += 1
 

@@ -34,26 +34,12 @@ logger = logging.getLogger(__name__)
 
 STAR_5_ALBUM_Z = STANDOUT_CONFIG.get("star_5", {}).get("album_z", 1.0)
 STAR_5_ARTIST_Z = STANDOUT_CONFIG.get("star_5", {}).get("artist_z", 1.2)
-STAR_5_ARTIST_PCT = STANDOUT_CONFIG.get("star_5", {}).get("artist_pct", 0.10)
 STAR_4_ALBUM_Z = STANDOUT_CONFIG.get("star_4", {}).get("album_z", 0.8)
-STAR_4_ARTIST_Z = STANDOUT_CONFIG.get("star_4", {}).get("artist_z", 1.0)
-STAR_4_ARTIST_PCT = STANDOUT_CONFIG.get("star_4", {}).get("artist_pct", 0.20)
 STAR_3_ALBUM_Z = STANDOUT_CONFIG.get("star_3", {}).get("album_z", 0.0)
 # Tracks clearly below the album average (album z below this floor) get 1★ —
 # without it, every track with a valid score defaulted to 2★ and 1★ was
 # unreachable.
 STAR_1_ALBUM_Z = STANDOUT_CONFIG.get("star_1", {}).get("album_z", -1.0)
-POPULARITY_5STAR_Z = STANDOUT_CONFIG.get("popularity_5star_z_threshold", 2.0)
-LB_UNRELIABLE_5STAR = STANDOUT_CONFIG.get("lb_unreliable_5star_threshold", 0.50)
-# Log-scaled listener z-score (within the album) that qualifies a confirmed
-# single as a listener standout — the raw Last.fm/ListenBrainz evidence the
-# blended popularity score compresses.
-LISTENER_5STAR_Z = STANDOUT_CONFIG.get("listener_5star_z_threshold", 1.0)
-UNDERPERFORMING_THRESHOLD = 0.6
-# Percentile-based elite paths need a statistically meaningful catalogue —
-# "top 10%" of a 5-track artist is a single track and means nothing. Below
-# this size, only a genuinely high artist z-score can substitute.
-STAR_5_MIN_CATALOGUE = 20
 
 
 # ---------------------------------------------------------------------------
@@ -74,18 +60,6 @@ def _compute_artist_z(score: float, artist_scores: list[float]) -> float:
     mu = mean(artist_scores)
     sigma = stdev(artist_scores) if len(artist_scores) > 1 else 1.0
     return calculate_track_zscore(score, mu, sigma)
-
-
-def _is_top_artist_percentile(score: float, artist_scores: list[float], pct: float) -> bool:
-    if not artist_scores or score <= 0:
-        return False
-    above = sum(1 for s in artist_scores if s > score)
-    total = len(artist_scores)
-    return total > 0 and (above / total) <= pct
-
-
-def _is_lastfm_unreliable(lastfm_listeners: float, lb_listens: float) -> bool:
-    return int(lastfm_listeners) <= 20 and int(lb_listens) >= 75
 
 
 def _listener_z(count: float, counts: list[float]) -> float:
@@ -158,6 +132,62 @@ def _resolve_navidrome_artist_id(cursor, artist: str) -> str | None:
 # Star rating assignment
 # ---------------------------------------------------------------------------
 
+def _has_z_standout_source(track: dict[str, Any]) -> bool:
+    """Return True when the track's single_sources carry ``popularity_z_standout``.
+
+    ``popularity_z_standout`` is the catalog-size-aware popularity standout
+    signal recorded during single detection (a popularity confirmation, not a
+    medium source).  The 5★ standout condition requires it (or the artist-wide
+    top-10% ``popularity_marked`` flag) as the "popularityzstandout" proof.
+    """
+    try:
+        raw = track.get("single_sources") or ""
+        if isinstance(raw, str):
+            sources = json.loads(raw) if raw.strip() else []
+        else:
+            sources = raw
+        return any(
+            isinstance(s, dict) and str(s.get("source") or "") == "popularity_z_standout"
+            for s in (sources or [])
+        )
+    except Exception:
+        return False
+
+
+def _album_percentile_star(score: float, album_scores: list[float]) -> int:
+    """Album-relative 1-4★ rating from the album's popularity percentiles.
+
+    Spec rule 4: the album's tracks are ranked by popularity and sliced into
+    bands — top ~20% → 4★, upper middle → 3★, lower middle → 2★, bottom ~20%
+    → 1★.  Purely album-relative: artist context is never consulted, so every
+    album has a meaningful internal ranking and no track reaches 5★ from
+    popularity alone.  Albums too small for a meaningful percentile
+    (< 4 valid scores) fall back to album z-score bands.
+    """
+    if score <= 0:
+        return 1
+    valid = [float(s) for s in (album_scores or []) if float(s or 0) > 0]
+    if len(valid) < 4:
+        album_z = _compute_album_z(score, valid)
+        if album_z >= STAR_4_ALBUM_Z:
+            return 4
+        if album_z >= STAR_3_ALBUM_Z:
+            return 3
+        if album_z < STAR_1_ALBUM_Z:
+            return 1
+        return 2
+    below = sum(1 for s in valid if s < score)
+    equal = sum(1 for s in valid if s == score)
+    pct = (below + equal / 2.0) / len(valid)
+    if pct >= 0.80:
+        return 4
+    if pct >= 0.50:
+        return 3
+    if pct >= 0.20:
+        return 2
+    return 1
+
+
 def _assign_stars(
     track: dict[str, Any],
     album_scores: list[float],
@@ -166,20 +196,29 @@ def _assign_stars(
     album_lb_listens: list[float] | None = None,
     popularity_only: bool = False,
 ) -> int:
-    """Assign 1–5 star rating to a single track.
+    """Assign 1–5 star rating to a single track (album-relative spec).
 
-    ``popularity_only`` (set when the scan ran popularity without single
-    detection) rates purely on popularity: single status must not influence
-    the result, 5★ is reserved for genuine popularity standouts and every
-    other track is 4★ or below.
+    Pipeline (spec rules 4-5):
+
+    1. The album-relative base rating is 1-4★, assigned purely from the
+       album's popularity percentiles (``_album_percentile_star``).
+    2. 5★ is reserved for:
+       - high-confidence singles (``single_confidence == 'high'``), or
+       - genuine triple-standouts: album z AND artist z above the standout
+         thresholds AND a popularity standout (top-10% ``popularity_marked``
+         or the ``popularity_z_standout`` detection signal).
+       Popularity alone never grants 5★.
+
+    ``popularity_only`` (a scan that rated popularity without single
+    detection) ignores single status so a stale stored flag can't inflate the
+    rating — only genuine standouts reach 5★.  Live tracks cap at 4★ (legacy
+    parity).  A manual user override (``single_confidence == 'user'``) is
+    always preserved.
     """
     score = float(track.get("popularity_score") or 0)
     is_single = bool(track.get("is_single"))
     single_confidence = str(track.get("single_confidence") or "low")
     is_live = bool(track.get("is_live")) or bool(track.get("album_context_live"))
-    lb_listens = float(track.get("listenbrainz_listens") or 0)
-    lf_listeners = float(track.get("lastfm_listeners") or 0)
-    lb_percentile = float(track.get("lb_percentile") or 0)
 
     # User override — a manually-set rating is preserved by every scan type.
     if single_confidence == "user":
@@ -187,131 +226,22 @@ def _assign_stars(
 
     album_z = _compute_album_z(score, album_scores)
     artist_z = _compute_artist_z(score, artist_scores)
-    artist_catalogue_size = len(artist_scores)
-    lf_z = _listener_z(lf_listeners, album_lf_listeners or [])
-    lb_z = _listener_z(lb_listens, album_lb_listens or [])
-    # Elite = top of the artist catalogue AND a standout within its own album.
-    # Without the album check, the least-bad track of a weak album would earn
-    # 5★ purely from percentile. Percentile paths also need a meaningful
-    # catalogue size; for small catalogues a genuinely high artist z-score is
-    # the only substitute.
-    _album_distribution_valid = len(album_scores) >= 3 and any(album_scores)
-    is_elite = (
-        _is_top_artist_percentile(score, artist_scores, STAR_5_ARTIST_PCT)
-        and (not _album_distribution_valid or album_z >= STAR_4_ALBUM_Z)
-        and (artist_catalogue_size >= STAR_5_MIN_CATALOGUE or artist_z >= STAR_5_ARTIST_Z)
+    popularity_marked = bool(track.get("popularity_marked"))
+
+    # ── 5★: singles + standouts only ──
+    is_standout = (
+        album_z >= STAR_5_ALBUM_Z
+        and artist_z >= STAR_5_ARTIST_Z
+        and (popularity_marked or _has_z_standout_source(track))
     )
-    is_top_catalog = _is_top_artist_percentile(score, artist_scores, 0.25)
-
-    # ── Popularity-only rating (no single detection ran this pass) ──────
-    # The scan rated popularity alone, so single status must not drive the
-    # rating: 5★ is granted only to genuine popularity standouts (elite
-    # catalogue + album standout, an extreme album outlier, or a clear
-    # listener standout) — legacy's "elite catalogue" 5★ path, which the
-    # staged runner dropped. Live tracks cap at 4★ (legacy parity). All other
-    # tiers are pure popularity standing within the album/artist catalogue.
-    if popularity_only:
-        if not is_live and (
-            is_elite
-            or album_z >= POPULARITY_5STAR_Z
-            or max(lf_z, lb_z) >= LISTENER_5STAR_Z
-        ):
-            return 5
-        if (
-            _is_top_artist_percentile(score, artist_scores, STAR_4_ARTIST_PCT)
-            or (album_z >= STAR_4_ALBUM_Z and score > 0)
-            or (
-                _is_lastfm_unreliable(lf_listeners, lb_listens)
-                and lb_percentile >= LB_UNRELIABLE_5STAR
-                and (album_z >= STAR_4_ALBUM_Z or lb_z >= LISTENER_5STAR_Z)
-            )
-        ):
-            return 4
-        # 3★ / 1★ / 2★
-        if album_z >= STAR_3_ALBUM_Z and score > 0:
-            return 3
-        if album_z < STAR_1_ALBUM_Z and score > 0:
-            return 1
-        if score > 0:
-            return 2
-        return 1
-
-    # Global 5★ floor: a non-single track must genuinely stand out within its
-    # own album (album-z >= popularity_5star_z_threshold, default 2.0) before
-    # ANY 5★ path may grant it. Previously the catalogue-percentile and
-    # listener-z paths could award 5★ at album-z near zero (e.g. Blackball at
-    # 0.37). Confirmed singles carry external release evidence and are exempt;
-    # albums too small for a valid z distribution are also exempt.
-    five_star_eligible = (
-        (is_single and single_confidence in ("high", "user"))
-        or not _album_distribution_valid
-        or album_z >= POPULARITY_5STAR_Z
-    )
-
-    # ── 5★ paths ──
-    # 5★ is reserved for standout CONFIRMED singles (legacy alignment); other
-    # singles and popular album tracks cap at 4★, so a single with a low
-    # z-score is still marked as a single and rated 4★, never dropped.
-
-    # 5★/4★: high-confidence single (old-system path 3 + LB addition).
-    if is_single and single_confidence == "high":
-        if is_live:
-            # Live singles reach 5★ only when elite/top-catalogue.
-            return 5 if is_elite else 4
-        if (
-            is_top_catalog
-            or album_z >= STAR_5_ALBUM_Z
-            or artist_z >= STAR_5_ARTIST_Z
-            or max(lf_z, lb_z) >= LISTENER_5STAR_Z
-        ):
-            return 5
-        return 4
-
-    # 4★/5★: medium-confidence single (old-system path 4). Always at least
-    # 4★ — a confirmed single is never rated below its single status.
-    if is_single and single_confidence == "medium":
-        return 5 if (five_star_eligible and is_top_catalog) else 4
-
-    # Non-singles cap at 4★: elite catalogue standouts, huge album-z
-    # outliers, listener standouts and the LB rescue path all rate 4★ —
-    # 5★ requires a confirmed standout single.
     if not is_live and (
-        is_elite
-        or album_z >= POPULARITY_5STAR_Z
-        or max(lf_z, lb_z) >= LISTENER_5STAR_Z
-        or (
-            _is_lastfm_unreliable(lf_listeners, lb_listens)
-            and lb_percentile >= LB_UNRELIABLE_5STAR
-            and (album_z >= STAR_4_ALBUM_Z or lb_z >= LISTENER_5STAR_Z)
-        )
+        (not popularity_only and single_confidence == "high")
+        or is_standout
     ):
-        return 4
+        return 5
 
-    # ── 4★ ──
-    if _is_top_artist_percentile(score, artist_scores, STAR_4_ARTIST_PCT):
-        return 4
-
-    # 4★: clearly above the album average even when the artist catalogue is
-    # too large to crack the top-20% percentile — album-relative standing is
-    # a first-class signal (an album standout like "Demons" at z=1.17 should
-    # not sit at 3★ merely because the artist has hundreds of tracks).
-    if album_z >= STAR_4_ALBUM_Z and score > 0:
-        return 4
-
-    # ── 3★ / 1★ / 2★ ──
-    # 3★: above album average
-    if album_z >= STAR_3_ALBUM_Z and score > 0:
-        return 3
-
-    # 1★: clearly below album average
-    if album_z < STAR_1_ALBUM_Z and score > 0:
-        return 1
-
-    # 2★: has a score, around album average
-    if score > 0:
-        return 2
-
-    return 1
+    # ── 1-4★: album-relative percentile base ──
+    return _album_percentile_star(score, album_scores)
 
 
 # ---------------------------------------------------------------------------

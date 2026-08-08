@@ -138,6 +138,9 @@ class Track(Base):
     single_detection_last_updated = Column(DateTime, nullable=True)
     single_manual_override = Column(Boolean, server_default=text("FALSE"), nullable=True)
 
+    # Artist-wide top-10% popularity marking (top 10% of the artist's catalogue)
+    popularity_marked = Column(Boolean, server_default=text("FALSE"), nullable=True)
+
     # Popularity freeze
     popularity_frozen = Column(Boolean, server_default=text("FALSE"), nullable=True)
     popularity_frozen_at = Column(DateTime, nullable=True)
