@@ -88,7 +88,8 @@ class TestPostAlbumStarRatings:
         conn = FakeConn()
         # Deterministic star value per track so assertions are stable.
         monkeypatch.setattr(
-            fs, "_assign_stars", lambda track, *args: 4 if track["title"] == "Apocalypse Please" else 5
+            fs, "_assign_stars",
+            lambda track, *args, **kwargs: 4 if track["title"] == "Apocalypse Please" else 5
         )
         monkeypatch.setattr(fs, "_sync_rating_to_navidrome", lambda track_id, stars: True)
         logged = []
@@ -131,6 +132,131 @@ class TestPostAlbumStarRatings:
         )
         assert outcome == {"star_ratings": 0, "navidrome_synced": 0}
         assert conn.cur.executed == []
+
+
+class TestAssignStarsPopularityOnly:
+    """A popularity-only pass rates on popularity alone.
+
+    Single detection did not run, so single status must not drive the rating:
+    5★ is reserved for genuine popularity standouts (elite catalogue + album
+    standout, extreme album outlier, or clear listener standout); every other
+    track is 4★ and below.
+    """
+
+    def _artist_scores(self):
+        return [50, 52, 54, 56, 58, 60, 62, 64, 66, 90]
+
+    def _album_scores(self):
+        return [50, 55, 60, 65, 90]
+
+    def _base_track(self, **overrides):
+        track = {
+            "track_id": "t1", "artist": "A", "album": "B", "title": "Song",
+            "popularity_score": 90.0, "final_score": 90.0,
+            "lastfm_listeners": 5000, "listenbrainz_listens": 4000,
+            "lb_percentile": 0.95, "lastfm_score": 8.0, "listenbrainz_score": 9.0,
+            "is_single": False, "single_confidence": "low",
+            "single_sources": "", "is_live": False,
+        }
+        track.update(overrides)
+        return track
+
+    def _listener_counts(self):
+        return [100, 200, 300, 500, 5000], [200, 300, 400, 500, 4000]
+
+    def test_standout_popularity_gets_five_star(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        lf, lb = self._listener_counts()
+        track = self._base_track()
+        # A non-single, elite-catalogue album standout → 5★ on popularity
+        # alone (legacy "elite catalogue" path), while the full scan caps
+        # non-singles at 4★.
+        assert fs._assign_stars(track, self._album_scores(), self._artist_scores(), lf, lb,
+                                popularity_only=True) == 5
+        assert fs._assign_stars(track, self._album_scores(), self._artist_scores(), lf, lb,
+                                popularity_only=False) == 4
+
+    def test_single_status_does_not_inflate_popularity_only_rating(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        lf, lb = self._listener_counts()
+        # A high-confidence single with only average popularity rates on its
+        # popularity alone (2★) in a popularity-only pass — single status is
+        # not a rating input because detection didn't run this pass. The full
+        # scan keeps the confirmed-single 4★ floor.
+        track = self._base_track(
+            title="Mid Single",
+            popularity_score=54.0,
+            final_score=54.0,
+            is_single=True,
+            single_confidence="high",
+            lastfm_listeners=300,
+            listenbrainz_listens=200,
+            lb_percentile=0.4,
+        )
+        assert fs._assign_stars(track, self._album_scores(), self._artist_scores(), lf, lb,
+                                popularity_only=True) == 2
+        assert fs._assign_stars(track, self._album_scores(), self._artist_scores(), lf, lb,
+                                popularity_only=False) == 4
+
+    def test_live_track_caps_at_four_in_popularity_only(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        lf, lb = self._listener_counts()
+        # Live recordings never reach 5★ from popularity alone (legacy parity).
+        track = self._base_track(is_live=True)
+        assert fs._assign_stars(track, self._album_scores(), self._artist_scores(), lf, lb,
+                                popularity_only=True) <= 4
+
+    def test_user_override_survives_popularity_only(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        lf, lb = self._listener_counts()
+        # A manually-set single is an explicit user preference — preserved by
+        # every scan type, including popularity-only passes.
+        track = self._base_track(single_confidence="user", popularity_score=10.0, final_score=10.0)
+        assert fs._assign_stars(track, self._album_scores(), self._artist_scores(), lf, lb,
+                                popularity_only=True) == 5
+
+
+class TestComputeArtistScoresExcludesScanned:
+    """Artist-wide score merge must not double-count this scan's tracks.
+
+    Tracks scored during the current scan were persisted to the DB, so a naive
+    merge (scan scores + ALL stored final_scores) double-counts them and
+    drifts the artist z-scores. The album-level merge already excludes scanned
+    titles; ``compute_artist_scores`` must do the same.
+    """
+
+    def test_scanned_titles_excluded_from_db_merge(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        class _Cursor:
+            def __init__(self):
+                self.fetched = [
+                    {"title": "Scanned A", "final_score": 80.0},
+                    {"title": "Scanned B", "final_score": 90.0},
+                    {"title": "Older Track", "final_score": 70.0},
+                ]
+
+            def execute(self, sql, params=None):
+                self.sql = sql
+                self.params = params
+
+            def fetchall(self):
+                return self.fetched
+
+        cursor = _Cursor()
+        # Both scanned titles must be excluded → only the older track anchors.
+        scores = fs.compute_artist_scores(
+            "Artist",
+            [80.0, 90.0],
+            object(),
+            cursor,
+            scanned_titles={"scanned a", "scanned b"},
+        )
+        assert scores == [80.0, 90.0, 70.0]
 
 
 class TestFinaliseScanPerAlbumFlag:
@@ -232,7 +358,7 @@ class TestPostAlbumStarRatingsResilience:
 
         conn = FakeConn()
 
-        def flaky_assign(track, *args):
+        def flaky_assign(track, *args, **kwargs):
             if track["title"] == "Time Is Running Out":
                 raise RuntimeError("boom")
             return 4

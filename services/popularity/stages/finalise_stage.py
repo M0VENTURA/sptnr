@@ -164,8 +164,15 @@ def _assign_stars(
     artist_scores: list[float],
     album_lf_listeners: list[float] | None = None,
     album_lb_listens: list[float] | None = None,
+    popularity_only: bool = False,
 ) -> int:
-    """Assign 1–5 star rating to a single track."""
+    """Assign 1–5 star rating to a single track.
+
+    ``popularity_only`` (set when the scan ran popularity without single
+    detection) rates purely on popularity: single status must not influence
+    the result, 5★ is reserved for genuine popularity standouts and every
+    other track is 4★ or below.
+    """
     score = float(track.get("popularity_score") or 0)
     is_single = bool(track.get("is_single"))
     single_confidence = str(track.get("single_confidence") or "low")
@@ -174,7 +181,7 @@ def _assign_stars(
     lf_listeners = float(track.get("lastfm_listeners") or 0)
     lb_percentile = float(track.get("lb_percentile") or 0)
 
-    # User override
+    # User override — a manually-set rating is preserved by every scan type.
     if single_confidence == "user":
         return 5
 
@@ -195,6 +202,39 @@ def _assign_stars(
         and (artist_catalogue_size >= STAR_5_MIN_CATALOGUE or artist_z >= STAR_5_ARTIST_Z)
     )
     is_top_catalog = _is_top_artist_percentile(score, artist_scores, 0.25)
+
+    # ── Popularity-only rating (no single detection ran this pass) ──────
+    # The scan rated popularity alone, so single status must not drive the
+    # rating: 5★ is granted only to genuine popularity standouts (elite
+    # catalogue + album standout, an extreme album outlier, or a clear
+    # listener standout) — legacy's "elite catalogue" 5★ path, which the
+    # staged runner dropped. Live tracks cap at 4★ (legacy parity). All other
+    # tiers are pure popularity standing within the album/artist catalogue.
+    if popularity_only:
+        if not is_live and (
+            is_elite
+            or album_z >= POPULARITY_5STAR_Z
+            or max(lf_z, lb_z) >= LISTENER_5STAR_Z
+        ):
+            return 5
+        if (
+            _is_top_artist_percentile(score, artist_scores, STAR_4_ARTIST_PCT)
+            or (album_z >= STAR_4_ALBUM_Z and score > 0)
+            or (
+                _is_lastfm_unreliable(lf_listeners, lb_listens)
+                and lb_percentile >= LB_UNRELIABLE_5STAR
+                and (album_z >= STAR_4_ALBUM_Z or lb_z >= LISTENER_5STAR_Z)
+            )
+        ):
+            return 4
+        # 3★ / 1★ / 2★
+        if album_z >= STAR_3_ALBUM_Z and score > 0:
+            return 3
+        if album_z < STAR_1_ALBUM_Z and score > 0:
+            return 1
+        if score > 0:
+            return 2
+        return 1
 
     # Global 5★ floor: a non-single track must genuinely stand out within its
     # own album (album-z >= popularity_5star_z_threshold, default 2.0) before
@@ -436,16 +476,23 @@ def compute_artist_scores(
     scan_scores: list[float],
     conn,
     cursor,
+    scanned_titles: set[str] | None = None,
 ) -> list[float]:
     """Artist-wide score distribution = scan results so far + existing DB scores.
 
     Mirrors the merge used at the end of the scan so per-album star ratings
     posted during the scan use the same artist context the final pass would.
+
+    ``scanned_titles`` (lowercased titles from THIS scan) are excluded from
+    the DB merge — those tracks were persisted during the scan, so including
+    them would double-count every scanned track (raw scan score + stored
+    final_score) and drift the artist z-scores between scans.
     """
+    scanned_titles = scanned_titles or set()
     artist_scores = [float(s) for s in scan_scores if float(s or 0) > 0]
     try:
         cursor.execute(
-            "SELECT final_score FROM tracks "
+            "SELECT title, final_score FROM tracks "
             "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND final_score > 0",
             (artist,),
         )
@@ -453,6 +500,7 @@ def compute_artist_scores(
             float(row.get("final_score") or 0)
             for row in cursor.fetchall()
             if row.get("final_score")
+            and str(row.get("title") or "").strip().lower() not in scanned_titles
         ]
         artist_scores = list(artist_scores) + list(db_artist_scores)
     except Exception as exc:
@@ -536,6 +584,7 @@ def post_album_star_ratings(
                     artist_scores,
                     album_lf_listeners,
                     album_lb_listens,
+                    popularity_only=bool(options.get("popularity_only")),
                 )
             except Exception as exc:
                 logger.warning(
@@ -582,7 +631,11 @@ def post_album_star_ratings(
                 f"5★: {star_counts[5]}, 4★: {star_counts[4]}, 3★: {star_counts[3]}, "
                 f"2★: {star_counts[2]}, 1★: {star_counts[1]}"
             )
-            singles_detected = [t for t in album_results if t.get("is_single")]
+            # A popularity-only pass did NOT run single detection, so the
+            # stale single flags in the DB must not drive the per-album output
+            # (tracks are grouped by star tier instead).
+            _pop_only = bool(options.get("popularity_only"))
+            singles_detected = [] if _pop_only else [t for t in album_results if t.get("is_single")]
             if singles_detected:
                 log_unified(
                     f"Singles Detection - Detected {len(singles_detected)} single(s) in '{album}'"
@@ -642,8 +695,10 @@ def post_album_star_ratings(
                     # Both high- and medium-confidence singles belong in the
                     # Detected Singles list — a medium single (e.g. MB-only
                     # confirmation with a low z-score) is still a single and
-                    # must not vanish into "Rest of Album".
-                    if t_single and t_conf in ("high", "medium"):
+                    # must not vanish into "Rest of Album".  A popularity-only
+                    # pass has no fresh single data, so it groups by star tier
+                    # (5★ standouts under "Top Rated Tracks") instead.
+                    if not _pop_only and t_single and t_conf in ("high", "medium"):
                         detected_singles.append((t_title, t_stars, t_artist, t_score, reason_str))
                     elif t_stars == 5:
                         popular_songs.append((t_title, t_stars, t_artist, t_score, reason_str))
@@ -665,7 +720,11 @@ def post_album_star_ratings(
                     log_unified(f"Single Detection Scan - ===== {album} - Detected Singles =====")
                     _log_track_group(detected_singles)
                 if popular_songs:
-                    log_unified(f"Single Detection Scan - ===== {album} - Popular Songs (Not Detected as Single) =====")
+                    if _pop_only:
+                        _pop_header = "Top Rated Tracks"
+                    else:
+                        _pop_header = "Popular Songs (Not Detected as Single)"
+                    log_unified(f"Single Detection Scan - ===== {album} - {_pop_header} =====")
                     _log_track_group(popular_songs)
                 if rest_of_album:
                     if detected_singles or popular_songs:
@@ -755,12 +814,19 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
 
             # Collect artist-wide scores, merging in existing DB scores so
             # mature/frozen tracks (skipped by the runner) still anchor the
-            # album/artist distributions.
+            # album/artist distributions.  Tracks scored during THIS scan are
+            # excluded from the DB merge so the distribution never
+            # double-counts them (raw scan score + stored final_score).
+            scanned_titles = {
+                str(r.get("title") or "").strip().lower()
+                for r in artist_results
+            }
             artist_scores = compute_artist_scores(
                 artist,
                 [float(r.get("popularity_score") or 0) for r in artist_results],
                 conn,
                 cursor,
+                scanned_titles=scanned_titles,
             )
 
             # ── Persist artist_stats (artist-context popularity data) ────

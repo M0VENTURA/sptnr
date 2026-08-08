@@ -247,6 +247,15 @@ def run_scan(
     # Resolved once up-front (used for history records and skip checks).
     scan_type = _resolve_scan_type(options)
 
+    # A singles pass only does singles detection — the popularity API prefetch,
+    # ListenBrainz album-tracklist fallback and download gap-detection are not
+    # singles work and are skipped (per-track popularity is fetched only for
+    # tracks that have no stored data, and only because singles detection's
+    # z-score/top-50% gates need SOME score signal).
+    _singles_pass = bool(
+        options.get("singles_only") or options.get("singles_with_missing_popularity")
+    )
+
     # Surface the scan mode up-front so the unified log says what is running
     # (metadata / popularity / singles / combined) and how much is queued.
     log_unified(f"[POPULARITY] Scan mode: {scan_type.capitalize()} — {total_albums} album(s) queued")
@@ -304,28 +313,38 @@ def run_scan(
     # ``_per_album_posted`` so finalise_scan skips the (now redundant) per-album
     # work and only does artist_stats / playlists / summary.
     _artist_scan_results: dict[str, list[dict[str, Any]]] = {}
-    _artist_db_scores: dict[str, list[float]] = {}
     _per_album_posted_keys: set[tuple[str, str]] = set()
 
-    def _load_artist_db_scores(artist: str) -> list[float]:
-        if not artist or artist in _artist_db_scores:
-            return _artist_db_scores.get(artist, [])
-        _artist_db_scores[artist] = []
+    def _load_artist_db_scores(artist: str, scanned_titles: set[str]) -> list[float]:
+        """Stored artist scores, EXCLUDING tracks scored during this scan.
+
+        Tracks scored in the current scan were persisted to the DB, so adding
+        them back would double-count every scanned track (raw scan score +
+        stored adjusted final_score) and drift the artist distribution.  The
+        album-level merge in ``post_album_star_ratings`` already excludes
+        scanned titles; this is the artist-wide equivalent.
+        """
+        db_scores: list[float] = []
         try:
             from sqlalchemy import text as _text
             from db.engine import db_session as _db_session
             with _db_session() as session:
                 rows = session.execute(
                     _text(
-                        "SELECT final_score FROM tracks "
-                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND final_score > 0"
+                        "SELECT title, final_score FROM tracks "
+                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                        "AND final_score > 0"
                     ),
                     {"artist": artist},
                 ).fetchall()
-                _artist_db_scores[artist] = [float(r[0]) for r in rows or [] if r[0]]
+                db_scores = [
+                    float(r[1])
+                    for r in rows or []
+                    if r[1] and str(r[0] or "").strip().lower() not in scanned_titles
+                ]
         except Exception as exc:
             logger.debug("[scan_runner] Artist DB score fetch failed for %s: %s", artist, exc)
-        return _artist_db_scores[artist]
+        return db_scores
 
     def _post_album_stars(artist: str, album_results: list[dict[str, Any]]) -> bool:
         """Assign/persist/log/sync star ratings for ONE completed album.
@@ -334,14 +353,24 @@ def run_scan(
         the album key is then recorded so the end-of-scan finalise skips it.
         Albums that failed to post stay un-recorded so finalise still handles
         them (no star rating is silently lost).
+
+        Metadata-only passes never rate (scores aren't computed).  Popularity-
+        only passes DO rate: they score purely on popularity and can award 5★
+        to standout popularity tracks.
         """
-        if not album_results or metadata_only or popularity_only:
+        if not album_results or metadata_only:
             return False
+        _artist_results = _artist_scan_results.get(artist, [])
         scan_scores = [
             float(r.get("popularity_score") or 0)
-            for r in _artist_scan_results.get(artist, [])
+            for r in _artist_results
+            if float(r.get("popularity_score") or 0) > 0
         ]
-        artist_scores = scan_scores + _load_artist_db_scores(artist)
+        scanned_titles = {
+            str(r.get("title") or "").strip().lower()
+            for r in _artist_results
+        }
+        artist_scores = scan_scores + _load_artist_db_scores(artist, scanned_titles)
         try:
             _outcome = post_album_star_ratings(
                 album_results=album_results,
@@ -571,6 +600,9 @@ def run_scan(
         # Skip prefetch for compilation/Various Artists albums — the "artist"
         # is not a real artist, so prefetching would waste API calls on
         # irrelevant data. Track-level lookups will still work per-track.
+        # A singles pass skips the prefetch entirely: it is not singles work,
+        # and track_stage only fetches popularity for tracks missing stored
+        # data (needed to drive singles detection's z-scores / top-50% gate).
         track_dicts = [tc["track"] for tc in track_contexts if tc.get("track")]
         _is_compilation_artist = artist.lower() in (
             "various artists", "various artists -", "various", 
@@ -580,22 +612,23 @@ def run_scan(
         if artist and artist != last_prefetch_artist and not _is_compilation_artist:
             last_prefetch_artist = artist
             prefetched_popularity = {}
-            try:
-                from services.popularity.popularity_cache_service import prefetch_artist_popularity
-                prefetched_popularity = prefetch_artist_popularity(
-                    artist=artist,
-                    tracks=artist_all_tracks.get(artist) or track_dicts,
-                    force=bool(options.get("force")),
-                    # Album-scoped scans (no cached data for the artist yet)
-                    # still persist the artist's full top-tracks catalogue in
-                    # one bulk call, so later scans never need per-track calls.
-                    cache_full_catalogue=True,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[scan_runner] Popularity cache prefetch failed for %s: %s (falls back to per-track lookups)",
-                    artist, exc,
-                )
+            if not _singles_pass:
+                try:
+                    from services.popularity.popularity_cache_service import prefetch_artist_popularity
+                    prefetched_popularity = prefetch_artist_popularity(
+                        artist=artist,
+                        tracks=artist_all_tracks.get(artist) or track_dicts,
+                        force=bool(options.get("force")),
+                        # Album-scoped scans (no cached data for the artist yet)
+                        # still persist the artist's full top-tracks catalogue in
+                        # one bulk call, so later scans never need per-track calls.
+                        cache_full_catalogue=True,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[scan_runner] Popularity cache prefetch failed for %s: %s (falls back to per-track lookups)",
+                        artist, exc,
+                    )
 
             # ── Artist release cache (albums/EPs/singles) ────────────────
             # One MusicBrainz + one Discogs call per artist fills
@@ -633,7 +666,9 @@ def run_scan(
             # Compares the cached releases against the library (title + year),
             # persists gaps into missing_releases, and caches tracklists for
             # a few of them so they can be queued for download (legacy parity).
-            if not _is_compilation_artist:
+            # Not singles work — a singles pass skips it (the download queue is
+            # served by dedicated missing-releases scans).
+            if not _is_compilation_artist and not _singles_pass:
                 try:
                     from services.popularity.release_cache_service import (
                         populate_missing_release_tracklists,
@@ -651,55 +686,56 @@ def run_scan(
         # release via MB search when the local tracks lack a release MBID)
         # and match the local tracks by normalized title.  The pulled rows
         # are persisted to track_popularity_cache so later scans reuse them
-        # without any API calls.
-        try:
-            from services.popularity.popularity_sources import get_listenbrainz_album_tracklist
-            _missing_lb_tracks = [
-                t for t in track_dicts
-                if t.get("title")
-                and not (prefetched_popularity.get(normalize_for_aggregation(t["title"])) or {}).get("listenbrainz_listens")
-            ]
-            if _missing_lb_tracks or bool(options.get("force")):
-                _album_lb_by_title = get_listenbrainz_album_tracklist(artist, album, track_dicts) or {}
-                _cache_rows: list[dict[str, Any]] = []
-                # Apply the album values to ALL of the album's tracks — the
-                # album tracklist is authoritative for per-track counts (it
-                # matches the ListenBrainz album page), so it overrides any
-                # cached value that was resolved from a different recording.
-                for _t in track_dicts:
-                    if not _t.get("title"):
-                        continue
-                    _key = normalize_for_aggregation(_t["title"])
-                    _entry = _album_lb_by_title.get(_key)
-                    if _entry and _entry.get("listenbrainz_listens"):
-                        _cur = prefetched_popularity.setdefault(_key, {})
-                        _cur["listenbrainz_listens"] = int(_entry["listenbrainz_listens"] or 0)
-                        _cur["listenbrainz_users"] = int(_entry.get("listenbrainz_users") or 0)
-                        _cur["recording_mbid"] = _entry.get("recording_mbid")
-                        # Freshly fetched during THIS scan — authoritative even
-                        # on forced scans (which normally bypass the cache).
-                        _cur["_album_tracklist"] = True
-                        _cache_rows.append({
-                            "artist": artist,
-                            "title": str(_t["title"]),
-                            "lastfm_listeners": int(_cur.get("lastfm_listeners") or 0),
-                            "lastfm_playcount": int(_cur.get("lastfm_playcount") or 0),
-                            "listenbrainz_listens": _cur["listenbrainz_listens"],
-                            "listenbrainz_users": _cur["listenbrainz_users"],
-                            "source": "album_tracklist",
-                        })
-                        logger.info(
-                            "[scan_runner] Album-tracklist LB match for '%s' (%s - %s): %s listens",
-                            _t.get("title"), artist, album, _cur["listenbrainz_listens"],
-                        )
-                if _cache_rows:
-                    try:
-                        from db.repositories.popularity_cache import upsert_track_popularity_bulk
-                        upsert_track_popularity_bulk(_cache_rows)
-                    except Exception as exc:
-                        logger.debug("[scan_runner] Album-tracklist cache persist failed: %s", exc)
-        except Exception as exc:
-            logger.debug("[scan_runner] Album-tracklist LB fallback failed for %s - %s: %s", artist, album, exc)
+        # without any API calls.  Not singles work — a singles pass skips it.
+        if not _singles_pass:
+            try:
+                from services.popularity.popularity_sources import get_listenbrainz_album_tracklist
+                _missing_lb_tracks = [
+                    t for t in track_dicts
+                    if t.get("title")
+                    and not (prefetched_popularity.get(normalize_for_aggregation(t["title"])) or {}).get("listenbrainz_listens")
+                ]
+                if _missing_lb_tracks or bool(options.get("force")):
+                    _album_lb_by_title = get_listenbrainz_album_tracklist(artist, album, track_dicts) or {}
+                    _cache_rows: list[dict[str, Any]] = []
+                    # Apply the album values to ALL of the album's tracks — the
+                    # album tracklist is authoritative for per-track counts (it
+                    # matches the ListenBrainz album page), so it overrides any
+                    # cached value that was resolved from a different recording.
+                    for _t in track_dicts:
+                        if not _t.get("title"):
+                            continue
+                        _key = normalize_for_aggregation(_t["title"])
+                        _entry = _album_lb_by_title.get(_key)
+                        if _entry and _entry.get("listenbrainz_listens"):
+                            _cur = prefetched_popularity.setdefault(_key, {})
+                            _cur["listenbrainz_listens"] = int(_entry["listenbrainz_listens"] or 0)
+                            _cur["listenbrainz_users"] = int(_entry.get("listenbrainz_users") or 0)
+                            _cur["recording_mbid"] = _entry.get("recording_mbid")
+                            # Freshly fetched during THIS scan — authoritative even
+                            # on forced scans (which normally bypass the cache).
+                            _cur["_album_tracklist"] = True
+                            _cache_rows.append({
+                                "artist": artist,
+                                "title": str(_t["title"]),
+                                "lastfm_listeners": int(_cur.get("lastfm_listeners") or 0),
+                                "lastfm_playcount": int(_cur.get("lastfm_playcount") or 0),
+                                "listenbrainz_listens": _cur["listenbrainz_listens"],
+                                "listenbrainz_users": _cur["listenbrainz_users"],
+                                "source": "album_tracklist",
+                            })
+                            logger.info(
+                                "[scan_runner] Album-tracklist LB match for '%s' (%s - %s): %s listens",
+                                _t.get("title"), artist, album, _cur["listenbrainz_listens"],
+                            )
+                    if _cache_rows:
+                        try:
+                            from db.repositories.popularity_cache import upsert_track_popularity_bulk
+                            upsert_track_popularity_bulk(_cache_rows)
+                        except Exception as exc:
+                            logger.debug("[scan_runner] Album-tracklist cache persist failed: %s", exc)
+            except Exception as exc:
+                logger.debug("[scan_runner] Album-tracklist LB fallback failed for %s - %s: %s", artist, album, exc)
 
         # Album-level LB listen counts (percentile anchor) — only the
         # CURRENT album's tracks anchor the album percentile, even though
@@ -715,7 +751,10 @@ def run_scan(
         # Used to normalise each track's LF score relative to the artist's
         # most popular track.  Cached in-memory so repeated artist lookups
         # across multiple albums cost at most one API call per artist.
-        artist_max_lf = get_lastfm_artist_max_listeners(artist)
+        # A singles pass skips it — it is only needed to score freshly-fetched
+        # popularity, and the log-scale fallback covers the rare missing-data
+        # track that a singles pass has to score for detection context.
+        artist_max_lf = get_lastfm_artist_max_listeners(artist) if not _singles_pass else 0
 
         # ✅ FIXED: Now properly counting track_contexts instead of the empty album_context array
         album_count = len(track_contexts)
@@ -874,10 +913,11 @@ def run_scan(
     update(stage="finalising", progress=98, message="Finalising popularity scan...", processed=total_albums, total_items=total_albums)
 
     # Star-rating assignment, Navidrome rating sync and NSP playlist creation
-    # only run on full / singles passes (legacy parity).  Metadata-only and
-    # popularity-only passes must NOT assign star ratings — scores/singles
-    # haven't been computed yet, so every track would incorrectly get 1★.
-    if not metadata_only and not popularity_only:
+    # run on full / singles / popularity-only passes (legacy parity).  Only
+    # metadata-only passes skip ratings — scores haven't been computed yet, so
+    # every track would incorrectly get 1★.  A popularity-only pass rates on
+    # popularity alone (5★ reserved for standout popularity tracks).
+    if not metadata_only:
         # When per-album star ratings were posted during the scan loop, tell
         # finalise to skip those albums (it still does artist_stats, the
         # essential playlist and the summary).  Only albums that were actually

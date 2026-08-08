@@ -175,6 +175,16 @@ def process_track(
     # popularity, cover and genre sections are skipped; only singles detection
     # runs, and the stored popularity is carried through unchanged.
     singles_detection_only = bool(options.get("singles_detection_only"))
+    # Standalone singles scan (singles_only / singles_with_missing_popularity):
+    # singles detection is the whole point — popularity is only fetched for
+    # tracks with NO stored popularity data, because singles detection's
+    # z-score / top-50% gates need SOME score signal.
+    singles_pass = bool(options.get("singles_only")) or bool(options.get("singles_with_missing_popularity"))
+    _has_stored_popularity = (
+        float(track.get("final_score") or track.get("popularity") or 0) > 0
+        or int(track.get("lastfm_listeners") or 0) >= 25
+        or int(track.get("listenbrainz_listens") or 0) >= 25
+    )
 
     update_payload: dict[str, Any] = {}
     score_data: dict[str, Any] = {}
@@ -182,11 +192,17 @@ def process_track(
     lastfm_listeners: int = 0
     listenbrainz_listens: int = 0
 
-    if singles_detection_only:
+    if singles_detection_only or (singles_pass and _has_stored_popularity):
         # Carry the stored popularity through so the result dict and star
-        # rating pass see the album's existing scores instead of 0.
+        # rating pass see the album's existing scores instead of 0, and so
+        # singles detection still gets a popularity signal to work with.
         score_data = {
-            "combined_score": float(track.get("final_score") or track.get("popularity_score") or 0),
+            "combined_score": float(
+                track.get("final_score")
+                or track.get("popularity")
+                or track.get("popularity_score")
+                or 0
+            ),
             "lastfm_score": float(track.get("lastfm_score") or 0),
             "listenbrainz_score": float(track.get("listenbrainz_score") or 0),
             "age_score": float(track.get("age_score") or 0),
@@ -199,7 +215,11 @@ def process_track(
     # 1. POPULARITY (via updated api_clients)
     # -------------------------------------------------------------------------
 
-    if not metadata_only and not singles_detection_only:
+    if (
+        not metadata_only
+        and not singles_detection_only
+        and not (singles_pass and _has_stored_popularity)
+    ):
         try:
             effective_track = _build_effective_track(track, update_payload)
 
@@ -739,7 +759,13 @@ def process_track(
             sd_artist = _as_str(effective_track.get("artist") or "")
             sd_album = _as_str(album_context.get("album") or track.get("album") or "")
             sd_album_type = _as_str(album_result.get("detected_album_type") or options.get("album_type") or "")
-            sd_popularity = float(effective_track.get("combined_score") or effective_track.get("popularity_score") or 0)
+            sd_popularity = float(
+                effective_track.get("combined_score")
+                or effective_track.get("popularity_score")
+                or effective_track.get("final_score")
+                or effective_track.get("popularity")
+                or 0
+            )
 
             album_track_count = len(album_context.get("tracks") or []) or 1
 

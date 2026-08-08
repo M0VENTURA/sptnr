@@ -778,6 +778,22 @@ def enrich_album(
         or ""
     )
 
+    # Scan-mode gates: a singles pass only needs the album type (compilation
+    # detection feeds singles detection) and the MusicBrainz artist ID (the
+    # artist-scoped release-group search); art / bio / country / similar
+    # artists / Last.fm tags / live-remix tagging are NOT singles work. A
+    # popularity-only pass needs none of the enrichment at all — popularity
+    # scoring reads raw counts, not album enrichment — so only the free
+    # name-based type detection runs (no API calls).
+    _singles_pass = bool(
+        options.get("singles_only")
+        or options.get("singles_with_missing_popularity")
+        or options.get("singles_detection_only")
+    )
+    _popularity_pass = bool(options.get("popularity_only"))
+    _meta = {"country": None, "bio": None, "image_url": None}
+    _similar: dict[str, list] = {"lastfm": [], "listenbrainz": []}
+
     # Acquire Discogs token from config
     discogs_token: str | None = None
     try:
@@ -793,81 +809,102 @@ def enrich_album(
     cursor = conn.cursor()
     album_tracks = album_row.get("tracks") or []
     try:
-        # 1. Album type detection (name-based + MusicBrainz release-group)
+        # 1. Album type detection (name-based + MusicBrainz release-group).
+        # A popularity-only pass runs the free name-based check only — the MB
+        # release-group lookup and the persistence write are not required to
+        # score popularity (and the persist could clobber a stronger type that
+        # a full scan detected). A singles pass keeps the MB lookup: the
+        # single/EP verdict feeds singles detection's compilation/track-count
+        # gates.
         detected_type = _detect_album_type(artist, album, album_artist or None, spotify_type or None)
-        mb_type, rg_mbid = _lookup_musicbrainz_album_type(artist, album)
-        if mb_type:
-            track_count = len(album_tracks)
-            # A MusicBrainz 'single'/'ep' verdict for a large track count is
-            # almost certainly a full album — downgrade (legacy EP override).
-            if mb_type in ("single", "ep") and track_count > 6:
-                mb_type = "album"
-            elif mb_type == "single" and track_count > 3:
-                mb_type = "ep"
-            # Prefer the MusicBrainz verdict for single/EP (name-based heuristics
-            # cannot detect those) and let it refine a plain 'album' verdict;
-            # keep name-based live/soundtrack/compilation verdicts otherwise.
-            if detected_type == "album" or mb_type in ("single", "ep"):
-                detected_type = mb_type
-                logger.info("[album_stage] MB album type for '%s - %s': %s", artist, album, detected_type)
-        is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
-        logger.info("[album_stage] '%s - %s' → type=%s, heterogeneous=%s",
-                     artist, album, detected_type, is_hetero)
+        if _popularity_pass:
+            is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
+        else:
+            mb_type, rg_mbid = _lookup_musicbrainz_album_type(artist, album)
+            if mb_type:
+                track_count = len(album_tracks)
+                # A MusicBrainz 'single'/'ep' verdict for a large track count is
+                # almost certainly a full album — downgrade (legacy EP override).
+                if mb_type in ("single", "ep") and track_count > 6:
+                    mb_type = "album"
+                elif mb_type == "single" and track_count > 3:
+                    mb_type = "ep"
+                # Prefer the MusicBrainz verdict for single/EP (name-based heuristics
+                # cannot detect those) and let it refine a plain 'album' verdict;
+                # keep name-based live/soundtrack/compilation verdicts otherwise.
+                if detected_type == "album" or mb_type in ("single", "ep"):
+                    detected_type = mb_type
+                    logger.info("[album_stage] MB album type for '%s - %s': %s", artist, album, detected_type)
+            is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
+            logger.info("[album_stage] '%s - %s' → type=%s, heterogeneous=%s",
+                         artist, album, detected_type, is_hetero)
 
-        # Propagate the detected type + release-group MBID to album tracks.
-        _persist_album_type_to_tracks(conn, cursor, artist, album, album_tracks, detected_type, rg_mbid)
+            # Propagate the detected type + release-group MBID to album tracks.
+            _persist_album_type_to_tracks(conn, cursor, artist, album, album_tracks, detected_type, rg_mbid)
 
-        # Mark compilation/soundtrack albums (legacy is_compilation flag).
-        if "+compilation" in detected_type.lower() or "+soundtrack" in detected_type.lower():
-            try:
-                cursor.execute(
-                    "UPDATE tracks SET is_compilation = 1 "
-                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s "
-                    "AND COALESCE(is_compilation, 0) = 0",
-                    (artist, album),
-                )
-                conn.commit()
-            except Exception as exc:
-                logger.debug("[album_stage] Compilation flag persist failed: %s", exc)
+            # Mark compilation/soundtrack albums (legacy is_compilation flag).
+            if "+compilation" in detected_type.lower() or "+soundtrack" in detected_type.lower():
+                try:
+                    cursor.execute(
+                        "UPDATE tracks SET is_compilation = 1 "
+                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s "
+                        "AND COALESCE(is_compilation, 0) = 0",
+                        (artist, album),
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    logger.debug("[album_stage] Compilation flag persist failed: %s", exc)
 
-        # 2. Album art (delegates to existing enrichment services)
-        art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
-        if art_source:
-            logger.info("[album_stage] Album art cached for %s - %s (%s)", artist, album, art_source)
+        # 2. Album art / artist metadata / similar artists / Last.fm tags /
+        #    Discogs id / live-remix tagging — enrichment, not singles or
+        #    popularity work.  A singles pass keeps ONLY the MusicBrainz artist
+        #    ID (the artist-scoped release-group search feeds singles
+        #    detection); a popularity-only pass skips all of it.
+        if _popularity_pass or _singles_pass:
+            art_source = None
+            meta = _meta
+            similar = _similar
+            if _singles_pass:
+                _fetch_musicbrainz_artist_id(artist, conn, options)
+        else:
+            # 2. Album art (delegates to existing enrichment services)
+            art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
+            if art_source:
+                logger.info("[album_stage] Album art cached for %s - %s (%s)", artist, album, art_source)
 
-        # 3. Artist metadata (delegates to existing enrichment services)
-        meta = _fetch_artist_metadata(artist, conn)
+            # 3. Artist metadata (delegates to existing enrichment services)
+            meta = _fetch_artist_metadata(artist, conn)
 
-        # Last.fm artist top tags (legacy parity)
-        _fetch_artist_lastfm_tags(artist, conn)
+            # Last.fm artist top tags (legacy parity)
+            _fetch_artist_lastfm_tags(artist, conn)
 
-        # Backfill releasecountry for tracks missing a release country so
-        # Navidrome's "Release Country" field stays populated (legacy parity).
-        if meta.get("country"):
-            try:
-                cursor.execute(
-                    "UPDATE tracks SET releasecountry = %s "
-                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
-                    "AND (releasecountry IS NULL OR TRIM(releasecountry) = '')",
-                    (meta["country"], artist),
-                )
-                conn.commit()
-            except Exception as exc:
-                logger.debug("[album_stage] releasecountry backfill failed: %s", exc)
+            # Backfill releasecountry for tracks missing a release country so
+            # Navidrome's "Release Country" field stays populated (legacy parity).
+            if meta.get("country"):
+                try:
+                    cursor.execute(
+                        "UPDATE tracks SET releasecountry = %s "
+                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
+                        "AND (releasecountry IS NULL OR TRIM(releasecountry) = '')",
+                        (meta["country"], artist),
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    logger.debug("[album_stage] releasecountry backfill failed: %s", exc)
 
-        # 4. MusicBrainz artist ID — run BEFORE similar artists so the LB
-        #    similar-artists lookup can use the freshly resolved MBID.
-        _fetch_musicbrainz_artist_id(artist, conn, options)
+            # 4. MusicBrainz artist ID — run BEFORE similar artists so the LB
+            #    similar-artists lookup can use the freshly resolved MBID.
+            _fetch_musicbrainz_artist_id(artist, conn, options)
 
-        # 5. Similar artists
-        similar = _fetch_similar_artists(artist, conn, options)
+            # 5. Similar artists
+            similar = _fetch_similar_artists(artist, conn, options)
 
-        # 6. Discogs artist ID (legacy parity)
-        _fetch_discogs_artist_id(artist, conn, options)
+            # 6. Discogs artist ID (legacy parity)
+            _fetch_discogs_artist_id(artist, conn, options)
 
-        # 7. Live/remix album tagging + alternate-take persistence
-        _apply_live_remix_album_tagging(conn, cursor, artist, album, detected_type, album_tracks)
-        _persist_alternate_takes(conn, cursor, album_context)
+            # 7. Live/remix album tagging + alternate-take persistence
+            _apply_live_remix_album_tagging(conn, cursor, artist, album, detected_type, album_tracks)
+            _persist_alternate_takes(conn, cursor, album_context)
 
         # 8. Cover song detection (legacy parity — full CoverDetector).
         # NOTE: the full cover pass (work-history lookup + "Title (Artist

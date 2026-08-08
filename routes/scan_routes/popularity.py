@@ -129,7 +129,8 @@ async def scan_popularity_route():
         elif mode in {"singles_detection", "singles_detection_force"}:
             scan_mode = "singles_detection"
             progress_file = progress_path("singles_scan_progress.json")
-        elif mode == "missing":
+        elif mode in {"popularity", "missing"}:
+            # True popularity-only scan (score + rate on popularity alone).
             scan_mode = "popularity"
             progress_file = progress_path("popularity_scan_progress.json")
         else:
@@ -149,6 +150,8 @@ async def scan_popularity_route():
             scan_kwargs["singles_only"] = True
         elif scan_mode == "singles_detection":
             scan_kwargs["singles_with_missing_popularity"] = True
+        elif scan_mode == "popularity":
+            scan_kwargs["popularity_only"] = True
 
         thread = run_async(
             run_popularity_scan,
