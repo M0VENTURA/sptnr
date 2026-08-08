@@ -2291,6 +2291,9 @@ async def logs():
                 full = os.path.join(log_dir, f)
                 size = os.path.getsize(full) if os.path.isfile(full) else 0
                 log_files.append({"name": f, "path": full, "size": size})
+    # Show the scanning progress log first so the page opens on the same
+    # feed the dashboard's Scanning Log panel displays.
+    log_files.sort(key=lambda f: (f["name"] != "unified_scan.log", f["name"]))
     return await render_template("pages/logs.html", log_dir=log_dir, log_files=log_files)
 
 
