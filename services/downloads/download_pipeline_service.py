@@ -846,7 +846,7 @@ def transfer_and_verify_download(
     return verify_file_in_music(queue_id or 0, final_dest)
 
 
-def start_release_download(release_id, release_title, artist, method='slskd'):
+def start_release_download(release_id, release_title, artist, method='slskd', create_folder_group=True):
 
     try:
         logger.info(f"[START_DOWNLOAD] {release_id}")
@@ -879,21 +879,29 @@ def start_release_download(release_id, release_title, artist, method='slskd'):
 
         release_album_artist = mb_data.get("artist") or artist
 
-        monitoring_folder = create_monitoring_folder(
-            artist, release_title, release_year
-        )
-
-        mb_release_db_id = upsert_musicbrainz_release(
-            resolved_release_id,
-            release_title,
-            artist,
-            release_year,
-            total_tracks,
-            monitoring_folder,
-            method,
-            album_artist=release_album_artist,
-            release_source='musicbrainz',
-        )
+        # When the caller only wants queue items (the search modal's "Download
+        # All Tracks" flow), skip the MusicBrainz monitoring-folder group so the
+        # album appears under the monitor's "Queue Items" section as a grouped
+        # queue-item folder rather than as a "Folder Group". The per-track queue
+        # rows carry release_id / import_group, which is all the download
+        # pipeline needs.
+        monitoring_folder = None
+        mb_release_db_id = None
+        if create_folder_group:
+            monitoring_folder = create_monitoring_folder(
+                artist, release_title, release_year
+            )
+            mb_release_db_id = upsert_musicbrainz_release(
+                resolved_release_id,
+                release_title,
+                artist,
+                release_year,
+                total_tracks,
+                monitoring_folder,
+                method,
+                album_artist=release_album_artist,
+                release_source='musicbrainz',
+            )
 
         queue_source = 'soulseek' if method.lower() == 'slskd' else 'qbittorrent'
 
@@ -910,6 +918,7 @@ def start_release_download(release_id, release_title, artist, method='slskd'):
             "success": True,
             "mb_release_db_id": mb_release_db_id,
             "queue_items_created": len(queue_ids),
+            "queue_ids": queue_ids,
         }
 
     except Exception as e:
