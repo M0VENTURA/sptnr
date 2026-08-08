@@ -48,6 +48,31 @@ class TestAlbumTypeNotClobbered:
         # stage produced (regression introduced alongside the album-type fix).
         assert stripped["final_score"] == 55.0
 
+    def test_strip_album_type_columns_drops_stale_album_mbids(self):
+        from services.popularity.stages.track_stage import _strip_album_type_columns
+
+        # Track loaded from DB BEFORE album enrichment ran — the album MBID
+        # columns are stale (empty here) and the album stage will have
+        # persisted freshly-resolved values for them.  The track upsert must
+        # NOT write these stale values back (that would clobber the release
+        # MBID / release-group MBID the album stage just stored).
+        track = {
+            "id": "t1",
+            "title": "Song",
+            "musicbrainz_album_mbid": "",
+            "musicbrainz_albumid": "",
+            "musicbrainz_releasegroupid": "",
+            "final_score": 50.0,
+        }
+        payload = {"final_score": 55.0}
+
+        stripped = _strip_album_type_columns(track, payload)
+
+        assert "musicbrainz_album_mbid" not in stripped
+        assert "musicbrainz_albumid" not in stripped
+        assert "musicbrainz_releasegroupid" not in stripped
+        assert stripped["final_score"] == 55.0
+
     def test_strip_album_type_columns_keeps_explicit_updates(self):
         from services.popularity.stages.track_stage import _strip_album_type_columns
 

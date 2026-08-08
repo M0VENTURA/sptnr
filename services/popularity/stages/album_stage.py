@@ -446,6 +446,36 @@ def _persist_album_type_to_tracks(conn, cursor, artist, album, tracks, album_typ
         except Exception as exc:
             logger.debug("[album_stage] Release-group MBID propagation failed: %s", exc)
 
+        # Resolve the release-group MBID to a concrete release MBID and store
+        # it on tracks that are still missing one (legacy parity). The album
+        # page's "MusicBrainz Release ID" field reads musicbrainz_album_mbid,
+        # and Navidrome groups tracks by release MBID — without this, albums
+        # whose audio files carry no release tag stay ungrouped.
+        # NOTE: never store a release-group MBID in the release-level column —
+        # when resolution fails, resolve_release_id returns the input
+        # unchanged, and we skip the write entirely.
+        release_mbid = ""
+        try:
+            from services.enrichment.musicbrainz_service import resolve_release_id
+            release_mbid = resolve_release_id(release_group_mbid)
+        except Exception as exc:
+            logger.debug("[album_stage] Release MBID resolution failed for %s: %s", release_group_mbid, exc)
+            release_mbid = ""
+        if release_mbid and str(release_mbid).strip() and str(release_mbid).strip() != str(release_group_mbid).strip():
+            try:
+                cursor.execute(
+                    """
+                    UPDATE tracks
+                    SET musicbrainz_album_mbid = %s, musicbrainz_albumid = %s
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
+                      AND (musicbrainz_album_mbid IS NULL OR TRIM(musicbrainz_album_mbid) = '')
+                    """,
+                    (release_mbid, release_mbid, artist, album),
+                )
+                conn.commit()
+            except Exception as exc:
+                logger.debug("[album_stage] Release MBID propagation failed: %s", exc)
+
 
 def _inject_album_genre(conn, cursor, track_id: str, label: str, mb_genres_raw, genres_raw) -> None:
     """Insert a genre label (Live/Acoustic/Remix) into stored genre columns."""
