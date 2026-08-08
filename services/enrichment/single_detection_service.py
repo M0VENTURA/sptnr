@@ -753,6 +753,7 @@ def detect_single_for_track(
     # z-scores and the popularity-standout signal still compute for collabs.
     _stats_artist = artist
     artist_vals: list[float] = []
+    album_vals: list[float] = []
     album_z = 0.0
     artist_z = 0.0
     if popularity is not None and popularity > 0:
@@ -821,8 +822,12 @@ def detect_single_for_track(
     z_standout = False
     try:
         # artist_vals was fetched above for the z-scores; reuse it here so a
-        # track costs one artist-stats query, not two.
-        artist_track_count = len(artist_vals or [])
+        # track costs one artist-stats query, not two.  On the FIRST scan of an
+        # artist the artist-stats table is empty (no stored scores yet), so the
+        # catalogue-size proxy falls back to the album's own track count —
+        # otherwise a genuinely dominant album track (District 9, album-z ~1.8)
+        # would never qualify as a standout on the pass that first scores it.
+        artist_track_count = max(len(artist_vals or []), len(album_vals or []))
         if artist_track_count >= 3 and max(album_z, artist_z) > 0:
             dyn_threshold = get_dynamic_z_threshold(
                 artist_track_count,

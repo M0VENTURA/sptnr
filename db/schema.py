@@ -196,6 +196,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "single_confidence": "TEXT", "single_confidence_score": "DOUBLE PRECISION",
         "single_status": "TEXT", "single_sources": "TEXT", "single_sources_used": "TEXT",
         "single_detection_last_updated": "TIMESTAMP", "single_manual_override": "BOOLEAN DEFAULT FALSE",
+        "popularity_marked": "BOOLEAN DEFAULT FALSE",
         "popularity_frozen": "BOOLEAN DEFAULT FALSE",
         "popularity_frozen_at": "TIMESTAMP", "mbid": "TEXT", "suggested_mbid": "TEXT",
         "musicbrainz_id": "TEXT", "musicbrainz_trackid": "TEXT", "musicbrainz_albumid": "TEXT",

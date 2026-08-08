@@ -71,11 +71,8 @@ from services.popularity.popularity_cache_policy import (
     should_use_cached_score,
 )
 
-# Score adjustments (artist-context and album-deviation)
-from services.popularity.popularity_adjustments import (
-    apply_mean_popularity_adjustment,
-    apply_album_deviation_adjustment,
-)
+# Score adjustments (album-relative only — artist-wide stats are ignored by
+# design so popularity measures strength within the album, not the catalogue).
 
 logger = logging.getLogger(__name__)
 
@@ -657,35 +654,17 @@ def process_track(
             update_payload["final_score"] = combined
             update_payload["popularity"] = combined
 
-            # ── Score adjustments ─────────────────────────────────────────
-            # 1. Artist-context adjustment (median+MAD z-score + pre-2005 decay)
-            if combined > 0:
-                _adjusted = apply_mean_popularity_adjustment(
-                    track_popularity=combined,
-                    artist_name=artist,
-                    release_year=_as_int(
-                        effective_track.get("year") or effective_track.get("release_year")
-                    ) or None,
-                )
-                if _adjusted != combined:
-                    update_payload["final_score"] = _adjusted
-                    update_payload["popularity"] = _adjusted
-                    update_payload["popularity_adjusted"] = True
-                    combined = _adjusted
-
-                # 2. Album-deviation adjustment (standout within album)
-                _album_adjusted = apply_album_deviation_adjustment(
-                    track_popularity=combined,
-                    artist_name=artist,
-                    album_name=_as_str(
-                        album_context.get("album") or track.get("album") or ""
-                    ),
-                    artist_mean_popularity=None,  # computed internally
-                )
-                if _album_adjusted != combined:
-                    update_payload["final_score"] = _album_adjusted
-                    update_payload["popularity"] = _album_adjusted
-                    update_payload["album_deviation_adjusted"] = True
+            # ── Raw score carried for the album-relative re-map ───────────
+            # The album-relative normalization (album median + scaled-MAD,
+            # robust z → 0-100) is an ALBUM-level operation — it must see ALL
+            # of the album's fresh raw scores before re-mapping any of them.
+            # It runs as a post-album pass in the scan runner (raw scores are
+            # carried here via ``_raw_combined``); artist-wide stats are
+            # deliberately ignored so popularity measures strength within the
+            # album, never the catalogue.  Only freshly-scored tracks carry a
+            # raw score — fully-cached/frozen tracks keep their stored score.
+            if not update_payload.get("_cached"):
+                update_payload["_raw_combined"] = float(score_data.get("combined_score") or 0)
 
         except Exception as e:
             # Surface scoring failures at WARNING so a scan that ends with all
@@ -1271,11 +1250,13 @@ def process_track(
         "lb_percentile": float(lb_percentile or 0.0),
         "popularity_score": _result_final_score,
         "final_score": _result_final_score,
+        "_raw_combined": float(update_payload.get("_raw_combined") or 0),
         "spotify_score": float(score_data.get("spotify_score", 0)),
         "lastfm_score": float(score_data.get("lastfm_score", 0)),
         "listenbrainz_score": float(score_data.get("listenbrainz_score", 0)),
         "is_single": bool(update_payload.get("is_single", track.get("is_single", False))),
         "single_confidence": str(update_payload.get("single_confidence", track.get("single_confidence", "low"))),
         "single_sources": update_payload.get("single_sources", track.get("single_sources", "")),
+        "popularity_marked": bool(track.get("popularity_marked", False)),
         "is_live": bool(track.get("is_live") or track.get("album_context_live")),
     }
