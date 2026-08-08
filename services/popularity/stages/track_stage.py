@@ -759,11 +759,16 @@ def process_track(
             sd_artist = _as_str(effective_track.get("artist") or "")
             sd_album = _as_str(album_context.get("album") or track.get("album") or "")
             sd_album_type = _as_str(album_result.get("detected_album_type") or options.get("album_type") or "")
+            # Use the ADJUSTED score (final_score/popularity) so this track's
+            # singles-gate signal is on the same scale as the stored album
+            # scores it is compared against below (``_album_scores`` reads
+            # stored adjusted popularity/final_score).  The raw combined_score
+            # would mix raw + adjusted scales in the top-50% comparison.
             sd_popularity = float(
-                effective_track.get("combined_score")
-                or effective_track.get("popularity_score")
-                or effective_track.get("final_score")
+                effective_track.get("final_score")
                 or effective_track.get("popularity")
+                or effective_track.get("combined_score")
+                or effective_track.get("popularity_score")
                 or 0
             )
 
@@ -1234,6 +1239,16 @@ def process_track(
     # 7. RETURN RESULT
     # -------------------------------------------------------------------------
 
+    # Return the ADJUSTED score so the result dict matches what was persisted:
+    # ``update_payload["final_score"]`` carries the artist-context and
+    # album-deviation adjustments, while ``score_data["combined_score"]`` is
+    # raw.  Mixing raw scan scores with stored adjusted ``final_score`` values
+    # in the album/artist distributions skews every z-score.  Falls back to the
+    # raw value for paths that never ran adjustments (singles-only, cache).
+    _result_final_score = float(
+        update_payload.get("final_score") or score_data.get("combined_score") or 0
+    )
+
     return {
         "track_id": track_id,
         "artist": track_artist,
@@ -1245,8 +1260,8 @@ def process_track(
         "lastfm_listeners": int(lastfm_listeners or 0),
         "listenbrainz_listens": int(listenbrainz_listens or 0),
         "lb_percentile": float(lb_percentile or 0.0),
-        "popularity_score": float(score_data.get("combined_score", 0)),
-        "final_score": float(score_data.get("combined_score", 0)),
+        "popularity_score": _result_final_score,
+        "final_score": _result_final_score,
         "spotify_score": float(score_data.get("spotify_score", 0)),
         "lastfm_score": float(score_data.get("lastfm_score", 0)),
         "listenbrainz_score": float(score_data.get("listenbrainz_score", 0)),
