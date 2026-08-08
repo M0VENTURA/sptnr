@@ -170,6 +170,13 @@ TABLES_TO_ENSURE: dict[str, str] = {
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         )
     """,
+    "artist_images": """
+        CREATE TABLE IF NOT EXISTS artist_images (
+            artist_name TEXT PRIMARY KEY,
+            image_url TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """,
 }
 
 # =============================================================================

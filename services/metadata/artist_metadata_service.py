@@ -11,6 +11,7 @@ old app.py when those features are needed.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -18,6 +19,11 @@ from sqlalchemy import text
 from db.engine import db_session
 from db.utils import get_db_connection
 from services.enrichment.artist_bio_service import get_artist_biography
+
+try:
+    from api_clients.audiodb import get_artist_fanart
+except Exception:  # pragma: no cover - import guard
+    get_artist_fanart = None
 
 logger = logging.getLogger(__name__)
 
@@ -162,25 +168,106 @@ def artist_favourite(request) -> tuple[dict, int]:
         conn.close()
 
 
+# In-process cache so concurrent <img> requests for the same artist don't all
+# hit AudioDB before the first one is persisted to the artist_images table.
+_artist_image_cache: dict[str, tuple[str, float]] = {}
+_ARTIST_IMAGE_CACHE_TTL_SECONDS = 6 * 3600
+_ARTIST_IMAGE_NEGATIVE_TTL_SECONDS = 30 * 60
+_ARTIST_IMAGE_CACHE_MAX_ENTRIES = 5000
+
+
 def get_artist_image(artist: str):
-    """Get artist image URL from database."""
+    """Get artist image URL from database, with AudioDB fallback for artists
+    not in the collection (e.g. similar-artist cards).
+
+    Mirrors the legacy endpoint: check ``artists`` first, then the
+    ``artist_images`` cache, then fetch from AudioDB on demand and cache it.
+    """
     if not artist:
         return {"success": False, "error": "name required"}, 400
+
+    def _is_valid_url(url: str) -> bool:
+        return bool(url) and url.startswith(("http://", "https://"))
+
+    key = artist.strip().lower()
+    if not key:
+        return {"success": False, "error": "name required"}, 400
+
+    cached = _artist_image_cache.get(key)
+    if cached:
+        img_url, fetched_at = cached
+        ttl = _ARTIST_IMAGE_CACHE_TTL_SECONDS if _is_valid_url(img_url) else _ARTIST_IMAGE_NEGATIVE_TTL_SECONDS
+        if (time.monotonic() - fetched_at) < ttl:
+            return ({"success": True, "image_url": img_url}, 200) if _is_valid_url(img_url) else (
+                {"success": False, "error": "No image", "image_url": ""}, 200
+            )
+
+    url = ""
     try:
         conn = get_db_connection()
     except Exception:
         return {"success": False, "error": "DB connection failed", "image_url": ""}, 200
     try:
         cursor = conn.cursor()
+        # 1) artists table (populated by popularity scans). Exact match first,
+        #    then fall back to case-insensitive so casing differences still hit.
         try:
-            cursor.execute("SELECT image_url FROM artists WHERE name = %s", (artist,))
+            cursor.execute(
+                "SELECT image_url FROM artists WHERE LOWER(name) = LOWER(%s) "
+                "AND image_url IS NOT NULL AND image_url != '' "
+                "ORDER BY CASE WHEN name = %s THEN 0 ELSE 1 END LIMIT 1",
+                (artist, artist),
+            )
             row = cursor.fetchone()
-            # Rows are RealDictRow (dict-like); never index by position.
-            url = str(row.get("image_url") or "").strip() if row else ""
+            if row:
+                url = str(row.get("image_url") or "").strip()
         except Exception:
             url = ""
-        if url and url.startswith(("http://", "https://")):
+
+        # 2) artist_images cache (populated by on-demand AudioDB lookups for
+        #    artists not in the collection, e.g. similar artists).
+        if not _is_valid_url(url):
+            url = ""
+            try:
+                cursor.execute(
+                    "SELECT image_url FROM artist_images WHERE LOWER(artist_name) = LOWER(%s) "
+                    "AND image_url IS NOT NULL AND image_url != '' LIMIT 1",
+                    (artist,),
+                )
+                img_row = cursor.fetchone()
+                if img_row:
+                    url = str(img_row.get("image_url") or "").strip()
+            except Exception:
+                url = ""
+
+        # 3) AudioDB on-demand fallback + cache (legacy parity).
+        if not _is_valid_url(url) and get_artist_fanart is not None:
+            try:
+                img = get_artist_fanart(artist, enabled=True)
+                if _is_valid_url(str(img or "")):
+                    url = str(img).strip()
+                    try:
+                        cursor.execute(
+                            "INSERT INTO artist_images (artist_name, image_url, updated_at) "
+                            "VALUES (%s, %s, CURRENT_TIMESTAMP) "
+                            "ON CONFLICT (artist_name) DO UPDATE SET "
+                            "image_url = EXCLUDED.image_url, updated_at = CURRENT_TIMESTAMP",
+                            (artist, url),
+                        )
+                        conn.commit()
+                    except Exception:
+                        pass
+                else:
+                    url = ""
+            except Exception as exc:
+                logger.debug("AudioDB artist image fallback failed for %s: %s", artist, exc)
+
+        if _is_valid_url(url):
+            _artist_image_cache[key] = (url, time.monotonic())
             return {"success": True, "image_url": url}, 200
+        _artist_image_cache[key] = ("", time.monotonic())
+        if len(_artist_image_cache) > _ARTIST_IMAGE_CACHE_MAX_ENTRIES:
+            _artist_image_cache.pop(next(iter(_artist_image_cache)), None)
         return {"success": False, "error": "No image", "image_url": ""}, 200
     except Exception as exc:
         return {"success": False, "error": str(exc), "image_url": ""}, 200
