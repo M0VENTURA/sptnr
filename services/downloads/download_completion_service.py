@@ -159,6 +159,89 @@ def _is_stale_queue_item(
 # FILE MATCHING
 # =============================================================================
 
+def _build_download_index(fs_files: list[dict[str, Any]]) -> dict[str, Any]:
+    """Index the walked downloads tree ONCE per reconciliation cycle.
+
+    The previous per-item matching loop re-walked the entire tree for every
+    ``downloading`` item (N items × M files, each with a metadata read), which
+    hammered file storage every ~30s cycle. The index turns the hot paths
+    (exact filename, fuzzy basename-token) into dict lookups.
+
+    Returns:
+        {
+            "by_rel_norm": {normalised rel_path -> file},
+            "by_basename": {lowercased basename -> [file, ...]},
+            "by_token":    {meaningful basename token -> [file, ...]},
+        }
+    """
+    by_rel_norm: dict[str, dict[str, Any]] = {}
+    by_basename: dict[str, list[dict[str, Any]]] = {}
+    by_token: dict[str, list[dict[str, Any]]] = {}
+
+    try:
+        from services.queue.queue_scoring import _tokenize_meaningful
+    except Exception:
+        _tokenize_meaningful = None
+
+    for f in fs_files:
+        rel = f["rel_path"].replace("\\", "/")
+        norm = _normalize_transfer_key(rel)
+        if norm:
+            by_rel_norm.setdefault(norm, f)
+        base = os.path.basename(rel)
+        by_basename.setdefault(base.lower(), []).append(f)
+        if _tokenize_meaningful is not None:
+            for token in set(_tokenize_meaningful(base)):
+                by_token.setdefault(token, []).append(f)
+
+    return {
+        "by_rel_norm": by_rel_norm,
+        "by_basename": by_basename,
+        "by_token": by_token,
+    }
+
+
+def _fuzzy_candidates(
+    fs_index: dict[str, Any],
+    item: dict,
+    fs_files: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return likely fuzzy-match candidates for one queue item, cheapest first.
+
+    Pre-filters the walked tree using meaningful basename tokens from the
+    queue item's title and artist. ``_score_soulseek_candidate`` already
+    rejects basenames sharing <50% of title tokens, so any candidate that
+    could score above the bar shares at least one title token — restricting
+    the scan to those files is safe. Artist tokens are included because
+    downloaded files virtually always carry the artist name, and cover the
+    metadata-only-match case where the filename itself is unhelpful.
+
+    Falls back to the full file list only when the item has no meaningful
+    title or artist tokens (so metadata-only matches are still found).
+    """
+    try:
+        from services.queue.queue_scoring import (
+            _tokenize_meaningful,
+            normalize_core_title,
+        )
+        from helpers.normalization_service import normalize_artist
+    except Exception:
+        return fs_files
+
+    tokens: set[str] = set(_tokenize_meaningful(normalize_core_title(item.get("title") or "")))
+    tokens |= set(_tokenize_meaningful(normalize_artist(item.get("artist") or "") or ""))
+
+    token_index = fs_index.get("by_token") or {}
+    seen: dict[str, dict[str, Any]] = {}
+    for token in tokens:
+        for f in token_index.get(token, []):
+            seen.setdefault(f["full_path"], f)
+
+    if seen:
+        return list(seen.values())
+    return fs_files
+
+
 def _file_matches_queue_item(
     file_path: str,
     queue_item: dict,
@@ -738,6 +821,14 @@ def check_completed_downloads() -> dict[str, Any]:
             except Exception as exc:
                 logger.debug("[COMPLETE] Filesystem walk failed: %s", exc)
 
+        # Index the walk ONCE so per-item matching is dict lookups instead of
+        # an O(items × files) re-scan with a metadata read per candidate.
+        fs_index = _build_download_index(fs_files) if fs_files else {
+            "by_rel_norm": {},
+            "by_basename": {},
+            "by_token": {},
+        }
+
         # 3. Files already claimed by non-downloading items (avoid reassignment).
         claimed_files: set[str] = set()
         try:
@@ -828,29 +919,40 @@ def check_completed_downloads() -> dict[str, Any]:
                             _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)", queue_id)
                             continue
 
-                # 2. Exact filename match against filesystem files.
+                # 2. Exact filename match against filesystem files (indexed).
                 if match_found is None and found_fn:
                     found_norm = _normalize_transfer_key(found_fn)
                     found_basename = os.path.basename(found_norm) if found_norm else None
-                    for f in fs_files:
-                        rel = f["rel_path"].replace("\\", "/")
-                        rel_norm = _normalize_transfer_key(rel)
-                        basename = os.path.basename(rel)
-                        if (rel_norm and found_norm and (rel_norm == found_norm or basename.lower() == found_basename)):
-                            candidate = f["full_path"]
-                            is_match, match_source = _file_matches_queue_item(candidate, item, rel)
-                            if not is_match:
-                                _delete_mismatched_download(candidate, queue_id, f"metadata mismatch for exact filename match ({match_source})")
-                                mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
-                                stats["failed"] += 1
-                                break
-                            match_found = rel
-                            abs_path = candidate
-                            break
+                    exact_candidates: list[dict[str, Any]] = []
+                    if found_norm:
+                        hit = fs_index["by_rel_norm"].get(found_norm)
+                        if hit:
+                            exact_candidates.append(hit)
+                    if found_basename:
+                        exact_candidates.extend(fs_index["by_basename"].get(found_basename.lower(), []))
 
-                # 3. Fuzzy match against filesystem files.
+                    seen_paths: set[str] = set()
+                    for f in exact_candidates:
+                        candidate = f["full_path"]
+                        if candidate in seen_paths:
+                            continue
+                        seen_paths.add(candidate)
+                        rel = f["rel_path"].replace("\\", "/")
+                        is_match, match_source = _file_matches_queue_item(candidate, item, rel)
+                        if not is_match:
+                            _delete_mismatched_download(candidate, queue_id, f"metadata mismatch for exact filename match ({match_source})")
+                            mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
+                            stats["failed"] += 1
+                            match_found = "__rejected__"
+                            break
+                        match_found = f["rel_path"]
+                        abs_path = candidate
+                        break
+
+                # 3. Fuzzy match against filesystem files (token-indexed).
+                #    Skipped when step 2 already rejected + failed this item.
                 if match_found is None:
-                    for f in fs_files:
+                    for f in _fuzzy_candidates(fs_index, item, fs_files):
                         rel = f["rel_path"].replace("\\", "/")
                         fn_key = _normalize_transfer_key(rel)
                         if fn_key in claimed_files or os.path.basename(fn_key) in claimed_files:
@@ -883,6 +985,9 @@ def check_completed_downloads() -> dict[str, Any]:
                         claimed_files.add(os.path.basename(fn_key))
                         logger.debug("[COMPLETE] Queue %s: fuzzy match found: %s (score-based)", queue_id, rel)
                         break
+
+                if match_found == "__rejected__":
+                    match_found = None
 
                 # 4. No file found — reconcile against live slskd transfers so
                 # stale 'downloading' rows do not remain stuck forever.

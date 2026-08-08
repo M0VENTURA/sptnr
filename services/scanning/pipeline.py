@@ -77,12 +77,49 @@ from services.scanning.navidrome_import import (
 
 scan_process_navidrome: dict[str, Any] | None = None
 
+# In-process guard: prevents the same artist pipeline from running twice
+# concurrently (double form submits on the artist page, artist page + dashboard
+# triggers). Two overlapping runs double the Last.fm/ListenBrainz/MusicBrainz
+# API load per track, which triggers rate limits and yields inconsistent data.
+_artist_scan_lock = threading.Lock()
+_running_artists: set[str] = set()
+
+
+def _try_claim_artist(artist_name: str) -> bool:
+    """Claim the artist for this pipeline run. False if already running."""
+    global _running_artists
+    key = str(artist_name or "").strip().lower()
+    if not key:
+        return False
+    with _artist_scan_lock:
+        if key in _running_artists:
+            return False
+        _running_artists.add(key)
+        return True
+
+
+def _release_artist(artist_name: str) -> None:
+    global _running_artists
+    key = str(artist_name or "").strip().lower()
+    with _artist_scan_lock:
+        _running_artists.discard(key)
+
 
 # -------------------------------------------------------------------------
 # Artist pipeline
 # -------------------------------------------------------------------------
 
 def run_artist_scan_pipeline(artist_name: str, force: bool = False):
+    if not _try_claim_artist(artist_name):
+        log_unified(f"⏭️ Artist scan already running for: {artist_name} — skipping duplicate trigger")
+        return
+    try:
+        _run_artist_scan_pipeline_inner(artist_name, force)
+    finally:
+        _release_artist(artist_name)
+
+
+def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False):
     logger.info("[SCAN_PIPELINE] Starting artist pipeline: %s (force=%s)", artist_name, force)
     record_scan("artist", "started", message=f"Artist scan: {artist_name}", artist=artist_name)
     try:

@@ -86,13 +86,39 @@ def run_popularity_scan(
     """Run the popularity scan pipeline. Entry point for CLI, WebUI, and scheduler."""
     logger.info("[POPULARITY_PIPELINE] Starting scan (artist=%s, verbose=%s, force=%s)",
                  artist_filter or "ALL", verbose, force)
-                 
+
     # ✅ CLEAR STALE STOP FLAGS: Ensure the scan starts with a clean slate
     if progress_file:
         try:
             clear_stop_request(progress_file)
         except Exception as e:
             logger.warning("Failed to clear stop request flag: %s", e)
+
+    # Persist the DB scan-state "running" marker so the dashboard /api/scan-progress
+    # feed shows targeted album/artist scans too (previously only
+    # ``run_popularity_mode`` wrote progress, so a scan started from the album or
+    # artist page was invisible to the dashboard and looked like it had halted).
+    _scan_type_label = _derive_progress_scan_type(
+        metadata_only=metadata_only,
+        singles_only=singles_only,
+        singles_with_missing_popularity=singles_with_missing_popularity,
+        popularity_only=popularity_only,
+    )
+    if progress_file:
+        try:
+            write_progress_with_current_artist(
+                progress_file,
+                _scan_type_label,
+                True,
+                current_artist=artist_filter,
+                extra={
+                    "status": "running",
+                    "mode": _scan_type_label,
+                    "force": force,
+                },
+            )
+        except Exception as e:
+            logger.debug("Failed to mark scan running in DB state: %s", e)
 
     update(stage="initialising", progress=1, message="Starting popularity scan...")
 
@@ -120,7 +146,7 @@ def run_popularity_scan(
     from helpers.logging_config import log_unified
     try:
         result = scanner(**kwargs)
-        
+
         # Check if the scan was gracefully stopped by the user
         if result is False or (isinstance(result, dict) and result.get("status") == "stopped"):
             update(stage="stopped", message="Scan stopped by user")
@@ -130,14 +156,63 @@ def run_popularity_scan(
         else:
             update(stage="complete", progress=100, message="Scan complete")
             log_unified("[POPULARITY] Scan complete")
-            
+
+        if progress_file:
+            try:
+                write_progress_with_current_artist(
+                    progress_file,
+                    _scan_type_label,
+                    False,
+                    current_artist=artist_filter,
+                    extra={
+                        "status": "complete" if result is not False else "stopped",
+                        "mode": _scan_type_label,
+                        "exit_code": 0,
+                    },
+                )
+            except Exception as e:
+                logger.debug("Failed to mark scan complete in DB state: %s", e)
+
         return result
     except Exception:
         update(stage="failed", message="Scan failed")
         log_unified("[POPULARITY] Scan failed")
         from services.popularity.progress_tracker import finish as _tracker_finish
         _tracker_finish(success=False)
+
+        if progress_file:
+            try:
+                write_progress_with_current_artist(
+                    progress_file,
+                    _scan_type_label,
+                    False,
+                    current_artist=artist_filter,
+                    extra={
+                        "status": "error",
+                        "mode": _scan_type_label,
+                        "error": "Scan failed",
+                        "exit_code": 1,
+                    },
+                )
+            except Exception as e:
+                logger.debug("Failed to mark scan failed in DB state: %s", e)
+
         raise
+
+
+def _derive_progress_scan_type(
+    *,
+    metadata_only: bool = False,
+    singles_only: bool = False,
+    singles_with_missing_popularity: bool = False,
+    popularity_only: bool = False,
+) -> str:
+    """Map runner options to the progress-file scan-type label."""
+    if metadata_only:
+        return "metadata_lookup_scan"
+    if singles_only or singles_with_missing_popularity:
+        return "singles_scan"
+    return "popularity_scan"
 
 
 # =============================================================================

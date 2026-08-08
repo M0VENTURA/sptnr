@@ -104,20 +104,15 @@ def run_album_pipeline(artist_name: str, album_name: str, force: bool = False) -
 
         from services.popularity.pipeline import run_popularity_scan as popularity_scan
 
-        log_unified(f"Step 2/3: Metadata enrichment for album '{album_display}'")
-        popularity_scan(
-            verbose=True,
-            force=force,
-            artist_filter=artist_name,
-            album_filter=album_name,
-            metadata_only=True,
-            progress_file="popularity_scan",
-        )
-
         # Popularity scoring for THIS album only (album-filtered), so a
         # single-album scan does not walk the artist's entire catalogue.
         # Artist-wide scans are still available from the dashboard.
-        log_unified(f"Step 2b/3: Popularity scan for album '{album_display}'")
+        # NOTE: the combined pass already performs the metadata enrichment
+        # (album type / art / artist metadata / similar artists), and an
+        # album-filtered scan never hits the timestamp skip — so a separate
+        # metadata-only pre-pass here was pure duplicate work (double API
+        # calls for art/bio/similar/last.fm per album).  Removed.
+        log_unified(f"Step 2/3: Popularity scan for album '{album_display}'")
         popularity_scan(
             verbose=True,
             force=force,
