@@ -10,10 +10,12 @@ Reproduces the Stray Kids scans where genuinely dominant tracks were missed:
   lookups (grouped by album artist "Stray Kids") found nothing, so even the
   z-score / standout signal could not compute.
 
-Fix: a catalog-size-aware popularity standout (``z_standout``) now confirms
-``medium`` in the high z-band on its own, the dynamic z threshold was lowered
-so strong outliers (z≈1.8) actually qualify, and the stats artist is resolved
-to the album artist for "feat." tracks.
+Fix: a catalog-size-aware popularity standout (``z_standout``) is now a
+popularity *confirmation* — it is NOT single evidence on its own (a popular
+album track is not a single), but it bolsters a track that already carries
+medium-confidence evidence to ``high`` when the z-score hits the standout
+range. The dynamic z threshold was lowered so strong outliers (z≈1.8) qualify,
+and the stats artist is resolved to the album artist for "feat." tracks.
 """
 
 from __future__ import annotations
@@ -43,27 +45,29 @@ def _final(**kw):
 
 
 class TestPopularityStandoutConfirmsSingle:
-    """A strong popularity outlier reaches medium/high in the high z-band."""
+    """The popularity confirmation bolsters, never confirms, a single."""
 
-    def test_standout_alone_is_medium(self):
-        # "U" case: album-z 1.80, zero metadata matches, only the popularity
-        # standout signal (counted as one medium source).
+    def test_standout_alone_is_none(self):
+        # "U" case: album-z 1.80, zero metadata matches. The popularity
+        # standout is NOT a medium single confirmation on its own — a
+        # popular album track is not a single.
         assert _final(
             album_z=1.8,
             artist_z=0.8,
             high_sources=0,
-            medium_sources=1,
+            medium_sources=0,
             z_standout=True,
-        ) == "medium"
+        ) == "none"
 
     def test_standout_with_weak_source_is_high(self):
-        # District 9 case: standout + Last.fm confirmation -> two medium
-        # sources in the high band -> high.
+        # District 9 case: a track with one medium source (Last.fm
+        # confirmation) is BOLSTERED to high when its z-score hits the
+        # standout range.
         assert _final(
             album_z=1.8,
             artist_z=0.88,
             high_sources=0,
-            medium_sources=2,
+            medium_sources=1,
             z_standout=True,
         ) == "high"
 
@@ -73,14 +77,14 @@ class TestPopularityStandoutConfirmsSingle:
             album_z=1.8,
             artist_z=0.8,
             high_sources=1,
-            medium_sources=1,
+            medium_sources=0,
             z_standout=True,
             has_metadata=True,
         ) == "high"
 
     def test_high_z_no_sources_no_standout_still_none(self):
         # Tehran/Crossroads guardrail: z ~1.2 with no corroboration must stay
-        # unflagged — z_standout (>= ~1.6-1.8) is required to confirm.
+        # unflagged — z_standout (>= ~1.6-1.8) is required to bolster.
         assert _final(
             album_z=1.2,
             artist_z=1.2,
@@ -180,5 +184,8 @@ class TestFeatureTrackStatsResolution:
         decision = result["decision"]
         assert decision["album_z"] > 1.5, decision
         assert decision["z_standout"] is True, result["reasons"]
-        assert result["is_single"] is True
-        assert result["confidence"] == "medium"
+        # The standout is NOT a medium single confirmation on its own: with
+        # zero source evidence the track is not flagged as a single even
+        # though its stats resolved correctly.
+        assert result["is_single"] is False, result["reasons"]
+        assert result["confidence"] == "low"

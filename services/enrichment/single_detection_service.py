@@ -589,9 +589,10 @@ def determine_final_status(
     ``musicbrainz_promo`` mark a confirmation that came from a promo-only
     release — promotional evidence caps the verdict at 'medium' unless an
     independent high-confidence source also confirms. ``z_standout`` marks a
-    catalog-size-aware popularity standout (dynamic z threshold) — in the
-    high z-band it reaches 'medium' on its own so genuinely dominant tracks
-    are never dropped to 'none' when the metadata sources are quiet. Returns
+    catalog-size-aware popularity standout (dynamic z threshold) — it is NOT
+    single evidence on its own (a popular album track is not a single), but
+    it bolsters a track that already carries medium-confidence evidence to
+    'high' when the track's z-score hits the standout range. Returns
     ``'high'``, ``'medium'``, or ``'none'``.
     """
     max_z = max(album_z, artist_z)
@@ -623,15 +624,17 @@ def determine_final_status(
     if max_z >= max(0.0, zscore_high):
         if high >= 1 or medium >= 2:
             verdict = 'high'
-        # A catalog-size-aware popularity standout is strong single evidence
-        # on its own: a track that towers over its album-mates in listens
-        # (e.g. District 9 at 2x the next track) was almost certainly issued
-        # as a single, even when the metadata sources are quiet.  The dynamic
-        # threshold (>= ~1.6-1.8 MAD above the median) keeps this far above
-        # the z≈1.2 Tehran/Crossroads false-positive range, and a metadata
-        # confirmation still upgrades it to 'high' via the rule above.
-        elif z_standout:
-            verdict = 'medium'
+        # A catalog-size-aware popularity standout is NOT single evidence on
+        # its own — a popular album track is not a single (z≈1.2
+        # Tehran/Crossroads false positives were the cautionary tale). It
+        # only BOLSTERS a track that already carries medium-confidence
+        # evidence: when a genuinely dominant outlier (z-score in the
+        # standout range, e.g. District 9 at ~1.8 with a Last.fm
+        # confirmation) is also backed by a medium source, the medium
+        # evidence is promoted to 'high'. With no medium evidence the
+        # standout alone still returns 'none'.
+        elif z_standout and medium >= 1:
+            verdict = 'high'
         else:
             verdict = 'none'
 
@@ -811,8 +814,10 @@ def detect_single_for_track(
     # dynamic threshold, the z-score alone was treated as strong single
     # evidence (the old engine used it to short-circuit source lookups).
     # Here the normal source lookups still run and report their results, and
-    # the standout is counted as a weak (medium) popularity source — in the
-    # high z-band it confirms the single on its own (see determine_final_status).
+    # the standout acts as a popularity confirmation — it is NOT a medium
+    # source on its own, but in the high z-band it bolsters a track that
+    # already has medium-confidence evidence to 'high' (see
+    # determine_final_status).
     z_standout = False
     try:
         # artist_vals was fetched above for the z-scores; reuse it here so a
@@ -1018,15 +1023,12 @@ def detect_single_for_track(
         medium_sources += 1
     if lb_top10:
         medium_sources += 1
-    # A catalog-size-aware z-score standout is popularity evidence, NOT
-    # metadata proof of a single release — a popular album track is not a
-    # single.  It counts as a weak (medium) source; in the high z-band it
-    # confirms the single as 'medium' (a dominant-outlier track like District
-    # 9 with no metadata matches is still a single), while a metadata match
-    # promotes it to 'high'.  A track with no such corroboration (Tehran/
-    # Crossroads, z≈1.2) stays unflagged.
-    if z_standout:
-        medium_sources += 1
+    # A catalog-size-aware z-score standout is popularity evidence, NOT a
+    # medium source — a popular album track is not a single, so it must not
+    # stack into ``medium >= 2`` on its own. It only BOLSTERS existing
+    # medium-confidence evidence to 'high' when the z-score is in the
+    # standout range (handled inside determine_final_status), leaving tracks
+    # with no real sources (Tehran/Crossroads, z≈1.2) unflagged.
 
     final = determine_final_status(
         discogs=discogs_confirmed, musicbrainz=musicbrainz_confirmed,
