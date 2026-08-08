@@ -17,6 +17,16 @@ from services.popularity.popularity_math import zscore_to_popularity
 
 logger = logging.getLogger(__name__)
 
+# The artist-context re-map is damped by blending it back with the raw
+# popularity.  Legacy behaviour replaced the score entirely with
+# ``zscore_to_popularity((raw - median) / spread)``; with a catalogue median
+# of ~48 and a floored spread of 10 that collapsed every raw 80-90 track
+# into a 91-97 band, so e.g. S-Class (364,373 listeners) and "Mixtape : Time
+# Out" (128,085 listeners) ended up within a point of each other.  Blending
+# keeps a bounded artist-context nudge while preserving the raw popularity
+# ordering and gaps.
+ARTIST_ADJUSTMENT_RAW_BLEND = 0.5
+
 
 def apply_mean_popularity_adjustment(
     track_popularity: float,
@@ -92,8 +102,14 @@ def apply_mean_popularity_adjustment(
                 z_score,
             )
 
-        # Convert z-score back to 0-100 scale
-        adjusted_score = zscore_to_popularity(z_score)
+        # Convert z-score back to 0-100 scale, blended with the raw score so
+        # the adjustment can't re-compress the top of the scale (see
+        # ``ARTIST_ADJUSTMENT_RAW_BLEND``).
+        remapped = zscore_to_popularity(z_score)
+        adjusted_score = (
+            ARTIST_ADJUSTMENT_RAW_BLEND * track_popularity
+            + (1.0 - ARTIST_ADJUSTMENT_RAW_BLEND) * remapped
+        )
 
         logger.debug(
             "Median+MAD popularity adjustment for '%s': original=%.1f, z_score=%.2f, adjusted=%.1f (artist_median=%.1f, MAD=%.1f, spread=%.1f)",
