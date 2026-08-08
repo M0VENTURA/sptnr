@@ -21,6 +21,13 @@ from routes.scan_routes._common import (
     run_async,
 )
 
+from services.scanning.runtime_state import (
+    scan_lock,
+    is_runtime_running,
+    set_runtime,
+    clear_runtime,
+)
+
 from services.scanning.pipelines.album_pipeline import run_album_pipeline
 from services.scanning.pipelines.artist_pipeline import run_artist_pipeline
 from services.scanning.pipelines.navidrome_targeted_pipeline import (
@@ -31,6 +38,31 @@ from services.scanning.pipelines.popularity_pipeline import (
     run_popularity_album_scan,
     run_popularity_artist_scan,
 )
+
+
+def _start_targeted_popularity_scan(
+    runner,
+    *args,
+    **kwargs,
+) -> bool:
+    """Start a targeted popularity scan under the runtime guard.
+
+    Returns True when the scan was started, False when one is already running
+    (mirrors the dashboard's /api/popularity/run duplicate protection).
+    """
+    with scan_lock:
+        if is_runtime_running("popularity"):
+            return False
+
+        def _worker():
+            try:
+                runner(*args, **kwargs)
+            finally:
+                clear_runtime("popularity")
+
+        thread = run_async(_worker)
+        set_runtime("popularity", {"thread": thread, "type": kwargs.get("scan_type") or "popularity"})
+    return True
 
 
 @scans_bp.route("/scan/artist-custom", methods=["POST"])
@@ -54,12 +86,15 @@ async def scan_artist_custom():
         run_async(run_navidrome_artist_pipeline, artist, force)
 
     elif scan_type in {"popularity", "metadata", "singles"}:
-        run_async(
+        started = _start_targeted_popularity_scan(
             run_popularity_artist_scan,
             artist,
             force=force,
             scan_type=scan_type,
         )
+        if not started:
+            await flash("A popularity scan is already running — skipped duplicate trigger", "warning")
+            return redirect_for_artist(artist)
 
     elif scan_type == "essentia":
         return redirect(url_for("scans.scan_essentia_mood"), code=307)
@@ -97,13 +132,16 @@ async def scan_album_custom():
         run_async(run_navidrome_album_pipeline, artist, album, force)
 
     elif scan_type in {"popularity", "metadata", "singles"}:
-        run_async(
+        started = _start_targeted_popularity_scan(
             run_popularity_album_scan,
             artist,
             album,
             force=force,
             scan_type=scan_type,
         )
+        if not started:
+            await flash("A popularity scan is already running — skipped duplicate trigger", "warning")
+            return redirect_for_album(artist, album)
 
     elif scan_type == "essentia":
         return redirect(url_for("scans.scan_essentia_mood"), code=307)

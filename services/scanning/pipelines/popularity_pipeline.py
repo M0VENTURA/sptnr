@@ -78,12 +78,11 @@ def run_popularity_mode(
             kwargs["singles_with_missing_popularity"] = True
 
         elif mode == "popularity":
-            # Full per-track pipeline (metadata + popularity + singles +
-            # covers) — identical to the album/artist-page scan entry points.
-            # Running with ``popularity_only=True`` skipped singles detection
-            # and metadata enrichment, so the dashboard scan logged and
-            # behaved differently from the album/artist scans.
+            # True popularity-only scan: scores popularity and rates tracks on
+            # popularity alone (5★ reserved for standout popularity tracks).
+            # No singles detection, metadata or cover work.
             scan_type = "popularity_scan"
+            kwargs["popularity_only"] = True
 
         elif mode == "all":
             scan_type = "full_scan"
@@ -198,6 +197,12 @@ def _build_targeted_popularity_kwargs(
 
     elif scan_type == "singles_detection":
         kwargs["singles_with_missing_popularity"] = True
+
+    elif scan_type == "popularity":
+        # Popularity-only: score + rate on popularity alone, no singles
+        # detection / metadata / cover work (matches the dashboard's
+        # "Popularity" scan mode).
+        kwargs["popularity_only"] = True
 
     return kwargs
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional
@@ -32,8 +33,15 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from helpers.normalization_service import normalise_result
 from db.repositories import queue as queue_repository
 from helpers.response_helpers import _ok, _fail
+from services.queue.queue_config import _SLSKD_INTER_ITEM_DELAY_SECONDS
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of items allowed in the search/download pipeline at once.
+# Dispatch is throttled to this cap so an album enqueue (tens of items at
+# once) cannot burst slskd/file-storage with unlimited concurrent work.
+# Overridable via ``QUEUE_MAX_IN_FLIGHT`` or ``queue.worker.max_in_flight``.
+MAX_IN_FLIGHT = 15
 
 
 # =============================================================================
@@ -396,11 +404,27 @@ def process_queue_item(
         return _fail(str(exc), 500, queue_id=queue_id)
 
 
-def process_next_batch(limit: int = 50) -> tuple[dict[str, Any], int]:
+def process_next_batch(
+    limit: int = 50,
+    *,
+    inter_item_delay_seconds: float | None = None,
+    max_in_flight: int | None = None,
+    use_cycle_lock: bool = True,
+) -> tuple[dict[str, Any], int]:
     """
     Process a batch of ready queue items.
 
     This is the main entrypoint called by queue_processing_service and queue_worker.
+
+    Throttling / safety features:
+        - ``inter_item_delay_seconds``: paced dispatch. The configured
+          ``slskd.timeouts.inter_item_delay_seconds`` (default 5) is applied
+          between items so a large enqueue does not fire every search/download
+          back-to-back. Pass ``0`` to disable pacing (used by manual triggers).
+        - ``max_in_flight``: only dispatch while fewer than this many items are
+          in ``searching``/``downloading``, so storage/API load stays bounded.
+        - ``use_cycle_lock``: cross-process mutual exclusion so the standalone
+          worker and the APScheduler job never claim items simultaneously.
     """
     started_at = time.time()
 
@@ -408,6 +432,12 @@ def process_next_batch(limit: int = 50) -> tuple[dict[str, Any], int]:
         limit = max(1, int(limit or 50))
     except (TypeError, ValueError):
         limit = 50
+
+    if inter_item_delay_seconds is None:
+        inter_item_delay_seconds = _SLSKD_INTER_ITEM_DELAY_SECONDS
+
+    if max_in_flight is None:
+        max_in_flight = _resolve_max_in_flight()
 
     try:
         processor = _resolve_processor()
@@ -422,71 +452,178 @@ def process_next_batch(limit: int = 50) -> tuple[dict[str, Any], int]:
                 ),
             )
 
-        items = _get_ready_items(limit)
+        # Serialise cycles across processes (worker + APScheduler) so the
+        # ready-items fetch, in-flight cap and claiming are all atomic w.r.t.
+        # the other process — otherwise a second cycle can fetch the same
+        # 'queued' rows a concurrent cycle is about to claim and re-process
+        # them once the lock releases.
+        def _run_batch() -> tuple[dict[str, Any], int]:
+            items = _get_ready_items(limit)
 
-        processed = 0
-        succeeded = 0
-        skipped = 0
-        failed = 0
+            # Enforce the in-flight cap: never claim more items than free slots.
+            available_slots = _available_in_flight_slots(max_in_flight)
+            if len(items) > available_slots:
+                logger.debug(
+                    "[QUEUE] In-flight cap reached (%s in flight, max %s) — processing %s of %s ready item(s)",
+                    max_in_flight - available_slots,
+                    max_in_flight,
+                    available_slots,
+                    len(items),
+                )
+                items = items[:available_slots]
 
-        results: list[dict[str, Any]] = []
-
-        for item in items:
-            queue_id = _item_id(item)
-
-            try:
-                payload, status = process_queue_item(item, processor=processor)
-
-                processed += 1
-
-                if payload.get("skipped"):
-                    skipped += 1
-                elif status < 400 and payload.get("success", True):
-                    succeeded += 1
-                else:
-                    failed += 1
-
-                results.append(
-                    {
-                        "queue_id": queue_id,
-                        "status_code": status,
-                        "success": payload.get("success", status < 400),
-                        "skipped": bool(payload.get("skipped")),
-                        "error": payload.get("error"),
-                    }
+            if not items:
+                return _ok(
+                    total=0,
+                    processed=0,
+                    succeeded=0,
+                    skipped=0,
+                    failed=0,
+                    throttled=max_in_flight - available_slots > 0,
+                    elapsed_seconds=round(time.time() - started_at, 3),
+                    results=[],
                 )
 
-            except Exception as exc:
-                logger.exception("Unhandled batch item failure")
-                failed += 1
+            return _process_batch(
+                items=items,
+                processor=processor,
+                inter_item_delay_seconds=inter_item_delay_seconds,
+                started_at=started_at,
+            )
 
-                if queue_id:
-                    _mark_failed(item, str(exc))
+        if use_cycle_lock:
+            from services.queue.queue_lock import queue_cycle_lock
 
-                results.append(
-                    {
-                        "queue_id": queue_id,
-                        "status_code": 500,
-                        "success": False,
-                        "error": str(exc),
-                    }
-                )
+            with queue_cycle_lock() as acquired:
+                if not acquired:
+                    logger.info(
+                        "[QUEUE] Another queue cycle holds the lock — skipping this batch to avoid concurrent dispatch"
+                    )
+                    return _ok(
+                        total=0,
+                        processed=0,
+                        succeeded=0,
+                        skipped=0,
+                        failed=0,
+                        throttled=True,
+                        reason="Another queue cycle is running",
+                        elapsed_seconds=round(time.time() - started_at, 3),
+                        results=[],
+                    )
+                return _run_batch()
 
-        elapsed_seconds = round(time.time() - started_at, 3)
-
-        return _ok(
-            total=len(items),
-            processed=processed,
-            succeeded=succeeded,
-            skipped=skipped,
-            failed=failed,
-            elapsed_seconds=elapsed_seconds,
-            results=results,
-        )
+        return _run_batch()
 
     except Exception as exc:
         logger.exception("process_next_batch failed")
         return _fail(str(exc), 500)
+
+
+def _resolve_max_in_flight() -> int:
+    """Resolve the in-flight dispatch cap from env/config (with defaults)."""
+    try:
+        env_value = int(os.getenv("QUEUE_MAX_IN_FLIGHT") or 0)
+        if env_value > 0:
+            return env_value
+    except (TypeError, ValueError):
+        pass
+    try:
+        from helpers.config_helpers import get_queue_worker_config
+        return int(get_queue_worker_config().get("max_in_flight") or MAX_IN_FLIGHT)
+    except Exception:
+        return MAX_IN_FLIGHT
+
+
+def _available_in_flight_slots(max_in_flight: int) -> int:
+    """Return how many more items may enter the search/download pipeline."""
+    try:
+        counts = queue_repository.get_queue_status_counts()
+        in_flight = int(counts.get("searching", 0) or 0) + int(
+            counts.get("downloading", 0) or 0
+        )
+        return max(0, int(max_in_flight) - in_flight)
+    except Exception as exc:
+        logger.debug("[QUEUE] In-flight slot check failed: %s", exc)
+        return max_in_flight
+
+
+def _process_batch(
+    *,
+    items: list[dict[str, Any]],
+    processor: ProcessorFunc,
+    inter_item_delay_seconds: float | None,
+    started_at: float,
+) -> tuple[dict[str, Any], int]:
+    """Dispatch a pre-claimed batch, optionally pacing between items."""
+    processed = 0
+    succeeded = 0
+    skipped = 0
+    failed = 0
+
+    results: list[dict[str, Any]] = []
+
+    for index, item in enumerate(items):
+        queue_id = _item_id(item)
+
+        try:
+            payload, status = process_queue_item(item, processor=processor)
+
+            processed += 1
+
+            if payload.get("skipped"):
+                skipped += 1
+            elif status < 400 and payload.get("success", True):
+                succeeded += 1
+            else:
+                failed += 1
+
+            results.append(
+                {
+                    "queue_id": queue_id,
+                    "status_code": status,
+                    "success": payload.get("success", status < 400),
+                    "skipped": bool(payload.get("skipped")),
+                    "error": payload.get("error"),
+                }
+            )
+
+        except Exception as exc:
+            logger.exception("Unhandled batch item failure")
+            failed += 1
+
+            if queue_id:
+                _mark_failed(item, str(exc))
+
+            results.append(
+                {
+                    "queue_id": queue_id,
+                    "status_code": 500,
+                    "success": False,
+                    "error": str(exc),
+                }
+            )
+
+        # Pace dispatch so an album enqueue cannot burst every search/download
+        # back-to-back — the configured inter-item delay gives slskd breathing
+        # room (and keeps file storage from being hammered in one go).
+        if (
+            inter_item_delay_seconds
+            and inter_item_delay_seconds > 0
+            and index < len(items) - 1
+        ):
+            time.sleep(float(inter_item_delay_seconds))
+
+    elapsed_seconds = round(time.time() - started_at, 3)
+
+    return _ok(
+        total=len(items),
+        processed=processed,
+        succeeded=succeeded,
+        skipped=skipped,
+        failed=failed,
+        elapsed_seconds=elapsed_seconds,
+        results=results,
+    )
 
 
 # =============================================================================

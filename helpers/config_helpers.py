@@ -1523,17 +1523,20 @@ def get_queue_worker_config() -> dict[str, Any]:
     Config section: ``queue.worker`` in config.yaml
 
     Returns:
-        Dict with keys ``interval_seconds``, ``batch_size``.
+        Dict with keys ``interval_seconds``, ``batch_size``,
+        ``max_in_flight``.
 
     Default Values:
         - interval_seconds: 30
         - batch_size: 50
+        - max_in_flight: 15
     """
     cfg = get_config()
     worker = cfg.get("queue", {}).get("worker", {})
     return {
         "interval_seconds": int(worker.get("interval_seconds", 30)),
         "batch_size": int(worker.get("batch_size", 50)),
+        "max_in_flight": int(worker.get("max_in_flight", 15)),
     }
 
 

@@ -197,6 +197,10 @@ def resolve_log_file_path(name: str) -> str | None:
 def get_log_file_content(name: str, lines: int = 500):
     """Return the tail of an arbitrary log file from the log directory.
 
+    ``unified_scan.log`` is filtered to scan activity only, so the /logs page
+    shows the same scanning feed as the dashboard's Scanning Log panel (which
+    reads it via ``/api/unified-log``).  Other files are returned raw.
+
     Returns ``{"lines": [...]}`` or an error tuple.
     """
     try:
@@ -210,6 +214,13 @@ def get_log_file_content(name: str, lines: int = 500):
 
     try:
         log_lines = _read_last_lines(log_path, lines)
+        if name == "unified_scan.log":
+            noise_pattern = _scheduler_noise_filter()
+            scan_pattern = _scan_activity_filter()
+            log_lines = [
+                l for l in log_lines
+                if not noise_pattern.search(l) and scan_pattern.search(l)
+            ]
         return {"lines": log_lines[-lines:]}
     except Exception as exc:
         logger.error("[LOG] read error for %s: %s", name, exc)

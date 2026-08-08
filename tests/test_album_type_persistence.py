@@ -262,6 +262,108 @@ class TestSinglesOnlyPass:
         assert result["popularity_score"] == 50.0
 
 
+class TestSinglesPassPopularityGating:
+    """A standalone singles scan only fetches popularity for tracks WITHOUT
+    stored popularity data.
+
+    ``singles_only`` / ``singles_with_missing_popularity`` run singles
+    detection as the whole point; a track that already carries popularity data
+    reuses it (singles detection only needs SOME score signal for its
+    z-score / top-50% gates), while a track with NO stored data gets a
+    popularity fetch because detection cannot work without one.
+    """
+
+    def _run(self, monkeypatch, track, options):
+        import services.popularity.stages.track_stage as ts
+
+        calls = {"fetch_popularity": 0, "singles": 0}
+        monkeypatch.setattr(ts, "MusicBrainzHttpClient", lambda *a, **k: object())
+        monkeypatch.setattr(ts, "LastFmClient", lambda *a, **k: object())
+        monkeypatch.setattr(ts, "ListenBrainzClient", lambda *a, **k: object())
+        monkeypatch.setattr(ts, "MusicBrainzService", lambda *a, **k: object())
+        monkeypatch.setattr(ts, "get_search_aggregated_lastfm_popularity", lambda *a, **k: {})
+
+        def fake_agg(*a, **k):
+            calls["fetch_popularity"] += 1
+            return {"listeners": 5000, "track_play": 9000, "matched_tracks": []}
+
+        monkeypatch.setattr(ts, "get_aggregated_lastfm_popularity", fake_agg)
+        monkeypatch.setattr(ts, "get_aggregated_listenbrainz_popularity", lambda *a, **k: {})
+
+        # Give the popularity section a Last.fm key so a run actually fetches
+        # (the section's config read goes through helpers.config_helpers).
+        monkeypatch.setattr(
+            "helpers.config_helpers.get_config",
+            lambda: {"api_integrations": {"lastfm": {"api_key": "test-key"}}},
+        )
+
+        def fake_detect(**kwargs):
+            calls["singles"] += 1
+            return {"is_single": True, "confidence": "high", "confidence_score": 0.9,
+                    "single_status": "high", "sources": [{"source": "musicbrainz", "matched": True}],
+                    "reasons": ["mb"]}
+
+        monkeypatch.setattr(ts, "detect_single_for_track", fake_detect)
+        monkeypatch.setattr(ts, "insert_or_update_track", lambda *a, **k: None)
+
+        result = ts.process_track(
+            track=track,
+            track_context={"artist": track.get("artist"), "album": track.get("album")},
+            album_context={"album": track.get("album"), "artist": track.get("artist"), "tracks": [track]},
+            album_result={"detected_album_type": "album", "is_heterogeneous": False},
+            options=options,
+        )
+        return result, calls
+
+    def test_singles_only_reuses_stored_popularity(self, monkeypatch):
+        track = {
+            "id": "t1", "artist": "Muse", "album": "Absolution", "title": "Hysteria",
+            "final_score": 72.0, "popularity": 72.0,
+            "lastfm_listeners": 1000, "listenbrainz_listens": 2000,
+            "lb_percentile": 0.9, "single_detection_last_updated": None,
+        }
+        result, calls = self._run(monkeypatch, track, options={"singles_only": True})
+        assert result is not None
+        # Stored popularity reused, NO popularity fetch.
+        assert calls["fetch_popularity"] == 0
+        assert result["popularity_score"] == 72.0
+        assert result["lastfm_listeners"] == 1000
+        assert result["listenbrainz_listens"] == 2000
+        # Singles detection still ran.
+        assert calls["singles"] == 1
+        assert result["is_single"] is True
+
+    def test_singles_only_fetches_when_popularity_missing(self, monkeypatch):
+        track = {
+            "id": "t1", "artist": "Muse", "album": "Absolution", "title": "Hysteria",
+            "final_score": 0.0, "popularity": 0.0,
+            "lastfm_listeners": 0, "listenbrainz_listens": 0,
+            "single_detection_last_updated": None,
+        }
+        result, calls = self._run(monkeypatch, track, options={"singles_only": True})
+        assert result is not None
+        # No stored popularity → fetched (required for singles detection).
+        assert calls["fetch_popularity"] == 1
+        assert calls["singles"] == 1
+        # Freshly-fetched count flowed through to the result.
+        assert result["lastfm_listeners"] == 5000
+
+    def test_singles_with_missing_popularity_also_gates(self, monkeypatch):
+        track = {
+            "id": "t1", "artist": "Muse", "album": "Absolution", "title": "Hysteria",
+            "final_score": 55.0, "popularity": 55.0,
+            "lastfm_listeners": 800, "listenbrainz_listens": 900,
+            "single_detection_last_updated": None,
+        }
+        result, calls = self._run(
+            monkeypatch, track, options={"singles_with_missing_popularity": True}
+        )
+        assert result is not None
+        assert calls["fetch_popularity"] == 0
+        assert result["popularity_score"] == 55.0
+        assert calls["singles"] == 1
+
+
 class TestAlbumTypeProtectedFromNavidromeSync:
     """A Navidrome metadata sync must never wipe album-type columns.
 
