@@ -163,9 +163,11 @@ def has_single_or_radio_edit_marker(title: str) -> bool:
 # ── Stage 0: Album-type helpers ───────────────────────────────────────────
 
 def is_compilation_album(album_type: str | None, album_title: str) -> bool:
-    if album_type and "compilation" in album_type.lower():
+    if album_type and ("compilation" in album_type.lower() or "soundtrack" in album_type.lower()):
         return True
     t = (album_title or "").lower()
+    if "various artists" in t:
+        return True
     return any(kw in t for kw in _COMPILATION_KEYWORDS)
 
 
@@ -193,12 +195,17 @@ def should_skip_single_detection(title: str, album_type: str | None = None) -> b
     is a single) still match.  Remastered variants are intentionally NOT
     skipped either — they are the same song as the original and remain
     eligible for single detection.
+
+    Compilation / Various-Artists albums are deliberately NOT skipped by
+    album type: every track on a compilation has a different artist, so ALL
+    tracks are checked as singles (the scan pipeline already bypasses the
+    top-50% popularity gate for them).  Live albums still skip entirely.
     """
     t = (title or "").lower()
     at = (album_type or "").lower()
     if _IGNORE_KEYWORD_RE.search(t):
         return True
-    if any(kw in at for kw in ["live", "compilation"]):
+    if "live" in at:
         return True
     return False
 
@@ -592,10 +599,20 @@ def determine_final_status(
     catalog-size-aware popularity standout (dynamic z threshold) — it is NOT
     single evidence on its own (a popular album track is not a single), but
     it bolsters a track that already carries medium-confidence evidence to
-    'high' when the track's z-score hits the standout range. Returns
-    ``'high'``, ``'medium'``, or ``'none'``.
+    'high' when the track's z-score hits the standout range. ``is_compilation``
+    disables popularity entirely: every track on a compilation has a different
+    artist, so the z-score bands and ``z_standout`` are ignored and the verdict
+    is decided by the metadata sources alone. Returns ``'high'``,
+    ``'medium'``, or ``'none'``.
     """
     max_z = max(album_z, artist_z)
+    # Compilation / Various-Artists albums: every track has a different
+    # artist, so album/artist-relative popularity (z-score) is meaningless
+    # for single detection.  Zero ``max_z`` so the z-score bands and the
+    # z_standout bump never factor — the verdict is decided purely by the
+    # metadata sources (Discogs / MusicBrainz / ISRC / radio-edit / Last.fm).
+    if is_compilation:
+        max_z = 0.0
     if high_sources is not None and medium_sources is not None:
         high = high_sources
         medium = medium_sources
@@ -751,12 +768,18 @@ def detect_single_for_track(
     # under the album artist ("Stray Kids").  Resolve the artist that actually
     # has stats (raw name first, then the canonical feature-stripped name) so
     # z-scores and the popularity-standout signal still compute for collabs.
+    #
+    # Compilation / Various-Artists albums SKIP this entirely: every track has
+    # a different artist, so album/artist-relative popularity (z-score) is
+    # meaningless for single detection — the verdict is purely source-based
+    # (Discogs / MusicBrainz / ISRC / radio-edit / Last.fm ...).  Zeroed
+    # z-scores also keep z_standout and the popularity marking from firing.
     _stats_artist = artist
     artist_vals: list[float] = []
     album_vals: list[float] = []
     album_z = 0.0
     artist_z = 0.0
-    if popularity is not None and popularity > 0:
+    if popularity is not None and popularity > 0 and not is_compilation:
         try:
             # Artist-level stats
             from services.popularity.popularity_stats_service import calculate_artist_stats, calculate_album_stats
@@ -784,8 +807,6 @@ def detect_single_for_track(
                     alb_mad = stat_median([abs(v - alb_med) for v in album_vals]) if album_vals else 0
                     alb_spread = max(alb_mad * 1.4826, 10.0)
                     album_z = (popularity - alb_med) / alb_spread if alb_spread > 0 else 0
-                    if is_compilation:
-                        album_z = artist_z  # use artist-wide for compilations
         except Exception as exc:
             logger.debug("Z-score calculation failed: %s", exc)
 
