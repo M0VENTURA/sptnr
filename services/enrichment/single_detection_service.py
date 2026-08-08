@@ -31,6 +31,7 @@ from helpers.normalization_service import (
     normalize_title_for_lucene_query,
     strip_remaster_suffix,
     is_remastered_only_variant,
+    strip_featured_artist,
 )
 
 from api_clients.musicbrainz_http import escape_lucene_special_chars
@@ -212,17 +213,24 @@ def calculate_z_score_strict(popularity: float, pop_median: float, pop_mad_scale
 
 
 def get_dynamic_z_threshold(track_count: int, release_year: int | None = None, is_compilation: bool = False) -> float:
-    """Calculate dynamic z-score threshold based on catalog size and release date."""
+    """Calculate dynamic z-score threshold based on catalog size and release date.
+
+    Thresholds sit around 1.6-1.8: a track one and a half to two scaled-MADs
+    above the artist median is a genuine popularity outlier.  Larger catalogs
+    use a *lower* threshold because their z-distributions compress (more
+    tracks cluster the top-of-catalog scores closer together), so the same
+    absolute z-score is a stronger signal there.
+    """
     if track_count < 5:
         threshold = 1.5
     elif track_count < 10:
-        threshold = 1.8
+        threshold = 1.7
     elif track_count < 50:
-        threshold = 2.0
-    elif track_count < 200:
-        threshold = 1.9
-    else:
         threshold = 1.8
+    elif track_count < 200:
+        threshold = 1.7
+    else:
+        threshold = 1.6
     if release_year and release_year < 2000:
         reduction = min(0.3, (2000 - release_year) * 0.02)
         threshold = max(1.2, threshold - reduction)
@@ -569,6 +577,7 @@ def determine_final_status(
     zscore_high: float = 1.0, zscore_medium: float = 0.6,
     high_sources: int | None = None, medium_sources: int | None = None,
     discogs_promo: bool = False, musicbrainz_promo: bool = False,
+    z_standout: bool = False,
 ) -> str:
     """Final single status based on source detection and z-score analysis.
 
@@ -579,8 +588,11 @@ def determine_final_status(
     per-source ``source_*_confidence`` config knobs). ``discogs_promo`` /
     ``musicbrainz_promo`` mark a confirmation that came from a promo-only
     release — promotional evidence caps the verdict at 'medium' unless an
-    independent high-confidence source also confirms. Returns ``'high'``,
-    ``'medium'``, or ``'none'``.
+    independent high-confidence source also confirms. ``z_standout`` marks a
+    catalog-size-aware popularity standout (dynamic z threshold) — in the
+    high z-band it reaches 'medium' on its own so genuinely dominant tracks
+    are never dropped to 'none' when the metadata sources are quiet. Returns
+    ``'high'``, ``'medium'``, or ``'none'``.
     """
     max_z = max(album_z, artist_z)
     if high_sources is not None and medium_sources is not None:
@@ -611,6 +623,15 @@ def determine_final_status(
     if max_z >= max(0.0, zscore_high):
         if high >= 1 or medium >= 2:
             verdict = 'high'
+        # A catalog-size-aware popularity standout is strong single evidence
+        # on its own: a track that towers over its album-mates in listens
+        # (e.g. District 9 at 2x the next track) was almost certainly issued
+        # as a single, even when the metadata sources are quiet.  The dynamic
+        # threshold (>= ~1.6-1.8 MAD above the median) keeps this far above
+        # the z≈1.2 Tehran/Crossroads false-positive range, and a metadata
+        # confirmation still upgrades it to 'high' via the rule above.
+        elif z_standout:
+            verdict = 'medium'
         else:
             verdict = 'none'
 
@@ -722,6 +743,13 @@ def detect_single_for_track(
     is_remastered = is_remastered_only_variant(title)
 
     # ── Calculate z-scores (median + MAD) ──
+    # The popularity-stats lookups group by ``album_artist`` in the DB, so a
+    # featured-artist track ("Stray Kids feat. Tablo") stores its popularity
+    # under the album artist ("Stray Kids").  Resolve the artist that actually
+    # has stats (raw name first, then the canonical feature-stripped name) so
+    # z-scores and the popularity-standout signal still compute for collabs.
+    _stats_artist = artist
+    artist_vals: list[float] = []
     album_z = 0.0
     artist_z = 0.0
     if popularity is not None and popularity > 0:
@@ -729,7 +757,16 @@ def detect_single_for_track(
             # Artist-level stats
             from services.popularity.popularity_stats_service import calculate_artist_stats, calculate_album_stats
 
-            _, _, artist_vals = calculate_artist_stats(None, artist)
+            _, _, _raw_vals = calculate_artist_stats(None, _stats_artist)
+            if not _raw_vals:
+                _canon = strip_featured_artist(_stats_artist)
+                if _canon and _canon != _stats_artist:
+                    _, _, _canon_vals = calculate_artist_stats(None, _canon)
+                    if _canon_vals:
+                        _stats_artist = _canon
+                        _raw_vals = _canon_vals
+            artist_vals = _raw_vals
+
             if artist_vals:
                 art_med = stat_median(artist_vals)
                 art_mad = stat_median([abs(v - art_med) for v in artist_vals]) if artist_vals else 0
@@ -737,7 +774,7 @@ def detect_single_for_track(
                 artist_z = (popularity - art_med) / art_spread if art_spread > 0 else 0
 
             if album:
-                _, _, album_vals = calculate_album_stats(None, artist, album)
+                _, _, album_vals = calculate_album_stats(None, _stats_artist, album)
                 if album_vals:
                     alb_med = stat_median(album_vals)
                     alb_mad = stat_median([abs(v - alb_med) for v in album_vals]) if album_vals else 0
@@ -771,14 +808,15 @@ def detect_single_for_track(
 
     # ── Dynamic z-score standout signal ──────────────────────────────────
     # Legacy behaviour: when a track's z-score exceeds the catalog-size-aware
-    # dynamic threshold, the z-score alone is treated as strong single
+    # dynamic threshold, the z-score alone was treated as strong single
     # evidence (the old engine used it to short-circuit source lookups).
-    # Here it is added as an additive high-confidence source instead, so the
-    # normal source lookups still run and report their results.
+    # Here the normal source lookups still run and report their results, and
+    # the standout is counted as a weak (medium) popularity source — in the
+    # high z-band it confirms the single on its own (see determine_final_status).
     z_standout = False
     try:
-        from services.popularity.popularity_stats_service import calculate_artist_stats
-        _, _, artist_vals = calculate_artist_stats(None, artist)
+        # artist_vals was fetched above for the z-scores; reuse it here so a
+        # track costs one artist-stats query, not two.
         artist_track_count = len(artist_vals or [])
         if artist_track_count >= 3 and max(album_z, artist_z) > 0:
             dyn_threshold = get_dynamic_z_threshold(
@@ -981,9 +1019,12 @@ def detect_single_for_track(
     if lb_top10:
         medium_sources += 1
     # A catalog-size-aware z-score standout is popularity evidence, NOT
-    # evidence of a single release — a popular album track is not a single.
-    # It corroborates real sources but can never confirm a single on its own,
-    # so it counts as a medium (weak) source only.
+    # metadata proof of a single release — a popular album track is not a
+    # single.  It counts as a weak (medium) source; in the high z-band it
+    # confirms the single as 'medium' (a dominant-outlier track like District
+    # 9 with no metadata matches is still a single), while a metadata match
+    # promotes it to 'high'.  A track with no such corroboration (Tehran/
+    # Crossroads, z≈1.2) stays unflagged.
     if z_standout:
         medium_sources += 1
 
@@ -1005,6 +1046,7 @@ def detect_single_for_track(
         medium_sources=medium_sources,
         discogs_promo=discogs_promo,
         musicbrainz_promo=musicbrainz_promo,
+        z_standout=z_standout,
     )
 
     # Soft z-gate cap: low-scoring tracks need two+ high-confidence sources to
@@ -1046,6 +1088,7 @@ def detect_single_for_track(
             "high_sources": high_sources,
             "medium_sources": medium_sources,
             "is_title_track": is_title,
+            "z_standout": bool(z_standout),
             "source_levels": {
                 k: _levels.get(k) for k in (
                     "discogs", "musicbrainz", "discogs_video", "lastfm"
