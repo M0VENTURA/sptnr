@@ -81,34 +81,54 @@ def zscore_to_popularity(z_score: float) -> float:
     return min(100.0, max(0.0, score))
 
 
+def _remap_relative_popularity(raw_score: float, reference_scores: list[float]) -> float:
+    """Shared robust-z re-map of a raw score against a reference distribution.
+
+        z = (raw - reference_median) / max(reference_MAD * 1.4826, ALBUM_RELATIVE_MIN_SPREAD)
+        popularity = zscore_to_popularity(z)
+
+    Every reference group (album or artist catalogue) is centred at ~50, so a
+    group's strongest track scores ~66-88 while its median sits at 50 — a
+    tight, meaningful spread with no ceiling clumping.  Returns ``raw_score``
+    unchanged when the reference has too few valid scores
+    (< ``ALBUM_RELATIVE_MIN_ALBUM_TRACKS``) or the raw score is zero.
+    """
+    if raw_score is None or float(raw_score) <= 0:
+        return float(raw_score or 0)
+    valid = [float(s) for s in (reference_scores or []) if float(s or 0) > 0]
+    if len(valid) < ALBUM_RELATIVE_MIN_ALBUM_TRACKS:
+        return float(raw_score)
+    reference_median = median(valid)
+    mad = median([abs(v - reference_median) for v in valid])
+    spread = max(mad * 1.4826, ALBUM_RELATIVE_MIN_SPREAD)
+    if spread <= 0:
+        return float(raw_score)
+    z = (float(raw_score) - reference_median) / spread
+    return zscore_to_popularity(z)
+
+
 def apply_album_relative_popularity(raw_score: float, album_scores: list[float]) -> float:
     """Re-map a raw popularity score relative to its ALBUM's distribution.
 
     Popularity is album-relative only: the score becomes how strong a track is
     *within its album*, using the album's median and scaled-MAD as the robust
-    reference (artist-wide stats are deliberately ignored).
-
-        z = (raw - album_median) / max(album_MAD * 1.4826, ALBUM_RELATIVE_MIN_SPREAD)
-        popularity = zscore_to_popularity(z)
-
-    Every album is centred at ~50, so the top track of a uniformly-popular
-    album scores ~66-88 while the album median sits at 50 — a tight, meaningful
-    spread with no ceiling clumping.  Returns ``raw_score`` unchanged when the
-    album has too few valid scores (< ``ALBUM_RELATIVE_MIN_ALBUM_TRACKS``) or
-    the raw score is zero (nothing to re-map).
+    reference (artist-wide stats are deliberately ignored).  See
+    ``_remap_relative_popularity`` for the mapping.
     """
-    if raw_score is None or float(raw_score) <= 0:
-        return float(raw_score or 0)
-    valid = [float(s) for s in (album_scores or []) if float(s or 0) > 0]
-    if len(valid) < ALBUM_RELATIVE_MIN_ALBUM_TRACKS:
-        return float(raw_score)
-    album_median = median(valid)
-    mad = median([abs(v - album_median) for v in valid])
-    spread = max(mad * 1.4826, ALBUM_RELATIVE_MIN_SPREAD)
-    if spread <= 0:
-        return float(raw_score)
-    z = (float(raw_score) - album_median) / spread
-    return zscore_to_popularity(z)
+    return _remap_relative_popularity(raw_score, album_scores)
+
+
+def apply_track_artist_relative_popularity(raw_score: float, artist_scores: list[float]) -> float:
+    """Re-map a raw popularity score relative to a TRACK ARTIST's distribution.
+
+    Used for compilation / Various-Artists albums: every track has a different
+    artist, so comparing a track against the compilation's median (the "album
+    artist" reference) is meaningless.  The score instead becomes how strong
+    the track is *within its own track artist's catalogue*, using the artist's
+    median and scaled-MAD as the robust reference.  Same mapping as the
+    album-relative variant (``_remap_relative_popularity``).
+    """
+    return _remap_relative_popularity(raw_score, artist_scores)
 
 
 def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int = 0) -> float:

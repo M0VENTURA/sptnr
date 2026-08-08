@@ -199,3 +199,48 @@ class TestAlbumRelativePopularity:
         album = [80, 75, 70, 65, 60, 0, 0, 0]
         score = self._apply(80.0, album)
         assert score >= 60.0
+
+
+class TestTrackArtistRelativePopularity:
+    """Compilation popularity: robust z against the TRACK artist's catalogue.
+
+    Compilation / Various-Artists albums mix many artists, so the compilation's
+    own distribution (the "album artist" reference) is meaningless.  Each track
+    is re-mapped against its own track artist's catalogue popularity instead —
+    the score answers "how popular is this track within its artist's
+    discography".
+    """
+
+    def _apply(self, raw, artist_scores):
+        from services.popularity.popularity_math import apply_track_artist_relative_popularity
+        return apply_track_artist_relative_popularity(raw, artist_scores)
+
+    def test_artist_median_track_scores_around_midpoint(self):
+        # A track at the artist's catalogue median re-maps to ~50 (z ≈ 0).
+        score = self._apply(60.0, [80, 75, 70, 65, 60, 55])
+        assert 30 <= score <= 70
+
+    def test_strong_track_for_artist_scores_above_catalogue_median(self):
+        artist = [50, 52, 54, 56, 58, 60]
+        strong = self._apply(90.0, artist)
+        typical = self._apply(55.0, artist)
+        assert strong > typical
+        assert strong < 100.0
+        assert typical < 100.0
+
+    def test_same_mapping_as_album_relative(self):
+        # The track-artist variant is the same robust-z mapping, just against a
+        # different reference distribution.
+        from services.popularity.popularity_math import (
+            apply_album_relative_popularity,
+            apply_track_artist_relative_popularity,
+        )
+        artist = [80, 75, 70, 65, 60, 55]
+        assert apply_track_artist_relative_popularity(85.0, artist) == apply_album_relative_popularity(85.0, artist)
+
+    def test_requires_three_valid_artist_scores(self):
+        # Too few artist catalogue scores → no meaningful distribution → raw kept.
+        assert self._apply(80.0, [80, 75]) == 80.0
+
+    def test_zero_raw_unchanged(self):
+        assert self._apply(0.0, [80, 75, 70, 65, 60]) == 0.0

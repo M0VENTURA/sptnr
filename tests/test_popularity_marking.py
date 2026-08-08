@@ -86,9 +86,9 @@ class TestPopularityMarkingBump:
 
 
 class TestAlbumRelativeNormalization:
-    def _normalize(self, tracks):
+    def _normalize(self, tracks, is_compilation=False):
         from services.popularity.scan_stage_runner import _apply_album_relative_normalization
-        return _apply_album_relative_normalization(tracks)
+        return _apply_album_relative_normalization(tracks, is_compilation=is_compilation)
 
     def test_remaps_fresh_scores(self):
         tracks = [
@@ -129,3 +129,106 @@ class TestAlbumRelativeNormalization:
         self._normalize(tracks)
         assert frozen["popularity_score"] == 60.0
         assert all(t["popularity_score"] != t["_raw_combined"] for t in fresh)
+
+
+class TestCompilationTrackArtistNormalization:
+    """Compilation albums re-map each track against its own TRACK artist.
+
+    On a compilation / Various-Artists album every track has a different
+    artist, so comparing a track against the compilation's median (the "album
+    artist" reference) is meaningless.  Each track is re-mapped against its own
+    track artist's stored catalogue popularity instead.
+    """
+
+    def _normalize(self, tracks, artist_scores_map=None):
+        from services.popularity import scan_stage_runner as s
+        monkeypatched = artist_scores_map is not None
+
+        def _fake_load(track_artist):
+            return list(artist_scores_map.get(track_artist) or [])
+
+        if monkeypatched:
+            original = s._load_track_artist_scores
+            s._load_track_artist_scores = _fake_load
+        try:
+            return s._apply_album_relative_normalization(tracks, is_compilation=True)
+        finally:
+            if monkeypatched:
+                s._load_track_artist_scores = original
+
+    def _tracks(self):
+        return [
+            {"track_id": f"t{i}", "artist": artist, "_raw_combined": raw,
+             "popularity_score": raw, "final_score": raw}
+            for i, (artist, raw) in enumerate([
+                ("Artist A", 90.0),
+                ("Artist B", 85.0),
+                ("Artist C", 80.0),
+                ("Artist D", 75.0),
+                ("Artist E", 70.0),
+                ("Artist F", 65.0),
+            ], start=1)
+        ]
+
+    def test_compilation_path_remaps_against_track_artist(self):
+        # Each track is re-mapped against ITS OWN artist's distribution — a
+        # track that tops its artist's catalogue scores high, one that sits at
+        # the catalogue median lands near 50.
+        scores_map = {
+            "Artist A": [90, 88, 86, 84, 82, 80],
+            "Artist B": [85, 83, 81, 79, 77, 75],
+            "Artist C": [80, 78, 76, 74, 72, 70],
+            "Artist D": [75, 73, 71, 69, 67, 65],
+            "Artist E": [70, 68, 66, 64, 62, 60],
+            "Artist F": [65, 63, 61, 59, 57, 55],
+        }
+        tracks = self._tracks()
+        changed = self._normalize(tracks, scores_map)
+        assert changed == len(tracks)
+        # Every track sits at or above its own artist's median → ~50 or higher,
+        # and none clamps at 100.
+        for t, artist in zip(tracks, scores_map):
+            assert 45 <= t["popularity_score"] <= 99
+            assert t["popularity_score"] != t["_raw_combined"]
+
+    def test_artist_median_track_scores_near_midpoint(self):
+        # A track sitting AT its artist's catalogue median re-maps to ~50.
+        scores_map = {
+            "Artist A": [90, 88, 86, 84, 82, 80],
+            "Artist B": [85, 83, 81, 79, 77, 75],
+            "Artist C": [80, 78, 76, 74, 72, 70],
+            "Artist D": [75, 73, 71, 69, 67, 65],
+            "Artist E": [70, 68, 66, 64, 62, 60],
+            "Artist F": [65, 63, 61, 59, 57, 55],
+        }
+        tracks = [
+            {"track_id": "t1", "artist": "Artist A", "_raw_combined": 85.0,
+             "popularity_score": 85.0, "final_score": 85.0},
+        ]
+        self._normalize(tracks, scores_map)
+        assert 30 <= tracks[0]["popularity_score"] <= 70
+
+    def test_artist_without_scores_keeps_raw(self):
+        # An artist with no stored catalogue scores (first scan) keeps its raw
+        # score — there is no distribution to compare against.
+        tracks = self._tracks()
+        changed = self._normalize(tracks, {})
+        assert changed == 0
+        assert all(t["popularity_score"] == t["_raw_combined"] for t in tracks)
+
+    def test_no_fresh_scores_skips(self):
+        tracks = [{"track_id": "t1", "artist": "A", "_raw_combined": 0, "popularity_score": 60.0}]
+        assert self._normalize(tracks, {"A": [80, 75, 70, 65, 60, 55]}) == 0
+
+    def test_non_compilation_still_uses_album_distribution(self):
+        # Regular albums are untouched by the compilation path — they still
+        # re-map against the album's own distribution.
+        tracks = self._tracks()
+        from services.popularity import scan_stage_runner as s
+        original = s._load_track_artist_scores
+        s._load_track_artist_scores = lambda artist: [99.0, 99.0, 99.0, 99.0, 99.0, 99.0]
+        try:
+            changed_album = s._apply_album_relative_normalization(tracks, is_compilation=False)
+        finally:
+            s._load_track_artist_scores = original
+        assert changed_album == len(tracks)
