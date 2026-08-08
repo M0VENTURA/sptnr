@@ -206,6 +206,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "writer": "TEXT", "isrc": "TEXT", "work": "TEXT", "pending_mb_updates": "TEXT",
         "mb_ignored_fields": "TEXT", "is_cover": "BIGINT DEFAULT 0", "is_cover_reason": "TEXT",
         "original_cover_artist": "TEXT", "cover_manual_override": "BOOLEAN DEFAULT FALSE",
+        "cover_last_checked": "TIMESTAMP",
         "is_live": "BIGINT DEFAULT 0", "is_acoustic": "BIGINT DEFAULT 0", "is_remix": "BIGINT DEFAULT 0",
         "alternate_take": "BIGINT DEFAULT 0", "base_track_id": "TEXT",
         "is_compilation": "BIGINT DEFAULT 0", "releasecountry": "TEXT",

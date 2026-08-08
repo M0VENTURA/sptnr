@@ -127,9 +127,10 @@ def get_listenbrainz_album_tracklist(
     """Fetch an album's per-track ListenBrainz popularity matched by title.
 
     ListenBrainz lists albums with their tracks, so albums whose local tracks
-    lack recording MBIDs can still get LB listen counts: resolve the album's
-    release MBID (local tracks first, then a MusicBrainz release search),
-    fetch the release tracklist, batch the popularity for those recordings,
+    lack recording MBIDs (or carry split recordings with zero listens) can
+    still get LB listen counts: resolve the album's release MBID (local
+    tracks first, then a MusicBrainz release search), fetch the release
+    tracklist from MusicBrainz, batch the LB popularity for those recordings,
     and key the result by normalized title.  Multiple recordings of the same
     title are aggregated.
 
@@ -148,33 +149,37 @@ def get_listenbrainz_album_tracklist(
     if not release_mbid:
         return {}
 
-    try:
-        from api_clients.listenbrainz import ListenBrainzClient
-        lb = ListenBrainzClient()
-        meta = lb.get_release_metadata_batch([release_mbid]) or {}
-        release_meta = (meta.get(release_mbid) or {}).get("release") or {}
-    except Exception as exc:
-        logger.debug("[LB_ALBUM] Release metadata failed for %s: %s", release_mbid, exc)
-        return {}
-
-    # Flatten the tracklist: normalized title -> recording MBIDs.
+    # Tracklist from MUSICBRAINZ (release → recordings) — the ListenBrainz
+    # metadata store (/metadata/release/) returns 404 for releases it has not
+    # cached (e.g. Phantoma), which silently killed the whole album path and
+    # left tracks at 0 even though the LB album page shows counts.  The
+    # per-recording counts then come from the LB popularity API — the same
+    # numbers the ListenBrainz album page aggregates.
     titles_to_mbids: Dict[str, List[str]] = {}
     recording_mbids: List[str] = []
-    for medium in release_meta.get("media") or []:
-        if not isinstance(medium, dict):
-            continue
-        for trk in medium.get("tracks") or []:
-            if not isinstance(trk, dict):
+    try:
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        mb = MusicBrainzHttpClient(enabled=True)
+        release = mb.get_release(release_mbid, inc="recordings")
+        for medium in release.get("media") or []:
+            if not isinstance(medium, dict):
                 continue
-            title = str(trk.get("title") or "").strip()
-            if not title:
-                continue
-            key = normalize_for_aggregation(title)
-            rec_mbid = str(trk.get("recording_mbid") or "").strip()
-            titles_to_mbids.setdefault(key, [])
-            if rec_mbid:
-                titles_to_mbids[key].append(rec_mbid)
-                recording_mbids.append(rec_mbid)
+            for trk in medium.get("tracks") or []:
+                if not isinstance(trk, dict):
+                    continue
+                title = str(trk.get("title") or "").strip()
+                if not title:
+                    continue
+                rec = trk.get("recording") or {}
+                rec_mbid = str(rec.get("id") or "").strip()
+                key = normalize_for_aggregation(title)
+                titles_to_mbids.setdefault(key, [])
+                if rec_mbid:
+                    titles_to_mbids[key].append(rec_mbid)
+                    recording_mbids.append(rec_mbid)
+    except Exception as exc:
+        logger.debug("[LB_ALBUM] MB release tracklist failed for %s: %s", release_mbid, exc)
+        return {}
 
     if not recording_mbids:
         return {}

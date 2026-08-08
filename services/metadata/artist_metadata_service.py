@@ -225,7 +225,7 @@ def update_ids(payload: dict) -> tuple[dict, int]:
     updates: list[str] = []
     params: list[str] = []
     for column, key in (
-        ("musicbrainz_artist_id", "musicbrainz_artist_id"),
+        ("musicbrainz_artistid", "musicbrainz_artist_id"),
         ("lastfm_artist_mbid", "lastfm_artist_mbid"),
         ("discogs_artist_id", "discogs_artist_id"),
         ("spotify_artist_id", "spotify_artist_id"),
@@ -320,7 +320,7 @@ def lookup_ids(payload: dict) -> tuple[dict, int]:
     updates: list[str] = []
     params: list[str] = []
     if musicbrainz_id:
-        updates.extend(["musicbrainz_artist_id = %s", "lastfm_artist_mbid = %s"])
+        updates.extend(["musicbrainz_artistid = %s", "lastfm_artist_mbid = %s"])
         params.extend([musicbrainz_id, musicbrainz_id])
     if discogs_id:
         updates.append("discogs_artist_id = %s")

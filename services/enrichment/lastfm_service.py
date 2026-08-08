@@ -431,6 +431,35 @@ class LastFmService:
             logger.debug("Last.fm track.search failed for %s / %s: %s", artist, title, exc)
             return []
 
+    def search_album(self, album: str, artist: str = "", limit: int = 10) -> list[dict[str, Any]]:
+        """Search Last.fm albums, keeping matches whose artist matches ``artist``.
+
+        ``album.search`` accepts no artist filter, so the returned list is
+        filtered client-side with the same artist-match scoring as track
+        searches (feat. credits resolve to the primary artist).
+        """
+        if not self.api_key:
+            return []
+        try:
+            data = self.http.get_json(
+                "album.search", timeout=(5, 10), album=album, limit=max(1, min(limit, 100))
+            )
+            albums = data.get("results", {}).get("albummatches", {}).get("album", [])
+            if isinstance(albums, dict):
+                albums = [albums]
+            output = []
+            for item in albums or []:
+                if not isinstance(item, dict):
+                    continue
+                item_artist = self.extract_artist_name(item.get("artist"))
+                if artist and self.artist_match_score(artist, item_artist) < 60:
+                    continue
+                output.append(item)
+            return output
+        except Exception as exc:
+            logger.debug("Last.fm album.search failed for '%s': %s", album, exc)
+            return []
+
     def _album_get_info(self, artist: str, album: str) -> dict[str, Any]:
         """Try album.getInfo across artist variants."""
         if not self.api_key:

@@ -111,6 +111,11 @@ def normalize_for_aggregation(title: str) -> str:
     # it with the bracket-carrying single requires both forms to collapse to
     # the same key (legacy parity with old_system/popularity_helpers.py).
     value = re.sub(r"\s+(?:feat\.?|ft\.?|featuring)\s+.*$", "", value, flags=re.IGNORECASE)
+    # Drop dashes that are NOT space-delimited ("Ph4/NT0‐mA" → "Ph4/NT0mA",
+    # unicode/ASCII variants) — some sources omit the separator entirely, so
+    # both variants must collapse to the same key.  Space-delimited dashes
+    # ("Foo - Bar") stay separators.
+    value = re.sub(r"(?<=\S)[\u2010\u2011\u2012\u2013\u2014\u2015\u2212-](?=\S)", "", value)
     value = re.sub(r"[^a-z0-9]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
 

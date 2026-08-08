@@ -462,7 +462,7 @@ async def artists():
     )
 
 
-@ui_bp.route("/artist/<path:name>")
+@ui_bp.route("/artist/<string:name>")
 async def artist_detail(name: str):
     name = unquote(name or "").strip()
     cfg = get_config()
@@ -2377,10 +2377,12 @@ async def discover():
 @ui_bp.route("/downloads/monitor")
 async def downloads_monitor():
     cfg = get_config()
+    from services.infrastructure.filesystem_service import resolve_downloads_dir
     return await render_template(
         "pages/downloads/monitor.html",
         qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
+        downloads_dir=resolve_downloads_dir(prefer_music_subfolder=False),
     )
 
 
@@ -2453,7 +2455,11 @@ async def downloads_discover_upcoming():
 
 @ui_bp.route("/artist/<path:name>/corrections")
 async def artist_corrections(name):
-    return await render_template("pages/artist_corrections.html", artist_name=name)
+    from services.metadata.artist_service import get_artist_corrections
+    data, code = get_artist_corrections(unquote(name or "").strip())
+    if code != 200:
+        return jsonify(data), code
+    return await render_template("pages/artist_corrections.html", **data)
 
 
 @ui_bp.route("/artist/<path:name>/genre-management")

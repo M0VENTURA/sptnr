@@ -60,8 +60,14 @@ _last_discovered_count: int | None = None
 
 
 def discover_audio_files() -> list[DiscoveredFile]:
-    """Filesystem-only scan for audio files."""
-    downloads_dir = resolve_torrents_dir()
+    """Filesystem-only scan for audio files across the configured downloads root.
+
+    Scans the configured root directly — NOT the ``Music``/``torrents``
+    subfolder preferences — so albums landing anywhere under the downloads
+    folder are discovered.  The recursive walk covers subfolders including
+    ``Music`` anyway.
+    """
+    downloads_dir = resolve_downloads_dir(prefer_music_subfolder=False)
     if not os.path.isdir(downloads_dir):
         logger.warning("Downloads directory not found: %s", downloads_dir)
         return []
@@ -116,8 +122,48 @@ def check_completed_downloads() -> dict[str, object]:
     return _check()
 
 
+def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
+    """Dedupe discovered files against the queue and insert the new ones.
+
+    Shared by the manual ``Discover Files`` action and the periodic
+    auto-discovery cycle so both paths enqueue identically.
+
+    Returns ``{"queued": int, "already_in_queue": int}``.
+    """
+    from db.repositories.queue_admin import (
+        find_existing_discovered_file,
+        insert_discovered_file,
+    )
+    queued = 0
+    already_in_queue = 0
+    for f in files:
+        existing = find_existing_discovered_file(
+            file_path=f.full_path,
+            filename=f.filename,
+            rel_path=f.rel_path,
+        )
+        if existing:
+            already_in_queue += 1
+            continue
+        insert_discovered_file(
+            artist="Unknown",
+            title=f.filename,
+            album="Unknown",
+            album_artist=None,
+            track_number=None,
+            disc_number=None,
+            year=None,
+            duration=None,
+            file_path=f.full_path,
+            filename=f.filename,
+            import_group="default",
+        )
+        queued += 1
+    return {"queued": queued, "already_in_queue": already_in_queue}
+
+
 def discover_files() -> dict[str, object]:
-    """Scan for audio files and return statistics.
+    """Scan for audio files, add new ones to the download queue, return stats.
 
     Returns:
         {
@@ -136,35 +182,37 @@ def discover_files() -> dict[str, object]:
     file_paths = [f.full_path for f in files]
     total = len(file_paths)
 
-    # Count how many are already in the download queue
-    already_in_queue = 0
+    # Enqueue new files (dedupe by path/filename, insert as "unmatched").
+    enqueued = enqueue_discovered_files(files)
+    queued = enqueued["queued"]
+    already_in_queue = enqueued["already_in_queue"]
+
+    # Count how many already exist in the music library (tracks table).
     already_in_library = 0
-    if total > 0:
+    if files:
         try:
             from db.utils import get_db_connection
-
             conn = get_db_connection()
             cursor = conn.cursor()
-            # Count rows in download_queue whose file_path matches discovered files
-            for path in file_paths:
+            for f in files:
                 cursor.execute(
-                    "SELECT COUNT(*) FROM download_queue WHERE file_path = %s",
-                    (path,),
+                    "SELECT COUNT(*) FROM tracks WHERE file_path = %s",
+                    (f.full_path,),
                 )
                 row = cursor.fetchone()
                 # Rows are RealDictRow (dict-like); never index by position.
                 count = int(row.get("count") or 0) if row else 0
                 if count > 0:
-                    already_in_queue += 1
+                    already_in_library += 1
             conn.close()
         except Exception as exc:
-            logger.debug("[DISCOVER] Queue check: %s", exc)
+            logger.debug("[DISCOVER] Library check: %s", exc)
 
     return {
         "success": True,
         "stats": {
             "scanned": total,
-            "queued": total - already_in_queue,
+            "queued": queued,
             "already_in_queue": already_in_queue,
             "already_in_library": already_in_library,
             "errors": [],

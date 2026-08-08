@@ -47,7 +47,7 @@ def detect_covers_for_artist(artist_name: str, conn, force: bool = False) -> int
     cur.execute(
         "SELECT id, title, artist, album, composer, writer, isrc, mbid, "
         "musicbrainz_album_mbid, file_path, is_cover, genres, musicbrainz_genres, "
-        "original_cover_artist, cover_manual_override "
+        "original_cover_artist, cover_manual_override, cover_last_checked "
         "FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)",
         (artist_name,),
     )
@@ -72,6 +72,7 @@ def detect_covers_for_artist(artist_name: str, conn, force: bool = False) -> int
             "musicbrainz_genres": row_get(row, "musicbrainz_genres", 12),
             "original_cover_artist": row_get(row, "original_cover_artist", 13, ""),
             "cover_manual_override": row_get(row, "cover_manual_override", 14, False),
+            "cover_last_checked": row_get(row, "cover_last_checked", 15),
         }
         album_key = track["album"] or "_no_album"
         albums.setdefault(album_key, []).append(track)

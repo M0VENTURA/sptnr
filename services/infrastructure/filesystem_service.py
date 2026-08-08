@@ -435,7 +435,7 @@ def is_valid_source_music_path(path_value, music_root):
     return is_under_music_root(norm, music_root)
 
 
-def resolve_downloads_dir() -> str:
+def resolve_downloads_dir(prefer_music_subfolder: bool = True) -> str:
     """
     Single source of truth for download folder resolution.
 
@@ -444,14 +444,24 @@ def resolve_downloads_dir() -> str:
         2. downloads.monitor_folder
         3. downloads.folder
         4. /downloads/Music
+
+    ``prefer_music_subfolder`` (default True) preserves the legacy convention
+    of scanning the ``Music`` subfolder when the configured root is a folder
+    literally named ``downloads``.  Discovery-style scans pass False so files
+    landing in the configured root are found too (the recursive walk covers
+    the ``Music`` subfolder anyway).
     """
+
+    def _resolve(value: str) -> str:
+        normalized = os.path.normpath(value.strip())
+        if not prefer_music_subfolder:
+            return normalized
+        return _prefer_music_subfolder(normalized)
 
     env_dir = os.environ.get("DOWNLOADS_DIR")
 
     if env_dir:
-        return _prefer_music_subfolder(
-            env_dir.strip()
-        )
+        return _resolve(env_dir)
 
     try:
         config = get_config()
@@ -466,18 +476,14 @@ def resolve_downloads_dir() -> str:
         )
 
         if monitor_folder:
-            return _prefer_music_subfolder(
-                monitor_folder.strip()
-            )
+            return _resolve(monitor_folder)
 
         folder = downloads_cfg.get(
             "folder"
         )
 
         if folder:
-            return _prefer_music_subfolder(
-                folder.strip()
-            )
+            return _resolve(folder)
 
     except Exception:
         pass
