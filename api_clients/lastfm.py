@@ -52,6 +52,9 @@ class LastFmClient:
     def get_artist_top_tags(self, artist: str, limit: int = 10) -> list[dict[str, Any]]:
         return self.service.get_artist_top_tags(artist, limit=limit)
 
+    def get_similar_artists(self, artist: str, limit: int = 10) -> list[dict[str, Any]]:
+        return self.service.get_similar_artists(artist, limit=limit)
+
     def get_recommendations(self) -> dict[str, Any]:
         return self.service.get_recommendations()
 

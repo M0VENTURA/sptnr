@@ -547,6 +547,47 @@ class LastFmService:
                 continue
         return []
 
+    def get_similar_artists(self, artist: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Fetch similar artists from Last.fm for a given artist.
+
+        Mirrors the legacy ``artist.getSimilar`` lookup: tries each artist
+        lookup candidate (full credit, feat.-stripped primary, bracket-stripped)
+        and returns ``[{"name": ..., "match": ...}]`` for the first candidate
+        that returns results.
+        """
+        if not self.api_key or not artist:
+            return []
+        for lookup_artist in self.build_artist_lookup_candidates(artist):
+            try:
+                data = self.http.get_json(
+                    "artist.getSimilar",
+                    timeout=(5, 10),
+                    artist=lookup_artist,
+                    limit=max(1, min(int(limit), 100)),
+                )
+                if "error" in data:
+                    continue
+                similar_artists = (data.get("similarartists") or {}).get("artist", [])
+                if isinstance(similar_artists, dict):
+                    similar_artists = [similar_artists]
+                result: list[dict[str, Any]] = []
+                for artist_obj in similar_artists or []:
+                    if not isinstance(artist_obj, dict):
+                        continue
+                    name = artist_obj.get("name", "")
+                    if not name:
+                        continue
+                    try:
+                        match = float(artist_obj.get("match", 0.0))
+                    except Exception:
+                        match = 0.0
+                    result.append({"name": name, "match": match})
+                if result:
+                    return result
+            except Exception as exc:
+                logger.debug("Last.fm similar artists failed for '%s': %s", lookup_artist, exc)
+        return []
+
     def get_recommendations(self) -> dict[str, list[dict[str, Any]]]:
         """Fetch simple Last.fm recommendations/top items."""
         if not self.api_key:

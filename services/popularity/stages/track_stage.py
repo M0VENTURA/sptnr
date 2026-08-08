@@ -99,11 +99,20 @@ def _build_effective_track(
 # album enrichment runs, and re-saving its stale album-type value would
 # clobber the freshly-detected type (album page shows "Unknown").
 _ALBUM_TYPE_COLUMNS = frozenset({"musicbrainz_albumtype", "spotify_album_type", "releasetype"})
+# Album-level MusicBrainz identifiers — owned by the album stage's enrichment
+# pass, which resolves the release-group MBID to a concrete release MBID and
+# persists musicbrainz_album_mbid / musicbrainz_albumid / musicbrainz_releasegroupid
+# for tracks missing them. The track contexts are prepared BEFORE that pass
+# runs, so the loaded in-memory values are stale and would otherwise clobber
+# the fresh album-stage writes on every upsert.
+_ALBUM_MBID_COLUMNS = frozenset({
+    "musicbrainz_album_mbid", "musicbrainz_albumid", "musicbrainz_releasegroupid",
+})
 # Columns the track stage must NEVER write back from stale in-memory values:
 # album-type columns (the album stage owns those) and ``title`` — the album
 # stage renames covers to "Title (Artist Cover)" and live/acoustic tracks
 # AFTER the track contexts were prepared, so the loaded title here is stale.
-_STALE_PROTECTED_COLUMNS = frozenset({"title"}) | _ALBUM_TYPE_COLUMNS
+_STALE_PROTECTED_COLUMNS = frozenset({"title"}) | _ALBUM_TYPE_COLUMNS | _ALBUM_MBID_COLUMNS
 
 
 def _strip_album_type_columns(
