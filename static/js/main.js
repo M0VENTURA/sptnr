@@ -285,7 +285,8 @@ window.downloadReleaseViaSoulseek = function(releaseId, title, artist) {
             method: 'slskd',
             persistent_search: false,
             max_retries: 3,
-            session_id: null
+            session_id: null,
+            queue_items_only: true
         })
     })
     .then(function(r) { return r.json(); })

@@ -1076,7 +1076,8 @@ function addDownloadToSession(releaseId, releaseTitle, artist, method, persisten
             method: method,
             persistent_search: persistentSearch,
             max_retries: 3,
-            session_id: sessionId
+            session_id: sessionId,
+            queue_items_only: true
         })
     })
     .then(response => response.json())

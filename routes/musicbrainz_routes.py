@@ -721,6 +721,10 @@ async def api_musicbrainz_download():
     persistent_search = bool(data.get("persistent_search", False))
     max_retries = data.get("max_retries", 3)
     session_id = data.get("session_id")
+    # When set, the album is added as plain queue items grouped by
+    # import_group (a "queue item folder") instead of being tracked as a
+    # MusicBrainz monitoring release ("folder group").
+    queue_items_only = bool(data.get("queue_items_only", False))
 
     if not all([release_id, release_title, artist]):
         return jsonify({"error": "Missing required parameters"}), 400
@@ -739,6 +743,7 @@ async def api_musicbrainz_download():
             release_title,
             artist,
             method=method,
+            create_folder_group=not queue_items_only,
         )
 
         if not result.get("success"):
@@ -768,6 +773,12 @@ async def api_musicbrainz_download():
 
         tracking_id = result.get("mb_release_db_id")
         queued_tracks = int(result.get("queue_items_created") or 0)
+
+        # When no monitoring folder group is created (queue_items_only), expose
+        # the first queue item id as a tracking handle so the UI has something
+        # concrete to report.
+        if not tracking_id and result.get("queue_ids"):
+            tracking_id = result.get("queue_ids")[0]
 
         # Wake the queue worker immediately (add_release_tracks_to_queue
         # inserts directly without signalling).

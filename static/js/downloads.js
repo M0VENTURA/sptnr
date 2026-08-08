@@ -1290,7 +1290,8 @@ async function _addMbDownloadToSession(releaseId, releaseTitle, artist, method, 
         method: method,
         persistent_search: persistentSearch,
         max_retries: MB_DEFAULT_MAX_RETRIES,
-        session_id: sessionId
+        session_id: sessionId,
+        queue_items_only: true
       })
     });
     

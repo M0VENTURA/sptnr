@@ -166,6 +166,8 @@ def queue_add_batch(data: Dict[str, Any]) -> Dict[str, Any]:
             recording_mbid=item.get("recording_mbid"),
             disc_number=item.get("disc_number"),
             duration=item.get("duration"),
+            import_group=item.get("import_group") or data.get("import_group"),
+            import_type=item.get("import_type") or data.get("import_type"),
         )
 
         results.append(result)
