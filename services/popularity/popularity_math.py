@@ -27,6 +27,25 @@ Z_SCORE_LOGISTIC_K = Z_SCORE_TO_POPULARITY_SCALE / 25.0
 #   10k -> 64   50k -> 75   100k -> 80   250k -> 86   1M -> 96
 LOG_SCALE_MULTIPLIER = 16.0
 
+# The confirmed-single boost is a fade-out, not a flat multiplier: the full
+# ``single_boost`` applies up to ``SINGLE_BOOST_FADE_START`` and tapers to
+# zero by ``SINGLE_BOOST_FADE_END``.  Without the taper the legacy ``*1.15``
+# saturates every top single against the ceiling — on 5-STAR, S-Class
+# (364,373 listeners) and "Mixtape : Time Out" (128,085 listeners) both
+# scored ~95-97 because the boost multiplied already-high raw scores past
+# the soft ceiling, erasing the real popularity gap.
+SINGLE_BOOST_FADE_START = 60.0
+SINGLE_BOOST_FADE_END = 92.0
+
+
+def single_boost_fade(score: float) -> float:
+    """Return the boost multiplier taper for a raw combined score."""
+    if score <= SINGLE_BOOST_FADE_START:
+        return 1.0
+    if score >= SINGLE_BOOST_FADE_END:
+        return 0.0
+    return 1.0 - (score - SINGLE_BOOST_FADE_START) / (SINGLE_BOOST_FADE_END - SINGLE_BOOST_FADE_START)
+
 
 def calculate_track_zscore(score: float, mean_value: float, stddev: float) -> float:
     """Calculate z-score for a track relative to a reference distribution."""
@@ -196,7 +215,8 @@ def calculate_combined_popularity_score(
     Matches the legacy ``popularity_scan`` behaviour:
     - live tracks get a ``live_weight_penalty`` (default 50%) on the Last.fm weight
     - source-mismatch weighting honours featured-track / metadata flags
-    - confirmed singles receive a ``single_boost`` (default +15%)
+    - confirmed singles receive a ``single_boost`` (default +15%), faded out
+      as the raw score nears the ceiling so top singles stay apart
     - tracks with a confirmed MusicBrainz ID get a ``metadata_score_floor``
       (default 5.0) so a known track never scores near zero when external
       APIs have no data
@@ -206,6 +226,13 @@ def calculate_combined_popularity_score(
       a bigger hit elsewhere, so LF-only tracks would rank below LB tracks
       with fewer listeners.
     """
+    # Absolute log-scale evidence (same calibration as the final 0-100 scale).
+    # The album-relative z-score / percentile scores below can LIFT a track,
+    # but never drag it: the floor is built from these absolute components so
+    # a genuinely popular track keeps the score its strongest evidence proves.
+    lastfm_log = calculate_lastfm_popularity_score(lastfm_listeners, 0)
+    lb_log = calculate_listenbrainz_popularity_score(listenbrainz_listens)
+
     if album_lf_listeners and listenbrainz_listens > 0:
         lastfm_score = calculate_lastfm_zscore_popularity(
             lastfm_listeners,
@@ -218,12 +245,12 @@ def calculate_combined_popularity_score(
         # popularity so a listener-rich track without LB data is not crushed
         # by the catalogue-relative z-score (which compares against the
         # artist's biggest hits) — it relies on Last.fm alone.
-        lastfm_score = calculate_lastfm_popularity_score(lastfm_listeners, 0)
-    lb_score = calculate_listenbrainz_popularity_score(listenbrainz_listens)
+        lastfm_score = lastfm_log
+    lb_score = lb_log
 
     if album_lb_listens:
         lb_percentile = calculate_listenbrainz_percentile(listenbrainz_listens, album_lb_listens)
-        lb_score = max(lb_score, lb_percentile * 100.0)
+        lb_score = max(lb_log, lb_percentile * 100.0)
 
     age_score = 0.0
     if release_date and age_source_value:
@@ -282,6 +309,19 @@ def calculate_combined_popularity_score(
     if active_scores and active_weights:
         total_weight = sum(active_weights)
         combined = sum(s * w for s, w in zip(active_scores, active_weights)) / total_weight
+        # A blend can never out-rank its strongest ABSOLUTE evidence.  The
+        # album-relative z-score / percentile and age scores are corroborating
+        # signals: averaging them into the mix must not drag a genuinely
+        # popular track below what its absolute log popularity already proves.
+        # Legacy regressions under the naive average: a 139k-listener track
+        # with 5.3k LB listens scored *below* a 133k-listener track with no LB
+        # data, and the 179k-listener album lead scored lowest because its
+        # under-counted LB weight out-voted its own Last.fm footprint.
+        absolute_components = [s for s in (lastfm_log, lb_log, age_score) if s > 0]
+        if absolute_components:
+            strongest = max(absolute_components)
+            if strongest > combined:
+                combined = strongest
     else:
         combined = 0.0
 
@@ -290,9 +330,13 @@ def calculate_combined_popularity_score(
     if has_metadata and 0.0 < combined < metadata_score_floor:
         combined = metadata_score_floor
 
-    # Confirmed singles receive a subtle boost (legacy behaviour).
+    # Confirmed singles receive a subtle boost (legacy behaviour).  The
+    # boost fades to zero as the raw score approaches the ceiling so two
+    # high-popularity singles don't collapse onto the same score (a flat
+    # ``* 1.15`` pushed every top single to 95+, making 364k and 128k
+    # listeners score within a point of each other).
     if is_single and combined > 0:
-        combined *= single_boost
+        combined *= 1.0 + (single_boost - 1.0) * single_boost_fade(combined)
 
     return {
         "combined_score": round(min(100.0, max(0.0, combined)), 3),
