@@ -93,12 +93,26 @@ def _detect_album_type(artist: str, album: str, album_artist: str | None, spotif
 # ---------------------------------------------------------------------------
 
 def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str | None = None) -> str | None:
-    """Fetch album art trying MusicBrainz/CAA first, then AudioDB, then Discogs.
+    """Fetch album art: Navidrome first (default), then MusicBrainz/CAA, then AudioDB, then Discogs.
 
-    Uses the existing ``album_art_service`` functions for CAA; falls back to
-    AudioDB and Discogs manually since those paths are not yet covered by the
-    enrichment layer.
+    Navidrome already holds the art the user sees in their library, so it is
+    the preferred source; external providers are only consulted when it has
+    no art.
     """
+    # 0) Try Navidrome (default source — no external calls needed)
+    try:
+        from services.enrichment.album_art_service import (
+            fetch_album_art_from_navidrome,
+            save_album_art_to_db,
+        )
+
+        data = fetch_album_art_from_navidrome(artist, album)
+        if data:
+            save_album_art_to_db(artist, album, data, source="navidrome")
+            return "navidrome"
+    except Exception as exc:
+        logger.debug("[album_stage] Navidrome art failed: %s", exc)
+
     # 1) Try MusicBrainz / Cover Art Archive via existing service
     try:
         data = fetch_album_art_from_musicbrainz(artist, album)

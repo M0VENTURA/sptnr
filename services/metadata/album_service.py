@@ -113,6 +113,12 @@ def get_local_album_art(
     artist: str,
     album: str,
 ) -> tuple[bytes | None, str | None]:
+    """Get album art: local DB first, then Navidrome (default source).
+
+    Navidrome already holds the art the user sees in their library, so it is
+    consulted before any external service. Art pulled from Navidrome is
+    cached to the DB for future requests.
+    """
     with db_cursor() as (conn, _cursor):
         data, mime = fetch_album_art_blob(
             conn,
@@ -122,6 +128,19 @@ def get_local_album_art(
 
         if data:
             return data, mime or "image/jpeg"
+
+    try:
+        from services.enrichment.album_art_service import (
+            fetch_album_art_from_navidrome,
+            save_album_art_to_db,
+        )
+
+        data = fetch_album_art_from_navidrome(artist, album)
+        if data:
+            save_album_art_to_db(artist, album, data, source="navidrome")
+            return data, "image/jpeg"
+    except Exception as exc:
+        logger.debug("Navidrome album art fallback failed for '%s' / '%s': %s", artist, album, exc)
 
     return None, None
 

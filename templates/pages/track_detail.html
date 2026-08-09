@@ -176,8 +176,9 @@
                         </div>
                         
                         <div class="mb-3">
-                            <label for="artist" class="form-label">Artist</label>
+                            <label for="artist" class="form-label">Track Artist</label>
                             <input type="text" class="form-control" id="artist" name="artist" value="{{ track.artist }}" required>
+                            <small class="form-text text-muted">The artist who performs this track — used to match the Track Artist, distinct from the Album Artist below.</small>
                         </div>
                         
                         <div class="mb-3">
@@ -647,6 +648,46 @@
                                 <input type="text" class="form-control" id="musicbrainz_workid" name="musicbrainz_workid" value="{{ track.musicbrainz_workid or '' }}" placeholder="Work MBID">
                             </div>
                         </div>
+                        <hr class="my-3">
+                        <div>
+                            <h6 class="mb-2">Lookups & MusicBrainz Links</h6>
+                            <div class="d-flex flex-wrap gap-2 mb-2">
+                                <button type="button" class="btn btn-outline-info btn-sm" onclick="lookupMusicBrainz(this)">
+                                    <i class="bi bi-search"></i> MusicBrainz Lookup
+                                </button>
+                                <button type="button" class="btn btn-outline-warning btn-sm" onclick="lookupDiscogs(this)">
+                                    <i class="bi bi-search"></i> Discogs Lookup
+                                </button>
+                            </div>
+                            {% if track.beets_mbid or track.musicbrainz_album_mbid or track.musicbrainz_artist_id %}
+                            <div class="small">
+                                {% if track.beets_mbid %}
+                                <div class="mb-1">
+                                    <strong>Recording:</strong>
+                                    <a href="https://musicbrainz.org/recording/{{ track.beets_mbid }}" target="_blank" class="text-primary">
+                                        {{ track.beets_mbid[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
+                                    </a>
+                                </div>
+                                {% endif %}
+                                {% if track.musicbrainz_album_mbid %}
+                                <div class="mb-1">
+                                    <strong>Release:</strong>
+                                    <a href="https://musicbrainz.org/release/{{ track.musicbrainz_album_mbid }}" target="_blank" class="text-primary">
+                                        {{ track.musicbrainz_album_mbid[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
+                                    </a>
+                                </div>
+                                {% endif %}
+                                {% if track.musicbrainz_artist_id %}
+                                <div>
+                                    <strong>Artist:</strong>
+                                    <a href="https://musicbrainz.org/artist/{{ track.musicbrainz_artist_id }}" target="_blank" class="text-primary">
+                                        {{ track.musicbrainz_artist_id[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
+                                    </a>
+                                </div>
+                                {% endif %}
+                            </div>
+                            {% endif %}
+                        </div>
                     </div>
                 </div>
 
@@ -810,6 +851,17 @@
 
                         <hr class="my-3">
 
+                        <!-- Detected Genres from external sources -->
+                        <div>
+                            <h6 class="mb-2">Detected Genres</h6>
+                            <small class="text-muted d-block mb-2">All genres detected from external sources for this track. These are kept in the database for reference.</small>
+                            <div id="genreSourcesContainer" class="spinner-border" role="status">
+                                <span class="visually-hidden">Loading genres...</span>
+                            </div>
+                        </div>
+
+                        <hr class="my-3">
+
                         <!-- Recommendations From Repeated Source Tags -->
                         <div>
                             <h6 class="mb-2">Recommended Genres</h6>
@@ -826,17 +878,43 @@
             
             <!-- Right Column: Metadata Info & Recommendations -->
             <div class="col-12 col-lg-6">
+                <!-- Similar Artists -->
+                <div class="card mb-4" id="track-similar-section">
+                    <div class="card-header p-0" id="track-similar-heading">
+                        <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-similar-collapse" aria-expanded="false" aria-controls="track-similar-collapse" style="color: inherit;">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-person-heart"></i> Similar Artists
+                            </h5>
+                            <i class="bi bi-chevron-down similar-chevron"></i>
+                        </button>
+                    </div>
+                    <div id="track-similar-collapse" class="collapse">
+                        <div class="card-body">
+                            <div id="similarArtistsContainer">
+                                <div class="text-center py-3 text-muted">
+                                    <i class="bi bi-chevron-down"></i>
+                                    <span>Expand to load similar artists from Last.fm and ListenBrainz.</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Track Scoring -->
                 <div class="card mb-4" id="track-scoring-section">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-graph-up"></i> Track Scoring
-                        </h5>
-                        {% set final_score = track.final_score or track.popularity %}
-                        {% if final_score is not none and final_score != '' %}
-                        <span class="badge badge-success" style="font-size: 0.9rem;">Final Score: {{ final_score|round(1) }}</span>
-                        {% endif %}
+                    <div class="card-header p-0" id="track-scoring-heading">
+                        <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-scoring-collapse" aria-expanded="true" aria-controls="track-scoring-collapse" style="color: inherit;">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-graph-up"></i> Track Scoring
+                                {% set final_score = track.final_score or track.popularity %}
+                                {% if final_score is not none and final_score != '' %}
+                                <span class="badge badge-success ms-2 align-middle" style="font-size: 0.75rem;">Final Score: {{ final_score|round(1) }}</span>
+                                {% endif %}
+                            </h5>
+                            <i class="bi bi-chevron-down similar-chevron"></i>
+                        </button>
                     </div>
+                    <div id="track-scoring-collapse" class="collapse show">
                     <div class="card-body">
 
                         <!-- Source Metrics -->
@@ -1026,42 +1104,6 @@
                         {% endif %}
 
                     </div>
-                </div>
-
-                <!-- Consolidated Detected Genres -->
-                <div class="card mb-4" id="track-genres-sources-section">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-collection-fill"></i> Detected Genres
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <p class="text-muted small mb-2">All genres detected from external sources for this track. These are kept in the database for reference.</p>
-                        <div id="genreSourcesContainer" class="spinner-border" role="status">
-                            <span class="visually-hidden">Loading genres...</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Similar Artists -->
-                <div class="card mb-4" id="track-similar-section">
-                    <div class="card-header p-0" id="track-similar-heading">
-                        <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-similar-collapse" aria-expanded="false" aria-controls="track-similar-collapse" style="color: inherit;">
-                            <h5 class="card-title mb-0">
-                                <i class="bi bi-person-heart"></i> Similar Artists
-                            </h5>
-                            <i class="bi bi-chevron-down similar-chevron"></i>
-                        </button>
-                    </div>
-                    <div id="track-similar-collapse" class="collapse">
-                        <div class="card-body">
-                            <div id="similarArtistsContainer">
-                                <div class="text-center py-3 text-muted">
-                                    <i class="bi bi-chevron-down"></i>
-                                    <span>Expand to load similar artists from Last.fm and ListenBrainz.</span>
-                                </div>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
@@ -1121,54 +1163,6 @@
                             <div class="metadata-value monospace" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
                         </div>
                         {% endif %}
-                    </div>
-                </div>
-
-                <!-- MusicBrainz & External Lookups -->
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-database"></i> External Lookups
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        {% if track.beets_mbid %}
-                        <div class="mb-3">
-                            <h6 class="mb-2">MusicBrainz Links</h6>
-                            {% if track.beets_mbid %}
-                            <div class="small mb-2">
-                                <strong>Recording:</strong>
-                                <a href="https://musicbrainz.org/recording/{{ track.beets_mbid }}" target="_blank" class="text-primary">
-                                    {{ track.beets_mbid[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
-                                </a>
-                            </div>
-                            {% endif %}
-                            {% if track.musicbrainz_album_mbid %}
-                            <div class="small mb-2">
-                                <strong>Release:</strong>
-                                <a href="https://musicbrainz.org/release/{{ track.musicbrainz_album_mbid }}" target="_blank" class="text-primary">
-                                    {{ track.musicbrainz_album_mbid[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
-                                </a>
-                            </div>
-                            {% endif %}
-                            {% if track.musicbrainz_artist_id %}
-                            <div class="small">
-                                <strong>Artist:</strong>
-                                <a href="https://musicbrainz.org/artist/{{ track.musicbrainz_artist_id }}" target="_blank" class="text-primary">
-                                    {{ track.musicbrainz_artist_id[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
-                                </a>
-                            </div>
-                            {% endif %}
-                        </div>
-                        {% endif %}
-                        <div class="d-grid gap-2">
-                            <button type="button" class="btn btn-outline-info btn-sm" onclick="lookupMusicBrainz(this)">
-                                <i class="bi bi-search"></i> MusicBrainz Lookup
-                            </button>
-                            <button type="button" class="btn btn-outline-warning btn-sm" onclick="lookupDiscogs(this)">
-                                <i class="bi bi-search"></i> Discogs Lookup
-                            </button>
-                        </div>
                     </div>
                 </div>
             </div>

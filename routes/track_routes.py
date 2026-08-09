@@ -294,6 +294,57 @@ async def api_track_update_metadata():
             # integer/numeric columns don't reject string payloads either.
             updates = _normalize_track_updates(updates, _get_track_column_types(session))
 
+            # Album-scoped fields describe the release as a whole. When they
+            # change for one track, push the same values to every other track
+            # on the album so a per-track edit can never split one release
+            # into two albums. Set ``apply_to_album: false`` to opt out.
+            album_scoped_fields = {
+                "album", "album_artist", "year",
+                "musicbrainz_albumid", "musicbrainz_albumartistid",
+                "musicbrainz_releasegroupid",
+            }
+            album_tracks_updated = 0
+            apply_to_album = data.get("apply_to_album", True) is not False
+            album_updates = {
+                k: v for k, v in updates.items() if k in album_scoped_fields
+            }
+            if apply_to_album and album_updates:
+                try:
+                    current = session.execute(
+                        text("""
+                            SELECT album, COALESCE(NULLIF(album_artist, ''), artist) AS album_artist
+                            FROM tracks
+                            WHERE CAST(id AS TEXT) = :id
+                        """),
+                        {"id": track_id},
+                    ).fetchone()
+                    if current and current[0]:
+                        set_clause = ", ".join(
+                            f"{k} = :{k}" for k in album_updates
+                        )
+                        result = session.execute(
+                            text(f"""
+                                UPDATE tracks
+                                SET {set_clause}
+                                WHERE CAST(id AS TEXT) <> :id
+                                  AND album = :old_album
+                                  AND COALESCE(NULLIF(album_artist, ''), artist) = :old_album_artist
+                            """),
+                            {
+                                **album_updates,
+                                "id": track_id,
+                                "old_album": current[0],
+                                "old_album_artist": current[1],
+                            },
+                        )
+                        album_tracks_updated = result.rowcount or 0
+                except Exception as album_err:
+                    logger.warning(
+                        "Album-scoped propagation failed for %s: %s",
+                        track_id,
+                        album_err,
+                    )
+
             set_clause = ", ".join(f"{k} = :{k}" for k in updates)
             params = {**updates, "id": track_id}
             session.execute(text(f"UPDATE tracks SET {set_clause} WHERE CAST(id AS TEXT) = :id"), params)
@@ -326,6 +377,7 @@ async def api_track_update_metadata():
             "success": True,
             "updated": list(updates.keys()),
             "file_synced": file_synced,
+            "album_tracks_updated": album_tracks_updated,
         })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -377,11 +429,84 @@ def track_genre_recommendations():
 
 @track_bp.route("/<track_id>/rescan-single", methods=["POST"])
 def api_rescan_single_track(track_id):
-    """Force a fresh single detection scan for one track."""
+    """Force a fresh single detection scan for one track.
+
+    When a ``source`` key is supplied (from the per-source Re-check buttons),
+    only that detection source is dropped from the stored ``single_sources``
+    JSON so the next scan re-runs the check for that source alone.
+    """
     try:
+        import json as _json
+
         with db_session() as session:
-            session.execute(text("UPDATE tracks SET single_detection_last_updated = NULL WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
-        return jsonify({"success": True, "message": "Single detection cleared for re-scan"})
+            source = ""
+            try:
+                body = request.get_json(silent=True) or {}
+                source = str(body.get("source") or "").strip()
+            except Exception:
+                source = ""
+
+            if source:
+                row = session.execute(
+                    text("SELECT single_sources FROM tracks WHERE CAST(id AS TEXT) = :id"),
+                    {"id": track_id},
+                ).fetchone()
+                raw = str(row[0] or "") if row and row[0] else ""
+                remaining: list = []
+                if raw.strip():
+                    try:
+                        parsed = _json.loads(raw)
+                        if isinstance(parsed, list):
+                            remaining = [
+                                entry for entry in parsed
+                                if not (
+                                    isinstance(entry, dict)
+                                    and str(entry.get("source") or "") == source
+                                ) and not (
+                                    isinstance(entry, str) and entry.strip() == source
+                                )
+                            ]
+                    except Exception:
+                        remaining = []
+
+                # No other sources remain → drop the single flag too, so a
+                # stale "Detected" badge cannot outlive its only evidence.
+                if not remaining:
+                    session.execute(
+                        text("""
+                            UPDATE tracks
+                            SET single_sources = '',
+                                single_detection_last_updated = NULL,
+                                is_single = FALSE,
+                                single_confidence = 'low',
+                                single_confidence_score = 0.0
+                            WHERE CAST(id AS TEXT) = :id
+                        """),
+                        {"id": track_id},
+                    )
+                else:
+                    session.execute(
+                        text("""
+                            UPDATE tracks
+                            SET single_sources = :sources_json,
+                                single_detection_last_updated = NULL
+                            WHERE CAST(id AS TEXT) = :id
+                        """),
+                        {
+                            "id": track_id,
+                            "sources_json": _json.dumps(remaining, default=str),
+                        },
+                    )
+                return jsonify({
+                    "success": True,
+                    "message": f"Source '{source}' cleared for re-scan",
+                })
+            else:
+                session.execute(
+                    text("UPDATE tracks SET single_detection_last_updated = NULL WHERE CAST(id AS TEXT) = :id"),
+                    {"id": track_id},
+                )
+                return jsonify({"success": True, "message": "Single detection cleared for re-scan"})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

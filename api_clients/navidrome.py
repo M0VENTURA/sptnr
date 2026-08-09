@@ -669,6 +669,36 @@ class NavidromeClient:
         qs = "&".join(f"{k}={v}" for k, v in params.items())
         return f"{self.base_url}/rest/getCoverArt?{qs}"
 
+    def get_cover_art_bytes(
+        self,
+        track_or_album_id: str,
+        size: int = 600,
+    ) -> bytes | None:
+        """Download cover art bytes from Navidrome.
+
+        The auth token lives in the query string of ``get_cover_art_url``, so
+        a plain GET of that URL returns the image bytes directly.
+
+        Args:
+            track_or_album_id: Navidrome track or album ID.
+            size: Desired image size in pixels.
+
+        Returns:
+            Raw image bytes, or ``None`` when the server has no art.
+        """
+        try:
+            url = self.get_cover_art_url(track_or_album_id, size=size)
+            resp = self.session.get(url, timeout=15)
+            if resp.status_code != 200:
+                return None
+            content_type = resp.headers.get("content-type", "")
+            if content_type and not content_type.startswith("image/"):
+                return None
+            return resp.content or None
+        except Exception as exc:
+            logger.debug("Failed to fetch cover art bytes from Navidrome: %s", exc)
+            return None
+
     def get_stream_url(self, song_id: str, max_bitrate: int | None = None) -> str:
         """Return a URL for streaming/downloading a song from Navidrome.
 

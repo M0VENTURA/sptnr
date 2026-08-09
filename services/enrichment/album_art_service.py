@@ -29,6 +29,12 @@ from helpers.normalization_service import (
 
 logger = logging.getLogger(__name__)
 
+# Negative-result cache for the Navidrome art lookup: albums genuinely
+# missing from Navidrome shouldn't re-run a search3 call on every art
+# request (an artist page can load dozens of covers at once).
+_navidrome_art_miss_cache: dict[tuple[str, str], float] = {}
+_NAVIDROME_MISS_TTL_SECONDS = 6 * 3600
+
 # --- Existing Core Functions ---
 
 def save_album_art_to_db(artist_name: str, album_name: str, image_data: bytes, source: str = "unknown", mime_type: str = "image/jpeg") -> bool:
@@ -279,6 +285,89 @@ def fetch_album_art_from_discogs(artist_name: str, album_name: str, token: str) 
         logger.debug("Failed to fetch album art from Discogs: %s", exc)
     return None
 
+def fetch_album_art_from_navidrome(artist_name: str, album_name: str) -> bytes | None:
+    """Pull album art straight from Navidrome (Subsonic ``getCoverArt``).
+
+    Navidrome already holds the art the user sees in their library, so it is
+    the preferred default source: external services are only consulted when
+    Navidrome returns no art.
+
+    Args:
+        artist_name: Artist name.
+        album_name: Album name.
+
+    Returns:
+        Raw image bytes, or None if not found / not configured.
+    """
+    try:
+        from helpers.config_helpers import get_config
+        from api_clients.navidrome import NavidromeClient
+
+        cfg = get_config()
+        users = cfg.get("navidrome_users") or []
+        if not users:
+            return None
+        first = users[0]
+        base_url = str(first.get("base_url") or "").rstrip("/")
+        username = str(first.get("user") or "")
+        password = str(first.get("pass") or "")
+        if not all([base_url, username, password]):
+            return None
+
+        import time as _time
+
+        cache_key = (normalize_artist(artist_name), normalize_album(album_name))
+        last_miss = _navidrome_art_miss_cache.get(cache_key)
+        if last_miss and (_time.time() - last_miss) < _NAVIDROME_MISS_TTL_SECONDS:
+            return None
+
+        client = NavidromeClient(
+            base_url=base_url,
+            username=username,
+            password=password,
+        )
+
+        wanted_artist = normalize_artist(artist_name)
+        wanted_album = normalize_album(album_name)
+
+        # Find the album id via search3 (auth lives in the query string).
+        album_id = None
+        try:
+            result = client.search(
+                f"{artist_name} {album_name}",
+                artist_count=0,
+                album_count=10,
+                song_count=0,
+            )
+            for candidate in result.get("albums") or []:
+                candidate_artist = normalize_artist(candidate.get("artist") or "")
+                candidate_album = normalize_album(
+                    candidate.get("name") or candidate.get("album") or ""
+                )
+                if (
+                    candidate_artist == wanted_artist
+                    and candidate_album == wanted_album
+                ):
+                    album_id = candidate.get("id")
+                    break
+        except Exception as exc:
+            logger.debug("Failed to locate album in Navidrome for %s — %s: %s", artist_name, album_name, exc)
+
+        if not album_id:
+            _navidrome_art_miss_cache[cache_key] = _time.time()
+            return None
+
+        data = client.get_cover_art_bytes(album_id, size=600)
+        if data:
+            logger.debug("Fetched album art from Navidrome for %s — %s", artist_name, album_name)
+            return data
+        _navidrome_art_miss_cache[cache_key] = _time.time()
+        return None
+    except Exception as exc:
+        logger.debug("Failed to fetch album art from Navidrome: %s", exc)
+        return None
+
+
 def fetch_album_art_from_audiodb(artist_name: str, album_name: str) -> bytes | None:
     """Fetch album art from TheAudioDB as an additional fallback source.
 
@@ -365,7 +454,12 @@ def get_album_art_placeholder_svg(size: int = 300) -> Response:
     return Response(svg, mimetype='image/svg+xml')
 
 def get_or_fetch_album_art(artist: str, album: str, discogs_token: str = "") -> tuple[bytes | None, str | None]:
-    """Orchestrates DB retrieval, API fetching, and DB caching."""
+    """Orchestrates DB retrieval, API fetching, and DB caching.
+
+    Order: local DB → Navidrome (default source, the art the user already
+    sees in their library) → MusicBrainz → Discogs → AudioDB. External
+    lookups only run when Navidrome has no art.
+    """
     # 1. DB
     conn = get_db_connection()
     try:
@@ -375,19 +469,25 @@ def get_or_fetch_album_art(artist: str, album: str, discogs_token: str = "") -> 
     finally:
         conn.close()
 
-    # 2. MusicBrainz
+    # 2. Navidrome (default — no external calls needed)
+    data = fetch_album_art_from_navidrome(artist, album)
+    if data:
+        save_album_art_to_db(artist, album, data, source="navidrome")
+        return data, "image/jpeg"
+
+    # 3. MusicBrainz
     data = fetch_album_art_from_musicbrainz(artist, album)
     if data:
         save_album_art_to_db(artist, album, data, source="musicbrainz")
         return data, "image/jpeg"
 
-    # 3. Discogs
+    # 4. Discogs
     data = fetch_album_art_from_discogs(artist, album, token=discogs_token)
     if data:
         save_album_art_to_db(artist, album, data, source="discogs")
         return data, "image/jpeg"
 
-    # AudioDB fallback (inserted before Discogs)
+    # 5. AudioDB fallback
     data = fetch_album_art_from_audiodb(artist, album)
     if data:
         save_album_art_to_db(artist, album, data, source="audiodb")
@@ -416,30 +516,79 @@ def download_and_save_album_art(artist: str, album: str, image_data: bytes, sour
 
 
 def search_album_art_external(artist: str, album: str, source: str = "musicbrainz") -> tuple[dict, int]:
-    """Search for album art from the specified external source."""
+    """Search for album art from the specified external source.
+
+    Returns ``{"images": [{"url": <data-url>, "title": ..., "artist": ..., "source": ...}]}``
+    so the front-end modal can render thumbnails immediately (no second
+    download round-trip needed).
+
+    ``applemusic`` is accepted as an alias for ``itunes``.
+    """
+    import base64 as _b64
+
     sources = {
-        "musicbrainz": lambda: fetch_album_art_from_musicbrainz(artist, album),
-        "discogs": lambda: fetch_album_art_from_discogs(artist, album, token=""),
-        "itunes": lambda: fetch_album_art_from_itunes(artist, album),
-        "audiodb": lambda: fetch_album_art_from_audiodb(artist, album),
+        "musicbrainz": ("MusicBrainz", lambda: fetch_album_art_from_musicbrainz(artist, album)),
+        "discogs": ("Discogs", lambda: fetch_album_art_from_discogs(artist, album, token="")),
+        "applemusic": ("Apple Music", lambda: fetch_album_art_from_itunes(artist, album)),
+        "itunes": ("Apple Music", lambda: fetch_album_art_from_itunes(artist, album)),
+        "audiodb": ("AudioDB", lambda: fetch_album_art_from_audiodb(artist, album)),
     }
-    fn = sources.get(source)
-    if not fn:
+    entry = sources.get(source)
+    if not entry:
         return {"success": False, "error": f"Unknown source: {source}"}, 400
+
+    label, fn = entry
     data = fn()
-    if data:
-        return {"success": True, "data": list(data), "source": source}, 200
-    return {"success": False, "error": "No album art found"}, 404
+    if not data:
+        return (
+            {
+                "success": False,
+                "error": "No album art found",
+                "images": [],
+            },
+            404,
+        )
+
+    data_url = f"data:image/jpeg;base64,{_b64.b64encode(data).decode('ascii')}"
+    return (
+        {
+            "success": True,
+            "images": [
+                {
+                    "url": data_url,
+                    "title": album,
+                    "artist": artist,
+                    "source": label,
+                }
+            ],
+        },
+        200,
+    )
 
 
 def set_album_art_from_url(artist: str, album: str, image_url: str) -> dict:
-    """Download image from URL and save to database."""
+    """Download image from URL and save to database.
+
+    Also accepts ``data:image/...;base64,...`` URLs (used by the album-art
+    search modal, which renders matched art as inline data URLs).
+    """
     try:
-        resp = httpx.get(image_url, timeout=10)
-        if resp.status_code != 200:
-            return {"success": False, "error": "Failed to download image"}
-        mime = resp.headers.get("content-type", "image/jpeg")
-        saved = save_album_art_to_db(artist, album, resp.content, source="url", mime_type=mime)
+        if str(image_url or "").startswith("data:"):
+            header, _, b64_payload = image_url.partition(",")
+            mime_type = header[5:].split(";")[0] or "image/jpeg"
+            import base64 as _b64
+            try:
+                image_data = _b64.b64decode(b64_payload)
+            except Exception:
+                return {"success": False, "error": "Invalid data URL payload"}, 400
+        else:
+            resp = httpx.get(image_url, timeout=10)
+            if resp.status_code != 200:
+                return {"success": False, "error": "Failed to download image"}
+            image_data = resp.content
+            mime_type = resp.headers.get("content-type", "image/jpeg")
+
+        saved = save_album_art_to_db(artist, album, image_data, source="url", mime_type=mime_type)
         if saved:
             return {"success": True, "message": "Album art saved from URL"}
         return {"success": False, "error": "Failed to save album art"}
@@ -462,6 +611,7 @@ __all__ = [
     "fetch_album_art_from_musicbrainz",
     "fetch_album_art_from_discogs",
     "fetch_album_art_from_audiodb",
+    "fetch_album_art_from_navidrome",
     "get_or_fetch_album_art",
     "download_and_save_album_art",
     "get_album_art_placeholder_svg",

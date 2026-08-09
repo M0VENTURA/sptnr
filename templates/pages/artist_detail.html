@@ -30,6 +30,8 @@
 #artist-similar-section .card-title, #artist-genres-section .card-title { font-size: 1.2rem; }
 #artistSimilarArtistsContainer strong { font-size: 1.05rem; }
 .similar-artist-pill { font-size: 0.95rem; padding: 0.45rem 0.6rem; }
+.artist-similar-card { border: 1px solid var(--border-color); background-color: var(--primary-bg); }
+.artist-similar-card:hover { border-color: var(--accent-color); }
 #artistGenresContainer .badge { font-size: 0.95rem; padding: 0.45rem 0.65rem; }
 /* Accordion album rows */
 .artist-page .accordion-item {
@@ -37,20 +39,37 @@
   margin-bottom: 0.25rem;
   background-color: var(--secondary-bg);
 }
-.artist-page .accordion-button {
+.artist-page .accordion-header-row {
   background-color: var(--secondary-bg);
   color: var(--text-primary);
   box-shadow: none;
-  gap: 0.5rem;
 }
-.artist-page .accordion-button:not(.collapsed) {
+.artist-page .accordion-header-row:not(.collapsed) {
   background-color: var(--primary-bg);
   color: var(--text-primary);
 }
-.artist-page .accordion-button::after { order: -1; margin-right: 0.5rem; margin-left: 0; }
-.artist-page .accordion-button .album-art-wrapper img { border-radius: 4px; }
+.artist-page .accordion-chevron-btn {
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.25rem;
+}
+.artist-page .accordion-chevron-btn:hover {
+  color: var(--text-primary);
+  background-color: var(--tertiary-bg);
+}
+.artist-page .album-chevron-icon {
+  transition: transform 0.2s ease;
+}
+.artist-page .accordion-chevron-btn:not(.collapsed) .album-chevron-icon {
+  transform: rotate(90deg);
+}
+.artist-page .accordion-header-row .album-art-wrapper img { border-radius: 4px; }
 @media (max-width: 767.98px) {
-  .artist-page .accordion-button .flex-grow-1 { font-size: 0.9rem; }
+  .artist-page .accordion-header-row .flex-grow-1 { font-size: 0.9rem; }
 }
 </style>
 
@@ -287,28 +306,65 @@
     <div id="artist-similar-collapse" class="collapse">
       <div class="card-body" style="background-color: var(--secondary-bg);">
       <div id="artistSimilarArtistsContainer">
-        {% set has_similar = similar_artists and (similar_artists.lastfm|length > 0 or similar_artists.listenbrainz|length > 0) %}
-        {% if has_similar %}
-          {% if similar_artists.lastfm %}
+        {% set display_list = similar_artists.display if similar_artists else [] %}
+        {% if display_list %}
+          {% set owned = display_list|selectattr('in_collection')|list %}
+          {% set recommended = display_list|rejectattr('in_collection')|list %}
+          {% if owned %}
             <div class="mb-3">
-              <small class="text-muted d-block mb-2"><i class="bi bi-music-note"></i> From Last.fm</small>
+              <small class="text-muted d-block mb-2"><i class="bi bi-check-circle-fill text-success"></i> In Collection <span class="badge bg-success ms-1">{{ owned|length }}</span></small>
               <div class="d-flex flex-wrap gap-2">
-                {% for sa in similar_artists.lastfm %}
-                  <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="text-decoration-none">
-                    <span class="badge bg-secondary similar-artist-pill">{{ sa.name }}</span>
+                {% for sa in owned %}
+                  <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="text-decoration-none" title="Open artist page">
+                    <span class="badge bg-success similar-artist-pill"><i class="bi bi-check-lg me-1"></i>{{ sa.name }}</span>
                   </a>
                 {% endfor %}
               </div>
             </div>
           {% endif %}
-          {% if similar_artists.listenbrainz %}
+          {% if recommended %}
             <div>
-              <small class="text-muted d-block mb-2"><i class="bi bi-music-note"></i> From ListenBrainz</small>
-              <div class="d-flex flex-wrap gap-2">
-                {% for sa in similar_artists.listenbrainz %}
-                  <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="text-decoration-none">
-                    <span class="badge bg-secondary similar-artist-pill">{{ sa.name }}</span>
-                  </a>
+              <small class="text-muted d-block mb-2"><i class="bi bi-stars"></i> Recommended
+                <span class="badge bg-secondary ms-1">{{ recommended|length }}</span>
+                <span class="ms-1" style="font-size: 0.85rem;">
+                  {%- for src in ['lastfm', 'listenbrainz'] -%}
+                    {%- if display_list|selectattr('sources')|list|selectattr('sources', 'contains', src)|list|length > 0 -%}
+                      <span class="badge" style="background-color: {{ '#D51007' if src == 'lastfm' else '#0066FF' }}; color: #fff;">{{ 'Last.fm' if src == 'lastfm' else 'ListenBrainz' }}</span>
+                    {%- endif -%}
+                  {%- endfor -%}
+                </span>
+              </small>
+              <div class="row g-2 row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-5">
+                {% for sa in recommended %}
+                <div class="col">
+                  <div class="card h-100 artist-similar-card overflow-hidden">
+                    <div style="aspect-ratio: 1 / 1; background: var(--tertiary-bg); position: relative;">
+                      <img src="{{ url_for('artist.api_artist_image', name=sa.name) }}" alt="{{ sa.name }}" loading="lazy"
+                           class="w-100 h-100" style="object-fit: cover;"
+                           onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                      <div style="display:none; position:absolute; inset:0; align-items:center; justify-content:center; color: var(--text-secondary); font-size: 2rem;">
+                        <i class="bi bi-music-note-beamed"></i>
+                      </div>
+                    </div>
+                    <div class="card-body p-2 text-center d-flex flex-column gap-1">
+                      <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="fw-semibold text-decoration-none text-truncate" title="{{ sa.name }}" style="font-size: 0.85rem;">{{ sa.name }}</a>
+                      <div class="d-flex justify-content-center gap-1 flex-wrap">
+                        {% for src in sa.sources %}
+                          {% if src == 'lastfm' %}
+                            <span class="badge" style="background-color: #D51007; color: #fff; font-size: 0.6rem;">Last.fm</span>
+                          {% elif src == 'listenbrainz' %}
+                            <span class="badge" style="background-color: #0066FF; color: #fff; font-size: 0.6rem;">ListenBrainz</span>
+                          {% endif %}
+                        {% endfor %}
+                      </div>
+                      <div class="mt-auto d-flex gap-1 justify-content-center">
+                        <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="btn btn-sm btn-outline-secondary" title="Open artist page"><i class="bi bi-person"></i></a>
+                        <button type="button" class="btn btn-sm btn-outline-info" title="Find releases on MusicBrainz" onclick="searchMusicBrainzForAllReleases('{{ sa.name|replace("'", "\\'") }}')"><i class="bi bi-search"></i></button>
+                        <a href="https://www.last.fm/music/{{ sa.name|urlencode }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-danger" title="View on Last.fm"><i class="bi bi-music-note-list"></i></a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 {% endfor %}
               </div>
             </div>
@@ -327,17 +383,23 @@
 
   <div class="mb-4" id="artist-genres-section">
     <div class="card">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="card-title mb-0">
-          <i class="bi bi-collection"></i> Genres and Moods
-        </h5>
-        <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistGenreRecommendations()" id="fetchArtistGenresBtn">
-          <i class="bi bi-cloud-download"></i> Get Online Suggestions
+      <div class="card-header p-0" id="artist-genres-heading">
+        <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#artist-genres-collapse" aria-expanded="false" aria-controls="artist-genres-collapse" style="color: inherit;">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-collection"></i> Genres and Moods
+          </h5>
+          <i class="bi bi-chevron-down similar-chevron"></i>
         </button>
       </div>
+      <div id="artist-genres-collapse" class="collapse">
       <div class="card-body">
         <div class="mb-4">
-          <h6 class="mb-3"><i class="bi bi-database-fill"></i> Detected Genres</h6>
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h6 class="mb-0"><i class="bi bi-database-fill"></i> Detected Genres</h6>
+            <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistGenreRecommendations()" id="fetchArtistGenresBtn">
+              <i class="bi bi-cloud-download"></i> Get Online Suggestions
+            </button>
+          </div>
           <p class="text-muted small mb-2">All genres detected from external sources (Last.fm, Discogs, MusicBrainz, Essentia, etc.) across all tracks. These are kept in the database for reference.</p>
           <div id="artistGenreSourcesContainer" class="text-muted small">
             {% set sources = [
@@ -439,15 +501,20 @@
             <i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3/FLAC Files)
           </button>
     </div>
+      </div>
   </div>
 
   <div class="card mb-4" id="artist-top-tracks-section">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-graph-up-arrow"></i> Top Tracks
-      </h5>
-      <small class="text-muted">Top 20 by popularity score</small>
+    <div class="card-header p-0" id="artist-top-tracks-heading">
+      <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#artist-top-tracks-collapse" aria-expanded="false" aria-controls="artist-top-tracks-collapse" style="color: inherit;">
+        <h5 class="card-title mb-0">
+          <i class="bi bi-graph-up-arrow"></i> Top Tracks
+          <small class="text-muted" style="font-size: 0.8rem;">Top 20 by popularity score</small>
+        </h5>
+        <i class="bi bi-chevron-down similar-chevron"></i>
+      </button>
     </div>
+    <div id="artist-top-tracks-collapse" class="collapse">
     <div class="card-body p-0">
       <div class="table-responsive">
         <table class="table table-hover mb-0">
@@ -499,6 +566,7 @@
             {% endif %}
           </tbody>
         </table>
+      </div>
       </div>
     </div>
   </div>

@@ -32,11 +32,11 @@ ui_bp = Blueprint("ui", __name__)
 # ===========================================================================
 
 def _similar_artist_display_list(session, entries: list) -> list[dict]:
-    """Normalise cached similar-artist entries and drop ones already owned.
+    """Normalise cached similar-artist entries and flag ones already owned.
 
-    Returns dicts with ``name``/``match`` for artists that are NOT yet in the
-    collection (no track carries them as the album artist), so the rendered
-    list is a genuine "discover new artists" recommendation set.
+    Returns dicts with ``name``/``match``/``in_collection`` so the rendered
+    list can split artists into "In Collection" and "Recommended" groups
+    (Last.fm + ListenBrainz combined, deduped by name).
     """
     normalised: list[dict] = []
     names: set[str] = set()
@@ -54,6 +54,7 @@ def _similar_artist_display_list(session, entries: list) -> list[dict]:
             continue
         if not item.get("name"):
             continue
+        item["in_collection"] = False
         normalised.append(item)
         names.add(item["name"].lower())
 
@@ -75,7 +76,10 @@ def _similar_artist_display_list(session, entries: list) -> list[dict]:
         ).fetchall()
         owned = {str(r[0]) for r in rows if r[0]}
 
-    return [item for item in normalised if item["name"].lower() not in owned]
+    for item in normalised:
+        item["in_collection"] = item["name"].lower() in owned
+
+    return normalised
 
 
 def _needs_setup(cfg=None):
@@ -1088,9 +1092,9 @@ async def artist_detail(name: str):
             logger.debug("Failed to fetch artist members for '%s': %s", name, exc)
 
     # ── Similar artists (pre-rendered to avoid spinner) ────────────────────
-    # Only artists NOT already in the collection are shown, so the section
-    # stays a genuine recommendation list (Last.fm + ListenBrainz combined).
-    similar_artists: dict[str, list[dict]] = {"lastfm": [], "listenbrainz": []}
+    # Last.fm + ListenBrainz are combined (deduped by name) and split into
+    # "In Collection" and "Recommended" for display.
+    similar_artists: dict[str, list[dict]] = {"lastfm": [], "listenbrainz": [], "display": []}
     try:
         with db_session() as session:
             row = session.execute(
@@ -1111,8 +1115,23 @@ async def artist_detail(name: str):
                         similar_artists["listenbrainz"] = json.loads(lb_raw)
                     except Exception:
                         pass
-        for source in ("lastfm", "listenbrainz"):
-            similar_artists[source] = _similar_artist_display_list(session, similar_artists[source])
+            for source in ("lastfm", "listenbrainz"):
+                similar_artists[source] = _similar_artist_display_list(
+                    session, similar_artists[source]
+                )
+            # Merge both sources into a single deduped display list.
+            merged: dict[str, dict] = {}
+            for source in ("lastfm", "listenbrainz"):
+                for item in similar_artists[source]:
+                    key = item["name"].lower()
+                    if key not in merged:
+                        entry = dict(item)
+                        entry["sources"] = []
+                        merged[key] = entry
+                    merged[key]["sources"].append(source)
+                    if item.get("in_collection"):
+                        merged[key]["in_collection"] = True
+            similar_artists["display"] = list(merged.values())
     except Exception as exc:
         logger.debug("Failed to load similar artists for '%s': %s", name, exc)
 
@@ -2120,6 +2139,59 @@ async def track_detail(track_id: str):
                         """),
                         params,
                     )
+
+                    # Album-scoped fields describe the release as a whole:
+                    # push the same values to every other track on the album
+                    # so a per-track edit can never split one release into
+                    # two albums.
+                    album_scoped_fields = {
+                        "album", "album_artist", "year",
+                        "musicbrainz_albumid", "musicbrainz_album_mbid",
+                        "musicbrainz_releasegroupid", "musicbrainz_albumartistid",
+                    }
+                    album_updates = {
+                        k: v for k, v in update_values.items()
+                        if k in album_scoped_fields
+                    }
+                    if album_updates and update_values.get("album"):
+                        try:
+                            album_set_clause = ", ".join(
+                                f"{quote_identifier(k)} = :{k}" for k in album_updates
+                            )
+                            album_params = {
+                                **album_updates,
+                                "id": str(track_id),
+                                "old_album": track.get("album"),
+                                "old_album_artist": (
+                                    track.get("album_artist")
+                                    or track.get("albumartist")
+                                    or track.get("artist")
+                                    or ""
+                                ),
+                            }
+                            album_result = db.execute(
+                                text(f"""
+                                    UPDATE tracks
+                                    SET {album_set_clause}
+                                    WHERE CAST(id AS TEXT) <> :id
+                                      AND album = :old_album
+                                      AND COALESCE(NULLIF(album_artist, ''), artist) = :old_album_artist
+                                """),
+                                album_params,
+                            )
+                            album_tracks_updated = album_result.rowcount or 0
+                        except Exception as album_err:
+                            logger.debug(
+                                "Album-scoped propagation failed for %s: %s",
+                                track_id,
+                                album_err,
+                            )
+                            album_tracks_updated = 0
+                        if album_tracks_updated:
+                            await flash(
+                                f"Album metadata also applied to {album_tracks_updated} other track(s) on this album.",
+                                "info",
+                            )
                     db.commit()
 
                     # Legacy parity undo: un-marking a track as live/acoustic
