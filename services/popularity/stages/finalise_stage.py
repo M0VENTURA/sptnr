@@ -23,6 +23,7 @@ from db.engine import db_session
 from db.utils import get_db_connection, row_get
 from services.popularity.popularity_math import calculate_track_zscore
 from services.popularity.standout_service import STANDOUT_CONFIG
+from services.catalog.album_classification_service import is_live_or_alternate_track_title
 
 from helpers.logging_config import log_unified
 
@@ -257,7 +258,16 @@ def _assign_stars(
     score = float(track.get("popularity_score") or 0)
     is_single = bool(track.get("is_single"))
     single_confidence = str(track.get("single_confidence") or "low")
-    is_live = bool(track.get("is_live")) or bool(track.get("album_context_live"))
+    # A "(Live)"/"(Acoustic)" title-suffixed track on a studio album is a live
+    # recording even when the album itself is studio — cap it at 4★ so a bonus
+    # live cut can never outrank the album's real singles.  A track flagged by
+    # single detection as an ``alternate_or_live_version`` carries exactly this
+    # marker, so the cap fires for the same titles detection skips.
+    is_live = (
+        bool(track.get("is_live"))
+        or bool(track.get("album_context_live"))
+        or is_live_or_alternate_track_title(track.get("title"))
+    )
 
     # User override — a manually-set rating is preserved by every scan type.
     if single_confidence == "user":
@@ -289,8 +299,14 @@ def _assign_stars(
         and artist_z >= STAR_5_ARTIST_Z
         and (popularity_marked or z_standout_source)
     )
+    # Top-% popularity marking alone grants 5★ (spec rule 2): a track in the
+    # artist's top 10% is "popular" regardless of single status, so it never
+    # needs a single-detection source.  The medium→high bump (rule 3) already
+    # upgraded widened top-20% medium singles to HIGH confidence, which the
+    # ``single_confidence == 'high'`` branch awards below.
     if not is_live and (
-        (not popularity_only and single_confidence == "high")
+        popularity_marked
+        or (not popularity_only and single_confidence == "high")
         or is_standout
     ):
         return 5
@@ -483,6 +499,7 @@ def compute_artist_scores(
     the cut.
     """
     scanned_titles = scanned_titles or set()
+    from services.catalog.album_classification_service import is_bonus_track_title
     artist_scores = [float(s) for s in scan_scores if float(s or 0) > 0]
     db_rows: list[tuple[str, str]] = []
     try:
@@ -496,6 +513,7 @@ def compute_artist_scores(
             for row in cursor.fetchall()
             if row.get("final_score")
             and str(row.get("title") or "").strip().lower() not in scanned_titles
+            and not is_bonus_track_title(str(row.get("title") or ""))
         ]
     except Exception as exc:
         logger.debug("[finalise_stage] Artist DB score fetch failed for %s: %s", artist, exc)
@@ -541,21 +559,57 @@ def post_album_star_ratings(
     try:
         album = str(album_results[0].get("album") or "Unknown")
 
+        # Album score distribution used for z-scores and the 1-4★ bands.
+        # Bonus / alternate / live tracks (``exclude_from_stats``) on a studio
+        # album are dropped from the reference so a deluxe edition padded with
+        # extra live cuts does not drag the album average down and crush the
+        # core tracks' ratings.  A true LIVE album flags every track excluded,
+        # so the drop falls back to the full set when too few tracks remain
+        # (the live album is scored against itself).
         album_scores = [
             float(r.get("popularity_score") or 0)
             for r in album_results
             if float(r.get("popularity_score") or 0) > 0
         ]
+        if len(album_scores) >= 3:
+            _eligible = [
+                float(r.get("popularity_score") or 0)
+                for r in album_results
+                if float(r.get("popularity_score") or 0) > 0
+                and not bool(r.get("exclude_from_stats"))
+            ]
+            if len(_eligible) >= 3:
+                album_scores = _eligible
         # Raw listener counts per album track — used to detect listener
-        # standouts (log-scaled z) for confirmed singles.
+        # standouts (log-scaled z) for confirmed singles.  Same bonus-track
+        # exclusion so an extra live cut cannot anchor the listener
+        # distribution.
         album_lf_listeners = [float(r.get("lastfm_listeners") or 0) for r in album_results]
         album_lb_listens = [float(r.get("listenbrainz_listens") or 0) for r in album_results]
+        if len(album_lf_listeners) >= 3 and len(album_lb_listens) >= 3:
+            _elf = [
+                float(r.get("lastfm_listeners") or 0)
+                for r in album_results
+                if not bool(r.get("exclude_from_stats"))
+            ]
+            _elb = [
+                float(r.get("listenbrainz_listens") or 0)
+                for r in album_results
+                if not bool(r.get("exclude_from_stats"))
+            ]
+            if len(_elf) >= 3 and len(_elb) >= 3:
+                album_lf_listeners = _elf
+                album_lb_listens = _elb
 
         try:
             # Merge DB scores ONLY for tracks not in the current scan.
             # Otherwise the distribution double-counts every scanned track
             # (raw popularity_score + stored final_score, which is
-            # decay-adjusted) and the z-scores drift between scans.
+            # decay-adjusted) and the z-scores drift between scans.  Stored
+            # bonus tracks (live/remix/demo/... titles) are excluded the same
+            # way the in-scan results are — a studio album's average must not
+            # be dragged down by its padded live cuts.
+            from services.catalog.album_classification_service import is_bonus_track_title
             scanned_titles = {str(r.get("title") or "").strip().lower() for r in album_results}
             cursor.execute(
                 "SELECT title, final_score FROM tracks "
@@ -567,6 +621,7 @@ def post_album_star_ratings(
                 for row in cursor.fetchall()
                 if row.get("final_score")
                 and str(row.get("title") or "").strip().lower() not in scanned_titles
+                and not is_bonus_track_title(str(row.get("title") or ""))
             ]
             album_scores = list(album_scores) + list(db_album_scores)
         except Exception as exc:
@@ -828,7 +883,12 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
             }
             artist_scores = compute_artist_scores(
                 artist,
-                [float(r.get("popularity_score") or 0) for r in artist_results],
+                [
+                    float(r.get("popularity_score") or 0)
+                    for r in artist_results
+                    if float(r.get("popularity_score") or 0) > 0
+                    and not bool(r.get("exclude_from_stats"))
+                ],
                 conn,
                 cursor,
                 scanned_titles=scanned_titles,

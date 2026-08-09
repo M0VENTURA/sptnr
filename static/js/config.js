@@ -242,6 +242,7 @@ function buildConfigObject() {
         album_zscore_threshold: parseFloat(getValue('sd_album_zscore', '0.8')) || 0.8,
         artist_zscore_threshold: parseFloat(getValue('sd_artist_zscore', '2.2')) || 2.2,
         artist_top_percentile: parseFloat(getValue('sd_artist_pct', '0.10')) || 0.10,
+        artist_medium_bump_percentile: parseFloat(getValue('sd_artist_medium_pct', '0.20')) || 0.20,
         artist_min_tracks: parseInt(getValue('sd_artist_min_tracks', '10')) || 10,
         popularity_5star_z_threshold: parseFloat(getValue('popularity_5star_z_threshold', '2.0')) || 2.0,
         lb_unreliable_5star_threshold: parseFloat(getValue('lb_unreliable_5star_threshold', '0.50')) || 0.50,

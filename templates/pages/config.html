@@ -860,8 +860,10 @@
       <h6 class="mb-3">Standout Marking — Artist Catalogue Context</h6>
       <p class="text-muted small mb-3">
         These thresholds decide whether a track is flagged as standing out within its <strong>artist's
-        whole catalogue</strong>. The flag upgrades a medium-confidence single to high and, combined with
-        the album z-score, is one of the paths to 5★.
+        whole catalogue</strong>. Tracks in the top band (default top 10%) are marked "popular" and earn
+        5★ without any single-detection source; the marking band widens (default to 20%) for tracks that
+        carry a MEDIUM-confidence single source, bumping them to HIGH → 5★. Combined with the album
+        z-score, the marking is also one of the paths to 5★ for genuine standouts.
       </p>
       <div class="row g-3 mb-4">
         <div class="col-12 col-sm-6 col-lg-3">
@@ -877,7 +879,12 @@
         <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">Artist Top %</label>
           <input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="sd_artist_pct" placeholder="0.10" value="{{ config.get('single_detection', {}).get('artist_top_percentile', 0.10) }}">
-          <small class="form-text text-muted">Fraction of the artist's catalogue considered "top" for popularity marking. Default: <strong>0.10</strong></small>
+          <small class="form-text text-muted">Fraction of the artist's catalogue considered "top" for popularity marking. Tracks here earn 5★ without a single-detection source. Default: <strong>0.10</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Medium-Bump Top %</label>
+          <input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="sd_artist_medium_pct" placeholder="0.20" value="{{ config.get('single_detection', {}).get('artist_medium_bump_percentile', 0.20) }}">
+          <small class="form-text text-muted">Widened marking band (default <strong>0.20</strong>): a track here with a MEDIUM-confidence single source is bumped to HIGH → 5★. Popularity alone below the top band never marks.</small>
         </div>
         <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">Artist Min Tracks</label>

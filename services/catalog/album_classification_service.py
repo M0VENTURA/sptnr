@@ -111,6 +111,48 @@ def is_live_or_unplugged_track_title(title: str) -> bool:
     return any(re.search(p, title or "", re.IGNORECASE) for p in [r"\blive\b", r"\bunplugged\b"])
 
 
+# Version-marker positions a bonus live/acoustic track uses.  Deliberately
+# format-tag based (the same discipline ``is_live_album_enhanced`` applies to
+# album titles): a bare ``\blive\b`` would mis-flag songs literally named
+# "Live Fast, Die Young" or "Live In Colour", capping them at 4★.
+_LIVE_ALTERNATE_TRACK_MARKERS = [
+    # Trailing parenthetical version tags: "Song (Live)", "Song (Acoustic)",
+    # "Song (Live In Tokyo 1994)", "Song (Unplugged)".
+    r"\((?:live|unplugged|acoustic|orchestral)[^)]*\)",
+    # Trailing "- Live" / "- Acoustic" separators.
+    r"[-–—]\s*(?:live|unplugged|acoustic|orchestral)\s*$",
+]
+
+
+def is_live_or_alternate_track_title(title: str) -> bool:
+    """Return True when a track TITLE flags a live/acoustic alternate version.
+
+    Matches version-marker positions only (a trailing ``(Live ...)`` /
+    ``(Acoustic ...)`` parenthetical or a ``- Live``-style separator) — the
+    markers a bonus live cut on a studio album carries.  Used to give such a
+    track live status (the live weight penalty on its popularity score and the
+    4★ cap on its star rating) without treating the whole album as live.
+    """
+    return any(
+        re.search(pattern, title or "", re.IGNORECASE)
+        for pattern in _LIVE_ALTERNATE_TRACK_MARKERS
+    )
+
+
+def is_bonus_track_title(title: str) -> bool:
+    """Return True when a track TITLE indicates a bonus / alternate version.
+
+    Title-only check matching ``ALT_TRACK_PATTERNS`` (live, unplugged,
+    acoustic, orchestral, remix, demo, instrumental, karaoke).  Used to filter
+    bonus tracks out of an album's average popularity scoring from STORED DB
+    rows, where the album-context flags (``album_context_live``) are not
+    persisted.  A studio album padded with extra live cuts is exactly the
+    bonus-track case this targets — the album's core tracks should be scored
+    against the album's core distribution, not the padded one.
+    """
+    return any(re.search(pattern, title or "", re.IGNORECASE) for pattern in ALT_TRACK_PATTERNS)
+
+
 def should_exclude_track_from_stats(
     title: str,
     album: str = "",

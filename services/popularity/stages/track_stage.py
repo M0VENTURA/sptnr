@@ -55,6 +55,11 @@ from services.enrichment.cover_detection_service import (
     detect_cover_song,
 )
 
+# Track classification (bonus/live/alternate title detection)
+from services.catalog.album_classification_service import (
+    is_live_or_alternate_track_title,
+)
+
 # Genre aggregation
 from services.enrichment.genre_aggregation_service import (
     aggregate_genres,
@@ -486,10 +491,14 @@ def process_track(
                         # otherwise tracks that exist on ListenBrainz read 0
                         # forever. The resolved MBID is persisted so later
                         # scans skip the lookup.
-                        if listenbrainz_listens == 0 and not recording_mbid and title and artist:
+                        # ``raw_title`` is passed (not the cleaned ``title``,
+                        # which strips brackets via lastfm_title) so an
+                        # alternate version like "Song (Live)" resolves to its
+                        # OWN recording instead of matching the studio original.
+                        if listenbrainz_listens == 0 and not recording_mbid and (raw_title or title) and artist:
                             try:
                                 from services.enrichment.musicbrainz_service import MusicBrainzService
-                                recording_mbid, _conf = MusicBrainzService().get_suggested_mbid(title, artist)
+                                recording_mbid, _conf = MusicBrainzService().get_suggested_mbid(raw_title or title, artist)
                                 if recording_mbid:
                                     _lb_source = "mbid_resolved"
                                     update_payload["recording_mbid"] = recording_mbid
@@ -540,10 +549,15 @@ def process_track(
                     except Exception as exc:
                         logger.debug("[track_stage] Cross-release LB aggregation failed for %s: %s", track_id, exc)
 
+                # A "(Live)"/"(Acoustic)" title on a STUDIO album is still a
+                # live recording: flag it so the live weight penalty applies
+                # (and the 4★ cap later).  Live albums are already flagged via
+                # ``album_context_live`` / ``is_live_album``.
                 is_live_flag = bool(
                     effective_track.get("is_live")
                     or effective_track.get("album_context_live")
                     or album_context.get("is_live_album")
+                    or is_live_or_alternate_track_title(raw_title or title)
                 )
                 is_featured_flag = bool(
                     "feat" in str(artist or "").lower()
@@ -1354,5 +1368,10 @@ def process_track(
         "single_confidence": str(update_payload.get("single_confidence", track.get("single_confidence", "low"))),
         "single_sources": update_payload.get("single_sources", track.get("single_sources", "")),
         "popularity_marked": bool(track.get("popularity_marked", False)),
-        "is_live": bool(track.get("is_live") or track.get("album_context_live")),
+        "is_live": bool(
+            track.get("is_live")
+            or track.get("album_context_live")
+            or is_live_or_alternate_track_title(track.get("title"))
+        ),
+        "exclude_from_stats": bool(track.get("exclude_from_stats")),
     }

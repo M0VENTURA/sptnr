@@ -113,6 +113,7 @@ STANDOUT_CONFIG: dict[str, Any] = {
     "album_zscore_threshold": 0.8,
     "artist_zscore_threshold": 2.2,
     "artist_top_percentile": 0.10,
+    "artist_medium_bump_percentile": 0.20,
     "artist_min_tracks": 10,
     "star_5": {"album_z": 1.0, "artist_z": 1.2, "artist_pct": 0.10},
     "star_4": {"album_z": 0.5, "artist_z": 1.0, "artist_pct": 0.20},
@@ -137,7 +138,8 @@ def apply_standout_config_overrides(config: dict | None = None) -> None:
         return
 
     for key in ("album_zscore_threshold", "artist_zscore_threshold",
-                 "artist_top_percentile", "artist_min_tracks"):
+                 "artist_top_percentile", "artist_medium_bump_percentile",
+                 "artist_min_tracks"):
         if key in sd:
             STANDOUT_CONFIG[key] = sd[key]
 

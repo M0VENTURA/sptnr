@@ -155,6 +155,14 @@ class TestAlbumZBandStars:
         album = [1, 10, 19, 28, 37, 46, 55, 64, 73, 82, 91, 100]
         assert self._stars(100.0, album, popularity_marked=True) == 5
 
+    def test_popularity_marked_alone_gets_five_without_single_source(self):
+        # Spec rule 2: a track in the artist's top 10% is "popular" — the
+        # marking alone grants 5★ even though it is NOT a high-confidence
+        # single and does NOT clear the album/artist standout thresholds.
+        album = [1, 10, 19, 28, 37, 46, 55, 64, 73, 82, 91, 100]
+        assert self._stars(46.0, album, popularity_marked=True, is_single=False,
+                           single_confidence="low") == 5
+
     def test_z_standout_source_counts_as_popularity_proof(self):
         # The popularity_z_standout detection signal is an alternative proof for
         # the 5★ standout condition.

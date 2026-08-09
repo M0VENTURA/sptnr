@@ -1,8 +1,9 @@
-"""Tests for the artist top-10% popularity marking + medium→high single bump.
+"""Tests for the artist top-% popularity marking + medium→high single bump.
 
 Spec rules 2-3: tracks in the top 10% of the artist's catalogue by popularity
-are marked ``popularity_marked``, and a medium-confidence single that is marked
-is upgraded to HIGH confidence (which then earns 5★).
+are marked ``popularity_marked`` and earn 5★ WITHOUT a single-detection source;
+the marking band widens to 20% for tracks carrying a MEDIUM-confidence single
+source, which is then upgraded to HIGH confidence (which also earns 5★).
 """
 
 from __future__ import annotations
@@ -12,36 +13,42 @@ import json
 
 class TestArtistTopMarkedCutoff:
     def _cutoff(self, scan_scores, db_scores=()):
-        from services.popularity.scan_stage_runner import _artist_top_marked_cutoff
-        return _artist_top_marked_cutoff(scan_scores, db_scores)
+        from services.popularity.scan_stage_runner import _artist_top_marked_cutoffs
+        return _artist_top_marked_cutoffs(scan_scores, db_scores)
 
     def test_top_ten_percent_cutoff(self):
         # 20 tracks → top 10% = 2 tracks → cutoff = 2nd-highest score.
         scores = list(range(81, 101))  # 81..100
-        cutoff, top_n = self._cutoff(scores)
+        top_cutoff, medium_cutoff, top_n, medium_n = self._cutoff(scores)
         assert top_n == 2
-        assert cutoff == 99.0
+        assert top_cutoff == 99.0
+        assert medium_n == 4
+        assert medium_cutoff == 97.0
 
     def test_small_catalogue_rounds_up(self):
         # 5 tracks → ceil(5 * 0.10) = 1 track marked.
-        cutoff, top_n = self._cutoff([10, 20, 30, 40, 50])
+        top_cutoff, medium_cutoff, top_n, medium_n = self._cutoff([10, 20, 30, 40, 50])
         assert top_n == 1
-        assert cutoff == 50.0
+        assert top_cutoff == 50.0
+        assert medium_n == 1
+        assert medium_cutoff == 50.0
 
     def test_no_scores_returns_none(self):
-        cutoff, top_n = self._cutoff([], [])
-        assert cutoff is None
+        top_cutoff, medium_cutoff, top_n, medium_n = self._cutoff([], [])
+        assert top_cutoff is None
+        assert medium_cutoff is None
         assert top_n == 0
+        assert medium_n == 0
 
     def test_merges_scan_and_db_scores(self):
-        cutoff, top_n = self._cutoff([90], [91, 92, 93])
+        top_cutoff, medium_cutoff, top_n, medium_n = self._cutoff([90], [91, 92, 93])
         assert top_n == 1
-        assert cutoff == 93.0
+        assert top_cutoff == 93.0
 
     def test_zero_scores_are_ignored(self):
-        cutoff, top_n = self._cutoff([90, 0, 0], [])
+        top_cutoff, medium_cutoff, top_n, medium_n = self._cutoff([90, 0, 0], [])
         assert top_n == 1
-        assert cutoff == 90.0
+        assert top_cutoff == 90.0
 
 
 class TestReanchorScoresToAlbumRelative:
@@ -126,9 +133,9 @@ class TestArtistTopMarkedCutoffMixedScales:
 
     def _cutoff(self, scan_scores, db_rows):
         from services.popularity.popularity_math import reanchor_scores_to_album_relative
-        from services.popularity.scan_stage_runner import _artist_top_marked_cutoff
+        from services.popularity.scan_stage_runner import _artist_top_marked_cutoffs
         db_reanchored = reanchor_scores_to_album_relative(db_rows)
-        return _artist_top_marked_cutoff(scan_scores, db_reanchored)
+        return _artist_top_marked_cutoffs(scan_scores, db_reanchored)
 
     def _db(self):
         rows = [
@@ -144,25 +151,25 @@ class TestArtistTopMarkedCutoffMixedScales:
         return rows
 
     def test_raw_merge_cutoff_inflated_and_fixed_by_reanchor(self):
-        from services.popularity.scan_stage_runner import _artist_top_marked_cutoff
+        from services.popularity.scan_stage_runner import _artist_top_marked_cutoffs
         scan_scores = [67.3, 63.9, 62.2, 57.8, 57.8, 52.6, 51.2,
                        48.8, 48.3, 48.1, 47.5, 46.3, 11.1]
         db_rows = self._db()
 
         # Raw-scale merge: the old albums' 85-95 hits dominate → inflated cutoff.
-        raw_cutoff, raw_top_n = _artist_top_marked_cutoff(
+        raw_top_cutoff, raw_medium_cutoff, raw_top_n, raw_medium_n = _artist_top_marked_cutoffs(
             scan_scores, [s for _alb, s in db_rows]
         )
         assert raw_top_n == 6
-        assert raw_cutoff >= 80.0
-        assert 63.9 < raw_cutoff  # the top-10% fresh track is pushed out
+        assert raw_top_cutoff >= 80.0
+        assert 63.9 < raw_top_cutoff  # the top-10% fresh track is pushed out
 
         # After re-anchoring stored albums onto the album-relative scale, the
         # cutoff lands in the fresh scale's ~63-67 band and 63.9 clears it.
-        fixed_cutoff, fixed_top_n = self._cutoff(scan_scores, db_rows)
+        fixed_top_cutoff, fixed_medium_cutoff, fixed_top_n, fixed_medium_n = self._cutoff(scan_scores, db_rows)
         assert fixed_top_n == 6
-        assert fixed_cutoff <= 65.0
-        assert 63.9 >= fixed_cutoff
+        assert fixed_top_cutoff <= 65.0
+        assert 63.9 >= fixed_top_cutoff
 
 
 class TestPopularityMarkingBump:
@@ -250,6 +257,44 @@ class TestAlbumRelativeNormalization:
         self._normalize(tracks)
         assert frozen["popularity_score"] == 60.0
         assert all(t["popularity_score"] != t["_raw_combined"] for t in fresh)
+
+    def test_bonus_tracks_excluded_from_album_reference(self):
+        # A studio album padded with extra live cuts: the live bonus tracks
+        # (exclude_from_stats=True) must NOT anchor the album's average.  The
+        # core tracks re-map against the core-only distribution, and the bonus
+        # tracks are scored relative to that same (higher) reference — so they
+        # land lower than they would if they dragged the median down.
+        tracks = [
+            {"track_id": f"t{i}", "title": f"Song {i}", "_raw_combined": raw,
+             "popularity_score": raw, "final_score": raw, "exclude_from_stats": False}
+            for i, raw in enumerate([95.0, 90.0, 85.0, 80.0, 75.0, 70.0], start=1)
+        ]
+        bonus = [
+            {"track_id": f"b{i}", "title": f"Bonus (Live) {i}", "_raw_combined": raw,
+             "popularity_score": raw, "final_score": raw, "exclude_from_stats": True}
+            for i, raw in enumerate([30.0, 25.0, 20.0], start=1)
+        ]
+        self._normalize(tracks + bonus)
+        # The core tracks are still spread and re-mapped above the midpoint.
+        core_scores = [t["popularity_score"] for t in tracks]
+        assert all(t["popularity_score"] != t["_raw_combined"] for t in tracks)
+        assert max(core_scores) < 100.0
+        assert max(core_scores) > 60.0
+        # The live bonus tracks score BELOW the core median — they are rated
+        # against the core distribution, not their own low numbers.
+        assert max(t["popularity_score"] for t in bonus) < min(core_scores)
+
+    def test_live_album_all_tracks_excluded_falls_back_to_full(self):
+        # A true live album flags EVERY track excluded — the drop must not
+        # empty the reference, so the album is scored against itself (each
+        # track re-maps normally).
+        tracks = [
+            {"track_id": f"t{i}", "title": f"Live Song {i}", "_raw_combined": raw,
+             "popularity_score": raw, "final_score": raw, "exclude_from_stats": True}
+            for i, raw in enumerate([95.0, 90.0, 85.0, 80.0, 75.0, 70.0], start=1)
+        ]
+        self._normalize(tracks)
+        assert all(t["popularity_score"] != t["_raw_combined"] for t in tracks)
 
 
 class TestCompilationTrackArtistNormalization:
