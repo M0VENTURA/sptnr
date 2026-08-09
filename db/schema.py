@@ -50,6 +50,7 @@ TABLES_TO_ENSURE: dict[str, str] = {
             id BIGSERIAL PRIMARY KEY, artist TEXT NOT NULL, title TEXT NOT NULL, 
             lastfm_listeners INTEGER DEFAULT 0, lastfm_playcount BIGINT DEFAULT 0, 
             listenbrainz_listens INTEGER DEFAULT 0, listenbrainz_users INTEGER DEFAULT 0, 
+            lastfm_tags TEXT,
             source TEXT DEFAULT 'bulk', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT uq_track_popularity_artist_title UNIQUE (artist, title)
         )
@@ -262,6 +263,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
     "musicbrainz_releases": {"album_artist": "TEXT", "genres": "TEXT", "cover_art_url": "TEXT", "release_source": "TEXT"},
     "musicbrainz_release_tracks": {"composer": "TEXT", "album_artist": "TEXT", "year": "TEXT"},
     "artist_release_cache": {"is_promo": "BOOLEAN DEFAULT FALSE"},
+    "track_popularity_cache": {"lastfm_tags": "TEXT"},
     "upcoming_releases": {
         "release_year": "INTEGER",
         "artist_in_collection": "BOOLEAN DEFAULT FALSE",

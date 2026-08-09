@@ -59,6 +59,12 @@ def _row_to_entry(row: Dict[str, Any]) -> Dict[str, Any]:
     }
     if not any(entry.values()):
         return {}
+    # Tags ride along when the cache row carries them (schema ensures the
+    # column exists; older rows may be NULL — the track stage re-fetches them
+    # on a forced scan).
+    _tags = row.get("lastfm_tags")
+    if _tags:
+        entry["lastfm_tags"] = _tags
     return entry
 
 
@@ -70,6 +76,12 @@ _lf_top_tracks_cache: Dict[str, Dict[str, Dict[str, int]]] = {}
 # full catalogue so rows keep the artist's real title casing, not a lowercased
 # cache key.
 _lf_top_tracks_titles: Dict[str, Dict[str, str]] = {}
+
+# Last.fm top-tags for the same map — ``artist.getTopTracks`` returns a
+# ``toptags`` block per track, so the single bulk call that fills the
+# popularity cache can ALSO fill each track's ``lastfm_tags`` (the tag
+# source the artist page aggregates). Keyed like the listeners map.
+_lf_top_tracks_tags: Dict[str, Dict[str, str]] = {}
 
 
 def _get_lastfm_client() -> Any:
@@ -84,6 +96,35 @@ def _get_lastfm_client() -> Any:
     except Exception as exc:
         logger.debug("[popularity_cache] LastFmClient build failed: %s", exc)
     return None
+
+
+def _extract_top_tags(track: Dict[str, Any]) -> str:
+    """Extract the top Last.fm tag names for one top-tracks entry.
+
+    ``artist.getTopTracks`` returns a ``toptags`` block per track
+    (``{"tag": [{"name": "rock"}, ...]}``). Returns a JSON array string so
+    the value can be persisted straight into the TEXT ``lastfm_tags`` column
+    (the same format track_stage writes for fresh per-track lookups).
+    """
+    try:
+        import json as _json
+        raw = (track.get("toptags") or {}).get("tag") or []
+        names: list[str] = []
+        seen: set[str] = set()
+        for tag in raw:
+            if isinstance(tag, dict):
+                name = str(tag.get("name") or "").strip()
+            else:
+                name = str(tag or "").strip()
+            if not name:
+                continue
+            key = name.casefold()
+            if key not in seen:
+                seen.add(key)
+                names.append(name)
+        return _json.dumps(names[:15], ensure_ascii=False) if names else ""
+    except Exception:
+        return ""
 
 
 def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, int]]:
@@ -110,6 +151,7 @@ def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, i
         return {}
     out: Dict[str, Dict[str, int]] = {}
     titles: Dict[str, str] = {}
+    tags: Dict[str, str] = {}
     acc: Dict[str, Dict[str, int]] = {}
     best: Dict[str, tuple[int, str]] = {}
     for track in top_tracks:
@@ -128,11 +170,15 @@ def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, i
         entry["lastfm_playcount"] += playcount
         if key not in best or listeners > best[key][0]:
             best[key] = (listeners, name)
+            _tags = _extract_top_tags(track)
+            if _tags:
+                tags[key] = _tags
     for key, counts in acc.items():
         out[key] = dict(counts)
         titles[key] = best.get(key, (0, key))[1]
     _lf_top_tracks_cache[cache_key] = out
     _lf_top_tracks_titles[cache_key] = titles
+    _lf_top_tracks_tags[cache_key] = tags
     return out
 
 
@@ -230,6 +276,7 @@ def prefetch_artist_popularity(
     # 2. Last.fm: one bulk call, only when some title lacks LF data.
     if lastfm_client is not None and _missing("lastfm_listeners"):
         lf_map = _lf_top_tracks_map(lastfm_client, artist)
+        lf_tags = _lf_top_tracks_tags.get(_lf_cache_key) or {}
         for track in tracks:
             title = track.get("title")
             if not title:
@@ -237,6 +284,8 @@ def prefetch_artist_popularity(
             key = _norm(title)
             if key not in entries and key in lf_map:
                 entries[key] = dict(lf_map[key])
+                if key in lf_tags:
+                    entries[key]["lastfm_tags"] = lf_tags[key]
 
         # Full-catalogue fast-path: artist has no cached data yet — persist
         # the ENTIRE top-tracks result from the single call already made,
@@ -274,6 +323,7 @@ def prefetch_artist_popularity(
     #    ``updated_at`` and stay fresh longer.
     title_by_key = {_norm(t["title"]): t["title"] for t in tracks if t.get("title")}
     lf_titles = _lf_top_tracks_titles.get(_lf_cache_key) or {}
+    lf_tags = _lf_top_tracks_tags.get(_lf_cache_key) or {}
     rows_to_upsert = []
     for key, entry in entries.items():
         if not entry:
@@ -283,11 +333,14 @@ def prefetch_artist_popularity(
         entry_lf_playcount = int(entry.get("lastfm_playcount") or 0)
         entry_lb_listens = int(entry.get("listenbrainz_listens") or 0)
         entry_lb_users = int(entry.get("listenbrainz_users") or 0)
+        entry_tags = str(entry.get("lastfm_tags") or lf_tags.get(key) or "") or ""
+        prev_tags = str(prev.get("lastfm_tags") or "") or ""
         if (
             int(prev.get("lastfm_listeners") or 0) == entry_lf_listeners
             and int(prev.get("lastfm_playcount") or 0) == entry_lf_playcount
             and int(prev.get("listenbrainz_listens") or 0) == entry_lb_listens
             and int(prev.get("listenbrainz_users") or 0) == entry_lb_users
+            and prev_tags == entry_tags
         ):
             continue  # unchanged — no write
         rows_to_upsert.append({
@@ -297,6 +350,7 @@ def prefetch_artist_popularity(
             "lastfm_playcount": entry_lf_playcount,
             "listenbrainz_listens": entry_lb_listens,
             "listenbrainz_users": entry_lb_users,
+            "lastfm_tags": entry_tags or None,
             "source": "bulk",
         })
     if rows_to_upsert:

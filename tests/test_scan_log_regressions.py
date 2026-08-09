@@ -30,7 +30,7 @@ from sqlalchemy import create_engine, text as sa_text
 
 _CACHE_COLUMNS = (
     "artist", "title", "lastfm_listeners", "lastfm_playcount",
-    "listenbrainz_listens", "listenbrainz_users", "updated_at",
+    "listenbrainz_listens", "listenbrainz_users", "lastfm_tags", "updated_at",
 )
 
 
@@ -55,18 +55,18 @@ def _make_rows(rows_data: list[tuple], *, single_col: str | None = None) -> list
         conn.execute(sa_text(
             "CREATE TABLE t (artist TEXT, title TEXT, lastfm_listeners INT, "
             "lastfm_playcount INT, listenbrainz_listens INT, "
-            "listenbrainz_users INT, updated_at TEXT)"
+            "listenbrainz_users INT, lastfm_tags TEXT, updated_at TEXT)"
         ))
         for r in rows_data:
             conn.execute(
                 sa_text(
                     "INSERT INTO t (artist, title, lastfm_listeners, lastfm_playcount, "
-                    "listenbrainz_listens, listenbrainz_users, updated_at) "
-                    "VALUES (:artist, :title, :ll, :lp, :lb_l, :lb_u, :updated)"
+                    "listenbrainz_listens, listenbrainz_users, lastfm_tags, updated_at) "
+                    "VALUES (:artist, :title, :ll, :lp, :lb_l, :lb_u, :tags, :updated)"
                 ),
                 {
                     "artist": r[0], "title": r[1], "ll": r[2], "lp": r[3],
-                    "lb_l": r[4], "lb_u": r[5], "updated": r[6],
+                    "lb_l": r[4], "lb_u": r[5], "tags": r[6], "updated": r[7],
                 },
             )
         result = conn.execute(sa_text(
@@ -152,8 +152,8 @@ class TestCachedPopularityForTitles:
         import db.repositories.popularity_cache as cache
 
         rows = _make_rows([
-            ("Ad Infinitum", "My Halo", 1000, 5000, 200, 150, "2026-08-01"),
-            ("Ad Infinitum", "Herzblut (feat. Melissa Bonny)", 900, 4000, 100, 80, "2026-08-01"),
+            ("Ad Infinitum", "My Halo", 1000, 5000, 200, 150, '["symphonic","metal"]', "2026-08-01"),
+            ("Ad Infinitum", "Herzblut (feat. Melissa Bonny)", 900, 4000, 100, 80, None, "2026-08-01"),
         ])
         monkeypatch.setattr(cache, "db_session", _session_factory([rows]))
 
@@ -166,6 +166,7 @@ class TestCachedPopularityForTitles:
         assert "herzblut (feat. melissa bonny)" in out
         assert out["my halo"]["lastfm_listeners"] == 1000
         assert out["my halo"]["title"] == "My Halo"
+        assert out["my halo"]["lastfm_tags"] == '["symphonic","metal"]'
 
     def test_empty_rows_return_empty(self, monkeypatch):
         import db.repositories.popularity_cache as cache
@@ -177,8 +178,8 @@ class TestCachedPopularityForTitles:
         import db.repositories.popularity_cache as cache
 
         rows = _make_rows([
-            ("Ad Infinitum", None, 0, 0, 0, 0, None),
-            ("Ad Infinitum", "Real", 500, 1000, 50, 20, "2026-08-01"),
+            ("Ad Infinitum", None, 0, 0, 0, 0, None, None),
+            ("Ad Infinitum", "Real", 500, 1000, 50, 20, None, "2026-08-01"),
         ])
         monkeypatch.setattr(cache, "db_session", _session_factory([rows]))
 
