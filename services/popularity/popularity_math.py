@@ -131,6 +131,45 @@ def apply_track_artist_relative_popularity(raw_score: float, artist_scores: list
     return _remap_relative_popularity(raw_score, artist_scores)
 
 
+def reanchor_scores_to_album_relative(rows: list[tuple[str, str, float]]) -> list[float]:
+    """Re-anchor stored ``(album, score)`` rows onto the album-relative scale.
+
+    The stored ``final_score`` column is a MIX of two scales.  Albums scanned
+    after the album-relative re-map persist values centred at ~50 (tight, top
+    ~62-67), while albums scored before the feature — or frozen/skipped tracks —
+    keep their RAW combined score, which for an artist's biggest hits can sit
+    at 85-95.  Merging the two in the artist-wide distribution silently
+    inflates the top-10% ``popularity_marked`` cutoff and skews artist z-scores:
+    a handful of raw-scale outliers occupy the top of the merged list and push
+    genuinely top-10% album-relative tracks below the cut.
+
+    Each stored album is therefore re-anchored against ITS OWN stored
+    distribution with the same mapping used for freshly-scanned albums
+    (``apply_album_relative_popularity``): the album's median → ~50 and its
+    hits land in the same ~60-67 band as fresh re-mapped albums, so the merged
+    catalogue becomes scale-consistent.  Raw-scale albums are corrected exactly
+    as a fresh scan would re-map them; already-album-relative albums are
+    centred at ~50 already, so the re-anchor only nudges them on the same scale
+    (self-healing as albums get re-scanned from raw).  Albums with fewer than
+    ``ALBUM_RELATIVE_MIN_ALBUM_TRACKS`` valid scores keep their stored value
+    (no distribution to compare against), matching fresh-scan behaviour.
+    """
+    by_album: dict[str, list[float]] = {}
+    for _album, _score in (rows or []):
+        _s = float(_score or 0)
+        if _s > 0:
+            by_album.setdefault(str(_album or ""), []).append(_s)
+    reanchored: list[float] = []
+    for _album, _score in (rows or []):
+        _s = float(_score or 0)
+        if _s <= 0:
+            continue
+        reanchored.append(
+            apply_album_relative_popularity(_s, by_album.get(str(_album or "")) or [])
+        )
+    return reanchored
+
+
 def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int = 0) -> float:
     """Calculate normalized Last.fm popularity from listener count."""
     if listeners is None or listeners <= 0:

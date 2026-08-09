@@ -565,27 +565,42 @@ def run_scan(
         stored adjusted final_score) and drift the artist distribution.  The
         album-level merge in ``post_album_star_ratings`` already excludes
         scanned titles; this is the artist-wide equivalent.
+
+        Stored ``final_score`` values are a MIX of scales — albums scanned
+        before the album-relative re-map keep their raw combined score (hits at
+        85-95) while freshly-scanned albums persist values centred at ~50 — so
+        each stored album is re-anchored onto the album-relative scale before
+        the scores are merged.  Otherwise a handful of raw-scale outliers occupy
+        the top of the merged distribution, inflate the top-10% marking cutoff,
+        and push genuinely top-10% album-relative tracks below it (and skew
+        artist z-scores the same way).
         """
-        db_scores: list[float] = []
+        db_rows: list[tuple[str, str]] = []
         try:
             from sqlalchemy import text as _text
             from db.engine import db_session as _db_session
             with _db_session() as session:
                 rows = session.execute(
                     _text(
-                        "SELECT title, final_score FROM tracks "
+                        "SELECT title, album, final_score FROM tracks "
                         "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
                         "AND final_score > 0"
                     ),
                     {"artist": artist},
                 ).fetchall()
-                db_scores = [
-                    float(r[1])
+                db_rows = [
+                    (str(r[1] or ""), float(r[2] or 0))
                     for r in rows or []
-                    if r[1] and str(r[0] or "").strip().lower() not in scanned_titles
+                    if r[2] and str(r[0] or "").strip().lower() not in scanned_titles
                 ]
         except Exception as exc:
             logger.debug("[scan_runner] Artist DB score fetch failed for %s: %s", artist, exc)
+        try:
+            from services.popularity.popularity_math import reanchor_scores_to_album_relative
+            db_scores = reanchor_scores_to_album_relative(db_rows)
+        except Exception as exc:
+            logger.debug("[scan_runner] Artist DB score re-anchor failed for %s: %s", artist, exc)
+            db_scores = [float(s) for _alb, s in db_rows]
         return db_scores
 
     def _post_album_stars(
