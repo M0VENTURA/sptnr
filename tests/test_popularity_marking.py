@@ -44,6 +44,127 @@ class TestArtistTopMarkedCutoff:
         assert cutoff == 90.0
 
 
+class TestReanchorScoresToAlbumRelative:
+    """Stored final_score values mix two scales — re-anchor onto album-relative.
+
+    Albums scanned before the album-relative re-map keep their RAW combined
+    score (hits at 85-95), while freshly-scanned albums persist album-relative
+    values centred at ~50.  Merging the two in the artist-wide distribution
+    inflates the top-10% marking cutoff (raw outliers dominate the top of the
+    list) and skews artist z-scores, so stored albums are re-anchored against
+    their own stored distribution before they join the scan scores.
+    """
+
+    def _reanchor(self, rows):
+        from services.popularity.popularity_math import reanchor_scores_to_album_relative
+        return reanchor_scores_to_album_relative(rows)
+
+    def test_raw_scale_album_compressed_to_album_relative(self):
+        # An old raw-scale album: the hit at 92 compresses onto the same
+        # ~50-70 band a fresh album-relative scan would produce (median ~50).
+        rows = [
+            ("Old", 92.0), ("Old", 88.0), ("Old", 85.0), ("Old", 82.0), ("Old", 79.0),
+            ("Old", 76.0), ("Old", 73.0), ("Old", 70.0), ("Old", 66.0), ("Old", 61.0),
+        ]
+        scores = self._reanchor(rows)
+        assert len(scores) == len(rows)
+        assert max(scores) < 75.0  # no longer an 85-95 raw outlier
+        from statistics import median
+        assert 45 <= median(scores) <= 55  # album-relative median ≈ 50
+
+    def test_already_album_relative_album_stays_centred(self):
+        # A post-feature album is already centred at ~50; re-anchoring keeps it
+        # on the same scale (the median stays ~50) instead of pushing it up.
+        rows = [
+            ("New", 50.0), ("New", 52.0), ("New", 54.0), ("New", 55.0), ("New", 56.0),
+            ("New", 57.0), ("New", 58.0), ("New", 59.0), ("New", 60.0), ("New", 62.0),
+        ]
+        scores = self._reanchor(rows)
+        from statistics import median
+        assert 45 <= median(scores) <= 55
+        assert max(scores) < 75.0
+
+    def test_mixed_raw_and_remapped_albums_merge_consistently(self):
+        # Raw-scale albums and already-remapped albums re-anchor onto the same
+        # scale, so neither population dominates the merged distribution.
+        rows = (
+            [("Old", s) for s in (92.0, 88.0, 85.0, 82.0, 79.0, 76.0, 73.0, 70.0, 66.0, 61.0)]
+            + [("New", s) for s in (50.0, 52.0, 54.0, 55.0, 56.0, 57.0, 58.0, 59.0, 60.0, 62.0)]
+        )
+        scores = self._reanchor(rows)
+        assert max(scores) < 75.0
+        assert all(0.0 < s <= 100.0 for s in scores)
+
+    def test_small_album_keeps_stored_value(self):
+        # < 3 valid scores → no distribution to compare against → unchanged
+        # (matches the fresh-scan behaviour for tiny albums).
+        assert self._reanchor([("Solo", 80.0)]) == [80.0]
+        assert sorted(self._reanchor([("Duo", 50.0), ("Duo", 90.0)])) == [50.0, 90.0]
+
+    def test_zero_scores_ignored_and_empty_input(self):
+        # Zero scores carry no signal: dropped from the album reference AND the
+        # output, while the valid tracks are still re-anchored to ~50.
+        scores = self._reanchor([("A", 0.0), ("A", 5.0), ("A", 6.0), ("A", 7.0)])
+        assert len(scores) == 3
+        assert 0.0 not in scores
+        from statistics import median
+        assert 45 <= median(scores) <= 55
+        assert self._reanchor([]) == []
+
+
+class TestArtistTopMarkedCutoffMixedScales:
+    """Raw-scale DB outliers must not inflate the top-10% cutoff.
+
+    Reproduction of the A Snow Capped Romance regression: the fresh album's
+    re-mapped scores (top ~67, median ~50) are ranked against the artist's
+    stored scores, and a handful of OLD raw-scale albums (hits at 85-95) sit at
+    the top of the merged list.  The inflated cutoff pushes a genuinely top-10%
+    fresh track (63.9) below the cut — so its medium→high single bump and 5★
+    never fire.  Re-anchoring the stored albums onto the album-relative scale
+    fixes the comparison.
+    """
+
+    def _cutoff(self, scan_scores, db_rows):
+        from services.popularity.popularity_math import reanchor_scores_to_album_relative
+        from services.popularity.scan_stage_runner import _artist_top_marked_cutoff
+        db_reanchored = reanchor_scores_to_album_relative(db_rows)
+        return _artist_top_marked_cutoff(scan_scores, db_reanchored)
+
+    def _db(self):
+        rows = [
+            ("OldA", 92.0), ("OldA", 88.0), ("OldA", 85.0), ("OldA", 82.0), ("OldA", 79.0),
+            ("OldA", 76.0), ("OldA", 73.0), ("OldA", 70.0), ("OldA", 66.0), ("OldA", 61.0),
+            ("OldB", 89.0), ("OldB", 86.0), ("OldB", 83.0), ("OldB", 80.0), ("OldB", 78.0),
+            ("OldB", 75.0), ("OldB", 72.0), ("OldB", 68.0), ("OldB", 64.0), ("OldB", 59.0),
+            ("NewA", 50.0), ("NewA", 52.0), ("NewA", 54.0), ("NewA", 55.0), ("NewA", 56.0),
+            ("NewA", 57.0), ("NewA", 58.0), ("NewA", 59.0), ("NewA", 60.0), ("NewA", 62.0),
+            ("NewB", 48.0), ("NewB", 50.0), ("NewB", 51.0), ("NewB", 53.0), ("NewB", 55.0),
+            ("NewB", 56.0), ("NewB", 58.0), ("NewB", 59.0), ("NewB", 60.0), ("NewB", 61.0),
+        ]
+        return rows
+
+    def test_raw_merge_cutoff_inflated_and_fixed_by_reanchor(self):
+        from services.popularity.scan_stage_runner import _artist_top_marked_cutoff
+        scan_scores = [67.3, 63.9, 62.2, 57.8, 57.8, 52.6, 51.2,
+                       48.8, 48.3, 48.1, 47.5, 46.3, 11.1]
+        db_rows = self._db()
+
+        # Raw-scale merge: the old albums' 85-95 hits dominate → inflated cutoff.
+        raw_cutoff, raw_top_n = _artist_top_marked_cutoff(
+            scan_scores, [s for _alb, s in db_rows]
+        )
+        assert raw_top_n == 6
+        assert raw_cutoff >= 80.0
+        assert 63.9 < raw_cutoff  # the top-10% fresh track is pushed out
+
+        # After re-anchoring stored albums onto the album-relative scale, the
+        # cutoff lands in the fresh scale's ~63-67 band and 63.9 clears it.
+        fixed_cutoff, fixed_top_n = self._cutoff(scan_scores, db_rows)
+        assert fixed_top_n == 6
+        assert fixed_cutoff <= 65.0
+        assert 63.9 >= fixed_cutoff
+
+
 class TestPopularityMarkingBump:
     def _bump(self, tracks):
         from services.popularity.scan_stage_runner import _apply_popularity_marking_bump
