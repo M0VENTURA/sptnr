@@ -39,6 +39,7 @@ from db.engine import db_session
 from helpers.config_helpers import (
     _SLSKD_MIN_ACCEPT_SCORE,
 )
+from helpers.normalization_service import queue_duration_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -1024,10 +1025,7 @@ def check_completed_downloads() -> dict[str, Any]:
                 # ------------------------------------------------------------------
                 expected_dur = item.get("duration")
                 if expected_dur:
-                    try:
-                        expected_dur = int(expected_dur)
-                    except (TypeError, ValueError):
-                        expected_dur = None
+                    expected_dur = queue_duration_seconds(expected_dur)
                 if expected_dur:
                     actual_dur = _extract_duration_seconds(abs_path)
                     if actual_dur and abs(expected_dur - actual_dur) > 20:

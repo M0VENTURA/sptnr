@@ -887,6 +887,37 @@ def safe_str(value, default: str = "") -> str:
     return str(value)
 
 
+def queue_duration_seconds(value: Any) -> Optional[float]:
+    """Normalize a download_queue ``duration`` value to seconds.
+
+    Queue rows historically store duration in inconsistent units:
+    - Rows written via ``add_release_tracks_to_queue`` persist the raw
+      MusicBrainz millisecond ``length`` (e.g. ``233000`` for 3:53).
+    - Rows written via the download matching service (and rows whose missing
+      duration is backfilled by the completion service) store plain seconds
+      (e.g. ``233``).
+
+    Matchers therefore accept either unit: a value of 3000 or above is treated
+    as milliseconds and converted, smaller values are already seconds. Returns
+    None for missing/non-numeric/zero values so callers can skip the check.
+
+    Args:
+        value: Stored queue duration (seconds or milliseconds).
+
+    Returns:
+        Duration in seconds as a float, or None when unusable.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value / 1000 if value >= 3000 else value
+
+
 def is_valid_version(track_title: str, allow_live_remix: bool = False) -> bool:
     """Validate track version against blacklist and whitelist.
 
