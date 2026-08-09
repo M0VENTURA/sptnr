@@ -31,6 +31,53 @@ ui_bp = Blueprint("ui", __name__)
 # AUTH HELPERS
 # ===========================================================================
 
+def _similar_artist_display_list(session, entries: list) -> list[dict]:
+    """Normalise cached similar-artist entries and drop ones already owned.
+
+    Returns dicts with ``name``/``match`` for artists that are NOT yet in the
+    collection (no track carries them as the album artist), so the rendered
+    list is a genuine "discover new artists" recommendation set.
+    """
+    normalised: list[dict] = []
+    names: set[str] = set()
+    for entry in entries or []:
+        if isinstance(entry, str):
+            item = {"name": entry.strip(), "match": 0.0}
+        elif isinstance(entry, dict):
+            item = dict(entry)
+            item["name"] = str(item.get("name") or "").strip()
+            try:
+                item["match"] = float(item.get("match") or 0.0)
+            except Exception:
+                item["match"] = 0.0
+        else:
+            continue
+        if not item.get("name"):
+            continue
+        normalised.append(item)
+        names.add(item["name"].lower())
+
+    if not normalised:
+        return []
+
+    owned: set[str] = set()
+    if names:
+        name_list = list(names)
+        placeholders = ", ".join([f":_n{i}" for i in range(len(name_list))])
+        params = {f"_n{i}": n for i, n in enumerate(name_list)}
+        rows = session.execute(
+            text(f"""
+                SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist))
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) IN ({placeholders})
+            """),
+            params,
+        ).fetchall()
+        owned = {str(r[0]) for r in rows if r[0]}
+
+    return [item for item in normalised if item["name"].lower() not in owned]
+
+
 def _needs_setup(cfg=None):
     cfg = cfg or get_config()
     nav_users = cfg.get("navidrome_users", [])
@@ -1041,6 +1088,8 @@ async def artist_detail(name: str):
             logger.debug("Failed to fetch artist members for '%s': %s", name, exc)
 
     # ── Similar artists (pre-rendered to avoid spinner) ────────────────────
+    # Only artists NOT already in the collection are shown, so the section
+    # stays a genuine recommendation list (Last.fm + ListenBrainz combined).
     similar_artists: dict[str, list[dict]] = {"lastfm": [], "listenbrainz": []}
     try:
         with db_session() as session:
@@ -1062,6 +1111,8 @@ async def artist_detail(name: str):
                         similar_artists["listenbrainz"] = json.loads(lb_raw)
                     except Exception:
                         pass
+        for source in ("lastfm", "listenbrainz"):
+            similar_artists[source] = _similar_artist_display_list(session, similar_artists[source])
     except Exception as exc:
         logger.debug("Failed to load similar artists for '%s': %s", name, exc)
 

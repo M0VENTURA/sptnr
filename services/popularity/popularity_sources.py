@@ -16,6 +16,7 @@ from api_clients.listenbrainz import (
     get_listenbrainz_popularity as lb_get_listenbrainz_popularity,
     get_listenbrainz_score as lb_get_listenbrainz_score,
 )
+from helpers.normalization_service import strip_cover_attribution
 from services.popularity.popularity_matching import (
     choose_best_provider_counts,
     get_artist_lookup_candidates,
@@ -331,6 +332,10 @@ def get_aggregated_lastfm_popularity(artist: str, track_title: str, lastfm_clien
     """
     if lastfm_client is None:
         return {"listeners": 0, "track_play": 0, "matched_tracks": []}
+    # Strip cover attributions so the Last.fm query targets the canonical
+    # track row ("Gangnam Style (PSY Cover)" → "Gangnam Style"), otherwise the
+    # low-listen "(Cover)" album row is returned instead of the real single.
+    track_title = strip_cover_attribution(track_title) or track_title
     is_featured = (
         "feat" in str(artist or "").casefold()
         or "feat" in str(track_title or "").casefold()
@@ -397,6 +402,9 @@ def get_search_aggregated_lastfm_popularity(
     """
     if lastfm_client is None:
         return {"listeners": 0, "track_play": 0, "matched_tracks": []}
+    # Strip cover attributions before searching so the API is queried with the
+    # canonical title ("Gangnam Style", not "Gangnam Style (PSY Cover)").
+    track_title = strip_cover_attribution(track_title) or track_title
     target = normalize_for_aggregation(track_title)
     if not target:
         return {"listeners": 0, "track_play": 0, "matched_tracks": []}

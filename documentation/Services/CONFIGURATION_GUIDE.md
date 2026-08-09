@@ -47,19 +47,23 @@ single_detection:
   artist_min_tracks: 10            # Min tracks for artist stats (default: 10)
   
   # Star rating criteria
+  # 1-4★ are assigned from the album's own popularity z-score bands
+  # (after 5★ singles/standouts are set): Z >= +0.5 → 4★, -0.5 <= Z < +0.5
+  # → 3★, -1.2 <= Z < -0.5 → 2★, Z < -1.2 → 1★.
   star_5:
     album_z: 1.0
     artist_z: 1.2
     artist_pct: 0.10
   star_4:
-    album_z: 0.8
+    album_z: 0.5
     artist_z: 1.0
     artist_pct: 0.20
   star_3:
-    album_z: 0.0
+    album_z: -0.5
   star_2:
-    album_mean: true
+    album_z: -1.2
   star_1:
+    album_z: -1.2
     default: true
 ```
 

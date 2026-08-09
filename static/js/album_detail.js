@@ -2992,7 +2992,17 @@ var _pageData = window._pageData || {};
 
     document.addEventListener('DOMContentLoaded', function() {
         const artist = _pageData.artistName;
-        if (artist && artist.length > 0) {
+        // Similar artists load lazily the first time the section is expanded.
+        let similarLoaded = false;
+        const similarCollapse = document.getElementById('album-similar-collapse');
+        if (similarCollapse) {
+            similarCollapse.addEventListener('shown.bs.collapse', function () {
+                if (!similarLoaded && artist && artist.length > 0) {
+                    similarLoaded = true;
+                    loadSimilarArtistsForAlbum(artist);
+                }
+            });
+        } else if (artist && artist.length > 0) {
             loadSimilarArtistsForAlbum(artist);
         }
         // Populate the missing-tracks section on page load (old-system parity).
@@ -3066,80 +3076,65 @@ var _pageData = window._pageData || {};
             ...listenbrainzArtists.map(a => normalizeSimilarArtist(a, 'listenbrainz')).filter(Boolean)
         ];
 
-        // Deduplicate by name, prefer in_collection=true
+        // Deduplicate by name, accumulating the sources that recommended it
         const seen = new Map();
         allArtists.forEach(a => {
             const key = a.name.toLowerCase();
-            if (!seen.has(key) || a.in_collection) seen.set(key, a);
+            if (seen.has(key)) {
+                seen.get(key).sources.add(a.source);
+            } else {
+                seen.set(key, { ...a, sources: new Set([a.source]) });
+            }
         });
         const uniqueArtists = Array.from(seen.values());
 
-        if (uniqueArtists.length === 0) {
-            container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No similar artists available</div>';
+        // Only recommend artists NOT already in the collection — the section is
+        // a discovery list, so owned artists are filtered out.
+        const recommendations = uniqueArtists.filter(a => !a.in_collection);
+
+        if (recommendations.length === 0) {
+            container.innerHTML = '<div class="alert alert-success mb-0"><i class="bi bi-check-circle"></i> All recommended similar artists are already in your collection!</div>';
             return;
         }
 
-        const inCollection = uniqueArtists.filter(a => a.in_collection);
-        const notInCollection = uniqueArtists.filter(a => !a.in_collection);
+        const sourceBadge = (a) => {
+            const parts = [];
+            if (a.sources.has('lastfm')) parts.push('<span class="badge bg-danger-subtle text-danger-emphasis">Last.fm</span>');
+            if (a.sources.has('listenbrainz')) parts.push('<span class="badge bg-info-subtle text-info-emphasis">ListenBrainz</span>');
+            return parts.join(' ');
+        };
 
-        let html = '';
+        let html = '<div class="row g-3">';
 
-        // Section: Similar Artists (In Collection)
-        if (inCollection.length > 0) {
+        recommendations.forEach(artist => {
+            const matchPercent = artist.match ? Math.round(artist.match * 100) : 0;
+            const matchBadge = matchPercent > 0 ? `<span class="badge bg-success position-absolute" style="top: 8px; right: 8px;">${matchPercent}%</span>` : '';
+            const artistImageUrl = `/api/artist/image?name=${encodeURIComponent(artist.name)}`;
             html += `
-                <div class="mb-4">
-                    <h6 class="mb-2"><i class="bi bi-collection-fill text-success"></i> Similar Artists (In Collection) <span class="badge bg-success">${inCollection.length}</span></h6>
-                    <div class="d-flex flex-wrap gap-2">
-                        ${inCollection.map(a => `
-                            <a href="/artist/${encodeURIComponent(a.name)}" class="badge bg-success text-decoration-none similar-artist-pill" style="font-size: 0.85rem; padding: 0.4rem 0.7rem;">
-                                ${escapeHtml(a.name)}
-                            </a>
-                        `).join('')}
-                    </div>
-                </div>
-            `;
-        }
-
-        // Section: Similar Artists (Not in Collection)
-        if (notInCollection.length > 0) {
-            html += `
-                <div>
-                    <h6 class="mb-3"><i class="bi bi-person-plus text-secondary"></i> Similar Artists (Not in Collection) <span class="badge bg-secondary">${notInCollection.length}</span></h6>
-                    <div class="row g-3">
-            `;
-            notInCollection.forEach(artist => {
-                const matchPercent = artist.match ? Math.round(artist.match * 100) : 0;
-                const matchBadge = matchPercent > 0 ? `<span class="badge bg-success position-absolute" style="top: 8px; right: 8px;">${matchPercent}%</span>` : '';
-                const artistImageUrl = `/api/artist/image?name=${encodeURIComponent(artist.name)}`;
-                html += `
-                    <div class="col-6 col-md-4 col-lg-3">
-                        <div class="card h-100 overflow-hidden" style="position: relative;">
-                            ${matchBadge}
-                            <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
-                                <img src="${artistImageUrl}" alt="${escapeHtml(artist.name)}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-                                <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8; display: none;" aria-label="Artist placeholder icon"></i>
-                            </div>
-                            <div class="card-body d-flex flex-column">
-                                <h6 class="card-title mb-2 fw-bold text-truncate" title="${escapeHtml(artist.name)}">${escapeHtml(artist.name)}</h6>
-                                <div class="btn-group-vertical btn-group-sm mt-auto" role="group">
-                                    <button class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(null, '${encodeURIComponent(artist.name)}', '')" title="Search MusicBrainz for releases">
-                                        <i class="bi bi-download"></i> Find Releases
-                                    </button>
-                                    <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
-                                        <i class="bi bi-box-arrow-up-right"></i> Last.fm
-                                    </a>
-                                </div>
+                <div class="col-6 col-md-4 col-lg-3">
+                    <div class="card h-100 overflow-hidden" style="position: relative;">
+                        ${matchBadge}
+                        <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
+                            <img src="${artistImageUrl}" alt="${escapeHtml(artist.name)}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                            <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8; display: none;" aria-label="Artist placeholder icon"></i>
+                        </div>
+                        <div class="card-body d-flex flex-column">
+                            <h6 class="card-title mb-2 fw-bold text-truncate" title="${escapeHtml(artist.name)}">${escapeHtml(artist.name)}</h6>
+                            <div class="mb-2">${sourceBadge(artist)}</div>
+                            <div class="btn-group-vertical btn-group-sm mt-auto" role="group">
+                                <button class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(null, '${encodeURIComponent(artist.name)}', '')" title="Search MusicBrainz for releases">
+                                    <i class="bi bi-download"></i> Find Releases
+                                </button>
+                                <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
+                                    <i class="bi bi-box-arrow-up-right"></i> Last.fm
+                                </a>
                             </div>
                         </div>
                     </div>
-                `;
-            });
-            html += `</div></div>`;
-        }
-
-        if (!html) {
-            html = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No similar artists available</div>';
-        }
+                </div>
+            `;
+        });
+        html += '</div>';
 
         container.innerHTML = html;
     }

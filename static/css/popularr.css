@@ -141,6 +141,16 @@ body {
   border-bottom: 1px solid var(--border-color);
 }
 
+/* ── Collapsible "Similar Artists" sections ────────────────────────────── */
+.similar-artists-toggle .similar-chevron {
+  transition: transform 0.15s ease;
+}
+.similar-artists-toggle[aria-expanded="true"] .similar-chevron,
+.similar-artists-toggle:not(.collapsed) .similar-chevron {
+  transform: rotate(180deg);
+}
+
+
 p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th { color: var(--text-primary); }
 a:not(.btn) { color: var(--spotify-green); }
 a:not(.btn):hover { color: var(--spotify-green-hover); }
