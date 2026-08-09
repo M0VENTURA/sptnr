@@ -142,18 +142,22 @@
                 <div class="col-12">
                   <label class="form-label form-label-sm">Display Name</label>
                   <input type="text" class="form-control form-control-sm user-display-name" placeholder="My Name" value="{{ user.get('display_name', '') }}">
+                  <small class="form-text text-muted">A friendly label shown in the UI for this account (e.g. "John's Music").</small>
                 </div>
                 <div class="col-12">
                   <label class="form-label form-label-sm">Navidrome Base URL</label>
                   <input type="text" class="form-control form-control-sm user-nav-url" placeholder="http://localhost:4533" value="{{ user.get('base_url', '') }}">
+                  <small class="form-text text-muted">The Navidrome server address. Used to read the library, push star ratings back via the Subsonic API, and look up track/album/artist ids. Required for this account to function.</small>
                 </div>
                 <div class="col-12 col-sm-6">
                   <label class="form-label form-label-sm">Username</label>
                   <input type="text" class="form-control form-control-sm user-nav-username" placeholder="username" value="{{ user.get('user', '') }}">
+                  <small class="form-text text-muted">Navidrome login used for API calls. Must have scan/rating permissions.</small>
                 </div>
                 <div class="col-12 col-sm-6">
                   <label class="form-label form-label-sm">Password</label>
                   <input type="password" class="form-control form-control-sm user-nav-password" placeholder="••••••••" value="{{ user.get('pass', '') }}">
+                  <small class="form-text text-muted">Navidrome password (or Subsonic token) for the user above. Stored in config.yaml.</small>
                 </div>
               </div>
             </div>
@@ -269,6 +273,7 @@
             </div>
             <label class="form-label form-label-sm">Personal Access Token</label>
             <input type="password" class="form-control form-control-sm" id="api_discogs_token" value="{{ config.get('api_integrations', {}).get('discogs', {}).get('token', '') }}">
+            <small class="form-text text-muted">A personal access token from <a href="https://www.discogs.com/settings/developers" target="_blank" rel="noopener">discogs.com/settings/developers</a>. Powers release lookups that confirm singles (Discogs often lists single/EP releases) and official-video detection, feeding the Single Detection confidence sources.</small>
           </div>
         </div>
 
@@ -296,6 +301,7 @@
             </div>
             <label class="form-label form-label-sm">API Key</label>
             <input type="text" class="form-control form-control-sm" id="api_audiodb_api_key" value="{{ config.get('api_integrations', {}).get('audiodb', {}).get('api_key', '') }}">
+            <small class="form-text text-muted">Key from <a href="https://www.theaudiodb.com/api_apply.php" target="_blank" rel="noopener">theaudiodb.com</a>. Used to fetch album/track metadata and genre tags that feed the Genre Aggregation weights.</small>
           </div>
         </div>
 
@@ -318,6 +324,7 @@
                 <input type="text" class="form-control form-control-sm" id="api_google_cse_id" value="{{ config.get('api_integrations', {}).get('google', {}).get('cse_id', '') }}">
               </div>
             </div>
+            <small class="form-text text-muted">Google Custom Search JSON API key plus a custom search engine ID. Used for web searches that resolve release/video links during single detection (e.g. confirming official video presence).</small>
           </div>
         </div>
 
@@ -332,6 +339,7 @@
             </div>
             <label class="form-label form-label-sm">API Key</label>
             <input type="text" class="form-control form-control-sm" id="api_youtube_api_key" value="{{ config.get('api_integrations', {}).get('youtube', {}).get('api_key', '') }}">
+            <small class="form-text text-muted">YouTube Data API key. Used to look up official music videos, which act as a medium-confidence single-detection source.</small>
           </div>
         </div>
       </div>
@@ -363,14 +371,17 @@
         <div class="col-12">
           <label class="form-label">Web URL</label>
           <input type="text" class="form-control" id="qbit_web_url" placeholder="http://localhost:8080" value="{{ config.get('qbittorrent', {}).get('web_url', '') }}">
+          <small class="form-text text-muted">qBittorrent web UI address used for the API.</small>
         </div>
         <div class="col-12 col-sm-6">
           <label class="form-label">Username</label>
           <input type="text" class="form-control" id="qbit_username" placeholder="admin" value="{{ config.get('qbittorrent', {}).get('username', '') }}">
+          <small class="form-text text-muted">qBittorrent web UI login.</small>
         </div>
         <div class="col-12 col-sm-6">
           <label class="form-label">Password</label>
           <input type="password" class="form-control" id="qbit_password" placeholder="••••••••" value="{{ config.get('qbittorrent', {}).get('password', '') }}">
+          <small class="form-text text-muted">qBittorrent web UI password. Stored in config.yaml.</small>
         </div>
         <div class="col-12">
           <label class="form-label">Torrent Downloads Folder</label>
@@ -392,10 +403,12 @@
         <div class="col-12">
           <label class="form-label">Web URL</label>
           <input type="text" class="form-control" id="slskd_web_url" placeholder="http://localhost:5030" value="{{ config.get('slskd', {}).get('web_url', '') }}">
+          <small class="form-text text-muted">slskd web UI / API address.</small>
         </div>
         <div class="col-12">
           <label class="form-label">API Key</label>
           <input type="password" class="form-control" id="slskd_api_key" placeholder="API Key" value="{{ config.get('slskd', {}).get('api_key', '') }}">
+          <small class="form-text text-muted">slskd API key (from your slskd config or web UI). Required for search/download features.</small>
         </div>
       </div>
     </div>
@@ -471,12 +484,14 @@
             {% endfor %}
             <input class="form-check-input" type="checkbox" id="downloads_quality_allow_mp3_320" {% if qf_ns.mp3 or not qf_priorities %}checked{% endif %}>
             <label class="form-check-label" for="downloads_quality_allow_mp3_320"><strong>Allow MP3 320kbps</strong></label>
+            <small class="d-block text-muted">Accept MP3 downloads at 320kbps (within tolerance). Uncheck to reject MP3 files.</small>
           </div>
         </div>
         <div class="col-12 col-md-4">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="downloads_quality_allow_flac" {% if qf_ns.flac or not qf_priorities %}checked{% endif %}>
             <label class="form-check-label" for="downloads_quality_allow_flac"><strong>Allow FLAC</strong></label>
+            <small class="d-block text-muted">Accept lossless FLAC downloads. Uncheck to reject FLAC files.</small>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -494,6 +509,7 @@
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="downloads_conversion_enabled" {% if config.get('downloads', {}).get('conversion', {}).get('enabled', False) %}checked{% endif %}>
             <label class="form-check-label" for="downloads_conversion_enabled"><strong>Enable Conversion on Import</strong></label>
+            <small class="d-block text-muted">Transcode downloaded files as they are moved into the music library.</small>
           </div>
         </div>
         <div class="col-12 col-md-6">
@@ -503,10 +519,12 @@
             <option value="flac_to_mp3" {% if conversion_mode == 'flac_to_mp3' %}selected{% endif %}>FLAC to MP3</option>
             <option value="none" {% if conversion_mode == 'none' %}selected{% endif %}>Disabled (Move as-is)</option>
           </select>
+          <small class="form-text text-muted">Which conversion to run when enabled.</small>
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">MP3 Bitrate (kbps)</label>
           <input type="number" class="form-control" id="downloads_conversion_mp3_bitrate" min="96" max="320" step="1" value="{{ config.get('downloads', {}).get('conversion', {}).get('mp3_bitrate_kbps', 320) }}">
+          <small class="form-text text-muted">Output bitrate for FLAC → MP3 conversion.</small>
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">Original File Handling</label>
@@ -515,6 +533,7 @@
             <option value="move_to_original" {% if original_handling == 'move_to_original' %}selected{% endif %}>Move to Downloads/Original</option>
             <option value="delete" {% if original_handling == 'delete' %}selected{% endif %}>Delete original after convert</option>
           </select>
+          <small class="form-text text-muted">What happens to the original (unconverted) file after a successful conversion.</small>
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">Original Archive Subfolder</label>
@@ -584,18 +603,22 @@
         <div class="col-12 col-md-3">
           <label class="form-label">Lookback (days)</label>
           <input type="number" class="form-control" id="daily_musicbrainz_release_lookback_days" placeholder="42" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookback_days', 42) }}" min="1" max="365">
+          <div class="form-text">How far back to look for recently released albums when building "recent" dashboard cards.</div>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label">Lookahead (days)</label>
           <input type="number" class="form-control" id="daily_musicbrainz_release_lookahead_days" placeholder="28" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookahead_days', 28) }}" min="1" max="365">
+          <div class="form-text">How far ahead to look for announced/upcoming releases when building "upcoming" dashboard cards.</div>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label">Max Artists / Run</label>
           <input type="number" class="form-control" id="daily_musicbrainz_release_max_artists" placeholder="500" value="{{ config.get('features', {}).get('daily_musicbrainz_release_max_artists', 500) }}" min="1" max="5000">
+          <div class="form-text">Cap on how many artists are queried per daily cycle — raise for large libraries, lower to save API quota.</div>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label">Releases / Artist</label>
           <input type="number" class="form-control" id="daily_musicbrainz_release_per_artist_limit" placeholder="100" value="{{ config.get('features', {}).get('daily_musicbrainz_release_per_artist_limit', 100) }}" min="10" max="250">
+          <div class="form-text">Max releases fetched per artist per run.</div>
         </div>
       </div>
 
@@ -820,12 +843,46 @@
         <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">High↔Medium Confidence Boundary</label>
           <input type="number" step="0.1" min="0.1" max="3.0" class="form-control form-control-sm" id="zscore_high_threshold" placeholder="1.0" value="{{ config.get('single_detection', {}).get('zscore_high_threshold', 1.0) }}">
-          <small class="form-text text-muted">Default: <strong>1.0</strong></small>
+          <small class="form-text text-muted">Album z-score at/above which a track is a <strong>high</strong>-confidence single. Default: <strong>1.0</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">Medium↔Low Confidence Boundary</label>
           <input type="number" step="0.1" min="0.1" max="3.0" class="form-control form-control-sm" id="zscore_medium_threshold" placeholder="0.6" value="{{ config.get('single_detection', {}).get('zscore_medium_threshold', 0.6) }}">
-          <small class="form-text text-muted">Default: <strong>0.6</strong></small>
+          <small class="form-text text-muted">Album z-score at/above which a track is a <strong>medium</strong>-confidence single. Default: <strong>0.6</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Standout Gap Z</label>
+          <input type="number" step="0.05" min="0" max="3" class="form-control form-control-sm" id="standout_gap_z" placeholder="0.75" value="{{ config.get('single_detection', {}).get('standout_gap_z', 0.75) }}">
+          <small class="form-text text-muted">Minimum gap from the next track for the "standout" album signal. Default: <strong>0.75</strong></small>
+        </div>
+      </div>
+
+      <h6 class="mb-3">Standout Marking — Artist Catalogue Context</h6>
+      <p class="text-muted small mb-3">
+        These thresholds decide whether a track is flagged as standing out within its <strong>artist's
+        whole catalogue</strong>. The flag upgrades a medium-confidence single to high and, combined with
+        the album z-score, is one of the paths to 5★.
+      </p>
+      <div class="row g-3 mb-4">
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Album Standout Z</label>
+          <input type="number" step="0.1" min="0.1" max="5" class="form-control form-control-sm" id="sd_album_zscore" placeholder="0.8" value="{{ config.get('single_detection', {}).get('album_zscore_threshold', 0.8) }}">
+          <small class="form-text text-muted">Min album z-score for a standalone standout flag. Default: <strong>0.8</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Artist Standout Z</label>
+          <input type="number" step="0.1" min="0.1" max="5" class="form-control form-control-sm" id="sd_artist_zscore" placeholder="2.2" value="{{ config.get('single_detection', {}).get('artist_zscore_threshold', 2.2) }}">
+          <small class="form-text text-muted">Min artist-catalogue z-score for the artist-level standout flag. Default: <strong>2.2</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Artist Top %</label>
+          <input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="sd_artist_pct" placeholder="0.10" value="{{ config.get('single_detection', {}).get('artist_top_percentile', 0.10) }}">
+          <small class="form-text text-muted">Fraction of the artist's catalogue considered "top" for popularity marking. Default: <strong>0.10</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Artist Min Tracks</label>
+          <input type="number" min="1" max="100" class="form-control form-control-sm" id="sd_artist_min_tracks" placeholder="10" value="{{ config.get('single_detection', {}).get('artist_min_tracks', 10) }}">
+          <small class="form-text text-muted">Minimum tracks an artist needs before artist-level stats are trusted. Default: <strong>10</strong></small>
         </div>
       </div>
 
@@ -838,7 +895,12 @@
           <small class="form-text text-muted">Global floor: a non-single track cannot earn 5★ below this album z-score, no matter which path it takes. Confirmed singles are exempt. Default: <strong>2.0</strong></small>
         </div>
       </div>
-      <p class="text-muted small mb-3">Tier thresholds below apply to <strong>confirmed singles</strong>; non-singles must also pass the 5★ floor above. A track meets a tier if it exceeds <em>any</em> of its criteria.</p>
+      <p class="text-muted small mb-3">
+        After 5★ tracks (confirmed singles and genuine standouts) are set, the <strong>rest of the album</strong>
+        is rated purely by where each track falls in the album's own popularity distribution — no artist
+        context is consulted. A track lands in the first band its album z-score clears. These bands form a
+        continuous ladder, so 2★ automatically sits between 3★ and 1★:
+      </p>
       <div class="row g-3">
         <div class="col-12 col-md-3">
           <div class="border rounded p-3 h-100">
@@ -848,33 +910,46 @@
               <div class="col-4"><label class="form-label form-label-sm">Artist Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star5_artist_z" placeholder="1.2" value="{{ config.get('single_detection', {}).get('star_5', {}).get('artist_z', 1.2) }}"></div>
               <div class="col-4"><label class="form-label form-label-sm">Top %</label><input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="star5_pct" placeholder="0.10" value="{{ config.get('single_detection', {}).get('star_5', {}).get('artist_pct', 0.10) }}"></div>
             </div>
+            <small class="form-text text-muted d-block mt-2">Reserved for confirmed singles and genuine triple-standouts: album z <strong>and</strong> artist z above these bounds <strong>and</strong> a top-10% catalogue flag. Popularity alone never grants 5★.</small>
           </div>
         </div>
         <div class="col-12 col-md-3">
           <div class="border rounded p-3 h-100">
             <h6 class="text-info mb-2">⭐⭐⭐⭐ 4★</h6>
             <div class="row g-2">
-              <div class="col-4"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star4_album_z" placeholder="0.8" value="{{ config.get('single_detection', {}).get('star_4', {}).get('album_z', 0.8) }}"></div>
+              <div class="col-4"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star4_album_z" placeholder="0.5" value="{{ config.get('single_detection', {}).get('star_4', {}).get('album_z', 0.5) }}"></div>
               <div class="col-4"><label class="form-label form-label-sm">Artist Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star4_artist_z" placeholder="1.0" value="{{ config.get('single_detection', {}).get('star_4', {}).get('artist_z', 1.0) }}"></div>
               <div class="col-4"><label class="form-label form-label-sm">Top %</label><input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="star4_pct" placeholder="0.20" value="{{ config.get('single_detection', {}).get('star_4', {}).get('artist_pct', 0.20) }}"></div>
             </div>
+            <small class="form-text text-muted d-block mt-2">Album z ≥ this value (default <strong>0.5</strong>) → album standout / fan favourite.</small>
           </div>
         </div>
         <div class="col-12 col-md-3">
           <div class="border rounded p-3 h-100">
             <h6 class="text-secondary mb-2">⭐⭐⭐ 3★</h6>
             <div class="row g-2">
-              <div class="col-6"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="-2" max="5" class="form-control form-control-sm" id="star3_album_z" placeholder="0.0" value="{{ config.get('single_detection', {}).get('star_3', {}).get('album_z', 0.0) }}"></div>
+              <div class="col-6"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="-2" max="5" class="form-control form-control-sm" id="star3_album_z" placeholder="-0.5" value="{{ config.get('single_detection', {}).get('star_3', {}).get('album_z', -0.5) }}"></div>
             </div>
+            <small class="form-text text-muted d-block mt-2">Album z ≥ this value but below the 4★ band (default <strong>-0.5</strong>) → standard album track.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-3">
+          <div class="border rounded p-3 h-100">
+            <h6 class="text-muted mb-2">⭐⭐ 2★</h6>
+            <div class="row g-2">
+              <div class="col-6"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="-5" max="5" class="form-control form-control-sm" id="star2_album_z" placeholder="-1.2" value="{{ config.get('single_detection', {}).get('star_2', {}).get('album_z', -1.2) }}"></div>
+            </div>
+            <small class="form-text text-muted d-block mt-2">Album z ≥ this value but below the 3★ band (default <strong>-1.2</strong>) → deep cut / minor track.</small>
           </div>
         </div>
         <div class="col-12 col-md-3">
           <div class="border rounded p-3 h-100">
             <h6 class="text-muted mb-2">⭐ 1★</h6>
             <div class="row g-2">
-              <div class="col-6"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="-5" max="0" class="form-control form-control-sm" id="star1_album_z" placeholder="-1.0" value="{{ config.get('single_detection', {}).get('star_1', {}).get('album_z', -1.0) }}"></div>
+              <div class="col-6"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="-5" max="0" class="form-control form-control-sm" id="star1_album_z" placeholder="-1.2" value="{{ config.get('single_detection', {}).get('star_1', {}).get('album_z', -1.2) }}"></div>
               <div class="col-6 d-flex align-items-end"><small class="form-text text-muted">Below this album z → 1★</small></div>
             </div>
+            <small class="form-text text-muted d-block mt-2">Album z below this value (default <strong>-1.2</strong>) → filler / outlier.</small>
           </div>
         </div>
       </div>
@@ -1017,14 +1092,17 @@
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="queue_detect_live" {% if config.get('queue', {}).get('matching', {}).get('detect_live_tracks', True) %}checked{% endif %}>
             <label class="form-check-label" for="queue_detect_live"><strong>Detect Live Tracks</strong></label>
+            <small class="d-block text-muted">Treats "(Live)" variants as different recordings so they don't false-match the studio track.</small>
           </div>
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="queue_detect_remix" {% if config.get('queue', {}).get('matching', {}).get('detect_remix_tracks', True) %}checked{% endif %}>
             <label class="form-check-label" for="queue_detect_remix"><strong>Detect Remix Tracks</strong></label>
+            <small class="d-block text-muted">Treats "(Remix)" / "(Mix)" variants as different recordings when matching queue items.</small>
           </div>
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="queue_detect_compilations" {% if config.get('queue', {}).get('matching', {}).get('detect_compilations', True) %}checked{% endif %}>
             <label class="form-check-label" for="queue_detect_compilations"><strong>Detect Compilations</strong></label>
+            <small class="d-block text-muted">Identifies compilation tracks so "Various Artists" releases match correctly instead of being treated as a single artist.</small>
           </div>
         </div>
       </div>
@@ -1039,26 +1117,36 @@
     </div>
     <div class="card-body">
       <h6 class="mb-3">Source Weights</h6>
+      <small class="text-muted d-block mb-3">
+        When the same track gets genres from several providers, these weights decide how much each
+        provider's vote counts toward the aggregated genre list. Weights are normalised automatically,
+        so they don't need to sum to 1.0 — only their relative size matters.
+      </small>
       <div class="row g-3 mb-4">
         <div class="col-6 col-md-2">
           <label class="form-label form-label-sm">MusicBrainz</label>
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_musicbrainz" placeholder="0.40" value="{{ config.get('genres', {}).get('weights', {}).get('musicbrainz', 0.40) }}">
+          <small class="form-text text-muted">Most authoritative. Default: <strong>0.40</strong></small>
         </div>
         <div class="col-6 col-md-2">
           <label class="form-label form-label-sm">Discogs</label>
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_discogs" placeholder="0.25" value="{{ config.get('genres', {}).get('weights', {}).get('discogs', 0.25) }}">
+          <small class="form-text text-muted">Default: <strong>0.25</strong></small>
         </div>
         <div class="col-6 col-md-2">
           <label class="form-label form-label-sm">AudioDB</label>
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_audiodb" placeholder="0.20" value="{{ config.get('genres', {}).get('weights', {}).get('audiodb', 0.20) }}">
+          <small class="form-text text-muted">Default: <strong>0.20</strong></small>
         </div>
         <div class="col-6 col-md-2">
           <label class="form-label form-label-sm">Essentia</label>
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_essentia" placeholder="0.20" value="{{ config.get('genres', {}).get('weights', {}).get('essentia', 0.20) }}">
+          <small class="form-text text-muted">Audio analysis. Default: <strong>0.20</strong></small>
         </div>
         <div class="col-6 col-md-2">
           <label class="form-label form-label-sm">Last.fm</label>
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_lastfm" placeholder="0.10" value="{{ config.get('genres', {}).get('weights', {}).get('lastfm', 0.10) }}">
+          <small class="form-text text-muted">User-tag based. Default: <strong>0.10</strong></small>
         </div>
       </div>
       <h6 class="mb-3">Genre Synonyms</h6>
@@ -1100,34 +1188,42 @@
         <div class="col-6 col-md-3">
           <label class="form-label form-label-sm">Min Artist Plays</label>
           <input type="number" min="1" max="1000" class="form-control form-control-sm" id="lastfm_min_artist_plays" placeholder="20" value="{{ config.get('lastfm', {}).get('min_artist_plays', 20) }}">
+          <small class="form-text text-muted">Minimum playcount for an artist to be included in similar-artist recommendations. Higher = fewer, more established recommendations.</small>
         </div>
         <div class="col-6 col-md-3">
           <label class="form-label form-label-sm">Min Similarity Score</label>
           <input type="number" step="0.01" min="0" max="1" class="form-control form-control-sm" id="lastfm_min_similarity" placeholder="0.46" value="{{ config.get('lastfm', {}).get('min_similarity_score', 0.46) }}">
+          <small class="form-text text-muted">Only recommend similar artists with a Last.fm similarity score at or above this value (0-1). Lower = more (but looser) recommendations.</small>
         </div>
         <div class="col-6 col-md-3">
           <label class="form-label form-label-sm">Max Similar / Artist</label>
           <input type="number" min="1" max="50" class="form-control form-control-sm" id="lastfm_max_similar" placeholder="5" value="{{ config.get('lastfm', {}).get('max_similar_per_artist', 5) }}">
+          <small class="form-text text-muted">How many similar artists are fetched per source artist for recommendations.</small>
         </div>
         <div class="col-6 col-md-3">
           <label class="form-label form-label-sm">Max Albums / Artist</label>
           <input type="number" min="1" max="50" class="form-control form-control-sm" id="lastfm_max_albums" placeholder="5" value="{{ config.get('lastfm', {}).get('max_albums_per_artist', 5) }}">
+          <small class="form-text text-muted">Top albums fetched per artist when building artist/album pages.</small>
         </div>
         <div class="col-6 col-md-3">
           <label class="form-label form-label-sm">Recent Months</label>
           <input type="number" min="1" max="24" class="form-control form-control-sm" id="lastfm_recent_months" placeholder="3" value="{{ config.get('lastfm', {}).get('recent_months', 3) }}">
+          <small class="form-text text-muted">Look-back window (months) used for recent-listens-based features such as recent-album recommendations.</small>
         </div>
         <div class="col-6 col-md-3">
           <label class="form-label form-label-sm">Cache TTL (hours)</label>
           <input type="number" min="1" max="720" class="form-control form-control-sm" id="lastfm_cache_ttl" placeholder="24" value="{{ config.get('lastfm', {}).get('cache_ttl_hours', 24) }}">
+          <small class="form-text text-muted">How long Last.fm API responses are cached. Lower TTL = fresher data but more API calls.</small>
         </div>
         <div class="col-6 col-md-3">
           <label class="form-label form-label-sm">Max Retries</label>
           <input type="number" min="0" max="10" class="form-control form-control-sm" id="lastfm_max_retries" placeholder="3" value="{{ config.get('lastfm', {}).get('max_retries', 3) }}">
+          <small class="form-text text-muted">Times a failed Last.fm request is retried before giving up.</small>
         </div>
         <div class="col-6 col-md-3">
           <label class="form-label form-label-sm">Rate Limit Delay (s)</label>
           <input type="number" step="0.1" min="0" max="10" class="form-control form-control-sm" id="lastfm_rate_limit" placeholder="0.5" value="{{ config.get('lastfm', {}).get('rate_limit_delay', 0.5) }}">
+          <small class="form-text text-muted">Delay between Last.fm API calls to respect rate limits. Increase if you hit 429 errors during scans.</small>
         </div>
       </div>
     </div>
@@ -1144,18 +1240,22 @@
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Min Accept Score</label>
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="matching_min_accept" placeholder="0.45" value="{{ config.get('matching', {}).get('min_accept_score', 0.45) }}">
+          <small class="form-text text-muted">Minimum similarity score before a provider result (e.g. from Spotify search) is accepted as matching a library track. Lower = more matches, higher = fewer false positives.</small>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Duration Tolerance (s)</label>
           <input type="number" min="0" max="30" class="form-control form-control-sm" id="matching_duration_tolerance" placeholder="5" value="{{ config.get('matching', {}).get('duration_tolerance_seconds', 5) }}">
+          <small class="form-text text-muted">Allowed track-length difference (seconds) when scoring a candidate match.</small>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Early Accept Length Tol.</label>
           <input type="number" min="0" max="30" class="form-control form-control-sm" id="matching_early_accept" placeholder="2" value="{{ config.get('matching', {}).get('early_accept_length_tolerance', 2) }}">
+          <small class="form-text text-muted">Tighter duration tolerance (seconds) required for an "early accept" — accepting a match without checking the full candidate list.</small>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Top N Candidates</label>
           <input type="number" min="5" max="500" class="form-control form-control-sm" id="matching_top_n" placeholder="50" value="{{ config.get('matching', {}).get('top_n_candidates', 50) }}">
+          <small class="form-text text-muted">How many candidate results are scored per search. Higher = better odds of a correct match but slower searches.</small>
         </div>
       </div>
     </div>
@@ -1172,18 +1272,22 @@
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Min Accept Score</label>
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="dl_match_min_accept" placeholder="0.45" value="{{ config.get('downloads', {}).get('matching', {}).get('min_accept_score', 0.45) }}">
+          <small class="form-text text-muted">Minimum similarity before a downloaded file is accepted as matching a queued item. Raise to avoid importing wrong files, lower to accept more lenient matches.</small>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Duration Tolerance (s)</label>
           <input type="number" min="0" max="30" class="form-control form-control-sm" id="dl_match_duration_tolerance" placeholder="5" value="{{ config.get('downloads', {}).get('matching', {}).get('duration_tolerance_seconds', 5) }}">
+          <small class="form-text text-muted">Allowed track-length difference (seconds) when matching downloaded files to the queue.</small>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Early Accept Length Tol.</label>
           <input type="number" min="0" max="30" class="form-control form-control-sm" id="dl_match_early_accept" placeholder="2" value="{{ config.get('downloads', {}).get('matching', {}).get('early_accept_length_tolerance', 2) }}">
+          <small class="form-text text-muted">Tighter duration tolerance (seconds) for accepting a downloaded file without scanning the full candidate set.</small>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Top N Candidates</label>
           <input type="number" min="5" max="500" class="form-control form-control-sm" id="dl_match_top_n" placeholder="50" value="{{ config.get('downloads', {}).get('matching', {}).get('top_n_candidates', 50) }}">
+          <small class="form-text text-muted">How many candidate results are scored when matching each downloaded file.</small>
         </div>
       </div>
     </div>
@@ -1200,22 +1304,27 @@
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Min Retry Delay (min)</label>
           <input type="number" min="1" max="1440" class="form-control form-control-sm" id="slskd_min_retry_delay" placeholder="60" value="{{ config.get('slskd', {}).get('timeouts', {}).get('min_retry_delay_minutes', 60) }}">
+          <small class="form-text text-muted">Shortest wait before retrying a failed transfer.</small>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Long Retry Delay (min)</label>
           <input type="number" min="1" max="10080" class="form-control form-control-sm" id="slskd_long_retry_delay" placeholder="1440" value="{{ config.get('slskd', {}).get('timeouts', {}).get('long_retry_delay_minutes', 1440) }}">
+          <small class="form-text text-muted">Longest wait before retrying a transfer that keeps failing (e.g. after 24 hours).</small>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Remotely Queued Timeout (min)</label>
           <input type="number" min="1" max="1440" class="form-control form-control-sm" id="slskd_remotely_queued_timeout" placeholder="60" value="{{ config.get('slskd', {}).get('timeouts', {}).get('remotely_queued_timeout_minutes', 60) }}">
+          <small class="form-text text-muted">Time a transfer may sit in the remote peer's queue before it is treated as stalled.</small>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Active State Timeout (min)</label>
           <input type="number" min="1" max="1440" class="form-control form-control-sm" id="slskd_active_timeout" placeholder="240" value="{{ config.get('slskd', {}).get('timeouts', {}).get('active_state_timeout_minutes', 240) }}">
+          <small class="form-text text-muted">Time an in-progress transfer may stay active without completing before it is failed/retried.</small>
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label form-label-sm">Inter-Item Delay (s)</label>
           <input type="number" min="0" max="60" class="form-control form-control-sm" id="slskd_inter_item_delay" placeholder="5" value="{{ config.get('slskd', {}).get('timeouts', {}).get('inter_item_delay_seconds', 5) }}">
+          <small class="form-text text-muted">Pause between starting consecutive queued transfers, to be kind to peers and slskd itself.</small>
         </div>
       </div>
     </div>
@@ -1421,7 +1530,13 @@
             'refresh_artist_index_on_start': 'Refresh artist index on startup.',
             'discogs_min_interval_sec': 'Min seconds between Discogs API calls.',
             'include_user_ratings_on_scan': 'Include user ratings during scanning.',
-            'scan_worker_threads': 'Parallel worker threads for scanning.'
+            'scan_worker_threads': 'Parallel worker threads for scanning.',
+            'source_discogs_confidence': 'How much a Discogs single/EP release match counts toward the single-detection confidence (high/medium/low). "Low" excludes the source entirely.',
+            'source_musicbrainz_confidence': 'How much a MusicBrainz release-group single match counts toward single-detection confidence.',
+            'source_musicbrainz_compilation_confidence': 'Confidence weight for MusicBrainz matches found on compilation/single tracks.',
+            'source_discogs_video_confidence': 'Confidence weight for a Discogs official-video match (drives the discogs_video single-detection source).',
+            'source_lastfm_confidence': 'Confidence weight for Last.fm single confirmation (e.g. a track tagged/labeled as a single on Last.fm).',
+            'source_radio_edit_confidence': 'Confidence weight for a "Radio Edit" version match.'
           } %}
           {# Defaults mirror the legacy config.yaml `features:` section so the
              groups render even when the config file omits these keys. Saving

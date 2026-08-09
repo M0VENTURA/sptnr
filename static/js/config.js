@@ -131,6 +131,12 @@ function buildConfigObject() {
     const el = document.getElementById(id);
     return el ? el.checked : (defaultValue || false);
   }
+  function parseNumber(id, defaultValue) {
+    const el = document.getElementById(id);
+    if (!el) return defaultValue;
+    const v = parseFloat(el.value);
+    return Number.isNaN(v) ? defaultValue : v;
+  }
 
   const navidrome_users = [];
   document.querySelectorAll('.user-card').forEach(card => {
@@ -244,20 +250,23 @@ function buildConfigObject() {
         metadata_score_floor: parseFloat(getValue('metadata_score_floor', '5.0')) || 5.0,
         live_weight_penalty: parseFloat(getValue('live_weight_penalty', '0.5')) || 0.5,
         star_5: {
-          album_z: parseFloat(getValue('star5_album_z', '1.0')) || 1.0,
-          artist_z: parseFloat(getValue('star5_artist_z', '1.2')) || 1.2,
-          artist_pct: parseFloat(getValue('star5_pct', '0.10')) || 0.10
+          album_z: parseNumber('star5_album_z', 1.0),
+          artist_z: parseNumber('star5_artist_z', 1.2),
+          artist_pct: parseNumber('star5_pct', 0.10)
         },
         star_4: {
-          album_z: parseFloat(getValue('star4_album_z', '0.8')) || 0.8,
-          artist_z: parseFloat(getValue('star4_artist_z', '1.0')) || 1.0,
-          artist_pct: parseFloat(getValue('star4_pct', '0.20')) || 0.20
+          album_z: parseNumber('star4_album_z', 0.5),
+          artist_z: parseNumber('star4_artist_z', 1.0),
+          artist_pct: parseNumber('star4_pct', 0.20)
         },
         star_3: {
-          album_z: parseFloat(getValue('star3_album_z', '0.0')) || 0.0
+          album_z: parseNumber('star3_album_z', -0.5)
+        },
+        star_2: {
+          album_z: parseNumber('star2_album_z', -1.2)
         },
         star_1: {
-          album_z: parseFloat(getValue('star1_album_z', '-1.0')) || -1.0
+          album_z: parseNumber('star1_album_z', -1.2)
         }
       }
     ),
