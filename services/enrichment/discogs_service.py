@@ -12,6 +12,7 @@ from helpers.normalization_service import (
     strip_parentheses,
     strip_featured_artist,
     clean_discogs_biography,
+    edition_annotations_compatible,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ class DiscogsService:
         formats = " ".join(str(f).lower() for f in (rel.get("format") or []) if f)
         return "promo" in formats
 
-    def _scan_releases(self, title_key: str, releases: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _scan_releases(self, title: str, title_key: str, releases: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Find the best single/EP match in *releases* for *title_key*.
 
         Returns a status dict, or None when nothing matches. A commercial
@@ -126,6 +127,11 @@ class DiscogsService:
                 continue
             formats = " ".join(str(f).lower() for f in (rel.get("format") or []) if f)
             if "single" not in formats and "ep" not in formats:
+                continue
+            # An edition-annotated track ("Valhalla (Epic Edition)") must only
+            # match a single/EP release carrying the SAME edition annotation —
+            # never the plain "Valhalla" single (title_key strips brackets).
+            if not edition_annotations_compatible(title, str(rel.get("title") or "")):
                 continue
             # Normalize the RELEASE title too — ``title_key`` is punctuation-
             # stripped ("what s the deal"), so matching it against the raw
@@ -169,7 +175,7 @@ class DiscogsService:
         # release with a matching title on the artist's release list is
         # authoritative confirmation, independent of search-result ranking.
         artist_releases = self._get_artist_releases(artist) or []
-        status = self._scan_releases(title_key, artist_releases)
+        status = self._scan_releases(title, title_key, artist_releases)
 
         if status is None:
             # Self-diagnosing miss: how many releases were scanned and what
@@ -186,7 +192,7 @@ class DiscogsService:
         # Stops Beating").
         if status is None:
             results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 25})
-            status = self._scan_releases(title_key, results or [])
+            status = self._scan_releases(title, title_key, results or [])
 
         if status is None:
             status = {"is_single": False, "is_promo": False, "release_year": None, "release_id": None, "format": ""}

@@ -35,6 +35,7 @@ from helpers.normalization_service import (
     strip_remaster_suffix,
     is_remastered_only_variant,
     strip_featured_artist,
+    edition_annotations_compatible,
 )
 
 from api_clients.musicbrainz_http import escape_lucene_special_chars
@@ -460,6 +461,14 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                     candidates += _found
                 for group in candidates:
                     rg_title = str(group.get("title") or "")
+                    # An edition-annotated track ("Valhalla (Epic Edition)")
+                    # must only match a release group carrying the SAME
+                    # edition annotation — never the plain "Valhalla" single.
+                    # Brackets are stripped by normalize_title_for_lookup on
+                    # both sides, so without this gate the epic-edition track
+                    # collides with the non-edition single's normalized title.
+                    if not edition_annotations_compatible(title, rg_title):
+                        continue
                     norm_rg = normalize_title_for_lookup(strip_single_release_suffix(rg_title) or rg_title)
                     # Exact normalized equality first, then fuzzy fallback for
                     # residual punctuation/case drift between sources.
