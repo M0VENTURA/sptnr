@@ -109,3 +109,62 @@ def test_featured_artist_uses_search_not_album_only():
         lastfm_client=lf,
     )
     assert res["listeners"] == 46200
+
+
+def test_normalize_aggregation_correlates_cover_versions():
+    """Cover attributions collapse to the canonical song key.
+
+    A file titled 'Gangnam Style (PSY Cover)' must correlate with Last.fm's
+    canonical 'Gangnam Style' row — they are the same song by the same artist.
+    """
+    assert normalize_for_aggregation("Gangnam Style (PSY Cover)") == "gangnam style"
+    assert normalize_for_aggregation("Gangnam Style (Cover)") == "gangnam style"
+    assert (
+        normalize_for_aggregation("Gangnam Style (PSY Cover)")
+        == normalize_for_aggregation("Gangnam Style")
+    )
+
+
+class CoverLastFmClient(FakeLastFmClient):
+    """Stub that mirrors Last.fm: the canonical row is popular, the
+    "(PSY Cover)" album row is a separate low-listen track."""
+
+    def search_track(self, artist, title, limit=20):
+        self.search_calls.append((artist, title, limit))
+        return [
+            {"name": "Gangnam Style", "artist": "Feuerschwanz", "listeners": 3012, "url": "/gangnam-style"},
+            {"name": "Gangnam Style (PSY Cover)", "artist": "Feuerschwanz", "listeners": 128, "url": "/gangnam-style-psy-cover"},
+        ]
+
+    def get_artist_top_tracks(self, artist, limit=200):
+        self.top_calls.append((artist, limit))
+        return []
+
+    def get_track_info(self, artist, title, track_mbid=None):
+        return {"listeners": 3012, "track_play": 15300, "track_name": "Gangnam Style"}
+
+
+def test_cover_title_aggregates_canonical_lastfm_row():
+    """A cover-suffixed track must find the canonical Last.fm row, not the
+    low-listen '(PSY Cover)' album row the raw title would match."""
+    lf = CoverLastFmClient()
+    res = get_aggregated_lastfm_popularity(
+        "Feuerschwanz",
+        "Gangnam Style (PSY Cover)",
+        lastfm_client=lf,
+    )
+    assert res["listeners"] == 3012 + 128
+    # The Last.fm search must be queried with the canonical title.
+    assert any(title == "Gangnam Style" for _, title, _ in lf.search_calls)
+
+
+def test_cover_title_search_uses_stripped_query():
+    """The search aggregation strips the cover attribution before querying."""
+    lf = CoverLastFmClient()
+    res = get_search_aggregated_lastfm_popularity(
+        "Feuerschwanz",
+        "Gangnam Style (PSY Cover)",
+        lastfm_client=lf,
+    )
+    assert res["listeners"] == 3012 + 128
+    assert lf.search_calls and lf.search_calls[0][1] == "Gangnam Style"

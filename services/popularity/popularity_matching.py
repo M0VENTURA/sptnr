@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from helpers.normalization_service import FEAT_SUFFIX_RE
+from helpers.normalization_service import FEAT_SUFFIX_RE, strip_cover_attribution
 
 ARTIST_JOIN_RE = re.compile(
     r"""
@@ -104,6 +104,11 @@ def normalize_title_for_lookup(title: str, extra_strip_patterns: list[str] | Non
 def normalize_for_aggregation(title: str) -> str:
     """Aggressively normalise title for local provider-count aggregation."""
     value = str(title or "").lower()
+    # Strip trailing cover attributions ("(PSY Cover)", "[Foo Cover]") so a
+    # cover track correlates with its canonical Last.fm row — the popular
+    # "Gangnam Style" single vs the low-listen "Gangnam Style (PSY Cover)"
+    # album row are the same song and must collapse to one key.
+    value = strip_cover_attribution(value)
     value = re.sub(r"\s*[\(\[].*?(feat\.|featuring|ft\.|remaster|remastered|radio edit|single version|album version).*?[\)\]]", "", value, flags=re.IGNORECASE)
     value = re.sub(r"\s*-\s*(remaster(?:ed)?|radio edit|single version|album version).*$", "", value, flags=re.IGNORECASE)
     # Unparenthesised "feat. Guest" / "featuring Guest" suffixes — the album

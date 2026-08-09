@@ -21,7 +21,7 @@ from typing import Any
 
 from api_clients.lastfm_http import LastFmHttpClient, retry_with_backoff
 from helpers.config_helpers import get_lastfm_config
-from helpers.normalization_service import FEAT_SUFFIX_RE
+from helpers.normalization_service import FEAT_SUFFIX_RE, strip_cover_attribution
 from services.popularity.popularity_sources import (
     get_aggregated_lastfm_popularity,
 )
@@ -314,6 +314,12 @@ class LastFmService:
         """
         if not self.api_key:
             return self._empty_track_info(artist, title)
+
+        # Strip cover attributions so direct lookups target the canonical Last.fm
+        # row. Last.fm titles a cover as just the song name ("Gangnam Style"),
+        # while local files add the attribution ("Gangnam Style (PSY Cover)") —
+        # querying with the raw title lands on a low-listen album-only row.
+        title = strip_cover_attribution(title) or title
 
         best_result: dict[str, Any] | None = None
         best_tuple = (-1, -1, -1)
