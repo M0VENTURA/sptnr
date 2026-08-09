@@ -33,15 +33,36 @@ def parse_json_tags(json_str: str | None) -> list[dict[str, Any]]:
     Handles columns like ``lastfm_tags``, ``discogs_genres``,
     ``musicbrainz_genres``, ``listenbrainz_genres``, ``spotify_genres``
     which store JSON arrays of ``{"name": …, "count": …}`` dicts.
+
+    Also tolerates plain-string arrays (``["rock", "metal"]``) — the scan
+    persists genre lists that way, and normalising them here keeps the
+    artist/album/track pages working regardless of the stored shape.
     """
     if not json_str:
         return []
     try:
         data = json.loads(json_str)
-        return list(data) if isinstance(data, list) else []
     except (json.JSONDecodeError, TypeError) as exc:
         logger.debug("Failed to parse JSON tags: %s", exc)
         return []
+    if not isinstance(data, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in data:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            try:
+                count = int(item.get("count") or 1)
+            except (TypeError, ValueError):
+                count = 1
+            normalized.append({"name": name, "count": count})
+        elif item:
+            name = str(item).strip()
+            if name:
+                normalized.append({"name": name, "count": 1})
+    return normalized
 
 
 def parse_delimited_tags(value: Any) -> list[dict[str, Any]]:
