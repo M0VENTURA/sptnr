@@ -81,12 +81,13 @@ def _album_results():
     ]
 
 
-class TestAlbumPercentileStars:
-    """Spec rule 4: 1-4★ come purely from the album's popularity percentiles.
+class TestAlbumZBandStars:
+    """Spec rule 4: 1-4★ come purely from the album's popularity z-score bands.
 
-    Top ~20% → 4★, upper middle → 3★, lower middle → 2★, bottom ~20% → 1★.
-    Artist context never affects the base rating, and popularity alone never
-    reaches 5★.
+    After 5★ singles/standouts are assigned, the rest of the album is ranked by
+    its intra-album z-score: Z >= +0.5 → 4★, -0.5 <= Z < +0.5 → 3★,
+    -1.2 <= Z < -0.5 → 2★, Z < -1.2 → 1★.  Artist context never affects the
+    base rating, and popularity alone never reaches 5★.
     """
 
     def _track(self, score, **overrides):
@@ -102,46 +103,51 @@ class TestAlbumPercentileStars:
         return track
 
     def _album(self):
-        # 12 tracks spread 1-100: 4★ for the top ~2, 3★ next ~4, 2★ next ~4, 1★ bottom ~2
+        # 12 tracks spread 1-100 → mean 50.5, sample stdev ~32.45, so:
+        # 4★ for 100/91/82/73 (z >= +0.5), 3★ for 64/46, 2★ for 28/19,
+        # 1★ for 10/1 (z < -1.2).
         return list(range(1, 101, 9))[:12]  # [1, 10, 19, 28, 37, 46, 55, 64, 73, 82, 91, 100]
 
     def _stars(self, score, album, **overrides):
         from services.popularity.stages import finalise_stage as fs
         return fs._assign_stars(self._track(score, **overrides), album, album)
 
-    def test_top_twenty_percent_gets_four(self):
-        # Top track (100) → 4★; 2nd (91) → 4★.
+    def test_top_band_gets_four(self):
+        # Z >= +0.5 → 4★.
         album = self._album()
         assert self._stars(100.0, album) == 4
-        assert self._stars(91.0, album) == 4
+        assert self._stars(73.0, album) == 4
 
-    def test_upper_middle_gets_three(self):
+    def test_middle_band_gets_three(self):
+        # -0.5 <= Z < +0.5 → 3★.
         assert self._stars(64.0, self._album()) == 3
-        assert self._stars(73.0, self._album()) == 3
+        assert self._stars(46.0, self._album()) == 3
 
-    def test_lower_middle_gets_two(self):
+    def test_lower_band_gets_two(self):
+        # -1.2 <= Z < -0.5 → 2★.
         assert self._stars(28.0, self._album()) == 2
-        assert self._stars(46.0, self._album()) == 2
+        assert self._stars(19.0, self._album()) == 2
 
-    def test_bottom_twenty_percent_gets_one(self):
+    def test_bottom_outliers_gets_one(self):
+        # Z < -1.2 → 1★.
         assert self._stars(1.0, self._album()) == 1
         assert self._stars(10.0, self._album()) == 1
 
     def test_zero_score_is_one_star(self):
         assert self._stars(0.0, self._album()) == 1
 
-    def test_high_confidence_single_gets_five_regardless_of_percentile(self):
+    def test_high_confidence_single_gets_five_regardless_of_band(self):
         # Spec rule 5: a high-confidence single is 5★ even at the bottom of a
-        # strong album — singles are exempt from the album-percentile base.
+        # strong album — singles are exempt from the album-z-band base.
         assert self._stars(
             10.0, self._album(), is_single=True, single_confidence="high"
         ) == 5
 
-    def test_medium_single_not_marked_follows_album_percentile(self):
+    def test_medium_single_not_marked_follows_album_band(self):
         # A medium-confidence single that is NOT popularity-marked stays on the
-        # album-percentile base (no 5★) unless it is a genuine standout.
+        # album-z-band base (no 5★) unless it is a genuine standout.
         album = self._album()
-        assert self._stars(46.0, album, is_single=True, single_confidence="medium") == 2
+        assert self._stars(46.0, album, is_single=True, single_confidence="medium") == 3
 
     def test_popularity_marked_standout_gets_five(self):
         # A non-single triple-standout (album z + artist z + top-10% marking)
@@ -159,6 +165,81 @@ class TestAlbumPercentileStars:
             single_sources='[{"source": "popularity_z_standout", "matched": true, "confidence": 0.5}]',
         )
         assert fs._assign_stars(track, album, album) == 5
+
+
+class TestZStandoutSourceReVerification:
+    """A ``popularity_z_standout`` source is re-verified against the album's raw
+    listener distribution before it can grant 5★.
+
+    On a standout album (one album far more popular than the rest of an
+    artist's catalogue) every track's artist_z is inflated, so the old code
+    marked whole albums as ``popularity_z_standout`` and promoted them to 5★.
+    The scan re-verifies the flag via the track's composite LF/LB listener z
+    (``listener_5star_z_threshold``) so only genuine intra-album standouts
+    reach 5★ from popularity.
+    """
+
+    def _track(self, score, lastfm, lb, **overrides):
+        track = {
+            "track_id": "t1", "artist": "A", "album": "B", "title": "Song",
+            "popularity_score": score, "final_score": score,
+            "lastfm_listeners": lastfm, "listenbrainz_listens": lb,
+            "lb_percentile": 0.5, "lastfm_score": 4.0, "listenbrainz_score": 4.0,
+            "is_single": False, "single_confidence": "low",
+            "single_sources": "", "is_live": False, "popularity_marked": False,
+        }
+        track.update(overrides)
+        return track
+
+    def _album(self):
+        return [40.0, 50.0, 60.0, 70.0, 80.0, 90.0]
+
+    def _listeners(self):
+        return [10000, 9000, 8000, 7000, 6000, 5000], [20000, 18000, 16000, 14000, 12000, 10000]
+
+    def test_mid_pack_listeners_do_not_honour_standout_flag(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        lf, lb = self._listeners()
+        # Album z AND artist z clear the 5★ standout thresholds, and the track
+        # carries a popularity_z_standout source — but its RAW listener counts
+        # sit mid-pack in the album, so the re-verification must NOT honour the
+        # flag. Popularity alone never reaches 5★.
+        track = self._track(
+            90.0, 6000, 12000,
+            single_sources='[{"source": "popularity_z_standout", "matched": true, "confidence": 0.5}]',
+        )
+        assert fs._assign_stars(track, self._album(), self._album(), lf, lb) == 4
+
+    def test_album_top_listeners_honour_standout_flag(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        lf, lb = self._listeners()
+        # The clear intra-album listener standout IS honoured → 5★.
+        track = self._track(
+            90.0, 10000, 20000,
+            single_sources='[{"source": "popularity_z_standout", "matched": true, "confidence": 0.5}]',
+        )
+        assert fs._assign_stars(track, self._album(), self._album(), lf, lb) == 5
+
+    def test_no_album_listener_distribution_keeps_flag(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        # No listener distribution → verification is skipped, flag honoured.
+        track = self._track(
+            90.0, 6000, 12000,
+            single_sources='[{"source": "popularity_z_standout", "matched": true, "confidence": 0.5}]',
+        )
+        assert fs._assign_stars(track, self._album(), self._album()) == 5
+
+    def test_popularity_marked_standout_not_listener_gated(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        lf, lb = self._listeners()
+        # The artist top-10% marking is a DIFFERENT proof path (not the
+        # z_standout source) — the listener re-verification does not apply.
+        track = self._track(90.0, 6000, 12000, popularity_marked=True)
+        assert fs._assign_stars(track, self._album(), self._album(), lf, lb) == 5
 
 
 class TestPostAlbumStarRatings:
@@ -352,6 +433,59 @@ class TestComputeArtistScoresExcludesScanned:
 
 
 class TestFinaliseScanPerAlbumFlag:
+    def _fegefeuer_results(self):
+        # One album, three tracks that carry different TRACK artists (a
+        # featured-artist split).  They must all group under the album artist
+        # "Feuerschwanz", not fragment into three 1-track "albums".
+        return [
+            {
+                "track_id": f"t{i}",
+                "artist": artist,
+                "album_artist": "Feuerschwanz",
+                "album": "Fegefeuer",
+                "title": f"Song {i}",
+                "popularity_score": 60.0,
+                "final_score": 60.0,
+                "lastfm_listeners": 100,
+                "listenbrainz_listens": 200,
+                "lastfm_score": 4.0,
+                "listenbrainz_score": 4.0,
+                "is_single": False,
+                "single_confidence": "low",
+                "single_sources": "",
+            }
+            for i, artist in enumerate(
+                ["Feuerschwanz", "Feuerschwanz feat. Fabienne Erni", "Feuerschwanz feat. Melissa Bonny"]
+            )
+        ]
+
+    def test_featured_tracks_group_by_album_artist(self, monkeypatch):
+        from services.popularity.stages import finalise_stage as fs
+
+        conn = FakeConn()
+        monkeypatch.setattr(fs, "get_db_connection", lambda: conn)
+        posted = []
+        monkeypatch.setattr(
+            fs,
+            "post_album_star_ratings",
+            lambda **kw: posted.append(kw) or {"star_ratings": 3, "navidrome_synced": 0},
+        )
+        monkeypatch.setattr(fs, "_create_nsp_playlist", lambda artist, tracks: None)
+        monkeypatch.setattr(fs, "log_unified", lambda msg: None)
+
+        fs.finalise_scan(
+            results=self._fegefeuer_results(),
+            options={"sync_navidrome": True},
+        )
+
+        # Exactly ONE album posting under the album artist — the feat. tracks
+        # must not split into separate 1-track albums (tracks=1, MAD=0.0 →
+        # broken z-scores / duplicate Navidrome syncs).
+        assert len(posted) == 1
+        assert posted[0]["artist"] == "Feuerschwanz"
+        assert len(posted[0]["album_results"]) == 3
+        assert posted[0]["album_results"][0]["album"] == "Fegefeuer"
+
     def test_per_album_posted_skips_duplicate_star_work(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
 

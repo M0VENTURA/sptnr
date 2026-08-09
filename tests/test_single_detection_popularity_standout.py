@@ -189,3 +189,100 @@ class TestFeatureTrackStatsResolution:
         # though its stats resolved correctly.
         assert result["is_single"] is False, result["reasons"]
         assert result["confidence"] == "low"
+
+
+class TestAlbumLocalCompositeZ:
+    """The single verdict uses the album-local composite z (raw LF/LB counts),
+    never the artist-wide z.
+
+    Reproduces the 36 Crazyfists "Bitterness the Star" bleed: the album is a
+    standout vs the rest of the catalogue, so EVERY track's artist_z was huge
+    (z≈2.6-3.4) and ``max(album_z, artist_z)`` promoted mid-pack album tracks
+    to ``single=high`` / 5★ on popularity alone (e.g. "Circle the Drain" at
+    album-z 0.90, "Bury Me Where I Fall" at album-z -0.11).
+    """
+
+    ALBUM_LF = [119490.0, 67064.0, 48039.0, 39262.0, 50697.0, 46555.0, 42740.0, 31215.0]
+    ALBUM_LB = [178820.0, 95311.0, 71434.0, 55095.0, 77329.0, 65510.0, 64751.0, 60976.0]
+
+    def _patch(self, monkeypatch):
+        import services.popularity.popularity_stats_service as pss
+        from services.enrichment import single_detection_service as sds
+
+        # Tight artist distribution → an inflated artist_z for ANY track
+        # (artist_z ≈ 3.1) regardless of the track's own popularity.
+        def fake_artist_stats(conn, artist):
+            return (50.0, 0.0, [50] * 50)
+
+        def fake_album_stats(conn, artist, album):
+            return (72.5, 10.0, [55, 60, 65, 70, 75, 80, 85, 82])
+
+        monkeypatch.setattr(pss, "calculate_artist_stats", fake_artist_stats)
+        monkeypatch.setattr(pss, "calculate_album_stats", fake_album_stats)
+        monkeypatch.setattr(
+            sds, "_detect_discogs",
+            lambda *a, **k: {"source": "discogs", "matched": False, "confidence": 0.0, "metadata": {}},
+        )
+        monkeypatch.setattr(
+            sds, "_detect_musicbrainz",
+            lambda *a, **k: {"source": "musicbrainz", "matched": False, "confidence": 0.0, "metadata": {}},
+        )
+        monkeypatch.setattr(
+            sds, "_detect_discogs_video",
+            lambda *a, **k: {"source": "discogs_video", "matched": False, "confidence": 0.0, "metadata": {}},
+        )
+
+        class FakeLastFm:
+            def check_track_as_single(self, artist, title):
+                return True
+
+            def get_album_track_count(self, artist, album):
+                return 0
+
+            def search_album(self, title, artist=None, limit=30):
+                return []
+
+        return FakeLastFm()
+
+    def _detect(self, monkeypatch, lastfm_listeners, listenbrainz_listens):
+        from services.enrichment.single_detection_service import detect_single_for_track
+
+        lastfm_client = self._patch(monkeypatch)
+        return detect_single_for_track(
+            title="Circle the Drain",
+            artist="36 Crazyfists",
+            album="Bitterness the Star",
+            album_track_count=12,
+            popularity=81.6,
+            album_type="album",
+            use_advanced_detection=True,
+            persist_result=False,
+            lastfm_client=lastfm_client,
+            lastfm_listeners=lastfm_listeners,
+            listenbrainz_listens=listenbrainz_listens,
+            album_lf_listeners=self.ALBUM_LF,
+            album_lb_listens=self.ALBUM_LB,
+        )
+
+    def test_mid_pack_album_track_not_promoted_by_inflated_artist_z(self, monkeypatch):
+        # "Circle the Drain": mid-pack listeners on the album, but its artist_z
+        # is inflated to ~3.1 by the standout album.  The composite album-local
+        # z is negative → no z_standout → a lone Last.fm medium source cannot
+        # promote it to 'high' (was single=high before the fix).
+        result = self._detect(monkeypatch, lastfm_listeners=39262, listenbrainz_listens=55095)
+        decision = result["decision"]
+        assert decision["artist_z"] > 2.5, decision
+        assert decision["z_composite"] < 1.0, decision
+        assert decision["z_standout"] is False, result["reasons"]
+        assert result["is_single"] is False, result["reasons"]
+        assert result["confidence"] == "low"
+
+    def test_album_standout_still_promoted(self, monkeypatch):
+        # "Slit Wrist Theory": the genuine intra-album standout (119k vs ~40k
+        # listeners) keeps its composite z ~2.1 → z_standout + Last.fm → high.
+        result = self._detect(monkeypatch, lastfm_listeners=119490, listenbrainz_listens=178820)
+        decision = result["decision"]
+        assert decision["z_composite"] > 1.5, decision
+        assert decision["z_standout"] is True, result["reasons"]
+        assert result["is_single"] is True, result["reasons"]
+        assert result["confidence"] == "high"

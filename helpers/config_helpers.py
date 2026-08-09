@@ -601,10 +601,10 @@ def get_standout_config() -> dict[str, Any]:
         - artist_top_percentile: 0.10 (top 10% of artist catalog)
         - artist_min_tracks: 10 (minimum tracks required for artist stats)
         - star_5: {"album_z": 1.0, "artist_z": 1.2, "artist_pct": 0.10}
-        - star_4: {"album_z": 0.8, "artist_z": 1.0, "artist_pct": 0.20}
-        - star_3: {"album_z": 0.0}
-        - star_2: {"album_mean": True}
-        - star_1: {"default": True}
+        - star_4: {"album_z": 0.5, "artist_z": 1.0, "artist_pct": 0.20}
+        - star_3: {"album_z": -0.5}
+        - star_2: {"album_z": -1.2}
+        - star_1: {"album_z": -1.2, "default": True}
     """
     cfg = get_config()
     sd_config = cfg.get("single_detection", {})
@@ -619,10 +619,10 @@ def get_standout_config() -> dict[str, Any]:
         "listener_5star_z_threshold": 1.0,
         "standout_gap_z": 0.75,
         "star_5": {"album_z": 1.0, "artist_z": 1.2, "artist_pct": 0.10},
-        "star_4": {"album_z": 0.8, "artist_z": 1.0, "artist_pct": 0.20},
-        "star_3": {"album_z": 0.0},
-        "star_2": {"album_mean": True},
-        "star_1": {"album_z": -1.0, "default": True},
+        "star_4": {"album_z": 0.5, "artist_z": 1.0, "artist_pct": 0.20},
+        "star_3": {"album_z": -0.5},
+        "star_2": {"album_z": -1.2},
+        "star_1": {"album_z": -1.2, "default": True},
     }
 
     # Merge user config with defaults

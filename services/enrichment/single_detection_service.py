@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from datetime import datetime
+from statistics import mean as stat_mean
 from statistics import median as stat_median
+from statistics import stdev as stat_stdev
 from typing import Any
 
 from helpers.normalization_service import (
@@ -217,6 +220,73 @@ def calculate_z_score_strict(popularity: float, pop_median: float, pop_mad_scale
     if pop_mad_scaled == 0:
         return 0.0
     return (popularity - pop_median) / pop_mad_scaled
+
+
+def _log_listener_z(count: float, counts: list[float]) -> float:
+    """Log-scaled z-score of a track's listener/listen count within its album.
+
+    Listener counts are heavily right-skewed (one hit dominates), so the
+    z-score is computed over ``log1p``-transformed values.  This is the raw
+    "standout within the album" signal that blended/decay-adjusted popularity
+    scores compress.  Zero-variance distributions (all counts identical, or
+    fewer than 3 positive counts) carry no outlier signal — return 0.0.
+    """
+    logs = [math.log1p(float(c)) for c in (counts or []) if float(c) > 0]
+    if len(logs) < 3 or not any(logs):
+        return 0.0
+    mu = stat_mean(logs)
+    sigma = stat_stdev(logs) if len(logs) > 1 else 1.0
+    if not sigma or sigma <= 0:
+        return 0.0
+    return (math.log1p(float(count)) - mu) / sigma
+
+
+def _composite_album_z(
+    lastfm_listeners: int | None,
+    listenbrainz_listens: int | None,
+    artist: str,
+    album: str | None,
+    album_lf_listeners: list[float] | None = None,
+    album_lb_listens: list[float] | None = None,
+) -> float:
+    """Album-local composite z-score from the track's raw LF/LB counts.
+
+    ``z_composite = (w_LF * z_LF + w_LB * z_LB) / (w_LF + w_LB)`` where each
+    provider z is the track's log-scaled z within ITS ALBUM'S OWN tracklist
+    distribution (never the artist catalogue).  When only one provider has
+    usable data the composite collapses to that provider's z (the "LB
+    invalid/bypassed → score on Last.fm only" behaviour).
+
+    Caller-supplied album distributions are used when provided; otherwise the
+    album's stored listener counts are loaded from the DB (keyed by the album
+    artist, matching every other popularity-stats lookup).  Returns 0.0 when
+    there is not enough album data for a meaningful signal.
+    """
+    try:
+        if album and (album_lf_listeners is None or album_lb_listens is None):
+            from services.popularity.popularity_stats_service import calculate_album_listener_stats
+            _db_lf, _db_lb = calculate_album_listener_stats(None, artist, album)
+            if album_lf_listeners is None:
+                album_lf_listeners = _db_lf
+            if album_lb_listens is None:
+                album_lb_listens = _db_lb
+        z_lf = _log_listener_z(float(lastfm_listeners or 0), album_lf_listeners or [])
+        z_lb = _log_listener_z(float(listenbrainz_listens or 0), album_lb_listens or [])
+        if not z_lf and not z_lb:
+            return 0.0
+        if not z_lb:
+            return z_lf
+        if not z_lf:
+            return z_lb
+        from services.popularity.popularity_config import resolve_weights
+        w_lf, w_lb, _ = resolve_weights()
+        total = w_lf + w_lb
+        if total <= 0:
+            return z_lf
+        return (w_lf * z_lf + w_lb * z_lb) / total
+    except Exception as exc:
+        logger.debug("Composite album z failed for %s / %s: %s", artist, album, exc)
+        return 0.0
 
 
 def get_dynamic_z_threshold(track_count: int, release_year: int | None = None, is_compilation: bool = False) -> float:
@@ -604,8 +674,16 @@ def determine_final_status(
     artist, so the z-score bands and ``z_standout`` are ignored and the verdict
     is decided by the metadata sources alone. Returns ``'high'``,
     ``'medium'``, or ``'none'``.
+
+    Popularity z is evaluated against the ALBUM's own tracklist (the local
+    baseline): ``album_z`` is used when present, falling back to ``artist_z``
+    only when no album-level baseline exists.  Using ``max(album_z, artist_z)``
+    let an album that is itself a standout vs the rest of an artist's catalogue
+    promote EVERY one of its tracks (inflated artist_z) — e.g. 36 Crazyfists -
+    "Bury Me Where I Fall" reached 'high' with album_z 0.19 purely on
+    artist_z 2.78.
     """
-    max_z = max(album_z, artist_z)
+    max_z = album_z if album_z else artist_z
     # Compilation / Various-Artists albums: every track has a different
     # artist, so album/artist-relative popularity (z-score) is meaningless
     # for single detection.  Zero ``max_z`` so the z-score bands and the
@@ -742,6 +820,9 @@ def detect_single_for_track(
     artist_mbid: str | None = None,
     mb_client=None,
     listenbrainz_listens: int | None = None,
+    lastfm_listeners: int | None = None,
+    album_lf_listeners: list[float] | None = None,
+    album_lb_listens: list[float] | None = None,
 ) -> dict[str, Any]:
     """Detect whether a track is a single using the 8-stage algorithm.
 
@@ -810,6 +891,25 @@ def detect_single_for_track(
         except Exception as exc:
             logger.debug("Z-score calculation failed: %s", exc)
 
+    # ── Composite album-local z-score (raw listener counts) ────────────────
+    # The popularity-score z above (``album_z`` / ``artist_z``) is computed
+    # against stored blended/decay-adjusted ``final_score`` values, which
+    # compress the standout signal (and can lag mid-scan).  The composite
+    # blends the track's RAW Last.fm listeners and ListenBrainz listens,
+    # each log-scaled against ITS OWN ALBUM's tracklist, so it directly
+    # answers "is this track a standout within its album?"  Used as the
+    # popularity-z for the single verdict and the ``z_standout`` gate.
+    z_composite = 0.0
+    if popularity is not None and popularity > 0 and not is_compilation:
+        z_composite = _composite_album_z(
+            lastfm_listeners,
+            listenbrainz_listens,
+            _stats_artist,
+            album,
+            album_lf_listeners=album_lf_listeners,
+            album_lb_listens=album_lb_listens,
+        )
+
     # Z-score gate (SOFT): a track scoring far below the artist median is no
     # longer rejected before source lookups — its popularity data may simply be
     # weak (missing Last.fm/LB counts, split variants). Sources still run; the
@@ -849,13 +949,20 @@ def detect_single_for_track(
         # otherwise a genuinely dominant album track (District 9, album-z ~1.8)
         # would never qualify as a standout on the pass that first scores it.
         artist_track_count = max(len(artist_vals or []), len(album_vals or []))
-        if artist_track_count >= 3 and max(album_z, artist_z) > 0:
+        # ALBUM-LOCAL baseline only: the composite listener z (or the album
+        # popularity z when no raw listener data exists) decides the standout —
+        # never the artist-wide z.  A standout album vs the rest of an artist's
+        # catalogue inflates every track's artist_z (36 Crazyfists: 7/12 tracks
+        # on Bitterness the Star had artist_z >= 2.6 but album z <= 0.9), so
+        # max(album_z, artist_z) promoted whole albums.
+        standout_z = z_composite or album_z
+        if artist_track_count >= 3 and standout_z > 0:
             dyn_threshold = get_dynamic_z_threshold(
                 artist_track_count,
                 None,
                 is_compilation,
             )
-            if max(album_z, artist_z) >= dyn_threshold:
+            if standout_z >= dyn_threshold:
                 z_standout = True
                 reasons.append("z_score_standout")
     except Exception as exc:
@@ -995,7 +1102,6 @@ def detect_single_for_track(
             sources.append({"source": _src_name, "matched": True, "confidence": 0.5})
 
     # ── Final decision ──
-    max_z = max(album_z, artist_z)
     has_meta = discogs_confirmed or musicbrainz_confirmed
     is_title = normalize_title_strict(title) == normalize_title_strict(album or "")
 
@@ -1079,7 +1185,11 @@ def detect_single_for_track(
 
     final = determine_final_status(
         discogs=discogs_confirmed, musicbrainz=musicbrainz_confirmed,
-        album_z=album_z, artist_z=artist_z,
+        # The single verdict uses the ALBUM-LOCAL z only: the raw-listener
+        # composite when available, else the album popularity z.  artist_z is
+        # zeroed here so an inflated artist-wide z (a standout album) can never
+        # promote an album-local non-standout to 'high'.
+        album_z=z_composite or album_z, artist_z=0.0,
         discogs_video=discogs_video_confirmed, lastfm=lastfm_confirmed,
         mb_compilation=mb_compilation_confirmed,
         radio_edit=radio_edit_found,
@@ -1150,6 +1260,7 @@ def detect_single_for_track(
         "decision": {
             "album_z": round(album_z, 2),
             "artist_z": round(artist_z, 2),
+            "z_composite": round(z_composite, 2),
             "z_low": bool(z_low),
             "high_sources": high_sources,
             "medium_sources": medium_sources,

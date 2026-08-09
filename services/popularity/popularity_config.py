@@ -115,13 +115,13 @@ STANDOUT_CONFIG: dict[str, Any] = {
     "artist_top_percentile": 0.10,
     "artist_min_tracks": 10,
     "star_5": {"album_z": 1.0, "artist_z": 1.2, "artist_pct": 0.10},
-    "star_4": {"album_z": 0.8, "artist_z": 1.0, "artist_pct": 0.20},
+    "star_4": {"album_z": 0.5, "artist_z": 1.0, "artist_pct": 0.20},
     "star_5_single": {"artist_pct": 0.25},
     "popularity_5star_z_threshold": 2.0,
     "lb_unreliable_5star_threshold": 0.50,
-    "star_3": {"album_z": 0.0},
-    "star_2": {"album_mean": True},
-    "star_1": {"default": True},
+    "star_3": {"album_z": -0.5},
+    "star_2": {"album_z": -1.2},
+    "star_1": {"album_z": -1.2, "default": True},
 }
 
 

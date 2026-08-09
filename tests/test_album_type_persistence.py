@@ -209,6 +209,8 @@ class TestSinglesOnlyPass:
                         mb_cached_singles=None, discogs_cached_singles=None,
                         discogs_cached_promos=None,
                         artist_mbid=None, listenbrainz_listens=0,
+                        lastfm_listeners=0, album_lf_listeners=None,
+                        album_lb_listens=None,
                         discogs_token=None, lastfm_client=None, mb_client=None):
             calls["singles"] += 1
             return {"is_single": True, "confidence": "high", "confidence_score": 0.9,

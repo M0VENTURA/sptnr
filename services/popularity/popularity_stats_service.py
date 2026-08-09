@@ -120,6 +120,57 @@ def calculate_artist_popularity_stats(artist_name: str, conn) -> dict:
     }
 
 
+def calculate_album_listener_stats(conn, artist: str, album: str) -> tuple[list[float], list[float]]:
+    """Return ``(lastfm_listeners[], listenbrainz_listens[])`` for an album.
+
+    Raw listener/listen counts per album track, used to build the album-local
+    LF/LB distributions for single-detection's composite z-score.  Only
+    positive counts are included (missing data is not signal).  When ``conn``
+    is ``None`` a fresh ``db_session`` is opened so callers (e.g. the
+    single-detection service) never crash on ``None.cursor()``.
+    """
+    lf_listeners: list[float] = []
+    lb_listens: list[float] = []
+    rows = []
+    if conn is None:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        try:
+            with _db_session() as session:
+                result = session.execute(
+                    _text("""
+                        SELECT lastfm_listeners, listenbrainz_listens FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                          AND album = :album
+                    """),
+                    {"artist": artist, "album": album},
+                )
+                rows = result.fetchall() or []
+        except Exception as exc:
+            logger.debug("[POPULARITY_STATS] Album listener session error for %s - %s: %s", artist, album, exc)
+            return [], []
+    else:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT lastfm_listeners, listenbrainz_listens FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+              AND album = %s
+            """,
+            (artist, album),
+        )
+        rows = cursor.fetchall() or []
+
+    for row in rows:
+        _lf = float(row[0] or 0)
+        _lb = float(row[1] or 0)
+        if _lf > 0:
+            lf_listeners.append(_lf)
+        if _lb > 0:
+            lb_listens.append(_lb)
+    return lf_listeners, lb_listens
+
+
 def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict | None = None):
     """Return set of track IDs to exclude from popularity statistics."""
     excluded = set()
