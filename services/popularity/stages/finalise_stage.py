@@ -93,6 +93,39 @@ def _listener_z(count: float, counts: list[float]) -> float:
     return (math.log1p(float(count)) - mu) / sigma
 
 
+def _composite_listener_z(
+    track: dict[str, Any],
+    album_lf_listeners: list[float] | None,
+    album_lb_listens: list[float] | None,
+) -> float:
+    """Album-local composite z from a track's raw LF/LB counts (log-scaled).
+
+    Blends ``_listener_z`` over the track's Last.fm listeners and ListenBrainz
+    listens using the configured LF/LB weights (normalised to LF + LB = 1).
+    When only one provider has usable data the composite collapses to it; no
+    album distribution → 0.0 (verification skipped, the flag is honoured as-is).
+    """
+    if album_lf_listeners is None or album_lb_listens is None:
+        return 0.0
+    lf_z = _listener_z(float(track.get("lastfm_listeners") or 0), album_lf_listeners)
+    lb_z = _listener_z(float(track.get("listenbrainz_listens") or 0), album_lb_listens)
+    if not lf_z and not lb_z:
+        return 0.0
+    if not lb_z:
+        return lf_z
+    if not lf_z:
+        return lb_z
+    try:
+        from services.popularity.popularity_config import resolve_weights
+        w_lf, w_lb, _ = resolve_weights()
+    except Exception:
+        w_lf, w_lb = 0.6, 0.4
+    total = w_lf + w_lb
+    if total <= 0:
+        return lf_z
+    return (w_lf * lf_z + w_lb * lb_z) / total
+
+
 def _resolve_navidrome_artist_id(cursor, artist: str) -> str | None:
     """Return the real Navidrome artist id for ``artist``, or None.
 
@@ -235,10 +268,26 @@ def _assign_stars(
     popularity_marked = bool(track.get("popularity_marked"))
 
     # ── 5★: singles + standouts only ──
+    # Scan synchronization for the ``popularity_z_standout`` proof: the flag
+    # was recorded during single detection, so it must be re-verified against
+    # the album's raw listener distribution here.  A standalone album vs the
+    # rest of an artist's catalogue used to inflate every track's artist_z and
+    # mark whole albums as ``z_standout`` (e.g. 36 Crazyfists - Bitterness the
+    # Star).  Re-verification requires the track's composite LF/LB listener z
+    # to actually clear the ``listener_5star_z_threshold`` before the flag is
+    # honoured; tracks without a usable album distribution keep the flag
+    # (verification returns 0.0 and is skipped, not demoted).
+    z_standout_source = _has_z_standout_source(track)
+    if z_standout_source:
+        _verify_z = _composite_listener_z(track, album_lf_listeners, album_lb_listens)
+        if _verify_z:
+            _listener_threshold = float(STANDOUT_CONFIG.get("listener_5star_z_threshold", 1.0) or 1.0)
+            if _verify_z < _listener_threshold:
+                z_standout_source = False
     is_standout = (
         album_z >= STAR_5_ALBUM_Z
         and artist_z >= STAR_5_ARTIST_Z
-        and (popularity_marked or _has_z_standout_source(track))
+        and (popularity_marked or z_standout_source)
     )
     if not is_live and (
         (not popularity_only and single_confidence == "high")
@@ -724,11 +773,16 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
     if not results:
         return
 
-    # Group results by artist for per-artist stats
+    # Group results by artist for per-artist stats.  The grouping key is the
+    # ALBUM artist (``album_artist``, falling back to the track artist): the
+    # DB stores popularity under the album artist, so a featured-artist track
+    # ("Feuerschwanz feat. Fabienne Erni") must join its album-mates instead of
+    # splitting the album into 1-track fragments with a degenerate (MAD=0.0)
+    # distribution.
     from collections import defaultdict
     by_artist: dict[str, list[dict]] = defaultdict(list)
     for r in results:
-        artist = str(r.get("artist") or r.get("canonical_artist") or "Unknown")
+        artist = str(r.get("album_artist") or r.get("artist") or r.get("canonical_artist") or "Unknown")
         by_artist[artist].append(r)
 
     conn = get_db_connection()

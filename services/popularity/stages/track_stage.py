@@ -864,6 +864,7 @@ def process_track(
                         or effective_track.get("lastfm_artist_mbid")
                     ),
                     listenbrainz_listens=int(listenbrainz_listens or 0),
+                    lastfm_listeners=int(lastfm_listeners or 0),
                     discogs_token=sd_discogs_token or None,
                     lastfm_client=sd_lastfm_client,
                     mb_client=MusicBrainzHttpClient(),
@@ -1318,9 +1319,23 @@ def process_track(
         update_payload.get("final_score") or score_data.get("combined_score") or 0
     )
 
+    # Grouping key for the finaliser: albums must be keyed by the ALBUM artist,
+    # never the per-track artist.  A "Feuerschwanz feat. Fabienne Erni" track on
+    # the album "Fegefeuer" belongs to the SAME album distribution as its
+    # album-mates — grouping by the raw track artist split the album into N
+    # "Fegefeuer by <feat.>" fragments in memory (tracks=1, MAD=0.0 → broken
+    # z-scores + duplicate Navidrome syncs).
+    _album_artist = _as_str(
+        track.get("album_artist")
+        or album_context.get("album_artist")
+        or album_context.get("artist")
+        or track_artist
+    )
+
     return {
         "track_id": track_id,
         "artist": track_artist,
+        "album_artist": _album_artist,
         "album": track.get("album") or effective_track.get("album", ""),
         # ``_strip_album_type_columns`` drops the stale title (the album
         # stage owns renames), but the in-memory loaded title is the correct

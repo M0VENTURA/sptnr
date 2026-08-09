@@ -167,6 +167,81 @@ class TestAlbumZBandStars:
         assert fs._assign_stars(track, album, album) == 5
 
 
+class TestZStandoutSourceReVerification:
+    """A ``popularity_z_standout`` source is re-verified against the album's raw
+    listener distribution before it can grant 5★.
+
+    On a standout album (one album far more popular than the rest of an
+    artist's catalogue) every track's artist_z is inflated, so the old code
+    marked whole albums as ``popularity_z_standout`` and promoted them to 5★.
+    The scan re-verifies the flag via the track's composite LF/LB listener z
+    (``listener_5star_z_threshold``) so only genuine intra-album standouts
+    reach 5★ from popularity.
+    """
+
+    def _track(self, score, lastfm, lb, **overrides):
+        track = {
+            "track_id": "t1", "artist": "A", "album": "B", "title": "Song",
+            "popularity_score": score, "final_score": score,
+            "lastfm_listeners": lastfm, "listenbrainz_listens": lb,
+            "lb_percentile": 0.5, "lastfm_score": 4.0, "listenbrainz_score": 4.0,
+            "is_single": False, "single_confidence": "low",
+            "single_sources": "", "is_live": False, "popularity_marked": False,
+        }
+        track.update(overrides)
+        return track
+
+    def _album(self):
+        return [40.0, 50.0, 60.0, 70.0, 80.0, 90.0]
+
+    def _listeners(self):
+        return [10000, 9000, 8000, 7000, 6000, 5000], [20000, 18000, 16000, 14000, 12000, 10000]
+
+    def test_mid_pack_listeners_do_not_honour_standout_flag(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        lf, lb = self._listeners()
+        # Album z AND artist z clear the 5★ standout thresholds, and the track
+        # carries a popularity_z_standout source — but its RAW listener counts
+        # sit mid-pack in the album, so the re-verification must NOT honour the
+        # flag. Popularity alone never reaches 5★.
+        track = self._track(
+            90.0, 6000, 12000,
+            single_sources='[{"source": "popularity_z_standout", "matched": true, "confidence": 0.5}]',
+        )
+        assert fs._assign_stars(track, self._album(), self._album(), lf, lb) == 4
+
+    def test_album_top_listeners_honour_standout_flag(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        lf, lb = self._listeners()
+        # The clear intra-album listener standout IS honoured → 5★.
+        track = self._track(
+            90.0, 10000, 20000,
+            single_sources='[{"source": "popularity_z_standout", "matched": true, "confidence": 0.5}]',
+        )
+        assert fs._assign_stars(track, self._album(), self._album(), lf, lb) == 5
+
+    def test_no_album_listener_distribution_keeps_flag(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        # No listener distribution → verification is skipped, flag honoured.
+        track = self._track(
+            90.0, 6000, 12000,
+            single_sources='[{"source": "popularity_z_standout", "matched": true, "confidence": 0.5}]',
+        )
+        assert fs._assign_stars(track, self._album(), self._album()) == 5
+
+    def test_popularity_marked_standout_not_listener_gated(self):
+        from services.popularity.stages import finalise_stage as fs
+
+        lf, lb = self._listeners()
+        # The artist top-10% marking is a DIFFERENT proof path (not the
+        # z_standout source) — the listener re-verification does not apply.
+        track = self._track(90.0, 6000, 12000, popularity_marked=True)
+        assert fs._assign_stars(track, self._album(), self._album(), lf, lb) == 5
+
+
 class TestPostAlbumStarRatings:
     def test_assigns_persists_logs_and_syncs(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
@@ -358,6 +433,59 @@ class TestComputeArtistScoresExcludesScanned:
 
 
 class TestFinaliseScanPerAlbumFlag:
+    def _fegefeuer_results(self):
+        # One album, three tracks that carry different TRACK artists (a
+        # featured-artist split).  They must all group under the album artist
+        # "Feuerschwanz", not fragment into three 1-track "albums".
+        return [
+            {
+                "track_id": f"t{i}",
+                "artist": artist,
+                "album_artist": "Feuerschwanz",
+                "album": "Fegefeuer",
+                "title": f"Song {i}",
+                "popularity_score": 60.0,
+                "final_score": 60.0,
+                "lastfm_listeners": 100,
+                "listenbrainz_listens": 200,
+                "lastfm_score": 4.0,
+                "listenbrainz_score": 4.0,
+                "is_single": False,
+                "single_confidence": "low",
+                "single_sources": "",
+            }
+            for i, artist in enumerate(
+                ["Feuerschwanz", "Feuerschwanz feat. Fabienne Erni", "Feuerschwanz feat. Melissa Bonny"]
+            )
+        ]
+
+    def test_featured_tracks_group_by_album_artist(self, monkeypatch):
+        from services.popularity.stages import finalise_stage as fs
+
+        conn = FakeConn()
+        monkeypatch.setattr(fs, "get_db_connection", lambda: conn)
+        posted = []
+        monkeypatch.setattr(
+            fs,
+            "post_album_star_ratings",
+            lambda **kw: posted.append(kw) or {"star_ratings": 3, "navidrome_synced": 0},
+        )
+        monkeypatch.setattr(fs, "_create_nsp_playlist", lambda artist, tracks: None)
+        monkeypatch.setattr(fs, "log_unified", lambda msg: None)
+
+        fs.finalise_scan(
+            results=self._fegefeuer_results(),
+            options={"sync_navidrome": True},
+        )
+
+        # Exactly ONE album posting under the album artist — the feat. tracks
+        # must not split into separate 1-track albums (tracks=1, MAD=0.0 →
+        # broken z-scores / duplicate Navidrome syncs).
+        assert len(posted) == 1
+        assert posted[0]["artist"] == "Feuerschwanz"
+        assert len(posted[0]["album_results"]) == 3
+        assert posted[0]["album_results"][0]["album"] == "Fegefeuer"
+
     def test_per_album_posted_skips_duplicate_star_work(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
 
