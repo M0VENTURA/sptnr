@@ -2095,7 +2095,7 @@ async def track_detail(track_id: str):
 
                     if resolved_path:
                         try:
-                            from helpers.tag_manager import write_tags_to_file
+                            from services.metadata.tag_file_service import write_tags_to_file
 
                             tags_to_write = build_tags_to_write(update_values)
 

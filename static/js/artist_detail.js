@@ -2925,7 +2925,7 @@ function saveArtistEditedTrack() {
     album: document.getElementById('editArtistTrackAlbumField').value.trim(),
     year: document.getElementById('editArtistTrackYearField').value.trim() || null,
     stars: parseInt(document.getElementById('editArtistTrackStarsField').value) || 0,
-    is_single: parseInt(document.getElementById('editArtistTrackSingleField').value) || 0,
+    is_single: parseInt(document.getElementById('editArtistTrackSingleField').value) === 1,
     single_confidence: document.getElementById('editArtistTrackConfidenceField').value,
     genres: editArtistTrackCurrentGenres.join('\\'),
     album_artist: document.getElementById('editArtistTrackAlbumArtistField').value.trim() || null,

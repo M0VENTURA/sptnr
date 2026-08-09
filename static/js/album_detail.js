@@ -2851,7 +2851,7 @@ var _pageData = window._pageData || {};
             album: document.getElementById('editTrackAlbumField').value.trim(),
             year: document.getElementById('editTrackYearField').value.trim() || null,
             stars: parseInt(document.getElementById('editTrackStarsField').value) || 0,
-            is_single: parseInt(document.getElementById('editTrackSingleField').value) || 0,
+            is_single: parseInt(document.getElementById('editTrackSingleField').value) === 1,
             single_confidence: document.getElementById('editTrackConfidenceField').value,
             genres: editTrackCurrentGenres.join('\\'),
             album_artist: document.getElementById('editTrackAlbumArtistField').value.trim() || null,
@@ -2867,12 +2867,12 @@ var _pageData = window._pageData || {};
             musicbrainz_releasegroupid: document.getElementById('editTrackMBReleaseGroupIdField').value.trim() || null,
             musicbrainz_releasetrackid: document.getElementById('editTrackMBReleaseTrackIdField').value.trim() || null,
             musicbrainz_workid: document.getElementById('editTrackMBWorkIdField').value.trim() || null,
-            is_cover: document.getElementById('editTrackIsCoverField').checked ? 1 : 0,
-            alternate_take: document.getElementById('editTrackAlternateTakeField').checked ? 1 : 0,
-            is_compilation: document.getElementById('editTrackIsCompilationField').checked ? 1 : 0,
-            is_live: document.getElementById('editTrackIsLiveField').checked ? 1 : 0,
-            is_acoustic: document.getElementById('editTrackIsAcousticField').checked ? 1 : 0,
-            is_remix: document.getElementById('editTrackIsRemixField').checked ? 1 : 0,
+            is_cover: document.getElementById('editTrackIsCoverField').checked,
+            alternate_take: document.getElementById('editTrackAlternateTakeField').checked,
+            is_compilation: document.getElementById('editTrackIsCompilationField').checked,
+            is_live: document.getElementById('editTrackIsLiveField').checked,
+            is_acoustic: document.getElementById('editTrackIsAcousticField').checked,
+            is_remix: document.getElementById('editTrackIsRemixField').checked,
             sync_to_file: true
         };
         
