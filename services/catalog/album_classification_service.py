@@ -14,7 +14,21 @@ from helpers.normalization_service import normalize_title_for_lookup
 COMPILATION_TYPES = {"compilation", "soundtrack", "various artists"}
 
 LIVE_ALBUM_PATTERNS = [
-    r"\blive\b",
+    r"\(live\)\s*$",
+    r"\[live\]\s*$",
+    r"-\s*live\s*$",
+    r",\s*live\s*$",
+    r"\+\s*live\s*$",
+    r"\s+live\s*$",
+    r"\s+live\s*[\)\]]\s*$",
+    r"live\s+at\b",
+    r"live\s+in\b",
+    r"live\s+from\b",
+    r"live\s+session\b",
+    r"live\s+recording\b",
+    r"live\s+tour\b",
+    r"\bconcert\b",
+    r"\bin\s+concert\b",
     r"\bunplugged\b",
     r"\bacoustic\b",
     r"\borchestral\b",
@@ -60,11 +74,30 @@ def is_live_or_alternate_album(album: str) -> bool:
 
 
 def detect_live_album_type(album: str, album_type_from_field: str = "") -> str:
-    text = f"{album or ''} {album_type_from_field or ''}".lower()
+    # ``album_type_from_field`` (e.g. the MusicBrainz release type) is the
+    # AUTHORITATIVE signal: when the album is matched to a known album type,
+    # the type field ALONE decides.  A studio album whose title merely
+    # contains "live"/"concert" text ("(how to live) as ghosts") must not be
+    # flagged live, and an explicit "live" type is trusted even when the
+    # title looks like a regular album.  Title-based heuristics only run as
+    # a FALLBACK when the album has NO matched type (no MusicBrainz/Spotify
+    # album-type match).
+    field_text = (album_type_from_field or "").lower()
+    if field_text:
+        if "acoustic" in field_text or "unplugged" in field_text:
+            return "acoustic"
+        if "live" in field_text:
+            return "live"
+        return ""
 
-    if "acoustic" in text or "unplugged" in text:
+    title = album or ""
+    title_text = title.lower()
+    if "acoustic" in title_text or "unplugged" in title_text:
         return "acoustic"
-    if "live" in text:
+    # Title-based live detection uses the format-tag patterns only — a bare
+    # "live" word inside a phrase ("(how to live) as ghosts") is NOT a live
+    # album and must not cap the album's star ratings at 4★.
+    if is_live_album_enhanced(title):
         return "live"
 
     return ""
@@ -83,13 +116,19 @@ def should_exclude_track_from_stats(
     album: str = "",
     is_live: int = 0,
     album_context_live: int = 0,
+    album_type: str = "",
 ) -> bool:
 
     if is_live or album_context_live:
         return True
 
-    if is_live_or_alternate_album(album):
-        return True
+    # When the album is matched to an authoritative album type (MusicBrainz/
+    # Spotify), the type alone decides the live verdict — title text like
+    # "(Live)" in an otherwise-studio album must not exclude its tracks.
+    # Unmatched albums fall back to the title heuristic.
+    if not (album_type or "").strip():
+        if is_live_or_alternate_album(album):
+            return True
 
     return any(re.search(pattern, title or "", re.IGNORECASE) for pattern in ALT_TRACK_PATTERNS)
 
@@ -179,11 +218,14 @@ _LIVE_ALBUM_ENHANCED_PATTERNS = [
     r"-\s*live\s*$",
     r",\s*live\s*$",
     r"\+\s*live\s*$",
+    r"\s+live\s*$",
+    r"\s+live\s*[\)\]]\s*$",
     r"live\s+at\b",
     r"live\s+in\b",
     r"live\s+from\b",
     r"live\s+session",
     r"live\s+recording",
+    r"live\s+tour\b",
     r"\bin\s+concert\b",
 ]
 

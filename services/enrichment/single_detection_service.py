@@ -1017,6 +1017,12 @@ def detect_single_for_track(
     # behaviour (Discogs + MusicBrainz = high, others = medium). A promo-only
     # Discogs match is downgraded to a MEDIUM source — promotional evidence,
     # not commercial-single confirmation (legacy parity).
+    #
+    # Discogs at sub-100% match confidence is ALSO a MEDIUM source: a lone
+    # 0.8 Discogs match must not grant 'high' on its own (that produced
+    # false-positive 5★ singles from a single partial match).  Only a
+    # full-confidence (1.0) Discogs match counts as high.
+    _discogs_full_confidence = discogs_confirmed and float(dr.get("confidence") or 0) >= 1.0
     _levels = _source_confidence_levels()
     high_sources = 0
     medium_sources = 0
@@ -1027,6 +1033,8 @@ def detect_single_for_track(
         if not _confirmed or _levels.get(_src, "high") == "low":
             continue
         _level = _levels.get(_src, "high")
+        if _src == "discogs" and not _discogs_full_confidence and _level == "high":
+            _level = "medium"
         if _src == "discogs" and discogs_promo and _level == "high":
             _level = "medium"
         if _src == "musicbrainz" and musicbrainz_promo and _level == "high":
@@ -1055,6 +1063,19 @@ def detect_single_for_track(
     # medium-confidence evidence to 'high' when the z-score is in the
     # standout range (handled inside determine_final_status), leaving tracks
     # with no real sources (Tehran/Crossroads, z≈1.2) unflagged.
+    #
+    # Independent medium corroboration for a sub-100% Discogs match: the
+    # release-date signal is DERIVED from the Discogs/MusicBrainz match itself
+    # (not independent evidence), so it must not count as the "second medium
+    # confidence method" that promotes Discogs to high.
+    _discogs_med_slot = 1 if (
+        discogs_confirmed
+        and _levels.get("discogs", "high") != "low"
+        and not _discogs_full_confidence
+    ) else 0
+    _corroborating_medium = (
+        medium_sources - _discogs_med_slot - (1 if single_release_date_match else 0)
+    )
 
     final = determine_final_status(
         discogs=discogs_confirmed, musicbrainz=musicbrainz_confirmed,
@@ -1076,6 +1097,18 @@ def detect_single_for_track(
         musicbrainz_promo=musicbrainz_promo,
         z_standout=z_standout,
     )
+
+    # A sub-100% Discogs match is MEDIUM, so it needs an independent medium
+    # source or the popularity standout (``z_standout``) to reach 'high'.
+    # Without corroboration a lone Discogs match stays 'medium' — that is the
+    # false-positive fix.
+    if (
+        discogs_confirmed
+        and not _discogs_full_confidence
+        and final in ("none", "medium")
+        and (_corroborating_medium >= 1 or z_standout)
+    ):
+        final = "high"
 
     # Soft z-gate cap: low-scoring tracks need two+ high-confidence sources to
     # reach 'high'; a single high source with NO independent corroboration

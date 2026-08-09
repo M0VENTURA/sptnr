@@ -1,14 +1,14 @@
 """Regression tests: confirmed singles must not be demoted by a low z-score.
 
-Reproduces the reported miss: a track confirmed as a single by Discogs (high
-source) AND MusicBrainz AND Last.fm (medium sources) came back as
-``medium``-confidence / 4★ purely because its popularity sat below the artist
-median (artist_z < -1.0, the ``z_low`` soft-gate). Discogs is the authority
-for single status and MusicBrainz + Last.fm independently corroborate, so the
-verdict must stay ``high`` (5★-eligible) regardless of z-score.
+Reproduces the reported miss: a track confirmed as a single by Discogs (0.8 —
+below 100%, so a MEDIUM source) AND MusicBrainz AND Last.fm (medium sources)
+came back as ``medium``-confidence / 4★ purely because its popularity sat below
+the artist median (artist_z < -1.0, the ``z_low`` soft-gate). MusicBrainz and
+Last.fm independently corroborate the Discogs match, so the verdict must stay
+``high`` (5★-eligible) regardless of z-score.
 
-The soft gate still demotes a LONE high source with zero corroboration at a
-low z-score — popularity must never promote a metadata-thin verdict to 5★.
+The gate still demotes a LONE sub-100% Discogs match with zero corroboration at
+a low z-score — popularity must never promote a metadata-thin verdict to 5★.
 """
 
 from __future__ import annotations
@@ -78,29 +78,29 @@ def _run(monkeypatch, discogs=True, musicbrainz=True, lastfm=True, release_year=
 
 class TestConfirmedSingleBelowMedian:
     def test_discogs_plus_mb_lastfm_stays_high(self, monkeypatch):
-        # Discogs + MusicBrainz + Last.fm all confirm, but the track sits below
-        # the artist median (artist_z < -1.0). The z_low gate must NOT demote a
-        # corroborated 'high' verdict to 'medium' — the confirmed single keeps
-        # its 5★ eligibility.
+        # Discogs (0.8, MEDIUM) + MusicBrainz + Last.fm all confirm, but the
+        # track sits below the artist median (artist_z < -1.0). The z_low gate
+        # must NOT demote a corroborated 'high' verdict to 'medium' — the
+        # confirmed single keeps its 5★ eligibility.
         result = _run(monkeypatch, discogs=True, musicbrainz=True, lastfm=True)
         assert result["is_single"] is True
         assert result["confidence"] == "high"
         assert result["decision"]["z_low"] is True
-        assert result["decision"]["high_sources"] == 1
+        assert result["decision"]["high_sources"] == 0
         assert result["decision"]["medium_sources"] >= 2
 
     def test_discogs_plus_mb_stays_high(self, monkeypatch):
-        # A high source plus ANY independent medium source is enough — no
-        # Last.fm needed.
+        # A sub-100% Discogs match plus ANY independent medium source is
+        # enough — no Last.fm needed.
         result = _run(monkeypatch, discogs=True, musicbrainz=True, lastfm=False)
         assert result["is_single"] is True
         assert result["confidence"] == "high"
         assert result["decision"]["z_low"] is True
-        assert result["decision"]["high_sources"] == 1
-        assert result["decision"]["medium_sources"] >= 1
+        assert result["decision"]["high_sources"] == 0
+        assert result["decision"]["medium_sources"] >= 2
 
     def test_lone_high_source_still_demoted(self, monkeypatch):
-        # The gate's purpose survives: a single Discogs match with NO other
+        # The gate's purpose survives: a sub-100% Discogs match with NO other
         # source at a low z-score still caps at 'medium' — popularity must not
         # promote a metadata-thin verdict to 5★. (No release-year metadata so
         # the release-date signal can't add a corroborating medium source.)
@@ -108,5 +108,5 @@ class TestConfirmedSingleBelowMedian:
         assert result["is_single"] is True
         assert result["confidence"] == "medium"
         assert result["decision"]["z_low"] is True
-        assert result["decision"]["high_sources"] == 1
-        assert result["decision"]["medium_sources"] == 0
+        assert result["decision"]["high_sources"] == 0
+        assert result["decision"]["medium_sources"] == 1

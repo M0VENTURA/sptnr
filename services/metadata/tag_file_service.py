@@ -258,15 +258,80 @@ def update_file_tags(file_path: str, tag_updates: Dict[str, Any]) -> bool:
     return write_tags_to_file(file_path, tag_updates)
 
 
+def _get_track_file_path(track_id: str) -> str | None:
+    """Return the track's stored ``file_path`` (or None)."""
+    try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            row = session.execute(
+                _text("SELECT file_path FROM tracks WHERE CAST(id AS TEXT) = :id"),
+                {"id": str(track_id)},
+            ).fetchone()
+            value = row[0] if row else None
+            return str(value).strip() if value and str(value).strip() else None
+    except Exception as exc:
+        logger.error("Failed to load file path for track %s: %s", track_id, exc)
+        return None
+
+
+def _resolve_music_file_path(path_value: str | None) -> str | None:
+    """Resolve a stored path to an absolute existing file.
+
+    Navidrome stores paths relative to its music folder (e.g.
+    ``Artist/Album/01 - Track.mp3``); the DB may also hold a fully absolute
+    path.  Try the stored value first, then each configured music root joined
+    with the relative path.  Returns the first path that exists on disk, or
+    None.
+    """
+    if not path_value:
+        return None
+    raw = str(path_value).strip()
+    if not raw:
+        return None
+
+    candidates = [raw]
+    if not os.path.isabs(raw):
+        for root in [
+            os.environ.get("MUSIC_FOLDER"),
+            os.environ.get("MUSIC_ROOT"),
+            os.environ.get("MUSIC_DIR"),
+            "/music",
+        ]:
+            if root:
+                candidates.append(os.path.join(str(root).strip(), raw))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def sync_track_tags_to_file(track_id: str) -> bool:
     tags = get_track_tags(track_id)
 
-    file_path = tags.get("file_path") or tags.get("path")
+    file_path = _resolve_music_file_path(_get_track_file_path(track_id))
 
     if not file_path:
+        logger.warning("No audio file resolved for track %s", track_id)
         return False
 
-    return write_tags_to_file(file_path, tags)
+    # Only write non-empty values — passing None/"" for a frame would make the
+    # writer DELETE that frame from the file (see ``_set_text_frame``).
+    tags_to_write = {
+        k: v for k, v in tags.items()
+        if v is not None and str(v).strip() != ""
+    }
+
+    if not tags_to_write:
+        logger.warning("No editable tags to write for track %s", track_id)
+        return False
+
+    return write_tags_to_file(file_path, tags_to_write)
 
 
 def update_file_metadata(file_path: str, metadata: Dict[str, Any]) -> bool:

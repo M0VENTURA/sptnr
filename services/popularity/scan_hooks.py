@@ -50,12 +50,19 @@ def prepare_album_context(
         spotify_album_type or musicbrainz_album_type or ""
     )
 
+    album_type_from_field = spotify_album_type or musicbrainz_album_type or ""
+
     live_album_type = detect_live_album_type(
         album,
-        album_type_from_field=spotify_album_type or musicbrainz_album_type or "",
+        album_type_from_field=album_type_from_field,
     )
 
-    is_live_album = bool(live_album_type) or is_live_or_alternate_album(album)
+    # The album-type field (MusicBrainz/Spotify match) is authoritative for
+    # the live verdict; the title-based check only fills in for albums with
+    # NO matched album type.
+    is_live_album = bool(live_album_type) or (
+        not album_type_from_field and is_live_or_alternate_album(album)
+    )
 
     is_compilation = detect_compilation_album(
         artist=artist,
@@ -118,6 +125,9 @@ def prepare_track_context(
         album=album,
         is_live=is_live,
         album_context_live=album_context_live,
+        album_type=album_context.get("musicbrainz_album_type")
+        or album_context.get("spotify_album_type")
+        or "",
     )
 
     return {

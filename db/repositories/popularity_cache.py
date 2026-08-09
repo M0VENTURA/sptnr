@@ -23,7 +23,7 @@ def get_cached_track_popularity(artist: str, title: str) -> Optional[Dict[str, A
             result = session.execute(
                 text("""
                     SELECT artist, title, lastfm_listeners, lastfm_playcount,
-                           listenbrainz_listens, listenbrainz_users, updated_at
+                           listenbrainz_listens, listenbrainz_users, lastfm_tags, updated_at
                     FROM track_popularity_cache
                     WHERE LOWER(artist) = LOWER(:artist) AND LOWER(title) = LOWER(:title)
                 """),
@@ -55,7 +55,7 @@ def get_cached_popularity_for_titles(
             result = session.execute(
                 text("""
                     SELECT artist, title, lastfm_listeners, lastfm_playcount,
-                           listenbrainz_listens, listenbrainz_users, updated_at
+                           listenbrainz_listens, listenbrainz_users, lastfm_tags, updated_at
                     FROM track_popularity_cache
                     WHERE LOWER(artist) = LOWER(:artist)
                     ORDER BY lastfm_listeners DESC
@@ -94,15 +94,16 @@ def upsert_track_popularity_bulk(rows: List[Dict[str, Any]]) -> int:
                     text("""
                         INSERT INTO track_popularity_cache
                             (artist, title, lastfm_listeners, lastfm_playcount,
-                             listenbrainz_listens, listenbrainz_users, source, updated_at)
+                             listenbrainz_listens, listenbrainz_users, lastfm_tags, source, updated_at)
                         VALUES
                             (:artist, :title, :lastfm_listeners, :lastfm_playcount,
-                             :listenbrainz_listens, :listenbrainz_users, :source, CURRENT_TIMESTAMP)
+                             :listenbrainz_listens, :listenbrainz_users, :lastfm_tags, :source, CURRENT_TIMESTAMP)
                         ON CONFLICT (artist, title) DO UPDATE SET
                             lastfm_listeners = EXCLUDED.lastfm_listeners,
                             lastfm_playcount = EXCLUDED.lastfm_playcount,
                             listenbrainz_listens = EXCLUDED.listenbrainz_listens,
                             listenbrainz_users = EXCLUDED.listenbrainz_users,
+                            lastfm_tags = COALESCE(EXCLUDED.lastfm_tags, track_popularity_cache.lastfm_tags),
                             source = EXCLUDED.source,
                             updated_at = CURRENT_TIMESTAMP
                     """),
@@ -113,6 +114,7 @@ def upsert_track_popularity_bulk(rows: List[Dict[str, Any]]) -> int:
                         "lastfm_playcount": int(row.get("lastfm_playcount") or 0),
                         "listenbrainz_listens": int(row.get("listenbrainz_listens") or 0),
                         "listenbrainz_users": int(row.get("listenbrainz_users") or 0),
+                        "lastfm_tags": row.get("lastfm_tags") or None,
                         "source": row.get("source") or "bulk",
                     },
                 )

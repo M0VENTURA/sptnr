@@ -363,6 +363,14 @@ def process_track(
                         update_payload["lastfm_playcount"] = lastfm_playcount
                         update_payload["lastfm_last_updated"] = now_ts
                         update_payload["_from_prefetch"] = True
+                        # The bulk cache prefetch carries each track's Last.fm
+                        # top-tags (captured from the single artist.getTopTracks
+                        # call) — persist them when the track has none. Without
+                        # this, the prefetch fast-path (which skips per-track
+                        # track.getInfo calls) never collected lastfm_tags, so
+                        # Last.fm-only genre data never reached the DB.
+                        if not effective_track.get("lastfm_tags") and _prefetch_entry.get("lastfm_tags"):
+                            update_payload["lastfm_tags"] = _prefetch_entry["lastfm_tags"]
                     else:
                         try:
                             from helpers.config_helpers import get_config
@@ -919,7 +927,7 @@ def process_track(
     # 3. METADATA - MusicBrainz (via enrichment service for better matching)
     # -------------------------------------------------------------------------
 
-    if not popularity_only and not frozen_track and not singles_detection_only:
+    if not popularity_only and not singles_detection_only:
         try:
             title = _as_str(track.get("title"))
             artist = _as_str(track.get("artist"))
@@ -928,17 +936,29 @@ def process_track(
                 # The per-track MusicBrainz lookup is the dominant per-track
                 # API cost — skip it when the track already has a resolved
                 # recording MBID and the scan isn't forced (metadata is
-                # stable between scans).
+                # stable between scans). Mature frozen tracks also skip it —
+                # the freeze is a score-only optimization, but the recording
+                # metadata (MBID, album, writer) is stable once resolved.
                 _has_mbid = bool(
                     _as_str(track.get("recording_mbid") or track.get("mbid") or track.get("musicbrainz_trackid"))
                 )
+                # Only columns that actually feed the genre display gate the
+                # genre source fetches. ``musicbrainz_tags`` is NOT one of
+                # them — the artist/album pages aggregate ``musicbrainz_genres``
+                # and the other per-source columns, never tags. Including tags
+                # here meant a track that only had MB tags never fetched MB
+                # genres (and so never showed any genre on the artist page).
                 _has_genres = bool(
-                    track.get("musicbrainz_genres") or track.get("musicbrainz_tags") or track.get("discogs_genres")
+                    track.get("musicbrainz_genres")
+                    or track.get("discogs_genres")
+                    or track.get("listenbrainz_genres")
+                    or track.get("spotify_genres")
+                    or track.get("lastfm_tags")
                 )
                 _force_meta = bool(options.get("force"))
                 mb_data = None
-                if _has_mbid and not _force_meta:
-                    logger.debug("[track_stage] Skipping MB metadata lookup for %s (MBID already resolved)", track_id)
+                if frozen_track or (_has_mbid and not _force_meta):
+                    logger.debug("[track_stage] Skipping MB metadata lookup for %s (frozen or MBID already resolved)", track_id)
                 else:
                     mb_service = MusicBrainzService()
                     mb_data = mb_service.lookup_recording_metadata(title, artist)
