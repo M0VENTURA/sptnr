@@ -173,6 +173,6 @@ class TestMonitoredDownloadsDir:
     def test_returns_resolved_downloads_dir(self, monkeypatch):
         monkeypatch.setattr(
             "services.downloads.download_scan_service.resolve_downloads_dir",
-            lambda: "/custom/downloads",
+            lambda *a, **k: "/custom/downloads",
         )
         assert dcs._monitored_downloads_dir() == "/custom/downloads"

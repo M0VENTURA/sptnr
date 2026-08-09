@@ -21,6 +21,7 @@ from helpers.normalization_service import (
     normalize_core_title,
     extract_version_info,
 )
+from helpers.config_helpers import _GENERIC_COMPILATION_ARTISTS
 
 # Import centralized configuration
 from helpers.config_helpers import get_queue_matching_config_v2
@@ -149,6 +150,24 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
     title_score = _simple_similarity(file_title_norm, queue_title_norm)
 
     # ------------------------------------------------------------------
+    # Compilation tolerance
+    # ------------------------------------------------------------------
+    # Compilation releases (e.g. "Greatest Hits") routinely tag the embedded
+    # artist as "Various Artists"/"VA" — or omit it entirely — while the queue
+    # item carries the per-track artist. An artist mismatch under those
+    # circumstances is NOT evidence the file is wrong; defer to filename
+    # matching (None) rather than hard-rejecting a correctly-named download.
+
+    file_artist_generic = (
+        not file_artist_norm
+        or file_artist_norm in _GENERIC_COMPILATION_ARTISTS
+    )
+    queue_is_compilation = (
+        queue_album_artist_norm in _GENERIC_COMPILATION_ARTISTS
+        or queue_artist_norm in _GENERIC_COMPILATION_ARTISTS
+    )
+
+    # ------------------------------------------------------------------
     # Early hard rejection (restored from original logic)
     # ------------------------------------------------------------------
 
@@ -156,6 +175,8 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
         return False
 
     if artist_score == 0.0 and title_score < 1.0:
+        if file_artist_generic or queue_is_compilation:
+            return None
         return False
 
     # ------------------------------------------------------------------
@@ -186,6 +207,8 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
     # ------------------------------------------------------------------
 
     if artist_score == 0.0:
+        if file_artist_generic or queue_is_compilation:
+            return None
         return False
 
     # unclear → let filename/scoring decide
