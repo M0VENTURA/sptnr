@@ -498,7 +498,27 @@ async def artist_detail(name: str):
         if isinstance(value, list):
             raw_items = value
         else:
-            raw_items = re.split(r"[,;|\\]+", str(value))
+            text = str(value)
+            # Genre/tag columns store JSON arrays (e.g. '["rock","metal"]') as
+            # well as plain delimited text.  Parse the JSON form first so the
+            # artist "Top Genres" sections show clean names.
+            if text.startswith("["):
+                try:
+                    import json as _json
+                    parsed = _json.loads(text)
+                    if isinstance(parsed, list):
+                        raw_items = []
+                        for item in parsed:
+                            if isinstance(item, dict):
+                                raw_items.append(str(item.get("name") or ""))
+                            else:
+                                raw_items.append(str(item))
+                    else:
+                        raw_items = re.split(r"[,;|\\]+", text)
+                except Exception:
+                    raw_items = re.split(r"[,;|\\]+", text)
+            else:
+                raw_items = re.split(r"[,;|\\]+", text)
 
         cleaned: list[str] = []
         seen: set[str] = set()
@@ -1229,7 +1249,24 @@ async def album_detail(artist: str, album: str):
         if isinstance(value, list):
             raw_items = value
         else:
-            raw_items = re.split(r"[,;|\\]+", str(value))
+            text = str(value)
+            if text.startswith("["):
+                try:
+                    import json as _json
+                    parsed = _json.loads(text)
+                    if isinstance(parsed, list):
+                        raw_items = []
+                        for item in parsed:
+                            if isinstance(item, dict):
+                                raw_items.append(str(item.get("name") or ""))
+                            else:
+                                raw_items.append(str(item))
+                    else:
+                        raw_items = re.split(r"[,;|\\]+", text)
+                except Exception:
+                    raw_items = re.split(r"[,;|\\]+", text)
+            else:
+                raw_items = re.split(r"[,;|\\]+", text)
 
         cleaned: list[str] = []
         seen: set[str] = set()
@@ -2058,7 +2095,7 @@ async def track_detail(track_id: str):
 
                     if resolved_path:
                         try:
-                            from helpers.tag_manager import write_tags_to_file
+                            from services.metadata.tag_file_service import write_tags_to_file
 
                             tags_to_write = build_tags_to_write(update_values)
 

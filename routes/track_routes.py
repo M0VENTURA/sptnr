@@ -40,6 +40,67 @@ def _coerce_optional_int(value: Any, allow_prefix: bool = False) -> int | None:
         return None
 
 
+def _parse_flag_bool(value: Any) -> bool:
+    """Coerce JSON 0/1, ``true``/``false`` and checkbox strings to a bool."""
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "checked"}
+
+
+def _get_track_column_types(session) -> dict[str, str]:
+    """Return tracks column name -> normalized data type."""
+    try:
+        result = session.execute(
+            text("""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = 'tracks'
+            """)
+        )
+        return {
+            str(row[0]).lower(): str(row[1]).lower()
+            for row in result.fetchall()
+        }
+    except Exception:
+        return {}
+
+
+def _normalize_track_updates(
+    updates: dict[str, Any],
+    column_types: dict[str, str],
+) -> dict[str, Any]:
+    """Coerce incoming values to match the real tracks column types.
+
+    The frontend sends flags as JSON 0/1 integers; PostgreSQL BOOLEAN
+    columns reject those with a DatatypeMismatch. Integer/numeric columns
+    also need their values cast so text payloads don't error either.
+    """
+    int_types = {"integer", "bigint", "smallint"}
+    numeric_types = {"numeric", "double precision", "real", "decimal"}
+
+    normalized: dict[str, Any] = {}
+    for column_name, value in updates.items():
+        column_type = column_types.get(column_name, "")
+
+        if column_type == "boolean":
+            normalized[column_name] = _parse_flag_bool(value)
+        elif column_type in int_types:
+            int_value = _coerce_optional_int(
+                value,
+                allow_prefix=(column_name == "track_number"),
+            )
+            normalized[column_name] = int_value
+        elif column_type in numeric_types:
+            try:
+                normalized[column_name] = float(value) if str(value).strip() else None
+            except (TypeError, ValueError):
+                normalized[column_name] = None
+        else:
+            normalized[column_name] = value
+
+    return normalized
+
+
 # ---------------------------------------------------------------------------
 # GET /api/track/<track_id> — single track metadata
 # ---------------------------------------------------------------------------
@@ -227,6 +288,12 @@ async def api_track_update_metadata():
                     updates[field] = data[field]
             if not updates:
                 return jsonify({"error": "No fields to update"}), 400
+
+            # Coerce values to the real column types so PostgreSQL BOOLEAN
+            # columns accept the 0/1 integers the edit modals send, and so
+            # integer/numeric columns don't reject string payloads either.
+            updates = _normalize_track_updates(updates, _get_track_column_types(session))
+
             set_clause = ", ".join(f"{k} = :{k}" for k in updates)
             params = {**updates, "id": track_id}
             session.execute(text(f"UPDATE tracks SET {set_clause} WHERE CAST(id AS TEXT) = :id"), params)
@@ -241,7 +308,25 @@ async def api_track_update_metadata():
                     revert_track_live_state(track_id)
                 except Exception as revert_err:
                     logger.debug("Live-state revert failed for %s: %s", track_id, revert_err)
-            return jsonify({"success": True, "updated": list(updates.keys())})
+
+        # Sync tags back to the audio file by default for the album/artist/
+        # track editing flows (frontend sends sync_to_file: true).
+        file_synced = False
+        if data.get("sync_to_file", True):
+            try:
+                from services.metadata.tag_file_service import sync_track_tags_to_file
+                file_synced = bool(sync_track_tags_to_file(track_id))
+            except Exception as sync_err:
+                logger.warning(
+                    "Track metadata DB update succeeded but file sync failed for %s: %s",
+                    track_id,
+                    sync_err,
+                )
+        return jsonify({
+            "success": True,
+            "updated": list(updates.keys()),
+            "file_synced": file_synced,
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

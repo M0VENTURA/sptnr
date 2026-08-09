@@ -12,6 +12,7 @@ Uses the updated ``api_clients`` classes directly for lookups.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -79,6 +80,11 @@ logger = logging.getLogger(__name__)
 
 _as_str = safe_str
 _as_int = safe_int
+
+# Per-artist Spotify genre cache (artist name → list of genres).  Artist-level
+# Spotify genres rarely change, so a full scan only pays the artist lookup once
+# per artist instead of once per track.
+_spotify_artist_genres_cache: dict[str, list[str]] = {}
 
 
 def _build_effective_track(
@@ -1040,13 +1046,18 @@ def process_track(
                         mb_genres = rec.get("genres") or []
                         mb_tags = rec.get("tags") or []
                         if mb_genres:
-                            update_payload["musicbrainz_genres"] = [
-                                g.get("name", "") for g in mb_genres if g.get("name")
-                            ]
+                            # Store as a JSON string — the column is TEXT and
+                            # psycopg2 cannot adapt a Python list to a text
+                            # parameter (this silently failed every track save).
+                            update_payload["musicbrainz_genres"] = json.dumps(
+                                [g.get("name", "") for g in mb_genres if g.get("name")],
+                                ensure_ascii=False,
+                            )
                         if mb_tags:
-                            update_payload["musicbrainz_tags"] = [
-                                t.get("name", "") for t in mb_tags if t.get("name")
-                            ]
+                            update_payload["musicbrainz_tags"] = json.dumps(
+                                [t.get("name", "") for t in mb_tags if t.get("name")],
+                                ensure_ascii=False,
+                            )
                 except Exception as e:
                     logger.debug("[track_stage][MB_GENRE] %s: %s", track_id, e)
 
@@ -1054,19 +1065,72 @@ def process_track(
             if title and artist and (not _has_genres or _force_meta):
                 try:
                     from api_clients.discogs_http import DiscogsHttpClient
-                    discogs = DiscogsHttpClient(token="")
-                    results = discogs.search_database({
-                        "q": f'{artist} {title}',
-                        "type": "release",
-                        "per_page": 3,
-                    })
-                    if results and len(results) > 0:
-                        genres = results[0].get("genre", []) or []
-                        styles = results[0].get("style", []) or []
-                        if genres or styles:
-                            update_payload["discogs_genres"] = list(set(genres + styles))
+                    from helpers.config_helpers import get_config as _get_discogs_cfg
+                    _discogs_cfg = (_get_discogs_cfg().get("api_integrations", {}) or {}).get("discogs", {}) or {}
+                    _discogs_token = str(_discogs_cfg.get("token") or "").strip()
+                    if not _discogs_token or _discogs_token.lower() in ("your_discogs_token", "your_token", "placeholder"):
+                        _discogs_token = ""
+                    if _discogs_token:
+                        discogs = DiscogsHttpClient(token=_discogs_token)
+                        results = discogs.search_database({
+                            "q": f'{artist} {title}',
+                            "type": "release",
+                            "per_page": 3,
+                        })
+                        if results and len(results) > 0:
+                            genres = results[0].get("genre", []) or []
+                            styles = results[0].get("style", []) or []
+                            if genres or styles:
+                                update_payload["discogs_genres"] = json.dumps(
+                                    list(set(genres + styles)),
+                                    ensure_ascii=False,
+                                )
                 except Exception as e:
                     logger.debug("[track_stage][DISCOGS_GENRE] %s: %s", track_id, e)
+
+            # Fetch ListenBrainz genres for the track (legacy parity) — only
+            # when a recording MBID is known and the column is still empty.
+            if title and artist and not track.get("listenbrainz_genres") and not update_payload.get("listenbrainz_genres"):
+                try:
+                    _lb_mbid = (
+                        (mb_data or {}).get("recording_mbid")
+                        or track.get("recording_mbid")
+                        or track.get("mbid")
+                        or track.get("musicbrainz_trackid")
+                    )
+                    if _lb_mbid:
+                        from api_clients.listenbrainz import get_recording_tags
+                        lb_tags = get_recording_tags(_lb_mbid) or []
+                        names = [str(t.get("tag") or t.get("name") or "").strip() for t in lb_tags if isinstance(t, dict)]
+                        names = [n for n in names if n]
+                        if names:
+                            update_payload["listenbrainz_genres"] = json.dumps(names, ensure_ascii=False)
+                            logger.debug("[track_stage][LB_GENRE] %s: %d ListenBrainz genre(s)", track_id, len(names))
+                except Exception as e:
+                    logger.debug("[track_stage][LB_GENRE] %s: %s", track_id, e)
+
+            # Fetch Spotify genres for the track (legacy parity) — artist-level
+            # genres are cached per artist so a full scan only pays the lookup
+            # once per artist instead of once per track.
+            if title and artist and not track.get("spotify_genres") and not update_payload.get("spotify_genres"):
+                try:
+                    from services.enrichment.spotify_metadata_service import get_spotify_client
+                    sp = get_spotify_client()
+                    if sp is not None:
+                        _sp_artist_key = (artist or "").strip().lower()
+                        if _sp_artist_key not in _spotify_artist_genres_cache:
+                            _sp_artist_id = sp.get_artist_id(artist)
+                            _sp_genres: list[str] = []
+                            if _sp_artist_id:
+                                _sp_meta = sp.get_artist_metadata(_sp_artist_id) or {}
+                                _sp_genres = [g for g in (_sp_meta.get("genres") or []) if g]
+                            _spotify_artist_genres_cache[_sp_artist_key] = _sp_genres
+                        _sp_genres = _spotify_artist_genres_cache.get(_sp_artist_key) or []
+                        if _sp_genres:
+                            update_payload["spotify_genres"] = json.dumps(_sp_genres, ensure_ascii=False)
+                            logger.debug("[track_stage][SPOTIFY_GENRE] %s: %d genre(s)", track_id, len(_sp_genres))
+                except Exception as e:
+                    logger.debug("[track_stage][SPOTIFY_GENRE] %s: %s", track_id, e)
 
         except Exception as e:
             logger.debug("[track_stage][MB] %s: %s", track_id, e)
@@ -1108,9 +1172,10 @@ def process_track(
                         except Exception:
                             _mbg = []
                     if isinstance(_mbg, list):
-                        update_payload["musicbrainz_genres"] = ["Cover"] + [g for g in _mbg if g != "Cover"]
+                        _cover_list = ["Cover"] + [g for g in _mbg if g != "Cover"]
                     else:
-                        update_payload["musicbrainz_genres"] = ["Cover"]
+                        _cover_list = ["Cover"]
+                    update_payload["musicbrainz_genres"] = json.dumps(_cover_list, ensure_ascii=False)
                     log_unified(f"[TRACK_STAGE] {track_artist} - {track_title} → cover detected ({reason})")
         except Exception as e:
             logger.debug("[track_stage][COVER] %s: %s", track_id, e)
@@ -1162,7 +1227,10 @@ def process_track(
                 # Top-3 genres across all sources.
                 aggregated = aggregate_genres(source_map, max_genres=3)
                 if aggregated:
-                    update_payload["aggregated_genres"] = aggregated
+                    # Persist to the REAL ``genres`` column (comma-joined, the
+                    # format the old scanner wrote).  ``aggregated_genres`` is
+                    # not a column and would be silently dropped by save_to_db.
+                    update_payload["genres"] = ", ".join(aggregated)
 
                 # Legacy parity: inject special genre tags (Christmas, Cover,
                 # Live, Acoustic, Remix, ...) detected from the title/album —
@@ -1180,21 +1248,14 @@ def process_track(
                 except Exception:
                     _special = set()
                 if _special:
-                    _existing = update_payload.get("aggregated_genres") or []
-                    if isinstance(_existing, str):
-                        try:
-                            import json as _json
-                            _existing = _json.loads(_existing)
-                        except Exception:
-                            _existing = []
-                    if isinstance(_existing, list):
-                        _merged = list(_existing)
-                        for _tag in sorted(_special):
-                            if _tag not in _merged:
-                                _merged.append(_tag)
-                        update_payload["aggregated_genres"] = _merged
-                    else:
-                        update_payload["aggregated_genres"] = sorted(_special)
+                    _existing = update_payload.get("genres") or ""
+                    if isinstance(_existing, (list, tuple)):
+                        _existing = ", ".join(str(x) for x in _existing)
+                    _merged = [g.strip() for g in str(_existing).split(",") if g.strip()]
+                    for _tag in sorted(_special):
+                        if _tag not in _merged:
+                            _merged.append(_tag)
+                    update_payload["genres"] = ", ".join(_merged)
                     logger.debug(
                         "[track_stage] Special genre tags for %s: %s",
                         track_id, sorted(_special),

@@ -1513,7 +1513,7 @@
             const payload = {
                 track_id: String(CURRENT_TRACK_ID),
                 sync_to_file: true,
-                is_single: result.is_single ? 1 : 0,
+                is_single: !!result.is_single,
                 single_confidence: result.is_single ? 'medium' : 'low'
             };
             if (result.year) payload.year = String(result.year);

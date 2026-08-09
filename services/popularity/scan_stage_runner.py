@@ -827,16 +827,31 @@ def run_scan(
             total_items=total_albums,
         )
 
-        album_context, track_contexts = prepare_tracks_for_album(
-            artist=artist,
-            album=album,
-            tracks=tracks,
-            album_artist=album_row.get("album_artist"),
-            spotify_album_type=album_row.get("spotify_album_type"),
-            musicbrainz_album_type=album_row.get("musicbrainz_album_type"),
-        )
-
-        stat_eligible_tracks = get_stat_eligible_tracks(track_contexts)
+        try:
+            album_context, track_contexts = prepare_tracks_for_album(
+                artist=artist,
+                album=album,
+                tracks=tracks,
+                album_artist=album_row.get("album_artist"),
+                spotify_album_type=album_row.get("spotify_album_type"),
+                musicbrainz_album_type=album_row.get("musicbrainz_album_type"),
+            )
+            stat_eligible_tracks = get_stat_eligible_tracks(track_contexts)
+        except Exception as exc:
+            # A malformed album (bad track shape / degenerate classification)
+            # must never kill the whole scan thread silently — that leaves the
+            # progress state stuck as "running" and the scan "fails to resume".
+            logger.warning("[scan_runner] Album prep failed for %s - %s: %s", artist, album, exc)
+            try:
+                log_unified(f"[POPULARITY] Album '{artist} - {album}' skipped (prep error: {exc})")
+            except Exception:
+                pass
+            try:
+                record_scan(scan_type, "failed", message=f"Album prep failed: {exc}", artist=artist, album=album)
+            except Exception:
+                pass
+            albums_processed += 1
+            continue
 
         # Determine actual scan type from options for history display
         record_scan(scan_type, "started", message=f"{scan_type} scan: {artist} - {album}", artist=artist, album=album)
