@@ -33,8 +33,38 @@ from services.scanning.scan_state import (
     write_progress_with_current_artist,
 )
 from services.scanning.scan_history_service import record_scan, was_album_scanned
+from services.catalog.album_classification_service import (
+    detect_live_album_type,
+    should_exclude_track_from_stats,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _refresh_album_live_context(album, album_context, track_contexts, album_type_field) -> None:
+    """Apply the album TYPE as the authoritative live-album signal.
+
+    Live-album detection uses the album type field when the album is matched
+    (MusicBrainz/Spotify) and only falls back to title heuristics for
+    unmatched albums.  Enrichment determines the type AFTER the album context
+    is prepared (title-based), so refresh both in-memory contexts so this
+    scan's singles pass sees the authoritative verdict.
+    """
+    if not album_type_field:
+        return
+    album_context["musicbrainz_album_type"] = str(album_type_field)
+    album_context["live_album_type"] = detect_live_album_type(album, album_type_field)
+    album_context["is_live_album"] = bool(album_context["live_album_type"])
+    for _tc in track_contexts or []:
+        _track = _tc.get("track") or {}
+        _tc["album_context_live"] = 1 if album_context["is_live_album"] else 0
+        _tc["exclude_from_stats"] = should_exclude_track_from_stats(
+            title=_tc.get("title") or "",
+            album=album,
+            is_live=int(_track.get("is_live") or 0),
+            album_context_live=_tc["album_context_live"],
+            album_type=str(album_type_field),
+        )
 
 
 def _resolve_scan_type(options: dict[str, Any]) -> str:
@@ -735,6 +765,12 @@ def run_scan(
                         spotify_album_type=album_row.get("spotify_album_type"),
                         musicbrainz_album_type=album_row.get("musicbrainz_album_type"),
                     )
+                    _refresh_album_live_context(
+                        album,
+                        _album_context,
+                        _track_contexts,
+                        _detected_type or "",
+                    )
                     _album_result = {
                         "album_row": album_row,
                         "album_context": _album_context,
@@ -862,6 +898,16 @@ def run_scan(
                 album_context=album_context,
                 stat_eligible_tracks=stat_eligible_tracks,
                 options=options,
+            )
+
+            # Live-album detection uses the album TYPE as the authoritative
+            # signal once enrichment matches one; refresh the in-memory album
+            # context so this scan's singles pass sees it.
+            _refresh_album_live_context(
+                album,
+                album_context,
+                track_contexts,
+                str((album_result or {}).get("detected_album_type") or ""),
             )
 
             # ── Bulk popularity cache prefetch — once per ARTIST ──────────────

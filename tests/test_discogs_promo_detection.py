@@ -260,7 +260,13 @@ class TestPromoFullDetection:
         assert result["confidence"] == "medium"
         assert "discogs_matched" in result["reasons"]
 
-    def test_commercial_discogs_match_is_high(self, monkeypatch):
+    def test_lone_commercial_discogs_match_is_medium(self, monkeypatch):
+        # A commercial Discogs match is still only 0.8 confidence — BELOW 100%
+        # — so it is a MEDIUM source.  With no independent medium source and no
+        # popularity standout to corroborate it, the verdict must stay
+        # 'medium' (false-positive fix: a single partial Discogs match must not
+        # grant 5★).
         result = self._run(monkeypatch, discogs_promo=False)
         assert result["is_single"] is True
-        assert result["confidence"] == "high"
+        assert result["confidence"] == "medium"
+        assert "discogs_matched" in result["reasons"]

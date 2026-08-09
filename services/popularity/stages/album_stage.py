@@ -53,7 +53,10 @@ _HETEROGENEOUS_MARKERS = [
 ]
 _LIVE_ALBUM_PATTERNS = [
     r"\blive\s+at\b", r"\blive\s+in\b", r"\blive\s+from\b",
-    r"\blive\s+session\b", r"\(live\)\s*$", r"\bunplugged\b", r"\bacoustic\b",
+    r"\blive\s+session\b", r"\(live\)\s*$", r"\[live\]\s*$",
+    r"-\s*live\s*$", r",\s*live\s*$", r"\+\s*live\s*$",
+    r"live\s+recording\b", r"live\s+tour\b", r"\bin\s+concert\b",
+    r"\bunplugged\b", r"\bacoustic\b",
 ]
 
 
@@ -381,6 +384,12 @@ def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None,
             return None, None
         primary = (best.get("primary_type") or "").lower()
         rg_mbid = best.get("id")
+        # Secondary types refine the primary type: a release-group whose
+        # primary type is "album" but is tagged secondary "live" is a LIVE
+        # album (and "compilation"/"remix" refine to those verdicts).  This
+        # keeps the album TYPE the authoritative live signal instead of
+        # falling back to title text.
+        secondary = " ".join(str(s).lower() for s in (best.get("secondary_types") or []) if s)
         mapping = {
             "single": "single",
             "ep": "ep",
@@ -389,6 +398,15 @@ def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None,
             "live": "album+live",
             "remix": "album+remix",
         }
+        if primary == "album" or primary not in mapping:
+            if "live" in secondary:
+                return "album+live", rg_mbid
+            if "acoustic" in secondary or "unplugged" in secondary:
+                return "album+acoustic", rg_mbid
+            if "compilation" in secondary:
+                return "album+compilation", rg_mbid
+            if "remix" in secondary:
+                return "album+remix", rg_mbid
         return mapping.get(primary), rg_mbid
     except Exception as exc:
         logger.debug("[album_stage] MB album-type lookup failed for '%s - %s': %s", artist, album, exc)

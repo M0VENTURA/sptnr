@@ -133,6 +133,92 @@ class TestLiveAlbumFalsePositive:
         assert ctx["is_live_album"] is False
         assert ctx["live_album_type"] == ""
 
+class TestLiveAlbumTypeIsAuthoritative:
+    """The album TYPE is the live-album signal; title heuristics are fallback.
+
+    Live-album detection always uses the album type field when the album is
+    matched (MusicBrainz/Spotify).  A matched type that says "album" wins even
+    when the title contains live-looking text; the title heuristic only runs
+    for albums with NO matched type.
+    """
+
+    def test_type_album_overrides_live_looking_title(self):
+        from services.catalog.album_classification_service import detect_live_album_type
+
+        assert detect_live_album_type("The Wall (Live)", "album") == ""
+        assert detect_live_album_type("(how to live) as ghosts", "album") == ""
+
+    def test_type_live_overrides_plain_title(self):
+        from services.catalog.album_classification_service import detect_live_album_type
+
+        assert detect_live_album_type("Anything At All", "album+live") == "live"
+        assert detect_live_album_type("Anything At All", "album+acoustic") == "acoustic"
+
+    def test_no_type_uses_title_fallback(self):
+        from services.catalog.album_classification_service import detect_live_album_type
+
+        assert detect_live_album_type("Song - Live") == "live"
+        assert detect_live_album_type("Live at Pompeii") == "live"
+        assert detect_live_album_type("(how to live) as ghosts") == ""
+
+    def test_prepare_album_context_type_wins(self):
+        from services.popularity.scan_hooks import prepare_album_context
+
+        ctx = prepare_album_context(
+            artist="Pink Floyd",
+            album="The Wall (Live)",
+            tracks=[{"id": "t1", "title": "Song", "artist": "Pink Floyd",
+                     "album": "The Wall (Live)", "musicbrainz_albumtype": "album"}],
+            musicbrainz_album_type="album",
+        )
+        assert ctx["is_live_album"] is False
+        assert ctx["live_album_type"] == ""
+
+        ctx2 = prepare_album_context(
+            artist="Pink Floyd",
+            album="The Wall (Live)",
+            tracks=[{"id": "t1", "title": "Song", "artist": "Pink Floyd",
+                     "album": "The Wall (Live)", "musicbrainz_albumtype": "album+live"}],
+            musicbrainz_album_type="album+live",
+        )
+        assert ctx2["is_live_album"] is True
+        assert ctx2["live_album_type"] == "live"
+
+    def test_should_exclude_uses_album_type(self):
+        from services.catalog.album_classification_service import should_exclude_track_from_stats
+
+        # Matched studio album whose title looks live: tracks stay eligible.
+        assert should_exclude_track_from_stats(
+            "Song", "The Wall (Live)", album_type="album"
+        ) is False
+        # Unmatched album falls back to the title heuristic.
+        assert should_exclude_track_from_stats("Song", "The Wall (Live)") is True
+
+    def test_mb_secondary_live_type_maps_to_live(self):
+        import services.enrichment.musicbrainz_service as mbm
+        from services.popularity.stages import album_stage as a
+
+        def run(secondary):
+            class FakeSvc:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def search_releasegroup_matches(self, artist, album, limit=3):
+                    return [{"id": "rg1", "title": album, "primary_type": "album",
+                             "secondary_types": secondary, "match_score": 0.95}]
+
+            mbm.MusicBrainzService = FakeSvc
+            return a._lookup_musicbrainz_album_type("Pink Floyd", "The Wall (Live)")
+
+        assert run(["live"]) == ("album+live", "rg1")
+        assert run([]) == ("album", "rg1")
+        assert run(["remix"]) == ("album+remix", "rg1")
+        assert run(["live", "compilation"]) == ("album+live", "rg1")
+
+
+class TestHowToLiveStarRating:
+    """'(how to live) as ghosts' must not cap tracks at 4★ (no live detection)."""
+
     def test_high_single_on_how_to_live_reaches_five_star(self):
         """A high-confidence single on the album must not be capped at 4★."""
         from services.popularity.stages.finalise_stage import _assign_stars
@@ -145,3 +231,6 @@ class TestLiveAlbumFalsePositive:
         }
         album = [40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 99.0]
         assert _assign_stars(track, album, album) == 5
+
+
+

@@ -77,6 +77,21 @@ def calculate_match_score(mb_title, mb_artist_credit, local_album, local_artist)
     return (title_sim * 0.6) + (artist_sim * 0.4)
 
 
+def _parse_secondary_types(raw) -> list[str]:
+    """Normalise the MusicBrainz ``secondary-types`` field into a list.
+
+    The search API returns secondary types as a comma-joined string (e.g.
+    ``"live"`` or ``"live,compilation"``); treat a list payload defensively.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [p.strip() for p in raw.split(",") if p.strip()]
+    if isinstance(raw, (list, tuple)):
+        return [str(p).strip() for p in raw if str(p).strip()]
+    return []
+
+
 def _artist_lookup_candidates(artist: str) -> list[str]:
     """Full credit first, then the feat.-stripped primary artist.
 
@@ -477,6 +492,10 @@ class MusicBrainzService:
                 "title": group.get("title"),
                 "primary_type": group.get("primary-type"),
                 "match_score": round(score, 3),
+                # Secondary types refine the primary type (e.g. a primary
+                # "album" that is secondary "live").  The search API returns
+                # them as a comma-joined string; normalise to a list.
+                "secondary_types": _parse_secondary_types(group.get("secondary-types")),
             })
 
         matches.sort(key=lambda x: x["match_score"], reverse=True)

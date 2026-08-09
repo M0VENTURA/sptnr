@@ -162,12 +162,27 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
                 logger.debug("[LOAD_STAGE] Skipping '%s - %s': only %s track(s), min %s", artist, album, len(tracks), min_tracks)
                 continue
 
+            # Album-type resolution for the album row: prefer a CONSISTENT
+            # stored type (persisted by the album stage after the MB
+            # release-group lookup).  Live/alternate detection then treats
+            # the matched type as authoritative and only falls back to title
+            # heuristics when no type is stored yet (first scan).
+            _mb_types = {
+                str(t.get("musicbrainz_albumtype") or "").strip()
+                for t in tracks
+                if str(t.get("musicbrainz_albumtype") or "").strip()
+            }
+            _sp_types = {
+                str(t.get("spotify_album_type") or "").strip()
+                for t in tracks
+                if str(t.get("spotify_album_type") or "").strip()
+            }
             candidates.append({
                 "artist": artist,
                 "album": album,
                 "album_artist": artist,
-                "spotify_album_type": None,
-                "musicbrainz_album_type": None,
+                "spotify_album_type": next(iter(_sp_types)) if len(_sp_types) == 1 else None,
+                "musicbrainz_album_type": next(iter(_mb_types)) if len(_mb_types) == 1 else None,
                 "tracks": tracks,
             })
 
