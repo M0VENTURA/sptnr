@@ -1045,14 +1045,22 @@
 
                 <!-- Similar Artists -->
                 <div class="card mb-4" id="track-similar-section">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-person-heart"></i> Similar Artists
-                        </h5>
+                    <div class="card-header p-0" id="track-similar-heading">
+                        <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-similar-collapse" aria-expanded="false" aria-controls="track-similar-collapse" style="color: inherit;">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-person-heart"></i> Similar Artists
+                            </h5>
+                            <i class="bi bi-chevron-down similar-chevron"></i>
+                        </button>
                     </div>
-                    <div class="card-body">
-                        <div id="similarArtistsContainer" class="spinner-border" role="status">
-                            <span class="visually-hidden">Loading similar artists...</span>
+                    <div id="track-similar-collapse" class="collapse">
+                        <div class="card-body">
+                            <div id="similarArtistsContainer">
+                                <div class="text-center py-3 text-muted">
+                                    <i class="bi bi-chevron-down"></i>
+                                    <span>Expand to load similar artists from Last.fm and ListenBrainz.</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1974,6 +1982,7 @@ function updateGenresDisplay() {
 
 // Initialize genre loading on page load
 let genresLoaded = false;
+let similarArtistsLoaded = false;
 
 document.addEventListener('DOMContentLoaded', function() {
     const trackId = '{{ track.id }}'.trim();
@@ -1990,7 +1999,18 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     if (artist && artist.length > 0) {
-        loadSimilarArtistsForTrack(artist);
+        // Similar artists load lazily the first time the section is expanded.
+        const similarCollapse = document.getElementById('track-similar-collapse');
+        if (similarCollapse) {
+            similarCollapse.addEventListener('shown.bs.collapse', function () {
+                if (!similarArtistsLoaded && artist) {
+                    similarArtistsLoaded = true;
+                    loadSimilarArtistsForTrack(artist);
+                }
+            });
+        } else {
+            loadSimilarArtistsForTrack(artist);
+        }
     }
 });
 
@@ -2160,66 +2180,54 @@ function displaySimilarArtists(data) {
         ...listenbrainzArtists.map(a => normalizeSimilarArtist(a, 'listenbrainz')).filter(Boolean)
     ];
 
-    // Deduplicate by name, prefer in_collection=true
+    // Deduplicate by name, accumulating the sources that recommended it
     const seen = new Map();
     allArtists.forEach(a => {
         const key = a.name.toLowerCase();
-        if (!seen.has(key) || a.in_collection) seen.set(key, a);
+        if (seen.has(key)) {
+            seen.get(key).sources.add(a.source);
+        } else {
+            seen.set(key, { ...a, sources: new Set([a.source]) });
+        }
     });
     const uniqueArtists = Array.from(seen.values());
 
-    const inCollection = uniqueArtists.filter(a => a.in_collection);
-    const notInCollection = uniqueArtists.filter(a => !a.in_collection);
+    // Only recommend artists NOT already in the collection — the section is
+    // a discovery list, so owned artists are filtered out.
+    const recommendations = uniqueArtists.filter(a => !a.in_collection);
 
-    let html = '';
+    if (recommendations.length === 0) {
+        container.innerHTML = '<div class="alert alert-success mb-0"><i class="bi bi-check-circle"></i> All recommended similar artists are already in your collection!</div>';
+        return;
+    }
 
-    // Section: Similar Artists (In Collection)
-    if (inCollection.length > 0) {
+    const sourceBadge = (a) => {
+        const parts = [];
+        if (a.sources.has('lastfm')) parts.push('<span class="badge bg-danger-subtle text-danger-emphasis">Last.fm</span>');
+        if (a.sources.has('listenbrainz')) parts.push('<span class="badge bg-info-subtle text-info-emphasis">ListenBrainz</span>');
+        return parts.join(' ');
+    };
+
+    let html = '<div class="d-flex flex-wrap gap-2">';
+    recommendations.forEach(a => {
+        const match = a.match ? ` <small class="text-muted">(${(a.match * 100).toFixed(0)}%)</small>` : '';
         html += `
-            <div class="mb-4">
-                <h6 class="mb-2"><i class="bi bi-collection-fill text-success"></i> Similar Artists (In Collection) <span class="badge bg-success">${inCollection.length}</span></h6>
-                <div class="d-flex flex-wrap gap-2">
-                    ${inCollection.map(a => `
-                        <a href="/artist/${encodeURIComponent(a.name)}" class="badge bg-success text-decoration-none" style="font-size: 0.85rem; padding: 0.4rem 0.7rem;">
-                            ${escapeHtml(a.name)}
-                        </a>
-                    `).join('')}
-                </div>
+            <div class="btn-group" role="group">
+                <span class="badge bg-secondary text-white" style="padding: 0.5rem 0.75rem;">
+                    <i class="bi bi-person-plus"></i> ${escapeHtml(a.name)}${match}
+                </span>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="Options for ${escapeHtml(a.name)}">
+                    <i class="bi bi-three-dots-vertical"></i>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end" style="min-width: auto;">
+                    <li><span class="dropdown-item-text small text-muted">${sourceBadge(a)}</span></li>
+                    <li><button class="dropdown-item" data-artist-mb="${escapeHtml(a.name)}" data-action="find-releases-track"><i class="bi bi-download"></i> Find Releases</button></li>
+                    <li><a class="dropdown-item" href="https://www.last.fm/music/${encodeURIComponent(a.name)}" target="_blank"><i class="bi bi-box-arrow-up-right"></i> Last.fm</a></li>
+                </ul>
             </div>
         `;
-    }
-
-    // Section: Similar Artists (Not in Collection)
-    if (notInCollection.length > 0) {
-        html += `
-            <div>
-                <h6 class="mb-3"><i class="bi bi-person-plus text-secondary"></i> Similar Artists (Not in Collection) <span class="badge bg-secondary">${notInCollection.length}</span></h6>
-                <div class="d-flex flex-wrap gap-2">
-                    ${notInCollection.map(a => {
-                        const match = a.match ? ` <small class="text-muted">(${(a.match * 100).toFixed(0)}%)</small>` : '';
-                        return `
-                            <div class="btn-group" role="group">
-                                <span class="badge bg-secondary text-white" style="padding: 0.5rem 0.75rem;">
-                                    <i class="bi bi-person-plus"></i> ${escapeHtml(a.name)}${match}
-                                </span>
-                                <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="Options for ${escapeHtml(a.name)}">
-                                    <i class="bi bi-three-dots-vertical"></i>
-                                </button>
-                                <ul class="dropdown-menu dropdown-menu-end" style="min-width: auto;">
-                                    <li><button class="dropdown-item" data-artist-mb="${escapeHtml(a.name)}" data-action="find-releases-track"><i class="bi bi-download"></i> Find Releases</button></li>
-                                    <li><a class="dropdown-item" href="https://www.last.fm/music/${encodeURIComponent(a.name)}" target="_blank"><i class="bi bi-box-arrow-up-right"></i> Last.fm</a></li>
-                                </ul>
-                            </div>
-                        `;
-                    }).join('')}
-                </div>
-            </div>
-        `;
-    }
-
-    if (!html) {
-        html = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No similar artists available</div>';
-    }
+    });
+    html += '</div>';
 
     container.innerHTML = html;
 

@@ -439,8 +439,62 @@ def lookup_ids(payload: dict) -> tuple[dict, int]:
         return {"success": False, "error": str(exc)}, 500
 
 
+def _catalogue_artist_names(conn, names: list[str]) -> set[str]:
+    """Return lowercased names of ``names`` that already exist in the catalogue.
+
+    An artist counts as "in the collection" if any track carries them as the
+    (album) artist. Only the provided names are queried so the lookup stays
+    cheap regardless of catalogue size.
+    """
+    unique = sorted({n.strip() for n in names if n and n.strip()})
+    if not unique:
+        return set()
+    try:
+        cursor = conn.cursor()
+        placeholders = ", ".join(["%s"] * len(unique))
+        cursor.execute(
+            "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) "
+            f"FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) IN ({placeholders})",
+            tuple(unique),
+        )
+        found = set()
+        for r in cursor.fetchall():
+            value = r[0] if not hasattr(r, "get") else (list(r.values()) or [None])[0]
+            if value:
+                found.add(str(value).lower())
+        return found
+    except Exception as exc:
+        logger.debug("Failed to resolve catalogue artists for similar-artist lookup: %s", exc)
+        return set()
+
+
+def _annotate_similar_artist(entries: list, in_collection: set[str]) -> list[dict]:
+    """Normalise cached similar-artist entries to dicts with ``in_collection``."""
+    result: list[dict] = []
+    for entry in entries or []:
+        if isinstance(entry, str):
+            name = entry.strip()
+            annotated: dict[str, Any] = {"name": name, "match": 0.0}
+        elif isinstance(entry, dict):
+            annotated = dict(entry)
+            name = str(annotated.get("name") or "").strip()
+        else:
+            continue
+        if not name:
+            continue
+        annotated["name"] = name
+        annotated.setdefault("match", 0.0)
+        annotated["in_collection"] = name.lower() in in_collection
+        result.append(annotated)
+    return result
+
+
 def get_similar_artists(artist: str, args) -> tuple[dict, int]:
-    """Get similar artists from DB cache (Last.fm / ListenBrainz)."""
+    """Get similar artists from DB cache (Last.fm / ListenBrainz).
+
+    Each recommended artist is annotated with ``in_collection`` so the frontend
+    can exclude artists the user already owns.
+    """
     if not artist:
         return {"success": False, "error": "artist required"}, 400
     sources = {"lastfm": [], "listenbrainz": []}
@@ -468,6 +522,16 @@ def get_similar_artists(artist: str, args) -> tuple[dict, int]:
                     sources["listenbrainz"] = json.loads(lb_raw) if isinstance(json.loads(lb_raw), list) else []
                 except Exception:
                     pass
+        names = []
+        for entries in sources.values():
+            for entry in entries:
+                if isinstance(entry, str):
+                    names.append(entry)
+                elif isinstance(entry, dict):
+                    names.append(str(entry.get("name") or ""))
+        in_collection = _catalogue_artist_names(conn, names)
+        for source in sources:
+            sources[source] = _annotate_similar_artist(sources[source], in_collection)
         return {"success": True, "similar_artists": sources}, 200
     except Exception as exc:
         return {"success": False, "error": str(exc)}, 500
