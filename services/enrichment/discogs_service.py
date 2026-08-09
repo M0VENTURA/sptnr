@@ -350,9 +350,6 @@ class DiscogsService:
             })
         return tracks
 
-    def has_official_video(self, title: str, artist: str) -> bool:
-        return False 
-
 # --- BRIDGE FUNCTIONS ---
 _DEFAULT_SERVICE: DiscogsService | None = None
 
