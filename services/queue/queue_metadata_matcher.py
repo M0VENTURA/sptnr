@@ -20,6 +20,7 @@ from helpers.normalization_service import (
     normalize_artist,
     normalize_core_title,
     extract_version_info,
+    queue_duration_seconds,
 )
 from helpers.config_helpers import _GENERIC_COMPILATION_ARTISTS
 
@@ -93,7 +94,7 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
     queue_artist = (queue_item.get("artist") or "").strip()
     queue_album_artist = (queue_item.get("album_artist") or "").strip()
     queue_title = (queue_item.get("title") or "").strip()
-    queue_duration = queue_item.get("duration")
+    queue_duration = queue_duration_seconds(queue_item.get("duration"))
 
     # ------------------------------------------------------------------
     # Missing data → defer

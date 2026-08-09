@@ -41,6 +41,7 @@ from services.infrastructure.filesystem_service import (
 
 from services.queue.queue_processing_service import add_release_tracks_to_queue
 from helpers.logging_config import log_unified, log_search
+from helpers.normalization_service import queue_duration_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -437,12 +438,12 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
     expected_artist = (item.get("artist") or "").strip()
     expected_title = (item.get("title") or "").strip()
     expected_album = (item.get("album") or "").strip() or None
-    expected_duration = item.get("duration")
-    if expected_duration:
-        try:
-            expected_duration = int(expected_duration)
-        except (TypeError, ValueError):
-            expected_duration = None
+    expected_duration = None
+    if item.get("duration"):
+        # Queue durations are stored in either seconds or milliseconds (the
+        # MusicBrainz-backed add path persists ms); scoring compares against
+        # slskd ``length_seconds`` so normalise to seconds first.
+        expected_duration = queue_duration_seconds(item.get("duration"))
 
     query = build_search_query(item)
     fallback_queries = _build_fallback_search_queries(item, query)

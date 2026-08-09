@@ -28,7 +28,7 @@ from db.repositories.queue import get_completed_group_queue_items, update_queue_
 from db.repositories.tracks import find_library_track
 from helpers.logging_config import log_unified
 from helpers.metadata_reader import read_mp3_metadata
-from helpers.normalization_service import normalize_artist
+from helpers.normalization_service import normalize_artist, queue_duration_seconds
 from services.downloads.download_processing_service import add_to_queue
 from services.metadata.tag_file_service import update_file_metadata
 
@@ -283,11 +283,16 @@ def add_release_tracks_to_queue(
                     "recording_mbid"
                 )
 
-                # MusicBrainz track length in ms — persisted so the download
-                # pipeline can score candidates by duration (within 10%) and
-                # the post-download matcher can fall back to duration
-                # matching (strict ±2s / lenient ±5s).
-                duration = track.get("duration") or track.get("length")
+                # MusicBrainz track length in ms — normalised to SECONDS for
+                # storage so the download pipeline can score candidates by
+                # duration (within 10%) and the post-download matcher can fall
+                # back to duration matching (strict ±2s / lenient ±5s).  The
+                # download matching service already stores seconds; persisting
+                # ms here made rows unit-inconsistent and caused every
+                # duration-bearing queue item to hard-reject a matching file.
+                duration = queue_duration_seconds(
+                    track.get("duration") or track.get("length")
+                )
 
                 # -----------------------------------------------------
                 # Skip tracks already in the collection
