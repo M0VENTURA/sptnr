@@ -23,6 +23,7 @@ from db.engine import db_session
 from db.utils import get_db_connection, row_get
 from services.popularity.popularity_math import calculate_track_zscore
 from services.popularity.standout_service import STANDOUT_CONFIG
+from services.catalog.album_classification_service import is_live_or_alternate_track_title
 
 from helpers.logging_config import log_unified
 
@@ -257,7 +258,16 @@ def _assign_stars(
     score = float(track.get("popularity_score") or 0)
     is_single = bool(track.get("is_single"))
     single_confidence = str(track.get("single_confidence") or "low")
-    is_live = bool(track.get("is_live")) or bool(track.get("album_context_live"))
+    # A "(Live)"/"(Acoustic)" title-suffixed track on a studio album is a live
+    # recording even when the album itself is studio — cap it at 4★ so a bonus
+    # live cut can never outrank the album's real singles.  A track flagged by
+    # single detection as an ``alternate_or_live_version`` carries exactly this
+    # marker, so the cap fires for the same titles detection skips.
+    is_live = (
+        bool(track.get("is_live"))
+        or bool(track.get("album_context_live"))
+        or is_live_or_alternate_track_title(track.get("title"))
+    )
 
     # User override — a manually-set rating is preserved by every scan type.
     if single_confidence == "user":
