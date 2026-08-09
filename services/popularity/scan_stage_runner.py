@@ -1026,10 +1026,19 @@ def run_scan(
             if not _singles_pass:
                 try:
                     from services.popularity.popularity_sources import get_listenbrainz_album_tracklist
+                    # Junk-level LB counts (below the 25-listen credibility floor)
+                    # are suspect the same way zero counts are: a wrong/split
+                    # recording MBID — or a translated title like the Korean
+                    # "삐처리" vs the library's English "BLEEP" — leaves a track
+                    # at ~0 listens even though the album page shows real counts.
+                    # Include those tracks so the album-tracklist fallback (which
+                    # matches by position + length too) can correct them.
                     _missing_lb_tracks = [
                         t for t in track_dicts
                         if t.get("title")
-                        and not (prefetched_popularity.get(normalize_for_aggregation(t["title"])) or {}).get("listenbrainz_listens")
+                        and int(
+                            (prefetched_popularity.get(normalize_for_aggregation(t["title"])) or {}).get("listenbrainz_listens") or 0
+                        ) < 25
                     ]
                     if _missing_lb_tracks or bool(options.get("force")):
                         _album_lb_by_title = get_listenbrainz_album_tracklist(artist, album, track_dicts) or {}

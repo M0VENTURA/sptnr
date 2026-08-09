@@ -156,8 +156,16 @@ def get_listenbrainz_album_tracklist(
     # left tracks at 0 even though the LB album page shows counts.  The
     # per-recording counts then come from the LB popularity API — the same
     # numbers the ListenBrainz album page aggregates.
-    titles_to_mbids: Dict[str, List[str]] = {}
+    #
+    # Tracks are also indexed by disc+position so a local track whose title
+    # does NOT appear on the ListenBrainz tracklist (e.g. the release lists the
+    # Korean name "삐처리" while the library stores the English "BLEEP") can
+    # still be matched by track number + length — the two rows are the same
+    # song, so the album's authoritative listen count must reach the local row.
+    titles_to_mbids: Dict[str, Dict[str, Any]] = {}
     recording_mbids: List[str] = []
+    # (disc, position) → {"key": normalized title, "length_ms", "mbids": []}
+    position_index: Dict[tuple, Dict[str, Any]] = {}
     try:
         from api_clients.musicbrainz_http import MusicBrainzHttpClient
         mb = MusicBrainzHttpClient(enabled=True)
@@ -165,6 +173,7 @@ def get_listenbrainz_album_tracklist(
         for medium in release.get("media") or []:
             if not isinstance(medium, dict):
                 continue
+            disc = medium.get("position")
             for trk in medium.get("tracks") or []:
                 if not isinstance(trk, dict):
                     continue
@@ -174,10 +183,33 @@ def get_listenbrainz_album_tracklist(
                 rec = trk.get("recording") or {}
                 rec_mbid = str(rec.get("id") or "").strip()
                 key = normalize_for_aggregation(title)
-                titles_to_mbids.setdefault(key, [])
+                entry = titles_to_mbids.setdefault(key, {
+                    "title": title,
+                    "mbids": [],
+                    "position": trk.get("position") or trk.get("number"),
+                    "disc": disc,
+                    "length_ms": trk.get("length"),
+                })
                 if rec_mbid:
-                    titles_to_mbids[key].append(rec_mbid)
+                    entry["mbids"].append(rec_mbid)
                     recording_mbids.append(rec_mbid)
+                try:
+                    pos = int(trk.get("position") or trk.get("number") or 0)
+                except (TypeError, ValueError):
+                    pos = 0
+                try:
+                    disc_i = int(disc) if disc not in (None, "") else 1
+                except (TypeError, ValueError):
+                    disc_i = 1
+                if pos > 0:
+                    pos_key = (disc_i, pos)
+                    pos_entry = position_index.setdefault(pos_key, {
+                        "key": key,
+                        "length_ms": trk.get("length"),
+                        "mbids": [],
+                    })
+                    if rec_mbid:
+                        pos_entry["mbids"].append(rec_mbid)
     except Exception as exc:
         logger.debug("[LB_ALBUM] MB release tracklist failed for %s: %s", release_mbid, exc)
         return {}
@@ -191,22 +223,83 @@ def get_listenbrainz_album_tracklist(
         logger.debug("[LB_ALBUM] Recording popularity failed for %s: %s", release_mbid, exc)
         return {}
 
-    out: Dict[str, Dict[str, Optional[int]]] = {}
-    for key, mbids in titles_to_mbids.items():
+    def _sum_counts(mbids: List[str]) -> tuple[int, int]:
         total = 0
         users = 0
         for m in mbids:
             entry = counts.get(m) or {}
             total += int(entry.get("total_listen_count") or 0)
             users += int(entry.get("total_user_count") or 0)
+        return total, users
+
+    out: Dict[str, Dict[str, Optional[int]]] = {}
+    for key, entry in titles_to_mbids.items():
+        total, users = _sum_counts(entry["mbids"])
         if total > 0:
             out[key] = {
                 "listenbrainz_listens": total,
                 "listenbrainz_users": users,
                 # The album's own recording for this title — lets the track
                 # adopt it so LB lookups match the ListenBrainz album page.
-                "recording_mbid": mbids[0] if mbids else None,
+                "recording_mbid": entry["mbids"][0] if entry["mbids"] else None,
             }
+
+    # Position/duration fallback: local tracks whose title key got no LB data
+    # (wrong recording MBID, or the album lists a translated title such as the
+    # Korean "삐처리" vs the library's English "BLEEP") are matched against the
+    # release tracklist by disc + track number, with a length sanity check.
+    # The album tracklist is authoritative for per-track counts, so this only
+    # fires when the title match was empty.
+    used_pos_keys: set[tuple] = set()
+    for t in tracks:
+        local_title = t.get("title")
+        if not local_title:
+            continue
+        local_key = normalize_for_aggregation(local_title)
+        if not local_key:
+            continue
+        if (out.get(local_key) or {}).get("listenbrainz_listens"):
+            continue
+        try:
+            local_pos = int(t.get("track_number") or 0)
+        except (TypeError, ValueError):
+            continue
+        if local_pos <= 0:
+            continue
+        try:
+            local_disc = int(t.get("disc_number") or 1)
+        except (TypeError, ValueError):
+            local_disc = 1
+        pos_key = (local_disc, local_pos)
+        if pos_key in used_pos_keys:
+            continue
+        pos_entry = position_index.get(pos_key)
+        if not pos_entry or not pos_entry["mbids"]:
+            continue
+        # Length sanity check when both sides carry it (MB length in ms, local
+        # duration in seconds) — guards against a mis-numbered album matching
+        # the wrong track.
+        mb_len_ms = pos_entry.get("length_ms")
+        try:
+            local_dur = float(t.get("duration") or 0)
+        except (TypeError, ValueError):
+            local_dur = 0.0
+        if mb_len_ms and local_dur > 0:
+            if abs(int(mb_len_ms) - local_dur * 1000) > 5000:
+                continue
+        total, users = _sum_counts(pos_entry["mbids"])
+        if total <= 0:
+            continue
+        out[local_key] = {
+            "listenbrainz_listens": total,
+            "listenbrainz_users": users,
+            "recording_mbid": pos_entry["mbids"][0],
+        }
+        used_pos_keys.add(pos_key)
+        logger.info(
+            "[LB_ALBUM] Position-matched '%s' (disc %s, track %s, %ss) -> '%s' (%s listens)",
+            local_title, local_disc, local_pos, local_dur, pos_entry.get("key"), total,
+        )
     if out:
         logger.info(
             "[LB_ALBUM] Preloaded %d track(s) for '%s - %s' (release %s)",

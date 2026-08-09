@@ -38,6 +38,7 @@ from helpers.normalization_service import (
     normalize_title_for_lucene_query,
     strip_featured_artist,
     strip_single_release_suffix,
+    edition_annotations_compatible,
 )
 
 logger = logging.getLogger(__name__)
@@ -335,6 +336,11 @@ class MusicBrainzService:
             ).lower()
             if pt not in ("single", "ep"):
                 continue
+            # Edition-annotated track ("Valhalla (Epic Edition)") must only
+            # match a single/EP release-group carrying the SAME edition
+            # annotation — never the plain "Valhalla" single.
+            if not edition_annotations_compatible(title, group.get("title") or ""):
+                continue
             sim = difflib.SequenceMatcher(
                 None,
                 norm_title,
@@ -355,7 +361,6 @@ class MusicBrainzService:
         merely appears on a single as a b-side ("Out on Patrol" on the "I'll
         Be Waiting" single) is NOT itself a single.
         """
-        norm_title = normalize_title_for_lookup(title)
         query_title = normalize_title_for_lucene_query(title)
         query = (
             f'recording:"{escape_lucene_special_chars(query_title)}" '
@@ -374,19 +379,23 @@ class MusicBrainzService:
                     continue
                 # The single/EP release-group must be FOR this track, not just
                 # contain it (b-sides live on singles too).
-                if self._rg_title_matches(norm_title, rg.get("title") or ""):
+                if self._rg_title_matches(title, rg.get("title") or ""):
                     return True
         return False
 
-    def _rg_title_matches(self, norm_title: str, rg_title: str) -> bool:
+    def _rg_title_matches(self, title: str, rg_title: str) -> bool:
         """True when a release-group title matches the track title.
 
         Exact normalized equality first, then a similarity fallback for
-        residual punctuation/case drift. Suffix variants ("(Epic Edition)")
-        are stripped on both sides.
+        residual punctuation/case drift. An edition-annotated track
+        ("Valhalla (Epic Edition)") must only match a release-group carrying
+        the SAME edition annotation — never the plain "Valhalla" single.
         """
-        if not norm_title or not rg_title:
+        if not title or not rg_title:
             return False
+        if not edition_annotations_compatible(title, rg_title):
+            return False
+        norm_title = normalize_title_for_lookup(strip_single_release_suffix(title) or title)
         norm_rg = normalize_title_for_lookup(strip_single_release_suffix(rg_title) or rg_title)
         if norm_rg == norm_title:
             return True
@@ -406,14 +415,13 @@ class MusicBrainzService:
         )
         if not recording:
             return False
-        norm_title = normalize_title_for_lookup(title) if title else ""
         for release in recording.get("releases") or []:
             rg = release.get("release-group") or {}
             pt = (rg.get("primary-type") or rg.get("primary_type") or "").lower()
             rt = (rg.get("type") or "").lower()
             if pt not in ("single", "ep") and rt not in ("single", "ep"):
                 continue
-            if not title or self._rg_title_matches(norm_title, rg.get("title") or ""):
+            if not title or self._rg_title_matches(title, rg.get("title") or ""):
                 return True
         return False
 

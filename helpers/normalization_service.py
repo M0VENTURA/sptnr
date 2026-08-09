@@ -260,6 +260,59 @@ def extract_version_info(
         found_versions,
     )
 
+
+# Edition / version annotations that mark a track as a DIFFERENT EDITION of
+# the song ("(Epic Edition)", "(Deluxe Edition)", ...).  A track carrying one
+# must only be treated as the same release as a title carrying the SAME
+# annotation — it must never be matched against the plain (un-annotated)
+# title.  Cover annotations ("(PSY Cover)", "(Nirvana Cover)") and live/remix
+# markers are NOT editions and never gate matching: MusicBrainz omits cover
+# annotations from release-group titles, so a cover track matches the cover's
+# own plain single, and remastered variants are intentionally treated as the
+# same song as the original.
+_EDITION_ANNOTATION_KEYWORDS = frozenset({
+    "anniversary", "collector", "deluxe", "edition", "epic", "expanded",
+    "extended", "limited", "reissue", "special", "tour", "ultimate",
+})
+
+_EDITION_ANNOTATION_RE = re.compile(r"[\(\[]([^\)\]]+)[\)\]]\s*$", re.IGNORECASE)
+
+
+def extract_edition_annotation(title: str) -> str | None:
+    """Return the normalized trailing edition annotation, or None.
+
+    Only a bracketed suffix whose content contains an edition marker
+    ("Epic Edition", "Deluxe Edition", ...) counts.  Cover annotations
+    ("(PSY Cover)") and live/remix markers are not editions and return None.
+    """
+    if not title:
+        return None
+    m = _EDITION_ANNOTATION_RE.search(title)
+    if not m:
+        return None
+    inner = m.group(1).strip().lower()
+    if not any(kw in inner for kw in _EDITION_ANNOTATION_KEYWORDS):
+        return None
+    return re.sub(r"[^a-z0-9]+", " ", inner).strip()
+
+
+def edition_annotations_compatible(title_a: str, title_b: str) -> bool:
+    """True when the edition annotations on two titles are compatible.
+
+    An edition-annotated track (e.g. "Valhalla (Epic Edition)") is only the
+    same release as a title carrying the SAME edition annotation — it must
+    never be matched against the plain "Valhalla".  When neither title carries
+    an edition annotation the titles are compatible; when exactly one carries
+    an annotation they are not.
+    """
+    ann_a = extract_edition_annotation(title_a)
+    ann_b = extract_edition_annotation(title_b)
+    if ann_a is None and ann_b is None:
+        return True
+    if ann_a is None or ann_b is None:
+        return False
+    return ann_a == ann_b
+
 def is_compilation_artist(
     artist: str | None,
 ) -> bool:
