@@ -81,12 +81,13 @@ def _album_results():
     ]
 
 
-class TestAlbumPercentileStars:
-    """Spec rule 4: 1-4★ come purely from the album's popularity percentiles.
+class TestAlbumZBandStars:
+    """Spec rule 4: 1-4★ come purely from the album's popularity z-score bands.
 
-    Top ~20% → 4★, upper middle → 3★, lower middle → 2★, bottom ~20% → 1★.
-    Artist context never affects the base rating, and popularity alone never
-    reaches 5★.
+    After 5★ singles/standouts are assigned, the rest of the album is ranked by
+    its intra-album z-score: Z >= +0.5 → 4★, -0.5 <= Z < +0.5 → 3★,
+    -1.2 <= Z < -0.5 → 2★, Z < -1.2 → 1★.  Artist context never affects the
+    base rating, and popularity alone never reaches 5★.
     """
 
     def _track(self, score, **overrides):
@@ -102,46 +103,51 @@ class TestAlbumPercentileStars:
         return track
 
     def _album(self):
-        # 12 tracks spread 1-100: 4★ for the top ~2, 3★ next ~4, 2★ next ~4, 1★ bottom ~2
+        # 12 tracks spread 1-100 → mean 50.5, sample stdev ~32.45, so:
+        # 4★ for 100/91/82/73 (z >= +0.5), 3★ for 64/46, 2★ for 28/19,
+        # 1★ for 10/1 (z < -1.2).
         return list(range(1, 101, 9))[:12]  # [1, 10, 19, 28, 37, 46, 55, 64, 73, 82, 91, 100]
 
     def _stars(self, score, album, **overrides):
         from services.popularity.stages import finalise_stage as fs
         return fs._assign_stars(self._track(score, **overrides), album, album)
 
-    def test_top_twenty_percent_gets_four(self):
-        # Top track (100) → 4★; 2nd (91) → 4★.
+    def test_top_band_gets_four(self):
+        # Z >= +0.5 → 4★.
         album = self._album()
         assert self._stars(100.0, album) == 4
-        assert self._stars(91.0, album) == 4
+        assert self._stars(73.0, album) == 4
 
-    def test_upper_middle_gets_three(self):
+    def test_middle_band_gets_three(self):
+        # -0.5 <= Z < +0.5 → 3★.
         assert self._stars(64.0, self._album()) == 3
-        assert self._stars(73.0, self._album()) == 3
+        assert self._stars(46.0, self._album()) == 3
 
-    def test_lower_middle_gets_two(self):
+    def test_lower_band_gets_two(self):
+        # -1.2 <= Z < -0.5 → 2★.
         assert self._stars(28.0, self._album()) == 2
-        assert self._stars(46.0, self._album()) == 2
+        assert self._stars(19.0, self._album()) == 2
 
-    def test_bottom_twenty_percent_gets_one(self):
+    def test_bottom_outliers_gets_one(self):
+        # Z < -1.2 → 1★.
         assert self._stars(1.0, self._album()) == 1
         assert self._stars(10.0, self._album()) == 1
 
     def test_zero_score_is_one_star(self):
         assert self._stars(0.0, self._album()) == 1
 
-    def test_high_confidence_single_gets_five_regardless_of_percentile(self):
+    def test_high_confidence_single_gets_five_regardless_of_band(self):
         # Spec rule 5: a high-confidence single is 5★ even at the bottom of a
-        # strong album — singles are exempt from the album-percentile base.
+        # strong album — singles are exempt from the album-z-band base.
         assert self._stars(
             10.0, self._album(), is_single=True, single_confidence="high"
         ) == 5
 
-    def test_medium_single_not_marked_follows_album_percentile(self):
+    def test_medium_single_not_marked_follows_album_band(self):
         # A medium-confidence single that is NOT popularity-marked stays on the
-        # album-percentile base (no 5★) unless it is a genuine standout.
+        # album-z-band base (no 5★) unless it is a genuine standout.
         album = self._album()
-        assert self._stars(46.0, album, is_single=True, single_confidence="medium") == 2
+        assert self._stars(46.0, album, is_single=True, single_confidence="medium") == 3
 
     def test_popularity_marked_standout_gets_five(self):
         # A non-single triple-standout (album z + artist z + top-10% marking)

@@ -3,7 +3,7 @@
 Migrated from the legacy ``popularity.py`` monolithic scan loop.
 
 Handles:
-- Star rating assignment (1–5★) using album/artist z-scores + percentiles
+- Star rating assignment (1–5★) using album/artist z-scores + z-score bands
 - Navidrome rating sync via Subsonic API
 - Essential playlist creation (NSP files)
 - Summary logging
@@ -34,12 +34,19 @@ logger = logging.getLogger(__name__)
 
 STAR_5_ALBUM_Z = STANDOUT_CONFIG.get("star_5", {}).get("album_z", 1.0)
 STAR_5_ARTIST_Z = STANDOUT_CONFIG.get("star_5", {}).get("artist_z", 1.2)
-STAR_4_ALBUM_Z = STANDOUT_CONFIG.get("star_4", {}).get("album_z", 0.8)
-STAR_3_ALBUM_Z = STANDOUT_CONFIG.get("star_3", {}).get("album_z", 0.0)
-# Tracks clearly below the album average (album z below this floor) get 1★ —
-# without it, every track with a valid score defaulted to 2★ and 1★ was
-# unreachable.
-STAR_1_ALBUM_Z = STANDOUT_CONFIG.get("star_1", {}).get("album_z", -1.0)
+# 1-4★ intra-album z-score bands (spec rule 4).  After 5★ singles/standouts
+# are assigned, the REST of the album is ranked purely by its position in the
+# album's own popularity distribution:
+#   - Z >= +0.5              → 4★ (album standout / fan favourite)
+#   - -0.5 <= Z < +0.5       → 3★ (standard album track)
+#   - -1.2 <= Z < -0.5       → 2★ (deep cut / minor track)
+#   - Z <  -1.2              → 1★ (filler / outlier)
+# These are data-driven rather than a fixed 20/30/30/20 rank split, so a
+# tightly-clustered album keeps its middle band instead of manufacturing fake
+# standout/filler ratings.
+STAR_4_ALBUM_Z = STANDOUT_CONFIG.get("star_4", {}).get("album_z", 0.5)
+STAR_3_ALBUM_Z = STANDOUT_CONFIG.get("star_3", {}).get("album_z", -0.5)
+STAR_2_ALBUM_Z = STANDOUT_CONFIG.get("star_2", {}).get("album_z", -1.2)
 
 
 # ---------------------------------------------------------------------------
@@ -154,36 +161,35 @@ def _has_z_standout_source(track: dict[str, Any]) -> bool:
         return False
 
 
-def _album_percentile_star(score: float, album_scores: list[float]) -> int:
-    """Album-relative 1-4★ rating from the album's popularity percentiles.
+def _album_z_band_star(score: float, album_scores: list[float]) -> int:
+    """Album-relative 1-4★ rating from the album's z-score bands.
 
     Spec rule 4: the album's tracks are ranked by popularity and sliced into
-    bands — top ~20% → 4★, upper middle → 3★, lower middle → 2★, bottom ~20%
-    → 1★.  Purely album-relative: artist context is never consulted, so every
-    album has a meaningful internal ranking and no track reaches 5★ from
-    popularity alone.  Albums too small for a meaningful percentile
-    (< 4 valid scores) fall back to album z-score bands.
+    z-score bands — top of the album (Z >= +0.5) → 4★, the standard middle
+    (-0.5 <= Z < +0.5) → 3★, the lower band (-1.2 <= Z < -0.5) → 2★, and
+    bottom outliers (Z < -1.2) → 1★.  Purely album-relative: artist context
+    is never consulted, so every album has a meaningful internal ranking and
+    no track reaches 5★ from popularity alone.
+
+    Unlike a fixed rank percentile split, the z-score bands respect the album's
+    ACTUAL popularity spread: an album whose tracks are all similarly popular
+    keeps them in the 3★ band instead of forcing artificial standouts/fillers,
+    while a spread-out album separates cleanly into 4★/2★/1★ tiers.
+
+    Albums too small for a meaningful z-score (< 3 valid scores) fall back to
+    the 3★ middle band (their album z is 0.0).
     """
     if score <= 0:
         return 1
     valid = [float(s) for s in (album_scores or []) if float(s or 0) > 0]
-    if len(valid) < 4:
-        album_z = _compute_album_z(score, valid)
-        if album_z >= STAR_4_ALBUM_Z:
-            return 4
-        if album_z >= STAR_3_ALBUM_Z:
-            return 3
-        if album_z < STAR_1_ALBUM_Z:
-            return 1
-        return 2
-    below = sum(1 for s in valid if s < score)
-    equal = sum(1 for s in valid if s == score)
-    pct = (below + equal / 2.0) / len(valid)
-    if pct >= 0.80:
-        return 4
-    if pct >= 0.50:
+    if len(valid) < 3:
         return 3
-    if pct >= 0.20:
+    album_z = _compute_album_z(score, valid)
+    if album_z >= STAR_4_ALBUM_Z:
+        return 4
+    if album_z >= STAR_3_ALBUM_Z:
+        return 3
+    if album_z >= STAR_2_ALBUM_Z:
         return 2
     return 1
 
@@ -201,7 +207,7 @@ def _assign_stars(
     Pipeline (spec rules 4-5):
 
     1. The album-relative base rating is 1-4★, assigned purely from the
-       album's popularity percentiles (``_album_percentile_star``).
+       album's popularity z-score bands (``_album_z_band_star``).
     2. 5★ is reserved for:
        - high-confidence singles (``single_confidence == 'high'``), or
        - genuine triple-standouts: album z AND artist z above the standout
@@ -240,8 +246,8 @@ def _assign_stars(
     ):
         return 5
 
-    # ── 1-4★: album-relative percentile base ──
-    return _album_percentile_star(score, album_scores)
+    # ── 1-4★: album-relative z-score base ──
+    return _album_z_band_star(score, album_scores)
 
 
 # ---------------------------------------------------------------------------
