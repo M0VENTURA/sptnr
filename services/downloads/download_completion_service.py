@@ -124,7 +124,10 @@ def _monitored_downloads_dir() -> str:
     """The downloads directory the completion service scans, for diagnostics."""
     try:
         from services.downloads.download_scan_service import resolve_downloads_dir
-        return resolve_downloads_dir()
+        # Must match the walk in ``check_completed_downloads`` (downloads root,
+        # not the ``Music`` subfolder preference) so diagnostics reflect the
+        # directory that is actually scanned.
+        return resolve_downloads_dir(prefer_music_subfolder=False)
     except Exception:
         return "?"
 
@@ -776,7 +779,15 @@ def check_completed_downloads() -> dict[str, Any]:
         slskd_client = get_slskd_client()
         slskd = SlskdService(http_client=slskd_client) if slskd_client is not None else None
 
-        downloads_dir = resolve_downloads_dir()
+        # Walk the downloads ROOT (not the ``Music`` subfolder preference)
+        # so files landing anywhere under the configured downloads folder are
+        # found — mirrors ``discover_audio_files``, which is the scan that
+        # surfaces these files on the monitor/downloads-folder view. Without
+        # this, a ``Music`` subfolder under DOWNLOADS_DIR makes the completion
+        # walk scan only ``Music`` while slskd downloads sit in the root, so
+        # the items are never matched and end up marked failed even though the
+        # files are present on disk.
+        downloads_dir = resolve_downloads_dir(prefer_music_subfolder=False)
 
         from helpers.logging_config import log_unified
         log_unified(
