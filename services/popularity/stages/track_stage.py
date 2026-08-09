@@ -1355,4 +1355,5 @@ def process_track(
         "single_sources": update_payload.get("single_sources", track.get("single_sources", "")),
         "popularity_marked": bool(track.get("popularity_marked", False)),
         "is_live": bool(track.get("is_live") or track.get("album_context_live")),
+        "exclude_from_stats": bool(track.get("exclude_from_stats")),
     }

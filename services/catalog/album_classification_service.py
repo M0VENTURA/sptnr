@@ -111,6 +111,20 @@ def is_live_or_unplugged_track_title(title: str) -> bool:
     return any(re.search(p, title or "", re.IGNORECASE) for p in [r"\blive\b", r"\bunplugged\b"])
 
 
+def is_bonus_track_title(title: str) -> bool:
+    """Return True when a track TITLE indicates a bonus / alternate version.
+
+    Title-only check matching ``ALT_TRACK_PATTERNS`` (live, unplugged,
+    acoustic, orchestral, remix, demo, instrumental, karaoke).  Used to filter
+    bonus tracks out of an album's average popularity scoring from STORED DB
+    rows, where the album-context flags (``album_context_live``) are not
+    persisted.  A studio album padded with extra live cuts is exactly the
+    bonus-track case this targets — the album's core tracks should be scored
+    against the album's core distribution, not the padded one.
+    """
+    return any(re.search(pattern, title or "", re.IGNORECASE) for pattern in ALT_TRACK_PATTERNS)
+
+
 def should_exclude_track_from_stats(
     title: str,
     album: str = "",

@@ -7,6 +7,7 @@ import logging
 import math
 from typing import Any
 
+from helpers.config_helpers import get_config
 from helpers.logging_config import log_unified
 from services.popularity.progress_tracker import finish, start, update
 from services.popularity.popularity_cache_policy import should_freeze_track
@@ -35,6 +36,7 @@ from services.scanning.scan_state import (
 from services.scanning.scan_history_service import record_scan, was_album_scanned
 from services.catalog.album_classification_service import (
     detect_live_album_type,
+    is_bonus_track_title,
     should_exclude_track_from_stats,
 )
 
@@ -213,32 +215,48 @@ def _run_album_cover_detection(
                 pass
 
 
-def _artist_top_marked_cutoff(scan_scores: list[float], db_scores: list[float]) -> tuple[float | None, int]:
-    """Return ``(cutoff_score, top_n)`` for the artist's top-10% marking.
+def _artist_top_marked_cutoffs(
+    scan_scores: list[float],
+    db_scores: list[float],
+    top_percentile: float = 0.10,
+    medium_percentile: float = 0.20,
+) -> tuple[float | None, float | None, int, int]:
+    """Return ``(top_cutoff, medium_cutoff, top_n, medium_n)`` for marking.
 
     The artist's catalogue = this scan's results so far + stored DB scores.
-    ``top_n = ceil(total * 0.10)``; a track whose popularity score is at or
-    above the ``top_n``-th score is ``popularity_marked``.  Returns
-    ``(None, 0)`` when there is no score data to rank.
+
+    - ``top_n = ceil(total * top_percentile)`` (default 10%): a track at or
+      above the ``top_n``-th score is ``popularity_marked`` and earns 5★
+      WITHOUT needing any single-detection source (spec rule 2).
+    - ``medium_n = ceil(total * medium_percentile)`` (default 20%): a track at
+      or above the ``medium_n``-th score that carries a MEDIUM-confidence
+      single source is also marked, which bumps it to HIGH confidence → 5★
+      (spec rule 3).  The widening only applies when a medium detection source
+      exists — popularity alone below the top band never marks.
+
+    Returns ``(None, None, 0, 0)`` when there is no score data to rank.
     """
     all_scores = [float(s) for s in scan_scores if float(s or 0) > 0]
     all_scores.extend(float(s) for s in db_scores if float(s or 0) > 0)
     if not all_scores:
-        return None, 0
+        return None, None, 0, 0
     all_scores.sort(reverse=True)
-    top_n = max(1, math.ceil(len(all_scores) * 0.10))
-    cutoff = all_scores[min(top_n - 1, len(all_scores) - 1)]
-    return cutoff, top_n
+    top_n = max(1, math.ceil(len(all_scores) * top_percentile))
+    medium_n = max(1, math.ceil(len(all_scores) * medium_percentile))
+    top_cutoff = all_scores[min(top_n - 1, len(all_scores) - 1)]
+    medium_cutoff = all_scores[min(medium_n - 1, len(all_scores) - 1)]
+    return top_cutoff, medium_cutoff, top_n, medium_n
 
 
 def _apply_popularity_marking_bump(album_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Upgrade medium-confidence singles that are ``popularity_marked`` to high.
 
     Spec rule 3: a track detected as a MEDIUM-confidence single whose popularity
-    score is in the artist's top 10% becomes HIGH confidence.  The flag is
-    surfaced in ``single_sources`` (``popularity_marked``) so the track page's
-    source table shows WHY, and the star-rating pass sees the upgraded
-    confidence.  Returns the (possibly mutated) list.
+    score is in the artist's top band (top 10%, or the widened top-20% band for
+    medium-source tracks) becomes HIGH confidence.  The flag is surfaced in
+    ``single_sources`` (``popularity_marked``) so the track page's source table
+    shows WHY, and the star-rating pass sees the upgraded confidence.  Returns
+    the (possibly mutated) list.
     """
     for tr in album_results:
         if not bool(tr.get("popularity_marked")):
@@ -262,7 +280,7 @@ def _apply_popularity_marking_bump(album_results: list[dict[str, Any]]) -> list[
         sources.append({"source": "popularity_marked", "matched": True, "confidence": 0.5})
         tr["single_sources"] = json.dumps(sources, default=str)
         logger.info(
-            "[scan_runner] Popularity marking upgraded '%s' to high-confidence single (top 10%% of catalogue)",
+            "[scan_runner] Popularity marking upgraded '%s' to high-confidence single (artist top band)",
             tr.get("title"),
         )
     return album_results
@@ -287,6 +305,37 @@ def _load_track_artist_scores(track_artist: str) -> list[float]:
         return []
 
 
+def _album_reference_scores(
+    album_results: list[dict[str, Any]],
+    score_key: str = "popularity_score",
+) -> list[float]:
+    """Album distribution used as the popularity/scoring reference.
+
+    Bonus / alternate / live tracks (``exclude_from_stats``) on a STUDIO album
+    must not pull the album's average scoring down — an album padded with extra
+    live cuts would otherwise crush its own track scores against an inflated
+    median.  Tracks flagged ``exclude_from_stats`` are therefore dropped from
+    the reference distribution, so popularity, z-scores and star bands measure
+    the album's core tracks only.
+
+    A true LIVE album flags EVERY track excluded (``album_context_live``), so
+    the drop must not empty the reference — when fewer than
+    ``ALBUM_RELATIVE_MIN_ALBUM_TRACKS`` eligible tracks remain, the full set is
+    used (a live album is scored against itself, as before).
+    """
+    full = [float(r.get(score_key) or 0) for r in album_results if float(r.get(score_key) or 0) > 0]
+    if len(full) < 3:
+        return full
+    eligible = [
+        float(r.get(score_key) or 0)
+        for r in album_results
+        if float(r.get(score_key) or 0) > 0 and not bool(r.get("exclude_from_stats"))
+    ]
+    if len(eligible) >= 3:
+        return eligible
+    return full
+
+
 def _apply_album_relative_normalization(
     album_results: list[dict[str, Any]],
     is_compilation: bool = False,
@@ -297,7 +346,10 @@ def _apply_album_relative_normalization(
     computed RAW combined scores are re-mapped via
     ``apply_album_relative_popularity`` (album median + scaled-MAD, robust
     z → 0-100) so scores spread within the album and never clump on the
-    ceiling.  Artist-wide stats are ignored.
+    ceiling.  Artist-wide stats are ignored.  Bonus / alternate / live tracks
+    (``exclude_from_stats``) on a studio album are excluded from the reference
+    distribution (``_album_reference_scores``) so they do not drag the album's
+    average scoring down.
 
     Compilation / Various-Artists albums: every track has a different artist,
     so the album distribution (the "album artist" reference) is meaningless.
@@ -311,11 +363,7 @@ def _apply_album_relative_normalization(
     """
     if is_compilation:
         return _apply_track_artist_relative_normalization(album_results)
-    raw_scores = [
-        float(r.get("_raw_combined") or 0)
-        for r in album_results
-        if float(r.get("_raw_combined") or 0) > 0
-    ]
+    raw_scores = _album_reference_scores(album_results, score_key="_raw_combined")
     if len(raw_scores) < 3:
         return 0
     changed = 0
@@ -591,7 +639,9 @@ def run_scan(
                 db_rows = [
                     (str(r[1] or ""), float(r[2] or 0))
                     for r in rows or []
-                    if r[2] and str(r[0] or "").strip().lower() not in scanned_titles
+                    if r[2]
+                    and str(r[0] or "").strip().lower() not in scanned_titles
+                    and not is_bonus_track_title(str(r[0] or ""))
                 ]
         except Exception as exc:
             logger.debug("[scan_runner] Artist DB score fetch failed for %s: %s", artist, exc)
@@ -645,6 +695,7 @@ def run_scan(
             float(r.get("popularity_score") or 0)
             for r in _artist_results
             if float(r.get("popularity_score") or 0) > 0
+            and not bool(r.get("exclude_from_stats"))
         ]
         scanned_titles = {
             str(r.get("title") or "").strip().lower()
@@ -653,18 +704,49 @@ def run_scan(
         _db_scores = _load_artist_db_scores(artist, scanned_titles)
         artist_scores = scan_scores + _db_scores
 
-        # ── Artist top-10% popularity marking + medium→high bump ─────────
-        # Spec steps 3-4: mark the top 10% of the artist's catalogue by
-        # popularity (``popularity_marked``), then upgrade any MEDIUM-confidence
-        # single in that range to HIGH.  Both are persisted before star ratings
-        # run so the 5★ bump (step 5) sees the upgraded confidence.
-        _cutoff, _top_n = _artist_top_marked_cutoff(scan_scores, _db_scores)
-        if _cutoff is not None and not options.get("popularity_only"):
+        # ── Artist top-% popularity marking + medium→high bump ────────────
+        # Spec steps 3-4: mark the top of the artist's catalogue by popularity
+        # (``popularity_marked``), then upgrade any MEDIUM-confidence single in
+        # that range to HIGH.  Two bands:
+        #   - top 10%: marked regardless of single status — the marking alone
+        #     earns 5★ (spec rule 2: "popular and 5★ without a single source").
+        #   - top 20% (widened): marked ONLY when a MEDIUM-confidence single
+        #     detection source exists — the bump then promotes it to HIGH → 5★
+        #     (spec rule 3).  The widening never marks popularity alone.
+        # Both are persisted before star ratings run so the 5★ bump (step 5)
+        # sees the upgraded confidence.
+        try:
+            _top_pct = float(
+                (get_config().get("single_detection") or {}).get("artist_top_percentile", 0.10) or 0.10
+            )
+            _medium_pct = float(
+                (get_config().get("single_detection") or {}).get("artist_medium_bump_percentile", 0.20) or 0.20
+            )
+        except Exception:
+            _top_pct, _medium_pct = 0.10, 0.20
+        _top_cutoff, _medium_cutoff, _top_n, _medium_n = _artist_top_marked_cutoffs(
+            scan_scores, _db_scores,
+            top_percentile=_top_pct,
+            medium_percentile=_medium_pct,
+        )
+        if _top_cutoff is not None and not options.get("popularity_only"):
             for _tr in album_results:
-                _tr["popularity_marked"] = bool(
-                    (float(_tr.get("popularity_score") or 0) >= _cutoff)
-                    and float(_tr.get("popularity_score") or 0) > 0
+                # Bonus / alternate / live tracks (``exclude_from_stats``) are
+                # not part of the artist's core catalogue popularity — they
+                # never consume a top-% slot and never earn 5★ from the
+                # marking (a padded live cut must not outrank a real single).
+                if bool(_tr.get("exclude_from_stats")):
+                    _tr["popularity_marked"] = False
+                    continue
+                _score = float(_tr.get("popularity_score") or 0)
+                _top_marked = _score >= _top_cutoff and _score > 0
+                _medium_marked = (
+                    _score >= _medium_cutoff
+                    and _score > 0
+                    and bool(_tr.get("is_single"))
+                    and str(_tr.get("single_confidence") or "low") == "medium"
                 )
+                _tr["popularity_marked"] = bool(_top_marked or _medium_marked)
             _apply_popularity_marking_bump(album_results)
             try:
                 _persist_popularity_marking(album_results)
