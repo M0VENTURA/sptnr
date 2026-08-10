@@ -103,6 +103,37 @@ def register_filters(app):
             value = value.replace(char, escape)
         return value
 
+    @app.template_filter('title_case')
+    def title_case(value):
+        """Display-style title casing without rewriting stored metadata.
+
+        Lowercases every word, then capitalises the first letter of the first
+        and last words plus all major words, keeping small function words
+        (of, the, and, to, ...) lowercase — "the cost of giving up" becomes
+        "The Cost of Giving Up". Used for hero headers only; raw tags are
+        never rewritten.
+        """
+        if not value:
+            return ''
+        small_words = {
+            'a', 'an', 'and', 'as', 'at', 'but', 'by', 'for', 'from', 'in',
+            'into', 'nor', 'of', 'off', 'on', 'or', 'per', 'the', 'to', 'up',
+            'vs', 'with',
+        }
+        words = str(value).split()
+        if not words:
+            return str(value)
+        out = []
+        for idx, word in enumerate(words):
+            lowered = word.lower()
+            if idx == 0 or idx == len(words) - 1 or lowered not in small_words:
+                for pos, ch in enumerate(lowered):
+                    if ch.isalpha():
+                        lowered = lowered[:pos] + ch.upper() + lowered[pos + 1:]
+                        break
+            out.append(lowered)
+        return ' '.join(out)
+
     # ----------------------------------------------------------------------
     # Tests
     # ----------------------------------------------------------------------

@@ -226,7 +226,9 @@ async function loadFolderGroups(options) {
     }).join('') + '</div>';
   }
   if (groups.length > 0) {
-    html += '<h6 class="px-3 pt-3 mb-0 small text-muted text-uppercase">Folder Groups</h6>';
+    // Distinct divider so QUEUE ITEMS and FOLDER GROUPS don't bleed together.
+    html += '<div class="border-top border-secondary mx-3 my-3"></div>';
+    html += '<h6 class="px-3 mb-0 small text-muted text-uppercase">Folder Groups</h6>';
     html += '<div class="list-group list-group-flush">' + groups.map(function(g) {
       // API shape: {name, display_name, total_tracks, discovered_count,
       // organized_count, progress_percent, status, files[], metadata{artist,album,year}}
@@ -241,7 +243,7 @@ async function loadFolderGroups(options) {
         fileHtml = '<ul class="list-unstyled mb-0 mt-1" style="max-height:160px;overflow-y:auto;">' +
           files.slice(0, 50).map(function(f) {
             var base = f && f.name ? f.name : String(f || '').split(/[\\/]/).pop();
-            return '<li style="font-size:0.75rem;" class="text-muted"><i class="bi bi-file-earmark-music me-1"></i>' + escapeHtml(base) + '</li>';
+            return '<li style="font-size:0.75rem;" class="text-muted"><i class="bi bi-file-earmark-music me-1"></i>' + escapeHtml(cleanQueueFileName(base)) + '</li>';
           }).join('') +
           (files.length > 50 ? '<li class="fst-italic small text-muted">+' + (files.length - 50) + ' more</li>' : '') +
           '</ul>';
@@ -296,33 +298,98 @@ async function renderUnmatchedFolders(options) {
   }
   section.style.display = 'block';
   if (badge) badge.textContent = folders.length + ' item' + (folders.length !== 1 ? 's' : '');
-  list.innerHTML = folders.map(function(f) {
-    var matched = f.status === 'matched';
-    var files = Array.isArray(f.files) ? f.files : [];
-    var fileHtml = '';
-    if (files.length > 0) {
-      fileHtml = '<ul class="list-unstyled mb-0 mt-1" style="max-height:160px;overflow-y:auto;">' +
-        files.slice(0, 30).map(function(file) {
-          var base = file && file.name ? file.name : String(file || '').split(/[\\/]/).pop();
-          return '<li style="font-size:0.75rem;" class="text-muted"><i class="bi bi-file-earmark-music me-1"></i>' + escapeHtml(base) + '</li>';
-        }).join('') +
-        (files.length > 30 ? '<li class="fst-italic small text-muted">+' + (files.length - 30) + ' more</li>' : '') +
-        '</ul>';
-    }
-    var statusBadge = matched
-      ? '<span class="badge bg-success flex-shrink-0" title="All files were imported to the library">Matched ✓</span>'
-      : '<span class="badge bg-secondary flex-shrink-0">' + (f.audio_count || 0) + ' audio</span>';
-    return '<div class="list-group-item">' +
-      '<div class="d-flex justify-content-between align-items-start gap-2">' +
-      '<div class="flex-grow-1"><strong>' + escapeHtml(f.display_name || f.name || 'Unknown') + '</strong>' + fileHtml + '</div>' +
-      statusBadge +
+
+  // Empty folders (0 audio, not matched) collapse into one group so they
+  // don't dominate the list; a one-click header action deletes them all.
+  var emptyFolders = folders.filter(function(f) {
+    return f.status !== 'matched' && !(f.audio_count > 0);
+  });
+  var contentFolders = folders.filter(function(f) {
+    return f.status === 'matched' || (f.audio_count || 0) > 0;
+  });
+  window.__emptyUnmatchedFolders = emptyFolders;
+  var deleteEmptyBtn = document.getElementById('deleteAllEmptyFoldersBtn');
+  if (deleteEmptyBtn) deleteEmptyBtn.style.display = emptyFolders.length ? '' : 'none';
+
+  var html = '';
+  if (contentFolders.length > 0) {
+    html += '<div class="list-group list-group-flush">' + contentFolders.map(function(f) {
+      var matched = f.status === 'matched';
+      var files = Array.isArray(f.files) ? f.files : [];
+      var fileHtml = '';
+      if (files.length > 0) {
+        fileHtml = '<ul class="list-unstyled mb-0 mt-1" style="max-height:160px;overflow-y:auto;">' +
+          files.slice(0, 30).map(function(file) {
+            var base = file && file.name ? file.name : String(file || '').split(/[\\/]/).pop();
+            return '<li style="font-size:0.75rem;" class="text-muted"><i class="bi bi-file-earmark-music me-1"></i>' + escapeHtml(cleanQueueFileName(base)) + '</li>';
+          }).join('') +
+          (files.length > 30 ? '<li class="fst-italic small text-muted">+' + (files.length - 30) + ' more</li>' : '') +
+          '</ul>';
+      }
+      var statusBadge = matched
+        ? '<span class="badge bg-success" title="All files were imported to the library">Matched ✓</span>'
+        : '<span class="badge bg-secondary">' + (f.audio_count || 0) + ' audio</span>';
+      // Actions sit on the far right of the title row (compact, single row).
+      return '<div class="list-group-item">' +
+        '<div class="d-flex justify-content-between align-items-start gap-2">' +
+        '<div class="flex-grow-1" style="min-width:0;">' +
+        '<strong>' + escapeHtml(f.display_name || f.name || 'Unknown') + '</strong>' + fileHtml +
+        '</div>' +
+        '<div class="d-flex flex-column flex-shrink-0 gap-1">' +
+        statusBadge +
+        '<button class="btn btn-sm btn-outline-primary py-0 unmatched-match-btn" data-path="' + escapeHtml(f.name) + '" title="Copy into the library as a MusicBrainz release (uses the naming convention from Settings)"><i class="bi bi-link-45deg"></i> Match</button>' +
+        '<button class="btn btn-sm btn-outline-danger py-0 unmatched-delete-btn" data-path="' + escapeHtml(f.name) + '" title="Delete this folder from the downloads folder"><i class="bi bi-trash3"></i> Delete</button>' +
+        '</div></div></div>';
+    }).join('') + '</div>';
+  }
+
+  if (emptyFolders.length > 0) {
+    html += '<div class="list-group list-group-flush"><div class="list-group-item">' +
+      '<div class="d-flex justify-content-between align-items-center">' +
+      '<button class="btn btn-sm btn-link text-muted p-0 text-decoration-none collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#emptyUnmatchedFoldersList" aria-expanded="false"><i class="bi bi-folder-x me-1"></i>Empty Folders (' + emptyFolders.length + ')</button>' +
+      '<small class="text-muted">0 audio files</small>' +
       '</div>' +
-      '<div class="d-flex gap-2 mt-2">' +
-      '<button class="btn btn-sm btn-outline-primary unmatched-match-btn" data-path="' + escapeHtml(f.name) + '" title="Copy into the library as a MusicBrainz release (uses the naming convention from Settings)"><i class="bi bi-link-45deg me-1"></i>Match to MusicBrainz</button>' +
-      '<button class="btn btn-sm btn-outline-danger unmatched-delete-btn" data-path="' + escapeHtml(f.name) + '" title="Delete this folder from the downloads folder"><i class="bi bi-trash3 me-1"></i>Delete</button>' +
-      '</div></div>';
-  }).join('');
+      '<div id="emptyUnmatchedFoldersList" class="collapse"><ul class="list-unstyled mb-0 mt-1" style="max-height:200px;overflow-y:auto;">' +
+      emptyFolders.map(function(f) {
+        return '<li style="font-size:0.75rem;" class="text-muted"><i class="bi bi-folder me-1"></i>' + escapeHtml(f.display_name || f.name || 'Unknown') + '</li>';
+      }).join('') +
+      '</ul></div></div></div>';
+  }
+
+  list.innerHTML = html;
   attachUnmatchedFolderActions(list);
+}
+
+// Strip the trailing numeric hash suffixes raw downloads carry
+// (e.g. "13 - Headlines (Friendship Never Ends)_639218336827019346.flac").
+function cleanQueueFileName(name) {
+  return String(name || '').replace(/_\d{12,}(\.\w+)$/i, '$1');
+}
+
+// Delete every empty (0 audio) unmatched folder in one click.
+async function deleteAllEmptyFolders(btn) {
+  var folders = window.__emptyUnmatchedFolders || [];
+  if (!folders.length) return;
+  if (!confirm('Delete ' + folders.length + ' empty folder(s) (no audio files) from the downloads folder? This cannot be undone.')) return;
+  btn.disabled = true;
+  var deleted = 0, failed = 0;
+  for (var i = 0; i < folders.length; i++) {
+    try {
+      var data = await fetchJsonOrThrow('/api/downloads/folder/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder_path: folders[i].name }),
+      });
+      if (data.success) deleted++; else failed++;
+    } catch (error) {
+      failed++;
+    }
+  }
+  alert('✅ Deleted ' + deleted + ' empty folder(s).' + (failed ? ' ⚠️ ' + failed + ' failed.' : ''));
+  btn.disabled = false;
+  if (typeof window.loadFolderGroups === 'function') {
+    window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+  }
 }
 
 function attachUnmatchedFolderActions(listEl) {

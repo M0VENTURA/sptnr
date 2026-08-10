@@ -7,9 +7,20 @@ or placed inside any Bootstrap modal for overlay behavior.
 
 <style>
 .mb-search-form { margin-bottom: 0.75rem; }
+/* Cyan is the reserved primary accent — neutral chrome by default, cyan on
+   hover/focus only (unified design language). */
+.mb-search-form .form-control:focus,
+.mb-search-form .form-select:focus {
+  border-color: #22d3ee;
+  box-shadow: 0 0 0 0.2rem rgba(34, 211, 238, 0.12);
+}
 .mb-results-container { max-height: 60vh; overflow-y: auto; }
 .mb-results-container .card { transition: border-color 0.15s ease; }
-.mb-results-container .card:hover { border-color: var(--spotify-green, #1db954); }
+.mb-results-container .card:hover { border-color: #22d3ee; }
+/* Neutral outline select buttons — cyan only on hover/focus. */
+.mb-select-btn { border-color: #6c757d; color: #adb5bd; }
+.mb-select-btn:hover,
+.mb-select-btn:focus { border-color: #22d3ee; color: #22d3ee; }
 </style>
 
 <!-- Search Controls -->
@@ -33,7 +44,7 @@ or placed inside any Bootstrap modal for overlay behavior.
         <input type="text" class="form-control form-control-sm" id="mbSearchYear" placeholder="2024" maxlength="4">
       </div>
       <div class="col-12 col-sm-4 col-md-3 d-flex gap-2">
-        <button type="submit" class="btn btn-info btn-sm flex-grow-1" id="mbSearchBtn">
+        <button type="submit" class="btn btn-outline-info btn-sm flex-grow-1" id="mbSearchBtn">
           <i class="bi bi-search"></i> Search
         </button>
         <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearMbSearch()" title="Clear">
@@ -41,28 +52,29 @@ or placed inside any Bootstrap modal for overlay behavior.
         </button>
       </div>
     </div>
-    <div class="row g-2 mt-2">
-      <div class="col-6 col-md-3">
-        <select id="mbReleaseType" class="form-select form-select-sm" onchange="performMbSearch()">
-          <option value="">All Types</option>
-          <option value="album">Album</option>
-          <option value="single">Single</option>
-          <option value="ep">EP</option>
-          <option value="compilation">Compilation</option>
-          <option value="soundtrack">Soundtrack</option>
-          <option value="live">Live</option>
-          <option value="remix">Remix</option>
-        </select>
-      </div>
-      <div class="col-6 col-md-2">
-        <select id="mbResultLimit" class="form-select form-select-sm" onchange="performMbSearch()">
-          <option value="12">12</option>
-          <option value="25" selected>25</option>
-          <option value="50">50</option>
-        </select>
-      </div>
-    </div>
   </form>
+</div>
+
+<!-- Filter Bar (dedicated flex bar aligned above the results container) -->
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+  <div class="d-flex align-items-center gap-2">
+    <select id="mbReleaseType" class="form-select form-select-sm" style="width:auto;" onchange="performMbSearch()" title="Filter by release type">
+      <option value="">All Types</option>
+      <option value="album">Album</option>
+      <option value="single">Single</option>
+      <option value="ep">EP</option>
+      <option value="compilation">Compilation</option>
+      <option value="soundtrack">Soundtrack</option>
+      <option value="live">Live</option>
+      <option value="remix">Remix</option>
+    </select>
+    <select id="mbResultLimit" class="form-select form-select-sm" style="width:auto;" onchange="performMbSearch()" title="Results per page">
+      <option value="12">12</option>
+      <option value="25" selected>25</option>
+      <option value="50">50</option>
+    </select>
+  </div>
+  <small class="text-muted" id="mbResultCount"></small>
 </div>
 
 <!-- Results -->
@@ -282,6 +294,9 @@ window.performMbSearch = async function() {
       return;
     }
 
+    var countEl = document.getElementById('mbResultCount');
+    if (countEl) countEl.textContent = releases.length + ' result' + (releases.length === 1 ? '' : 's');
+
     // Group by derived category (primary + secondary types) so Live / Remix /
     // Compilation / Soundtrack get their own sections instead of being lumped
     // under "Album".
@@ -315,24 +330,28 @@ window.performMbSearch = async function() {
         html += '<div class="col-12 col-md-6 col-lg-4 mb-2"><div class="card h-100">';
         html += '<div class="row g-0 h-100"><div class="col-4 d-flex align-items-center p-2">';
 
+        // Cover art with a disc-placeholder fallback: the placeholder sits
+        // behind the image and the image is removed on error, so broken
+        // artwork never renders as a broken-image icon.
+        html += '<div style="position:relative;aspect-ratio:1;width:100%;">';
+        html += '<div class="rounded img-fluid d-flex" style="position:absolute;inset:0;background:var(--tertiary-bg, #2b2b2b);align-items:center;justify-content:center;color:var(--text-secondary);"><i class="bi bi-disc fs-1"></i></div>';
         if (coverUrl) {
-          html += '<div style="position:relative;aspect-ratio:1;width:100%;">';
-          html += '<img src="' + escHtml(coverUrl) + '" class="rounded img-fluid" style="aspect-ratio:1;object-fit:cover;width:100%;" onerror="this.style.display=\'none\';this.parentElement.querySelector(\'.mb-placeholder\').style.display=\'flex\'">';
-          html += '<div class="mb-placeholder rounded img-fluid" style="position:absolute;inset:0;display:none;background:var(--tertiary-bg, #2b2b2b);align-items:center;justify-content:center;color:var(--text-secondary);"><i class="bi bi-disc fs-1"></i></div>';
-          html += '</div>';
-        } else {
-          html += '<div class="rounded img-fluid d-flex" style="aspect-ratio:1;width:100%;background:var(--tertiary-bg, #2b2b2b);align-items:center;justify-content:center;color:var(--text-secondary);"><i class="bi bi-disc fs-1"></i></div>';
+          html += '<img src="' + escHtml(coverUrl) + '" class="rounded img-fluid" loading="lazy" style="position:absolute;inset:0;aspect-ratio:1;object-fit:cover;width:100%;" onerror="this.remove()">';
         }
+        html += '</div>';
 
         html += '</div><div class="col-8"><div class="card-body p-2">';
         html += '<h6 class="card-title mb-1 small text-truncate" title="' + escHtml(r.title) + '">' + escHtml(r.title) + '</h6>';
         html += '<p class="card-text small text-muted mb-1 text-truncate">' + escHtml(artistName) + '</p>';
-        html += '<p class="card-text small text-muted mb-1">' + year;
-        if (r.country) html += ' · ' + escHtml(r.country);
-        html += '</p>';
+        // Horizontal metadata badge row: type + source + year/country.
+        html += '<div class="d-flex align-items-center gap-2 flex-wrap small text-muted mb-1">';
+        html += '<span class="badge bg-secondary-subtle text-secondary-emphasis">' + escHtml(t) + '</span>';
+        html += '<span class="badge bg-info-subtle text-info-emphasis"><i class="bi bi-music-note-beamed"></i> MusicBrainz</span>';
+        html += '<span>' + year + (r.country ? ' · ' + escHtml(r.country) : '') + '</span>';
+        html += '</div>';
 
         if (hasReleases) {
-          html += '<button class="btn btn-sm btn-outline-primary w-100 mb-1" onclick="toggleMbReleases(\'' + dataKey + '\', this)"><i class="bi bi-chevron-down"></i> Choose Release (' + r.releases.length + ')</button>';
+          html += '<button class="btn btn-sm btn-outline-secondary mb-select-btn w-100 mb-1" onclick="toggleMbReleases(\'' + dataKey + '\', this)"><i class="bi bi-chevron-down"></i> Choose Release (' + r.releases.length + ')</button>';
           html += '<div id="releases_' + dataKey + '" class="d-none"><div class="list-group list-group-flush" style="max-height:200px;overflow-y:auto;">';
           r.releases.forEach(function(rel) {
             var relYear = (rel.date || rel.release_date || '').split('-')[0] || '?';
@@ -347,7 +366,7 @@ window.performMbSearch = async function() {
           });
           html += '</div></div>';
         } else {
-          html += '<button class="btn btn-sm btn-outline-success w-100" onclick="selectMbRelease(\'' + dataKey + '\', \'' + escHtml(r.id || '') + '\', \'' + escHtml(r.title) + '\')"><i class="bi bi-check2"></i> Select</button>';
+          html += '<button class="btn btn-sm btn-outline-secondary mb-select-btn w-100" onclick="selectMbRelease(\'' + dataKey + '\', \'' + escHtml(r.id || '') + '\', \'' + escHtml(r.title) + '\')"><i class="bi bi-plus-lg"></i> Select</button>';
         }
         html += '</div></div></div></div></div>';
       });

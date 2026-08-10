@@ -1,10 +1,41 @@
 {% extends "base.html" %}
 
-{% block title %}{{ track.title }} - Popularr{% endblock %}
+{% block title %}{{ track.title|title_case }} - Popularr{% endblock %}
 
 {% block content %}
+<style>
+    /* Track page: hero cover, sticky bars, touch rows, segmented tabs */
+    .hero-cover { width: 64px; height: 64px; }
+    @media (min-width: 992px) { .hero-cover { width: 160px; height: 160px; } }
+
+    .single-source-row .btn {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    @media (min-width: 992px) {
+        .single-source-row .btn { min-height: 0; }
+    }
+
+    .track-sticky-bar { top: 4.2rem; z-index: 1000; }
+
+    .track-quick-bar {
+        position: fixed;
+        bottom: 0; left: 0; right: 0;
+        z-index: 1990;
+        background: rgba(18, 18, 18, 0.97);
+        border-top: 1px solid var(--border-color);
+        backdrop-filter: blur(10px);
+        padding: 0.6rem 1rem;
+        box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.5);
+    }
+    [id$="-section"],
+    [id$="-card"] { scroll-margin-top: 7rem; }
+</style>
 <div class="container-fluid mt-4">
     {% set artist_parts = track.artist|split_artist_collabs %}
+    {% set hero_art_url = '/api/album/' ~ (track.artist|path_segment) ~ '/' ~ (track.album|path_segment) ~ '/art?s=160' %}
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
             <li class="breadcrumb-item"><a href="{{ url_for('ui.dashboard') }}">Dashboard</a></li>
@@ -24,7 +55,7 @@
         <div class="card-body">
             <div class="d-flex flex-column flex-lg-row gap-4">
                 <div class="flex-shrink-0 align-self-center align-self-lg-start">
-                    <div class="album-art-container position-relative" style="width: 160px; height: 160px;">
+                    <div class="album-art-container hero-cover position-relative">
                         <img id="trackAlbumArtImage" src="/api/album/{{ track.artist|path_segment }}/{{ track.album|path_segment }}/art?s=160"
                              alt="{{ track.album }}"
                              style="width: 100%; height: 100%; object-fit: cover; border-radius: 6px;"
@@ -35,9 +66,15 @@
                     <div class="d-flex flex-column flex-md-row justify-content-between align-items-start gap-3">
                         <div>
                             <h1 class="h3 mb-1">
-                                <i class="bi bi-music-note-list"></i> {{ track.title }}
+                                <i class="bi bi-music-note-list"></i> {{ track.title|title_case }}
+                                {% if track.stars %}
+                                    <span class="badge badge-success ms-2 align-middle">{{ track.stars }}★</span>
+                                {% endif %}
+                                {% if track.is_single == 1 %}
+                                    <span class="badge bg-info ms-1 align-middle">Single</span>
+                                {% endif %}
                                 {% if is_track_favourite %}
-                                    <span class="badge bg-warning text-dark ms-2">Favourite</span>
+                                    <span class="badge bg-warning text-dark ms-2 align-middle">Favourite</span>
                                 {% endif %}
                             </h1>
                             <p class="text-muted mb-0">by
@@ -47,39 +84,66 @@
                             </p>
                         </div>
                         <div class="d-flex gap-2 flex-wrap">
-                            <div class="btn-group" role="group">
-                                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this track">
-                                    <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
+                            <!-- Desktop actions -->
+                            <div class="d-none d-lg-flex gap-2 align-items-center flex-wrap">
+                                <div class="btn-group" role="group">
+                                    <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this track">
+                                        <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
+                                    </button>
+                                    <ul class="dropdown-menu dropdown-menu-end">
+                                        {% if qbit_config.enabled %}
+                                        <li><a class="dropdown-item" onclick="openQbitSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')" href="javascript:void(0)">
+                                            <i class="bi bi-cloud-download"></i> Search qBittorrent
+                                        </a></li>
+                                        {% endif %}
+                                        {% if slskd_config.enabled %}
+                                        <li><a class="dropdown-item" onclick="openSlskdSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')" href="javascript:void(0)">
+                                            <i class="bi bi-music-note-beamed"></i> Search Soulseek
+                                        </a></li>
+                                        {% endif %}
+                                    </ul>
+                                </div>
+                                <button type="button" class="btn btn-outline-secondary" onclick="Player.playTrack('{{ track_id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')" title="Preview in the built-in player">
+                                    <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Preview</span>
+                                </button>
+                                <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" id="rescanTrackForm">
+                                    <button class="btn btn-info" type="submit" title="Rescan this track (Navidrome + Popularity + Singles)">
+                                        <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Track</span>
+                                    </button>
+                                </form>
+                                <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" id="essentiaScanForm">
+                                    <input type="hidden" name="track_id" value="{{ track.id }}">
+                                    <button class="btn btn-outline-secondary" type="submit" title="Run Essentia ML mood/genre scan for this track">
+                                        <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
+                                    </button>
+                                </form>
+                                <button type="button" class="btn btn-outline-secondary" id="renameFileBtn"
+                                        onclick="renameTrackFile('{{ track.id }}')"
+                                        title="Rename/move the file using the format configured in Settings (downloads.file_name_format)">
+                                    <i class="bi bi-pencil-square"></i> <span class="d-none d-sm-inline">Rename File</span>
+                                </button>
+                            </div>
+                            <!-- Mobile overflow menu -->
+                            <div class="btn-group d-lg-none">
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
+                                    <i class="bi bi-three-dots-vertical"></i> Actions
                                 </button>
                                 <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="document.getElementById('rescanTrackForm').submit()"><i class="bi bi-arrow-repeat"></i> Rescan Track</a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="Player.playTrack('{{ track_id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')"><i class="bi bi-play-circle"></i> Preview</a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="document.getElementById('essentiaScanForm').submit()"><i class="bi bi-cpu"></i> Essentia Scan</a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameTrackFile('{{ track.id }}')"><i class="bi bi-pencil-square"></i> Rename File</a></li>
+                                    {% if qbit_config.enabled or slskd_config.enabled %}
+                                    <li><hr class="dropdown-divider"></li>
+                                    {% endif %}
                                     {% if qbit_config.enabled %}
-                                    <li><a class="dropdown-item" onclick="openQbitSearchTrack('{{ track.artist }}', '{{ track.title }}')" href="javascript:void(0)">
-                                        <i class="bi bi-cloud-download"></i> Search qBittorrent
-                                    </a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openQbitSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-cloud-download"></i> Search qBittorrent</a></li>
                                     {% endif %}
                                     {% if slskd_config.enabled %}
-                                    <li><a class="dropdown-item" onclick="openSlskdSearchTrack('{{ track.artist }}', '{{ track.title }}')" href="javascript:void(0)">
-                                        <i class="bi bi-music-note-beamed"></i> Search Soulseek
-                                    </a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openSlskdSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-music-note-beamed"></i> Search Soulseek</a></li>
                                     {% endif %}
                                 </ul>
                             </div>
-                            <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" class="d-contents">
-                                <button class="btn btn-outline-info" type="submit" title="Rescan this track (Navidrome + Popularity + Singles)">
-                                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Track</span>
-                                </button>
-                            </form>
-                            <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" class="d-contents">
-                                <input type="hidden" name="track_id" value="{{ track.id }}">
-                                <button class="btn" style="border-color:#6f42c1;color:#6f42c1;" type="submit" title="Run Essentia ML mood/genre scan for this track">
-                                    <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
-                                </button>
-                            </form>
-                            <button type="button" class="btn btn-outline-warning" id="renameFileBtn"
-                                    onclick="renameTrackFile('{{ track.id }}')"
-                                    title="Rename/move the file using the format configured in Settings (downloads.file_name_format)">
-                                <i class="bi bi-pencil-square"></i> <span class="d-none d-sm-inline">Rename File</span>
-                            </button>
                         </div>
                     </div>
                     <hr class="my-3">
@@ -100,17 +164,6 @@
                             <strong>{{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}</strong>
                         </div>
                         {% endif %}
-                        <div class="col-6 col-md-3">
-                            <small class="text-muted d-block">Rating</small>
-                            <strong>
-                                {% if track.stars %}
-                                    <span class="badge badge-success">{{ track.stars }}★</span>
-                                    {% if track.is_single == 1 %}
-                                        <span class="badge bg-info ms-1">Single</span>
-                                    {% endif %}
-                                {% else %}—{% endif %}
-                            </strong>
-                        </div>
                         {% if track.track_number %}
                         <div class="col-6 col-md-3">
                             <small class="text-muted d-block">Track #</small>
@@ -129,39 +182,35 @@
         </div>
     </div>
 
-    <!-- Sticky Section Navigation -->
-    <div class="card mb-4 sticky-top" style="top: 4rem; z-index: 1000;">
+    <!-- Sticky toolbar: Expand/Collapse (desktop) · Segmented tabs (mobile) -->
+    <div class="card track-sticky-bar sticky-top mb-3">
         <div class="card-body py-2 px-3">
-            <ul class="nav nav-pills gap-2 small">
-                <li class="nav-item"><a class="nav-link" href="#track-edit-section">Track Info</a></li>
-                <li class="nav-item"><a class="nav-link" href="#track-sort-keys-section">Sort Keys</a></li>
-                <li class="nav-item"><a class="nav-link" href="#track-credits-section">Credits</a></li>
-                <li class="nav-item"><a class="nav-link" href="#track-release-info-section">Release</a></li>
-                <li class="nav-item"><a class="nav-link" href="#track-movement-section">Classical</a></li>
-                <li class="nav-item"><a class="nav-link" href="#track-technical-legal-section">Technical</a></li>
-                <li class="nav-item"><a class="nav-link" href="#track-external-ids-section">IDs</a></li>
-                <li class="nav-item"><a class="nav-link" href="#track-replaygain-section">ReplayGain</a></li>
-                <li class="nav-item"><a class="nav-link" href="#track-lyrics-section">Lyrics</a></li>
-                <li class="nav-item"><a class="nav-link" href="#track-genres-edit-section">Genres</a></li>
-                <li class="nav-item"><a class="nav-link" href="#track-scoring-section">Scoring</a></li>
-            </ul>
+            <div class="d-none d-lg-flex align-items-center gap-2">
+                <span class="small text-muted me-2"><i class="bi bi-list-nested"></i> Sections</span>
+                <button class="btn btn-sm btn-outline-info" type="button" id="accordion-expand-all">
+                    <i class="bi bi-arrows-angle-expand"></i> Expand All
+                </button>
+                <button class="btn btn-sm btn-outline-info" type="button" id="accordion-collapse-all">
+                    <i class="bi bi-arrows-angle-contract"></i> Collapse All
+                </button>
+            </div>
+            <div class="d-lg-none btn-group w-100" role="group" aria-label="Track sections" id="mobileTabBar">
+                <button type="button" class="btn btn-info active" data-tab="scoring"><i class="bi bi-graph-up"></i> Score</button>
+                <button type="button" class="btn btn-outline-info" data-tab="details"><i class="bi bi-info-circle"></i> Details</button>
+                <button type="button" class="btn btn-outline-info" data-tab="lyrics"><i class="bi bi-chat-quote"></i> Lyrics</button>
+                <button type="button" class="btn btn-outline-info" data-tab="tech"><i class="bi bi-gear"></i> Audio</button>
+            </div>
         </div>
-    </div>
-
-    <!-- Toggle all sections -->
-    <div class="d-flex justify-content-end mb-2 gap-2">
-        <button class="btn btn-sm btn-outline-secondary" type="button" id="accordion-expand-all">Expand All</button>
-        <button class="btn btn-sm btn-outline-secondary" type="button" id="accordion-collapse-all">Collapse All</button>
     </div>
 
     <form method="POST" action="{{ url_for('ui.track_detail', track_id=track.id) }}">
         <div class="row g-2 g-md-3">
             <!-- Left Column: Track Metadata & Editing -->
-            <div class="col-12 col-lg-6">
+            <div class="col-12 col-lg-7">
                 <div class="accordion" id="trackEditAccordion">
 
                 <!-- Core Track Information -->
-                <div class="accordion-item mb-0 border" id="track-edit-section">
+                <div class="accordion-item mb-0 border" id="track-edit-section" data-mobile-tab="details">
                     <h2 class="accordion-header" id="track-edit-heading">
                         <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#track-edit-collapse" aria-expanded="true" aria-controls="track-edit-collapse">
                             <i class="bi bi-pencil-square me-2"></i> Track Information
@@ -312,7 +361,7 @@
                 </div>
 
                 <!-- Sort Keys Section -->
-                <div class="accordion-item mb-0 border" id="track-sort-keys-section">
+                <div class="accordion-item mb-0 border" id="track-sort-keys-section" data-mobile-tab="details">
                     <h2 class="accordion-header" id="track-sort-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-sort-collapse" aria-expanded="false" aria-controls="track-sort-collapse">
                             <i class="bi bi-sort-alpha-down me-2"></i> Sort Keys
@@ -364,7 +413,7 @@
                 </div>
 
                 <!-- Additional Credits Section -->
-                <div class="accordion-item mb-0 border" id="track-credits-section">
+                <div class="accordion-item mb-0 border" id="track-credits-section" data-mobile-tab="details">
                     <h2 class="accordion-header" id="track-credits-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-credits-collapse" aria-expanded="false" aria-controls="track-credits-collapse">
                             <i class="bi bi-people-fill me-2"></i> Additional Credits
@@ -428,7 +477,7 @@
                 </div>
 
                 <!-- Release Info Section -->
-                <div class="accordion-item mb-0 border" id="track-release-info-section">
+                <div class="accordion-item mb-0 border" id="track-release-info-section" data-mobile-tab="details">
                     <h2 class="accordion-header" id="track-release-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-release-collapse" aria-expanded="false" aria-controls="track-release-collapse">
                             <i class="bi bi-disc-fill me-2"></i> Release Information
@@ -530,7 +579,7 @@
                 </div>
 
                 <!-- Classical / Movement Section -->
-                <div class="accordion-item mb-0 border" id="track-movement-section">
+                <div class="accordion-item mb-0 border" id="track-movement-section" data-mobile-tab="details">
                     <h2 class="accordion-header" id="track-movement-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-movement-collapse" aria-expanded="false" aria-controls="track-movement-collapse">
                             <i class="bi bi-music-note-beamed me-2"></i> Classical / Movement
@@ -568,7 +617,7 @@
                 </div>
 
                 <!-- Technical / Legal Section -->
-                <div class="accordion-item mb-0 border" id="track-technical-legal-section">
+                <div class="accordion-item mb-0 border" id="track-technical-legal-section" data-mobile-tab="tech">
                     <h2 class="accordion-header" id="track-technical-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-technical-collapse" aria-expanded="false" aria-controls="track-technical-collapse">
                             <i class="bi bi-gear-fill me-2"></i> Technical &amp; Legal
@@ -599,7 +648,7 @@
                     </div>
                 </div>
 
-                <div class="accordion-item mb-0 border" id="track-external-ids-section">
+                <div class="accordion-item mb-0 border" id="track-external-ids-section" data-mobile-tab="tech">
                     <h2 class="accordion-header" id="track-external-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-external-collapse" aria-expanded="false" aria-controls="track-external-collapse">
                             <i class="bi bi-upc-scan me-2"></i> External IDs
@@ -655,7 +704,7 @@
                                 <button type="button" class="btn btn-outline-info btn-sm" onclick="lookupMusicBrainz(this)">
                                     <i class="bi bi-search"></i> MusicBrainz Lookup
                                 </button>
-                                <button type="button" class="btn btn-outline-warning btn-sm" onclick="lookupDiscogs(this)">
+                                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="lookupDiscogs(this)">
                                     <i class="bi bi-search"></i> Discogs Lookup
                                 </button>
                             </div>
@@ -692,7 +741,7 @@
                 </div>
 
                 <!-- ReplayGain Section -->
-                <div class="accordion-item mb-0 border" id="track-replaygain-section">
+                <div class="accordion-item mb-0 border" id="track-replaygain-section" data-mobile-tab="tech">
                     <h2 class="accordion-header" id="track-replaygain-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-replaygain-collapse" aria-expanded="false" aria-controls="track-replaygain-collapse">
                             <i class="bi bi-soundwave me-2"></i> ReplayGain / R128
@@ -735,7 +784,7 @@
                 </div>
 
                 <!-- Full Lyrics Section -->
-                <div class="accordion-item mb-0 border" id="track-lyrics-section">
+                <div class="accordion-item mb-0 border" id="track-lyrics-section" data-mobile-tab="lyrics">
                     <h2 class="accordion-header" id="track-lyrics-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-lyrics-collapse" aria-expanded="false" aria-controls="track-lyrics-collapse">
                             <i class="bi bi-chat-quote-fill me-2"></i> Full Lyrics
@@ -751,7 +800,7 @@
                 </div>
 
                 <!-- Genres & Tags Section -->
-                <div class="accordion-item mb-0 border" id="track-genres-edit-section">
+                <div class="accordion-item mb-0 border" id="track-genres-edit-section" data-mobile-tab="tech">
                     <h2 class="accordion-header" id="track-genres-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-genres-collapse" aria-expanded="false" aria-controls="track-genres-collapse">
                             <i class="bi bi-tags-fill me-2"></i> Genres and Moods
@@ -876,32 +925,10 @@
                 </div>
             </div>
             
-            <!-- Right Column: Metadata Info & Recommendations -->
-            <div class="col-12 col-lg-6">
-                <!-- Similar Artists -->
-                <div class="card mb-4" id="track-similar-section">
-                    <div class="card-header p-0" id="track-similar-heading">
-                        <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-similar-collapse" aria-expanded="false" aria-controls="track-similar-collapse" style="color: inherit;">
-                            <h5 class="card-title mb-0">
-                                <i class="bi bi-person-heart"></i> Similar Artists
-                            </h5>
-                            <i class="bi bi-chevron-down similar-chevron"></i>
-                        </button>
-                    </div>
-                    <div id="track-similar-collapse" class="collapse">
-                        <div class="card-body">
-                            <div id="similarArtistsContainer">
-                                <div class="text-center py-3 text-muted">
-                                    <i class="bi bi-chevron-down"></i>
-                                    <span>Expand to load similar artists from Last.fm and ListenBrainz.</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
+            <!-- Right Column: Scoring, Insight & Discovery -->
+            <div class="col-12 col-lg-5">
                 <!-- Track Scoring -->
-                <div class="card mb-4" id="track-scoring-section">
+                <div class="card mb-4" id="track-scoring-section" data-mobile-tab="scoring">
                     <div class="card-header p-0" id="track-scoring-heading">
                         <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-scoring-collapse" aria-expanded="true" aria-controls="track-scoring-collapse" style="color: inherit;">
                             <h5 class="card-title mb-0">
@@ -981,99 +1008,97 @@
                             </select>
                         </div>
 
-                        <hr class="my-3">
+                    </div>
+                    </div>
+                </div>
 
-                        <!-- Single Detection -->
-                        <h6 class="fw-semibold text-muted small text-uppercase mb-2">Single Detection</h6>
+                <!-- Single Detection -->
+                <div class="card mb-4" id="track-single-detection-card" data-mobile-tab="scoring">
+                    <div class="card-header p-0" id="track-single-detection-heading">
+                        <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-single-detection-collapse" aria-expanded="true" aria-controls="track-single-detection-collapse" style="color: inherit;">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-bullseye"></i> Single Detection
+                                {% if track.single_confidence in ('high', 'user') %}
+                                    <span class="badge bg-success ms-2 align-middle" style="font-size: 0.75rem;">High{% if track.single_confidence == 'user' %} (User){% endif %}</span>
+                                {% elif track.single_confidence == 'medium' %}
+                                    <span class="badge bg-warning text-dark ms-2 align-middle" style="font-size: 0.75rem;">Medium</span>
+                                {% else %}
+                                    <span class="badge bg-secondary ms-2 align-middle" style="font-size: 0.75rem;">None</span>
+                                {% endif %}
+                            </h5>
+                            <i class="bi bi-chevron-down similar-chevron"></i>
+                        </button>
+                    </div>
+                    <div id="track-single-detection-collapse" class="collapse show">
+                    <div class="card-body">
 
                         <div class="row g-2 align-items-end mb-3">
-                            <div class="col-6 col-md-3">
+                            <div class="col-6 col-md-5">
                                 <label for="is_single" class="form-label small mb-1">Is Single</label>
                                 <select class="form-select form-select-sm" id="is_single" name="is_single">
                                     <option value="false" {% if not track.is_single %}selected{% endif %}>No</option>
                                     <option value="true" {% if track.is_single %}selected{% endif %}>Yes</option>
                                 </select>
                             </div>
-                            <div class="col-6 col-md-3">
-                                <div class="form-label small text-muted mb-1">Confidence</div>
-                                <div>
-                                    {% if track.single_confidence in ('high', 'user') %}
-                                        <span class="badge bg-success">High{% if track.single_confidence == 'user' %} (User){% endif %}</span>
-                                    {% elif track.single_confidence == 'medium' %}
-                                        <span class="badge bg-warning text-dark">Medium</span>
+                            <div class="col-6 col-md-4">
+                                <div class="form-label small text-muted mb-1">Last scan</div>
+                                <div class="small">
+                                    {% if track.single_detection_last_updated %}
+                                        {{ (track.single_detection_last_updated|string)[:16].replace('T', ' ') }}
                                     {% else %}
-                                        <span class="badge bg-secondary">None</span>
+                                        Never
                                     {% endif %}
                                 </div>
                             </div>
-                            <div class="col-12 col-md-6">
-                                <div class="d-flex align-items-center gap-3 flex-wrap pb-1">
-                                    <div class="form-check mb-0">
-                                        <input type="checkbox" class="form-check-input" id="single_manual_override" name="single_manual_override" {% if track.single_manual_override %}checked{% endif %}>
-                                        <label class="form-check-label small" for="single_manual_override">Force (skip auto-scan)</label>
-                                    </div>
-                                    <div class="d-flex align-items-center gap-2 small">
-                                        <span class="text-muted">Last scan:</span>
-                                        <span>
-                                            {% if track.single_detection_last_updated %}
-                                                {{ (track.single_detection_last_updated|string)[:16].replace('T', ' ') }}
-                                            {% else %}
-                                                Never
-                                            {% endif %}
-                                        </span>
-                                    </div>
+                            <div class="col-12 col-md-3">
+                                <div class="form-check pt-1">
+                                    <input type="checkbox" class="form-check-input" id="single_manual_override" name="single_manual_override" {% if track.single_manual_override %}checked{% endif %}>
+                                    <label class="form-check-label small" for="single_manual_override">Force (skip auto-scan)</label>
                                 </div>
                             </div>
-                        </div>
-
-                        <!-- Single Detection Sources -->
-                        <div class="mb-2">
-                            <div class="small fw-semibold text-muted mb-1">Detection Sources</div>
-                            <table class="table table-sm table-borderless mb-0 align-middle" style="font-size:0.78rem;">
-                                <tbody>
-                                    {% set detection_sources = [
-                                        ('discogs', 'Discogs', 'High'),
-                                        ('discogs_video', 'Discogs Video', 'Medium'),
-                                        ('musicbrainz', 'MusicBrainz', 'Medium'),
-                                        ('musicbrainz_video', 'MusicBrainz Video', 'Medium'),
-                                        ('musicbrainz_compilation', 'MusicBrainz Compilation', 'Medium'),
-                                        ('lastfm', 'Last.fm', 'Medium'),
-                                        ('isrc', 'ISRC', 'Medium'),
-                                        ('listenbrainz_top10', 'ListenBrainz Top-10%', 'Medium'),
-                                        ('popularity_marked', 'Popularity Marked (Artist Top-%)', 'Medium'),
-                                        ('popularity_z_standout', 'Popularity Standout', 'Medium'),
-                                        ('radio_edit', 'Radio Edit / Duration', 'Medium'),
-                                        ('release_date_match', 'Release Date Match', 'Medium')
-                                    ] %}
-                                    {% for src_key, src_label, src_conf in detection_sources %}
-                                    <tr>
-                                        <td style="width:40%; padding:2px 4px;">{{ src_label }}</td>
-                                        <td style="padding:2px 4px;">
-                                            {% if src_key in (track.single_sources_list or []) %}
-                                                <span class="badge bg-success" style="font-size:0.65rem;">Detected</span>
-                                            {% else %}
-                                                <span class="badge bg-light text-muted border" style="font-size:0.65rem;">Not Detected</span>
-                                            {% endif %}
-                                        </td>
-                                        <td style="padding:2px 4px;" class="text-end">
-                                            <button type="button" class="btn btn-outline-secondary py-0 px-1"
-                                                    style="font-size:0.65rem; line-height:1.2;"
-                                                    onclick="rescanSingleSource('{{ track_id }}', '{{ src_key }}', event)"
-                                                    title="Re-check this source on next scan">
-                                                <i class="bi bi-arrow-repeat"></i> Re-check
-                                            </button>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
                         </div>
 
                         <hr class="my-3">
 
-                        <!-- Cover Detection -->
-                        <h6 class="fw-semibold text-muted small text-uppercase mb-2">Cover Detection</h6>
+                        <div class="small fw-semibold text-muted text-uppercase mb-1">Detection Sources</div>
+                        <div class="d-flex flex-column">
+                            {% set detection_sources = [
+                                ('discogs', 'Discogs', 'High'),
+                                ('discogs_video', 'Discogs Video', 'Medium'),
+                                ('musicbrainz', 'MusicBrainz', 'Medium'),
+                                ('musicbrainz_video', 'MusicBrainz Video', 'Medium'),
+                                ('musicbrainz_compilation', 'MusicBrainz Compilation', 'Medium'),
+                                ('lastfm', 'Last.fm', 'Medium'),
+                                ('isrc', 'ISRC', 'Medium'),
+                                ('listenbrainz_top10', 'ListenBrainz Top-10%', 'Medium'),
+                                ('popularity_marked', 'Popularity Marked (Artist Top-%)', 'Medium'),
+                                ('popularity_z_standout', 'Popularity Standout', 'Medium'),
+                                ('radio_edit', 'Radio Edit / Duration', 'Medium'),
+                                ('release_date_match', 'Release Date Match', 'Medium')
+                            ] %}
+                            {% for src_key, src_label, src_conf in detection_sources %}
+                            <div class="single-source-row d-flex flex-wrap align-items-center gap-2 py-2 border-bottom border-secondary-subtle">
+                                <div class="flex-grow-1 small fw-semibold" style="min-width: 140px;">{{ src_label }}</div>
+                                <div>
+                                    {% if src_key in (track.single_sources_list or []) %}
+                                        <span class="badge bg-success">Detected</span>
+                                    {% else %}
+                                        <span class="badge bg-light text-muted border">Not Detected</span>
+                                    {% endif %}
+                                </div>
+                                <button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0"
+                                        style="min-width: 100px;"
+                                        onclick="rescanSingleSource('{{ track_id }}', '{{ src_key }}', event)"
+                                        title="Re-check this source on next scan">
+                                    <i class="bi bi-arrow-repeat"></i> Re-check
+                                </button>
+                            </div>
+                            {% endfor %}
+                        </div>
 
+                        <hr class="my-3">
+
+                        <h6 class="fw-semibold text-muted small text-uppercase mb-2">Cover Detection</h6>
                         <div class="d-flex flex-wrap align-items-center gap-3 mb-2">
                             <div class="d-flex align-items-center gap-2">
                                 <span class="small text-muted">Cover Song:</span>
@@ -1083,7 +1108,7 @@
                                     <span class="badge bg-secondary">No</span>
                                 {% endif %}
                                 <button type="button" class="btn btn-outline-info py-0 px-1"
-                                        style="font-size:0.65rem; line-height:1.2;"
+                                        style="font-size:0.65rem; line-height:1.2; min-height: 34px;"
                                         data-bs-toggle="modal" data-bs-target="#coverSearchModal"
                                         title="Search for cover match">
                                     <i class="bi bi-search"></i> Search
@@ -1107,8 +1132,122 @@
                     </div>
                 </div>
 
+                <!-- Essentia Audio Analysis -->
+                <div class="card mb-4" id="track-essentia-card" data-mobile-tab="tech">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-cpu"></i> Essentia Audio Analysis
+                        </h5>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('essentiaScanForm').submit()" title="Run Essentia ML mood/genre scan for this track">
+                            <i class="bi bi-lightning-charge"></i> Run Scan
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        {% set has_essentia = (track.bpm is not none and track.bpm != '') or track.mood_list or track.essentia_genres %}
+                        {% if not has_essentia %}
+                        <div class="alert alert-info mb-0">
+                            <i class="bi bi-info-circle"></i> No Essentia analysis yet. Run an <strong>Essentia scan</strong> to detect BPM, moods and genres locally without an internet connection.
+                        </div>
+                        {% else %}
+                        <div class="border rounded p-3 mb-3" style="background: var(--tertiary-bg, #2b2b2b);">
+                            <div class="row g-3 text-center">
+                                <div class="col-4">
+                                    <div class="text-muted small fw-semibold mb-1"><i class="bi bi-speedometer2"></i> BPM</div>
+                                    <div class="fs-4 fw-bold">{{ track.bpm|round|int if track.bpm is not none else '—' }}</div>
+                                </div>
+                                <div class="col-4">
+                                    <div class="text-muted small fw-semibold mb-1"><i class="bi bi-music-note"></i> Key</div>
+                                    <div class="fs-4 fw-bold">{{ track.key or '—' }}</div>
+                                </div>
+                                <div class="col-4">
+                                    <div class="text-muted small fw-semibold mb-1"><i class="bi bi-volume-up"></i> Loudness</div>
+                                    <div class="fs-4 fw-bold">—</div>
+                                </div>
+                            </div>
+                            <div class="small text-muted text-center mt-2">Key / Energy / Loudness aren't persisted by the current Essentia pipeline — only moods &amp; genres are.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <div class="small fw-semibold text-muted text-uppercase mb-2">Detected Moods</div>
+                            <div>
+                                {% if track.mood_list %}
+                                    {% for mood in track.mood_list %}
+                                    <span class="badge text-dark me-1 mb-1" style="background-color: #F59C00;">{{ mood }}</span>
+                                    {% endfor %}
+                                {% else %}
+                                    <span class="text-muted small">No mood tags yet</span>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <div class="small fw-semibold text-muted text-uppercase mb-2">Essentia Genres</div>
+                            <div>
+                                {% if track.essentia_genres %}
+                                    {% for genre in track.essentia_genres|split_genres %}
+                                    <span class="badge bg-secondary me-1 mb-1">{{ genre }}</span>
+                                    {% endfor %}
+                                {% else %}
+                                    <span class="text-muted small">No Essentia genres yet</span>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="small">
+                            {% if track.mood_source %}
+                            <div class="d-flex justify-content-between py-1 border-bottom border-secondary-subtle">
+                                <span class="text-muted">Mood source</span><span>{{ track.mood_source }}</span>
+                            </div>
+                            {% endif %}
+                            {% if track.mood_confidence %}
+                            <div class="d-flex justify-content-between py-1 border-bottom border-secondary-subtle">
+                                <span class="text-muted">Mood confidence</span><span>{{ track.mood_confidence }}</span>
+                            </div>
+                            {% endif %}
+                            {% if track.essentia_model_version %}
+                            <div class="d-flex justify-content-between py-1 border-bottom border-secondary-subtle">
+                                <span class="text-muted">Model version</span><span>{{ track.essentia_model_version }}</span>
+                            </div>
+                            {% endif %}
+                            {% if track.essentia_scan_version %}
+                            <div class="d-flex justify-content-between py-1 border-bottom border-secondary-subtle">
+                                <span class="text-muted">Scan version</span><span>{{ track.essentia_scan_version }}</span>
+                            </div>
+                            {% endif %}
+                            {% if track.essentia_last_updated %}
+                            <div class="d-flex justify-content-between py-1">
+                                <span class="text-muted">Last updated</span><span>{{ (track.essentia_last_updated|string)[:16].replace('T', ' ') }}</span>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Similar Artists -->
+                <div class="card mb-4" id="track-similar-section" data-mobile-tab="tech">
+                    <div class="card-header p-0" id="track-similar-heading">
+                        <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-similar-collapse" aria-expanded="false" aria-controls="track-similar-collapse" style="color: inherit;">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-person-heart"></i> Similar Artists
+                            </h5>
+                            <i class="bi bi-chevron-down similar-chevron"></i>
+                        </button>
+                    </div>
+                    <div id="track-similar-collapse" class="collapse">
+                        <div class="card-body">
+                            <div id="similarArtistsContainer">
+                                <div class="text-center py-3 text-muted">
+                                    <i class="bi bi-chevron-down"></i>
+                                    <span>Expand to load similar artists from Last.fm and ListenBrainz.</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Audio Information -->
-                <div class="card mb-4">
+                <div class="card mb-4" id="track-audio-info-card" data-mobile-tab="tech">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-disc-fill"></i> Audio Information
@@ -1177,6 +1316,31 @@
             </a>
         </div>
     </form>
+
+    <!-- Mobile sticky quick actions -->
+    <div class="track-quick-bar d-lg-none">
+        <div class="d-flex gap-2 align-items-center" style="max-width: 1400px; margin: 0 auto;">
+            <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" class="flex-grow-1">
+                <button class="btn btn-info w-100" type="submit">
+                    <i class="bi bi-arrow-repeat"></i> Rescan Track
+                </button>
+            </form>
+            <div class="btn-group flex-grow-1">
+                <button class="btn btn-outline-secondary dropdown-toggle w-100" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-download"></i> Download
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end w-100">
+                    {% if qbit_config.enabled %}
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openQbitSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-cloud-download"></i> Search qBittorrent</a></li>
+                    {% endif %}
+                    {% if slskd_config.enabled %}
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openSlskdSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-music-note-beamed"></i> Search Soulseek</a></li>
+                    {% endif %}
+                </ul>
+            </div>
+        </div>
+    </div>
+    <div class="d-lg-none" style="height: 68px;"></div>
 </div>
 
 <script id="page-data" type="application/json">{{ {
@@ -1580,6 +1744,42 @@
             bsCollapse.hide();
         });
     });
+</script>
+
+<script>
+// ── Mobile segmented tabs: Scoring / Details / Lyrics / Audio ──
+(function () {
+    var mq = window.matchMedia('(min-width: 992px)');
+    var currentTab = 'scoring';
+
+    function applyMobileTabs() {
+        var isDesktop = mq.matches;
+        document.querySelectorAll('[data-mobile-tab]').forEach(function (el) {
+            var visible = isDesktop || el.getAttribute('data-mobile-tab') === currentTab;
+            el.style.display = visible ? '' : 'none';
+        });
+        document.querySelectorAll('#mobileTabBar button[data-tab]').forEach(function (btn) {
+            var active = btn.getAttribute('data-tab') === currentTab && !isDesktop;
+            btn.classList.toggle('btn-info', active);
+            btn.classList.toggle('btn-outline-info', !active);
+            btn.classList.toggle('active', active);
+        });
+    }
+
+    var bar = document.getElementById('mobileTabBar');
+    if (bar) {
+        bar.addEventListener('click', function (e) {
+            var btn = e.target.closest('button[data-tab]');
+            if (!btn) return;
+            currentTab = btn.getAttribute('data-tab');
+            applyMobileTabs();
+        });
+    }
+    if (mq.addEventListener) {
+        mq.addEventListener('change', applyMobileTabs);
+    }
+    applyMobileTabs();
+})();
 </script>
 
 <!-- External Lookup Modal -->
