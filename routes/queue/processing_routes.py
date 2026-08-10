@@ -91,12 +91,6 @@ def api_queue_requeue_all_unmatched():
     return _json_response(queue_requeue_all_unmatched())
 
 
-@queue_processing_bp.route("/api/queue/prefetch-release-tracks", methods=["POST"])
-def api_queue_prefetch_release_tracks():
-    """Prefetch release tracks for an upcoming album release (stub)."""
-    return _json_response({"success": True, "tracks": []})
-
-
 @queue_processing_bp.route("/api/queue/retry-all-failed", methods=["POST"])
 def api_queue_retry_all_failed():
     return _json_response(queue_retry_all_failed())

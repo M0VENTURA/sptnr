@@ -154,9 +154,11 @@ TABLES_TO_ENSURE: dict[str, str] = {
             mbid_match_score REAL,
             mbid_last_checked_at TEXT,
             mbid_manual_override BOOLEAN DEFAULT FALSE,
+            status TEXT DEFAULT 'discovered',
+            last_seen_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            CONSTRAINT uq_upcoming_artist_album_source UNIQUE (artist_name, album_name, source)
+            CONSTRAINT uq_upcoming_artist_album UNIQUE (artist_name, album_name)
         )
     """,
     "scan_states": """

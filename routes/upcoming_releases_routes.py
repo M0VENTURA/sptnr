@@ -7,6 +7,7 @@ to ensure proper rate limiting, User-Agent, and Lucene-escaping.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from quart import Blueprint, jsonify, request
@@ -47,23 +48,44 @@ def _search_musicbrainz_release_group(artist: str, album: str, track: str = "") 
 
 @upcoming_bp.route("", methods=["GET"])
 def api_upcoming_releases():
-    """Get upcoming releases with collection/recommended artist annotations.
+    """Get upcoming releases with collection/queue annotations and pagination.
 
     Query params:
-        collection (str): If "true", only include releases where artist is in collection.
-        recommended (str): If "true", only include releases where artist is recommended.
+        filter (str): "all" (default), "collection" (artist/album in library),
+                      or "discovered" (Wikipedia-sourced rows only).
         include_queue (str): If "true", include in_queue flag per release.
+        page (int): 1-based page number (default 1).
+        limit (int): Page size (default 50, max 200).
     """
     try:
-        filter_collection = request.args.get("collection", "").strip().lower() == "true"
-        filter_recommended = request.args.get("recommended", "").strip().lower() == "true"
+        release_filter = (request.args.get("filter", "") or "all").strip().lower()
+        if release_filter not in ("all", "collection", "discovered"):
+            release_filter = "all"
+        # Legacy alias used by queue.html/monitor.js: ?collection=true means
+        # "artists already in my library only".
+        if (request.args.get("collection") or "").strip().lower() == "true":
+            release_filter = "collection"
         include_queue = request.args.get("include_queue", "").strip().lower() == "true"
+        page = max(1, request.args.get("page", 1, type=int))
+        limit = max(1, min(request.args.get("limit", 50, type=int), 200))
 
         with db_session() as session:
-            result = session.execute(text("SELECT * FROM upcoming_releases ORDER BY release_date ASC NULLS LAST LIMIT 100"))
+            total = session.execute(text("SELECT COUNT(*) FROM upcoming_releases")).scalar() or 0
+            result = session.execute(
+                text("SELECT * FROM upcoming_releases ORDER BY release_date ASC NULLS LAST, id ASC LIMIT :limit OFFSET :offset"),
+                {"limit": limit + 1, "offset": (page - 1) * limit},
+            )
             rows = result.fetchall()
 
+        has_more = len(rows) > limit
+        rows = rows[:limit]
         releases = [dict(r._mapping) for r in rows]
+
+        # "discovered" tab = Wikipedia-sourced rows (everything that is not the
+        # MusicBrainz daily collection scan).
+        if release_filter == "discovered":
+            releases = [r for r in releases if (r.get("source") or "") != "MusicBrainz Daily Collection"]
+
         artist_names = list({r.get("artist_name", "") or "" for r in releases if r.get("artist_name")})
 
         # Batch: artists in collection
@@ -131,7 +153,6 @@ def api_upcoming_releases():
             album_name = (release.get("album_name") or "").lower()
             release["artist_in_collection"] = artist_name in artists_in_collection
             release["album_in_collection"] = (artist_name, album_name) in albums_in_collection
-            release["artist_in_recommended"] = False
             if include_queue and artist_name and album_name:
                 in_queue = (artist_name, album_name) in queued_pairs
                 release["in_queue"] = in_queue
@@ -140,13 +161,17 @@ def api_upcoming_releases():
                 release["in_queue"] = False
                 release["queue_status"] = None
 
-        # Apply collection filter if requested
-        if filter_collection:
+        if release_filter == "collection":
             releases = [r for r in releases if r.get("artist_in_collection")]
-        elif filter_recommended:
-            releases = [r for r in releases if r.get("artist_in_recommended")]
 
-        return jsonify({"success": True, "releases": releases})
+        return jsonify({
+            "success": True,
+            "releases": releases,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "has_more": has_more,
+        })
     except Exception as exc:
         logger.error("Failed to fetch upcoming releases: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
@@ -154,19 +179,69 @@ def api_upcoming_releases():
 
 @upcoming_bp.route("/<int:release_id>/match", methods=["POST"])
 async def api_match_upcoming_release(release_id):
-    """Match an upcoming release to a MusicBrainz release-group."""
-    data = (await request.get_json()) or {}
+    """Match an upcoming release to a MusicBrainz release-group.
+
+    When ``release_group_mbid`` is omitted, falls back to a server-side
+    MusicBrainz search using the stored artist/album names and stores the best
+    match (``match_source = 'auto_search'``).  404 when nothing is found.
+    """
+    data = (await request.get_json(silent=True)) or {}
     rg_mbid = (data.get("release_group_mbid") or "").strip()
     source = (data.get("source") or "manual_selection").strip()
 
-    if not rg_mbid:
-        return jsonify({"error": "release_group_mbid is required"}), 400
-
     try:
+        if rg_mbid:
+            with db_session() as session:
+                session.execute(text("UPDATE upcoming_releases SET release_group_mbid = :mbid, match_source = :source, mbid_last_checked_at = :checked WHERE id = :id"),
+                              {"mbid": rg_mbid, "source": source, "id": release_id, "checked": datetime.now().isoformat()})
+            return jsonify({"success": True, "release_group_mbid": rg_mbid, "match_source": source})
+
+        # ── Fallback: no MBID supplied → look the row up and search MB ──
         with db_session() as session:
-            session.execute(text("UPDATE upcoming_releases SET release_group_mbid = :mbid, match_source = :source WHERE id = :id"),
-                          {"mbid": rg_mbid, "source": source, "id": release_id})
-        return jsonify({"success": True, "release_group_mbid": rg_mbid})
+            row = session.execute(
+                text("SELECT id, artist_name, album_name FROM upcoming_releases WHERE id = :id"),
+                {"id": release_id},
+            ).fetchone()
+        if row is None:
+            return jsonify({"error": "release not found"}), 404
+
+        artist = str(row[1] or "").strip()
+        album = str(row[2] or "").strip()
+        if not artist or not album:
+            return jsonify({"error": "release has no artist/album to search"}), 400
+
+        results = _search_musicbrainz_release_group(artist, album)
+        if not results:
+            return jsonify({"error": "no MusicBrainz release group found", "artist": artist, "album": album}), 404
+
+        best = results[0]
+        best_mbid = (best.get("id") or "").strip()
+        if not best_mbid:
+            return jsonify({"error": "no MusicBrainz release group found", "artist": artist, "album": album}), 404
+
+        release_date = (best.get("first-release-date") or "")[:10]
+        primary_type = (best.get("primary-type") or best.get("type") or "")
+        with db_session() as session:
+            session.execute(
+                text("""UPDATE upcoming_releases
+                        SET release_group_mbid = :mbid,
+                            match_source = 'auto_search',
+                            release_date = CASE
+                                WHEN release_date IS NULL OR (:date IS NOT NULL AND :date < release_date)
+                                    THEN :date
+                                ELSE release_date
+                            END,
+                            primary_type = :ptype,
+                            mbid_match_status = 'matched',
+                            mbid_source = 'auto_search',
+                            mbid_last_checked_at = :checked
+                        WHERE id = :id"""),
+                {"mbid": best_mbid, "date": release_date or None, "ptype": primary_type,
+                 "id": release_id, "checked": datetime.now().isoformat()},
+            )
+        logger.info("Auto-matched upcoming release %s (%s - %s) -> %s", release_id, artist, album, best_mbid)
+        return jsonify({"success": True, "release_group_mbid": best_mbid,
+                        "match_source": "auto_search", "artist": artist, "album": album})
     except Exception as exc:
         logger.error("Failed to match upcoming release %s: %s", release_id, exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
@@ -212,6 +287,22 @@ def api_scrape_upcoming_releases():
         })
     except Exception as exc:
         logger.error("Failed to scrape Wikipedia: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@upcoming_bp.route("/scrape/status", methods=["GET"])
+def api_upcoming_scrape_status():
+    """Live status of the background MusicBrainz refresh.
+
+    Returns ``{status: "running"|"idle"|"error", progress, total,
+    current_artist, updated_at, last_stats}`` — the UI polls this while the
+    refresh is running to render a "Refreshing… (142/500)" badge.
+    """
+    try:
+        from services.upcoming_releases.musicbrainz_fetcher_service import get_refresh_status
+        return jsonify(get_refresh_status())
+    except Exception as exc:
+        logger.error("Failed to read scrape status: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
@@ -286,28 +377,6 @@ async def api_search_musicbrainz_release():
         return jsonify({"error": str(exc)}), 500
 
 
-@upcoming_bp.route("/release-group-tracks", methods=["GET"])
-def api_get_release_group_tracks():
-    """Fetch track listing for the first release in a release group."""
-    rg_mbid = request.args.get("release_group_mbid", "").strip()
-    if not rg_mbid:
-        return jsonify({"error": "release_group_mbid required"}), 400
-    try:
-        client = _get_mb_client()
-        releases = client.browse_releases_for_group(rg_mbid, inc="recordings+artist-credits", limit=1)
-        if releases:
-            # Fetch full release details with recordings
-            first = releases[0]
-            rid = first.get("id")
-            if rid:
-                release_data = client.get_release(rid, inc="recordings+artist-credits")
-                return jsonify({"success": True, "release": release_data})
-        return jsonify({"success": True, "releases": releases})
-    except Exception as exc:
-        logger.error("Failed to fetch release group tracks: %s", exc, exc_info=True)
-        return jsonify({"error": str(exc)}), 500
-
-
 @upcoming_bp.route("/search-discogs", methods=["POST"])
 async def api_search_discogs_release():
     """Search Discogs for a release."""
@@ -331,9 +400,3 @@ async def api_search_discogs_release():
     except Exception as exc:
         logger.error("Discogs search failed: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
-
-
-@upcoming_bp.route("/search", methods=["POST"])
-def api_search_upcoming_release():
-    """Search for downloads of an upcoming release (placeholder)."""
-    return jsonify({"success": True, "results": []}), 200

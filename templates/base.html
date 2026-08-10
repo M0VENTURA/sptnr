@@ -86,7 +86,15 @@
           </li>
           <li class="nav-item"><a class="nav-link" href="/downloads/monitor#folderGroupsSection"><i class="bi bi-download"></i> Downloads</a></li>
           <li class="nav-item"><a class="nav-link" href="/playlists"><i class="bi bi-collection-play"></i> Playlists</a></li>
-          <li class="nav-item"><a class="nav-link" href="/discover"><i class="bi bi-compass"></i> Discover</a></li>
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="discoverDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-compass"></i> Discover
+            </a>
+            <ul class="dropdown-menu">
+              <li><a class="dropdown-item" href="/discover"><i class="bi bi-compass"></i> Discover</a></li>
+              <li><a class="dropdown-item" href="/downloads/discover/upcoming"><i class="bi bi-calendar-event"></i> Upcoming Releases</a></li>
+            </ul>
+          </li>
           <li class="nav-item"><a class="nav-link" href="/missing"><i class="bi bi-exclamation-circle"></i> Missing</a></li>
           
           {% if custom_bookmark_links and custom_bookmark_links|length > 0 %}

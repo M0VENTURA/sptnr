@@ -429,7 +429,6 @@ function renderUpcomingReleasesTable(releases) {
 
     const dateBadge = new Date(releaseDate) > new Date() ? '<span class="badge bg-success">Upcoming</span>' : '<span class="badge bg-primary">Recent</span>';
     const colBadge = r.artist_in_collection ? '<span class="badge bg-success ms-1" title="Artist in collection"><i class="bi bi-check"></i></span>' : "";
-    const recBadge = r.artist_in_recommended ? '<span class="badge bg-warning text-dark ms-1" title="Recommended artist"><i class="bi bi-star"></i></span>' : "";
     
     const eArtist = encodeURIComponent(r.artist_name || "");
     const eAlbum = encodeURIComponent(r.album_name || "");
@@ -445,7 +444,7 @@ function renderUpcomingReleasesTable(releases) {
       : `<button class="btn btn-sm btn-outline-primary" title="Add to queue" onclick="addUpcomingReleaseToQueueDashboard('${eArtist}', '${eAlbum}', '${encodeURIComponent(r.release_date || "")}', this)"><i class="bi bi-plus-circle"></i></button>`;
 
     return `<tr>
-      <td>${escapeHtml(r.artist_name)}${colBadge}${recBadge}</td>
+      <td>${escapeHtml(r.artist_name)}${colBadge}</td>
       <td>${escapeHtml(r.album_name)}</td>
       <td>${escapeHtml(releaseDate)} ${dateBadge}</td>
       <td>${sourceBadge}</td>
@@ -455,7 +454,7 @@ function renderUpcomingReleasesTable(releases) {
 }
 
 function _renderUpcomingTableFilterButtons() {
-  ["all", "collection", "recommended"].forEach(key => {
+  ["all", "collection"].forEach(key => {
     const btn = document.getElementById(`upcomingTableFilter${key.charAt(0).toUpperCase() + key.slice(1)}`);
     if (!btn) return;
     const active = key === dashboardTableFilter;
@@ -465,7 +464,7 @@ function _renderUpcomingTableFilterButtons() {
 }
 
 function setUpcomingTableFilter(filter) {
-  dashboardTableFilter = ["all", "collection", "recommended"].includes(filter) ? filter : "all";
+  dashboardTableFilter = ["all", "collection"].includes(filter) ? filter : "all";
   _renderUpcomingTableFilterButtons();
   sessionStorage.setItem("dashboardTableFilter", dashboardTableFilter);
   loadUpcomingReleasesTable();
@@ -473,16 +472,13 @@ function setUpcomingTableFilter(filter) {
 
 async function loadUpcomingReleasesTable() {
   try {
-    const params = new URLSearchParams({ include_queue: "true" });
-    if (dashboardTableFilter === "collection") params.set("collection", "true");
-    else if (dashboardTableFilter === "recommended") params.set("recommended", "true");
-    
-    const resp = await fetch(`/api/upcoming-releases?${params.toString()}`);
-    const data = await resp.json();
+    const data = await UpcomingReleasesService.fetchReleases({
+      filter: dashboardTableFilter === "collection" ? "collection" : undefined,
+      include_queue: true,
+    });
     let releases = data.releases || [];
 
     if (dashboardTableFilter === "collection") releases = releases.filter(r => r.artist_in_collection);
-    else if (dashboardTableFilter === "recommended") releases = releases.filter(r => r.artist_in_recommended);
 
     releases.sort((a, b) => (a.release_date || "9999-12-31").localeCompare(b.release_date || "9999-12-31"));
     renderUpcomingReleasesTable(releases);

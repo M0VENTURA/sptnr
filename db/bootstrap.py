@@ -125,6 +125,61 @@ def ensure_album_art_schema() -> bool:
         logging.error("Album art schema error: %s", e)
         return False
 
+def ensure_upcoming_releases_schema() -> bool:
+    """Migrate ``upcoming_releases`` to per-album identity + lifecycle columns.
+
+    - Adds ``status`` (discovered/bookmarked/queued/imported) and ``last_seen_at``.
+    - Collapses the per-source unique constraint ``(artist_name, album_name,
+      source)`` into a per-album unique index ``(artist_name, album_name)`` so
+      Wikipedia and MusicBrainz rows for the same album merge instead of
+      duplicating.  Duplicate rows are resolved first: the MusicBrainz row
+      wins (it carries the authoritative MBID), older duplicates of the same
+      source are dropped, and surviving older rows are backfilled.
+    """
+    try:
+        with db_session() as session:
+            if not table_exists(session, "upcoming_releases"):
+                return True
+            _ensure_columns(session, "upcoming_releases", {
+                "status": "TEXT NOT NULL DEFAULT 'discovered'",
+                "last_seen_at": "TIMESTAMP",
+            })
+
+            # Dedupe: drop non-MusicBrainz rows where a MusicBrainz row exists
+            # for the same album (MBID data must win), then older duplicates
+            # within the same source.
+            session.execute(text("""
+                DELETE FROM upcoming_releases a
+                USING upcoming_releases b
+                WHERE a.id <> b.id
+                  AND a.artist_name = b.artist_name
+                  AND a.album_name = b.album_name
+                  AND a.source <> 'MusicBrainz Daily Collection'
+                  AND b.source = 'MusicBrainz Daily Collection'
+            """))
+            session.execute(text("""
+                DELETE FROM upcoming_releases a
+                USING upcoming_releases b
+                WHERE a.id > b.id
+                  AND a.artist_name = b.artist_name
+                  AND a.album_name = b.album_name
+                  AND a.source = b.source
+            """))
+
+            # Swap the constraint: drop the per-source unique, add per-album.
+            try:
+                session.execute(text("ALTER TABLE upcoming_releases DROP CONSTRAINT IF EXISTS uq_upcoming_artist_album_source"))
+            except Exception:
+                pass
+            session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_upcoming_artist_album ON upcoming_releases (artist_name, album_name)"))
+
+            # Backfill last_seen_at for rows we have no visibility into.
+            session.execute(text("UPDATE upcoming_releases SET last_seen_at = COALESCE(last_seen_at, updated_at, created_at, CURRENT_TIMESTAMP)"))
+        return True
+    except Exception as e:
+        logging.error("Upcoming releases schema error: %s", e)
+        return False
+
 def _ensure_subset(table: str, keys: Iterable[str], registry: dict[str, str]) -> bool:
     try:
         with db_session() as session:
@@ -244,6 +299,7 @@ def ensure_full_schema(_db_path: str | None = None) -> bool:
         ensure_album_artist_column_data()
         ensure_artists_name_unique_constraint()
         ensure_album_art_schema()
+        ensure_upcoming_releases_schema()
         ensure_single_detection_columns()
         ensure_queue_source_column()
         # Essentia feature columns (danceability, essentia_* , bpm) — kept as an

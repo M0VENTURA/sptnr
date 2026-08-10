@@ -36,6 +36,33 @@ _mb_client: MusicBrainzHttpClient | None = None
 _refresh_lock = threading.Lock()
 _refresh_running = False
 
+# Circuit breaker: abort the whole refresh after this many consecutive
+# per-artist failures (rate limits / network errors usually repeat).
+_MAX_CONSECUTIVE_FAILURES = 5
+
+# Live progress snapshot shared with the /scrape/status endpoint.
+_status_lock = threading.Lock()
+_status: dict[str, Any] = {
+    "status": "idle",
+    "progress": 0,
+    "total": 0,
+    "current_artist": None,
+    "updated_at": None,
+    "last_stats": None,
+}
+
+
+def _set_status(**changes: Any) -> None:
+    with _status_lock:
+        _status.update(changes)
+        _status["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+
+def get_refresh_status() -> dict[str, Any]:
+    """Snapshot of the background MusicBrainz refresh (for the status endpoint)."""
+    with _status_lock:
+        return dict(_status)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -151,7 +178,13 @@ def _fetch_artist_release_groups(
 
 
 def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tuple[int, int]:
-    """Upsert one artist's releases; returns (inserted, updated)."""
+    """Upsert one artist's releases; returns (inserted, updated).
+
+    Precedence rule (per-album identity): MusicBrainz metadata is
+    authoritative, so an MB row overwrites an existing Wikipedia row — but it
+    keeps the earlier valid release date.  A Wikipedia row never clobbers an
+    existing MB row (handled in the Wikipedia scraper's upsert).
+    """
     inserted = 0
     updated = 0
     if not releases:
@@ -170,16 +203,27 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                             artist_name, album_name, release_date, release_year, source,
                             artist_in_collection, release_group_mbid,
                             mbid_match_status, mbid_source, mbid_confidence,
-                            mbid_match_score, mbid_last_checked_at, updated_at
+                            mbid_match_score, mbid_last_checked_at, status,
+                            last_seen_at, updated_at
                         ) VALUES (
                             :artist, :album, :date, :year, :source,
                             TRUE, :mbid,
                             'matched', 'musicbrainz_daily_scan', 'high',
-                            1.0, :checked, CURRENT_TIMESTAMP
+                            1.0, :checked, 'discovered',
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
-                        ON CONFLICT (artist_name, album_name, source) DO UPDATE SET
-                            release_date = EXCLUDED.release_date,
-                            release_year = EXCLUDED.release_year,
+                        ON CONFLICT (artist_name, album_name) DO UPDATE SET
+                            last_seen_at = CURRENT_TIMESTAMP,
+                            source = EXCLUDED.source,
+                            release_date = CASE
+                                WHEN upcoming_releases.release_date IS NULL
+                                     OR EXCLUDED.release_date IS NULL
+                                    THEN COALESCE(EXCLUDED.release_date, upcoming_releases.release_date)
+                                WHEN EXCLUDED.release_date < upcoming_releases.release_date
+                                    THEN EXCLUDED.release_date
+                                ELSE upcoming_releases.release_date
+                            END,
+                            release_year = COALESCE(EXCLUDED.release_year, upcoming_releases.release_year),
                             artist_in_collection = TRUE,
                             release_group_mbid = COALESCE(EXCLUDED.release_group_mbid, upcoming_releases.release_group_mbid),
                             mbid_match_status = CASE
@@ -189,6 +233,14 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                             mbid_confidence = CASE
                                 WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_confidence
                                 ELSE EXCLUDED.mbid_confidence
+                            END,
+                            mbid_source = CASE
+                                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_source
+                                ELSE EXCLUDED.mbid_source
+                            END,
+                            mbid_match_score = CASE
+                                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_score
+                                ELSE EXCLUDED.mbid_match_score
                             END,
                             mbid_last_checked_at = EXCLUDED.mbid_last_checked_at,
                             updated_at = CURRENT_TIMESTAMP
@@ -230,11 +282,15 @@ def fetch_musicbrainz_upcoming_releases(
     """
     try:
         from helpers.config_helpers import get_feature
-        enabled = bool(get_feature("daily_musicbrainz_release_scan_enabled", True))
+        enabled = get_feature("upcoming_releases_scan_enabled", None)
+        if enabled is None:
+            # Legacy alias — the old per-scanner toggle predates the unified flag.
+            enabled = get_feature("daily_musicbrainz_release_scan_enabled", True)
+        enabled = bool(enabled)
     except Exception:
         enabled = True
     if not enabled:
-        return {"skipped": True, "reason": "daily_musicbrainz_release_scan_enabled is false"}
+        return {"skipped": True, "reason": "upcoming_releases_scan_enabled is false"}
 
     artists_limit = artists_limit or _feature_int("daily_musicbrainz_release_max_artists", 500)
     per_artist_limit = per_artist_limit or _feature_int("daily_musicbrainz_release_per_artist_limit", 100)
@@ -253,15 +309,37 @@ def fetch_musicbrainz_upcoming_releases(
 
     client = _get_mb_client()
     stats: dict[str, Any] = {"artists_scanned": 0, "inserted": 0, "updated": 0}
-    for artist in artists:
-        stats["artists_scanned"] += 1
-        try:
-            rgs = _fetch_artist_release_groups(client, artist, per_artist_limit, min_date, max_date)
-            new_count, upd_count = _persist_artist_releases(artist, rgs)
-            stats["inserted"] += new_count
-            stats["updated"] += upd_count
-        except Exception as exc:
-            logger.debug("[UPCOMING_MB] Artist %s failed: %s", artist, exc)
+    total_artists = len(artists)
+    _set_status(status="running", progress=0, total=total_artists, current_artist=None)
+    consecutive_failures = 0
+    try:
+        for artist in artists:
+            stats["artists_scanned"] += 1
+            try:
+                rgs = _fetch_artist_release_groups(client, artist, per_artist_limit, min_date, max_date)
+                new_count, upd_count = _persist_artist_releases(artist, rgs)
+                stats["inserted"] += new_count
+                stats["updated"] += upd_count
+                consecutive_failures = 0
+            except Exception as exc:
+                consecutive_failures += 1
+                logger.debug("[UPCOMING_MB] Artist %s failed: %s", artist, exc)
+                if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                    logger.warning(
+                        "[UPCOMING_MB] Aborting refresh after %s consecutive failures (last artist: %s)",
+                        consecutive_failures, artist,
+                    )
+                    stats["aborted"] = True
+                    stats["abort_reason"] = f"{consecutive_failures} consecutive failures"
+                    break
+            finally:
+                _set_status(
+                    progress=stats["artists_scanned"],
+                    current_artist=artist,
+                    stats=stats,
+                )
+    finally:
+        _set_status(status="idle", current_artist=None, last_stats=stats)
 
     logger.info("[UPCOMING_MB] Refresh complete: %s", stats)
     return stats
@@ -283,9 +361,11 @@ def start_musicbrainz_refresh() -> bool:
     def _run() -> None:
         global _refresh_running
         try:
-            fetch_musicbrainz_upcoming_releases()
+            stats = fetch_musicbrainz_upcoming_releases()
+            _set_status(status="idle", current_artist=None, last_stats=stats if isinstance(stats, dict) else None)
         except Exception as exc:
             logger.error("[UPCOMING_MB] Background refresh failed: %s", exc)
+            _set_status(status="error", current_artist=None, last_error=str(exc))
         finally:
             with _refresh_lock:
                 _refresh_running = False

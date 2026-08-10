@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -423,6 +423,18 @@ class WikipediaReleaseScraper:
         # Parse day; if the cell also carries a month name (e.g. "January 9"
         # or "January9"), prefer it over the heading-detected month.
         day_str = values.get("day")
+        # TBA/TBD/TBR (or a missing day cell) means no valid date — keep the
+        # row but persist release_date as NULL, so the UI shows "TBA" and the
+        # stale-release GC never treats it as a released album.
+        if not has_date or (day_str or "").strip().upper() in ("TBA", "TBD", "TBR"):
+            return {
+                "artist_name": artist.strip(),
+                "album_name": album.strip(),
+                "release_date": None,
+                "release_year": year,
+                "_had_date": False,
+            }
+
         day = self._parse_day(day_str, last_seen_day)
         if day is None:
             day = 1
@@ -438,14 +450,12 @@ class WikipediaReleaseScraper:
             except ValueError:
                 return None
 
-        release_date = release_dt.strftime("%Y-%m-%d")
-
         return {
             "artist_name": artist.strip(),
             "album_name": album.strip(),
-            "release_date": release_date,
+            "release_date": release_dt.strftime("%Y-%m-%d"),
             "release_year": year,
-            "_had_date": has_date,
+            "_had_date": True,
         }
 
     # ------------------------------------------------------------------
@@ -494,19 +504,21 @@ class WikipediaReleaseScraper:
             if not artist or not album or len(artist) > 200:
                 continue
             
-            # Parse date if present
-            if "day" in values:
+            # Parse date if present (TBA/TBD/TBR day cells => unknown date)
+            day_text = (values.get("day") or "").strip().upper()
+            if "day" in values and day_text not in ("TBA", "TBD", "TBR"):
                 day = self._parse_day(values["day"], None)
                 month = self._month_in_cell(values["day"]) or 1
                 if day:
                     date_str = f"{year}-{month:02d}-{day:02d}"
+                    had_date = True
                 else:
-                    date_str = f"{year}-{month:02d}-01"
-                had_date = bool(day)
+                    date_str = None
+                    had_date = False
             else:
-                date_str = f"{year}-01-01"
+                date_str = None
                 had_date = False
-            
+
             releases.append({
                 "artist_name": artist,
                 "album_name": album,
@@ -593,6 +605,13 @@ class WikipediaReleaseScraper:
     ) -> tuple[int, int]:
         """Save scraped releases to the database.
 
+        Precedence rule (per-album identity ``(artist_name, album_name)``):
+        a Wikipedia-scraped row never clobbers an existing MusicBrainz row
+        (MBID + authoritative metadata win) — it only refreshes
+        ``last_seen_at``.  Against an existing Wikipedia row the new date/year
+        are applied, falling back to the stored values when the scrape found
+        no valid date (TBA).
+
         Returns:
             Tuple of (new_count, updated_count).
         """
@@ -606,24 +625,41 @@ class WikipediaReleaseScraper:
             for release in releases:
                 artist = release["artist_name"]
                 album = release["album_name"]
-                rel_date = release["release_date"]
+                rel_date = release.get("release_date")
+                rel_year = release.get("release_year")
 
-                # Upsert (match schema: artist_name, album_name, source, release_date)
                 try:
                     result = session.execute(
                         text("""
                             INSERT INTO upcoming_releases
-                                (artist_name, album_name, source, release_date)
-                            VALUES (:artist, :album, :source, :date)
-                            ON CONFLICT (artist_name, album_name, source)
-                            DO UPDATE SET
-                                release_date = EXCLUDED.release_date,
+                                (artist_name, album_name, source, release_date,
+                                 release_year, status, last_seen_at, updated_at)
+                            VALUES (:artist, :album, :source, :date,
+                                    :year, 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            ON CONFLICT (artist_name, album_name) DO UPDATE SET
+                                last_seen_at = CURRENT_TIMESTAMP,
+                                source = CASE
+                                    WHEN upcoming_releases.source = 'MusicBrainz Daily Collection'
+                                        THEN upcoming_releases.source
+                                    ELSE EXCLUDED.source
+                                END,
+                                release_date = CASE
+                                    WHEN upcoming_releases.source = 'MusicBrainz Daily Collection'
+                                        THEN upcoming_releases.release_date
+                                    ELSE COALESCE(EXCLUDED.release_date, upcoming_releases.release_date)
+                                END,
+                                release_year = CASE
+                                    WHEN upcoming_releases.source = 'MusicBrainz Daily Collection'
+                                        THEN upcoming_releases.release_year
+                                    ELSE COALESCE(EXCLUDED.release_year, upcoming_releases.release_year)
+                                END,
                                 updated_at = CURRENT_TIMESTAMP
                         """),
                         {
                             "artist": artist,
                             "album": album,
                             "date": rel_date,
+                            "year": rel_year,
                             "source": source_name,
                         },
                     )
@@ -659,3 +695,44 @@ def scrape(
     """
     scraper = WikipediaReleaseScraper(sources=sources)
     return scraper.scrape_all()
+
+
+def purge_stale_upcoming_releases(days: int | None = None) -> dict[str, Any]:
+    """Delete releases whose date has passed and were never acted on.
+
+    Keeps rows the user explicitly engaged with: ``bookmarked``, ``queued``
+    and ``imported``.  Runs in the daily maintenance cycle (scheduler) and
+    reports the number of rows removed so callers can log it.
+
+    The ``days`` window defaults to ``features.upcoming_releases_purge_days``
+    (config page), falling back to 30 days.
+
+    Returns:
+        ``{"deleted": int, "days": int}`` (or the exception message when the
+        table is unavailable / the query fails structurally).
+    """
+    try:
+        if days is None:
+            try:
+                from helpers.config_helpers import get_feature
+                days = int(get_feature("upcoming_releases_purge_days", 30) or 30)
+            except Exception:
+                days = 30
+        cutoff = (datetime.now().date() - timedelta(days=max(1, days))).isoformat()
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    DELETE FROM upcoming_releases
+                    WHERE release_date IS NOT NULL
+                      AND release_date < :cutoff
+                      AND status NOT IN ('bookmarked', 'queued', 'imported')
+                """),
+                {"cutoff": cutoff},
+            )
+        deleted = result.rowcount or 0
+        if deleted:
+            logger.info("[SCRAPER] Purged %s stale upcoming releases (older than %s)", deleted, cutoff)
+        return {"deleted": deleted, "days": days}
+    except Exception as exc:
+        logger.debug("[SCRAPER] Stale purge skipped: %s", exc)
+        return {"deleted": 0, "days": days, "error": str(exc)}

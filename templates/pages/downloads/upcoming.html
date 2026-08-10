@@ -8,33 +8,39 @@
     {% set subtitle = 'Discover and download upcoming releases' %}
     {% include 'components/_downloads_header.html' %}
   </div>
-<div class="card">
-    <div class="card-header d-flex justify-content-between align-items-center">
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
       <h5 class="card-title mb-0">
         <i class="bi bi-calendar-event"></i> Upcoming Album Releases
       </h5>
       <div class="d-flex align-items-center gap-2 flex-wrap">
-        <button class="btn btn-sm btn-success" onclick="checkForUpdatesMonitor()">
+        <span id="upcomingProgressBadge"></span>
+        <button class="btn btn-sm btn-success" type="button" id="btnCheckForUpdates">
           <i class="bi bi-bell"></i> Check for Updates
         </button>
-        <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleasesMonitor()">
+        <button class="btn btn-sm btn-primary" type="button" id="btnScrapeUpcoming">
           <i class="bi bi-download"></i> Update from Wikipedia
         </button>
-        <button class="btn btn-sm btn-outline-primary" onclick="refreshUpcomingReleasesMonitor()">
+        <button class="btn btn-sm btn-outline-primary" type="button" id="btnRefreshUpcoming">
           <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
-        <button class="btn btn-sm btn-outline-danger" onclick="clearUpcomingReleasesMonitor()" title="Clear old entries and start fresh">
+        <button class="btn btn-sm btn-outline-danger" type="button" id="btnClearUpcoming" title="Clear old entries and start fresh">
           <i class="bi bi-trash"></i> Clear Database
         </button>
       </div>
     </div>
     <div class="card-body">
-      <div class="mb-3">
-        <label class="form-check">
-          <input class="form-check-input" type="checkbox" id="upcomingFilterCollection" onchange="refreshUpcomingReleases()">
-          <span class="form-check-label">Only show releases from artists in my collection</span>
-        </label>
-      </div>
+      <ul class="nav nav-pills mb-3" id="upcomingTabs">
+        <li class="nav-item">
+          <button class="nav-link active" type="button" data-filter="all">All</button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" type="button" data-filter="collection">Collection Artists</button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" type="button" data-filter="discovered">Discovered / Wikipedia</button>
+        </li>
+      </ul>
 
       <div id="upcomingStatus" class="alert alert-info" style="display:none;">
         <div class="d-flex">
@@ -54,6 +60,8 @@
           <p class="text-muted">Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.</p>
         </div>
       </div>
+
+      <div id="upcomingPagination" class="d-flex justify-content-center align-items-center gap-2 mt-3 flex-wrap"></div>
     </div>
   </div>
 </div>
@@ -82,15 +90,8 @@
     border-color: #333;
   }
 
-  #musicBrainzModal .table thead {
-    border-color: #333;
-  }
-
-  #musicBrainzModal .table th {
-    color: #e0e0e0;
-    border-color: #333;
-  }
-
+  #musicBrainzModal .table thead,
+  #musicBrainzModal .table th,
   #musicBrainzModal .table tbody tr {
     border-color: #333;
   }
@@ -133,20 +134,222 @@
   }
 </style>
 
-{# The shared MusicBrainz search modal is included globally by base.html — a legacy inline copy used to duplicate the musicBrainzModal id here. #}
-
-<!-- Include existing JavaScript -->
-<script src="{{url_for('static', filename='js/downloads.js')}}?v=3"></script>
-<script src="{{url_for('static', filename='js/monitor.js')}}?v=4"></script>
+<script src="{{ url_for('static', filename='js/upcoming_releases.js') }}?v=1"></script>
 <script>
-  document.addEventListener('DOMContentLoaded', function() {
-    const lastChecked = localStorage.getItem('upcomingReleasesLastChecked');
-    const oneDayMs = 24 * 60 * 60 * 1000;
+(function () {
+  'use strict';
+  var S = window.UpcomingReleasesService;
+  if (!S) return;
+
+  var PAGE_SIZE = 50;
+  var currentFilter = 'all';
+
+  // ── Progress badge + polling ─────────────────────────────────────────
+  var progressTimer = null;
+
+  async function updateProgressBadge() {
+    try {
+      var status = await S.fetchScrapeStatus();
+      var badgeEl = document.getElementById('upcomingProgressBadge');
+      if (badgeEl) badgeEl.innerHTML = S.renderProgressBadge(status);
+      return !!(status && status.status === 'running');
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  function stopProgressPolling() {
+    if (progressTimer) {
+      clearInterval(progressTimer);
+      progressTimer = null;
+    }
+  }
+
+  function startProgressPolling() {
+    stopProgressPolling();
+    progressTimer = setInterval(function () {
+      updateProgressBadge().then(function (running) {
+        if (!running) {
+          stopProgressPolling();
+          refreshPage();
+        }
+      });
+    }, 3000);
+  }
+
+  function showStatus(message) {
+    var error = document.getElementById('upcomingError');
+    var el = document.getElementById('upcomingStatus');
+    var text = document.getElementById('upcomingStatusText');
+    if (!el || !text || !error) return;
+    error.style.display = 'none';
+    el.style.display = 'block';
+    text.textContent = message;
+  }
+
+  function hideStatus() {
+    var el = document.getElementById('upcomingStatus');
+    if (el) el.style.display = 'none';
+  }
+
+  function showError(message) {
+    var error = document.getElementById('upcomingError');
+    var el = document.getElementById('upcomingStatus');
+    if (error) {
+      error.innerHTML = '<i class="bi bi-exclamation-triangle"></i> <strong>Error:</strong> ' + S.escapeHtml(message);
+      error.style.display = 'block';
+    }
+    if (el) el.style.display = 'none';
+  }
+
+  // ── Pagination ───────────────────────────────────────────────────────
+  function renderPagination() {
+    var container = document.getElementById('upcomingPagination');
+    if (!container) return;
+    var page = S.state.filters.page || 1;
+    var totalPages = Math.max(1, Math.ceil((S.state.total || 0) / PAGE_SIZE));
+
+    var html = '<button type="button" class="btn btn-sm btn-outline-secondary" id="upcomingPrevPage" ' +
+      (page <= 1 ? 'disabled' : '') + '><i class="bi bi-chevron-left"></i> Prev</button>' +
+      '<span class="small text-muted">Page ' + page + ' of ' + totalPages + ' · ' + S.state.total + ' release(s)</span>' +
+      '<button type="button" class="btn btn-sm btn-outline-secondary" id="upcomingNextPage" ' +
+      (!S.state.hasMore ? 'disabled' : '') + '>Next <i class="bi bi-chevron-right"></i></button>';
+    container.innerHTML = html;
+
+    var prev = document.getElementById('upcomingPrevPage');
+    var next = document.getElementById('upcomingNextPage');
+    if (prev) prev.addEventListener('click', function () {
+      if (S.state.filters.page > 1) {
+        S.state.filters.page -= 1;
+        refreshPage();
+      }
+    });
+    if (next) next.addEventListener('click', function () {
+      if (S.state.hasMore) {
+        S.state.filters.page += 1;
+        refreshPage();
+      }
+    });
+  }
+
+  // ── Table refresh ────────────────────────────────────────────────────
+  async function refreshPage() {
+    var container = document.getElementById('upcomingReleases');
+    if (!container) return;
+    container.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary spinner-border-sm" role="status"></div><p class="mt-2 small mb-0">Loading upcoming releases...</p></div>';
+
+    S.state.filters.page = S.state.filters.page || 1;
+    S.state.filters.limit = PAGE_SIZE;
+    try {
+      var data = await S.fetchReleases({
+        filter: currentFilter === 'all' ? undefined : currentFilter,
+        include_queue: true,
+        page: S.state.filters.page,
+        limit: PAGE_SIZE,
+      });
+      S.renderTable('upcomingReleases', data.releases || [], {
+        emptyMessage: currentFilter === 'discovered'
+          ? 'No Wikipedia-discovered releases yet. Click <strong>Update from Wikipedia</strong> to scrape.'
+          : 'No upcoming releases found. Click <strong>Check for Updates</strong> to search MusicBrainz.',
+      });
+      renderPagination();
+      hideStatus();
+    } catch (error) {
+      if (error && error.name === 'AbortError') return;
+      container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0">Nothing to show yet.</p></div>';
+      showError(error.message || 'Failed to load upcoming releases');
+    }
+  }
+
+  // ── Actions ──────────────────────────────────────────────────────────
+  async function checkForUpdates() {
+    localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
+    await refreshPage();
+  }
+
+  async function scrapeWikipedia() {
+    var btn = document.getElementById('btnScrapeUpcoming');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Scraping...';
+    }
+    showStatus('Scraping Wikipedia for upcoming releases...');
+    try {
+      var data = await S.triggerScrape();
+      showStatus('✓ ' + (data.message || 'Scrape complete'));
+      startProgressPolling();
+      await updateProgressBadge();
+      setTimeout(function () {
+        hideStatus();
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="bi bi-download"></i> Update from Wikipedia';
+        }
+        refreshPage();
+      }, 2000);
+    } catch (error) {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-download"></i> Update from Wikipedia';
+      }
+      showError(error.message || 'Scrape failed');
+    }
+  }
+
+  async function clearDatabase() {
+    if (!confirm('Are you sure you want to clear all upcoming releases from the database?')) return;
+    showStatus('Clearing database...');
+    try {
+      await fetch('/api/upcoming-releases/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      showStatus('✓ Database cleared');
+      setTimeout(function () {
+        hideStatus();
+        refreshPage();
+      }, 1200);
+    } catch (error) {
+      showError(error.message || 'Failed to clear database');
+    }
+  }
+
+  function bindActions() {
+    document.getElementById('btnCheckForUpdates').addEventListener('click', checkForUpdates);
+    document.getElementById('btnScrapeUpcoming').addEventListener('click', scrapeWikipedia);
+    document.getElementById('btnRefreshUpcoming').addEventListener('click', refreshPage);
+    document.getElementById('btnClearUpcoming').addEventListener('click', clearDatabase);
+
+    document.querySelectorAll('#upcomingTabs .nav-link').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        currentFilter = this.getAttribute('data-filter') || 'all';
+        document.querySelectorAll('#upcomingTabs .nav-link').forEach(function (t) {
+          t.classList.toggle('active', t === tab);
+        });
+        S.state.filters.page = 1;
+        refreshPage();
+      });
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    bindActions();
+    S.onRefresh = refreshPage;
+
+    // Resume polling if a refresh is already running (e.g. triggered from
+    // the monitor page earlier).
+    updateProgressBadge().then(function (running) {
+      if (running) startProgressPolling();
+    });
+
+    var lastChecked = localStorage.getItem('upcomingReleasesLastChecked');
+    var oneDayMs = 24 * 60 * 60 * 1000;
     if (!lastChecked || (Date.now() - parseInt(lastChecked, 10)) > oneDayMs) {
-      setTimeout(checkForUpdatesMonitor, 1000);
+      setTimeout(checkForUpdates, 1000);
     } else {
-      setTimeout(refreshUpcomingReleasesMonitor, 1000);
+      setTimeout(refreshPage, 1000);
     }
   });
+})();
 </script>
 {% endblock %}

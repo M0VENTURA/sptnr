@@ -27,6 +27,7 @@ import time
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
@@ -256,6 +257,60 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
                 logger.info("APScheduler: missing_releases_scan already registered")
     except Exception as exc:
         logger.warning("APScheduler: failed to register missing_releases_scan: %s", exc)
+
+    # ── Upcoming releases: daily Wikipedia scrape + weekly MB refresh ─────
+    # Both run under the unified ``features.upcoming_releases_scan_enabled``
+    # toggle (legacy ``daily_musicbrainz_release_scan_enabled`` honoured as a
+    # fallback for installs that only ever set the old key).
+    try:
+        from helpers.config_helpers import get_feature
+        scan_enabled = get_feature("upcoming_releases_scan_enabled", None)
+        if scan_enabled is None:
+            scan_enabled = get_feature("daily_musicbrainz_release_scan_enabled", True)
+        scan_enabled = bool(scan_enabled)
+    except Exception:
+        scan_enabled = True
+
+    if scan_enabled:
+        # Daily 03:00 — scrape the Wikipedia sources + purge stale rows.
+        try:
+            from services.upcoming_releases.wikipedia_scraper_service import scrape as scrape_wikipedia, purge_stale_upcoming_releases
+            if scheduler.get_job("upcoming_wikipedia_scrape") is None:
+                def _run_wikipedia_scrape() -> None:
+                    try:
+                        scrape_wikipedia()
+                    finally:
+                        purge_stale_upcoming_releases()
+
+                scheduler.add_job(
+                    _run_wikipedia_scrape,
+                    trigger=CronTrigger(hour=3, minute=0),
+                    id="upcoming_wikipedia_scrape",
+                    name="Upcoming releases: Wikipedia scrape + stale purge",
+                    replace_existing=True,
+                )
+                logger.info("APScheduler: registered upcoming_wikipedia_scrape (03:00 daily)")
+            else:
+                logger.info("APScheduler: upcoming_wikipedia_scrape already registered")
+        except Exception as exc:
+            logger.warning("APScheduler: failed to register upcoming_wikipedia_scrape: %s", exc)
+
+        # Weekly Sunday 04:00 — MusicBrainz release-groups for the collection.
+        try:
+            from services.upcoming_releases.musicbrainz_fetcher_service import fetch_musicbrainz_upcoming_releases
+            if scheduler.get_job("upcoming_musicbrainz_scan") is None:
+                scheduler.add_job(
+                    fetch_musicbrainz_upcoming_releases,
+                    trigger=CronTrigger(day_of_week="sun", hour=4, minute=0),
+                    id="upcoming_musicbrainz_scan",
+                    name="Upcoming releases: MusicBrainz collection refresh",
+                    replace_existing=True,
+                )
+                logger.info("APScheduler: registered upcoming_musicbrainz_scan (Sunday 04:00)")
+            else:
+                logger.info("APScheduler: upcoming_musicbrainz_scan already registered")
+        except Exception as exc:
+            logger.warning("APScheduler: failed to register upcoming_musicbrainz_scan: %s", exc)
 
 
 # ---------------------------------------------------------------------------

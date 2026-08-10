@@ -9,6 +9,8 @@ Handles:
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from quart import Blueprint, request, jsonify
 import logging
 
@@ -306,6 +308,79 @@ def api_queue():
             "status_counts": {},
             "total": 0,
         })
+
+
+@downloads_bp.route("/api/downloads/queue-upcoming", methods=["POST"])
+async def api_queue_upcoming():
+    """Queue an upcoming release (by ``upcoming_release_id``) for download.
+
+    Only releases whose date has passed (``release_date <= today``) can be
+    queued.  Inserts an album-typed item into ``download_queue`` (deduped by
+    artist/title) and marks the upcoming row ``status = 'queued'``.
+    """
+    payload = await request.get_json(silent=True) or {}
+    release_id = payload.get("upcoming_release_id") or payload.get("id")
+    try:
+        release_id = int(release_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "upcoming_release_id is required"}), 400
+
+    try:
+        from db.engine import db_session
+        from db.repositories.queue import insert_queue_item
+        from sqlalchemy import text
+
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT * FROM upcoming_releases WHERE id = :id"),
+                {"id": release_id},
+            ).fetchone()
+        if row is None:
+            return jsonify({"success": False, "error": "release not found"}), 404
+
+        release = dict(row._mapping)
+        artist = (release.get("artist_name") or "").strip()
+        album = (release.get("album_name") or "").strip()
+        rel_date = (release.get("release_date") or "").strip()
+        if not artist or not album:
+            return jsonify({"success": False, "error": "release has no artist/album"}), 400
+
+        today = datetime.now().date().isoformat()
+        if not rel_date or rel_date > today:
+            return jsonify({
+                "success": False,
+                "error": "release not out yet" if rel_date else "release date unknown",
+                "release_date": rel_date,
+            }), 400
+
+        year = int(rel_date[:4]) if len(rel_date) >= 4 and rel_date[:4].isdigit() else None
+        queued = insert_queue_item(
+            artist=artist,
+            title=album,
+            album=album,
+            source="qbittorrent",
+            priority=5,
+            year=year,
+            release_mbid=(release.get("release_group_mbid") or "") or None,
+            import_type="album",
+        )
+
+        with db_session() as session:
+            session.execute(
+                text("UPDATE upcoming_releases SET status = 'queued' WHERE id = :id"),
+                {"id": release_id},
+            )
+
+        return jsonify({
+            "success": True,
+            "already_queued": bool(queued.get("already_queued")),
+            "queue_id": queued.get("id"),
+            "artist": artist,
+            "album": album,
+        })
+    except Exception as exc:
+        logging.error("Failed to queue upcoming release %s: %s", release_id, exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @downloads_bp.route("/api/downloads/clear-queue", methods=["POST"])

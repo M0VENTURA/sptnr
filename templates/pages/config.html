@@ -581,32 +581,17 @@
 
       <div class="col-12"><hr class="my-2"></div>
       <div class="col-12">
-        <h6 class="mb-2"><i class="bi bi-cloud-search"></i> Live MusicBrainz Upcoming Releases</h6>
-        <p class="text-muted small mb-2">Real-time MusicBrainz WS/2 searches for new, upcoming and recently-added releases by artists in your collection or recommended list. Results appear on the Dashboard and Downloads pages.</p>
+        <h6 class="mb-2"><i class="bi bi-calendar-event"></i> Upcoming Releases Automation</h6>
+        <p class="text-muted small mb-2">Runs the scheduled upcoming-releases pipeline: the daily Wikipedia scrape (03:00) and the weekly MusicBrainz release-group refresh for collection artists (Sunday 04:00). Manual buttons on the Upcoming Releases page always work regardless of this toggle.</p>
         <div class="form-check form-switch mb-2">
-          <input class="form-check-input" type="checkbox" id="live_musicbrainz_upcoming_releases_enabled" {% if config.get('features', {}).get('live_musicbrainz_upcoming_releases_enabled', True) %}checked{% endif %}>
-          <label class="form-check-label" for="live_musicbrainz_upcoming_releases_enabled"><strong>Enable Live MusicBrainz Upcoming Releases</strong></label>
+          <input class="form-check-input" type="checkbox" id="upcoming_releases_scan_enabled" {% if config.get('features', {}).get('upcoming_releases_scan_enabled', True) %}checked{% endif %}>
+          <label class="form-check-label" for="upcoming_releases_scan_enabled"><strong>Enable Automatic Upcoming Releases Scans</strong></label>
         </div>
       </div>
       <div class="col-12 col-md-3">
-        <label class="form-label">Lookback (days)</label>
-        <input type="number" class="form-control" id="live_musicbrainz_lookback_days" placeholder="14" value="{{ config.get('features', {}).get('live_musicbrainz_lookback_days', 14) }}" min="1" max="365">
-        <div class="form-text">How far back to search for newly released albums.</div>
-      </div>
-      <div class="col-12 col-md-3">
-        <label class="form-label">Lookahead (days)</label>
-        <input type="number" class="form-control" id="live_musicbrainz_lookahead_days" placeholder="180" value="{{ config.get('features', {}).get('live_musicbrainz_lookahead_days', 180) }}" min="1" max="730">
-        <div class="form-text">How far ahead to search for upcoming releases (default 180 days = 6 months).</div>
-      </div>
-      <div class="col-12 col-md-3">
-        <label class="form-label">Added Lookback (days)</label>
-        <input type="number" class="form-control" id="live_musicbrainz_added_lookback_days" placeholder="7" value="{{ config.get('features', {}).get('live_musicbrainz_added_lookback_days', 7) }}" min="1" max="30">
-        <div class="form-text">How far back to search for recently added MusicBrainz entries.</div>
-      </div>
-      <div class="col-12 col-md-3">
-        <label class="form-label">Max Results / Query</label>
-        <input type="number" class="form-control" id="live_musicbrainz_max_results" placeholder="200" value="{{ config.get('features', {}).get('live_musicbrainz_max_results', 200) }}" min="50" max="500">
-        <div class="form-text">Maximum releases to fetch per search query.</div>
+        <label class="form-label">Stale Purge (days)</label>
+        <input type="number" class="form-control" id="upcoming_releases_purge_days" placeholder="30" value="{{ config.get('features', {}).get('upcoming_releases_purge_days', 30) }}" min="1" max="365">
+        <div class="form-text">Releases older than this are removed each daily cycle unless bookmarked, queued or imported.</div>
       </div>
 
       <!-- Retry Scheduler Settings -->
@@ -1684,6 +1669,6 @@
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/config.js') }}"></script>
+<script src="{{ url_for('static', filename='js/config.js') }}?v=2"></script>
 {% endblock %}
 

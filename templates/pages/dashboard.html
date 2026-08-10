@@ -232,7 +232,6 @@
                         <div class="btn-group btn-group-sm" role="group">
                             <button type="button" class="btn btn-info btn-sm py-0" id="upcomingTableFilterAll" onclick="setUpcomingTableFilter('all')">All</button>
                             <button type="button" class="btn btn-outline-info btn-sm py-0" id="upcomingTableFilterCollection" onclick="setUpcomingTableFilter('collection')">Collection</button>
-                            <button type="button" class="btn btn-outline-info btn-sm py-0" id="upcomingTableFilterRecommended" onclick="setUpcomingTableFilter('recommended')">Rec.</button>
                         </div>
                         <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-info py-0">
                             <i class="bi bi-arrow-right"></i>
@@ -294,5 +293,6 @@
 </script>
 
 <script src="{{ url_for('static', filename='js/downloads.js') }}?v=2"></script>
-<script src="{{ url_for('static', filename='js/dashboard.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/upcoming_releases.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}?v=3"></script>
 {% endblock %}

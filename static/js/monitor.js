@@ -593,7 +593,7 @@ function renderMonitorQueueGroupRow(group, index) {
     '</div>';
 }
 
-// ===== Upcoming Releases =====
+// ===== Upcoming Releases (delegates to UpcomingReleasesService) =====
 async function checkForUpdatesMonitor() {
   localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
   await refreshUpcomingReleasesMonitor();
@@ -603,56 +603,28 @@ async function refreshUpcomingReleasesMonitor() {
   var container = document.getElementById('upcomingReleasesMonitor');
   if (!container) return;
   var filterCollection = document.getElementById('upcomingFilterCollectionMonitor')?.checked || false;
-  if (window.upcomingReleasesRequestController) {
-    try { window.upcomingReleasesRequestController.abort(); } catch (_) {}
-  }
-  window.upcomingReleasesRequestController = new AbortController();
-  var rc = window.upcomingReleasesRequestController;
   container.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary spinner-border-sm" role="status"></div><p class="mt-2 small mb-0">Loading upcoming releases...</p></div>';
   try {
-    var data = await fetchJsonOrThrow('/api/upcoming-releases?collection=' + filterCollection + '&include_queue=true', { signal: rc.signal }, 20000);
-    if (!data.releases || data.releases.length === 0) {
+    var data = await UpcomingReleasesService.fetchReleases({
+      filter: filterCollection ? 'collection' : undefined,
+      include_queue: true,
+    });
+    var releases = data.releases || [];
+    if (releases.length === 0) {
       container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0">No upcoming releases found.</p></div>';
-      if (window.upcomingReleasesRequestController === rc) window.upcomingReleasesRequestController = null;
       return;
     }
-    var releases = data.releases;
     if (filterCollection) {
-      releases = releases.filter(function(r) { return !r.album_in_collection; });
+      releases = releases.filter(function (r) { return !r.album_in_collection; });
       if (releases.length === 0) {
         container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0"><i class="bi bi-check-circle"></i> All upcoming releases from your collection are accounted for.</p></div>';
-        if (window.upcomingReleasesRequestController === rc) window.upcomingReleasesRequestController = null;
         return;
       }
     }
-    var grouped = {};
-    releases.forEach(function(r) {
-      var m = (r.release_date || 'Unknown Date').substring(0, 7);
-      if (!grouped[m]) grouped[m] = [];
-      grouped[m].push(r);
-    });
-    var sortedMonths = Object.keys(grouped).sort();
-    var html = '<div class="accordion" id="upcomingReleaseAccordionMonitor">';
-    sortedMonths.forEach(function(month, idx) {
-      var monthReleases = grouped[month];
-      var monthLabel = new Date(month + '-01').toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
-      html += '<div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#ucm' + idx + '"><strong>' + escapeHtml(monthLabel) + '</strong><span class="badge bg-primary ms-2">' + monthReleases.length + '</span></button></h2><div id="ucm' + idx + '" class="accordion-collapse collapse"><div class="accordion-body p-0"><div class="table-responsive"><table class="table table-hover table-striped table-dark table-sm mb-0"><thead><tr><th>Artist</th><th>Album</th><th>Date</th><th>Source</th><th>MBID</th><th>Action</th></tr></thead><tbody>';
-      monthReleases.forEach(function(release) {
-        var artistEnc = encodeInlineArg(release.artist_name || '');
-        var albumEnc = encodeInlineArg(release.album_name || '');
-        html += '<tr><td>' + escapeHtml(release.artist_name || '') + '</td><td>' + escapeHtml(release.album_name || '') + (release.in_queue ? ' <span class="badge bg-info text-dark ms-1">In Queue</span>' : '') + '</td><td><small>' + escapeHtml(release.release_date || 'TBA') + '</small></td><td><span class="badge bg-secondary">' + escapeHtml(release.source || 'Wikipedia') + '</span></td><td>' + (release.release_group_mbid ? '<code class="small">' + escapeHtml(release.release_group_mbid.slice(0, 8)) + '...</code>' : '<span class="text-muted small">unmatched</span>') + '</td><td><button type="button" class="btn btn-sm btn-outline-info" onclick="searchUpcomingReleaseFromEncoded(\'' + artistEnc + '\', \'' + albumEnc + '\', ' + (Number(release.id) || 0) + ')"><i class="bi bi-search"></i> Search / Download</button></td></tr>';
-      });
-      html += '</tbody></table></div></div></div></div>';
-    });
-    html += '</div>';
-    container.innerHTML = html;
+    UpcomingReleasesService.renderTable('upcomingReleasesMonitor', releases);
   } catch (error) {
     console.error('Error loading upcoming releases:', error);
-    // A newer refresh has taken over — don't clobber its spinner/render
-    // with a stale error from this (aborted) request.
-    if (window.upcomingReleasesRequestController !== rc) return;
-    container.innerHTML = '<div class="text-center py-4"><p class="text-danger mb-2"><i class="bi bi-exclamation-triangle"></i> Error loading upcoming releases.</p><p class="text-muted small mb-0">' + (error.message || 'Unknown error') + '</p><button class="btn btn-sm btn-outline-primary mt-2" onclick="refreshUpcomingReleasesMonitor()"><i class="bi bi-arrow-clockwise"></i> Retry</button></div>';
-    window.upcomingReleasesRequestController = null;
+    container.innerHTML = '<div class="text-center py-4"><p class="text-danger mb-2"><i class="bi bi-exclamation-triangle"></i> Error loading upcoming releases.</p><p class="text-muted small mb-0">' + escapeHtml(error.message || 'Unknown error') + '</p><button class="btn btn-sm btn-outline-primary mt-2" onclick="refreshUpcomingReleasesMonitor()"><i class="bi bi-arrow-clockwise"></i> Retry</button></div>';
   }
 }
 
@@ -665,7 +637,7 @@ async function scrapeUpcomingReleasesMonitor() {
   errorEl.style.display = 'none';
   statusText.textContent = 'Scraping Wikipedia for upcoming releases...';
   try {
-    var data = await fetchJsonOrThrow('/api/upcoming-releases/scrape', { method: 'POST', headers: { 'Content-Type': 'application/json' } }, 120000);
+    var data = await UpcomingReleasesService.triggerScrape();
     statusText.textContent = '✓ ' + data.message;
     setTimeout(function() { statusEl.style.display = 'none'; refreshUpcomingReleasesMonitor(); }, 1500);
   } catch (error) {
@@ -686,8 +658,10 @@ async function clearUpcomingReleasesMonitor() {
   errorEl.style.display = 'none';
   statusText.textContent = 'Clearing database...';
   try {
-    var data = await fetchJsonOrThrow('/api/upcoming-releases/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' } }, 15000);
-    statusText.textContent = '✓ ' + data.message;
+    var resp = await fetch('/api/upcoming-releases/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    var data = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) throw new Error(data.error || 'Failed to clear database');
+    statusText.textContent = '✓ Database cleared';
     setTimeout(function() {
       statusEl.style.display = 'none';
       container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0">Database cleared.</p></div>';
@@ -706,7 +680,10 @@ async function autoMatchAllUpcomingReleasesMonitor(btn) {
   var matched = 0, failed = 0;
   try {
     var filterCollection = document.getElementById('upcomingFilterCollectionMonitor')?.checked || false;
-    var data = await fetchJsonOrThrow('/api/upcoming-releases?collection=' + filterCollection + '&include_queue=true', {}, 20000);
+    var data = await UpcomingReleasesService.fetchReleases({
+      filter: filterCollection ? 'collection' : undefined,
+      include_queue: true,
+    });
     var unmatched = (data.releases || []).filter(function(r) { return !r.release_group_mbid; });
     if (unmatched.length === 0) {
       btn.innerHTML = '<i class="bi bi-check-circle"></i> All matched';
@@ -715,9 +692,8 @@ async function autoMatchAllUpcomingReleasesMonitor(btn) {
     }
     for (var i = 0; i < unmatched.length; i++) {
       try {
-        var resp = await fetch('/api/upcoming-releases/' + unmatched[i].id + '/match', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-        var d = await resp.json();
-        if (resp.ok && d.success) matched++; else failed++;
+        await UpcomingReleasesService.matchRelease(unmatched[i].id, null);
+        matched++;
       } catch (_) { failed++; }
     }
     await refreshUpcomingReleasesMonitor();
@@ -732,9 +708,7 @@ async function autoMatchAllUpcomingReleasesMonitor(btn) {
 async function matchUpcomingReleaseMonitor(releaseId) {
   if (!releaseId) return;
   try {
-    var resp = await fetch('/api/upcoming-releases/' + releaseId + '/match', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    var data = await resp.json();
-    if (!resp.ok || !data.success) throw new Error(data.error || 'Match failed');
+    await UpcomingReleasesService.matchRelease(releaseId, null);
     await refreshUpcomingReleasesMonitor();
   } catch (error) {
     alert('Error matching: ' + error.message);
@@ -742,11 +716,8 @@ async function matchUpcomingReleaseMonitor(releaseId) {
 }
 
 function searchUpcomingReleaseFromEncoded(artistEnc, albumEnc, releaseId) {
-  var artist = decodeInlineArg(artistEnc, '');
-  var album = decodeInlineArg(albumEnc, '');
-  if (!artist || !album) { alert('Missing artist/album info.'); return; }
-  var fn = window.searchMusicBrainzRelease || function(){};
-  fn(null, artist, album, releaseId);
+  var fn = window.searchMusicBrainzReleaseFromEncoded || function(){};
+  fn(null, artistEnc, albumEnc);
 }
 
 // ===== Discovery =====

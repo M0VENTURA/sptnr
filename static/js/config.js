@@ -302,11 +302,8 @@ function buildConfigObject() {
         daily_musicbrainz_release_lookahead_days: parseInt(getValue('daily_musicbrainz_release_lookahead_days', '28')) || 28,
         daily_musicbrainz_release_max_artists: parseInt(getValue('daily_musicbrainz_release_max_artists', '500')) || 500,
         daily_musicbrainz_release_per_artist_limit: parseInt(getValue('daily_musicbrainz_release_per_artist_limit', '100')) || 100,
-        live_musicbrainz_upcoming_releases_enabled: getChecked('live_musicbrainz_upcoming_releases_enabled', true),
-        live_musicbrainz_lookback_days: parseInt(getValue('live_musicbrainz_lookback_days', '14')) || 14,
-        live_musicbrainz_lookahead_days: parseInt(getValue('live_musicbrainz_lookahead_days', '180')) || 180,
-        live_musicbrainz_added_lookback_days: parseInt(getValue('live_musicbrainz_added_lookback_days', '7')) || 7,
-        live_musicbrainz_max_results: parseInt(getValue('live_musicbrainz_max_results', '200')) || 200
+        upcoming_releases_scan_enabled: getChecked('upcoming_releases_scan_enabled', true),
+        upcoming_releases_purge_days: parseInt(getValue('upcoming_releases_purge_days', '30')) || 30
       }
     ),
     single_detection: Object.assign(
