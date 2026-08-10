@@ -57,6 +57,19 @@
         border-color: rgba(248, 113, 113, 0.4);
     }
 
+    /* Album sub-row actions — uniform slate ghost styling */
+    #artistsList .album-row-btn {
+        background: transparent;
+        color: #9ca3af;
+        border-color: #4b5563;
+    }
+    #artistsList .album-row-btn:hover,
+    #artistsList .album-row-btn:focus {
+        background: rgba(34, 211, 238, 0.08);
+        color: #22d3ee;
+        border-color: #22d3ee;
+    }
+
     /* Live filter highlight */
     #artistsList .list-group-item.filtered-out {
         display: none !important;
@@ -156,14 +169,25 @@
                 <div class="list-group-item bg-primary bg-opacity-10" id="letter-header-{{ letter_key }}" data-letter-header="{{ letter_key }}" style="scroll-margin-top: 80px;">
                     <div class="d-flex justify-content-between align-items-center">
                         <h5 class="mb-0 fw-bold">{{ letter_key }}</h5>
-                        <div class="d-flex align-items-center gap-2">
-                            <div class="form-check form-check-inline mb-0" title="Force full rescan from this letter">
-                                <input class="form-check-input letter-force-check" type="checkbox" id="letter-force-{{ loop.index0 }}" data-letter="{{ letter_key }}">
-                                <label class="form-check-label small" for="letter-force-{{ loop.index0 }}">Force</label>
-                            </div>
-                            <button class="btn btn-outline-primary btn-sm" onclick="scanLetterArtists('{{ letter_key }}')" title="Scan from this letter">
-                                <i class="bi bi-lightning"></i> Scan
+                        <div class="btn-group btn-group-sm" role="group" aria-label="Scan from letter {{ letter_key }}">
+                            <button class="btn btn-outline-primary" onclick="scanLetterArtists('{{ letter_key }}', 'changes')" title="Scan changes from letter {{ letter_key }}">
+                                <i class="bi bi-lightning"></i> Scan Group
                             </button>
+                            <button type="button" class="btn btn-outline-primary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" aria-expanded="false" title="Scan options">
+                                <span class="visually-hidden">Toggle scan options</span>
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li>
+                                    <button class="dropdown-item" type="button" onclick="scanLetterArtists('{{ letter_key }}', 'changes')">
+                                        <i class="bi bi-arrow-repeat me-1"></i> Scan (Changes Only)
+                                    </button>
+                                </li>
+                                <li>
+                                    <button class="dropdown-item" type="button" onclick="scanLetterArtists('{{ letter_key }}', 'forced')">
+                                        <i class="bi bi-lightning-charge-fill me-1"></i> Force Re-scan
+                                    </button>
+                                </li>
+                            </ul>
                         </div>
                     </div>
                 </div>
