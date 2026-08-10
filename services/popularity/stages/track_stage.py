@@ -1094,23 +1094,53 @@ def process_track(
                             parts = _os.path.normpath(fp).split(_os.sep)
                             if len(parts) >= 2:
                                 folder_name = parts[-2]
-                        primary_ref = folder_name or existing_album
-
                         mb_album = _as_str(mb_data["album"])
                         match_ratio = 0.0
-                        if primary_ref and mb_album:
-                            from difflib import SequenceMatcher
-                            match_ratio = SequenceMatcher(None, primary_ref.lower(), mb_album.lower()).ratio()
-                            if match_ratio >= 0.6:
-                                update_payload["album"] = mb_album
-                            elif folder_name and existing_album:
-                                # If MB doesn't match the folder, check if old
-                                # album column is closer — keep existing if so
-                                old_ratio = SequenceMatcher(None, existing_album.lower(), mb_album.lower()).ratio()
-                                if old_ratio >= 0.6:
+                        # An album column that already matches the folder is
+                        # authoritative.  Per-track MusicBrainz releases for
+                        # multi-edition albums ("OPVS NOIR Vol. 3" vs
+                        # "OPVS NOIR Vol. 3 (Instrumental)") can resolve to a
+                        # DIFFERENT release per track, and rewriting each
+                        # track's album from its own lookup splits one folder
+                        # into several albums on every metadata scan.  Only
+                        # rewrite a folder-backed album when the column clearly
+                        # disagrees with the folder (a previous bad MusicBrainz
+                        # match) or when there is no folder to anchor on.
+                        from difflib import SequenceMatcher
+                        # Near-identical only: a loose threshold (0.6) also
+                        # matches a sibling EDITION of the same release
+                        # ("OPVS NOIR Vol. 3 (Instrumental)" vs "OPVS NOIR
+                        # Vol. 3") and would both fail to repair a corrupted
+                        # column and wrongly "confirm" a renamed track.
+                        folder_consistent = bool(
+                            folder_name
+                            and existing_album
+                            and SequenceMatcher(
+                                None,
+                                existing_album.lower(),
+                                folder_name.lower(),
+                            ).ratio() >= 0.9
+                        )
+                        if mb_album and not folder_consistent:
+                            primary_ref = folder_name or existing_album
+                            if primary_ref:
+                                match_ratio = SequenceMatcher(None, primary_ref.lower(), mb_album.lower()).ratio()
+                                if match_ratio >= 0.6:
                                     update_payload["album"] = mb_album
-                        elif mb_album:
-                            update_payload["album"] = mb_album
+                                elif folder_name and existing_album:
+                                    # If MB doesn't match the folder, check if
+                                    # old album column is closer — keep
+                                    # existing if so
+                                    old_ratio = SequenceMatcher(None, existing_album.lower(), mb_album.lower()).ratio()
+                                    if old_ratio >= 0.6:
+                                        update_payload["album"] = mb_album
+                            else:
+                                update_payload["album"] = mb_album
+                        elif folder_consistent:
+                            logger.debug(
+                                "[track_stage] Skipping album rename for %s (album '%s' matches folder '%s')",
+                                track_id, existing_album, folder_name,
+                            )
 
                         if not update_payload.get("album"):
                             logger.debug(
