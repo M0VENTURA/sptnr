@@ -107,11 +107,15 @@ def _collection_artists(limit: int) -> list[str]:
         with db_session() as session:
             result = session.execute(
                 text("""
-                    SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist_name
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-                      AND TRIM(COALESCE(NULLIF(album_artist, ''), artist)) <> ''
-                    ORDER BY LOWER(COALESCE(NULLIF(album_artist, ''), artist))
+                    SELECT artist_name
+                    FROM (
+                        SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist_name,
+                               LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS artist_sort
+                        FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+                          AND TRIM(COALESCE(NULLIF(album_artist, ''), artist)) <> ''
+                    ) AS artist_rows
+                    ORDER BY artist_sort
                     LIMIT :limit
                 """),
                 {"limit": max(1, min(limit, 5000))},

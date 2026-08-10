@@ -225,7 +225,7 @@ async def api_album_apply_discogs_id():
 @album_bp.route("/ignore-missing-track", methods=["POST"])
 async def api_album_ignore_missing_track():
     """Mark a persisted missing track as ignored."""
-    data = request.get_json(force=True, silent=True) or {}
+    data = (await request.get_json(force=True, silent=True)) or {}
     missing_id = data.get("id")
     artist = (data.get("artist") or "").strip()
     album = (data.get("album") or "").strip()
@@ -320,9 +320,9 @@ def api_album_track_recommendations(artist, album):
 
 
 @album_bp.route("/musicbrainz", methods=["POST"])
-def api_album_musicbrainz_lookup():
+async def api_album_musicbrainz_lookup():
     """Lookup album on MusicBrainz."""
-    data = request.get_json(force=True, silent=True) or {}
+    data = (await request.get_json(force=True, silent=True)) or {}
     album = data.get("album", "")
     artist = data.get("artist", "")
     existing_mbid = (data.get("existing_mbid") or "").strip()
@@ -335,9 +335,9 @@ def api_album_musicbrainz_lookup():
 
 
 @album_bp.route("/musicbrainz/release-group/releases", methods=["POST"])
-def api_release_group_releases():
+async def api_release_group_releases():
     """Fetch all specific releases in a MusicBrainz release group."""
-    data = request.get_json(force=True, silent=True) or {}
+    data = (await request.get_json(force=True, silent=True)) or {}
     rg_mbid = (data.get("release_group_mbid") or "").strip()
     if not rg_mbid:
         return jsonify({"error": "release_group_mbid is required"}), 400
@@ -347,9 +347,9 @@ def api_release_group_releases():
 
 
 @album_bp.route("/musicbrainz/compare", methods=["POST"])
-def api_album_musicbrainz_compare():
+async def api_album_musicbrainz_compare():
     """Compare MusicBrainz release tracks with library tracks."""
-    data = request.get_json(force=True, silent=True) or {}
+    data = (await request.get_json(force=True, silent=True)) or {}
     rg_mbid = (data.get("release_group_mbid") or "").strip()
     artist = (data.get("artist") or "").strip()
     album = (data.get("album") or "").strip()
@@ -362,9 +362,9 @@ def api_album_musicbrainz_compare():
 
 
 @album_bp.route("/discogs", methods=["POST"])
-def api_album_discogs_lookup():
+async def api_album_discogs_lookup():
     """Lookup album on Discogs."""
-    data = request.get_json(force=True, silent=True) or {}
+    data = (await request.get_json(force=True, silent=True)) or {}
     album = data.get("album", "")
     artist = data.get("artist", "")
     
@@ -376,9 +376,9 @@ def api_album_discogs_lookup():
 
 
 @album_bp.route("/spotify-genres", methods=["POST"])
-def api_album_spotify_genres():
+async def api_album_spotify_genres():
     """Get Spotify genres for an album from database."""
-    data = request.get_json(force=True, silent=True) or {}
+    data = (await request.get_json(force=True, silent=True)) or {}
     album = data.get("album", "")
     artist = data.get("artist", "")
     
@@ -419,9 +419,9 @@ async def api_album_add_to_missing_releases():
 
 
 @album_bp.route("/musicbrainz/best-release", methods=["POST"])
-def api_album_musicbrainz_best_release():
+async def api_album_musicbrainz_best_release():
     """Find the best matching release inside a release group for a local album."""
-    data = request.get_json(force=True, silent=True) or {}
+    data = (await request.get_json(force=True, silent=True)) or {}
     rg_mbid = (data.get("release_group_mbid") or "").strip()
     artist = (data.get("artist") or "").strip()
     album = (data.get("album") or "").strip()
@@ -434,9 +434,9 @@ def api_album_musicbrainz_best_release():
 
 
 @album_bp.route("/musicbrainz/release/tracks", methods=["POST"])
-def api_album_musicbrainz_release_tracks():
+async def api_album_musicbrainz_release_tracks():
     """Fetch the track list for a specific MusicBrainz release."""
-    data = request.get_json(force=True, silent=True) or {}
+    data = (await request.get_json(force=True, silent=True)) or {}
     release_mbid = (data.get("release_mbid") or "").strip()
     
     if not release_mbid:
