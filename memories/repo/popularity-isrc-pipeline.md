@@ -1,6 +1,7 @@
 # Popularity ISRC Pipeline + RapidFuzz Map
 
 ## ISRC pipeline (implemented 2026-08-10)
+
 - MB resolution: `musicbrainz_service.py::_first_isrc` + `_recording_to_metadata` returns `isrc`
   (search docs + recording entities expose `isrcs` array)
 - Composite Last.fm fetch: `popularity_sources.py::get_aggregated_lastfm_popularity`
@@ -17,11 +18,13 @@
   (MAX over `is_single` needs `MAX(CASE WHEN is_single THEN 1 ELSE 0 END)` — PG has no max(boolean))
 
 ## CRITICAL SCHEMA GOTCHA
+
 - `popularity_score` is a SCAN-SIDE field only — tracks table columns are `final_score` + `popularity`
   (written in lockstep; album-relative remap persists both via `_persist_album_relative_scores`)
 - Any SQL referencing popularity_score fails with "column does not exist"
 
 ## RapidFuzz placement (requirements.txt already has it)
+
 - In use: `discogs_service.py` (token_set_ratio+partial_ratio via `_discogs_title_similarity`;
   `_scan_releases` now uses it too), `matching/track_matching.py` (dead module), old_system files
 - NEW: `popularity_sources.py` `_token_similarity` (token_set_ratio, difflib fallback) —
@@ -35,5 +38,6 @@
   (bracket-preserving difflib there is deliberate)
 
 ## Quart rules reminder
+
 - Every route reading JSON: `async def` + `(await request.get_json(silent=True)) or {}`
 - PG-only: no SQLite branches; psycopg2 can't adapt lists — inline params only

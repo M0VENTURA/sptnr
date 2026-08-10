@@ -257,7 +257,7 @@ class MusicBrainzService:
             logger.debug("[MB LOOKUP] %s", e, exc_info=True)
             return {}
 
-    def _first_isrc(recording: dict) -> str | None:
+def _first_isrc(recording: dict) -> str | None:
     """First ISRC from a MusicBrainz recording or search document.
 
     Both the JSON search docs and the recording entity expose ISRCs as an
@@ -273,7 +273,7 @@ class MusicBrainzService:
     return value or None
 
 
-def _recording_to_metadata(self, recording: dict, mbid: str, confidence: float) -> Dict[str, Any]:
+    def _recording_to_metadata(self, recording: dict, mbid: str, confidence: float) -> Dict[str, Any]:
         """Project a raw MusicBrainz recording document onto the metadata dict.
 
         Shared by the per-track lookup (``lookup_recording_metadata``) and the
