@@ -738,7 +738,7 @@
   {% set total_discovered_singles = albums_by_category.single|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_singles = albums_by_category.single|selectattr('is_missing', 'equalto', True)|list|length %}
   
-  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="albums-section">
+  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-vinyl-fill"></i> Albums
@@ -775,7 +775,7 @@
   </div>
 
   {% if albums_by_category.compilation|length > 0 %}
-  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="compilations-section">
+  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="compilations-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <div>
         <h5 class="card-title mb-0">
@@ -802,7 +802,7 @@
   {% endif %}
 
   {% if albums_by_category.live_album|length > 0 %}
-  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="live-albums-section">
+  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="live-albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-broadcast"></i> Live Albums
@@ -834,7 +834,7 @@
   {% endif %}
 
   {% if albums_by_category.remix_album|length > 0 %}
-  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="remix-albums-section">
+  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="remix-albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-soundwave"></i> Remix Albums
@@ -866,7 +866,7 @@
   {% endif %}
 
   {% if albums_by_category.ep|length > 0 %}
-  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="eps-section">
+  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="eps-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-disc"></i> EPs
@@ -898,7 +898,7 @@
   {% endif %}
 
   {% if albums_by_category.single|length > 0 %}
-  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="singles-section">
+  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="singles-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-music-note-beamed"></i> Singles
@@ -934,7 +934,7 @@
     {% if (albums_by_category.get(key) or [])|length == 0 %}{% set _ = empty_categories.append((key, label)) %}{% endif %}
   {% endfor %}
   {% if empty_categories %}
-  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="empty-categories-section">
+  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="empty-categories-section">
     <div class="card-header p-0">
       <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#empty-categories-collapse" aria-expanded="false" aria-controls="empty-categories-collapse" style="color: inherit;">
         <h5 class="card-title mb-0">
