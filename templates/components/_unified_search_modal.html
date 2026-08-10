@@ -1,0 +1,64 @@
+{#
+Unified Hybrid Search Modal — All / In Library / MusicBrainz
+=============================================================
+Tap-to-open global search, included from base.html. Backed by
+static/js/unified_search.js.
+
+Scope rules:
+- All       : library artists/albums/tracks + a compact MusicBrainz section
+- In Library: library results only (POST /api/search)
+- MusicBrainz: release search via the shared MB component internals
+  (searchMusicBrainzReleases) with quick-queue buttons
+
+Debounce: 50ms local scopes / 400ms MusicBrainz (set in unified_search.js).
+#}
+
+<div class="modal fade" id="unifiedSearchModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-fullscreen-md-down modal-dialog-centered modal-lg" style="margin-top: 0;">
+    <div class="modal-content">
+      <div class="modal-header py-2 ps-3 pe-2">
+        <h6 class="modal-title"><i class="bi bi-search"></i> Search</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body pt-2 pb-1">
+        <div class="input-group mb-2">
+          <span class="input-group-text" id="unifiedSearchIcon"><i class="bi bi-search"></i></span>
+          <input
+            type="text"
+            id="unifiedSearchInput"
+            class="form-control"
+            placeholder="Artists, albums, tracks, releases…"
+            autocomplete="off"
+            aria-label="Search"
+            style="min-height: 44px;"
+          />
+        </div>
+
+        <ul class="nav nav-pills gap-1 mb-2" id="unifiedScopeTabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button type="button" class="nav-link active" data-scope="all" role="tab" aria-selected="true">
+              <i class="bi bi-collection"></i> All
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button type="button" class="nav-link" data-scope="library" role="tab" aria-selected="false">
+              <i class="bi bi-music-note-beamed"></i> In Library
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button type="button" class="nav-link" data-scope="mb" role="tab" aria-selected="false">
+              <i class="bi bi-hexagon-fill"></i> MusicBrainz
+            </button>
+          </li>
+        </ul>
+
+        <div id="unifiedSearchError" class="alert alert-danger py-1 px-2 small d-none" role="alert"></div>
+        <div id="unifiedSearchResults" class="us-results"></div>
+      </div>
+      <div class="modal-footer py-1 px-3">
+        <small class="text-muted me-auto" id="usResultMeta"></small>
+        <small class="text-muted"><i class="bi bi-keyboard"></i> Enter to search</small>
+      </div>
+    </div>
+  </div>
+</div>

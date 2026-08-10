@@ -308,3 +308,93 @@ option:checked { background-color: var(--spotify-green); color: #000; }
     top: 0;
     z-index: 10;
 }
+
+/* ── Unified hybrid search modal ────────────────────────────────────────── */
+.us-results {
+    max-height: 60vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.us-section-title {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.35rem;
+    margin: 0.9rem 0 0.45rem;
+}
+
+.us-section:first-child .us-section-title {
+    margin-top: 0;
+}
+
+.us-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: 0.5rem;
+    text-decoration: none !important;
+    color: var(--text-primary) !important;
+}
+
+.us-row:hover {
+    background: var(--tertiary-bg);
+    color: var(--text-primary) !important;
+}
+
+.us-row .us-row-icon {
+    flex-shrink: 0;
+    width: 2rem;
+    height: 2rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.4rem;
+    background: var(--tertiary-bg);
+    color: var(--spotify-green);
+}
+
+.us-row .us-row-main {
+    min-width: 0;
+    flex: 1;
+}
+
+.us-row .us-row-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.us-row .us-row-sub {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.us-row .us-row-meta {
+    color: var(--text-tertiary);
+    font-size: 0.72rem;
+    flex-shrink: 0;
+}
+
+/* Tap-to-open search pills (navbar + dashboard) keep a visible search look */
+#navSearchInput[readonly],
+#dashboardTopSearchInput[readonly] {
+    cursor: pointer;
+    color: var(--text-secondary);
+}
+
+#navSearchInput[readonly]:focus,
+#dashboardTopSearchInput[readonly]:focus {
+    border-color: var(--border-color);
+    box-shadow: none;
+}

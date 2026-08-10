@@ -409,10 +409,12 @@ function renderUpcomingReleasesTable(releases) {
 
   if (!releases || releases.length === 0) {
     body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No upcoming releases found.</td></tr>';
+    const cardsEl = document.getElementById("upcoming-releases-cards");
+    if (cardsEl) cardsEl.innerHTML = '<div class="text-center text-muted py-4 small">No upcoming releases found.</div>';
     return;
   }
 
-  body.innerHTML = releases.map(r => {
+  const rows = releases.map(r => {
     const releaseDate = r.release_date || "TBA";
     // The Wikipedia scraper stores the configured source display names (e.g.
     // "2026 Albums", "Heavy Metal 2026") — they never contain the literal
@@ -443,14 +445,33 @@ function renderUpcomingReleasesTable(releases) {
       ? '<button class="btn btn-sm btn-outline-success" disabled title="Already in queue"><i class="bi bi-check2-circle"></i></button>'
       : `<button class="btn btn-sm btn-outline-primary" title="Add to queue" onclick="addUpcomingReleaseToQueueDashboard('${eArtist}', '${eAlbum}', '${encodeURIComponent(r.release_date || "")}', this)"><i class="bi bi-plus-circle"></i></button>`;
 
-    return `<tr>
-      <td>${escapeHtml(r.artist_name)}${colBadge}</td>
-      <td>${escapeHtml(r.album_name)}</td>
-      <td>${escapeHtml(releaseDate)} ${dateBadge}</td>
-      <td>${sourceBadge}</td>
-      <td class="text-center"><div class="d-flex gap-1 justify-content-center">${searchBtn}${queueBtn}</div></td>
-    </tr>`;
-  }).join("");
+    return {
+      html: `<tr>
+        <td>${escapeHtml(r.artist_name)}${colBadge}</td>
+        <td>${escapeHtml(r.album_name)}</td>
+        <td>${escapeHtml(releaseDate)} ${dateBadge}</td>
+        <td>${sourceBadge}</td>
+        <td class="text-center"><div class="d-flex gap-1 justify-content-center">${searchBtn}${queueBtn}</div></td>
+      </tr>`,
+      // Stacked mobile card (shown below lg — the table is hidden on small screens)
+      card: `<div class="upcoming-card p-2 mb-2 rounded border">
+        <div class="d-flex justify-content-between align-items-start gap-2">
+          <div class="min-w-0">
+            <div class="fw-semibold text-truncate">${escapeHtml(r.artist_name)}${colBadge}</div>
+            <div class="small text-muted text-truncate">${escapeHtml(r.album_name)}</div>
+          </div>
+          <div class="d-flex gap-1 flex-shrink-0">${searchBtn}${queueBtn}</div>
+        </div>
+        <div class="d-flex align-items-center gap-2 mt-1 flex-wrap small">
+          <span class="text-muted"><i class="bi bi-calendar"></i> ${escapeHtml(releaseDate)}</span>${dateBadge}${sourceBadge}
+        </div>
+      </div>`
+    };
+  });
+
+  body.innerHTML = rows.map(x => x.html).join("");
+  const cardsEl = document.getElementById("upcoming-releases-cards");
+  if (cardsEl) cardsEl.innerHTML = rows.map(x => x.card).join("");
 }
 
 function _renderUpcomingTableFilterButtons() {
@@ -489,13 +510,12 @@ async function loadUpcomingReleasesTable() {
 
 // ===== Unified Log =====
 let logPaused = false;
+let logModalVisible = false;
 
-function toggleLog() {
-  const body = document.getElementById("logBody");
-  const btn = document.getElementById("toggleLogBtn");
-  if (!body || !btn) return;
-  body.classList.toggle("collapsed");
-  btn.innerHTML = body.classList.contains("collapsed") ? '<i class="bi bi-chevron-down"></i>' : '<i class="bi bi-chevron-up"></i>';
+function openUnifiedLogModal() {
+  const modalEl = document.getElementById("unifiedLogModal");
+  if (!modalEl) return;
+  bootstrap.Modal.getOrCreateInstance(modalEl).show();
 }
 
 function updateUnifiedLog() {
@@ -518,15 +538,34 @@ function updateUnifiedLog() {
 }
 
 // ===== Active Scans Progress Panel =====
+/* One-line summary for the sticky bottom status bar. */
+function updateScanStatusBar(active) {
+  const line = document.getElementById("scanStatusLine");
+  const icon = document.getElementById("scanStatusIcon");
+  if (!line || !icon) return;
+  if (!active || active.length === 0) {
+    line.textContent = "Idle — no scan running";
+    icon.className = "scan-status-idle";
+    icon.innerHTML = '<i class="bi bi-circle"></i>';
+    return;
+  }
+  const scan = active[0];
+  const name = SCAN_TYPE_DISPLAY_NAMES[scan.scan_type] || scan.scan_type;
+  const pct = Math.min(scan.progress || 0, 100);
+  line.textContent = `${name} — ${pct}%` + (scan.current_item ? ` · ${scan.current_item}` : "");
+  icon.className = "scan-status-active";
+  icon.innerHTML = '<i class="bi bi-activity"></i>';
+}
+
 function updateActiveScans() {
   fetch(`/api/scan-progress?_ts=${Date.now()}`, { cache: "no-store" })
     .then(r => r.json())
     .then(data => {
       const panel = document.getElementById("activeScansPanel");
       const body = document.getElementById("activeScansBody");
-      if (!panel || !body) return;
-
       const active = data.active_scans || [];
+      updateScanStatusBar(active);
+      if (!panel || !body) return;
       if (active.length === 0) {
         panel.style.display = "none";
         return;
@@ -582,21 +621,25 @@ document.addEventListener("DOMContentLoaded", function () {
 
   updateAll();
   setInterval(updateAll, 5000);
-  updateUnifiedLog();
-  setInterval(updateUnifiedLog, 10000);
-});
 
-/* Open the MusicBrainz Lookup card — expands the mobile collapse drawer,
-   scrolls it into view and focuses the artist field. */
-window.openLookupDrawer = function () {
-  const card = document.getElementById("lookupCard");
-  const body = document.getElementById("lookupCardBody");
-  if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
-  if (body && !body.classList.contains("show")) {
-    bootstrap.Collapse.getOrCreateInstance(body).show();
+  // Full-screen log modal: only fetch log lines while it is visible.
+  const logModalEl = document.getElementById("unifiedLogModal");
+  if (logModalEl) {
+    logModalEl.addEventListener("shown.bs.modal", function () {
+      logModalVisible = true;
+      updateUnifiedLog();
+    });
+    logModalEl.addEventListener("hidden.bs.modal", function () {
+      logModalVisible = false;
+    });
   }
-  setTimeout(function () {
-    const el = document.getElementById("lookupArtist");
-    if (el) el.focus();
-  }, 400);
-};
+  setInterval(function () { if (logModalVisible) updateUnifiedLog(); }, 5000);
+
+  // Lift the sticky scan status bar above the global player bar when it appears.
+  setInterval(function () {
+    const playerBar = document.getElementById("globalPlayerBar");
+    if (playerBar) {
+      document.body.classList.toggle("player-visible", !playerBar.classList.contains("d-none"));
+    }
+  }, 2000);
+});

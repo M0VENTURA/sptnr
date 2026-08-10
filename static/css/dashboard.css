@@ -32,16 +32,77 @@
     border: 1px solid rgba(120, 135, 160, 0.45);
 }
 
-/* Log toggle animation */
-#logBody {
-    transition: max-height 0.3s ease;
-    overflow: hidden;
+/* ─── Sticky one-line scan status bar ─────────────────────────────────── */
+#scanStatusBar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2040;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    height: 2.4rem;
+    padding: 0.25rem 0.75rem;
+    background: rgba(18, 18, 18, 0.97);
+    border-top: 1px solid var(--border-color);
+    backdrop-filter: blur(10px);
+    cursor: pointer;
+    font-size: 0.8rem;
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.4);
 }
 
-#logBody.collapsed {
-    max-height: 0 !important;
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
+#scanStatusBar:hover {
+    background: rgba(30, 30, 30, 0.97);
+}
+
+#scanStatusBar .scan-status-idle {
+    color: var(--text-tertiary);
+}
+
+#scanStatusBar .scan-status-active {
+    color: var(--spotify-green);
+    animation: scan-status-pulse 1.6s ease-in-out infinite;
+}
+
+#scanStatusBar .scan-status-open {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 0.1rem 0.6rem;
+    font-size: 0.75rem;
+}
+
+@keyframes scan-status-pulse {
+    50% { opacity: 0.45; }
+}
+
+/* When the global player bar is visible, sit above it instead of overlapping. */
+body.player-visible #scanStatusBar {
+    bottom: 68px;
+}
+
+body {
+    padding-bottom: 3.2rem;
+}
+
+/* ─── Upcoming releases stacked mobile cards ──────────────────────────── */
+.upcoming-card {
+    background: var(--secondary-bg);
+    border-color: var(--border-color) !important;
+}
+
+.upcoming-card .min-w-0 {
+    min-width: 0;
+}
+
+.upcoming-card .upcoming-source-chip {
+    font-size: 0.65rem;
 }
 
 /* ─── Mobile layout fixes ─────────────────────────────────────────────── */

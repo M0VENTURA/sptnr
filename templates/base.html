@@ -47,7 +47,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
   {% endif %}
   
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/popularr.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/popularr.css') }}?v=3">
 </head>
 <body>
   <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
@@ -58,6 +58,9 @@
       <a class="navbar-brand" href="{{ url_for('ui.dashboard') }}">
         <i class="bi bi-music-note-beamed"></i> Popularr
       </a>
+      <button class="btn btn-outline-secondary btn-sm d-lg-none ms-auto me-2" type="button" onclick="openUnifiedSearch()" aria-label="Search" title="Search" style="min-width:44px;min-height:44px;">
+        <i class="bi bi-search"></i>
+      </button>
       <div class="collapse navbar-collapse" id="navbarNav">
         <ul class="navbar-nav ms-auto">
           <li class="nav-item">
@@ -66,14 +69,14 @@
             </a>
           </li>
           <li class="nav-item nav-nav-search d-none d-lg-flex align-items-center">
-            <form class="d-flex w-100" id="navSearchForm" onsubmit="navSearch(event)">
+            <div class="d-flex w-100" id="navSearchForm" onclick="openUnifiedSearch()" title="Search library or MusicBrainz" style="cursor:pointer;">
               <div class="input-group input-group-sm" style="width: 100%; max-width: 320px;">
-                <input type="text" id="navSearchInput" class="form-control form-control-sm" placeholder="Search library or MusicBrainz…" autocomplete="off">
-                <button class="btn btn-outline-secondary btn-sm" type="submit" title="Search">
+                <input type="text" id="navSearchInput" class="form-control form-control-sm" placeholder="Search library or MusicBrainz…" autocomplete="off" readonly>
+                <button class="btn btn-outline-secondary btn-sm" type="button" title="Search" aria-label="Search">
                   <i class="bi bi-search"></i>
                 </button>
               </div>
-            </form>
+            </div>
           </li>
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="artistsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -167,6 +170,10 @@
       {% include 'components/_musicbrainz_search_modal.html' ignore missing %}
   </div>
 
+  <div id="global-unified-search-container">
+      {% include 'components/_unified_search_modal.html' ignore missing %}
+  </div>
+
   <div id="globalPlayerBar" class="d-none" style="position:fixed;bottom:0;left:0;right:0;z-index:2000;background:rgba(18,18,18,0.97);border-top:1px solid var(--border-color);backdrop-filter:blur(10px);padding:0.5rem 1rem;box-shadow:0 -4px 16px rgba(0,0,0,0.5);">
     <audio id="globalAudioEl" preload="none"></audio>
     <div class="d-flex align-items-center gap-3" style="max-width:1400px;margin:0 auto;">
@@ -203,6 +210,7 @@
   <script src="{{ url_for('static', filename='js/player.js') }}"></script>
   <script src="{{ url_for('static', filename='js/musicbrainz-folder-groups.js') }}"></script>
   <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/unified_search.js') }}?v=1"></script>
 
   {% block scripts %}{% endblock %}
 </body>

@@ -15,7 +15,7 @@
                 <i class="bi bi-speedometer2"></i> Dashboard
             </h1>
             <p class="text-muted mb-0">Music library overview and scan controls</p>
-            <form class="dashboard-mobile-search d-lg-none mt-2" onsubmit="navSearch(event)">
+            <form class="dashboard-mobile-search d-lg-none mt-2" onclick="openUnifiedSearch()" style="cursor:pointer;">
                 <div class="input-group">
                     <input
                         type="text"
@@ -24,9 +24,10 @@
                         placeholder="Search library or MusicBrainz…"
                         autocomplete="off"
                         aria-label="Search library"
+                        readonly
                         style="font-size:16px;min-height:44px;"
                     />
-                    <button class="btn btn-outline-secondary" type="submit" title="Search" style="min-height:44px;">
+                    <button class="btn btn-outline-secondary" type="button" title="Search" style="min-height:44px;">
                         <i class="bi bi-search"></i>
                     </button>
                 </div>
@@ -116,7 +117,7 @@
             </a>
         </div>
         <div class="col-6 col-md-4 col-xl-2">
-            <button onclick="openLookupDrawer()" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+            <button onclick="openUnifiedSearch('all')" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
                 <i class="bi bi-search fs-4"></i> <span class="small fw-semibold">Search</span>
             </button>
         </div>
@@ -247,7 +248,7 @@
                         </a>
                     </div>
                 </div>
-                <div class="table-responsive" style="height: 320px; overflow-y: auto;">
+                <div class="table-responsive d-none d-lg-block" style="height: 320px; overflow-y: auto;">
                     <table class="table table-hover mb-0 table-sm" style="min-width: 680px;">
                         <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
                             <tr>
@@ -262,31 +263,43 @@
                         </tbody>
                     </table>
                 </div>
+                <div id="upcoming-releases-cards" class="d-lg-none p-2"></div>
             </div>
         </div>
     </div>
 
-    <div class="card mb-4">
-        <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
-            <span class="fw-semibold"><i class="bi bi-terminal"></i> Scanning Log</span>
-            <div class="d-flex gap-2 align-items-center log-toolbar">
-                <div class="d-flex gap-1">
-                    <a href="/api/download-log/unified" class="btn btn-sm btn-outline-primary py-0 px-1" download title="Download scanning log"><i class="bi bi-download"></i></a>
-                    <a href="/api/download-log/info" class="btn btn-sm btn-outline-info py-0 px-1" download title="Download info log"><i class="bi bi-info-circle"></i></a>
-                    <a href="/api/download-log/debug" class="btn btn-sm btn-outline-warning py-0 px-1" download title="Download debug log"><i class="bi bi-bug"></i></a>
-                    <a href="/api/download-log/queue" class="btn btn-sm btn-outline-success py-0 px-1" download title="Download queue log"><i class="bi bi-list-ul"></i></a>
+    <div class="modal fade modal-fullscreen" id="unifiedLogModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-fullscreen">
+            <div class="modal-content">
+                <div class="modal-header py-2 px-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <h6 class="modal-title mb-0"><i class="bi bi-terminal"></i> Scanning Log</h6>
+                    <div class="d-flex gap-2 align-items-center log-toolbar">
+                        <div class="d-flex gap-1">
+                            <a href="/api/download-log/unified" class="btn btn-sm btn-outline-primary py-0 px-1" download title="Download scanning log"><i class="bi bi-download"></i></a>
+                            <a href="/api/download-log/info" class="btn btn-sm btn-outline-info py-0 px-1" download title="Download info log"><i class="bi bi-info-circle"></i></a>
+                            <a href="/api/download-log/debug" class="btn btn-sm btn-outline-warning py-0 px-1" download title="Download debug log"><i class="bi bi-bug"></i></a>
+                            <a href="/api/download-log/queue" class="btn btn-sm btn-outline-success py-0 px-1" download title="Download queue log"><i class="bi bi-list-ul"></i></a>
+                        </div>
+                        <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm py-0"><i class="bi bi-pause"></i> Pause</button>
+                        <button type="button" class="btn-close ms-2" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
                 </div>
-                <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm py-0"><i class="bi bi-pause"></i> Pause</button>
-                <button id="toggleLogBtn" type="button" class="btn btn-outline-secondary btn-sm py-0" onclick="toggleLog()"><i class="bi bi-chevron-up"></i></button>
+                <div class="modal-body p-2">
+                    <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0" style="height: 100%; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+                </div>
             </div>
-        </div>
-        <div class="card-body p-2" id="logBody">
-            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0" style="height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
         </div>
     </div>
 </div>
 
-<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+<!-- Sticky one-line scan status bar — tap to open the full-screen log. -->
+<div id="scanStatusBar" role="button" tabindex="0" onclick="openUnifiedLogModal()" title="Open scanning log">
+    <span id="scanStatusIcon" class="scan-status-idle"><i class="bi bi-circle"></i></span>
+    <span id="scanStatusLine" class="text-truncate">Idle</span>
+    <span class="scan-status-open"><i class="bi bi-terminal"></i> Log</span>
+</div>
+
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}?v=3">
 
 {# The shared MusicBrainz search modal is included globally by base.html — do not include it again here. #}
 
@@ -303,5 +316,5 @@
 
 <script src="{{ url_for('static', filename='js/downloads.js') }}?v=2"></script>
 <script src="{{ url_for('static', filename='js/upcoming_releases.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/dashboard.js') }}?v=4"></script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}?v=5"></script>
 {% endblock %}
