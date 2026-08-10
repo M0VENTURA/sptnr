@@ -3,6 +3,20 @@
 {% block title %}{{ album_name }} - {{ artist_name }} - Popularr{% endblock %}
 
 {% block content %}
+<style>
+    /* Album page: mobile 4-tab grouping + genre clamp */
+    @media (max-width: 991.98px) {
+        .album-mobile-group { display: none; }
+        .album-mobile-group.album-mobile-active { display: block; }
+    }
+    @media (min-width: 992px) {
+        .album-mobile-group { display: block !important; }
+    }
+    .genre-badge-more {
+        cursor: pointer;
+        font-size: 0.75rem;
+    }
+</style>
 <div class="container-fluid mt-4">
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
@@ -13,165 +27,168 @@
         </ol>
     </nav>
     
-    <!-- Album Art & Basic Info Combined Card -->
-    <div class="mb-4" id="album-details-section">
-        <div class="card">
-            <div class="card-body">
-                <div class="row g-4">
-                    <!-- Album Art -->
-                    <div class="col-12 col-md-3 d-flex flex-column align-items-center">
-                        <div class="album-art-container position-relative mb-3">
-                            <img id="albumArtImage" src="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" 
-                                 alt="{{ album_name }}" 
-                                 style="width: 100%; height: 100%; object-fit: cover;"
-                                 onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Album Art%3C/text%3E%3C/svg%3E';">
-                            <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openAlbumArtModal()" title="Change album art">
-                                <i class="bi bi-pencil"></i> Change
+    <!-- Unified Hero Banner: art + title + actions + key stats in one card -->
+    <div class="card mb-4" id="album-details-section">
+        <div class="card-body">
+            <div class="d-flex flex-column flex-md-row gap-4">
+                <!-- Album Art -->
+                <div class="flex-shrink-0 align-self-center align-self-md-start">
+                    <div class="album-art-container position-relative">
+                        <img id="albumArtImage" src="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" 
+                             alt="{{ album_name }}" 
+                             style="width: 100%; height: 100%; object-fit: cover;"
+                             onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Album Art%3C/text%3E%3C/svg%3E';">
+                        <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openAlbumArtModal()" title="Change album art">
+                            <i class="bi bi-pencil"></i> Change
+                        </button>
+                    </div>
+                </div>
+                <!-- Album Info + Actions -->
+                <div class="flex-grow-1">
+                    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start gap-3">
+                        <div>
+                            <h1 class="h3 mb-1">
+                                <i class="bi bi-album"></i> {{ album_name }}
+                                {% if is_album_favourite %}
+                                    <span class="badge bg-warning text-dark ms-2">Favourite</span>
+                                {% endif %}
+                            </h1>
+                            <p class="text-muted mb-0">
+                                by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a>
+                                {% if album_data and album_data.avg_stars %}
+                                    <span class="badge badge-success ms-2 align-middle">{{ album_data.avg_stars|round(2) }}★</span>
+                                {% endif %}
+                                {% if album_data and album_data.singles_count and album_data.singles_count > 0 %}
+                                    <span class="badge badge-info ms-1 align-middle">⚡ {{ album_data.singles_count }} Detected Singles</span>
+                                {% endif %}
+                            </p>
+                        </div>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <button class="btn btn-outline-success btn-sm" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites" id="albumFavBtn">
+                                <i class="bi {{ 'bi-star-fill' if is_album_favourite else 'bi-star' }}" id="albumFavIcon"></i> <span class="d-none d-sm-inline" id="albumFavLabel">{{ 'Favourited' if is_album_favourite else 'Favourite' }}</span>
+                            </button>
+                            <button class="btn btn-outline-info btn-sm" onclick="openAlbumLookupModal()">
+                                <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Lookup</span>
+                            </button>
+                            <div class="btn-group btn-group-sm" role="group">
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this album">
+                                    <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    {% if qbit_config is defined and qbit_config.enabled %}
+                                    <li><a class="dropdown-item" onclick="openQbitSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
+                                        <i class="bi bi-cloud-download"></i> Search qBittorrent
+                                    </a></li>
+                                    {% endif %}
+                                    {% if slskd_config is defined and slskd_config.enabled %}
+                                    <li><a class="dropdown-item" onclick="openSlskdSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
+                                        <i class="bi bi-music-note-beamed"></i> Search Soulseek
+                                    </a></li>
+                                    {% endif %}
+                                </ul>
+                            </div>
+                            <form method="POST" action="{{ url_for('scans.scan_album_custom') }}" class="d-flex align-items-center gap-2 flex-wrap">
+                                <input type="hidden" name="artist" value="{{ artist_name }}">
+                                <input type="hidden" name="album" value="{{ album_name }}">
+                                {% include 'components/_scan_selector.html' %}
+                                <div class="form-check form-check-inline mb-0" title="Force full rescan for this album">
+                                    <input class="form-check-input" type="checkbox" id="albumForceScan" name="force" value="1">
+                                    <label class="form-check-label small" for="albumForceScan">Force</label>
+                                </div>
+                                <button class="btn btn-warning btn-sm" type="submit" title="Run selected scan for this album">
+                                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan</span>
+                                </button>
+                            </form>
+                            <button class="btn btn-secondary btn-sm" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" title="Rename all album files based on current metadata">
+                                <i class="bi bi-files"></i> <span class="d-none d-sm-inline">Rename Files</span>
                             </button>
                         </div>
                     </div>
-                    <!-- Album Info -->
-                    <div class="col-12 col-md-9">
-                        <h5 class="mb-3"><i class="bi bi-info-circle"></i> Album Details</h5>
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <small class="text-muted d-block">Artist</small>
-                                <strong><a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></strong>
-                            </div>
-                            <div class="col-6">
-                                <small class="text-muted d-block">Album</small>
-                                <strong>{{ album_name }}</strong>
-                            </div>
+                    <hr class="my-3">
+                    <div class="row g-2">
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Release Year</small>
                             {% if album_data and album_data.spotify_release_date %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Release Year</small>
                                 <strong>{{ album_data.spotify_release_date[:4] }}</strong>
-                            </div>
                             {% elif album_data and album_data.album_year %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Release Year</small>
                                 <strong>{{ album_data.album_year }}</strong>
-                            </div>
-                            {% endif %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Album Type</small>
-                                {% if album_data and album_data.spotify_album_type %}
-                                    {% set _atype = album_data.spotify_album_type|lower %}
-                                    {% if 'compilation' in _atype %}
-                                        <strong><span class="badge bg-info">Compilation</span></strong>
-                                    {% elif 'live' in _atype %}
-                                        <strong><span class="badge bg-info">Live</span></strong>
-                                    {% elif 'remix' in _atype %}
-                                        <strong><span class="badge bg-info">Remix</span></strong>
-                                    {% elif 'soundtrack' in _atype %}
-                                        <strong><span class="badge bg-info">Soundtrack</span></strong>
-                                    {% elif 'spokenword' in _atype %}
-                                        <strong><span class="badge bg-info">Spoken Word</span></strong>
-                                    {% elif _atype == 'ep' %}
-                                        <strong><span class="badge bg-info">EP</span></strong>
-                                    {% elif _atype == 'single' %}
-                                        <strong><span class="badge bg-info">Single</span></strong>
-                                    {% else %}
-                                        <strong><span class="badge bg-info">{{ album_data.spotify_album_type|title }}</span></strong>
-                                    {% endif %}
-                                {% else %}
-                                    <strong><span class="badge bg-secondary">Unknown</span></strong>
-                                {% endif %}
-                            </div>
-                            {% if album_data and album_data.track_count %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Tracks</small>
-                                <strong>{{ album_data.track_count }}</strong>
-                            </div>
-                            {% endif %}
-                            {% if album_data and album_data.avg_stars %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Avg Rating</small>
-                                <strong><span class="badge bg-success">{{ album_data.avg_stars|round(2) }}★</span></strong>
-                            </div>
-                            {% endif %}
-                            {% if album_data and album_data.record_label %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Record Label</small>
-                                <strong>{{ album_data.record_label }}</strong>
-                            </div>
-                            {% endif %}
-                            {% if album_data and album_data.catalog_number %}
-                            <div class="col-6">
-                                <small class="text-muted d-block">Catalog #</small>
-                                <strong>{{ album_data.catalog_number }}</strong>
-                            </div>
+                            {% else %}
+                                <strong>—</strong>
                             {% endif %}
                         </div>
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Album Type</small>
+                            {% if album_data and album_data.spotify_album_type %}
+                                {% set _atype = album_data.spotify_album_type|lower %}
+                                {% if 'compilation' in _atype %}
+                                    <strong><span class="badge bg-info">Compilation</span></strong>
+                                {% elif 'live' in _atype %}
+                                    <strong><span class="badge bg-info">Live</span></strong>
+                                {% elif 'remix' in _atype %}
+                                    <strong><span class="badge bg-info">Remix</span></strong>
+                                {% elif 'soundtrack' in _atype %}
+                                    <strong><span class="badge bg-info">Soundtrack</span></strong>
+                                {% elif 'spokenword' in _atype %}
+                                    <strong><span class="badge bg-info">Spoken Word</span></strong>
+                                {% elif _atype == 'ep' %}
+                                    <strong><span class="badge bg-info">EP</span></strong>
+                                {% elif _atype == 'single' %}
+                                    <strong><span class="badge bg-info">Single</span></strong>
+                                {% else %}
+                                    <strong><span class="badge bg-info">{{ album_data.spotify_album_type|title }}</span></strong>
+                                {% endif %}
+                            {% else %}
+                                <strong><span class="badge bg-secondary">Unknown</span></strong>
+                            {% endif %}
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Tracks</small>
+                            <strong>{{ album_data.track_count or 0 }}</strong>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Duration</small>
+                            <strong>
+                                {% if album_data.total_duration %}
+                                    {% set hours = (album_data.total_duration / 3600)|int %}
+                                    {% set minutes = ((album_data.total_duration % 3600) / 60)|int %}
+                                    {% if hours > 0 %}{{ hours }}h {{ minutes }}m{% else %}{{ minutes }}m{% endif %}
+                                {% else %}—{% endif %}
+                            </strong>
+                        </div>
+                        {% if album_data and album_data.record_label %}
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Record Label</small>
+                            <strong>{{ album_data.record_label }}</strong>
+                        </div>
+                        {% endif %}
+                        {% if album_data and album_data.catalog_number %}
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Catalog #</small>
+                            <strong>{{ album_data.catalog_number }}</strong>
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
         </div>
     </div>
-    
-    <!-- Album Title & Action Buttons -->
-    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
-        <div class="flex-grow-1">
-            <h1 class="h2 mb-1">
-                <i class="bi bi-album"></i> {{ album_name }}
-                {% if is_album_favourite %}
-                    <span class="badge bg-warning text-dark ms-2">Favourite</span>
-                {% endif %}
-            </h1>
-            <p class="text-muted mb-0">by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
-        </div>
-        <div class="d-flex gap-2 flex-wrap">
-            <button class="btn btn-outline-success btn-sm" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites" id="albumFavBtn">
-                <i class="bi {{ 'bi-star-fill' if is_album_favourite else 'bi-star' }}" id="albumFavIcon"></i> <span class="d-none d-sm-inline" id="albumFavLabel">{{ 'Favourited' if is_album_favourite else 'Favourite' }}</span>
-            </button>
-            <button class="btn btn-outline-info btn-sm" onclick="openAlbumLookupModal()">
-                <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Lookup</span>
-            </button>
-            <div class="btn-group btn-group-sm" role="group">
-                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this album">
-                    <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
-                </button>
-                <ul class="dropdown-menu dropdown-menu-end">
-                    {% if qbit_config is defined and qbit_config.enabled %}
-                    <li><a class="dropdown-item" onclick="openQbitSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
-                        <i class="bi bi-cloud-download"></i> Search qBittorrent
-                    </a></li>
-                    {% endif %}
-                    {% if slskd_config is defined and slskd_config.enabled %}
-                    <li><a class="dropdown-item" onclick="openSlskdSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
-                        <i class="bi bi-music-note-beamed"></i> Search Soulseek
-                    </a></li>
-                    {% endif %}
-                </ul>
-            </div>
-            <form method="POST" action="{{ url_for('scans.scan_album_custom') }}" class="d-flex align-items-center gap-2 flex-wrap">
-                <input type="hidden" name="artist" value="{{ artist_name }}">
-                <input type="hidden" name="album" value="{{ album_name }}">
-                {% include 'components/_scan_selector.html' %}
-                <div class="form-check form-check-inline mb-0" title="Force full rescan for this album">
-                    <input class="form-check-input" type="checkbox" id="albumForceScan" name="force" value="1">
-                    <label class="form-check-label small" for="albumForceScan">Force</label>
-                </div>
-                <button class="btn btn-warning btn-sm" type="submit" title="Run selected scan for this album">
-                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan</span>
-                </button>
-            </form>
-            <button class="btn btn-secondary btn-sm" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" title="Rename all album files based on current metadata">
-                <i class="bi bi-files"></i> <span class="d-none d-sm-inline">Rename Files</span>
-            </button>
-        </div>
-    </div>
+
 
     <!-- Navigation Tabs -->
     <div class="card mb-4 sticky-top" style="top: 4rem; z-index: 1000;">
         <div class="card-body py-2 px-3">
-            <ul class="nav nav-pills gap-2 small">
+            <ul class="nav nav-pills gap-2 small d-none d-lg-flex">
                 <li class="nav-item"><a class="nav-link" href="#album-information-section">Information</a></li>
-                <li class="nav-item"><a class="nav-link" href="#album-overview-section">Overview</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-genres-section">Genres and Moods</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-similar-section">Similar</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-tracks-section">Tracks</a></li>
             </ul>
+            <div class="btn-group d-lg-none w-100" role="group" aria-label="Album sections" id="albumMobileTabBar">
+                <button type="button" class="btn btn-info active album-mobile-tab" data-album-tab="tracks"><i class="bi bi-music-note-list"></i> Tracks</button>
+                <button type="button" class="btn btn-outline-info album-mobile-tab" data-album-tab="details"><i class="bi bi-info-circle"></i> Details</button>
+                <button type="button" class="btn btn-outline-info album-mobile-tab" data-album-tab="genres"><i class="bi bi-tags"></i> Genres</button>
+                <button type="button" class="btn btn-outline-info album-mobile-tab" data-album-tab="similar"><i class="bi bi-people"></i> Similar</button>
+            </div>
         </div>
     </div>
 
@@ -181,7 +198,7 @@
             <!-- EDIT FORM -->
             <div class="col-12 order-2">
                 <!-- Album Edit Card -->
-                <div class="card" id="album-information-section">
+                <div class="card album-mobile-group" id="album-information-section" data-album-group="details">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-pencil-square"></i> Edit Album
@@ -309,106 +326,35 @@
                 </div>
             </div>
 
-            <!-- OVERVIEW -->
+            <!-- CONTEXTUAL CORRECTION BANNER (auto-appears when issues exist) -->
+            {% set ns_mbid = namespace(total=0, missing=0) %}
+            {% for _t in tracks %}
+              {% set ns_mbid.total = ns_mbid.total + 1 %}
+              {% if not (_t.get('musicbrainz_trackid') or _t.get('recording_mbid')) %}{% set ns_mbid.missing = ns_mbid.missing + 1 %}{% endif %}
+            {% endfor %}
+            {% if ns_mbid.missing > 0 %}
             <div class="col-12 order-1">
-                <!-- Album Overview Card -->
-                {% if album_data %}
-                <div class="card" id="album-overview-section">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-graph-up"></i> Album Overview
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-3">
-                            <!-- Release Information -->
-                            {% if album_data.spotify_release_date %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Release Date</div>
-                                    <div class="metadata-value">{{ album_data.spotify_release_date }}</div>
-                                </div>
+                <div class="card mb-4" id="album-correction-banner">
+                    <div class="card-body py-3 d-flex flex-column flex-md-row justify-content-between align-items-start gap-2">
+                        <div class="d-flex align-items-start gap-2">
+                            <i class="bi bi-info-circle text-warning mt-1"></i>
+                            <div>
+                                <strong>💡 {{ ns_mbid.missing }} track{{ 's' if ns_mbid.missing != 1 }} on this album {{ 'is' if ns_mbid.missing == 1 else 'are' }} missing MusicBrainz Recording IDs.</strong>
+                                <small class="text-muted d-block">Linking them improves single detection, ListenBrainz scoring and cover matching.</small>
                             </div>
-                            {% endif %}
-
-                            <!-- Duration -->
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Duration</div>
-                                    <div class="metadata-value">
-                                        {% if album_data.total_duration %}
-                                            {% set hours = (album_data.total_duration / 3600)|int %}
-                                            {% set minutes = ((album_data.total_duration % 3600) / 60)|int %}
-                                            {% if hours > 0 %}
-                                                {{ hours }}h {{ minutes }}m
-                                            {% else %}
-                                                {{ minutes }}m
-                                            {% endif %}
-                                        {% else %}
-                                            —
-                                        {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Average Rating -->
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Avg Rating</div>
-                                    <div class="metadata-value">
-                                        {% if album_data.avg_stars %}
-                                            <span class="badge badge-success">{{ album_data.avg_stars|round(2) }}★</span>
-                                        {% else %}
-                                            —
-                                        {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Track Count -->
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Track Count</div>
-                                    <div class="metadata-value">{{ album_data.track_count or 0 }}</div>
-                                </div>
-                            </div>
-
-                            <!-- Discs (if multi-disc) -->
-                            {% if album_data.total_discs and album_data.total_discs > 1 %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Total Discs</div>
-                                    <div class="metadata-value">{{ album_data.total_discs }}</div>
-                                </div>
-                            </div>
-                            {% endif %}
-
-                            <!-- Detected Singles -->
-                            {% if album_data.singles_count and album_data.singles_count > 0 %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Detected Singles</div>
-                                    <div class="metadata-value">
-                                        <span class="badge badge-info">{{ album_data.singles_count }} track{{ 's' if album_data.singles_count != 1 }}</span>
-                                    </div>
-                                </div>
-                            </div>
-                            {% endif %}
-
-                            <!-- Last Scanned -->
-                            {% if album_data.last_scanned %}
-                            <div class="col-12">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Last Scanned</div>
-                                    <div class="metadata-value">{{ album_data.last_scanned }}</div>
-                                </div>
-                            </div>
-                            {% endif %}
+                        </div>
+                        <div class="d-flex gap-2 flex-wrap flex-shrink-0">
+                            <button type="button" class="btn btn-sm btn-outline-info" onclick="autoLinkAllMbids()" title="Look up each unlinked track on MusicBrainz and save its Recording ID">
+                                <i class="bi bi-link-45deg"></i> ⚡ Auto-Link All MBIDs
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-warning" onclick="alignTracklist()" title="Fetch the official MusicBrainz tracklist for comparison">
+                                <i class="bi bi-list-check"></i> 🔄 Align Tracklist
+                            </button>
                         </div>
                     </div>
                 </div>
-                {% endif %}
             </div>
+            {% endif %}
         </div>
     </form>
     
@@ -416,7 +362,7 @@
 
     
     <!-- Genres & Tags Card -->
-    <div class="card mb-4" id="album-genres-section">
+    <div class="card mb-4 album-mobile-group" id="album-genres-section" data-album-group="genres">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-tags-fill"></i> Genres and Moods
@@ -508,7 +454,7 @@
                 </div>
 
     <!-- Similar Artists Card -->
-    <div class="card mb-4" id="album-similar-section">
+    <div class="card mb-4 album-mobile-group" id="album-similar-section" data-album-group="similar">
                     <div class="card-header p-0" id="album-similar-heading">
                         <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#album-similar-collapse" aria-expanded="false" aria-controls="album-similar-collapse" style="color: inherit;">
                             <h5 class="card-title mb-0">
@@ -529,7 +475,7 @@
                     </div>
                 </div>
     
-    <div class="card mb-4" id="album-tracks-section">
+    <div class="card mb-4 album-mobile-group" id="album-tracks-section" data-album-group="tracks">
         <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">
                 <i class="bi bi-music-note-list"></i> Tracks

@@ -98,6 +98,10 @@
           </a>
           {% endif %}
           {% if is_missing %}
+            <button type="button" class="btn btn-success btn-sm btn-quick-queue" title="Send straight to the download queue (default quality)"
+                    onclick="quickQueueRelease('{{ album.get('release_id', '') }}', '{{ (album.get('title') or '')|escapejs }}', '{{ artist_name|escapejs }}'); event.stopPropagation();">
+              <i class="bi bi-download"></i> <span class="d-none d-lg-inline">Quick Queue</span>
+            </button>
             <button type="button" class="btn btn-outline-warning btn-sm" title="Search / Download via Soulseek"
                     onclick="searchMusicBrainzReleaseFromEncoded(event, '{{ (artist_name|urlencode|replace('+', '%20')) }}', '{{ ((album.get('title') or '')|urlencode|replace('+', '%20')) }}')">
               <i class="bi bi-search"></i>

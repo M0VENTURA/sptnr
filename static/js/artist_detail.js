@@ -3044,7 +3044,7 @@ async function loadArtistCoveredBy(artistName) {
   const artistNameForCorr = artistNameEl ? artistNameEl.dataset.artistName : '';
   if (!artistNameForCorr) return;
 
-  // Show corrections banner (always show link to corrections page)
+  // Show corrections link (always visible; the dot lights up when issues exist)
   const banner = document.getElementById('artist-corrections-banner');
   if (banner) banner.style.display = 'block';
 
@@ -3082,12 +3082,165 @@ async function loadArtistCoveredBy(artistName) {
     if (totalMissingTracks > 0) {
       const badge = document.getElementById('artist-missing-tracks-badge');
       if (badge) {
-        badge.textContent = `${totalMissingTracks} missing track${totalMissingTracks !== 1 ? 's' : ''} in library`;
+        badge.textContent = `${totalMissingTracks} track${totalMissingTracks !== 1 ? 's' : ''} missing`;
         badge.style.display = 'inline-block';
       }
+      const dot = document.getElementById('artistCorrectionsDot');
+      if (dot) dot.style.display = 'inline-block';
     }
   });
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Reorganisation Plan (#867) — Tools dropdown, filter bar, mobile tabs,
+// bio Read More, accordion single-expansion, one-tap quick queue.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Force Metadata Refresh: tick the Force checkbox on the scan form and submit.
+function forceArtistMetadataRefresh() {
+  const form = document.getElementById('artistScanForm');
+  if (!form) return;
+  const force = document.getElementById('artistForceScan');
+  if (force) force.checked = true;
+  form.submit();
+}
+
+// Bio Read More toggle (3-line clamp ⇄ full text).
+function toggleArtistBio() {
+  const clamp = document.getElementById('artistBioClamp');
+  const btn = document.getElementById('artistBioToggle');
+  if (!clamp || !btn) return;
+  const expanded = clamp.classList.toggle('expanded');
+  btn.innerHTML = expanded
+    ? '<i class="bi bi-chevron-contract me-1"></i>Read Less'
+    : '<i class="bi bi-chevron-expand me-1"></i>Read More';
+}
+
+// Album status filter: 'all' | 'library' | 'missing'
+function setArtistFilter(filter) {
+  document.querySelectorAll('.artist-filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.filter === filter);
+  });
+  document.querySelectorAll('.album-row').forEach(row => {
+    const status = row.dataset.status || 'discovered';
+    if (filter === 'all') {
+      row.style.display = '';
+      return;
+    }
+    if (filter === 'library') {
+      row.style.display = status === 'missing' ? 'none' : '';
+      return;
+    }
+    if (filter === 'missing') {
+      row.style.display = status === 'missing' ? '' : 'none';
+    }
+  });
+  // Collapse any open accordions when switching filters so hidden rows don't
+  // leave orphaned open bodies behind.
+  if (typeof window.bootstrap !== 'undefined') {
+    document.querySelectorAll('.album-row .accordion-collapse.show').forEach(el => {
+      bootstrap.Collapse.getInstance(el)?.hide();
+    });
+  }
+}
+
+// Mobile 4-tab navigation: show/hide grouped sections on <lg viewports.
+function switchArtistMobileTab(tab) {
+  document.querySelectorAll('.artist-mobile-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.artistTab === tab);
+    const isActive = btn.dataset.artistTab === tab;
+    btn.classList.toggle('btn-info', isActive);
+    btn.classList.toggle('btn-outline-info', !isActive);
+  });
+  document.querySelectorAll('.mobile-tab-group').forEach(group => {
+    const match = group.dataset.mobileGroup === tab;
+    group.classList.toggle('mobile-tab-active', match);
+    // Also keep the section reachable for desktop pill nav on large screens.
+    if (window.innerWidth >= 992) group.style.display = '';
+  });
+}
+
+// Accordion single-expansion across all artist release categories: opening an
+// album tracklist collapses every other open album tracklist on the page.
+function initArtistSingleExpansion() {
+  document.addEventListener('click', (e) => {
+    const toggleBtn = e.target.closest('.accordion-chevron-btn');
+    if (!toggleBtn) return;
+    const targetId = toggleBtn.getAttribute('data-bs-target');
+    if (!targetId) return;
+    // Only act when we're about to expand (aria-expanded flips after the click).
+    setTimeout(() => {
+      const opened = document.querySelector('.album-row .accordion-collapse.show');
+      if (!opened) return;
+      const openedPanel = opened.closest('.album-row');
+      document.querySelectorAll('.album-row .accordion-collapse.show').forEach(panel => {
+        if (panel === opened) return;
+        if (window.bootstrap) bootstrap.Collapse.getInstance(panel)?.hide();
+      });
+    }, 50);
+  });
+}
+
+// Sticky toast feedback bar (One-Tap Queue feedback).
+function showQueueToast(message) {
+  let toast = document.getElementById('queueToast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'queueToast';
+    toast.className = 'queue-toast';
+    toast.innerHTML = '<span class="queue-toast-msg"></span><span class="queue-toast-close" onclick="dismissQueueToast()"><i class="bi bi-x-lg"></i></span>';
+    document.body.appendChild(toast);
+  }
+  toast.querySelector('.queue-toast-msg').textContent = message;
+  toast.style.display = 'flex';
+  clearTimeout(window.__queueToastTimer);
+  window.__queueToastTimer = setTimeout(dismissQueueToast, 4000);
+}
+
+function dismissQueueToast() {
+  const toast = document.getElementById('queueToast');
+  if (toast) toast.style.display = 'none';
+}
+
+// One-Tap Quick Queue: send a MusicBrainz release straight to the download
+// queue using the default quality profile (no confirmation modal).
+async function quickQueueRelease(releaseId, releaseTitle, artist) {
+  if (!releaseId || !releaseTitle || !artist) return;
+  try {
+    const resp = await fetch('/api/musicbrainz/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        release_id: releaseId,
+        release_title: releaseTitle,
+        artist: artist,
+        method: 'slskd',
+        queue_items_only: true
+      })
+    });
+    const data = await resp.json();
+    if (data.success || (resp.status >= 200 && resp.status < 300)) {
+      showQueueToast(`📥 ${releaseTitle} sent to queue`);
+    } else {
+      showQueueToast(`⚠️ Could not queue “${releaseTitle}”: ${data.error || 'Unknown error'}`);
+    }
+  } catch (e) {
+    showQueueToast(`⚠️ Network error while queueing “${releaseTitle}”`);
+  }
+}
+
+// Init: mobile tabs default to "disco", single-expansion listener.
+document.addEventListener('DOMContentLoaded', () => {
+  const tabBar = document.getElementById('artistMobileTabBar');
+  if (tabBar) {
+    tabBar.querySelectorAll('.artist-mobile-tab').forEach(btn => {
+      btn.addEventListener('click', () => switchArtistMobileTab(btn.dataset.artistTab));
+    });
+    switchArtistMobileTab('disco');
+  }
+  initArtistSingleExpansion();
+});
+
 
 
 

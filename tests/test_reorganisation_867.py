@@ -116,3 +116,98 @@ class TestSingleWordBioDisambiguation:
         bio = service.get_artist_biography("The Beatles")
         assert bio == "Poppy is an American singer-songwriter."
         assert captured == ["The Beatles"]
+
+
+class TestAutoLinkAlbumMbids:
+    """routes.musicbrainz_routes._normalise_track_key / _match_release_tracklist.
+
+    The album-page "Auto-Link All MBIDs" correction action resolves local tracks
+    missing Recording IDs against the official MusicBrainz release tracklist by
+    (disc, position) first and normalised title second.
+    """
+
+    def _local(self, track_number, title, disc_number=1, id_=None):
+        return {
+            "id": id_ or f"t{track_number}",
+            "title": title,
+            "track_number": track_number,
+            "disc_number": disc_number,
+        }
+
+    def _mb(self, position, title, recording_mbid="rec-1", disc=1):
+        return {
+            "position": position if disc == 1 else None,
+            "number": str(position),
+            "title": title,
+            "recording_mbid": recording_mbid,
+        }
+
+    def test_normalise_track_key(self):
+        from routes.musicbrainz_routes import _normalise_track_key
+
+        assert _normalise_track_key("Yesterday (Acoustic Version)") == "yesterdayacousticversion"
+        assert _normalise_track_key("  The Cost of Giving Up! ") == "thecostofgivingup"
+        assert _normalise_track_key(None) == ""
+        assert _normalise_track_key("") == ""
+
+    def test_match_by_position(self):
+        from routes.musicbrainz_routes import _match_release_tracklist
+
+        local = [self._local(3, "some local title", id_="L3")]
+        mb = [
+            self._mb(1, "Track One", "rec-a"),
+            self._mb(3, "The Real MB Title", "rec-c"),
+        ]
+        result = _match_release_tracklist(local, mb)
+        assert len(result) == 1
+        assert result[0]["recording_mbid"] == "rec-c"
+        assert result[0]["track_id"] == "L3"
+
+    def test_title_fallback_when_position_missing(self):
+        from routes.musicbrainz_routes import _match_release_tracklist
+
+        # Local has no track_number → must match on normalised title.
+        local = [{"id": "X", "title": "Yesterday (Acoustic Version)", "track_number": None, "disc_number": 1}]
+        mb = [self._mb(16, "Yesterday (Acoustic Version)", "rec-16")]
+        result = _match_release_tracklist(local, mb)
+        assert len(result) == 1
+        assert result[0]["recording_mbid"] == "rec-16"
+
+    def test_disc_aware_position_matching(self):
+        from routes.musicbrainz_routes import _match_release_tracklist
+
+        local = [self._local(1, "Opener", disc_number=2, id_="D2T1")]
+        mb = [
+            self._mb(1, "Disc One Opener", "rec-d1", disc=1),
+            self._mb(1, "Disc Two Opener", "rec-d2", disc=2),
+        ]
+        result = _match_release_tracklist(local, mb)
+        # Position 1 on disc 1 exists, but local is disc 2 → must NOT match
+        # position-1-of-disc-1, and the title differs so no title fallback.
+        assert result == []
+
+    def test_title_match_resolves_when_disc_position_differs(self):
+        from routes.musicbrainz_routes import _match_release_tracklist
+
+        local = [self._local(1, "Disc Two Opener", disc_number=2, id_="D2T1")]
+        mb = [
+            self._mb(1, "Disc One Opener", "rec-d1", disc=1),
+            self._mb(1, "Disc Two Opener", "rec-d2", disc=2),
+        ]
+        result = _match_release_tracklist(local, mb)
+        assert len(result) == 1
+        assert result[0]["recording_mbid"] == "rec-d2"
+
+    def test_skips_mb_tracks_without_recording_mbid(self):
+        from routes.musicbrainz_routes import _match_release_tracklist
+
+        local = [self._local(1, "Opener", id_="L1")]
+        mb = [{"position": 1, "number": "1", "title": "Opener", "recording_mbid": ""}]
+        assert _match_release_tracklist(local, mb) == []
+
+    def test_no_matches_returns_empty(self):
+        from routes.musicbrainz_routes import _match_release_tracklist
+
+        local = [self._local(7, "Completely Different", id_="L1")]
+        mb = [self._mb(1, "Opener", "rec-a")]
+        assert _match_release_tracklist(local, mb) == []

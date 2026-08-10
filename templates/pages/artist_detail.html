@@ -71,6 +71,61 @@
 @media (max-width: 767.98px) {
   .artist-page .accordion-header-row .flex-grow-1 { font-size: 0.9rem; }
 }
+/* Bio Read More clamp */
+.bio-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bio-clamp.expanded {
+  -webkit-line-clamp: unset;
+  display: block;
+}
+/* Mobile 4-tab grouping: only the active group is visible on phones */
+@media (max-width: 991.98px) {
+  .mobile-tab-group { display: none; }
+  .mobile-tab-group.mobile-tab-active { display: block; }
+}
+@media (min-width: 992px) {
+  .mobile-tab-group { display: block !important; }
+}
+/* Sticky queue toast */
+.queue-toast {
+  position: fixed;
+  bottom: 1rem; left: 1rem; right: 1rem;
+  z-index: 2100;
+  background: rgba(20, 30, 24, 0.97);
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  color: var(--text-primary);
+  border-radius: 0.6rem;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.95rem;
+  animation: queueToastSlideUp 0.25s ease;
+}
+@keyframes queueToastSlideUp {
+  from { transform: translateY(100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.queue-toast .queue-toast-close { cursor: pointer; opacity: 0.7; }
+.queue-toast .queue-toast-close:hover { opacity: 1; }
+/* Quick Queue button */
+.btn-quick-queue {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+@media (min-width: 992px) {
+  .btn-quick-queue { min-height: 0; }
+}
 </style>
 
 <div class="container-fluid mt-4 artist-page" data-bs-spy="scroll" data-bs-target="#artist-nav" data-bs-smooth-scroll="true" tabindex="0">
@@ -86,6 +141,9 @@
     <div class="flex-grow-1">
       <h1 class="h2 mb-2" data-artist-name="{{ artist_name|e }}">
         <i class="bi bi-person-music"></i> {{ artist_name }}
+        {% if artist_country %}
+        <span class="badge bg-info align-middle" style="font-size: 0.85rem; padding: 0.4rem 0.8rem; vertical-align: middle;">{{ artist_country }}</span>
+        {% endif %}
       </h1>
       <p class="text-muted mb-0">Artist overview</p>
     </div>
@@ -98,10 +156,7 @@
       <button id="artistFavouriteBtn" class="btn btn-outline-danger" onclick='toggleArtistFavourite({{ artist_name|tojson }})' title="Favourite this artist — new albums will be auto-queued for download" aria-label="Favourite this artist to auto-queue new albums for download">
         <i class="bi bi-heart" id="artistFavouriteIcon"></i> <span class="d-none d-sm-inline" id="artistFavouriteLabel">Favourite</span>
       </button>
-      <a class="btn btn-outline-secondary" href="{{ url_for('ui.artists') }}">
-        <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
-      </a>
-      <form action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
+      <form id="artistScanForm" action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
         <input type="hidden" name="artist" value="{{ artist_name }}">
         {% include 'components/_scan_selector.html' ignore missing %}
         <div class="form-check form-check-inline mb-0" title="Force full rescan for this artist">
@@ -112,24 +167,44 @@
           <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan Artist</span>
         </button>
       </form>
+      <div class="btn-group">
+        <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Administrative tools">
+          <i class="bi bi-tools"></i> <span class="d-none d-sm-inline">Tools</span>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li>
+            <a class="dropdown-item" href="{{ url_for('ui.artist_corrections', name=artist_name) }}">
+              <i class="bi bi-wrench-adjustable me-2"></i> Corrections
+              <span id="artistCorrectionsDot" class="badge rounded-pill bg-warning text-dark ms-2" style="display:none;" title="Corrections recommended">!</span>
+              <span id="artist-missing-tracks-badge" class="badge bg-warning text-dark ms-2" style="display:none;"></span>
+            </a>
+          </li>
+          <li><a class="dropdown-item" href="{{ url_for('ui.artist_genre_management', name=artist_name) }}"><i class="bi bi-tags me-2"></i> Genre Management</a></li>
+          <li><a class="dropdown-item" href="javascript:void(0)" onclick="openEditArtistIdsModal()"><i class="bi bi-pencil me-2"></i> Edit External IDs</a></li>
+          <li><hr class="dropdown-divider"></li>
+          <li>
+            <button class="dropdown-item" type="button" onclick="forceArtistMetadataRefresh()" title="Force a full rescan for this artist">
+              <i class="bi bi-arrow-repeat me-2"></i> Force Metadata Refresh
+            </button>
+          </li>
+        </ul>
+      </div>
+      <a class="btn btn-outline-secondary" href="{{ url_for('ui.artists') }}">
+        <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
+      </a>
     </div>
   </div>
 
-  <div id="artist-corrections-banner" style="display:none;" class="mb-3">
-    <a href="{{ url_for('ui.artist_corrections', name=artist_name) }}" class="btn btn-outline-danger btn-sm">
-      <i class="bi bi-tools"></i> Needs Correcting
-    </a>
-    <span id="artist-missing-tracks-badge" class="badge bg-warning text-dark ms-2" style="display:none;"></span>
-  </div>
-  <div class="mb-3">
-    <a href="{{ url_for('ui.artist_genre_management', name=artist_name) }}" class="btn btn-outline-info btn-sm">
-      <i class="bi bi-tags"></i> Genre Management
-    </a>
-  </div>
-
+  {% set cat_keys = ['album', 'compilation', 'live_album', 'remix_album', 'ep', 'single'] %}
+  {% set ns_totals = namespace(all=0, library=0, missing=0) %}
+  {% for key in cat_keys %}
+    {% set ns_totals.all = ns_totals.all + (albums_by_category.get(key) or [])|length %}
+    {% set ns_totals.library = ns_totals.library + (albums_by_category.get(key) or [])|selectattr('is_missing', 'equalto', False)|list|length %}
+    {% set ns_totals.missing = ns_totals.missing + (albums_by_category.get(key) or [])|selectattr('is_missing', 'equalto', True)|list|length %}
+  {% endfor %}
   <div class="card mb-4 sticky-top" style="top: 4rem; z-index: 1000;">
     <div class="card-body py-2 px-3">
-      <ul class="nav nav-pills gap-2 small">
+      <ul class="nav nav-pills gap-2 small d-none d-lg-flex">
         <li class="nav-item"><a class="nav-link" href="#artist-overview-section">Overview</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-stats-section">Stats</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-similar-section">Similar</a></li>
@@ -139,10 +214,24 @@
         <li class="nav-item"><a class="nav-link" href="#artist-covers-section">Covers</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-appears-on-section">Appears On</a></li>
       </ul>
+      <div class="btn-group d-lg-none w-100 mt-2 mt-lg-0" role="group" aria-label="Artist sections" id="artistMobileTabBar">
+        <button type="button" class="btn btn-info active artist-mobile-tab" data-artist-tab="disco"><i class="bi bi-vinyl"></i> Disco</button>
+        <button type="button" class="btn btn-outline-info artist-mobile-tab" data-artist-tab="top"><i class="bi bi-star"></i> Top</button>
+        <button type="button" class="btn btn-outline-info artist-mobile-tab" data-artist-tab="similar"><i class="bi bi-people"></i> Similar</button>
+        <button type="button" class="btn btn-outline-info artist-mobile-tab" data-artist-tab="about"><i class="bi bi-info-circle"></i> About</button>
+      </div>
+      <div class="d-flex align-items-center gap-2 mt-2 flex-wrap" id="artistFilterBar">
+        <span class="small text-muted me-1"><i class="bi bi-funnel"></i> Filter:</span>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Album status filter">
+          <button type="button" class="btn btn-outline-secondary artist-filter-btn active" data-filter="all" onclick="setArtistFilter('all')">All ({{ ns_totals.all }})</button>
+          <button type="button" class="btn btn-outline-success artist-filter-btn" data-filter="library" onclick="setArtistFilter('library')">In Library ({{ ns_totals.library }})</button>
+          <button type="button" class="btn btn-outline-warning artist-filter-btn" data-filter="missing" onclick="setArtistFilter('missing')">🟡 Missing ({{ ns_totals.missing }})</button>
+        </div>
+      </div>
     </div>
   </div>
 
-  <div class="mb-4" id="artist-overview-section">
+  <div class="mb-4 mobile-tab-group" data-mobile-group="about" id="artist-overview-section">
     <div class="card">
       <div class="card-body">
         <div class="row g-4">
@@ -161,7 +250,12 @@
             <h5 class="mb-3"><i class="bi bi-info-circle"></i> Artist Bio</h5>
             <div id="artistBio" class="text-muted" style="min-height: 120px;" data-has-initial-bio="{{ '1' if artist_bio else '0' }}">
               {% if artist_bio %}
-                <p>{{ artist_bio|e|replace('&lt;br /&gt;', '<br>')|replace('&lt;br/&gt;', '<br>')|replace('&lt;br&gt;', '<br>')|replace('\n', '<br>')|safe }}</p>
+                <div id="artistBioClamp" class="bio-clamp">
+                  <p class="mb-0">{{ artist_bio|e|replace('&lt;br /&gt;', '<br>')|replace('&lt;br/&gt;', '<br>')|replace('&lt;br&gt;', '<br>')|replace('\n', '<br>')|safe }}</p>
+                </div>
+                <button type="button" id="artistBioToggle" class="btn btn-link btn-sm p-0 mt-1" style="text-decoration: none;" onclick="toggleArtistBio()">
+                  <i class="bi bi-chevron-expand me-1"></i>Read More
+                </button>
               {% else %}
                 <p class="text-center mt-2 text-muted">
                   <i class="bi bi-info-circle"></i>
@@ -251,7 +345,7 @@
     </div>
   </div>
 
-  <div class="row g-2 g-md-3 mb-4" id="artist-stats-section">
+  <div class="row g-2 g-md-3 mb-4 mobile-tab-group" data-mobile-group="top" id="artist-stats-section">
     <div class="col-6 col-md-3">
       <div class="card h-100">
         <div class="card-body text-center">
@@ -294,7 +388,7 @@
     </div>
   </div>
 
-  <div class="card mb-4" id="artist-similar-section">
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="similar" id="artist-similar-section">
     <div class="card-header p-0" id="artist-similar-heading">
       <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#artist-similar-collapse" aria-expanded="false" aria-controls="artist-similar-collapse" style="color: inherit;">
         <h5 class="card-title mb-0">
@@ -381,7 +475,7 @@
     </div>
   </div>
 
-  <div class="mb-4" id="artist-genres-section">
+  <div class="mb-4 mobile-tab-group" data-mobile-group="about" id="artist-genres-section">
     <div class="card">
       <div class="card-header p-0" id="artist-genres-heading">
         <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#artist-genres-collapse" aria-expanded="false" aria-controls="artist-genres-collapse" style="color: inherit;">
@@ -504,7 +598,7 @@
       </div>
   </div>
 
-  <div class="card mb-4" id="artist-top-tracks-section">
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="top" id="artist-top-tracks-section">
     <div class="card-header p-0" id="artist-top-tracks-heading">
       <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#artist-top-tracks-collapse" aria-expanded="false" aria-controls="artist-top-tracks-collapse" style="color: inherit;">
         <h5 class="card-title mb-0">
@@ -571,7 +665,7 @@
     </div>
   </div>
 
-  <div class="row g-2 g-md-3 mb-4">
+  <div class="row g-2 g-md-3 mb-4 mobile-tab-group" data-mobile-group="top" id="artist-duration-section">
     <div class="col-6 col-md-4">
       <div class="card h-100">
         <div class="card-body text-center">
@@ -644,7 +738,7 @@
   {% set total_discovered_singles = albums_by_category.single|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_singles = albums_by_category.single|selectattr('is_missing', 'equalto', True)|list|length %}
   
-  <div class="card mb-4" id="albums-section">
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-vinyl-fill"></i> Albums
@@ -680,7 +774,8 @@
     </div>
   </div>
 
-  <div class="card mb-4" id="compilations-section">
+  {% if albums_by_category.compilation|length > 0 %}
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="compilations-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <div>
         <h5 class="card-title mb-0">
@@ -699,19 +794,15 @@
       {% endif %}
     </div>
     <div class="accordion accordion-flush" id="accordion-compilations">
-      {% if albums_by_category.compilation|length > 0 %}
-        {% for album in albums_by_category.compilation %}
-          {{ render_album_row(album, artist_name, album.is_missing, "accordion-compilations") }}
-        {% endfor %}
-      {% else %}
-        <div class="text-center text-muted py-4">
-          <i class="bi bi-info-circle"></i> No compilations found
-        </div>
-      {% endif %}
+      {% for album in albums_by_category.compilation %}
+        {{ render_album_row(album, artist_name, album.is_missing, "accordion-compilations") }}
+      {% endfor %}
     </div>
   </div>
+  {% endif %}
 
-  <div class="card mb-4" id="live-albums-section">
+  {% if albums_by_category.live_album|length > 0 %}
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="live-albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-broadcast"></i> Live Albums
@@ -735,19 +826,15 @@
       </div>
     </div>
     <div class="accordion accordion-flush" id="accordion-live-albums">
-      {% if albums_by_category.live_album|length > 0 %}
-        {% for album in albums_by_category.live_album %}
-          {{ render_album_row(album, artist_name, album.is_missing, "accordion-live-albums") }}
-        {% endfor %}
-      {% else %}
-        <div class="text-center text-muted py-4">
-          <i class="bi bi-info-circle"></i> No live albums found
-        </div>
-      {% endif %}
+      {% for album in albums_by_category.live_album %}
+        {{ render_album_row(album, artist_name, album.is_missing, "accordion-live-albums") }}
+      {% endfor %}
     </div>
   </div>
+  {% endif %}
 
-  <div class="card mb-4" id="remix-albums-section">
+  {% if albums_by_category.remix_album|length > 0 %}
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="remix-albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-soundwave"></i> Remix Albums
@@ -771,19 +858,15 @@
       </div>
     </div>
     <div class="accordion accordion-flush" id="accordion-remix-albums">
-      {% if albums_by_category.remix_album|length > 0 %}
-        {% for album in albums_by_category.remix_album %}
-          {{ render_album_row(album, artist_name, album.is_missing, "accordion-remix-albums") }}
-        {% endfor %}
-      {% else %}
-        <div class="text-center text-muted py-4">
-          <i class="bi bi-info-circle"></i> No remix albums found
-        </div>
-      {% endif %}
+      {% for album in albums_by_category.remix_album %}
+        {{ render_album_row(album, artist_name, album.is_missing, "accordion-remix-albums") }}
+      {% endfor %}
     </div>
   </div>
+  {% endif %}
 
-  <div class="card mb-4" id="eps-section">
+  {% if albums_by_category.ep|length > 0 %}
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="eps-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-disc"></i> EPs
@@ -807,19 +890,15 @@
       </div>
     </div>
     <div class="accordion accordion-flush" id="accordion-eps">
-      {% if albums_by_category.ep|length > 0 %}
-        {% for album in albums_by_category.ep %}
-          {{ render_album_row(album, artist_name, album.is_missing, "accordion-eps") }}
-        {% endfor %}
-      {% else %}
-        <div class="text-center text-muted py-4">
-          <i class="bi bi-info-circle"></i> No EPs found
-        </div>
-      {% endif %}
+      {% for album in albums_by_category.ep %}
+        {{ render_album_row(album, artist_name, album.is_missing, "accordion-eps") }}
+      {% endfor %}
     </div>
   </div>
+  {% endif %}
 
-  <div class="card mb-4" id="singles-section">
+  {% if albums_by_category.single|length > 0 %}
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="singles-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-music-note-beamed"></i> Singles
@@ -843,19 +922,43 @@
       </div>
     </div>
     <div class="accordion accordion-flush" id="accordion-singles">
-      {% if albums_by_category.single|length > 0 %}
-        {% for album in albums_by_category.single %}
-          {{ render_album_row(album, artist_name, album.is_missing, "accordion-singles") }}
-        {% endfor %}
-      {% else %}
-        <div class="text-center text-muted py-4">
-          <i class="bi bi-info-circle"></i> No singles found
-        </div>
-      {% endif %}
+      {% for album in albums_by_category.single %}
+        {{ render_album_row(album, artist_name, album.is_missing, "accordion-singles") }}
+      {% endfor %}
     </div>
   </div>
+  {% endif %}
 
-  <div class="card mb-4" id="artist-covers-section">
+  {% set empty_categories = [] %}
+  {% for key, label in [('album', 'Albums'), ('compilation', 'Compilations'), ('live_album', 'Live Albums'), ('remix_album', 'Remix Albums'), ('ep', 'EPs'), ('single', 'Singles')] %}
+    {% if (albums_by_category.get(key) or [])|length == 0 %}{% set _ = empty_categories.append((key, label)) %}{% endif %}
+  {% endfor %}
+  {% if empty_categories %}
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="disco" id="empty-categories-section">
+    <div class="card-header p-0">
+      <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#empty-categories-collapse" aria-expanded="false" aria-controls="empty-categories-collapse" style="color: inherit;">
+        <h5 class="card-title mb-0">
+          <i class="bi bi-archive"></i> More Releases
+          <span class="badge bg-secondary ms-2">{{ empty_categories|length }}</span>
+          <small class="text-muted d-block mt-1" style="font-size: 0.8rem;">Empty categories</small>
+        </h5>
+        <i class="bi bi-chevron-down similar-chevron"></i>
+      </button>
+    </div>
+    <div id="empty-categories-collapse" class="collapse">
+      <div class="card-body text-muted small">
+        {% for key, label in empty_categories %}
+        <div class="d-flex justify-content-between align-items-center py-1" style="border-bottom: 1px solid var(--border-color);">
+          <span>{{ label }}</span>
+          <span class="text-muted">0 releases</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="about" id="artist-covers-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-music-note-list"></i> Covers of {{ artist_name }}'s Songs
@@ -874,7 +977,7 @@
     </div>
   </div>
 
-  <div class="card mb-4" id="artist-appears-on-section">
+  <div class="card mb-4 mobile-tab-group" data-mobile-group="similar" id="artist-appears-on-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-people"></i> Appears On
