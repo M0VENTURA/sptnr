@@ -380,9 +380,16 @@
     if (!modalEl || !input) return;
 
     if (prefill === undefined || prefill === null) {
-      var navEl = document.getElementById('navSearchInput');
-      var dashEl = document.getElementById('dashboardTopSearchInput');
-      prefill = (navEl && navEl.value) || (dashEl && dashEl.value) || '';
+      // If the modal is already open (e.g. the "All MusicBrainz results"
+      // button inside results), keep the current query instead of resetting
+      // to the (empty) navbar/dashboard inputs.
+      if (modalEl.classList.contains('show') && input.value) {
+        prefill = input.value;
+      } else {
+        var navEl = document.getElementById('navSearchInput');
+        var dashEl = document.getElementById('dashboardTopSearchInput');
+        prefill = (navEl && navEl.value) || (dashEl && dashEl.value) || '';
+      }
     }
 
     selectScope(scope || SCOPE_ALL);

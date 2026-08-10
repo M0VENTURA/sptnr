@@ -499,11 +499,13 @@ async def api_musicbrainz_search():
             if type_term:
                 parts.append(type_term)
 
-            if not parts:
+            if not (artist or album or year):
                 # Legacy free-text query path.  The old system sent the raw
                 # free-text query (no field prefix) so MusicBrainz matches it
                 # across title AND artist — "Mudvayne" finds releases BY
                 # Mudvayne, not just releases whose title contains "Mudvayne".
+                # A type term may already be in ``parts`` (type-only filter) —
+                # the free text is still ANDed with it rather than dropped.
                 if not query:
                     return jsonify({"error": "query required"}), 400
                 parts.append(
