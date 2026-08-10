@@ -42,26 +42,23 @@ def normalize_download_queue() -> None:
 def normalize_invalid_status() -> None:
     """
     Ensure all statuses are valid.
+
+    Uses the canonical ``ALL_QUEUE_STATUSES`` set from queue_constraints so
+    this can never silently reset legitimate statuses (e.g. ``processing``
+    or ``moving``) back to ``queued``.  The statuses are inlined into the
+    SQL — psycopg2 cannot adapt a Python set/list for ``NOT IN (:statuses)``.
     """
 
-    valid_statuses = {
-        "queued",
-        "searching",
-        "downloading",
-        "matched",
-        "completed",
-        "failed",
-        "unmatched",
-        "imported",
-        "in_collection"
-    }
+    from services.queue.queue_constraints import ALL_QUEUE_STATUSES
+
+    status_sql = ", ".join(f"'{s}'" for s in sorted(ALL_QUEUE_STATUSES))
 
     with db_session() as session:
-        result = session.execute(text("""
+        result = session.execute(text(f"""
             UPDATE download_queue
             SET status = 'queued'
-            WHERE status NOT IN :statuses
-        """), {"statuses": tuple(valid_statuses)})
+            WHERE status NOT IN ({status_sql})
+        """))
 
         count = result.rowcount or 0
 

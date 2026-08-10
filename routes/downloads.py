@@ -324,8 +324,99 @@ def api_grouped_queue():
 
 
 @downloads_bp.route("/api/downloads/queue/batch-group", methods=["POST"])
-def api_batch_group():
-    return jsonify({"success": False, "error": "Not implemented"})
+async def api_batch_group():
+    """Group selected queue items into a named album group.
+
+    Port of the legacy batch-group endpoint: sets ``album`` on every item
+    and, when a group artist is supplied, only overwrites mismatched artists
+    when ``force_artist_override`` is set (prevents cross-artist corruption).
+    """
+    data = (await request.get_json(silent=True)) or {}
+    item_ids = data.get("item_ids") or []
+    group_name = str(data.get("group_name") or "").strip()
+    group_artist = str(data.get("group_artist") or "").strip()
+    force_artist_override = bool(data.get("force_artist_override", False))
+
+    if not isinstance(item_ids, list) or not item_ids or not group_name:
+        return jsonify({"success": False, "error": "item_ids and group_name are required"}), 400
+
+    empty_artists = {"", "unknown", "various", "various artists"}
+
+    from db.engine import db_session
+    from sqlalchemy import text
+
+    updated = artist_updated = artist_skipped = 0
+    conflicts = []
+    try:
+        with db_session() as session:
+            for item_id in item_ids:
+                row = session.execute(
+                    text("SELECT id, artist, title FROM download_queue WHERE id = :id"),
+                    {"id": item_id},
+                ).fetchone()
+                if row is None:
+                    continue
+
+                item_artist = str(row[1] or "")
+                item_title = str(row[2] or "")
+
+                if group_artist:
+                    current_norm = item_artist.strip().lower()
+                    new_norm = group_artist.strip().lower()
+                    should_update = (
+                        force_artist_override
+                        or current_norm in empty_artists
+                        or current_norm == new_norm
+                    )
+                    if should_update:
+                        session.execute(
+                            text("""
+                                UPDATE download_queue
+                                SET album = :album, artist = :artist,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = :id
+                            """),
+                            {"album": group_name, "artist": group_artist, "id": item_id},
+                        )
+                        artist_updated += 1
+                    else:
+                        session.execute(
+                            text("""
+                                UPDATE download_queue
+                                SET album = :album, updated_at = CURRENT_TIMESTAMP
+                                WHERE id = :id
+                            """),
+                            {"album": group_name, "id": item_id},
+                        )
+                        artist_skipped += 1
+                        conflicts.append({
+                            "id": item_id,
+                            "title": item_title,
+                            "artist": item_artist,
+                        })
+                else:
+                    session.execute(
+                        text("""
+                            UPDATE download_queue
+                            SET album = :album, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = :id
+                        """),
+                        {"album": group_name, "id": item_id},
+                    )
+                updated += 1
+    except Exception as exc:
+        logging.error(f"[batch-group] {exc}")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+    return jsonify({
+        "success": True,
+        "updated": updated,
+        "total": len(item_ids),
+        "artist_updated": artist_updated,
+        "artist_skipped": artist_skipped,
+        "artist_conflicts": conflicts[:10],
+        "message": f"Grouped {updated} items into '{group_name}'",
+    })
 
 
 @downloads_bp.route("/api/downloads/queue/<int:queue_id>", methods=["POST"])
@@ -386,10 +477,16 @@ def api_pipeline_sync():
 
 
 def process_single_file(data=None):
-    return {"success": False, "message": "Not implemented"}
+    from services.downloads.download_processing_service import (
+        process_single_file as _impl,
+    )
+    return _impl(data or {})
 
 def process_retry_queue():
     return process_next_batch()
 
 def process_albums():
-    return {"success": False, "message": "Not implemented"}
+    from services.downloads.download_processing_service import (
+        process_albums as _impl,
+    )
+    return _impl()

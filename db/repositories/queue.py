@@ -27,6 +27,29 @@ from services.queue.queue_constraints import (
 
 logger = logging.getLogger(__name__)
 
+# Columns callers are allowed to write via ``update_queue_item()``. Whitelisted
+# so API payloads can never inject arbitrary column names into the SET clause.
+UPDATE_ALLOWED_COLUMNS = frozenset({
+    # Core identity / metadata
+    "artist", "title", "album", "album_artist", "source", "priority",
+    "track_number", "disc_number", "year", "duration",
+    # MusicBrainz linkage
+    "release_id", "release_source", "release_mbid", "recording_mbid",
+    "release_year", "cover_art_url",
+    # Grouping
+    "import_group", "import_type",
+    # File / path tracking
+    "file_path", "matched_file_path", "music_file_path", "found_filename",
+    "progress", "speed",
+    # Retry / backoff
+    "retry_count", "max_retries", "retry_delay_minutes", "next_retry_at",
+    "failure_reason",
+    # State
+    "status",
+    # Copy tracking (legacy)
+    "copied_individually", "copied_individually_at",
+})
+
 
 # =============================================================================
 # CORE GETTERS
@@ -140,7 +163,7 @@ def insert_queue_item(
                 WHERE LOWER(artist) = LOWER(:artist)
                   AND LOWER(title) = LOWER(:title)
                   AND source = :source
-                  AND status IN ('queued', 'searching', 'downloading', 'completed', 'unmatched')
+                  AND status IN ('queued', 'searching', 'downloading', 'completed', 'unmatched', 'imported', 'in_collection')
                 ORDER BY created_at ASC
                 LIMIT 1
             """),
@@ -192,10 +215,17 @@ def update_queue_item(queue_id: int, **kwargs) -> Optional[Dict[str, Any]]:
     if not kwargs:
         return get_queue_item(queue_id)
 
+    # Whitelist columns so API payloads can't inject arbitrary column names
+    # into the SET clause (see UPDATE_ALLOWED_COLUMNS above).
+    updates = {k: v for k, v in kwargs.items() if k in UPDATE_ALLOWED_COLUMNS}
+    if not updates:
+        logger.warning("[update_queue_item] no whitelisted columns for queue %s", queue_id)
+        return get_queue_item(queue_id)
+
     set_clauses = []
     params = {}
 
-    for key, value in kwargs.items():
+    for key, value in updates.items():
         set_clauses.append(f"{key} = :{key}")
         params[key] = json.dumps(value) if isinstance(value, (dict, list)) else value
 
@@ -218,6 +248,36 @@ def update_queue_item(queue_id: int, **kwargs) -> Optional[Dict[str, Any]]:
         return None
 
 
+def claim_queue_item(
+    queue_id: int,
+    status: str = "searching",
+) -> Optional[Dict[str, Any]]:
+    """Atomically claim a queued item for processing.
+
+    The guarded UPDATE only wins if the item is still ``queued`` and past any
+    retry backoff, so concurrent workers can never double-claim an item.
+    Used by the orchestrator's ``_claim_item`` chain (``process_next_batch``).
+    """
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = :status, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :qid
+                      AND status = 'queued'
+                      AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
+                    RETURNING *
+                """),
+                {"qid": queue_id, "status": status},
+            )
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
+    except Exception as e:
+        logger.error(f"[claim_queue_item] {e}")
+        return None
+
+
 def delete_queue_item(queue_id: int) -> bool:
     try:
         with db_session() as session:
@@ -231,9 +291,33 @@ def delete_queue_item(queue_id: int) -> bool:
         return False
 
 
+def get_queue_item_by_path(path: str) -> Optional[Dict[str, Any]]:
+    """Find the most recently updated queue item owning ``path``.
+
+    Matches any of the path columns (``file_path``, ``found_filename``,
+    ``music_file_path``).  Used by the ``process-one`` endpoint.
+    """
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT * FROM download_queue
+                    WHERE file_path = :p
+                       OR found_filename = :p
+                       OR music_file_path = :p
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                """),
+                {"p": path},
+            )
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
+    except Exception as e:
+        logger.error(f"[get_queue_item_by_path] {e}")
+        return None
+
+
 # =============================================================================
-# GROUP / MATCHING HELPERS
-# =============================================================================# =============================================================================
 # GROUP / MATCHING HELPERS
 # =============================================================================
 
@@ -277,7 +361,6 @@ def apply_release_mbid(queue_ids: list, mbid: str, artist: str, album: str) -> i
 
 # =============================================================================
 # STATUS / PROCESSING
-# =============================================================================
 # =============================================================================
 
 
@@ -344,7 +427,8 @@ def get_ready_for_processing(limit: int = 100) -> List[Dict]:
                     SELECT *
                     FROM download_queue
                     WHERE status = 'queued'
-                    ORDER BY created_at ASC
+                      AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
+                    ORDER BY priority DESC, created_at ASC
                     LIMIT :limit
                 """),
                 {"limit": limit},
@@ -400,6 +484,56 @@ def requeue_due_failed_items(limit: int = 50) -> List[Dict[str, Any]]:
     except Exception as exc:
         logger.error("[requeue_due_failed_items] %s", exc)
         return []
+
+
+def get_failed_queue(limit: int = 100) -> List[Dict[str, Any]]:
+    """Return failed items, newest first, for API / requeue endpoints."""
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT *
+                    FROM download_queue
+                    WHERE status = 'failed'
+                    ORDER BY updated_at DESC
+                    LIMIT :limit
+                """),
+                {"limit": limit},
+            )
+            return [dict(r._mapping) for r in result.fetchall()]
+    except Exception as exc:
+        logger.error("[get_failed_queue] %s", exc)
+        return []
+
+
+def requeue_queue_item(queue_id: int) -> Optional[Dict[str, Any]]:
+    """Manually requeue a failed/removed/cancelled item, resetting retry state.
+
+    Clears ``next_retry_at`` and ``retry_count`` so the item is picked up
+    immediately by the next worker cycle (unlike a plain status bump, which
+    would leave the backoff window in place).
+    """
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = 'queued',
+                        retry_count = 0,
+                        failure_reason = NULL,
+                        next_retry_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :qid
+                      AND status IN ('failed', 'removed', 'cancelled')
+                    RETURNING *
+                """),
+                {"qid": queue_id},
+            )
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
+    except Exception as exc:
+        logger.error("[requeue_queue_item] %s", exc)
+        return None
     
     # =============================================================================
 # COMPLETED / POST-DOWNLOAD QUEUE

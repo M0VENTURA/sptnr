@@ -132,6 +132,10 @@ MAINTENANCE_CANDIDATES: tuple[MaintenanceCandidate, ...] = (
         "services.queue.queue_cleanup_service",
         "cleanup_stuck_items",
     ),
+    MaintenanceCandidate(
+        "services.downloads.slskd_reaper_service",
+        "reap_stalled_transfers",
+    ),
 )
 
 

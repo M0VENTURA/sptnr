@@ -404,6 +404,7 @@ class SlskdService:
                     "averageSpeed": int(item.get("averageSpeed", 0) or 0),
                     "queuePosition": self.extract_queue_position(item),
                     "localFilePath": item.get("localFilePath") or item.get("localPath") or item.get("downloadedFilePath") or item.get("path") or "",
+                    "startedAt": item.get("startedAt") or item.get("started"),
                 })
         return flat
 

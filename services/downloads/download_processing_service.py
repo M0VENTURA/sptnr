@@ -193,7 +193,17 @@ def queue_add_batch(data: Dict[str, Any]) -> Dict[str, Any]:
 # =============================================================================
 
 def queue_requeue(queue_id: int) -> Dict[str, Any]:
-    updated = update_queue_item(queue_id, status="queued")
+    """Requeue an item.
+
+    Failed/removed/cancelled items go through ``requeue_queue_item`` so the
+    retry backoff (``next_retry_at`` / ``retry_count``) is cleared — manual
+    retries must be immediate.  Other statuses get a plain status bump.
+    """
+    from db.repositories.queue import requeue_queue_item
+
+    updated = requeue_queue_item(queue_id) or update_queue_item(
+        queue_id, status="queued"
+    )
 
     if not updated:
         return {"success": False, "error": "Queue item not found"}
@@ -588,3 +598,91 @@ def get_completed_queue_items(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     return get_completed_queue(limit)
+
+
+# =============================================================================
+# MANUAL PROCESSING (process-one / process-albums endpoints)
+# =============================================================================
+
+def process_single_file(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Process a single downloaded file: tag it and move it to the library.
+
+    Modern re-implementation of the legacy ``process-one`` endpoint.  Finds
+    the queue item owning ``path`` and delegates to the standard completed-
+    item pipeline (tag update -> move -> mark imported).
+    """
+    try:
+        path = str((data or {}).get("path") or "").strip()
+        if not path:
+            return {"success": False, "error": "path is required"}
+
+        import os
+        if not os.path.isfile(path):
+            return {"success": False, "error": f"File not found: {path}"}
+
+        from db.repositories.queue import get_queue_item_by_path
+        item = get_queue_item_by_path(path)
+        if not item:
+            return {
+                "success": False,
+                "error": "No queue item found for this file",
+            }
+
+        # Ensure the pipeline sees a usable file path even when the item only
+        # has the download copy recorded in ``found_filename``.
+        item["file_path"] = item.get("file_path") or item.get("found_filename")
+        return process_completed_queue_item(item)
+    except Exception as exc:
+        logger.exception("[process_single_file] failed")
+        return {"success": False, "error": str(exc)}
+
+
+def process_albums(data: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Process downloaded album groups: tag + move every track to the library.
+
+    Modern re-implementation of the legacy ``process-albums`` endpoint.
+    Groups queue items that have a downloaded file by (album artist, album)
+    and runs each track through the standard import pipeline.  Only fully
+    downloaded (``completed`` / ``unmatched``) items are touched — anything
+    still mid-flight is left alone.
+    """
+    stats: Dict[str, Any] = {"checked": 0, "processed": 0, "errors": []}
+    try:
+        from db.repositories.queue import get_completed_queue
+
+        items = get_completed_queue(limit=200)
+
+        albums: Dict[tuple, list] = {}
+        for item in items:
+            if item.get("status") not in ("completed", "unmatched"):
+                continue
+            if not (item.get("file_path") or item.get("found_filename")):
+                continue
+            artist = item.get("album_artist") or item.get("artist") or "Unknown"
+            album = item.get("album") or ""
+            key = (str(album).strip().lower(), str(artist).strip().lower())
+            albums.setdefault(key, []).append(item)
+
+        for album_items in albums.values():
+            stats["checked"] += 1
+            processed = True
+            for item in album_items:
+                item["file_path"] = item.get("file_path") or item.get("found_filename")
+                result = process_completed_queue_item(item)
+                if not result.get("success"):
+                    processed = False
+                    stats["errors"].append(str(result.get("error") or "unknown error"))
+            if processed:
+                stats["processed"] += 1
+
+        return {
+            "success": True,
+            "stats": stats,
+            "message": (
+                f"Checked {stats['checked']} albums. "
+                f"{stats['processed']} processed."
+            ),
+        }
+    except Exception as exc:
+        logger.exception("[process_albums] failed")
+        return {"success": False, "error": str(exc)}
