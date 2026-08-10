@@ -5,10 +5,16 @@ Tap-to-open global search, included from base.html. Backed by
 static/js/unified_search.js.
 
 Scope rules:
-- All       : library artists/albums/tracks + a compact MusicBrainz section
+- All       : library artists/albums + a compact MusicBrainz section,
+              then in-library tracks (blueprint priority order)
 - In Library: library results only (POST /api/search)
 - MusicBrainz: release search via the shared MB component internals
   (searchMusicBrainzReleases) with quick-queue buttons
+
+The release-type dropdown and the collapsible advanced filters
+(Artist / Album / Track / Year) map to the structured fields on
+POST /api/musicbrainz/search so precision queries don't hit the
+free-text Lucene path.
 
 Debounce: 50ms local scopes / 400ms MusicBrainz (set in unified_search.js).
 #}
@@ -27,11 +33,38 @@ Debounce: 50ms local scopes / 400ms MusicBrainz (set in unified_search.js).
             type="text"
             id="unifiedSearchInput"
             class="form-control"
-            placeholder="Artists, albums, tracks, releases…"
+            placeholder="Search library or MusicBrainz…"
             autocomplete="off"
-            aria-label="Search"
+            aria-label="Search library or MusicBrainz"
             style="min-height: 44px;"
           />
+          <button type="button" class="btn btn-outline-secondary" id="unifiedFiltersToggle" title="Advanced filters" aria-expanded="false" aria-controls="unifiedAdvancedFilters">
+            <i class="bi bi-sliders"></i> <span class="d-none d-sm-inline">Filters</span>
+          </button>
+        </div>
+
+        <div class="collapse" id="unifiedAdvancedFilters">
+          <div class="border rounded p-2 mb-2" style="background: var(--primary-bg);">
+            <div class="row g-2 align-items-end">
+              <div class="col-6 col-md-3">
+                <label class="form-label small mb-1 text-muted">Artist</label>
+                <input type="text" class="form-control form-control-sm" id="unifiedFilterArtist" placeholder="Artist name" autocomplete="off">
+              </div>
+              <div class="col-6 col-md-3">
+                <label class="form-label small mb-1 text-muted">Album</label>
+                <input type="text" class="form-control form-control-sm" id="unifiedFilterAlbum" placeholder="Album title" autocomplete="off">
+              </div>
+              <div class="col-6 col-md-3">
+                <label class="form-label small mb-1 text-muted">Track</label>
+                <input type="text" class="form-control form-control-sm" id="unifiedFilterTrack" placeholder="Track title" autocomplete="off">
+              </div>
+              <div class="col-6 col-md-3">
+                <label class="form-label small mb-1 text-muted">Year</label>
+                <input type="text" class="form-control form-control-sm" id="unifiedFilterYear" placeholder="2024" maxlength="4" autocomplete="off">
+              </div>
+            </div>
+            <small class="text-muted d-block mt-2"><i class="bi bi-info-circle"></i> Advanced filters target MusicBrainz discovery results. Cleared fields fall back to the single search bar.</small>
+          </div>
         </div>
 
         <ul class="nav nav-pills gap-1 mb-2" id="unifiedScopeTabs" role="tablist">
@@ -51,6 +84,21 @@ Debounce: 50ms local scopes / 400ms MusicBrainz (set in unified_search.js).
             </button>
           </li>
         </ul>
+
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <label class="form-label small text-muted mb-0 flex-shrink-0"><i class="bi bi-funnel"></i> Type:</label>
+          <select id="unifiedSearchType" class="form-select form-select-sm" style="max-width: 220px;">
+            <option value="">All types</option>
+            <option value="album">Album</option>
+            <option value="single">Single</option>
+            <option value="ep">EP</option>
+            <option value="compilation">Compilation</option>
+            <option value="soundtrack">Soundtrack</option>
+            <option value="live">Live</option>
+            <option value="remix">Remix</option>
+          </select>
+          <span class="ms-auto"><small class="text-muted" id="unifiedTypeHint">Filters MusicBrainz releases</small></span>
+        </div>
 
         <div id="unifiedSearchError" class="alert alert-danger py-1 px-2 small d-none" role="alert"></div>
         <div id="unifiedSearchResults" class="us-results"></div>

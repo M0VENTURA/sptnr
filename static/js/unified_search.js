@@ -7,6 +7,11 @@
  * the shared component's searchMusicBrainzReleases() (single free-text
  * query path) so the two MB search UIs stay consistent.
  *
+ * Optional advanced filters (Artist / Album / Track / Year) and the release
+ * type dropdown map to the structured fields the backend already supports
+ * (artist / releasegroup / recording / date / primarytype+secondarytype), so
+ * precision queries avoid the 1 req/sec Lucene free-text path.
+ *
  * Debounce: 50ms local scopes / 400ms MusicBrainz.
  */
 (function () {
@@ -64,18 +69,54 @@
       .catch(function () { return { artists: [], albums: [], tracks: [] }; });
   }
 
-  function fetchMb(query, limit) {
-    // Reuse the shared MB component internals when available (base.html
-    // loads _musicbrainz_search_component.html globally).
-    if (typeof window.searchMusicBrainzReleases === 'function') {
+  function getTypeFilter() {
+    var el = document.getElementById('unifiedSearchType');
+    return el ? el.value : '';
+  }
+
+  function getAdvancedFilters() {
+    function val(id) {
+      var el = document.getElementById(id);
+      return el ? el.value.trim() : '';
+    }
+    return {
+      artist: val('unifiedFilterArtist'),
+      album: val('unifiedFilterAlbum'),
+      track: val('unifiedFilterTrack'),
+      year: val('unifiedFilterYear')
+    };
+  }
+
+  function fetchMb(query, limit, opts) {
+    opts = opts || {};
+    var hasAdvanced = opts.artist || opts.album || opts.track || opts.year;
+
+    // Plain free-text query with no structured filters — reuse the shared MB
+    // component internals so the two search UIs stay consistent.
+    if (!hasAdvanced && !opts.type && typeof window.searchMusicBrainzReleases === 'function') {
       return window.searchMusicBrainzReleases(query, '', limit)
         .then(function (data) { return data.releases || []; })
         .catch(function () { return []; });
     }
+
+    var payload = {};
+    if (hasAdvanced) {
+      payload.artist = opts.artist || '';
+      payload.album = opts.album || '';
+      payload.track = opts.track || '';
+      payload.year = opts.year || '';
+      // Artist-only search means "release groups BY the artist", not groups
+      // whose title happens to match the artist name (matches the MB modal).
+      if (opts.artist && !opts.album && !opts.track && !opts.year) payload.artist_only = true;
+    } else {
+      payload.query = query;
+    }
+    if (opts.type) payload.type = opts.type;
+
     return fetch('/api/musicbrainz/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: query })
+      body: JSON.stringify(payload)
     })
       .then(function (res) { return res.ok ? res.json() : { releases: [] }; })
       .then(function (data) { return (data.releases || []).slice(0, limit); })
@@ -182,12 +223,10 @@
     var albums = local.albums || [];
     var tracks = local.tracks || [];
 
+    // Priority order per the unified-search blueprint: in-library artists &
+    // albums first, then MusicBrainz / missing releases, then local tracks.
     if (artists.length) html += section('Artists', artistRows(artists));
     if (albums.length) html += section('Albums', albumRows(albums));
-    if (tracks.length) html += section('Tracks', trackRows(tracks));
-    if (!artists.length && !albums.length && !tracks.length) {
-      html += '<div class="text-center text-muted py-4 small">No library matches for "' + esc(query) + '"</div>';
-    }
 
     if (_scope === SCOPE_ALL) {
       if (mbReleases.length) {
@@ -201,6 +240,11 @@
       } else {
         html += '<div class="text-center text-muted py-3 small"><i class="bi bi-hexagon"></i> No MusicBrainz matches for "' + esc(query) + '"</div>';
       }
+    }
+
+    if (tracks.length) html += section('Tracks', trackRows(tracks));
+    if (!artists.length && !albums.length && !tracks.length) {
+      html += '<div class="text-center text-muted py-4 small">No library matches for "' + esc(query) + '"</div>';
     }
     return html;
   }
@@ -224,9 +268,11 @@
     if (!input || !resultsEl) return;
 
     var query = input.value.trim();
+    var adv = getAdvancedFilters();
+    var hasAdvanced = adv.artist || adv.album || adv.track || adv.year;
     var seq = ++_runSeq;
 
-    if (query.length < MIN_QUERY_LENGTH) {
+    if (query.length < MIN_QUERY_LENGTH && !hasAdvanced) {
       resultsEl.innerHTML = '<div class="text-center text-muted py-5">' +
         '<i class="bi bi-search" style="font-size: 2rem;"></i>' +
         '<p class="mt-2 mb-0 small">Type at least ' + MIN_QUERY_LENGTH + ' characters</p></div>';
@@ -236,8 +282,16 @@
 
     resultsEl.innerHTML = '<div class="text-center py-5"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>';
 
+    var mbOpts = {
+      type: getTypeFilter(),
+      artist: adv.artist,
+      album: adv.album,
+      track: adv.track,
+      year: adv.year
+    };
+
     if (_scope === SCOPE_MB) {
-      fetchMb(query, MB_LIMIT_MB_TAB)
+      fetchMb(query, MB_LIMIT_MB_TAB, mbOpts)
         .then(function (releases) {
           if (seq !== _runSeq) return;
           if (getMetaEl()) getMetaEl().textContent = releases.length + ' musicbrainz result' + (releases.length === 1 ? '' : 's');
@@ -246,8 +300,10 @@
       return;
     }
 
-    var localPromise = fetchLibrary(query);
-    var mbPromise = _scope === SCOPE_ALL ? fetchMb(query, MB_LIMIT_ALL_TAB) : Promise.resolve([]);
+    var localPromise = query.length >= MIN_QUERY_LENGTH
+      ? fetchLibrary(query)
+      : Promise.resolve({ artists: [], albums: [], tracks: [] });
+    var mbPromise = _scope === SCOPE_ALL ? fetchMb(query, MB_LIMIT_ALL_TAB, mbOpts) : Promise.resolve([]);
     Promise.all([localPromise, mbPromise])
       .then(function (results) {
         if (seq !== _runSeq) return;
@@ -364,6 +420,29 @@
         runSearch();
       }
     });
+
+    // Advanced filters toggle (slide-down panel).
+    var filtersToggle = document.getElementById('unifiedFiltersToggle');
+    var filtersPanel = document.getElementById('unifiedAdvancedFilters');
+    if (filtersToggle && filtersPanel) {
+      filtersToggle.addEventListener('click', function () {
+        var shown = filtersPanel.classList.toggle('show');
+        filtersToggle.setAttribute('aria-expanded', shown ? 'true' : 'false');
+      });
+    }
+
+    // Advanced filter fields + type dropdown re-run the search.
+    var filterInputs = document.querySelectorAll('#unifiedAdvancedFilters input, #unifiedSearchType');
+    for (var i = 0; i < filterInputs.length; i++) {
+      filterInputs[i].addEventListener('input', function () {
+        clearTimeout(_debounceTimer);
+        _debounceTimer = setTimeout(runSearch, _scope === SCOPE_MB ? MB_DEBOUNCE_MS : LOCAL_DEBOUNCE_MS);
+      });
+      filterInputs[i].addEventListener('change', function () {
+        clearTimeout(_debounceTimer);
+        runSearch();
+      });
+    }
 
     // Scope tabs — switching re-runs immediately with the current query.
     var tabs = document.querySelectorAll('#unifiedScopeTabs .nav-link');
