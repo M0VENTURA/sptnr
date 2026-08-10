@@ -148,10 +148,13 @@ class MusicBrainzHttpClient:
             params["inc"] = inc
         return self.get(f"release/{release_mbid}", params=params, timeout=timeout)
 
-    def get_release_group(self, release_group_mbid: str, timeout: float = 10.0) -> dict[str, Any]:
+    def get_release_group(self, release_group_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not release_group_mbid:
             return {}
-        return self.get(f"release-group/{release_group_mbid}", params={"fmt": "json"}, timeout=timeout)
+        params: dict[str, Any] = {"fmt": "json"}
+        if inc:
+            params["inc"] = inc
+        return self.get(f"release-group/{release_group_mbid}", params=params, timeout=timeout)
 
     def get_recording(self, recording_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not recording_mbid:
