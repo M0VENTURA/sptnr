@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from difflib import SequenceMatcher
 from typing import Any, TypedDict, List, Dict, Optional
 
 from api_clients.discogs_http import DiscogsHttpClient
@@ -16,6 +17,57 @@ from helpers.normalization_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+# --- CONSTANTS ---
+# Titles scoring below this normalized Similarity Ratio never match (loose
+# 1-word collisions like "Halo" vs "Hallow" sit just above 0.8 raw, so the
+# gate alone is not enough — see the short-title penalty below).
+MIN_DISCOGS_SIMILARITY = 0.75
+# Max confidence for a verified Discogs single/EP match (exact title).
+DISCOGS_BASE_WEIGHT = 0.85
+# A confidence this low is treated as "full" (near-exact verified match).
+DISCOGS_FULL_CONFIDENCE = 0.85
+
+
+def calculate_discogs_confidence(title: str, similarity_ratio: float,
+                                 artist_verified: bool) -> dict[str, Any]:
+    """Dynamic Discogs match confidence.
+
+    Formula: ``base_weight(0.85) × title_similarity_ratio × penalties``.
+
+    Penalties:
+    - Artist-ID sanity check: an UNVERIFIED match (free-text DB search
+      fallback, where the release may belong to a different artist) halves
+      the score — verified only when the release came from the artist's own
+      Discogs page.
+    - Short/generic title penalty: one- or two-word titles ("Halo",
+      "Tomorrow", "Nothing") routinely hit 0.80+ ratio against unrelated
+      releases; they need near-exact precision (ratio >= 0.95), otherwise
+      the score is cut to 60%.
+
+    Returns ``{matched, confidence, metadata}`` — ``matched`` when the final
+    confidence is >= 0.40, ``metadata.similarity_ratio`` for logs/UI.
+    """
+    sim = float(similarity_ratio or 0.0)
+    if sim < MIN_DISCOGS_SIMILARITY:
+        return {"matched": False, "confidence": 0.0,
+                "metadata": {"similarity_ratio": round(sim, 2)}}
+
+    confidence = DISCOGS_BASE_WEIGHT * sim
+
+    if not artist_verified:
+        confidence *= 0.50  # cannot confirm the release belongs to this artist
+
+    if len(str(title or "").split()) <= 2 and sim < 0.95:
+        confidence *= 0.60  # short/generic titles must be near-exact
+
+    final = round(max(0.0, min(1.0, confidence)), 2)
+    return {
+        "matched": final >= 0.40,
+        "confidence": final,
+        "metadata": {"similarity_ratio": round(sim, 2)},
+    }
+
 
 # --- TYPES ---
 class DiscogsTrack(TypedDict):
@@ -113,15 +165,40 @@ class DiscogsService:
         formats = " ".join(str(f).lower() for f in (rel.get("format") or []) if f)
         return "promo" in formats
 
-    def _scan_releases(self, title: str, title_key: str, releases: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _scan_releases(self, title: str, title_key: str, releases: list[dict[str, Any]],
+                       artist_verified: bool = True) -> dict[str, Any] | None:
         """Find the best single/EP match in *releases* for *title_key*.
 
-        Returns a status dict, or None when nothing matches. A commercial
-        single/EP match is preferred over a promo-only one, so a track that
-        was BOTH a promo and a proper single is reported as a (high-confidence)
-        commercial single.
+        Candidates are scored with a continuous title-similarity ratio
+        (SequenceMatcher over the normalized titles), gated at
+        ``MIN_DISCOGS_SIMILARITY`` — the old binary equality/containment
+        test reported every hit as full confidence, which let a short
+        release title ("Halo", "Tomorrow") collide with loosely-related
+        editions.  The highest-scoring commercial single/EP wins; a
+        promo-only match is the fallback (promotional evidence is weaker).
+
+        ``artist_verified`` records whether *releases* came from the
+        artist's OWN Discogs page (True) or a free-text DB search (False)
+        so the caller's confidence formula can apply the artist-ID penalty.
+
+        Returns a status dict, or None when nothing matches.
         """
-        best: dict[str, Any] | None = None
+        best_commercial: dict[str, Any] | None = None
+        best_promo: dict[str, Any] | None = None
+        best_commercial_score = 0.0
+        best_promo_score = 0.0
+
+        def _status(rel: dict[str, Any], formats: str, is_promo: bool, sim: float) -> dict[str, Any]:
+            return {
+                "is_single": True,
+                "is_promo": is_promo,
+                "release_year": rel.get("year") if isinstance(rel.get("year"), int) else None,
+                "release_id": str(rel.get("id") or "") or None,
+                "format": formats,
+                "similarity": round(sim, 2),
+                "artist_verified": artist_verified,
+            }
+
         for rel in releases:
             if str(rel.get("role") or "Main").strip().lower() != "main":
                 continue
@@ -137,21 +214,21 @@ class DiscogsService:
             # stripped ("what s the deal"), so matching it against the raw
             # lowercased title ("what's the deal?") fails on apostrophes.
             rel_title = self._normalize_title(str(rel.get("title") or ""))
-            if not rel_title or not (rel_title == title_key or title_key in rel_title):
+            if not rel_title:
+                continue
+            sim = SequenceMatcher(None, title_key, rel_title).ratio()
+            if sim < MIN_DISCOGS_SIMILARITY:
                 continue
             is_promo = "promo" in formats
-            status: dict[str, Any] = {
-                "is_single": True,
-                "is_promo": is_promo,
-                "release_year": rel.get("year") if isinstance(rel.get("year"), int) else None,
-                "release_id": str(rel.get("id") or "") or None,
-                "format": formats,
-            }
+            status = _status(rel, formats, is_promo, sim)
             if not is_promo:
-                return status  # commercial single is the strongest possible match
-            if best is None:
-                best = status
-        return best
+                if sim > best_commercial_score:
+                    best_commercial_score = sim
+                    best_commercial = status
+            elif sim > best_promo_score:
+                best_promo_score = sim
+                best_promo = status
+        return best_commercial or best_promo
 
     def get_single_status(self, title: str, artist: str,
                           album_context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -173,9 +250,10 @@ class DiscogsService:
 
         # Primary: match against the artist's OWN release list. A single/EP
         # release with a matching title on the artist's release list is
-        # authoritative confirmation, independent of search-result ranking.
+        # authoritative confirmation, independent of search-result ranking —
+        # the artist ID was resolved, so matches here are artist-verified.
         artist_releases = self._get_artist_releases(artist) or []
-        status = self._scan_releases(title, title_key, artist_releases)
+        status = self._scan_releases(title, title_key, artist_releases, artist_verified=True)
 
         if status is None:
             # Self-diagnosing miss: how many releases were scanned and what
@@ -189,13 +267,17 @@ class DiscogsService:
         # Fallback: use search_database with specific params. A wider window
         # (25 vs 5) because the album edition outranks the single and the
         # single can sit outside a tiny top-N (e.g. "+44 - When Your Heart
-        # Stops Beating").
+        # Stops Beating").  Matches here are NOT artist-verified — the search
+        # can surface another artist's release — so the caller halves their
+        # confidence via the artist-ID sanity penalty.
         if status is None:
             results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 25})
-            status = self._scan_releases(title, title_key, results or [])
+            status = self._scan_releases(title, title_key, results or [], artist_verified=False)
 
         if status is None:
-            status = {"is_single": False, "is_promo": False, "release_year": None, "release_id": None, "format": ""}
+            status = {"is_single": False, "is_promo": False, "release_year": None,
+                      "release_id": None, "format": "", "similarity": 0.0,
+                      "artist_verified": False}
 
         self._single_cache[cache_key] = status
         return status

@@ -37,6 +37,13 @@ def _read_last_lines(path, max_lines, chunk_size=65536, max_bytes=4 * 1024 * 102
     return data.decode("utf-8", errors="ignore").splitlines()[-max_lines:]
 
 
+def _read_all_lines(path):
+    """Read an entire log file (used by the /logs page's full-history view)."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    return data.decode("utf-8", errors="ignore").splitlines()
+
+
 def _filter_lines_last_hour(lines: list[str]) -> list[str]:
     """Keep only lines whose leading timestamp falls within the last hour.
 
@@ -194,26 +201,34 @@ def resolve_log_file_path(name: str) -> str | None:
     return full
 
 
-def get_log_file_content(name: str, lines: int = 500):
+def get_log_file_content(name: str, lines: int | str = 500):
     """Return the tail of an arbitrary log file from the log directory.
 
     ``unified_scan.log`` is filtered to scan activity only, so the /logs page
     shows the same scanning feed as the dashboard's Scanning Log panel (which
     reads it via ``/api/unified-log``).  Other files are returned raw.
 
+    ``lines`` accepts a count (1-2000) or ``"all"`` / ``0`` / ``-1`` to return
+    the file's FULL history (no tail truncation).
+
     Returns ``{"lines": [...]}`` or an error tuple.
     """
-    try:
-        lines = max(1, min(int(lines), 2000))
-    except (TypeError, ValueError):
-        lines = 500
+    all_lines = str(lines).strip().lower() in ("all", "0", "-1")
+    if not all_lines:
+        try:
+            lines = max(1, min(int(lines), 2000))
+        except (TypeError, ValueError):
+            lines = 500
 
     log_path = resolve_log_file_path(name)
     if not log_path:
         return {"error": f"Log not found: {name}", "lines": []}, 404
 
     try:
-        log_lines = _read_last_lines(log_path, lines)
+        if all_lines:
+            log_lines = _read_all_lines(log_path)
+        else:
+            log_lines = _read_last_lines(log_path, lines)
         if name == "unified_scan.log":
             noise_pattern = _scheduler_noise_filter()
             scan_pattern = _scan_activity_filter()
@@ -221,7 +236,7 @@ def get_log_file_content(name: str, lines: int = 500):
                 l for l in log_lines
                 if not noise_pattern.search(l) and scan_pattern.search(l)
             ]
-        return {"lines": log_lines[-lines:]}
+        return {"lines": log_lines if all_lines else log_lines[-lines:]}
     except Exception as exc:
         logger.error("[LOG] read error for %s: %s", name, exc)
         return {"error": str(exc), "lines": []}, 500

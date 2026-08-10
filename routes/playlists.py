@@ -145,11 +145,15 @@ async def playlist_importer_csv():
     return await render_template("playlists/importer_csv.html")
 
 
+@playlists_bp.route("/playlists")
+async def playlists_index():
+    """Rebuilt Playlists page: all smart + regular playlists in one view."""
+    return await render_template("playlists/index.html")
+
+
 @playlists_bp.route("/playlists/browse")
 async def playlists_browse():
-    cfg = get_config()
-    nav_users = cfg.get("navidrome_users", [])
-    return await render_template("playlists/browse.html", navidrome_users=nav_users)
+    return redirect(url_for("playlists.playlists_index"))
 
 
 @playlists_bp.route("/playlists/create/<playlist_type>")
@@ -471,3 +475,195 @@ def api_recommended_playlists_create():
     except Exception as exc:
         logging.error("Failed to create recommended playlist: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+# =============================================================================
+# PLAYLIST INDEX (rebuilt /playlists page)
+# =============================================================================
+
+@playlists_bp.route("/api/playlists/all")
+def api_playlists_all():
+    """Return every playlist in the system.
+
+    Smart playlists come from .nsp files in the Playlists directory (with
+    their file name/path); anything else is a Navidrome smart/regular
+    playlist fetched from the Subsonic API.  .nsp files win over same-named
+    Navidrome entries so the file-backed version (which we can rename) is
+    shown.
+    """
+    from routes.navidrome import get_navidrome_client
+    from services.playlists.playlist_service import list_nsp_playlists
+
+    file_playlists = list_nsp_playlists()
+    file_names = {entry["name"].strip().lower(): entry for entry in file_playlists}
+
+    client = get_navidrome_client()
+    nav_playlists = []
+    if client:
+        try:
+            nav_playlists = client.fetch_all_playlists() or []
+        except Exception as exc:
+            logging.error("Failed to fetch Navidrome playlists: %s", exc, exc_info=True)
+
+    merged = []
+    for entry in file_playlists:
+        merged.append({
+            "id": f"file::{entry['file_name']}",
+            "source": "file",
+            "type": "smart",
+            "name": entry["name"],
+            "file_name": entry["file_name"],
+            "file_path": entry["file_path"],
+            "comment": entry["comment"],
+            "track_count": entry["track_count"],
+            "rule_based": entry["rule_based"],
+        })
+
+    for nav in nav_playlists:
+        name = str(nav.get("name") or "").strip()
+        if not name or name.strip().lower() in file_names:
+            continue  # already shown as a file-backed smart playlist
+        nav_type = nav.get("type")
+        merged.append({
+            "id": str(nav.get("id") or ""),
+            "source": "navidrome",
+            "type": nav_type if nav_type in ("smart", "regular") else "regular",
+            "name": name,
+            "file_name": None,
+            "file_path": None,
+            "comment": str(nav.get("comment") or ""),
+            "track_count": int(nav.get("songCount") or 0) or len(nav.get("entry") or []),
+            "rule_based": bool(nav.get("criteria")),
+        })
+
+    merged.sort(key=lambda item: (item["type"] != "smart", item["name"].lower()))
+    return jsonify({"playlists": merged, "navidrome_configured": bool(client)})
+
+
+@playlists_bp.route("/api/playlists/tracks", methods=["POST"])
+def api_playlists_tracks():
+    """Return the track list of one playlist.
+
+    ``source`` selects the backend: ``file`` reads the .nsp JSON directly
+    (falling back to a Navidrome name lookup for rule-based files), while
+    ``navidrome`` loads the playlist from the Subsonic API.
+    """
+    data = request.get_json(silent=True) or {}
+    source = str(data.get("source") or "")
+    playlist_id = str(data.get("id") or "")
+
+    from routes.navidrome import get_navidrome_client
+    from services.playlists.playlist_service import read_nsp_playlist
+
+    if source == "file":
+        file_path = str(data.get("file_path") or "")
+        if not file_path or not _os.path.exists(file_path):
+            return jsonify({"error": "Playlist file not found"}), 404
+
+        playlist = read_nsp_playlist(file_path)
+        if not playlist:
+            return jsonify({"error": "Could not read playlist file"}), 500
+
+        tracks = playlist.get("_tracks") or []
+        if not tracks:
+            # Rule-based or trackIds-only: let Navidrome resolve the entries.
+            client = get_navidrome_client()
+            if client:
+                try:
+                    found = client.find_playlist_by_name(playlist.get("name") or "")
+                    if found:
+                        detail = client.fetch_playlist(found.get("id"))
+                        tracks = detail.get("tracks") or []
+                except Exception as exc:
+                    logging.error("Failed to resolve rule-based playlist via Navidrome: %s", exc, exc_info=True)
+
+        return jsonify({
+            "playlist": {
+                "id": playlist_id,
+                "source": "file",
+                "type": "smart",
+                "name": playlist.get("name"),
+                "file_name": playlist.get("_file_name"),
+                "file_path": playlist.get("_file_path"),
+                "comment": playlist.get("comment") or "",
+                "rule_based": bool(playlist.get("rules")),
+            },
+            "tracks": tracks,
+        })
+
+    if source == "navidrome":
+        client = get_navidrome_client()
+        if not client:
+            return jsonify({"error": "Navidrome not configured"}), 400
+        playlist = client.fetch_playlist(playlist_id)
+        if not playlist:
+            return jsonify({"error": "Playlist not found"}), 404
+        tracks = []
+        for entry in playlist.get("tracks") or []:
+            if not isinstance(entry, dict):
+                continue
+            tracks.append({
+                "id": str(entry.get("id") or ""),
+                "title": str(entry.get("title") or entry.get("name") or ""),
+                "artist": str(entry.get("artist") or ""),
+                "album": str(entry.get("album") or ""),
+                "duration": entry.get("duration"),
+                "rating": entry.get("userRating") or entry.get("rating"),
+            })
+        return jsonify({
+            "playlist": {
+                "id": playlist_id,
+                "source": "navidrome",
+                "type": playlist.get("type") if playlist.get("type") in ("smart", "regular") else "regular",
+                "name": playlist.get("name"),
+                "file_name": None,
+                "file_path": None,
+                "comment": playlist.get("comment") or "",
+                "rule_based": False,
+            },
+            "tracks": tracks,
+        })
+
+    return jsonify({"error": "Unknown playlist source"}), 400
+
+
+@playlists_bp.route("/api/playlists/rename", methods=["POST"])
+def api_playlists_rename():
+    """Rename a playlist.
+
+    File-backed smart playlists also rename the .nsp file on disk
+    (``file_name``); Navidrome playlists are renamed via the Subsonic API.
+    """
+    data = request.get_json(silent=True) or {}
+    source = str(data.get("source") or "")
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Playlist name is required"}), 400
+
+    if source == "file":
+        from services.playlists.playlist_service import rename_nsp_playlist
+        file_path = str(data.get("file_path") or "")
+        if not file_path or not _os.path.exists(file_path):
+            return jsonify({"error": "Playlist file not found"}), 404
+        try:
+            result = rename_nsp_playlist(file_path, name, data.get("file_name"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            logging.error("Failed to rename playlist file: %s", exc, exc_info=True)
+            return jsonify({"error": f"Rename failed: {exc}"}), 500
+        return jsonify({"success": True, **result})
+
+    if source == "navidrome":
+        from routes.navidrome import get_navidrome_client
+        client = get_navidrome_client()
+        if not client:
+            return jsonify({"error": "Navidrome not configured"}), 400
+        playlist_id = str(data.get("id") or "")
+        if not playlist_id:
+            return jsonify({"error": "Missing playlist id"}), 400
+        if client.rename_playlist(playlist_id, name):
+            return jsonify({"success": True})
+        return jsonify({"error": "Navidrome rejected the rename"}), 500
+
+    return jsonify({"error": "Unknown playlist source"}), 400

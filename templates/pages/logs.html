@@ -56,13 +56,21 @@
     var autoRefreshInterval = null;
     var autoRefreshOn = false;
 
-    function loadLog() {
+    // Manual loads show the FULL history of unified_scan.log; the 5s
+    // auto-refresh polling stays bounded (last 2000 lines) so the page
+    // doesn't re-download the whole file on every tick.
+    function linesFor(name, autoRefresh) {
+        if (autoRefresh) return '2000';
+        return name === 'unified_scan.log' ? 'all' : '500';
+    }
+
+    function loadLog(autoRefresh) {
         var selected = logSelector.options[logSelector.selectedIndex];
         if (!selected) return;
         var name = selected.value;
         currentLogLabel.textContent = name;
         logOutput.textContent = 'Loading...';
-        fetch('/api/log-file?name=' + encodeURIComponent(name) + '&lines=500')
+        fetch('/api/log-file?name=' + encodeURIComponent(name) + '&lines=' + linesFor(name, autoRefresh))
             .then(function(r) {
                 var contentType = (r.headers.get('content-type') || '').toLowerCase();
                 if (!contentType.includes('application/json')) {
@@ -88,7 +96,7 @@
             });
     }
 
-    refreshBtn.addEventListener('click', loadLog);
+    refreshBtn.addEventListener('click', function() { loadLog(false); });
 
     clearBtn.addEventListener('click', function() {
         logOutput.textContent = '';
@@ -102,8 +110,8 @@
             toggleAutoBtn.classList.remove('btn-danger');
             toggleAutoBtn.classList.add('btn-outline-secondary');
         } else {
-            loadLog();
-            autoRefreshInterval = setInterval(loadLog, 5000);
+            loadLog(true);
+            autoRefreshInterval = setInterval(function() { loadLog(true); }, 5000);
             autoRefreshOn = true;
             toggleAutoBtn.innerHTML = '<i class="bi bi-stop"></i> Stop';
             toggleAutoBtn.classList.remove('btn-outline-secondary');
@@ -116,10 +124,10 @@
         logOutput.style.wordWrap = this.checked ? 'break-word' : 'normal';
     });
 
-    logSelector.addEventListener('change', loadLog);
+    logSelector.addEventListener('change', function() { loadLog(false); });
 
     // Initial load
-    loadLog();
+    loadLog(false);
 })();
 </script>
 

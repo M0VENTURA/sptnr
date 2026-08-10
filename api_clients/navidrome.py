@@ -410,6 +410,20 @@ class NavidromeClient:
             logger.error("Failed to update playlist %s public=%s: %s", playlist_id, public, exc)
             return False
 
+    def rename_playlist(self, playlist_id: str, name: str) -> bool:
+        """Rename a playlist via the Subsonic ``updatePlaylist`` endpoint."""
+        try:
+            data = self._get_subsonic_response(
+                "updatePlaylist",
+                timeout=30,
+                playlistId=playlist_id,
+                name=name,
+            )
+            return data.get("status") == "ok"
+        except Exception as exc:
+            logger.error("Failed to rename playlist %s: %s", playlist_id, exc)
+            return False
+
     # ------------------------------------------------------------------
     # Artist info (OpenSubsonic — requires external integration)
     # ------------------------------------------------------------------

@@ -504,6 +504,7 @@ def _detect_discogs(title: str, artist: str, album: str | None,
         return {"source": "discogs", "matched": False, "confidence": 0.0, "metadata": {}}
     # Fast path: the title is already known to be a Discogs single from the
     # artist's cached release list (avoids one Discogs API call per track).
+    # Exact list membership = perfect title similarity, verified artist.
     if cached_single_titles:
         normalized = (title or "").lower().strip()
         if normalized in {str(t).lower().strip() for t in cached_single_titles}:
@@ -511,10 +512,14 @@ def _detect_discogs(title: str, artist: str, album: str | None,
                 str(t).lower().strip() for t in cached_promo_titles
             }
             return {"source": "discogs", "matched": True,
-                    "confidence": 0.5 if is_promo else 0.8,
-                    "metadata": {"is_promo": is_promo}, "cached": True}
+                    "confidence": 0.5 if is_promo else 0.85,
+                    "metadata": {"is_promo": is_promo, "similarity_ratio": 1.0},
+                    "cached": True}
     try:
-        from services.enrichment.discogs_service import _get_service as _get_discogs_service
+        from services.enrichment.discogs_service import (
+            _get_service as _get_discogs_service,
+            calculate_discogs_confidence,
+        )
         # Use the shared per-token service so the per-artist release list and
         # single verdicts are cached across tracks — a fresh DiscogsService per
         # track would re-fetch the artist's releases for EVERY track (N+1).
@@ -522,20 +527,32 @@ def _detect_discogs(title: str, artist: str, album: str | None,
         ctx = {"album": album, "is_special_edition": is_special_edition} if album else {"is_special_edition": is_special_edition}
         if hasattr(svc, "get_single_status"):
             st = svc.get_single_status(title, artist, album_context=ctx)
-            matched = bool(st.get("is_single"))
+            matched_raw = bool(st.get("is_single"))
             is_promo = bool(st.get("is_promo"))
             year = st.get("release_year")
+            similarity = float(st.get("similarity") or 0.0)
+            artist_verified = bool(st.get("artist_verified", False))
         else:
-            matched = bool(svc.is_single(title, artist, album_context=ctx))
+            matched_raw = bool(svc.is_single(title, artist, album_context=ctx))
             is_promo = False
             year = None
-            if matched and hasattr(svc, "get_single_release_year"):
+            similarity = 1.0
+            artist_verified = True
+            if matched_raw and hasattr(svc, "get_single_release_year"):
                 year = svc.get_single_release_year(title, artist)
+        # Dynamic confidence: base weight (0.85) × title similarity ratio ×
+        # penalties (unverified artist → half; short/generic title → 0.6
+        # unless near-exact). The scan already strips single-release suffixes
+        # (``lookup_title``) and both sides normalize brackets/punctuation,
+        # so "New Way Out (Radio Edit)" vs "New Way Out" scores ~1.0, not 0.70.
+        calc = calculate_discogs_confidence(title, similarity, artist_verified)
+        matched = bool(matched_raw and calc["matched"])
         metadata: dict[str, Any] = {"is_promo": is_promo}
+        metadata.update(calc.get("metadata") or {})
         if year:
             metadata["release_year"] = year
         return {"source": "discogs", "matched": matched,
-                "confidence": 0.5 if (matched and is_promo) else (0.8 if matched else 0.0),
+                "confidence": calc["confidence"] if matched else 0.0,
                 "metadata": metadata}
     except Exception as exc:
         logger.debug("Discogs single detection failed for %s / %s: %s", artist, title, exc)
@@ -1145,11 +1162,13 @@ def detect_single_for_track(
     # Discogs match is downgraded to a MEDIUM source — promotional evidence,
     # not commercial-single confirmation (legacy parity).
     #
-    # Discogs at sub-100% match confidence is ALSO a MEDIUM source: a lone
-    # 0.8 Discogs match must not grant 'high' on its own (that produced
+    # Discogs at sub-full confidence (fuzzy match) is ALSO a MEDIUM source: a
+    # lone fuzzy Discogs match must not grant 'high' on its own (that produced
     # false-positive 5★ singles from a single partial match).  Only a
-    # full-confidence (1.0) Discogs match counts as high.
-    _discogs_full_confidence = discogs_confirmed and float(dr.get("confidence") or 0) >= 1.0
+    # near-exact, artist-verified title match counts as high — the dynamic
+    # confidence formula scores those at 0.85 (base 0.85 × ratio ≈ 1.0), so
+    # the full-confidence gate is 0.85, not 1.0.
+    _discogs_full_confidence = discogs_confirmed and float(dr.get("confidence") or 0) >= 0.85
     _levels = _source_confidence_levels()
     high_sources = 0
     medium_sources = 0
@@ -1191,7 +1210,7 @@ def detect_single_for_track(
     # standout range (handled inside determine_final_status), leaving tracks
     # with no real sources (Tehran/Crossroads, z≈1.2) unflagged.
     #
-    # Independent medium corroboration for a sub-100% Discogs match: the
+    # Independent medium corroboration for a sub-0.85 Discogs match: the
     # release-date signal is now genuinely INDEPENDENT evidence (the album's
     # STORED release year vs the matched release date — the album year comes
     # from the tracks table, not from the Discogs match itself), so it
@@ -1229,10 +1248,10 @@ def detect_single_for_track(
         z_standout=z_standout,
     )
 
-    # A sub-100% Discogs match is MEDIUM, so it needs an independent medium
-    # source or the popularity standout (``z_standout``) to reach 'high'.
-    # Without corroboration a lone Discogs match stays 'medium' — that is the
-    # false-positive fix.
+    # A sub-0.85 Discogs match (fuzzy / unverified) is MEDIUM, so it needs an
+    # independent medium source or the popularity standout (``z_standout``)
+    # to reach 'high'.  Without corroboration a lone Discogs match stays
+    # 'medium' — that is the false-positive fix.
     if (
         discogs_confirmed
         and not _discogs_full_confidence

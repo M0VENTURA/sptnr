@@ -33,7 +33,8 @@ def api_log_file():
 
     Query params:
         name  - log filename (e.g. ``info.log``, ``debug.log``)
-        lines - number of lines (1-2000, default 500)
+        lines - number of lines (1-2000, default 500), or ``all`` for the
+                full file history (used by the /logs page)
     """
     name = request.args.get("name", "").strip()
     lines = request.args.get("lines", "500")
