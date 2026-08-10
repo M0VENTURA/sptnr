@@ -271,6 +271,9 @@ option:checked { background-color: var(--spotify-green); color: #000; }
 @media (max-width: 991.98px) {
   .navbar-nav { flex-direction: column !important; width: 100%; }
   .navbar-nav .nav-link { padding: 0.875rem 1.25rem !important; min-height: 48px; }
+  /* Header search — revealed inside the mobile hamburger menu */
+  li.nav-nav-search { display: block !important; width: 100%; padding: 0.5rem 1.25rem 0.25rem; }
+  li.nav-nav-search .input-group { max-width: none !important; }
 }
 
 /* ── Genre/mood source brand colors ─────────────────────────────────────── */

@@ -25,7 +25,6 @@ Environment variables:
     PG_USER       – PostgreSQL user (default: popularr)
     PG_PASSWORD   – PostgreSQL password
     PG_DATABASE   – PostgreSQL database name (default: popularr)
-    DB_PATH       – SQLite fallback path (default: /database/popularr.db)
 """
 
 from __future__ import annotations
@@ -56,12 +55,12 @@ class Base(DeclarativeBase):
 # ---------------------------------------------------------------------------
 
 def _resolve_database_url() -> str:
-    """Build the database connection string from environment variables.
+    """Build the PostgreSQL connection string from environment variables.
 
-    Returns a PostgreSQL URL if PG_* vars are set.
-    Falls back to SQLite ONLY when no PostgreSQL configuration exists at
-    all — this covers the first-run / setup-wizard scenario.  If PG_HOST
-    is set but unreachable the error propagates (fail fast).
+    ``DATABASE_URL`` wins when set; otherwise the ``PG_*`` variables are
+    combined into a ``postgresql+psycopg2`` URL.  PostgreSQL is required —
+    there is no SQLite fallback.  If PG_HOST is set but unreachable the
+    error propagates (fail fast).
     """
     explicit = os.environ.get("DATABASE_URL", "").strip()
     if explicit:
@@ -81,11 +80,10 @@ def _resolve_database_url() -> str:
             return f"postgresql+psycopg2://{pg_user}:{encoded_pass}@{pg_host}:{pg_port}/{pg_db}"
         return f"postgresql+psycopg2://{pg_user}@{pg_host}:{pg_port}/{pg_db}"
 
-    # SQLite fallback — only reached when no PostgreSQL is configured at all,
-    # meaning the app is running in first-run / setup-wizard mode.
-    db_path = os.environ.get("DB_PATH", "/database/popularr.db")
-    logger.info("No PG_HOST/DATABASE_URL set — using SQLite at %s (first-run mode)", db_path)
-    return f"sqlite:///{db_path}"
+    raise RuntimeError(
+        "PostgreSQL configuration missing: set DATABASE_URL or PG_HOST "
+        "(plus PG_PORT/PG_USER/PG_PASSWORD/PG_DATABASE as needed)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -129,8 +127,8 @@ def get_engine() -> Engine:
     }
 
     if sqlite:
-        # SQLite doesn't need pooling — using NullPool avoids "QueuePool limit
-        # of size 5 overflow 10" errors with multi-threaded access.
+        # Only reachable via an explicit DATABASE_URL override (e.g. tests):
+        # SQLite needs NullPool to avoid multi-threaded access errors.
         kwargs["poolclass"] = NullPool
         kwargs["connect_args"] = {"check_same_thread": False}
     else:

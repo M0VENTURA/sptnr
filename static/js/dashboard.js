@@ -585,3 +585,18 @@ document.addEventListener("DOMContentLoaded", function () {
   updateUnifiedLog();
   setInterval(updateUnifiedLog, 10000);
 });
+
+/* Open the MusicBrainz Lookup card — expands the mobile collapse drawer,
+   scrolls it into view and focuses the artist field. */
+window.openLookupDrawer = function () {
+  const card = document.getElementById("lookupCard");
+  const body = document.getElementById("lookupCardBody");
+  if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (body && !body.classList.contains("show")) {
+    bootstrap.Collapse.getOrCreateInstance(body).show();
+  }
+  setTimeout(function () {
+    const el = document.getElementById("lookupArtist");
+    if (el) el.focus();
+  }, 400);
+};

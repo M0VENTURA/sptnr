@@ -285,7 +285,7 @@ def ensure_mb_ignored_fields_column() -> bool: return _ensure_subset("tracks", [
 # MAIN BOOTSTRAP & ENTRY
 # =============================================================================
 
-def ensure_full_schema(_db_path: str | None = None) -> bool:
+def ensure_full_schema() -> bool:
     lock_acquired = False
     try:
         with db_session() as session:

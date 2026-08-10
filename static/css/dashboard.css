@@ -43,3 +43,35 @@
     padding-top: 0 !important;
     padding-bottom: 0 !important;
 }
+
+/* ─── Mobile layout fixes ─────────────────────────────────────────────── */
+
+/* Stat badges: single-line horizontal swipe strip instead of 2-row wrap */
+.dashboard-stat-strip {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+.dashboard-stat-strip::-webkit-scrollbar {
+    display: none;
+}
+
+@media (max-width: 575.98px) {
+    /* 44px+ touch targets for the scanning-log toolbar */
+    .log-toolbar {
+        flex-wrap: wrap;
+    }
+    .log-toolbar .btn {
+        min-height: 44px;
+        min-width: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    /* Finger-sized scanner tab pills and run buttons */
+    #scannerTabs .nav-link {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+    }
+}

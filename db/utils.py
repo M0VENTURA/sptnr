@@ -22,8 +22,6 @@ except ImportError:  # pragma: no cover - depends on runtime image
     execute_values = None
 
 
-DB_PATH = os.environ.get("DB_PATH", "/database/popularr.db")
-
 _PG_LAST_FAILURE_MONOTONIC = 0.0
 _PG_FAILURE_BACKOFF_SECONDS = float(os.environ.get("PG_FAILURE_BACKOFF_SECONDS", "30"))
 _PG_IDLE_IN_TRANSACTION_TIMEOUT_MS = int(os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "60000"))

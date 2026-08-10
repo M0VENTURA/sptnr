@@ -14,7 +14,9 @@ import os
 import pytest
 
 os.environ.setdefault("CONFIG_PATH", "/dev/null")
-os.environ.setdefault("DB_PATH", ":memory:")
+# Production is PostgreSQL-only; an explicit DATABASE_URL keeps the unit
+# test suite self-contained on an in-memory SQLite engine.
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 # ---------------------------------------------------------------------------
 # App fixture

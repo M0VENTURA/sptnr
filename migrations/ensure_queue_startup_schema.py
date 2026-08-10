@@ -142,7 +142,7 @@ def _is_pg_configured() -> bool:
 
 
 def main():
-    # Skip entirely if no PG config is present — new systems or SQLite fallback
+    # Skip entirely if no PG config is present.
     if not _is_pg_configured():
         print("⏭️  No PostgreSQL config found (set PG_HOST or DATABASE_URL) — skipping startup schema.")
         return 0

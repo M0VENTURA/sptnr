@@ -14,7 +14,8 @@ Backends:
     - PostgreSQL (primary): session-scoped advisory lock
       (``pg_try_advisory_lock``). Lock ownership is tied to the holding
       DB connection, so a killed worker releases it automatically.
-    - SQLite fallback: ``fcntl.flock`` on a lock file under the temp dir.
+    - File lock fallback (non-PostgreSQL engine URLs only — e.g. explicit
+      test overrides): ``fcntl.flock`` on a lock file under the temp dir.
 
 Usage::
 

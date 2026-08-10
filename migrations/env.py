@@ -1,7 +1,7 @@
 """Alembic environment configuration for Popularr.
 
 Loads the SQLAlchemy engine from ``db.engine`` (respecting DATABASE_URL /
-PG_* / DB_PATH env vars) so the same connection logic applies to both the
+PG_* env vars) so the same connection logic applies to both the
 app and migrations.
 """
 

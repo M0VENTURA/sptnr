@@ -82,7 +82,6 @@ class Settings(BaseSettings):
     # ── Config paths ──────────────────────────────────────────────────────
     config_path: str = Field(default="/config/config.yaml", description="Config file path")
     log_path: str = Field(default="/config/app.log", description="Log file path")
-    db_path: str = Field(default="/database/popularr.db", description="SQLite fallback path")
 
     # ── Scheduler ─────────────────────────────────────────────────────────
     scheduler_timezone: str = Field(default="Australia/Melbourne")

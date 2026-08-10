@@ -205,7 +205,6 @@ def get_config() -> dict:
         "downloads_folder": s.downloads_folder,
         "config_path": s.config_path,
         "log_path": s.log_path,
-        "db_path": s.db_path,
         "nav_url": s.nav_url,
         "nav_user": s.nav_user,
         "nav_pass": s.nav_pass,
@@ -1303,18 +1302,6 @@ def get_state_directory() -> str:
         Value of env var ``SCAN_STATE_DIR``, or ``/database``.
     """
     return os.environ.get("SCAN_STATE_DIR", "/database")
-
-
-def get_database_path() -> str:
-    """Get the SQLite database file path (legacy).
-
-    Returns:
-        Absolute path string.
-
-    Default:
-        ``/database/popularr.db``
-    """
-    return os.path.join(get_state_directory(), "popularr.db")
 
 
 def get_api_rate_limiter_state_file() -> str:

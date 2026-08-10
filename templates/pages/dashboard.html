@@ -21,7 +21,7 @@
                         type="text"
                         id="dashboardTopSearchInput"
                         class="form-control"
-                        placeholder="Search library..."
+                        placeholder="Search library or MusicBrainz…"
                         autocomplete="off"
                         aria-label="Search library"
                         style="font-size:16px;min-height:44px;"
@@ -34,12 +34,12 @@
         </div>
     </div>
 
-    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-        <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-music-note"></i> {{ stats.tc if stats else '?' }} tracks</span>
-        <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-disc"></i> {{ stats.ac if stats else '?' }} albums</span>
-        <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-people"></i> {{ stats.artists_c if stats else '?' }} artists</span>
+    <div class="d-flex flex-nowrap align-items-center gap-2 mb-3 dashboard-stat-strip">
+        <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-music-note"></i> {{ stats.tc if stats else '?' }} tracks</span>
+        <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-disc"></i> {{ stats.ac if stats else '?' }} albums</span>
+        <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-people"></i> {{ stats.artists_c if stats else '?' }} artists</span>
         {% if stats and stats.avg_stars is not none %}
-        <span class="badge bg-dark px-3 py-2 rounded-pill"><i class="bi bi-star-fill text-warning"></i> {{ stats.avg_stars }}</span>
+        <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-star-fill text-warning"></i> {{ stats.avg_stars }}</span>
         {% endif %}
     </div>
 
@@ -54,9 +54,13 @@
     <!-- ===== Lookup Card ===== -->
     <div class="card mb-4 border-secondary" id="lookupCard">
         <div class="card-header py-2 d-flex justify-content-between align-items-center">
-            <h6 class="mb-0"><i class="bi bi-search"></i> MusicBrainz Lookup</h6>
-            <small class="text-muted">Search for releases to download</small>
+            <button type="button" class="btn btn-link p-0 text-decoration-none text-start w-100 d-flex align-items-center gap-2"
+                    data-bs-toggle="collapse" data-bs-target="#lookupCardBody" aria-expanded="true" aria-controls="lookupCardBody">
+                <h6 class="mb-0"><i class="bi bi-search"></i> MusicBrainz Lookup</h6>
+                <i class="bi bi-chevron-up ms-auto lookup-chevron"></i>
+            </button>
         </div>
+        <div class="collapse show d-lg-block" id="lookupCardBody">
         <div class="card-body py-3">
             <form onsubmit="event.preventDefault(); doLookup()">
                 <div class="row g-2 align-items-end">
@@ -87,53 +91,71 @@
                 </div>
             </form>
         </div>
+        </div>
     </div>
 
     <div class="row g-2 mb-4">
         <div class="col-6 col-md-4 col-xl-2">
-            <a href="/artists" class="btn btn-primary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+            <a href="/artists" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
                 <i class="bi bi-people fs-4"></i> <span class="small fw-semibold">Artists</span>
             </a>
         </div>
         <div class="col-6 col-md-4 col-xl-2">
-            <a href="/missing" class="btn btn-outline-warning w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+            <a href="/missing" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
                 <i class="bi bi-exclamation-circle fs-4"></i> <span class="small fw-semibold">Missing</span>
             </a>
         </div>
         <div class="col-6 col-md-4 col-xl-2">
-            <a href="/analytics/genres-moods" class="btn btn-outline-info w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+            <a href="/analytics/genres-moods" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
                 <i class="bi bi-bar-chart-line fs-4"></i> <span class="small fw-semibold">Analytics</span>
             </a>
         </div>
         <div class="col-6 col-md-4 col-xl-2">
-            <a href="/config" class="btn btn-outline-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+            <a href="/config" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
                 <i class="bi bi-gear fs-4"></i> <span class="small fw-semibold">Settings</span>
             </a>
         </div>
         <div class="col-6 col-md-4 col-xl-2">
-            <button onclick="document.getElementById('lookupCard')?.scrollIntoView({behavior:'smooth'}); document.getElementById('lookupArtist')?.focus()" class="btn btn-outline-info w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+            <button onclick="openLookupDrawer()" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
                 <i class="bi bi-search fs-4"></i> <span class="small fw-semibold">Search</span>
             </button>
         </div>
         <div class="col-6 col-md-4 col-xl-2">
-            <button onclick="stopAllScans()" class="btn btn-outline-danger w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
+            <button onclick="stopAllScans()" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
                 <i class="bi bi-stop-circle fs-4"></i> <span class="small fw-semibold">Stop</span>
             </button>
         </div>
     </div>
 
-    <!-- ===== Scan Controls ===== -->
-    <div class="row g-2 mb-3">
-        <div class="col-sm-6 col-xl-4">
-            <div class="card h-100 border-primary border-opacity-25">
-                <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                    <small class="fw-semibold"><i class="bi bi-graph-up"></i> Popularity</small>
-                    <div class="d-flex gap-1">
-                        <a href="/config#popularity-weights" class="btn btn-outline-light btn-sm py-0 px-1" title="Settings"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopPopularityScan()" class="btn btn-outline-danger btn-sm py-0 px-1" title="Stop"><i class="bi bi-stop-fill"></i></button>
+    <!-- ===== Scanner Controls (segmented switcher) ===== -->
+    <div class="card mb-3" id="scannerControlsCard">
+        <div class="card-header py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <small class="fw-semibold"><i class="bi bi-lightning-charge"></i> Scanner Controls</small>
+            <ul class="nav nav-pills gap-1" id="scannerTabs" role="tablist" style="--bs-nav-link-padding-y: 0.35rem;">
+                <li class="nav-item" role="presentation">
+                    <button type="button" class="nav-link active" data-bs-toggle="pill" data-bs-target="#scannerPanePopularity" role="tab" aria-controls="scannerPanePopularity" aria-selected="true">
+                        <i class="bi bi-graph-up"></i> Popularity
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button type="button" class="nav-link" data-bs-toggle="pill" data-bs-target="#scannerPaneNavidrome" role="tab" aria-controls="scannerPaneNavidrome" aria-selected="false">
+                        <i class="bi bi-cloud-arrow-down"></i> Navidrome
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button type="button" class="nav-link" data-bs-toggle="pill" data-bs-target="#scannerPaneEssentia" role="tab" aria-controls="scannerPaneEssentia" aria-selected="false">
+                        <i class="bi bi-music-note-list"></i> Essentia
+                    </button>
+                </li>
+            </ul>
+        </div>
+        <div class="card-body py-2">
+            <div class="tab-content">
+                <div class="tab-pane fade show active" id="scannerPanePopularity" role="tabpanel" aria-labelledby="scannerTabPopularity">
+                    <div class="d-flex justify-content-end gap-1 mb-1">
+                        <a href="/config#popularity-weights" class="btn btn-outline-light btn-sm py-1 px-2" title="Settings"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopPopularityScan()" class="btn btn-outline-danger btn-sm py-1 px-2" title="Stop"><i class="bi bi-stop-fill"></i></button>
                     </div>
-                </div>
-                <div class="card-body py-2">
                     <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
                         <select id="popScanSelector" class="form-select form-select-sm" style="min-width: 130px; width: auto;" title="Select popularity scan type">
                             <option value="all">All</option>
@@ -145,45 +167,32 @@
                             <input class="form-check-input" type="checkbox" id="popScanForce" name="force" value="1">
                             <label class="form-check-label small" for="popScanForce">Forced</label>
                         </div>
-                        <button id="popScanRunBtn" onclick="runDashboardPopularityScan()" class="btn btn-primary btn-sm py-0 px-2"><i class="bi bi-play-fill"></i> Run</button>
+                        <button id="popScanRunBtn" onclick="runDashboardPopularityScan()" class="btn btn-primary btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Run</button>
                     </div>
                     <div><span id="pop-status" class="text-muted small">Idle</span></div>
                 </div>
-            </div>
-        </div>
-        <div class="col-sm-6 col-xl-4">
-            <div class="card h-100 border-secondary border-opacity-25">
-                <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                    <small class="fw-semibold"><i class="bi bi-cloud-arrow-down"></i> Navidrome <span id="nav-connectivity" class="badge bg-secondary ms-1" style="font-size:9px">?</span></small>
-                    <div class="d-flex gap-1">
-                        <a href="/config#users" class="btn btn-outline-light btn-sm py-0 px-1" title="Settings"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopNavidromeSync()" class="btn btn-outline-danger btn-sm py-0 px-1" title="Stop"><i class="bi bi-stop-fill"></i></button>
+                <div class="tab-pane fade" id="scannerPaneNavidrome" role="tabpanel" aria-labelledby="scannerTabNavidrome">
+                    <div class="d-flex justify-content-end gap-1 mb-1">
+                        <a href="/config#users" class="btn btn-outline-light btn-sm py-1 px-2" title="Settings"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopNavidromeSync()" class="btn btn-outline-danger btn-sm py-1 px-2" title="Stop"><i class="bi bi-stop-fill"></i></button>
                     </div>
-                </div>
-                <div class="card-body py-2">
                     <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
+                        <span id="nav-connectivity" class="badge bg-secondary" style="font-size:9px">?</span>
                         <div class="form-check form-check-inline mb-0" title="Full re-import of every artist (ignores the new-items / changed-album skips)">
                             <input class="form-check-input" type="checkbox" id="navImportForce" name="force" value="1">
                             <label class="form-check-label small" for="navImportForce">Forced</label>
                         </div>
-                        <button onclick="startNavidromeImport()" class="btn btn-secondary btn-sm py-0 px-2"><i class="bi bi-play-fill"></i> Import</button>
-                        <button onclick="startNavidromeServerScan()" class="btn btn-outline-secondary btn-sm py-0 px-2" title="Trigger a Navidrome server rescan so new/changed files (e.g. completed downloads) appear in Navidrome"><i class="bi bi-arrow-repeat"></i> Sync Changes</button>
+                        <button onclick="startNavidromeImport()" class="btn btn-secondary btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Import</button>
+                        <button onclick="startNavidromeServerScan()" class="btn btn-outline-secondary btn-sm py-1 px-3" style="min-height:44px;" title="Trigger a Navidrome server rescan so new/changed files (e.g. completed downloads) appear in Navidrome"><i class="bi bi-arrow-repeat"></i> Sync Changes</button>
                     </div>
                     <div><span id="nav-status" class="text-muted small">Idle</span></div>
                 </div>
-            </div>
-        </div>
-        <div class="col-sm-6 col-xl-4">
-            <div class="card h-100 border-info border-opacity-25">
-                <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                    <small class="fw-semibold"><i class="bi bi-music-note-list"></i> Essentia</small>
-                    <div class="d-flex gap-1">
-                        <a href="/config#essentia-mood-scan" class="btn btn-outline-light btn-sm py-0 px-1" title="Settings"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopEssentiaScan()" class="btn btn-outline-danger btn-sm py-0 px-1" title="Stop"><i class="bi bi-stop-fill"></i></button>
+                <div class="tab-pane fade" id="scannerPaneEssentia" role="tabpanel" aria-labelledby="scannerTabEssentia">
+                    <div class="d-flex justify-content-end gap-1 mb-1">
+                        <a href="/config#essentia-mood-scan" class="btn btn-outline-light btn-sm py-1 px-2" title="Settings"><i class="bi bi-gear"></i></a>
+                        <button onclick="stopEssentiaScan()" class="btn btn-outline-danger btn-sm py-1 px-2" title="Stop"><i class="bi bi-stop-fill"></i></button>
                     </div>
-                </div>
-                <div class="card-body py-2">
-                    <button onclick="startEssentiaScan()" class="btn btn-info btn-sm py-0 px-2 mb-1"><i class="bi bi-play-fill"></i> Run</button>
+                    <button onclick="startEssentiaScan()" class="btn btn-info btn-sm py-1 px-3 mb-1" style="min-height:44px;"><i class="bi bi-play-fill"></i> Run</button>
                     <div><span id="ess-status" class="text-muted small">Idle</span></div>
                 </div>
             </div>
@@ -208,7 +217,7 @@
                     <h6 class="mb-0"><i class="bi bi-clock-history"></i> Recent Scans</h6>
                 </div>
                 <div class="table-responsive" style="height: 320px; overflow-y: auto;">
-                    <table class="table table-hover mb-0 table-sm">
+                    <table class="table table-hover mb-0 table-sm" style="min-width: 620px;">
                         <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
                             <tr>
                                 <th style="width: 28%"><i class="bi bi-person"></i> Artist</th>
@@ -239,7 +248,7 @@
                     </div>
                 </div>
                 <div class="table-responsive" style="height: 320px; overflow-y: auto;">
-                    <table class="table table-hover mb-0 table-sm">
+                    <table class="table table-hover mb-0 table-sm" style="min-width: 680px;">
                         <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
                             <tr>
                                 <th style="width: 28%"><i class="bi bi-person"></i> Artist</th>
@@ -260,7 +269,7 @@
     <div class="card mb-4">
         <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
             <span class="fw-semibold"><i class="bi bi-terminal"></i> Scanning Log</span>
-            <div class="d-flex gap-2 align-items-center">
+            <div class="d-flex gap-2 align-items-center log-toolbar">
                 <div class="d-flex gap-1">
                     <a href="/api/download-log/unified" class="btn btn-sm btn-outline-primary py-0 px-1" download title="Download scanning log"><i class="bi bi-download"></i></a>
                     <a href="/api/download-log/info" class="btn btn-sm btn-outline-info py-0 px-1" download title="Download info log"><i class="bi bi-info-circle"></i></a>
@@ -294,5 +303,5 @@
 
 <script src="{{ url_for('static', filename='js/downloads.js') }}?v=2"></script>
 <script src="{{ url_for('static', filename='js/upcoming_releases.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/dashboard.js') }}?v=3"></script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}?v=4"></script>
 {% endblock %}
