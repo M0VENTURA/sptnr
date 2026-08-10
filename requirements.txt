@@ -9,6 +9,10 @@ apscheduler>=3.10,<4.0
 pydantic-settings>=2.0,<3.0
 structlog>=24.0,<25.0
 
+# C-speed fuzzy string matching for Discogs/MusicBrainz title scoring
+# (optional — discogs_service falls back to stdlib difflib when unavailable)
+rapidfuzz>=3.0.0,<4.0.0
+
 # Database — SQLAlchemy ORM + async driver + migrations
 sqlalchemy>=2.0,<3.0
 asyncpg>=0.29,<1.0

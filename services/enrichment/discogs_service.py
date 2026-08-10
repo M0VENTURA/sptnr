@@ -7,6 +7,11 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, TypedDict, List, Dict, Optional
 
+try:  # Optional C-speed fuzzy matching — see _discogs_title_similarity
+    from rapidfuzz import fuzz as _rapidfuzz_fuzz
+except ImportError:  # pragma: no cover — stdlib fallback keeps matching working
+    _rapidfuzz_fuzz = None
+
 from api_clients.discogs_http import DiscogsHttpClient
 from helpers.normalization_service import (
     normalize_title_for_lookup,
@@ -67,6 +72,98 @@ def calculate_discogs_confidence(title: str, similarity_ratio: float,
         "confidence": final,
         "metadata": {"similarity_ratio": round(sim, 2)},
     }
+
+
+# --- DISCOGS TITLE COMPARISON ---
+# Discogs release/track titles routinely carry structural noise that is not
+# part of the song title and dilutes raw SequenceMatcher ratios:
+#   "They're All Around Us - Single"
+#   "They're All Around Us (Single)"
+#   "They're All Around Us [Explicit]"
+#   "They're All Around Us / New Way Boy"   (split single B-side)
+DISCOGS_NOISE_SUFFIX_RE = re.compile(
+    r"\s*[-–—]\s*(?:the\s+)?"
+    r"(?:single|ep|promo|radio\s+edit|edit|explicit|clean|remaster(?:ed)?|mono|stereo|album\s+version)"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+
+def _clean_title_for_comparison(title: str) -> str:
+    """Normalized comparison key for a Discogs title.
+
+    Canonical normalization (``normalize_title_for_lookup``) PLUS stripping
+    of structural release noise so it cannot dilute similarity scoring:
+    - bracketed sections: ``[Explicit]``, ``(Single)``, ``(Remastered)``
+    - trailing dash suffixes: ``- Single``, ``- EP``, ``- Radio Edit``, ...
+
+    Edition annotations ("(Epic Edition)") are guarded BEFORE scoring by
+    ``edition_annotations_compatible`` (the same annotation is required on
+    both sides), so stripping all brackets here is safe.
+    """
+    if not title:
+        return ""
+    value = re.sub(r"[\(\[][^\)\]]*[\)\]]", " ", title)
+    value = DISCOGS_NOISE_SUFFIX_RE.sub("", value)
+    return normalize_title_for_lookup(value)
+
+
+def _discogs_title_similarity(local_title: str, candidate_title: str) -> float:
+    """Token-aware similarity between a local track title and a Discogs candidate.
+
+    Plain SequenceMatcher ratios penalize extra structural words (" - Single")
+    and word order, so scoring escalates:
+    1. exact normalized equality -> 1.0
+    2. token containment with >= 70% coverage -> 0.95
+    3. split-title ("A / B") primary-side containment -> 0.95
+    4. otherwise the best of the plain and word-order-sorted ratios
+    """
+    local_key = _clean_title_for_comparison(local_title)
+    candidate_key = _clean_title_for_comparison(candidate_title)
+    if not local_key or not candidate_key:
+        return 0.0
+    if local_key == candidate_key:
+        return 1.0
+
+    shorter, longer = (
+        (local_key, candidate_key)
+        if len(local_key) <= len(candidate_key)
+        else (candidate_key, local_key)
+    )
+    if shorter in longer and len(shorter) / len(longer) >= 0.70:
+        return 0.95
+
+    # Split singles: "They're All Around Us / New Way Boy" — the primary side
+    # (before the first " / ") of either title may be the whole other title.
+    for raw in (local_title, candidate_title):
+        primary = re.split(r"\s*/\s*", raw.strip(), maxsplit=1)[0] if raw else ""
+        primary_key = _clean_title_for_comparison(primary)
+        if not primary_key:
+            continue
+        if primary_key == local_key or primary_key == candidate_key:
+            return 0.95
+        for other_key in (local_key, candidate_key):
+            if primary_key in other_key and len(primary_key) / len(other_key) >= 0.70:
+                return 0.95
+
+    # RapidFuzz (C-speed) when installed: token_set_ratio handles subsets and
+    # word order ("they re all around us" vs "they re all around us new way
+    # boy"); partial_ratio handles suffix differences ("A" vs "A B").  The
+    # stdlib fallback is the equivalent max of plain and word-order-sorted
+    # SequenceMatcher ratios.
+    if _rapidfuzz_fuzz is not None:
+        return max(
+            _rapidfuzz_fuzz.token_set_ratio(local_key, candidate_key),
+            _rapidfuzz_fuzz.partial_ratio(local_key, candidate_key),
+        ) / 100.0
+
+    def _sorted(value: str) -> str:
+        return " ".join(sorted(value.split()))
+
+    return max(
+        SequenceMatcher(None, local_key, candidate_key).ratio(),
+        SequenceMatcher(None, _sorted(local_key), _sorted(candidate_key)).ratio(),
+    )
 
 
 # --- TYPES ---
