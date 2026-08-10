@@ -8,19 +8,13 @@ from __future__ import annotations
 import logging
 import unicodedata
 import re
-import time
 from typing import Any
-
-import httpx
 
 from sqlalchemy import text
 from db.engine import db_session
 from db.utils import get_db_connection, row_get  # TODO: migrate
-from helpers.config_helpers import get_musicbrainz_user_agent
 
 logger = logging.getLogger(__name__)
-
-MUSICBRAINZ_USER_AGENT = get_musicbrainz_user_agent()
 
 
 def get_library_tracks(artist: str, album: str) -> list[dict]:
@@ -69,15 +63,16 @@ def get_missing_tracks(artist: str, album: str) -> dict:
     if not mb_mbid:
         # Fallback: search MB for a release
         try:
-            headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-            search_url = "https://musicbrainz.org/ws/2/release/"
-            from urllib.parse import quote
-            resp = httpx.get(
-                search_url,
-                params={"query": f'artist:"{quote(artist)}" AND release:"{quote(album)}"', "fmt": "json", "limit": 5},
-                headers=headers, timeout=10,
+            from api_clients.musicbrainz_http import (
+                MusicBrainzHttpClient,
+                escape_lucene_special_chars,
             )
-            releases = resp.json().get("releases", [])
+            from helpers.normalization_service import normalize_title_for_lucene_query
+            query = (
+                f'artist:"{escape_lucene_special_chars(artist)}" '
+                f'AND release:"{escape_lucene_special_chars(album)}"'
+            )
+            releases = MusicBrainzHttpClient(enabled=True).search_releases(query, limit=5)
             if releases:
                 mb_mbid = releases[0].get("id")
         except Exception as exc:

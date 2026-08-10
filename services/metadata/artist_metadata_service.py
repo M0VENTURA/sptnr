@@ -14,9 +14,6 @@ import logging
 import time
 from typing import Any
 
-import httpx
-from sqlalchemy import text
-from db.engine import db_session
 from db.utils import get_db_connection
 from services.enrichment.artist_bio_service import get_artist_biography
 
@@ -715,14 +712,15 @@ def genre_recommendations(artist: str) -> tuple[dict, int]:
     if not artist:
         return {"success": False, "error": "artist required"}, 400
     try:
-        from urllib.parse import quote
-        headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
-        resp = httpx.get(
-            f"https://musicbrainz.org/ws/2/artist/?query=artist:{quote(artist)}&fmt=json&limit=1",
-            headers=headers, timeout=10,
+        from api_clients.musicbrainz_http import (
+            MusicBrainzHttpClient,
+            escape_lucene_special_chars,
         )
-        data = resp.json()
-        artists = data.get("artists", [])
+        # Shared client: canonical User-Agent + 1 req/s throttle + retry/backoff.
+        artists = MusicBrainzHttpClient(enabled=True).search_artists(
+            f'artist:"{escape_lucene_special_chars(artist)}"',
+            limit=1,
+        )
         if not artists:
             return {"success": True, "genres": []}, 200
         tags = artists[0].get("tags", [])

@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
-import httpx
 
 from sqlalchemy import text
 from db.engine import db_session
@@ -43,11 +42,8 @@ from services.enrichment.album_art_service import (
     fetch_album_art_from_itunes,
     fetch_album_art_from_musicbrainz
 )
-from helpers.config_helpers import get_musicbrainz_user_agent
 
 logger = logging.getLogger(__name__)
-
-MUSICBRAINZ_USER_AGENT = get_musicbrainz_user_agent()
 
 
 # =============================================================================
@@ -443,48 +439,35 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
 
     # 3. Fallback to MusicBrainz API check
     try:
-        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-        search_url = "https://musicbrainz.org/ws/2/release"
-        params = {
-            "query": f'release:"{album}" AND artist:"{artist}"',
-            "fmt": "json",
-            "limit": 5,
-        }
+        from api_clients.musicbrainz_http import (
+            MusicBrainzHttpClient,
+            escape_lucene_special_chars,
+        )
+        # Shared client: canonical User-Agent + 1 req/s throttle + retry/backoff.
+        mb = MusicBrainzHttpClient(enabled=True)
 
-        resp = httpx.get(search_url, params=params, headers=headers, timeout=5)
-        resp.raise_for_status()
-        releases = resp.json().get("releases", [])
+        releases = mb.search_releases(
+            f'release:"{escape_lucene_special_chars(album)}" AND artist:"{escape_lucene_special_chars(artist)}"',
+            limit=5,
+        ) or []
 
         if not releases:
-            search_url = "https://musicbrainz.org/ws/2/release-group"
-            params = {"query": f'"{album}" AND artist:"{artist}"', "fmt": "json", "limit": 1}
-
-            resp = httpx.get(search_url, params=params, headers=headers, timeout=5)
-            resp.raise_for_status()
-            release_groups = resp.json().get("release-groups", [])
+            release_groups = mb.search_release_groups(
+                f'"{escape_lucene_special_chars(album)}" AND artist:"{escape_lucene_special_chars(artist)}"',
+                limit=1,
+            )
 
             if not release_groups or not release_groups[0].get("id"):
                 return {"success": True, "matched": [], "queued": [], "unmatched": [], "status": 200}
 
             rg_id = release_groups[0]["id"]
-            releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases"
-
-            releases_resp = httpx.get(releases_url, params={"fmt": "json", "limit": 5}, headers=headers, timeout=5)
-            releases_resp.raise_for_status()
-            releases = releases_resp.json().get("releases", [])
+            rg_data = mb.get_release_group(rg_id, inc="releases")
+            releases = rg_data.get("releases", []) if isinstance(rg_data, dict) else []
 
         if releases:
             release_id = releases[0].get("id")
-            release_detail_url = f"https://musicbrainz.org/ws/2/release/{release_id}"
-            
-            detail_resp = httpx.get(
-                release_detail_url,
-                params={"fmt": "json", "inc": "recordings"},
-                headers=headers,
-                timeout=5,
-            )
-            detail_resp.raise_for_status()
-            media = detail_resp.json().get("media", [])
+            detail = mb.get_release(release_id, inc="recordings")
+            media = detail.get("media", []) if isinstance(detail, dict) else []
 
             mb_matched = []
             mb_unmatched = []

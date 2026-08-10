@@ -465,7 +465,14 @@ async def api_queue_import_missing_tracks():
     """Match selected missing MusicBrainz release tracks to existing queue rows."""
     import logging as _logging
     import re as _re
-    from difflib import SequenceMatcher
+    try:  # C-speed fuzzy matching — see the ratio helper below
+        from rapidfuzz import fuzz as _ratio_fuzz
+        def _fuzzy_ratio(a: str, b: str) -> float:
+            return _ratio_fuzz.token_set_ratio(a or "", b or "") / 100.0
+    except ImportError:  # pragma: no cover — stdlib fallback keeps matching working
+        from difflib import SequenceMatcher as _SequenceMatcher
+        def _fuzzy_ratio(a: str, b: str) -> float:
+            return _SequenceMatcher(None, a or "", b or "").ratio()
 
     conn = None
     try:
@@ -562,7 +569,7 @@ async def api_queue_import_missing_tracks():
                 if recording_mbid and cand["recording_mbid"] == recording_mbid:
                     score = 1.0
                 elif title_norm and cand["title_norm"]:
-                    score = SequenceMatcher(None, title_norm, cand["title_norm"]).ratio()
+                    score = _fuzzy_ratio(title_norm, cand["title_norm"])
                     if track_number and cand["track_number"] and str(track_number).strip() == cand["track_number"]:
                         score = min(1.0, score + 0.15)
                 if score > best_score:

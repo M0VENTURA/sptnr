@@ -16,13 +16,17 @@ Owns MusicBrainz interpretation/business rules:
 
 from __future__ import annotations
 
-import difflib
 import json
 import logging
 import os
 from typing import Any, List, Dict, Tuple
-import httpx
-import time
+
+try:  # C-speed fuzzy matching — see _similarity
+    from rapidfuzz import fuzz as _rapidfuzz_fuzz  # type: ignore[import-untyped]
+    _HAVE_RAPIDFUZZ = True
+except ImportError:  # pragma: no cover — stdlib fallback keeps matching working
+    import difflib as _difflib
+    _HAVE_RAPIDFUZZ = False
 
 from api_clients.musicbrainz_http import (
     MUSICBRAINZ_UUID_RE,
@@ -41,6 +45,43 @@ from helpers.normalization_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _similarity(a: str, b: str) -> float:
+    """String similarity on a 0-1 scale.
+
+    RapidFuzz ``token_set_ratio`` (C-speed, order- and word-subset
+    insensitive) with a ``difflib`` fallback so matching keeps working
+    without the optional dependency.
+    """
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if _HAVE_RAPIDFUZZ:
+        return _rapidfuzz_fuzz.token_set_ratio(a, b) / 100.0
+    return _difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _mbid_similarity(a: str, b: str) -> float:
+    """Order-insensitive title similarity WITHOUT subset inflation.
+
+    ``token_set_ratio`` treats "Valhalla" as a 1.0 subset match of "Valhalla
+    (Epic Edition)", which makes MBID resolution ambiguous — a studio track
+    could tie with its live/epic edition recording and resolve to whichever
+    MusicBrainz returns first.  Recording MBID selection needs precision, so
+    ``token_sort_ratio`` (word-order insensitive, subset-penalising) is used
+    there; single-detection title matching uses ``_similarity`` where subset
+    matches are the desired outcome.  ``difflib`` fallback mirrors the legacy
+    ``SequenceMatcher`` ratio.
+    """
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if _HAVE_RAPIDFUZZ:
+        return _rapidfuzz_fuzz.token_sort_ratio(a, b) / 100.0
+    return _difflib.SequenceMatcher(None, a, b).ratio()
 
 CACHE_FILE = "/tmp/mbid_cache.json" if os.path.exists("/tmp") else "mbid_cache.json"
 
@@ -68,7 +109,7 @@ def build_artist_credit_string(artist_credit):
 
 
 def calculate_match_score(mb_title, mb_artist_credit, local_album, local_artist) -> float:
-    title_sim = difflib.SequenceMatcher(None, normalize_string(local_album), normalize_string(mb_title)).ratio()
+    title_sim = _similarity(normalize_string(local_album), normalize_string(mb_title))
 
     artist_name = ""
     if isinstance(mb_artist_credit, list) and mb_artist_credit:
@@ -77,7 +118,7 @@ def calculate_match_score(mb_title, mb_artist_credit, local_album, local_artist)
     elif isinstance(mb_artist_credit, str):
         artist_name = mb_artist_credit
 
-    artist_sim = difflib.SequenceMatcher(None, normalize_string(local_artist), normalize_string(artist_name)).ratio()
+    artist_sim = _similarity(normalize_string(local_artist), normalize_string(artist_name))
 
     return (title_sim * 0.6) + (artist_sim * 0.4)
 
@@ -131,6 +172,22 @@ def get_shared_mb_client() -> MusicBrainzHttpClient:
     if _SHARED_MB_CLIENT is None:
         _SHARED_MB_CLIENT = MusicBrainzHttpClient(enabled=True)
     return _SHARED_MB_CLIENT
+
+
+def _first_isrc(recording: dict) -> str | None:
+    """First ISRC from a MusicBrainz recording or search document.
+
+    Both the JSON search docs and the recording entity expose ISRCs as an
+    ``isrcs`` array; a defensive ``isrc-list`` alias covers older payloads.
+    """
+    isrcs = recording.get("isrcs") or recording.get("isrc-list") or []
+    if isinstance(isrcs, list):
+        for raw in isrcs:
+            value = str(raw or "").strip()
+            if value:
+                return value
+    value = str(recording.get("isrc") or "").strip()
+    return value or None
 
 
 class MusicBrainzService:
@@ -210,9 +267,9 @@ class MusicBrainzService:
             norm_title = normalize_title_for_mbid_match(title)
 
             for rec in recordings:
-                sim = difflib.SequenceMatcher(
-                    None, norm_title, normalize_title_for_lookup(rec.get("title") or "")
-                ).ratio()
+                sim = _mbid_similarity(
+                    norm_title, normalize_title_for_lookup(rec.get("title") or "")
+                )
 
                 if sim > best_score:
                     best_score = sim
@@ -256,22 +313,6 @@ class MusicBrainzService:
         except Exception as e:
             logger.debug("[MB LOOKUP] %s", e, exc_info=True)
             return {}
-
-def _first_isrc(recording: dict) -> str | None:
-    """First ISRC from a MusicBrainz recording or search document.
-
-    Both the JSON search docs and the recording entity expose ISRCs as an
-    ``isrcs`` array; a defensive ``isrc-list`` alias covers older payloads.
-    """
-    isrcs = recording.get("isrcs") or recording.get("isrc-list") or []
-    if isinstance(isrcs, list):
-        for raw in isrcs:
-            value = str(raw or "").strip()
-            if value:
-                return value
-    value = str(recording.get("isrc") or "").strip()
-    return value or None
-
 
     def _recording_to_metadata(self, recording: dict, mbid: str, confidence: float) -> Dict[str, Any]:
         """Project a raw MusicBrainz recording document onto the metadata dict.
@@ -373,9 +414,9 @@ def _first_isrc(recording: dict) -> str | None:
                     best = None
                     best_score = 0.0
                     for rec in recordings:
-                        sim = difflib.SequenceMatcher(
-                            None, norm_title, normalize_title_for_lookup(rec.get("title") or "")
-                        ).ratio()
+                        sim = _mbid_similarity(
+                            norm_title, normalize_title_for_lookup(rec.get("title") or "")
+                        )
                         if sim > best_score:
                             best_score = sim
                             best = rec
@@ -467,11 +508,10 @@ def _first_isrc(recording: dict) -> str | None:
             # annotation — never the plain "Valhalla" single.
             if not edition_annotations_compatible(title, group.get("title") or ""):
                 continue
-            sim = difflib.SequenceMatcher(
-                None,
+            sim = _similarity(
                 norm_title,
                 normalize_title_for_lookup(group.get("title") or ""),
-            ).ratio()
+            )
             if sim >= 0.7:
                 return True
         return False
@@ -525,7 +565,7 @@ def _first_isrc(recording: dict) -> str | None:
         norm_rg = normalize_title_for_lookup(strip_single_release_suffix(rg_title) or rg_title)
         if norm_rg == norm_title:
             return True
-        return difflib.SequenceMatcher(None, norm_rg, norm_title).ratio() >= 0.85
+        return _similarity(norm_rg, norm_title) >= 0.85
 
     def _recording_has_single_release(self, mbid: str, title: str = "") -> bool:
         """True when any release of the recording belongs to a Single/EP
@@ -803,28 +843,16 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
     """
 
     try:
-        headers = {
-            "User-Agent": "musicbrainz-enrichment-service",
-            "Accept": "application/json"
-        }
+        # Shared client applies the canonical User-Agent, the 1 req/s throttle
+        # and transport-layer retry/backoff — never a bare unthrottled call.
+        data = get_shared_mb_client().get_release(
+            release_id,
+            inc="recordings+artist-credits+release-groups",
+        )
 
-        url = f"https://musicbrainz.org/ws/2/release/{release_id}"
-        params = {
-            "inc": "recordings+artist-credits+release-groups",
-            "fmt": "json"
-        }
-
-        # ✅ simple rate limit
-        time.sleep(1.0)
-
-        response = httpx.get(url, headers=headers, params=params, timeout=10)
-
-        if response.status_code == 404:
-            logger.debug(f"[MB] Release {release_id} not found")
+        if not data:
+            logger.debug("[MB] Release %s not found", release_id)
             return None
-
-        response.raise_for_status()
-        data = response.json()
 
         rg = data.get("release-group", {})
 
@@ -859,12 +887,12 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
                     "duration": track.get("length"),
                 })
 
-        # ✅ cover art (best effort)
+        # ✅ cover art (best effort) — CAA also requires a UA header
         try:
-            cover_url = f"https://coverartarchive.org/release/{release_id}/front-500"
-            cover = httpx.get(cover_url, timeout=5)
-            if cover.status_code == 200:
-                release_info["cover_art"] = cover.content
+            from api_clients.coverartarchive import get_release_front_image_bytes
+            cover = get_release_front_image_bytes(release_id)
+            if cover:
+                release_info["cover_art"] = cover
         except Exception:
             pass
 
@@ -991,15 +1019,9 @@ def get_release_group_releases(rg_mbid: str, include_track_counts: bool = False)
         include a ``track_count`` key when *include_track_counts* is True.
     """
     try:
-        headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
-        resp = httpx.get(
-            f"https://musicbrainz.org/ws/2/release-group/{rg_mbid}",
-            params={"fmt": "json", "inc": "releases"},
-            headers=headers,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        data = get_shared_mb_client().get_release_group(rg_mbid, inc="releases")
+        if not data:
+            return {"success": False, "error": "No release-group data returned"}
         releases = data.get("releases", [])
 
         if include_track_counts and releases:
@@ -1028,23 +1050,12 @@ def _enrich_releases_with_track_counts(releases: list[dict]) -> None:
         return
 
     try:
-        headers = {"User-Agent": "Popularr/1.0", "Accept": "application/json"}
-        resp = httpx.get(
-            f"https://musicbrainz.org/ws/2/release/",
-            params={
-                "fmt": "json",
-                "inc": "media",
-                "release-group": rg_mbid,
-                "limit": 100,
-            },
-            headers=headers,
-            timeout=15,
+        browse_releases = get_shared_mb_client().browse_releases_for_group(
+            rg_mbid, inc="media", limit=100,
         )
-        resp.raise_for_status()
-        browse_data = resp.json()
         # Build a lookup: release MBID → total track count
         tc_lookup: dict[str, int] = {}
-        for rel in browse_data.get("releases", []):
+        for rel in browse_releases:
             rel_id = rel.get("id")
             if not rel_id:
                 continue
@@ -1103,11 +1114,10 @@ def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict:
 
     local_tc = _get_local_track_count(artist, album)
 
-    from difflib import SequenceMatcher
     scored = []
     for rel in releases:
         title = rel.get("title", "")
-        title_score = SequenceMatcher(None, album.lower(), title.lower()).ratio()
+        title_score = _similarity(album.lower(), title.lower())
 
         # Official releases get a bonus
         status_bonus = 0.1 if rel.get("status") == "Official" else 0.0
