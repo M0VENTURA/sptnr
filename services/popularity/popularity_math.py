@@ -212,6 +212,58 @@ def reanchor_scores_to_album_relative(rows: list[tuple[str, str, float]]) -> lis
     return reanchored
 
 
+# ---------------------------------------------------------------------------
+# 3-step album scaling model (M_peak → A_skew → R_eff)
+# ---------------------------------------------------------------------------
+
+def age_skew_multiplier(
+    album_year: Optional[float | int],
+    current_year: int,
+    peak_year: Optional[float | int] = None,
+) -> float:
+    """Return the age-skew multiplier ``A_skew`` for an album.
+
+    Raw popularity inherently favours mid-career albums (5-15 years old), so
+    an album's median score is scaled by its release year relative to the
+    artist's PEAK album (``peak_year``):
+
+    - Newer than the peak (fresh releases): logarithmic boost
+      ``1.0 + 0.35 * log2(1 + 3 / max(1, Y_current - Y_album))`` — gives
+      brand-new albums a +15%..+35% multiplier to offset their short
+      accumulation window.
+    - Older than the peak (legacy / pre-peak): gentle linear boost
+      ``1.0 + 0.15 * min(1.0, (Y_peak - Y_album) / 20)`` (+5%..+15%) for
+      pre-digital / pre-streaming gaps.
+    - Peak-era albums (or unknown years): ``1.0`` (no adjustment).
+
+    Returns ``1.0`` whenever the album year is missing/invalid so unknown-age
+    albums are never penalised or inflated.
+    """
+    y_album = float(album_year or 0)
+    if y_album <= 0 or current_year <= 0:
+        return 1.0
+    y_peak = float(peak_year or 0)
+    if y_peak > 0:
+        if y_album > y_peak:
+            years_since = max(1, int(current_year) - int(y_album))
+            return 1.0 + 0.35 * math.log2(1.0 + 3.0 / years_since)
+        if y_album < y_peak:
+            return 1.0 + 0.15 * min(1.0, (y_peak - y_album) / 20.0)
+    return 1.0
+
+
+def effective_album_ratio(effective_median: float, m_peak: float) -> float:
+    """Return ``R_eff`` — where the album sits on the artist's career curve.
+
+    ``R_eff = min(1.0, effective_median / M_peak)`` with ``effective_median``
+    already age-skewed (``album_median * A_skew``).  Clamped to [0.0, 1.0];
+    returns ``1.0`` when the benchmark is missing/zero (no constraint).
+    """
+    if not m_peak or float(m_peak) <= 0:
+        return 1.0
+    return min(1.0, max(0.0, float(effective_median) / float(m_peak)))
+
+
 def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int = 0) -> float:
     """Calculate normalized Last.fm popularity from listener count."""
     if listeners is None or listeners <= 0:

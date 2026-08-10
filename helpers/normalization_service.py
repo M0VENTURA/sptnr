@@ -21,6 +21,35 @@ from helpers.config_helpers import (
 
 
 # =============================================================================
+# ✅ UNICODE PUNCTUATION EQUIVALENTS
+# =============================================================================
+
+# Map of Unicode punctuation to ASCII equivalents.  Applied BEFORE
+# punctuation removal because ``\w`` is Unicode-aware: a curly apostrophe
+# (U+2019) is a word character, so it survives ``re.sub(r"[^\w\s]", ...)``
+# while a straight ASCII apostrophe is replaced — "they're all around us"
+# (Discogs) vs "they’re all around us" (library) would otherwise score
+# ~0.88 on SequenceMatcher instead of 1.00.
+UNICODE_PUNCT_MAP = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",  # ‘’‚‛
+    "\u201c": '"', "\u201d": '"', "\u2032": "'", "\u2033": '"',  # “”′″
+    "\u2013": "-", "\u2014": "-", "\u2015": "-",  # – — ―
+    "\u00a0": " ",  # non-breaking space
+})
+
+
+def normalize_unicode_punctuation(value: str) -> str:
+    """Convert smart quotes, primes, dashes and NBSP to ASCII equivalents.
+
+    Must run before any ``\w``-based punctuation removal so curly and
+    straight apostrophes normalize identically.
+    """
+    if not value:
+        return value
+    return value.translate(UNICODE_PUNCT_MAP)
+
+
+# =============================================================================
 # ✅ CORE NORMALIZATION
 # =============================================================================
 
@@ -65,6 +94,7 @@ def normalize_string(value: str) -> str:
     Canonical normalization:
     - lowercase
     - remove accents
+    - smart quotes/dashes → ASCII equivalents
     - remove punctuation
     - collapse whitespace
     """
@@ -73,7 +103,14 @@ def normalize_string(value: str) -> str:
 
     value = value.lower().strip()
 
-    value = unicodedata.normalize("NFD", value)
+    # Smart quotes must become ASCII BEFORE the punctuation regex — a curly
+    # apostrophe is a Unicode word char and would otherwise survive while a
+    # straight one is replaced (see normalize_unicode_punctuation).
+    value = normalize_unicode_punctuation(value)
+
+    # NFKD (not NFD) also splits Unicode ligatures (ﬁ → fi), so "Ofﬁcial"
+    # matches "Official".
+    value = unicodedata.normalize("NFKD", value)
     value = "".join(c for c in value if not unicodedata.combining(c))
 
     value = re.sub(r"[^\w\s]", " ", value)
@@ -413,7 +450,8 @@ def normalize_title_for_lucene_query(
         return ""
 
     value = re.sub(r"\s*\([^)]*\bcover\b[^)]*\)", "", title, flags=re.IGNORECASE)
-    value = unicodedata.normalize("NFD", value.lower())
+    value = normalize_unicode_punctuation(value.lower())
+    value = unicodedata.normalize("NFKD", value)
     value = "".join(c for c in value if not unicodedata.combining(c))
     value = re.sub(r"[^\w\s]", "", value)
     return re.sub(r"\s+", " ", value).strip()

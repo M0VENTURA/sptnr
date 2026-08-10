@@ -15,13 +15,19 @@ import json
 import logging
 import math
 import os
+from datetime import datetime
 from statistics import mean, median, stdev
 from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
 from db.utils import get_db_connection, row_get
-from services.popularity.popularity_math import calculate_robust_zscore
+from services.popularity.popularity_math import (
+    age_skew_multiplier,
+    apply_album_relative_popularity,
+    calculate_robust_zscore,
+    effective_album_ratio,
+)
 from services.popularity.popularity_zscore import composite_listener_z
 from services.popularity.standout_service import STANDOUT_CONFIG
 from services.catalog.album_classification_service import is_live_or_alternate_track_title
@@ -61,6 +67,42 @@ STAR_2_ALBUM_Z = STANDOUT_CONFIG.get("star_2", {}).get("album_z", -1.2)
 # the neighbouring tier, preserving a distinct gap to the tier below.
 # Tunable via config ``single_detection.star_epsilon_score_points``.
 STAR_EPSILON_SCORE_POINTS = float(STANDOUT_CONFIG.get("star_epsilon_score_points", 0.5) or 0.5)
+
+# ---------------------------------------------------------------------------
+# 3-step album scaling model (era-qualified 5★ singles)
+# ---------------------------------------------------------------------------
+# Songs no longer auto-earn 5★ just for being a confirmed high-confidence
+# single.  Each album is classified by where it sits on the artist's career
+# curve (R_eff, from the discography benchmark M_peak + the age-skew
+# multiplier A_skew), and singles must clear that era's bar:
+#
+#   Era (R_eff)        Catalog top-%   Album top-N    Max 5★ slots
+#   peak   (>= 0.75)   top 20%         top 3          4
+#   solid  (0.40-0.74) top 15%         top 2          2
+#   minor  (< 0.40)    top 10%         #1 only        1
+#
+# A ``single=high`` track that misses the bar drops to the 4★ Single Floor
+# (never below 4★).  Tunable via config.yaml ``single_detection.album_scaling``.
+_ALBUM_SCALING = STANDOUT_CONFIG.get("album_scaling") or {}
+ALBUM_ERA_PEAK_MIN_RATIO = float(_ALBUM_SCALING.get("peak_era_min_ratio", 0.75) or 0.75)
+ALBUM_ERA_SOLID_MIN_RATIO = float(_ALBUM_SCALING.get("solid_era_min_ratio", 0.40) or 0.40)
+ALBUM_ERA_RULES: dict[str, dict[str, float | int]] = {
+    "peak": {
+        "catalog_top_pct": float(_ALBUM_SCALING.get("peak_catalog_top_pct", 0.20) or 0.20),
+        "album_top_n": int(_ALBUM_SCALING.get("peak_album_top_n", 3) or 3),
+        "max_5star_slots": int(_ALBUM_SCALING.get("peak_max_5star_slots", 4) or 4),
+    },
+    "solid": {
+        "catalog_top_pct": float(_ALBUM_SCALING.get("solid_catalog_top_pct", 0.15) or 0.15),
+        "album_top_n": int(_ALBUM_SCALING.get("solid_album_top_n", 2) or 2),
+        "max_5star_slots": int(_ALBUM_SCALING.get("solid_max_5star_slots", 2) or 2),
+    },
+    "minor": {
+        "catalog_top_pct": float(_ALBUM_SCALING.get("minor_catalog_top_pct", 0.10) or 0.10),
+        "album_top_n": int(_ALBUM_SCALING.get("minor_album_top_n", 1) or 1),
+        "max_5star_slots": int(_ALBUM_SCALING.get("minor_max_5star_slots", 1) or 1),
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +251,142 @@ def _album_z_band_star(score: float, album_scores: list[float]) -> int:
     return 1
 
 
+# ---------------------------------------------------------------------------
+# 3-step scaling model helpers
+# ---------------------------------------------------------------------------
+
+def _percentile_cutoff(scores: list[float], top_pct: float) -> float | None:
+    """Score threshold separating the artist catalogue's top ``top_pct``.
+
+    Mirrors ``_artist_top_marked_cutoffs`` semantics (sorted desc, cutoff at
+    the ``ceil(len * pct)``-th score).  ``None`` when there is no data.
+    """
+    valid = sorted((float(s) for s in (scores or []) if float(s or 0) > 0), reverse=True)
+    if not valid:
+        return None
+    n = max(1, math.ceil(len(valid) * top_pct))
+    return valid[min(n - 1, len(valid) - 1)]
+
+
+def _album_rank(score: float, album_scores: list[float]) -> int:
+    """1-based rank of ``score`` within the album (ties share the top rank)."""
+    if score <= 0:
+        return len([s for s in (album_scores or []) if float(s or 0) > 0]) + 1
+    higher = sum(1 for s in (album_scores or []) if float(s or 0) > score)
+    return higher + 1
+
+
+def _album_era_for_ratio(reff: float) -> str:
+    """Classify an album by its effective ratio: peak / solid / minor."""
+    if reff >= ALBUM_ERA_PEAK_MIN_RATIO:
+        return "peak"
+    if reff >= ALBUM_ERA_SOLID_MIN_RATIO:
+        return "solid"
+    return "minor"
+
+
+def _build_album_model(
+    artist: str,
+    album_results: list[dict[str, Any]],
+    artist_scores: list[float],
+    cursor,
+) -> dict[str, Any]:
+    """3-step scaling model context for ONE album.
+
+    Step 1 — M_peak: the highest album-median across the artist's catalogue
+        (DB ``final_score`` per album, re-anchored onto the album-relative
+        scale so stored raw-scale albums are comparable; the current album's
+        fresh scan scores are merged in).
+    Step 2 — A_skew: age-skew multiplier from the album's release year vs
+        the peak album's year (fresh releases / legacy albums boosted).
+    Step 3 — R_eff = min(1.0, album_median * A_skew / M_peak).
+    Step 4 — era rules: catalog top-% cutoff, album top-N and the 5★ slot cap.
+
+    Returns ``{}`` when no benchmark can be derived (empty catalogue / no
+    scores) — the caller then keeps the legacy single-→-5★ behaviour.
+    """
+    try:
+        current_album = str(album_results[0].get("album") or "")
+        scanned_titles = {
+            str(r.get("title") or "").strip().lower() for r in album_results
+        }
+
+        cursor.execute(
+            "SELECT title, album, final_score, year FROM tracks "
+            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND final_score > 0",
+            (artist,),
+        )
+        rows = cursor.fetchall()
+
+        by_album: dict[str, list[float]] = {}
+        album_years: dict[str, int] = {}
+        for row in rows:
+            _title = str(row_get(row, "title") or "").strip().lower()
+            if _title in scanned_titles:
+                continue
+            _album = str(row_get(row, "album") or "")
+            _score = float(row_get(row, "final_score") or 0)
+            if _score > 0:
+                by_album.setdefault(_album, []).append(_score)
+            _year = int(row_get(row, "year") or 0)
+            if _year > 0:
+                album_years.setdefault(_album, _year)
+
+        # Fresh scan scores for the current album (not yet stored) join its
+        # group; years fall back to the scan's track fields.
+        for r in album_results:
+            _score = float(r.get("popularity_score") or 0)
+            if _score > 0 and not bool(r.get("exclude_from_stats")):
+                by_album.setdefault(current_album, []).append(_score)
+            _year = int(r.get("year") or r.get("release_year") or 0)
+            if _year > 0:
+                album_years.setdefault(current_album, _year)
+
+        # Re-anchor each album against its own distribution so the medians
+        # sit on the same (album-relative) scale.
+        medians: dict[str, float] = {}
+        for _album, _scores in by_album.items():
+            if not _scores:
+                continue
+            _reanchored = [
+                apply_album_relative_popularity(s, _scores) for s in _scores
+            ]
+            medians[_album] = median(_reanchored)
+
+        if not medians:
+            return {}
+        m_peak = max(medians.values())
+        if m_peak <= 0:
+            return {}
+        current_median = medians.get(current_album) or m_peak
+
+        peak_album = max(medians, key=medians.get)
+        peak_year = album_years.get(peak_album, 0)
+        album_year = album_years.get(current_album, 0)
+
+        a_skew = age_skew_multiplier(album_year, datetime.now().year, peak_year)
+        reff = effective_album_ratio(current_median * a_skew, m_peak)
+        era = _album_era_for_ratio(reff)
+        rules = ALBUM_ERA_RULES.get(era, ALBUM_ERA_RULES["peak"])
+
+        return {
+            "has_benchmark": True,
+            "m_peak": m_peak,
+            "album_median": current_median,
+            "a_skew": a_skew,
+            "reff": reff,
+            "era": era,
+            "catalog_cutoff": _percentile_cutoff(
+                artist_scores, float(rules["catalog_top_pct"])
+            ),
+            "album_top_n": int(rules["album_top_n"]),
+            "max_5star_slots": int(rules["max_5star_slots"]),
+        }
+    except Exception as exc:
+        logger.debug("[finalise_stage] Album benchmark failed for %s: %s", artist, exc)
+        return {}
+
+
 def _assign_stars(
     track: dict[str, Any],
     album_scores: list[float],
@@ -216,6 +394,7 @@ def _assign_stars(
     album_lf_listeners: list[float] | None = None,
     album_lb_listens: list[float] | None = None,
     popularity_only: bool = False,
+    album_model: dict[str, Any] | None = None,
 ) -> int:
     """Assign 1–5 star rating to a single track (album-relative spec).
 
@@ -229,6 +408,11 @@ def _assign_stars(
          thresholds AND a popularity standout (top-10% ``popularity_marked``
          or the ``popularity_z_standout`` detection signal).
        Popularity alone never grants 5★.
+    3. When the 3-step album scaling model (``album_model``) is available,
+       singles and marked tracks must ALSO clear their album's era bar
+       (R_eff tier): the era's artist catalog top-% cutoff OR the album's
+       top-N tracks.  A high single that misses the bar drops to the 4★
+       Single Floor — it never falls below 4★.
 
     ``popularity_only`` (a scan that rated popularity without single
     detection) ignores single status so a stale stored flag can't inflate the
@@ -305,6 +489,41 @@ def _assign_stars(
         or (not popularity_only and single_confidence == "high")
         or is_standout
     ):
+        # Triple-standout proof (album z + artist z + popularity source)
+        # always earns 5★ — it is not a "single" award and is not era-capped.
+        if is_standout:
+            return 5
+
+        # ── 3-step album scaling model (step 4: era rules) ──
+        # When the artist's discography benchmark is available (and the track
+        # actually carries a popularity score), singles and marked tracks must
+        # clear the album's era bar instead of auto-earning 5★:
+        #   qualify = score >= era catalog top-% cutoff
+        #             OR (single=high AND album rank <= era top-N)
+        # A high single that misses the bar falls to the 4★ Single Floor.
+        # Marked tracks are top-10% catalogue tracks — they clear the
+        # strictest (minor-era top 10%) bar and still earn 5★.
+        if album_model and album_model.get("has_benchmark") and score > 0:
+            era = str(album_model.get("era") or "")
+            rules = ALBUM_ERA_RULES.get(era)
+            catalog_cutoff = album_model.get("catalog_cutoff")
+            qualifies_catalog = catalog_cutoff is not None and score >= float(catalog_cutoff)
+            qualifies_album = (
+                not popularity_only
+                and rules is not None
+                and _album_rank(score, album_scores) <= int(rules["album_top_n"])
+            )
+            if qualifies_catalog or qualifies_album:
+                track["_era_5star"] = True
+                return 5
+            # 4★ Single Floor (spec safety net): a high-confidence single
+            # that fails the 5★ criteria never drops below 4★.
+            if not popularity_only and single_confidence == "high":
+                return max(_album_z_band_star(score, album_scores), 4)
+            # Marked-only tracks below the era bar (medium-bumped singles
+            # ranked 10-20% on a minor-era album) fall through to the band.
+            return _album_z_band_star(score, album_scores)
+
         return 5
 
     # ── 1-4★: album-relative z-score base ──
@@ -623,6 +842,25 @@ def post_album_star_ratings(
         except Exception as exc:
             logger.debug("[finalise_stage] Album DB score merge failed for %s - %s: %s", artist, album, exc)
 
+        # ── 3-step album scaling model: era context for this album ──
+        # M_peak (discography benchmark) → A_skew (age skew) → R_eff → era
+        # rules.  Falls back to {} (legacy single→5★ behaviour) when the
+        # artist has no catalogue data to benchmark against.
+        album_model: dict[str, Any] = {}
+        try:
+            album_model = _build_album_model(artist, album_results, artist_scores, cursor)
+            if album_model.get("has_benchmark"):
+                logger.info(
+                    "[finalise_stage] %s - %s → era=%s (M_peak=%.1f, album median=%.1f, A_skew=%.2f, R_eff=%.2f)",
+                    artist, album, album_model.get("era"),
+                    float(album_model.get("m_peak") or 0),
+                    float(album_model.get("album_median") or 0),
+                    float(album_model.get("a_skew") or 1.0),
+                    float(album_model.get("reff") or 0),
+                )
+        except Exception as exc:
+            logger.debug("[finalise_stage] Album model build failed for %s - %s: %s", artist, album, exc)
+
         for track in album_results:
             # Assign star rating — one track's edge case (e.g. a degenerate
             # distribution) must never abort the whole album's rating pass and
@@ -636,6 +874,7 @@ def post_album_star_ratings(
                     album_lf_listeners,
                     album_lb_listens,
                     popularity_only=bool(options.get("popularity_only")),
+                    album_model=album_model,
                 )
             except Exception as exc:
                 logger.warning(
@@ -646,12 +885,14 @@ def post_album_star_ratings(
             track["stars"] = stars
             total_star_ratings += 1
             logger.debug(
-                "[finalise_stage] %s - %s → %d★ (score=%.1f, album_z=%.2f, artist_z=%.2f, single=%s/%s)",
+                "[finalise_stage] %s - %s → %d★ (score=%.1f, album_z=%.2f, artist_z=%.2f, single=%s/%s%s)",
                 artist, track.get("title"), stars,
                 float(track.get("popularity_score") or 0),
                 _compute_album_z(float(track.get("popularity_score") or 0), album_scores)[0],
                 _compute_artist_z(float(track.get("popularity_score") or 0), artist_scores)[0],
                 track.get("is_single"), track.get("single_confidence"),
+                f", era={album_model.get('era')}/R={float(album_model.get('reff') or 0):.2f}"
+                if album_model.get("has_benchmark") else "",
             )
 
             # Persist to database
@@ -664,6 +905,41 @@ def post_album_star_ratings(
                     )
                 except Exception as exc:
                     logger.debug("[finalise_stage] DB update failed for %s: %s", track_id, exc)
+
+        # ── Era 5★ slot cap (scaling model step 4) ────────────────────────
+        # The era's slot budget limits how many 5★ singles one album can
+        # carry via the catalog/album-rank path; surplus (weakest by album
+        # z-score) are demoted to the 4★ Single Floor.
+        if album_model.get("has_benchmark"):
+            max_slots = int(album_model.get("max_5star_slots") or ALBUM_ERA_RULES["peak"]["max_5star_slots"])
+            slot_tracks = [
+                t for t in album_results
+                if t.get("_era_5star") and int(t.get("stars") or 0) == 5
+            ]
+            if len(slot_tracks) > max_slots:
+                slot_tracks.sort(
+                    key=lambda t: _compute_album_z(
+                        float(t.get("popularity_score") or 0), album_scores
+                    )[0],
+                    reverse=True,
+                )
+                for t in slot_tracks[max_slots:]:
+                    t["stars"] = 4
+                    _tid = str(t.get("track_id") or "")
+                    if _tid:
+                        try:
+                            cursor.execute(
+                                "UPDATE tracks SET stars = 4 WHERE id = %s",
+                                (_tid,),
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "[finalise_stage] 5★ cap demote failed for %s: %s", _tid, exc,
+                            )
+                    logger.info(
+                        "[finalise_stage] %s - %s 5★ → 4★ (era slot cap %d)",
+                        artist, t.get("title"), max_slots,
+                    )
 
         conn.commit()
 
