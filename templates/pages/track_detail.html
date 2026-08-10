@@ -360,15 +360,16 @@
                     </div>
                 </div>
 
-                <!-- Sort Keys Section -->
+                <!-- Advanced Section (collapsed sort keys + web/legal details) -->
                 <div class="accordion-item mb-0 border" id="track-sort-keys-section" data-mobile-tab="details">
                     <h2 class="accordion-header" id="track-sort-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-sort-collapse" aria-expanded="false" aria-controls="track-sort-collapse">
-                            <i class="bi bi-sort-alpha-down me-2"></i> Sort Keys
+                            <i class="bi bi-sliders2 me-2"></i> Advanced
                         </button>
                     </h2>
                     <div id="track-sort-collapse" class="accordion-collapse collapse" aria-labelledby="track-sort-heading" data-bs-parent="#trackEditAccordion">
                         <div class="accordion-body">
+                        <h6 class="text-muted mb-3">Sort Keys</h6>
                         <div class="row g-2">
                             <div class="col-6">
                                 <label for="titlesort" class="form-label">Title Sort</label>
@@ -407,6 +408,18 @@
                             <div class="col-6">
                                 <label for="albumartistssort" class="form-label">Album Artists Sort</label>
                                 <input type="text" class="form-control" id="albumartistssort" name="albumartistssort" value="{{ track.albumartistssort or '' }}" placeholder="Sort album artists (multi)">
+                            </div>
+                        </div>
+                        <hr class="my-3">
+                        <h6 class="text-muted mb-3">Web &amp; Legal</h6>
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="website" class="form-label">Artist Website</label>
+                                <input type="url" class="form-control" id="website" name="website" value="{{ track.website or '' }}" placeholder="https://artist.com">
+                            </div>
+                            <div class="col-6">
+                                <label for="license" class="form-label">License</label>
+                                <input type="text" class="form-control" id="license" name="license" value="{{ track.license or '' }}" placeholder="e.g., CC BY-SA 4.0">
                             </div>
                         </div>
                     </div>
@@ -476,109 +489,10 @@
                     </div>
                 </div>
 
-                <!-- Release Info Section -->
-                <div class="accordion-item mb-0 border" id="track-release-info-section" data-mobile-tab="details">
-                    <h2 class="accordion-header" id="track-release-heading">
-                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-release-collapse" aria-expanded="false" aria-controls="track-release-collapse">
-                            <i class="bi bi-disc-fill me-2"></i> Release Information
-                        </button>
-                    </h2>
-                    <div id="track-release-collapse" class="accordion-collapse collapse" aria-labelledby="track-release-heading" data-bs-parent="#trackEditAccordion">
-                        <div class="accordion-body">
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <label for="recordlabel" class="form-label">Record Label</label>
-                                <input type="text" class="form-control" id="recordlabel" name="recordlabel" value="{{ track.recordlabel or '' }}" placeholder="e.g., Columbia Records">
-                            </div>
-                            <div class="col-6">
-                                <label for="copyright" class="form-label">Copyright</label>
-                                <input type="text" class="form-control" id="copyright" name="copyright" value="{{ track.copyright or '' }}" placeholder="e.g., © 2023 Label">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="releasedate" class="form-label">Release Date</label>
-                                <input type="text" class="form-control" id="releasedate" name="releasedate" value="{{ track.releasedate or '' }}" placeholder="e.g., 2023-06-15">
-                            </div>
-                            <div class="col-6">
-                                <label for="discsubtitle" class="form-label">Disc Subtitle</label>
-                                <input type="text" class="form-control" id="discsubtitle" name="discsubtitle" value="{{ track.discsubtitle or '' }}" placeholder="e.g., Live at the Forum">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="language" class="form-label">Language</label>
-                                <input type="text" class="form-control" id="language" name="language" value="{{ track.language or '' }}" placeholder="e.g., eng">
-                            </div>
-                            <div class="col-6">
-                                <label for="explicitstatus" class="form-label">Explicit Status</label>
-                                <input type="text" class="form-control" id="explicitstatus" name="explicitstatus" value="{{ track.explicitstatus or '' }}" placeholder="e.g., 0, 1, 2">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="releasetype" class="form-label">Release Type</label>
-                                <input type="text" class="form-control" id="releasetype" name="releasetype" value="{{ track.releasetype or '' }}" placeholder="e.g., album, single, EP">
-                            </div>
-                            <div class="col-6">
-                                <label for="releasestatus" class="form-label">Release Status</label>
-                                <input type="text" class="form-control" id="releasestatus" name="releasestatus" value="{{ track.releasestatus or '' }}" placeholder="e.g., official">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="releasecountry" class="form-label">Release Country</label>
-                                <input type="text" class="form-control" id="releasecountry" name="releasecountry" value="{{ track.releasecountry or '' }}" placeholder="e.g., US">
-                            </div>
-                            <div class="col-6">
-                                <label for="media" class="form-label">Media Format</label>
-                                <input type="text" class="form-control" id="media" name="media" value="{{ track.media or '' }}" placeholder="e.g., CD, Digital Media">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="barcode" class="form-label">Barcode</label>
-                                <input type="text" class="form-control" id="barcode" name="barcode" value="{{ track.barcode or '' }}" placeholder="Release barcode">
-                            </div>
-                            <div class="col-6">
-                                <label for="catalognumber" class="form-label">Catalog Number</label>
-                                <input type="text" class="form-control" id="catalognumber" name="catalognumber" value="{{ track.catalognumber or '' }}" placeholder="Catalog number">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="asin" class="form-label">ASIN</label>
-                                <input type="text" class="form-control" id="asin" name="asin" value="{{ track.asin or '' }}" placeholder="Amazon ASIN">
-                            </div>
-                            <div class="col-6">
-                                <label for="script" class="form-label">Script</label>
-                                <input type="text" class="form-control" id="script" name="script" value="{{ track.script or '' }}" placeholder="e.g., Latn">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="originalyear" class="form-label">Original Year</label>
-                                <input type="text" class="form-control" id="originalyear" name="originalyear" value="{{ track.originalyear or '' }}" placeholder="e.g., 1971">
-                            </div>
-                            <div class="col-6">
-                                <label for="originaldate" class="form-label">Original Date</label>
-                                <input type="text" class="form-control" id="originaldate" name="originaldate" value="{{ track.originaldate or '' }}" placeholder="e.g., 1971-10-11">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="tracktotal" class="form-label">Track Total</label>
-                                <input type="text" class="form-control" id="tracktotal" name="tracktotal" value="{{ track.tracktotal or '' }}" placeholder="Total tracks on release">
-                            </div>
-                            <div class="col-6">
-                                <label for="disctotal" class="form-label">Disc Total</label>
-                                <input type="text" class="form-control" id="disctotal" name="disctotal" value="{{ track.disctotal or '' }}" placeholder="Total discs in release">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Classical / Movement Section -->
+                <!-- Classical / Movement Section (auto-hidden unless the track is Classical) -->
+                {% set _has_classical = track.genres and 'classical' in track.genres|lower %}
+                {% set _has_classical_data = track.grouping or track.movement or track.movementname or track.movementtotal or track.key %}
+                {% if _has_classical or _has_classical_data %}
                 <div class="accordion-item mb-0 border" id="track-movement-section" data-mobile-tab="details">
                     <h2 class="accordion-header" id="track-movement-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-movement-collapse" aria-expanded="false" aria-controls="track-movement-collapse">
@@ -615,38 +529,7 @@
                         </div>
                     </div>
                 </div>
-
-                <!-- Technical / Legal Section -->
-                <div class="accordion-item mb-0 border" id="track-technical-legal-section" data-mobile-tab="tech">
-                    <h2 class="accordion-header" id="track-technical-heading">
-                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-technical-collapse" aria-expanded="false" aria-controls="track-technical-collapse">
-                            <i class="bi bi-gear-fill me-2"></i> Technical &amp; Legal
-                        </button>
-                    </h2>
-                    <div id="track-technical-collapse" class="accordion-collapse collapse" aria-labelledby="track-technical-heading" data-bs-parent="#trackEditAccordion">
-                        <div class="accordion-body">
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <label for="website" class="form-label">Artist Website</label>
-                                <input type="url" class="form-control" id="website" name="website" value="{{ track.website or '' }}" placeholder="https://artist.com">
-                            </div>
-                            <div class="col-6">
-                                <label for="license" class="form-label">License</label>
-                                <input type="text" class="form-control" id="license" name="license" value="{{ track.license or '' }}" placeholder="e.g., CC BY-SA 4.0">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="encodedby" class="form-label">Encoded By</label>
-                                <input type="text" class="form-control" id="encodedby" name="encodedby" value="{{ track.encodedby or '' }}" placeholder="Encoder name">
-                            </div>
-                            <div class="col-6">
-                                <label for="encodersettings" class="form-label">Encoder Settings</label>
-                                <input type="text" class="form-control" id="encodersettings" name="encodersettings" value="{{ track.encodersettings or '' }}" placeholder="e.g., -V 0">
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                {% endif %}
 
                 <div class="accordion-item mb-0 border" id="track-external-ids-section" data-mobile-tab="tech">
                     <h2 class="accordion-header" id="track-external-heading">
@@ -670,36 +553,37 @@
                                     </button>
                                 </div>
                             </div>
-                        </div>
-                        <div class="row g-2 mt-1">
                             <div class="col-6">
                                 <label for="musicbrainz_artistid" class="form-label">MusicBrainz Artist ID</label>
                                 <input type="text" class="form-control" id="musicbrainz_artistid" name="musicbrainz_artistid" value="{{ track.musicbrainz_artistid or '' }}" placeholder="Artist MBID">
                             </div>
-                            <div class="col-6">
-                                <label for="musicbrainz_albumartistid" class="form-label">MusicBrainz Album Artist ID</label>
-                                <input type="text" class="form-control" id="musicbrainz_albumartistid" name="musicbrainz_albumartistid" value="{{ track.musicbrainz_albumartistid or '' }}" placeholder="Album artist MBID">
-                            </div>
                         </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="musicbrainz_releasegroupid" class="form-label">MusicBrainz Release Group ID</label>
-                                <input type="text" class="form-control" id="musicbrainz_releasegroupid" name="musicbrainz_releasegroupid" value="{{ track.musicbrainz_releasegroupid or '' }}" placeholder="Release group MBID">
+
+                        <hr class="my-3">
+
+                        <!-- Read-only clickable pills for every linked external ID -->
+                        {% set _rec = track.beets_mbid or track.mbid or track.musicbrainz_trackid %}
+                        {% set _rel = track.musicbrainz_album_mbid or track.musicbrainz_albumid %}
+                        {% set _art = track.musicbrainz_artist_id or track.musicbrainz_artistid or track.artist_mbid %}
+                        {% set _rg = track.musicbrainz_releasegroupid %}
+                        {% set _wk = track.musicbrainz_workid %}
+                        {% set _disc = track.discogs_album_id or track.discogs_release_id or track.discogs_id %}
+                        <div>
+                            <h6 class="mb-2">Linked IDs</h6>
+                            <div class="d-flex flex-wrap gap-2 mb-2">
+                                {% if _rec %}<a class="btn btn-sm btn-outline-primary" href="https://musicbrainz.org/recording/{{ _rec }}" target="_blank" title="{{ _rec }}"><i class="bi bi-music-note"></i> MB Recording <i class="bi bi-box-arrow-up-right" style="font-size:0.6rem;"></i></a>{% endif %}
+                                {% if _rel %}<a class="btn btn-sm btn-outline-primary" href="https://musicbrainz.org/release/{{ _rel }}" target="_blank" title="{{ _rel }}"><i class="bi bi-disc"></i> MB Release <i class="bi bi-box-arrow-up-right" style="font-size:0.6rem;"></i></a>{% endif %}
+                                {% if _art %}<a class="btn btn-sm btn-outline-primary" href="https://musicbrainz.org/artist/{{ _art }}" target="_blank" title="{{ _art }}"><i class="bi bi-person"></i> MB Artist <i class="bi bi-box-arrow-up-right" style="font-size:0.6rem;"></i></a>{% endif %}
+                                {% if _rg %}<a class="btn btn-sm btn-outline-secondary" href="https://musicbrainz.org/release-group/{{ _rg }}" target="_blank" title="{{ _rg }}"><i class="bi bi-collection"></i> MB Release Group <i class="bi bi-box-arrow-up-right" style="font-size:0.6rem;"></i></a>{% endif %}
+                                {% if _wk %}<a class="btn btn-sm btn-outline-secondary" href="https://musicbrainz.org/work/{{ _wk }}" target="_blank" title="{{ _wk }}"><i class="bi bi-file-earmark-music"></i> MB Work <i class="bi bi-box-arrow-up-right" style="font-size:0.6rem;"></i></a>{% endif %}
+                                {% if _disc %}<a class="btn btn-sm btn-outline-secondary" href="https://www.discogs.com/release/{{ _disc }}" target="_blank" title="{{ _disc }}"><i class="bi bi-vinyl"></i> Discogs <i class="bi bi-box-arrow-up-right" style="font-size:0.6rem;"></i></a>{% endif %}
                             </div>
-                            <div class="col-6">
-                                <label for="musicbrainz_releasetrackid" class="form-label">MusicBrainz Release Track ID</label>
-                                <input type="text" class="form-control" id="musicbrainz_releasetrackid" name="musicbrainz_releasetrackid" value="{{ track.musicbrainz_releasetrackid or '' }}" placeholder="Release track MBID">
-                            </div>
+                            <p class="text-muted small mb-0">Secondary IDs (Album Artist, Release Group, Release Track, Work) are read-only — click a pill to open the linked page.</p>
                         </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="musicbrainz_workid" class="form-label">MusicBrainz Work ID</label>
-                                <input type="text" class="form-control" id="musicbrainz_workid" name="musicbrainz_workid" value="{{ track.musicbrainz_workid or '' }}" placeholder="Work MBID">
-                            </div>
-                        </div>
+
                         <hr class="my-3">
                         <div>
-                            <h6 class="mb-2">Lookups & MusicBrainz Links</h6>
+                            <h6 class="mb-2">Lookups</h6>
                             <div class="d-flex flex-wrap gap-2 mb-2">
                                 <button type="button" class="btn btn-outline-info btn-sm" onclick="lookupMusicBrainz(this)">
                                     <i class="bi bi-search"></i> MusicBrainz Lookup
@@ -707,77 +591,6 @@
                                 <button type="button" class="btn btn-outline-secondary btn-sm" onclick="lookupDiscogs(this)">
                                     <i class="bi bi-search"></i> Discogs Lookup
                                 </button>
-                            </div>
-                            {% if track.beets_mbid or track.musicbrainz_album_mbid or track.musicbrainz_artist_id %}
-                            <div class="small">
-                                {% if track.beets_mbid %}
-                                <div class="mb-1">
-                                    <strong>Recording:</strong>
-                                    <a href="https://musicbrainz.org/recording/{{ track.beets_mbid }}" target="_blank" class="text-primary">
-                                        {{ track.beets_mbid[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
-                                    </a>
-                                </div>
-                                {% endif %}
-                                {% if track.musicbrainz_album_mbid %}
-                                <div class="mb-1">
-                                    <strong>Release:</strong>
-                                    <a href="https://musicbrainz.org/release/{{ track.musicbrainz_album_mbid }}" target="_blank" class="text-primary">
-                                        {{ track.musicbrainz_album_mbid[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
-                                    </a>
-                                </div>
-                                {% endif %}
-                                {% if track.musicbrainz_artist_id %}
-                                <div>
-                                    <strong>Artist:</strong>
-                                    <a href="https://musicbrainz.org/artist/{{ track.musicbrainz_artist_id }}" target="_blank" class="text-primary">
-                                        {{ track.musicbrainz_artist_id[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
-                                    </a>
-                                </div>
-                                {% endif %}
-                            </div>
-                            {% endif %}
-                        </div>
-                    </div>
-                </div>
-
-                <!-- ReplayGain Section -->
-                <div class="accordion-item mb-0 border" id="track-replaygain-section" data-mobile-tab="tech">
-                    <h2 class="accordion-header" id="track-replaygain-heading">
-                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-replaygain-collapse" aria-expanded="false" aria-controls="track-replaygain-collapse">
-                            <i class="bi bi-soundwave me-2"></i> ReplayGain / R128
-                        </button>
-                    </h2>
-                    <div id="track-replaygain-collapse" class="accordion-collapse collapse" aria-labelledby="track-replaygain-heading" data-bs-parent="#trackEditAccordion">
-                        <div class="accordion-body">
-                        <p class="text-muted small mb-3">These values are typically set by scanning tools. Edit only if you know what you are doing.</p>
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <label for="replaygain_track_gain" class="form-label">Track Gain (dB)</label>
-                                <input type="text" class="form-control" id="replaygain_track_gain" name="replaygain_track_gain" value="{{ track.replaygain_track_gain or '' }}" placeholder="e.g., -6.54 dB">
-                            </div>
-                            <div class="col-6">
-                                <label for="replaygain_track_peak" class="form-label">Track Peak</label>
-                                <input type="text" class="form-control" id="replaygain_track_peak" name="replaygain_track_peak" value="{{ track.replaygain_track_peak or '' }}" placeholder="e.g., 0.988">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="replaygain_album_gain" class="form-label">Album Gain (dB)</label>
-                                <input type="text" class="form-control" id="replaygain_album_gain" name="replaygain_album_gain" value="{{ track.replaygain_album_gain or '' }}" placeholder="e.g., -5.20 dB">
-                            </div>
-                            <div class="col-6">
-                                <label for="replaygain_album_peak" class="form-label">Album Peak</label>
-                                <input type="text" class="form-control" id="replaygain_album_peak" name="replaygain_album_peak" value="{{ track.replaygain_album_peak or '' }}" placeholder="e.g., 0.999">
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-6">
-                                <label for="r128_track_gain" class="form-label">R128 Track Gain</label>
-                                <input type="text" class="form-control" id="r128_track_gain" name="r128_track_gain" value="{{ track.r128_track_gain or '' }}" placeholder="e.g., -900">
-                            </div>
-                            <div class="col-6">
-                                <label for="r128_album_gain" class="form-label">R128 Album Gain</label>
-                                <input type="text" class="form-control" id="r128_album_gain" name="r128_album_gain" value="{{ track.r128_album_gain or '' }}" placeholder="e.g., -750">
                             </div>
                         </div>
                     </div>
@@ -1246,11 +1059,11 @@
                     </div>
                 </div>
 
-                <!-- Audio Information -->
+                <!-- ReplayGain & File Info (read-only stat card) -->
                 <div class="card mb-4" id="track-audio-info-card" data-mobile-tab="tech">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-disc-fill"></i> Audio Information
+                            <i class="bi bi-soundwave"></i> ReplayGain &amp; File Info
                         </h5>
                     </div>
                     <div class="card-body">
@@ -1290,6 +1103,21 @@
                                 {% endif %}
                             </div>
                         </div>
+
+                        {% set has_gain = track.replaygain_track_gain or track.replaygain_track_peak or track.replaygain_album_gain or track.replaygain_album_peak or track.r128_track_gain or track.r128_album_gain %}
+                        {% if has_gain %}
+                        <hr class="my-3">
+                        <div class="small fw-semibold text-muted text-uppercase mb-2">ReplayGain / R128</div>
+                        <div class="d-flex flex-wrap gap-2 mb-2">
+                            {% if track.replaygain_track_gain %}<span class="badge bg-secondary-subtle text-dark" title="Track gain"><i class="bi bi-volume-up me-1"></i>{{ track.replaygain_track_gain }} dB</span>{% endif %}
+                            {% if track.replaygain_track_peak %}<span class="badge bg-secondary-subtle text-dark" title="Track peak">Peak {{ track.replaygain_track_peak }}</span>{% endif %}
+                            {% if track.replaygain_album_gain %}<span class="badge bg-secondary-subtle text-dark" title="Album gain"><i class="bi bi-collection me-1"></i>{{ track.replaygain_album_gain }} dB</span>{% endif %}
+                            {% if track.replaygain_album_peak %}<span class="badge bg-secondary-subtle text-dark" title="Album peak">Peak {{ track.replaygain_album_peak }}</span>{% endif %}
+                            {% if track.r128_track_gain %}<span class="badge bg-secondary-subtle text-dark" title="R128 track gain">R128 {{ track.r128_track_gain }}</span>{% endif %}
+                            {% if track.r128_album_gain %}<span class="badge bg-secondary-subtle text-dark" title="R128 album gain">R128 Album {{ track.r128_album_gain }}</span>{% endif %}
+                        </div>
+                        {% endif %}
+
                         {% if track.isrc %}
                         <div class="metadata-row mt-2">
                             <div class="metadata-label small">ISRC</div>
