@@ -30,19 +30,96 @@ from services.popularity.popularity_math import (
     effective_album_ratio,
 )
 from services.popularity.popularity_zscore import composite_listener_z
-from services.popularity.standout_service import STANDOUT_CONFIG
 from services.catalog.album_classification_service import is_live_or_alternate_track_title
 
+from helpers.config_helpers import get_standout_config
 from helpers.logging_config import log_unified
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Star rating thresholds
+# Live star-rating / era-scaling config
 # ---------------------------------------------------------------------------
+# Every star/era threshold below is read from ``single_detection`` config on
+# EACH call (``get_standout_config`` reads the cached config source) so a
+# config.html edit applies to the next scan without a process restart — the
+# legacy module-level constants froze them at Python startup.
 
-STAR_5_ALBUM_Z = STANDOUT_CONFIG.get("star_5", {}).get("album_z", 1.0)
-STAR_5_ARTIST_Z = STANDOUT_CONFIG.get("star_5", {}).get("artist_z", 1.2)
+_DEFAULT_ERA_RULES: dict[str, dict[str, float | int]] = {
+    "peak": {"catalog_top_pct": 0.20, "album_top_n": 3, "max_5star_slots": 4},
+    "solid": {"catalog_top_pct": 0.15, "album_top_n": 2, "max_5star_slots": 2},
+    "minor": {"catalog_top_pct": 0.10, "album_top_n": 1, "max_5star_slots": 1},
+}
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value) if value is not None else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _fmt_count(count) -> str:
+    """Format a listener count compactly (14201 → '14.2k')."""
+    try:
+        value = float(count or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value >= 1000:
+        return f"{value / 1000:.1f}k"
+    return f"{value:.0f}"
+
+
+def _live_star_thresholds() -> dict[str, float]:
+    """Star-tier z boundaries + epsilon buffer, read live from config."""
+    cfg = get_standout_config() or {}
+
+    def _tier(key: str, field: str, default: float) -> float:
+        block = cfg.get(key) or {}
+        return _safe_float(block.get(field), default)
+
+    return {
+        "star5_album_z": _tier("star_5", "album_z", 1.0),
+        "star5_artist_z": _tier("star_5", "artist_z", 1.2),
+        "star4_album_z": _tier("star_4", "album_z", 0.5),
+        "star3_album_z": _tier("star_3", "album_z", -0.5),
+        "star2_album_z": _tier("star_2", "album_z", -1.2),
+        "epsilon": _safe_float(cfg.get("star_epsilon_score_points"), 0.5),
+        "listener_5star_z": _safe_float(cfg.get("listener_5star_z_threshold"), 1.0),
+    }
+
+
+def _live_album_scaling() -> tuple[dict[str, dict[str, float | int]], float, float]:
+    """Era rules + era-boundary ratios, read live from ``album_scaling``.
+
+    Returns ``(rules, peak_era_min_ratio, solid_era_min_ratio)`` with keys
+    ``{era: {catalog_top_pct, album_top_n, max_5star_slots}}``.
+    """
+    cfg = get_standout_config() or {}
+    scaling = cfg.get("album_scaling") or {}
+    if not isinstance(scaling, dict):
+        scaling = {}
+    rules: dict[str, dict[str, float | int]] = {}
+    for era, defaults in _DEFAULT_ERA_RULES.items():
+        rules[era] = {
+            "catalog_top_pct": _safe_float(
+                scaling.get(f"{era}_catalog_top_pct"), float(defaults["catalog_top_pct"])
+            ),
+            "album_top_n": int(_safe_float(
+                scaling.get(f"{era}_album_top_n"), float(defaults["album_top_n"])
+            )),
+            "max_5star_slots": int(_safe_float(
+                scaling.get(f"{era}_max_5star_slots"), float(defaults["max_5star_slots"])
+            )),
+        }
+    peak_min = _safe_float(scaling.get("peak_era_min_ratio"), 0.75)
+    solid_min = _safe_float(scaling.get("solid_era_min_ratio"), 0.40)
+    return rules, peak_min, solid_min
+
+
+# ---------------------------------------------------------------------------
+# Star rating thresholds (documentation of the live-read defaults)
+# ---------------------------------------------------------------------------
 # 1-4★ intra-album z-score bands (spec rule 4).  After 5★ singles/standouts
 # are assigned, the REST of the album is ranked purely by its position in the
 # album's own popularity distribution:
@@ -53,9 +130,6 @@ STAR_5_ARTIST_Z = STANDOUT_CONFIG.get("star_5", {}).get("artist_z", 1.2)
 # These are data-driven rather than a fixed 20/30/30/20 rank split, so a
 # tightly-clustered album keeps its middle band instead of manufacturing fake
 # standout/filler ratings.
-STAR_4_ALBUM_Z = STANDOUT_CONFIG.get("star_4", {}).get("album_z", 0.5)
-STAR_3_ALBUM_Z = STANDOUT_CONFIG.get("star_3", {}).get("album_z", -0.5)
-STAR_2_ALBUM_Z = STANDOUT_CONFIG.get("star_2", {}).get("album_z", -1.2)
 
 # Epsilon-delta closeness buffer, in SCORE POINTS on the 0-100 scale: a track
 # within this of a tier boundary shares the HIGHER tier.  Hard cutoffs split
@@ -67,11 +141,8 @@ STAR_2_ALBUM_Z = STANDOUT_CONFIG.get("star_2", {}).get("album_z", -1.2)
 # robust spread floored at 8.0 — never widens a band far enough to overlap
 # the neighbouring tier, preserving a distinct gap to the tier below.
 # Tunable via config ``single_detection.star_epsilon_score_points``.
-STAR_EPSILON_SCORE_POINTS = float(STANDOUT_CONFIG.get("star_epsilon_score_points", 0.5) or 0.5)
 
-# ---------------------------------------------------------------------------
-# 3-step album scaling model (era-qualified 5★ singles)
-# ---------------------------------------------------------------------------
+# 3-step album scaling model (era-qualified 5★ singles):
 # Songs no longer auto-earn 5★ just for being a confirmed high-confidence
 # single.  Each album is classified by where it sits on the artist's career
 # curve (R_eff, from the discography benchmark M_peak + the age-skew
@@ -84,26 +155,6 @@ STAR_EPSILON_SCORE_POINTS = float(STANDOUT_CONFIG.get("star_epsilon_score_points
 #
 # A ``single=high`` track that misses the bar drops to the 4★ Single Floor
 # (never below 4★).  Tunable via config.yaml ``single_detection.album_scaling``.
-_ALBUM_SCALING = STANDOUT_CONFIG.get("album_scaling") or {}
-ALBUM_ERA_PEAK_MIN_RATIO = float(_ALBUM_SCALING.get("peak_era_min_ratio", 0.75) or 0.75)
-ALBUM_ERA_SOLID_MIN_RATIO = float(_ALBUM_SCALING.get("solid_era_min_ratio", 0.40) or 0.40)
-ALBUM_ERA_RULES: dict[str, dict[str, float | int]] = {
-    "peak": {
-        "catalog_top_pct": float(_ALBUM_SCALING.get("peak_catalog_top_pct", 0.20) or 0.20),
-        "album_top_n": int(_ALBUM_SCALING.get("peak_album_top_n", 3) or 3),
-        "max_5star_slots": int(_ALBUM_SCALING.get("peak_max_5star_slots", 4) or 4),
-    },
-    "solid": {
-        "catalog_top_pct": float(_ALBUM_SCALING.get("solid_catalog_top_pct", 0.15) or 0.15),
-        "album_top_n": int(_ALBUM_SCALING.get("solid_album_top_n", 2) or 2),
-        "max_5star_slots": int(_ALBUM_SCALING.get("solid_max_5star_slots", 2) or 2),
-    },
-    "minor": {
-        "catalog_top_pct": float(_ALBUM_SCALING.get("minor_catalog_top_pct", 0.10) or 0.10),
-        "album_top_n": int(_ALBUM_SCALING.get("minor_album_top_n", 1) or 1),
-        "max_5star_slots": int(_ALBUM_SCALING.get("minor_max_5star_slots", 1) or 1),
-    },
-}
 
 
 # ---------------------------------------------------------------------------
@@ -131,18 +182,21 @@ def _compute_artist_z(score: float, artist_scores: list[float]) -> tuple[float, 
     return calculate_robust_zscore(score, artist_scores, min_count=5)
 
 
-def _star_epsilon_z(spread: float) -> float:
+def _star_epsilon_z(spread: float, epsilon: float | None = None) -> float:
     """Convert the score-point epsilon buffer into z-units for a spread.
 
     Defined in score points (the domain the user sees: 54.1 vs 53.9) because
     a fixed z-epsilon would be lax on wide-spread albums and useless on tight
     ones.  With the robust spread floored at 8.0 the epsilon is at most
     0.5/8.0 = 0.0625 z, so the widened band can never reach the next tier
-    boundary (bands sit >= 0.5 z apart).
+    boundary (bands sit >= 0.5 z apart).  ``epsilon`` defaults to the LIVE
+    ``star_epsilon_score_points`` config value.
     """
     if not spread or spread <= 0:
         return 0.0
-    return STAR_EPSILON_SCORE_POINTS / spread
+    if epsilon is None:
+        epsilon = _live_star_thresholds()["epsilon"]
+    return epsilon / spread
 
 
 def _resolve_navidrome_artist_id(cursor, artist: str) -> str | None:
@@ -213,8 +267,12 @@ def _has_z_standout_source(track: dict[str, Any]) -> bool:
         return False
 
 
-def _album_z_band_star(score: float, album_scores: list[float]) -> int:
-    """Album-relative 1-4★ rating from the album's z-score bands.
+def _album_z_band_star(
+    score: float,
+    album_scores: list[float],
+    reference_scores: list[float] | None = None,
+) -> int:
+    """Album-relative 1-4★ rating from the z-score bands.
 
     Spec rule 4: the album's tracks are ranked by popularity and sliced into
     z-score bands — top of the album (Z >= +0.5) → 4★, the standard middle
@@ -223,31 +281,38 @@ def _album_z_band_star(score: float, album_scores: list[float]) -> int:
     is never consulted, so every album has a meaningful internal ranking and
     no track reaches 5★ from popularity alone.
 
+    ``reference_scores`` overrides the reference distribution (used for
+    compilation / Best-Of albums, where the curated tracklist inflates the
+    album median — the bands are evaluated against the ARTIST's catalogue
+    instead).
+
     Unlike a fixed rank percentile split, the z-score bands respect the album's
     ACTUAL popularity spread: an album whose tracks are all similarly popular
     keeps them in the 3★ band instead of forcing artificial standouts/fillers,
     while a spread-out album separates cleanly into 4★/2★/1★ tiers.
 
     Albums too small for a meaningful z-score (< 3 valid scores) fall back to
-    the 3★ middle band (their album z is 0.0).
+    the 3★ middle band (their album z is 0.0).  Thresholds are read LIVE from
+    config on every call.
     """
     if score <= 0:
         return 1
-    valid = [float(s) for s in (album_scores or []) if float(s or 0) > 0]
+    valid = [float(s) for s in (reference_scores if reference_scores is not None else album_scores or []) if float(s or 0) > 0]
     if len(valid) < 3:
         return 3
     album_z, spread = _compute_album_z(score, valid)
+    th = _live_star_thresholds()
     # Epsilon-delta closeness buffer: a track within ``epsilon`` z of a band
     # boundary shares the HIGHER tier, so a near-boundary track is not
     # punished for a single-scrobble difference while a distinct gap to the
     # next tier down is preserved (bands are >= 0.5 z apart and the epsilon
     # is at most ~0.06 z).
-    epsilon = _star_epsilon_z(spread)
-    if album_z >= STAR_4_ALBUM_Z - epsilon:
+    epsilon = _star_epsilon_z(spread, th["epsilon"])
+    if album_z >= th["star4_album_z"] - epsilon:
         return 4
-    if album_z >= STAR_3_ALBUM_Z - epsilon:
+    if album_z >= th["star3_album_z"] - epsilon:
         return 3
-    if album_z >= STAR_2_ALBUM_Z - epsilon:
+    if album_z >= th["star2_album_z"] - epsilon:
         return 2
     return 1
 
@@ -278,10 +343,15 @@ def _album_rank(score: float, album_scores: list[float]) -> int:
 
 
 def _album_era_for_ratio(reff: float) -> str:
-    """Classify an album by its effective ratio: peak / solid / minor."""
-    if reff >= ALBUM_ERA_PEAK_MIN_RATIO:
+    """Classify an album by its effective ratio: peak / solid / minor.
+
+    Era boundaries (``peak_era_min_ratio`` / ``solid_era_min_ratio``) are
+    read LIVE from ``single_detection.album_scaling`` on every call.
+    """
+    _rules, peak_min, solid_min = _live_album_scaling()
+    if reff >= peak_min:
         return "peak"
-    if reff >= ALBUM_ERA_SOLID_MIN_RATIO:
+    if reff >= solid_min:
         return "solid"
     return "minor"
 
@@ -368,7 +438,8 @@ def _build_album_model(
         a_skew = age_skew_multiplier(album_year, datetime.now().year, peak_year)
         reff = effective_album_ratio(current_median * a_skew, m_peak)
         era = _album_era_for_ratio(reff)
-        rules = ALBUM_ERA_RULES.get(era, ALBUM_ERA_RULES["peak"])
+        _rules, _, _ = _live_album_scaling()
+        rules = _rules.get(era, _rules["peak"])
 
         return {
             "has_benchmark": True,
@@ -396,15 +467,23 @@ def _assign_stars(
     album_lb_listens: list[float] | None = None,
     popularity_only: bool = False,
     album_model: dict[str, Any] | None = None,
+    is_compilation: bool = False,
 ) -> int:
     """Assign 1–5 star rating to a single track (album-relative spec).
 
     Pipeline (spec rules 4-5):
 
     1. The album-relative base rating is 1-4★, assigned purely from the
-       album's popularity z-score bands (``_album_z_band_star``).
+       album's popularity z-score bands (``_album_z_band_star``).  For
+       compilation / Best-Of albums the bands use the ARTIST's catalogue
+       distribution instead — a curated hits tracklist inflates the local
+       median, which drives real 4★ singles at the bottom of the tracklist
+       down to 1★.
     2. 5★ is reserved for:
-       - high-confidence singles (``single_confidence == 'high'``), or
+       - high-confidence singles that clear the ORGANIC popularity floor
+         (score >= 45.0 or >= 1000 Last.fm listeners — a Discogs-tagged
+         single with ~300 listeners must not leapfrog genuinely popular
+         album tracks), or
        - genuine triple-standouts: album z AND artist z above the standout
          thresholds AND a popularity standout (top-10% ``popularity_marked``
          or the ``popularity_z_standout`` detection signal).
@@ -413,16 +492,16 @@ def _assign_stars(
        singles and marked tracks must ALSO clear their album's era bar
        (R_eff tier): the era's artist catalog top-% cutoff OR the album's
        top-N tracks.  A high single that misses the bar drops to the 4★
-       Single Floor — it never falls below 4★.
+       Single Floor — it never falls below 4★ (and never above 3★ when the
+       organic floor is not met).
 
     ``popularity_only`` (a scan that rated popularity without single
     detection) ignores single status so a stale stored flag can't inflate the
     rating — only genuine standouts reach 5★.  Live tracks cap at 4★ (legacy
     parity).  A manual user override (``single_confidence == 'user'``) is
-    always preserved.
+    always preserved.  All thresholds are read LIVE from config on every call.
     """
     score = float(track.get("popularity_score") or 0)
-    is_single = bool(track.get("is_single"))
     single_confidence = str(track.get("single_confidence") or "low")
     # A "(Live)"/"(Acoustic)" title-suffixed track on a studio album is a live
     # recording even when the album itself is studio — cap it at 4★ so a bonus
@@ -439,7 +518,27 @@ def _assign_stars(
     if single_confidence == "user":
         return 5
 
-    album_z, album_spread = _compute_album_z(score, album_scores)
+    th = _live_star_thresholds()
+
+    # Organic popularity floor: single-driven elevation (5★ / 4★ Single
+    # Floor / era album-top-N) requires the track to have a real organic
+    # audience — a metadata-tagged single with almost no listeners must not
+    # jump ahead of popular album tracks.  Marked / standout paths are
+    # popularity-driven by definition and are not gated.
+    try:
+        from services.popularity.popularity_config import get_single_organic_floor
+        _org_score, _org_listeners = get_single_organic_floor()
+    except Exception:
+        _org_score, _org_listeners = 45.0, 1000.0
+    organic = score >= _org_score or int(track.get("lastfm_listeners") or 0) >= _org_listeners
+
+    # Compilation / Best-Of albums evaluate the star bands against the
+    # ARTIST's catalogue distribution (the curated tracklist inflates the
+    # album median).  True Various-Artists albums keep the album reference —
+    # the "album artist" has no catalogue to compare against.
+    ref_scores = artist_scores if is_compilation else album_scores
+
+    album_z, album_spread = _compute_album_z(score, ref_scores)
     artist_z, artist_spread = _compute_artist_z(score, artist_scores)
     popularity_marked = bool(track.get("popularity_marked"))
 
@@ -471,23 +570,22 @@ def _assign_stars(
                 album_lf_listeners=album_lf_listeners,
                 album_lb_listens=album_lb_listens,
             )
-        if _verify_z:
-            _listener_threshold = float(STANDOUT_CONFIG.get("listener_5star_z_threshold", 1.0) or 1.0)
-            if _verify_z < _listener_threshold:
-                z_standout_source = False
+        if _verify_z and _verify_z < th["listener_5star_z"]:
+            z_standout_source = False
     is_standout = (
-        album_z >= STAR_5_ALBUM_Z - _star_epsilon_z(album_spread)
-        and artist_z >= STAR_5_ARTIST_Z - _star_epsilon_z(artist_spread)
+        album_z >= th["star5_album_z"] - _star_epsilon_z(album_spread, th["epsilon"])
+        and artist_z >= th["star5_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"])
         and (popularity_marked or z_standout_source)
     )
     # Top-% popularity marking alone grants 5★ (spec rule 2): a track in the
     # artist's top 10% is "popular" regardless of single status, so it never
     # needs a single-detection source.  The medium→high bump (rule 3) already
     # upgraded widened top-20% medium singles to HIGH confidence, which the
-    # ``single_confidence == 'high'`` branch awards below.
+    # ``single_confidence == 'high'`` branch awards below — gated on the
+    # organic floor so metadata-only singles can't leapfrog real popularity.
     if not is_live and (
         popularity_marked
-        or (not popularity_only and single_confidence == "high")
+        or (not popularity_only and single_confidence == "high" and organic)
         or is_standout
     ):
         # Triple-standout proof (album z + artist z + popularity source)
@@ -506,11 +604,13 @@ def _assign_stars(
         # strictest (minor-era top 10%) bar and still earn 5★.
         if album_model and album_model.get("has_benchmark") and score > 0:
             era = str(album_model.get("era") or "")
-            rules = ALBUM_ERA_RULES.get(era)
+            _rules, _, _ = _live_album_scaling()
+            rules = _rules.get(era)
             catalog_cutoff = album_model.get("catalog_cutoff")
             qualifies_catalog = catalog_cutoff is not None and score >= float(catalog_cutoff)
             qualifies_album = (
                 not popularity_only
+                and organic
                 and rules is not None
                 and _album_rank(score, album_scores) <= int(rules["album_top_n"])
             )
@@ -518,17 +618,19 @@ def _assign_stars(
                 track["_era_5star"] = True
                 return 5
             # 4★ Single Floor (spec safety net): a high-confidence single
-            # that fails the 5★ criteria never drops below 4★.
+            # that fails the 5★ criteria never drops below 4★ — unless the
+            # organic floor is unmet, in which case it must not exceed 3★.
             if not popularity_only and single_confidence == "high":
-                return max(_album_z_band_star(score, album_scores), 4)
+                band = _album_z_band_star(score, ref_scores)
+                return max(band, 4) if organic else min(band, 3)
             # Marked-only tracks below the era bar (medium-bumped singles
             # ranked 10-20% on a minor-era album) fall through to the band.
-            return _album_z_band_star(score, album_scores)
+            return _album_z_band_star(score, ref_scores)
 
         return 5
 
     # ── 1-4★: album-relative z-score base ──
-    return _album_z_band_star(score, album_scores)
+    return _album_z_band_star(score, ref_scores)
 
 
 # ---------------------------------------------------------------------------
@@ -797,6 +899,7 @@ def _create_essential_m3u(artist: str, cursor) -> None:
                 "[finalise_stage] Essential collection created: %s (%d tracks)",
                 file_path, len(winners),
             )
+            log_unified(f"📄 Playlist: Generated '{playlist_name}.m3u' ({len(winners)} tracks)")
         except Exception as exc:
             logger.warning("[finalise_stage] Essential collection write failed for %s: %s", artist, exc)
         return
@@ -904,6 +1007,27 @@ def post_album_star_ratings(
     try:
         album = str(album_results[0].get("album") or "Unknown")
 
+        # ── Compilation / Best-Of reference offset ─────────────────────────
+        # Single-artist compilations (Greatest Hits) rate tracks against the
+        # ARTIST's catalogue distribution instead of the album's: a curated
+        # hits tracklist sits on an artificially high local median, which
+        # drives the real 4★ singles at the bottom of the tracklist down to
+        # 1★.  True Various-Artists albums keep the album reference — the
+        # "album artist" has no catalogue to compare against.
+        try:
+            from services.enrichment.single_detection_service import is_compilation_album
+            _album_type = str(
+                album_results[0].get("album_type")
+                or album_results[0].get("detected_album_type")
+                or ""
+            )
+            is_compilation = bool(is_compilation_album(_album_type, album))
+        except Exception:
+            is_compilation = False
+        if is_compilation and artist.lower() in (
+            "various artists", "various", "compilation", "soundtrack"
+        ):
+            is_compilation = False
         # Album score distribution used for z-scores and the 1-4★ bands.
         # Bonus / alternate / live tracks (``exclude_from_stats``) on a studio
         # album are dropped from the reference so a deluxe edition padded with
@@ -1005,6 +1129,7 @@ def post_album_star_ratings(
                     album_lb_listens,
                     popularity_only=bool(options.get("popularity_only")),
                     album_model=album_model,
+                    is_compilation=is_compilation,
                 )
             except Exception as exc:
                 logger.warning(
@@ -1036,12 +1161,33 @@ def post_album_star_ratings(
                 except Exception as exc:
                     logger.debug("[finalise_stage] DB update failed for %s: %s", track_id, exc)
 
+                # Mirror the rating into the audio file tags (POPM/RATING) when
+                # the tagging policy permits — the master toggle and the
+                # ratings_only mode are honoured by ``write_rating_to_file``.
+                # Silently skipped when tag writes are disabled.
+                if stars >= 1:
+                    try:
+                        from services.metadata.tag_file_service import (
+                            _get_track_file_path,
+                            _resolve_music_file_path,
+                            write_rating_to_file,
+                        )
+                        _abs = _resolve_music_file_path(_get_track_file_path(track_id))
+                        if _abs:
+                            write_rating_to_file(_abs, stars)
+                    except Exception as _tag_err:
+                        logger.debug("[finalise_stage] Rating tag write failed for %s: %s", track_id, _tag_err)
+
         # ── Era 5★ slot cap (scaling model step 4) ────────────────────────
         # The era's slot budget limits how many 5★ singles one album can
         # carry via the catalog/album-rank path; surplus (weakest by album
         # z-score) are demoted to the 4★ Single Floor.
         if album_model.get("has_benchmark"):
-            max_slots = int(album_model.get("max_5star_slots") or ALBUM_ERA_RULES["peak"]["max_5star_slots"])
+            _rules, _, _ = _live_album_scaling()
+            max_slots = int(
+                album_model.get("max_5star_slots")
+                or _rules["peak"]["max_5star_slots"]
+            )
             slot_tracks = [
                 t for t in album_results
                 if t.get("_era_5star") and int(t.get("stars") or 0) == 5
@@ -1073,24 +1219,18 @@ def post_album_star_ratings(
 
         conn.commit()
 
-        # ── Per-album progress (dashboard unified log) ──────────
-        # Mirrors the legacy scanner: emit a human-readable per-album
-        # star-rating summary so operators can follow progress in the
-        # dashboard log while the scan is running.
+        # ── Per-album tabular summary (dashboard unified log) ─────
+        # One clean table per album: rating, track title, album z-score,
+        # popularity score, Last.fm listeners and single confidence.
         try:
             star_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
             for t in album_results:
                 s = int(t.get("stars") or 0)
                 if 1 <= s <= 5:
                     star_counts[s] += 1
-            log_unified(
-                f"Star Ratings - Album '{album}' by {artist}: "
-                f"5★: {star_counts[5]}, 4★: {star_counts[4]}, 3★: {star_counts[3]}, "
-                f"2★: {star_counts[2]}, 1★: {star_counts[1]}"
-            )
+
             # A popularity-only pass did NOT run single detection, so the
-            # stale single flags in the DB must not drive the per-album output
-            # (tracks are grouped by star tier instead).
+            # stale single flags in the DB must not drive the per-album output.
             _pop_only = bool(options.get("popularity_only"))
             singles_detected = [] if _pop_only else [t for t in album_results if t.get("is_single")]
             if singles_detected:
@@ -1098,97 +1238,74 @@ def post_album_star_ratings(
                     f"Singles Detection - Detected {len(singles_detected)} single(s) in '{album}'"
                 )
 
-            # ── Detailed per-track final output ───────────────────
-            # Mirrors the legacy scanner's album summary: every track
-            # is listed with its star rating, grouped into detected
-            # singles, popular tracks, and the rest of the album.
-            if album_results:
-                detected_singles: list[tuple[str, int, str, float, str]] = []
-                popular_songs: list[tuple[str, int, str, float, str]] = []
-                rest_of_album: list[tuple[str, int, str, float, str]] = []
-                for t in album_results:
-                    t_stars = int(t.get("stars") or 0)
-                    t_single = bool(t.get("is_single"))
-                    t_conf = str(t.get("single_confidence") or "low").lower()
-                    t_title = str(t.get("title") or "Unknown")
-                    t_artist = str(t.get("artist") or artist)
-                    t_score = float(t.get("popularity_score") or t.get("final_score") or 0)
-                    album_z, _ = _compute_album_z(t_score, album_scores)
-                    artist_z, _ = _compute_artist_z(t_score, artist_scores)
+            # Compilation / Best-Of albums evaluate the z-score against the
+            # artist's catalogue — the same reference the star bands used.
+            _ref_scores = artist_scores if is_compilation else album_scores
 
-                    reasons: list[str] = []
-                    try:
-                        sources = t.get("single_sources") or ""
-                        if isinstance(sources, str):
-                            parsed = json.loads(sources) if sources.strip() else []
-                        else:
-                            parsed = sources
-                        if isinstance(parsed, list):
-                            reasons.append(", ".join(str(s) for s in parsed[:3]))
-                    except Exception:
-                        pass
-                    if t_single and t_conf == "high" and album_z:
-                        reasons.append(f"album-z-score: {album_z:.2f}")
-                    elif t_stars == 5 and album_z:
-                        reasons.append(f"album-z-score: {album_z:.2f}")
-                    elif album_z:
-                        reasons.append(f"album-z-score: {album_z:.2f}")
-                    # Surface the raw listener counts alongside the
-                    # scoring so ratings are easy to sanity-check
-                    # against the source data (Last.fm / ListenBrainz).
-                    reasons.append(
-                        f"lf={int(t.get('lastfm_listeners') or 0):,} "
-                        f"lb={int(t.get('listenbrainz_listens') or 0):,}"
-                    )
-                    # Show each provider's score contribution so the
-                    # rating can be traced back to the sources.
-                    reasons.append(
-                        f"LF-score={float(t.get('lastfm_score') or 0):.1f} "
-                        f"LB-score={float(t.get('listenbrainz_score') or 0):.1f} "
-                        f"score={t_score:.1f}"
-                    )
-                    reason_str = f" ({'; '.join(r for r in reasons if r)})" if reasons else ""
+            rows: list[dict[str, Any]] = []
+            for t in album_results:
+                t_stars = int(t.get("stars") or 0)
+                t_conf = str(t.get("single_confidence") or "low").lower()
+                t_title = str(t.get("title") or "Unknown").strip()
+                t_score = float(t.get("popularity_score") or t.get("final_score") or 0)
+                album_z, _ = _compute_album_z(t_score, _ref_scores)
 
-                    # Both high- and medium-confidence singles belong in the
-                    # Detected Singles list — a medium single (e.g. MB-only
-                    # confirmation with a low z-score) is still a single and
-                    # must not vanish into "Rest of Album".  A popularity-only
-                    # pass has no fresh single data, so it groups by star tier
-                    # (5★ standouts under "Top Rated Tracks") instead.
-                    if not _pop_only and t_single and t_conf in ("high", "medium"):
-                        detected_singles.append((t_title, t_stars, t_artist, t_score, reason_str))
-                    elif t_stars == 5:
-                        popular_songs.append((t_title, t_stars, t_artist, t_score, reason_str))
+                # Confidence note: which sources actually confirmed it.
+                note = ""
+                try:
+                    sources = t.get("single_sources") or ""
+                    if isinstance(sources, str):
+                        parsed = json.loads(sources) if sources.strip() else []
                     else:
-                        rest_of_album.append((t_title, t_stars, t_artist, t_score, reason_str))
+                        parsed = sources
+                    if isinstance(parsed, list) and parsed:
+                        matched_sources = [
+                            str(s.get("source") or "") for s in parsed
+                            if isinstance(s, dict) and bool(s.get("matched"))
+                        ]
+                        if matched_sources:
+                            note = " (" + ", ".join(
+                                s.replace("_", " ").title() for s in matched_sources[:2]
+                            ) + ")"
+                except Exception:
+                    pass
+                if not note and t_stars == 5 and t_conf == "low":
+                    note = " (Standout)"
 
-                def _log_track_group(lines: list[tuple[str, int, str, float, str]]) -> None:
-                    # List in star-rating order (descending), using the
-                    # track's popularity score as the tie-breaker.
-                    for t_title, t_stars, t_artist, t_score, reason in sorted(
-                        lines, key=lambda item: (-item[1], -item[3])
-                    ):
-                        star_str = "★" * max(0, min(t_stars, 5)) + "☆" * max(0, 5 - min(t_stars, 5))
-                        log_unified(
-                            f"Single Detection Scan - {star_str:<5} {t_artist} - {t_title}{reason}"
-                        )
+                rows.append({
+                    "stars": max(1, min(t_stars, 5)),
+                    "title": t_title[:34],
+                    "z": album_z,
+                    "score": t_score,
+                    "lf": _fmt_count(t.get("lastfm_listeners")),
+                    "conf": t_conf.upper() if t_conf in ("high", "medium") else "LOW",
+                    "note": note,
+                })
+            rows.sort(key=lambda r: (-r["stars"], -r["score"]))
 
-                if detected_singles:
-                    log_unified(f"Single Detection Scan - ===== {album} - Detected Singles =====")
-                    _log_track_group(detected_singles)
-                if popular_songs:
-                    if _pop_only:
-                        _pop_header = "Top Rated Tracks"
-                    else:
-                        _pop_header = "Popular Songs (Not Detected as Single)"
-                    log_unified(f"Single Detection Scan - ===== {album} - {_pop_header} =====")
-                    _log_track_group(popular_songs)
-                if rest_of_album:
-                    if detected_singles or popular_songs:
-                        log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
-                    else:
-                        log_unified(f"Single Detection Scan - ===== {album} - All Tracks =====")
-                    _log_track_group(rest_of_album)
+            log_unified("=" * 80)
+            log_unified(
+                f"📊 SCAN RESULTS: {str(artist or '').strip()} — {str(album or '').strip()} "
+                f"({len(album_results)} Tracks)"
+            )
+            log_unified("=" * 80)
+            log_unified(
+                f"{'RATING':<7} {'TRACK TITLE':<34} {'Z-SCORE':>7} {'SCORE':>6} "
+                f"{'LF LISTENS':>10}  SINGLE CONF"
+            )
+            log_unified("-" * 80)
+            for r in rows:
+                star_str = "★" * r["stars"] + "☆" * (5 - r["stars"])
+                log_unified(
+                    f"{star_str:<7} {r['title']:<34} {r['z']:>+7.2f} {r['score']:>6.1f} "
+                    f"{r['lf']:>10}  {r['conf']}{r['note']}"
+                )
+            log_unified("-" * 80)
+            log_unified(
+                f"⭐ Distribution: 5★: {star_counts[5]} | 4★: {star_counts[4]} | "
+                f"3★: {star_counts[3]} | 2★: {star_counts[2]} | 1★: {star_counts[1]}"
+            )
+            log_unified("=" * 80)
         except Exception as log_exc:
             logger.debug("[finalise_stage] Album progress log failed: %s", log_exc)
 
@@ -1208,10 +1325,14 @@ def post_album_star_ratings(
                         navidrome_synced += 1
                         _synced += 1
             _failed = _attempted - _synced
+            # Surface successful syncs at INFO — a per-album summary line so
+            # the album scan log shows Navidrome output (previously silent).
+            if _synced > 0:
+                log_unified(f"🔗 Navidrome: synced {_synced} rating(s) for '{artist}'")
             if _failed > 0:
                 logger.warning(
                     "[finalise_stage] %d/%d Navidrome rating syncs failed for %s — check credentials / Subsonic API",
-                    _failed, _attempted, artist,
+                    _failed, _attempted, str(artist or "").strip(),
                 )
 
     except Exception as exc:

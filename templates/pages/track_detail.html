@@ -164,6 +164,18 @@
                             <strong>{{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}</strong>
                         </div>
                         {% endif %}
+                        {% if track.bpm %}
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">BPM</small>
+                            <strong>{{ track.bpm|round(0)|int }}</strong>
+                        </div>
+                        {% endif %}
+                        {% if track.musical_key %}
+                        <div class="col-6 col-md-3">
+                            <small class="text-muted d-block">Key</small>
+                            <strong>{{ track.musical_key }}</strong>
+                        </div>
+                        {% endif %}
                         {% if track.track_number %}
                         <div class="col-6 col-md-3">
                             <small class="text-muted d-block">Track #</small>
@@ -531,7 +543,7 @@
                 </div>
                 {% endif %}
 
-                <div class="accordion-item mb-0 border" id="track-external-ids-section" data-mobile-tab="tech">
+                <div class="accordion-item mb-0 border" id="track-external-ids-section" data-mobile-tab="details">
                     <h2 class="accordion-header" id="track-external-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-external-collapse" aria-expanded="false" aria-controls="track-external-collapse">
                             <i class="bi bi-upc-scan me-2"></i> External IDs
@@ -605,6 +617,12 @@
                     </h2>
                     <div id="track-lyrics-collapse" class="accordion-collapse collapse" aria-labelledby="track-lyrics-heading" data-bs-parent="#trackEditAccordion">
                         <div class="accordion-body">
+                        <div class="d-flex align-items-center gap-2 mb-2">
+                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="fetchLyricsFromLrclib('{{ track.id }}')" title="Fetch lyrics from LRCLIB (open-source, no API key required)">
+                                <i class="bi bi-cloud-download"></i> Fetch Lyrics
+                            </button>
+                            <span id="lyricsFetchStatus" class="small text-muted"></span>
+                        </div>
                         <div class="mb-3">
                             <label for="lyrics" class="form-label">Lyrics</label>
                             <textarea class="form-control" id="lyrics" name="lyrics" rows="10" placeholder="Paste full song lyrics here...">{{ track.lyrics or '' }}</textarea>
@@ -613,7 +631,7 @@
                 </div>
 
                 <!-- Genres & Tags Section -->
-                <div class="accordion-item mb-0 border" id="track-genres-edit-section" data-mobile-tab="tech">
+                <div class="accordion-item mb-0 border" id="track-genres-edit-section" data-mobile-tab="details">
                     <h2 class="accordion-header" id="track-genres-heading">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-genres-collapse" aria-expanded="false" aria-controls="track-genres-collapse">
                             <i class="bi bi-tags-fill me-2"></i> Genres and Moods
@@ -756,6 +774,23 @@
                     </div>
                     <div id="track-scoring-collapse" class="collapse show">
                     <div class="card-body">
+
+                        <!-- Rating Basis: why this track earned its stars -->
+                        {% set rating_basis = [] %}
+                        {% if track.single_confidence == 'user' %}{% set _ = rating_basis.append('Manual override') %}{% endif %}
+                        {% if track.single_confidence == 'high' %}{% set _ = rating_basis.append('High-confidence single') %}{% endif %}
+                        {% if track.popularity_marked %}{% set _ = rating_basis.append('Top 10% artist catalog') %}{% endif %}
+                        {% if track.stars == 5 and track.single_confidence != 'high' and not track.popularity_marked %}{% set _ = rating_basis.append('Standout (album + artist z)') %}{% endif %}
+                        {% if rating_basis %}
+                        <div class="alert alert-secondary py-2 px-3 mb-3">
+                            <small class="text-muted text-uppercase fw-semibold d-block mb-1"><i class="bi bi-patch-check"></i> Rating Basis</small>
+                            <div class="d-flex flex-wrap gap-2">
+                                {% for basis in rating_basis %}
+                                <span class="badge bg-success-subtle text-dark">{{ basis }}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
 
                         <!-- Source Metrics -->
                         <h6 class="fw-semibold text-muted small text-uppercase mb-2">Source Metrics</h6>
@@ -1038,7 +1073,7 @@
                 </div>
 
                 <!-- Similar Artists -->
-                <div class="card mb-4" id="track-similar-section" data-mobile-tab="tech">
+                <div class="card mb-4" id="track-similar-section" data-mobile-tab="details">
                     <div class="card-header p-0" id="track-similar-heading">
                         <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-similar-collapse" aria-expanded="false" aria-controls="track-similar-collapse" style="color: inherit;">
                             <h5 class="card-title mb-0">
@@ -1063,7 +1098,7 @@
                 <div class="card mb-4" id="track-audio-info-card" data-mobile-tab="tech">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-soundwave"></i> ReplayGain &amp; File Info
+                            <i class="bi bi-soundwave"></i> Audio Analysis
                         </h5>
                     </div>
                     <div class="card-body">
@@ -1085,6 +1120,24 @@
                                 <div class="metadata-row">
                                     <div class="metadata-label small">BPM</div>
                                     <div class="metadata-value small">{{ track.bpm }}</div>
+                                </div>
+                                {% endif %}
+                                {% if track.musical_key %}
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Musical Key</div>
+                                    <div class="metadata-value small">{{ track.musical_key }}</div>
+                                </div>
+                                {% endif %}
+                                {% if track.loudness_lufs is not none %}
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Loudness</div>
+                                    <div class="metadata-value small">{{ track.loudness_lufs|round(1) }} LUFS</div>
+                                </div>
+                                {% endif %}
+                                {% if track.replaygain is not none %}
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">ReplayGain</div>
+                                    <div class="metadata-value small">{{ track.replaygain|round(2) }} dB</div>
                                 </div>
                                 {% endif %}
                             </div>
@@ -1572,6 +1625,34 @@
             bsCollapse.hide();
         });
     });
+</script>
+
+<script>
+// ── Lyrics: LRCLIB fetch (plain + synced LRC) ──
+async function fetchLyricsFromLrclib(trackId) {
+    const status = document.getElementById('lyricsFetchStatus');
+    if (!trackId) return;
+    if (status) { status.textContent = 'Searching LRCLIB…'; status.className = 'small text-muted'; }
+    try {
+        const resp = await fetch(`/api/track/${encodeURIComponent(trackId)}/lyrics/fetch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.found) {
+            if (status) { status.textContent = data.error || 'No lyrics found on LRCLIB.'; status.className = 'small text-warning'; }
+            return;
+        }
+        const textarea = document.getElementById('lyrics');
+        if (textarea) textarea.value = data.lyrics || '';
+        if (status) {
+            status.textContent = data.synced ? '✓ Saved (synced LRC)' : '✓ Saved (plain)';
+            status.className = 'small text-success';
+        }
+    } catch (e) {
+        if (status) { status.textContent = 'Network error: ' + e.message; status.className = 'small text-danger'; }
+    }
+}
 </script>
 
 <script>

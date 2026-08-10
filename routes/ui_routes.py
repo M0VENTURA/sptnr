@@ -632,43 +632,11 @@ async def artist_detail(name: str):
         return [display_names[k] for k in sorted_keys[:limit]]
 
     def classify_album(album_row: dict[str, Any]) -> str:
-        import re as _re
+        # Shared classifier — musicbrainz_albumtype → spotify_album_type →
+        # album_type, with title heuristics.  See
+        # ``services.catalog.album_classification_service.classify_album_type``.
+        return classify_album_type(album_row)
 
-        raw_type = str(
-            album_row.get("musicbrainz_albumtype")
-            or album_row.get("spotify_album_type")
-            or album_row.get("album_type")
-            or ""
-        ).lower()
-
-        album_name = str(
-            album_row.get("album") or ""
-        ).lower()
-
-        # Compilation / soundtrack
-        if "compilation" in raw_type:
-            return "compilation"
-        if "soundtrack" in raw_type or "soundtrack" in album_name:
-            return "compilation"
-
-        # Live / unplugged / acoustic
-        if "live" in raw_type or _re.search(r'\blive\b', album_name) or "unplugged" in album_name:
-            return "live_album"
-
-        # Remix
-        if "remix" in raw_type or "remix" in album_name:
-            return "remix_album"
-
-        # EP — catches "ep", "album+ep", "ep+mix", etc. (MusicBrainz combines
-        # primary+secondary types into a single "+"-joined string).
-        if "ep" in raw_type:
-            return "ep"
-
-        # Single
-        if "single" in raw_type:
-            return "single"
-
-        return "album"
     with db_session() as session:
         result = session.execute(
             text("""
@@ -2696,7 +2664,9 @@ async def downloads_search_soulseek():
 
 @ui_bp.route("/downloads/search/musicbrainz")
 async def downloads_search_musicbrainz():
-    return redirect(url_for("ui.downloads_search") + "#search-musicbrainz")
+    # MusicBrainz search moved into the global unified search modal
+    # (base.html) — keep the old URL working by landing on the search hub.
+    return redirect(url_for("ui.downloads_search"))
 
 
 @ui_bp.route("/downloads/search/qbittorrent")

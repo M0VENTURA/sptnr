@@ -1782,26 +1782,16 @@ async function batchOrganizeSelected() { alert('batchOrganizeSelected not yet im
 // QUEUE RENDERING (element-guarded — safe on any page that loads downloads.js)
 // ============================================================================
 
-// Renders the monitor page's Download Queue section: grouped folders first,
 // Renders the monitor page's Download Queue card: the real download_queue
-// rows grouped by album (Queue Items) AND the MusicBrainz folder groups
-// (Folder Groups). Both must render together — a folder-groups-only render
-// made newly added albums vanish under bare folder names whenever this
-// function's 10s poll ran after monitor.js had shown the items.
+// rows grouped by album (Queue Groups).  The legacy MusicBrainz folder
+// groups were removed — queue groups match the folders and support
+// expanding, stopping and deleting, so the old read-only section is gone.
 async function renderQueueSection() {
   const section = document.getElementById('folderGroupsSection');
   const list = document.getElementById('folderGroupsList');
   const badge = document.getElementById('folderGroupsBadge');
   if (!section || !list) return;
   section.style.display = 'block';
-
-  let groups = [];
-  try {
-    const data = await fetchJsonOrThrow('/api/downloads/grouped-folders');
-    if (data && data.success) groups = data.folder_groups || [];
-  } catch (error) {
-    console.error('Error loading folder groups:', error);
-  }
 
   let qItems = [];
   try {
@@ -1823,35 +1813,8 @@ async function renderQueueSection() {
       return renderQueueGroupRow(group, 'active', index);
     }).join('') + '</div>';
   }
-  if (groups.length > 0) {
-    html += '<h6 class="px-3 pt-3 mb-0 small text-muted text-uppercase">Folder Groups</h6>';
-    html += '<div class="list-group list-group-flush">' + groups.map(function(g) {
-      // API shape: {name, display_name, total_tracks, discovered_count,
-      // organized_count, progress_percent, status, files[], metadata{artist,album,year}}
-      const name = g.display_name || g.name || 'Unknown';
-      const meta = g.metadata || {};
-      const artist = meta.artist || '';
-      const album = meta.album || '';
-      const files = Array.isArray(g.files) ? g.files : [];
-      const trackCount = files.length || g.total_tracks || 0;
-      let fileHtml = '';
-      if (files.length > 0) {
-        fileHtml = '<ul class="list-unstyled mb-0 mt-1" style="max-height:160px;overflow-y:auto;">' +
-          files.slice(0, 50).map(function(f) {
-            const base = f && f.name ? f.name : String(f || '').split(/[\\/]/).pop();
-            return '<li style="font-size:0.75rem;" class="text-muted"><i class="bi bi-file-earmark-music me-1"></i>' + escapeHtml(base) + '</li>';
-          }).join('') +
-          (files.length > 50 ? '<li class="fst-italic small text-muted">+' + (files.length - 50) + ' more</li>' : '') +
-          '</ul>';
-      }
-      return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-start gap-2"><div class="flex-grow-1"><strong>' + escapeHtml(name) + '</strong>' +
-        (artist ? '<br><small class="text-muted">' + escapeHtml(artist) + (album ? ' - ' + escapeHtml(album) : '') + '</small>' : '') +
-        fileHtml +
-        '</div><span class="badge bg-info flex-shrink-0">' + trackCount + ' track' + (trackCount !== 1 ? 's' : '') + '</span></div></div>';
-    }).join('') + '</div>';
-  }
 
-  const total = qItems.length + groups.length;
+  const total = qItems.length;
   if (total === 0) {
     if (badge) badge.textContent = '0 items';
     list.innerHTML = '<div class="alert alert-info m-3"><i class="bi bi-info-circle"></i> No items in queue right now.</div>';

@@ -181,8 +181,7 @@
 let queueLogPaused = false;
 let searchLogPaused = false;
 
-// ===== Folder Groups =====
-async function loadFolderGroups(options) {
+// ===== Queue Groups (legacy MusicBrainz folder groups were removed — the\n// queue groups match the folders and support expand/stop/delete) =====\nasync function loadFolderGroups(options) {
   options = options || {};
   var section = document.getElementById('folderGroupsSection');
   var list = document.getElementById('folderGroupsList');
@@ -190,17 +189,6 @@ async function loadFolderGroups(options) {
   if (!section || !list) return;
   if (options.keepVisibleOnEmpty !== false) section.style.display = 'block';
 
-  var groups = [];
-  try {
-    var data = await fetchJsonOrThrow('/api/downloads/grouped-folders');
-    if (data && data.success) groups = data.folder_groups || [];
-  } catch (error) {
-    console.error('Error loading folder groups:', error);
-  }
-
-  // Always fetch the real download_queue rows too — items added via the
-  // search / download modals must be visible even when folder groups exist
-  // (previously they were hidden whenever groups.length > 0).
   var qItems = [];
   try {
     var qd = await fetchJsonOrThrow('/api/downloads/queue?limit=200');
@@ -212,10 +200,8 @@ async function loadFolderGroups(options) {
   var html = '';
   if (qItems.length > 0) {
     html += '<h6 class="px-3 pt-3 mb-0 small text-muted text-uppercase">Queue Items</h6>';
-    // Group tracks into album folders (legacy parity — old_system grouped by
-    // artist+album / import_group and rendered each album as a collapsible
-    // folder with every song as a queue item below). Tracks added together
-    // from a MusicBrainz release share an ``import_group`` (mbid_<release_id>);
+    // Group tracks into album groups — items added together from a
+    // MusicBrainz release share an ``import_group`` (mbid_<release_id>);
     // other batch-added tracks fall back to artist+album grouping.
     var queueGroups = buildMonitorQueueGroups(qItems);
     html += '<div class="list-group list-group-flush">' + queueGroups.map(function(group, index) {
@@ -225,38 +211,8 @@ async function loadFolderGroups(options) {
       return renderMonitorQueueGroupRow(group, index);
     }).join('') + '</div>';
   }
-  if (groups.length > 0) {
-    // Distinct divider so QUEUE ITEMS and FOLDER GROUPS don't bleed together.
-    html += '<div class="border-top border-secondary mx-3 my-3"></div>';
-    html += '<h6 class="px-3 mb-0 small text-muted text-uppercase">Folder Groups</h6>';
-    html += '<div class="list-group list-group-flush">' + groups.map(function(g) {
-      // API shape: {name, display_name, total_tracks, discovered_count,
-      // organized_count, progress_percent, status, files[], metadata{artist,album,year}}
-      var name = g.display_name || g.name || 'Unknown';
-      var meta = g.metadata || {};
-      var artist = meta.artist || '';
-      var album = meta.album || '';
-      var files = Array.isArray(g.files) ? g.files : [];
-      var trackCount = files.length || g.total_tracks || 0;
-      var fileHtml = '';
-      if (files.length > 0) {
-        fileHtml = '<ul class="list-unstyled mb-0 mt-1" style="max-height:160px;overflow-y:auto;">' +
-          files.slice(0, 50).map(function(f) {
-            var base = f && f.name ? f.name : String(f || '').split(/[\\/]/).pop();
-            return '<li style="font-size:0.75rem;" class="text-muted"><i class="bi bi-file-earmark-music me-1"></i>' + escapeHtml(cleanQueueFileName(base)) + '</li>';
-          }).join('') +
-          (files.length > 50 ? '<li class="fst-italic small text-muted">+' + (files.length - 50) + ' more</li>' : '') +
-          '</ul>';
-      }
-      return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-start gap-2">' +
-        '<div class="flex-grow-1"><strong>' + escapeHtml(name) + '</strong>' +
-        (artist ? '<br><small class="text-muted">' + escapeHtml(artist) + (album ? ' - ' + escapeHtml(album) : '') + '</small>' : '') +
-        fileHtml +
-        '</div><span class="badge bg-info flex-shrink-0">' + trackCount + ' track' + (trackCount !== 1 ? 's' : '') + '</span></div></div>';
-    }).join('') + '</div>';
-  }
 
-  var total = qItems.length + groups.length;
+  var total = qItems.length;
   if (total === 0) {
     if (options.keepVisibleOnEmpty !== false) {
       if (badge) badge.textContent = '0 items';

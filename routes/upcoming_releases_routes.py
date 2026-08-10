@@ -84,6 +84,27 @@ def api_upcoming_releases():
                 where_sql = " WHERE COALESCE(source_key, source) = :source_key"
                 params["source_key"] = source_filter
 
+        # Rolling display window: last N months → next M months from today
+        # (the same window the Wikipedia scraper imports).  Undated (TBA)
+        # rows are kept so genuinely unscheduled releases stay visible, but
+        # out-of-window dated rows (e.g. the January block when the current
+        # month is August) are hidden.
+        try:
+            from services.upcoming_releases.wikipedia_scraper_service import get_release_window
+            _win_start, _win_end = get_release_window()
+            _date_clause = (
+                " (release_date IS NULL OR release_date BETWEEN :win_start AND :win_end)"
+            )
+            where_sql = (
+                f" WHERE {_date_clause}"
+                if not where_sql
+                else where_sql + f" AND {_date_clause}"
+            )
+            params["win_start"] = _win_start.strftime("%Y-%m-%d")
+            params["win_end"] = _win_end.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
         with db_session() as session:
             total = session.execute(
                 text(f"SELECT COUNT(*) FROM upcoming_releases{where_sql}"),

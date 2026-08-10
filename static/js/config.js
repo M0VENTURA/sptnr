@@ -313,26 +313,18 @@ function buildConfigObject() {
         zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
         zscore_medium_threshold: parseFloat(getValue('zscore_medium_threshold', '0.6')) || 0.6,
         star_epsilon_score_points: parseFloat(getValue('star_epsilon_score_points', '0.5')) || 0.5,
-        album_zscore_threshold: parseFloat(getValue('sd_album_zscore', '0.8')) || 0.8,
-        artist_zscore_threshold: parseFloat(getValue('sd_artist_zscore', '2.2')) || 2.2,
         artist_top_percentile: parseFloat(getValue('sd_artist_pct', '0.10')) || 0.10,
         artist_medium_bump_percentile: parseFloat(getValue('sd_artist_medium_pct', '0.20')) || 0.20,
-        artist_min_tracks: parseInt(getValue('sd_artist_min_tracks', '10')) || 10,
-        popularity_5star_z_threshold: parseFloat(getValue('popularity_5star_z_threshold', '2.0')) || 2.0,
-        lb_unreliable_5star_threshold: parseFloat(getValue('lb_unreliable_5star_threshold', '0.50')) || 0.50,
         listener_5star_z_threshold: parseFloat(getValue('listener_5star_z_threshold', '1.0')) || 1.0,
         single_boost: parseFloat(getValue('single_boost', '1.15')) || 1.15,
         metadata_score_floor: parseFloat(getValue('metadata_score_floor', '5.0')) || 5.0,
         live_weight_penalty: parseFloat(getValue('live_weight_penalty', '0.5')) || 0.5,
         star_5: {
           album_z: parseNumber('star5_album_z', 1.0),
-          artist_z: parseNumber('star5_artist_z', 1.2),
-          artist_pct: parseNumber('star5_pct', 0.10)
+          artist_z: parseNumber('star5_artist_z', 1.2)
         },
         star_4: {
-          album_z: parseNumber('star4_album_z', 0.5),
-          artist_z: parseNumber('star4_artist_z', 1.0),
-          artist_pct: parseNumber('star4_pct', 0.20)
+          album_z: parseNumber('star4_album_z', 0.5)
         },
         star_3: {
           album_z: parseNumber('star3_album_z', -0.5)
@@ -342,6 +334,17 @@ function buildConfigObject() {
         },
         star_1: {
           album_z: parseNumber('star1_album_z', -1.2)
+        },
+        album_scaling: {
+          peak_catalog_top_pct: parseFloat(getValue('era_peak_catalog_top_pct', '0.20')) || 0.20,
+          peak_album_top_n: parseInt(getValue('era_peak_album_top_n', '3')) || 3,
+          peak_max_5star_slots: parseInt(getValue('era_peak_max_5star_slots', '4')) || 4,
+          solid_catalog_top_pct: parseFloat(getValue('era_solid_catalog_top_pct', '0.15')) || 0.15,
+          solid_album_top_n: parseInt(getValue('era_solid_album_top_n', '2')) || 2,
+          solid_max_5star_slots: parseInt(getValue('era_solid_max_5star_slots', '2')) || 2,
+          minor_catalog_top_pct: parseFloat(getValue('era_minor_catalog_top_pct', '0.10')) || 0.10,
+          minor_album_top_n: parseInt(getValue('era_minor_album_top_n', '1')) || 1,
+          minor_max_5star_slots: parseInt(getValue('era_minor_max_5star_slots', '1')) || 1
         }
       }
     ),
@@ -354,6 +357,19 @@ function buildConfigObject() {
           listenbrainz: parseFloat(getValue('pop_weight_listenbrainz', '0.35')) || 0.35,
           age: parseFloat(getValue('pop_weight_age', '0.10')) || 0.10
         }
+      }
+    ),
+    tagging: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.tagging) || {},
+      {
+        write_tags_to_file: getChecked('tagging_write_enabled', true),
+        write_options: {
+          ratings_only: getChecked('tagging_ratings_only', false),
+          fill_missing_only: getChecked('tagging_fill_missing_only', false),
+          embed_lyrics: getChecked('tagging_embed_lyrics', false)
+        },
+        preserve_file_timestamps: getChecked('tagging_preserve_timestamps', true)
       }
     ),
     genres: Object.assign(

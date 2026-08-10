@@ -725,6 +725,22 @@ def run_scan(
         finish(success=True)
         return {"success": True, "albums_processed": 0, "tracks_processed": 0}
 
+    # ── Standardised scan banner ─────────────────────────────────────────
+    # Targeted artist/album scans get the same ASCII phase structure as the
+    # album import pipeline (Step 1/3 ...), instead of jumping straight into
+    # per-track output.
+    _banner_artist = str(options.get("artist_filter") or "").strip()
+    _banner_album = str(options.get("album_filter") or "").strip()
+    if _banner_album:
+        _banner_title = f"ALBUM SCAN: {_banner_artist} — {_banner_album}"
+    elif _banner_artist:
+        _banner_title = f"ARTIST SCAN: {_banner_artist}"
+    else:
+        _banner_title = "LIBRARY SCAN"
+    log_unified("=" * 80)
+    log_unified(f"🚀 {_banner_title} ({total_albums} Album(s) Queued)")
+    log_unified("=" * 80)
+
     albums_processed = 0
     tracks_processed = 0
     skipped_albums = 0
@@ -1000,6 +1016,12 @@ def run_scan(
             _last_letter = _letter
             log_unified(f"Popularity Scan - Letter '{_letter}'")
 
+        # Per-album processing line (numbered queue for targeted scans).
+        log_unified(
+            f"[{album_index}/{total_albums}] Processing: \"{str(album or '').strip()}\" "
+            f"({len(tracks or [])} Tracks)"
+        )
+
         # ── Per-artist singles-title caches (loaded early so the skip path
         #    can also run singles detection) ───────────────────────────────
         _is_compilation_artist = artist.lower() in (
@@ -1036,13 +1058,13 @@ def run_scan(
             if skip_days > 0:
                 if was_album_scanned(artist, album, scan_type, skip_days):
                     skip_album = True
-                    log_unified(f"Popularity Scan - Skipping album \"{album}\" (scanned within last {skip_days} days)")
+                    log_unified(f"Popularity Scan - Skipping album \"{str(album or '').strip()}\" (scanned within last {skip_days} days)")
                 elif tracks:
                     all_scored = all(float(t.get("final_score") or 0) > 0 for t in tracks)
                     all_assessed = all(t.get("single_detection_last_updated") for t in tracks)
                     if all_scored and all_assessed:
                         skip_album = True
-                        log_unified(f"Popularity Scan - Skipping album \"{album}\" (no changes detected)")
+                        log_unified(f"Popularity Scan - Skipping album \"{str(album or '').strip()}\" (no changes detected)")
         if skip_album:
             skipped_albums += 1
             # Skipped albums still get a lightweight album-type pass so the
@@ -1186,7 +1208,7 @@ def run_scan(
             # progress state stuck as "running" and the scan "fails to resume".
             logger.warning("[scan_runner] Album prep failed for %s - %s: %s", artist, album, exc)
             try:
-                log_unified(f"[POPULARITY] Album '{artist} - {album}' skipped (prep error: {exc})")
+                log_unified(f"[POPULARITY] Album '{str(artist or '').strip()} - {str(album or '').strip()}' skipped (prep error: {exc})")
             except Exception:
                 pass
             try:

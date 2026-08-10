@@ -92,3 +92,25 @@ def get_live_weight_penalty(config: dict | None = None) -> float:
         return float(sd.get("live_weight_penalty", 0.5))
     except Exception:
         return 0.5
+
+
+def get_single_organic_floor(config: dict | None = None) -> tuple[float, float]:
+    """Return the organic popularity floor gating single-driven star elevation.
+
+    A metadata-tagged single (Discogs/MusicBrainz) with almost no organic
+    audience must not leapfrog genuinely popular album tracks: single-driven
+    elevation above 3★ (5★ award, 4★ Single Floor, era album-top-N) requires
+    ``popularity_score >= score_floor`` OR ``Last.fm listeners >=
+    listeners_floor``.  Defaults: ``(45.0, 1000)`` — configurable via
+    ``single_detection.single_organic_floor_score`` /
+    ``single_organic_floor_listeners``.
+    """
+    cfg = config if isinstance(config, dict) else get_config()
+    sd = cfg.get("single_detection", {}) if isinstance(cfg, dict) else {}
+    try:
+        return (
+            float(sd.get("single_organic_floor_score", 45.0)),
+            float(sd.get("single_organic_floor_listeners", 1000)),
+        )
+    except Exception:
+        return 45.0, 1000.0

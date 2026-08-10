@@ -69,6 +69,50 @@ def normalize_primary_release_type(album_type: str) -> str:
     return value.strip()
 
 
+def classify_album_type(album_row: dict) -> str:
+    """Classify an album into the artist-page discography buckets.
+
+    Mirrors the artist page / MusicBrainz release-group classification:
+    ``compilation`` → 'compilation', ``live`` → 'live_album', ``remix`` →
+    'remix_album', ``ep`` → 'ep', ``single`` → 'single', default 'album'.
+    Uses the authoritative ``musicbrainz_albumtype`` column first, falling
+    back to ``spotify_album_type`` / ``album_type``, then title heuristics.
+    """
+    raw_type = str(
+        album_row.get("musicbrainz_albumtype")
+        or album_row.get("spotify_album_type")
+        or album_row.get("album_type")
+        or ""
+    ).lower()
+
+    album_name = str(album_row.get("album") or "").lower()
+
+    # Compilation / soundtrack
+    if "compilation" in raw_type:
+        return "compilation"
+    if "soundtrack" in raw_type or "soundtrack" in album_name:
+        return "compilation"
+
+    # Live / unplugged / acoustic
+    if "live" in raw_type or re.search(r"\blive\b", album_name) or "unplugged" in album_name:
+        return "live_album"
+
+    # Remix
+    if "remix" in raw_type or "remix" in album_name:
+        return "remix_album"
+
+    # EP — catches "ep", "album+ep", "ep+mix", etc. (MusicBrainz combines
+    # primary+secondary types into a single "+"-joined string).
+    if "ep" in raw_type:
+        return "ep"
+
+    # Single
+    if "single" in raw_type:
+        return "single"
+
+    return "album"
+
+
 def is_live_or_alternate_album(album: str) -> bool:
     return any(re.search(pattern, album or "", re.IGNORECASE) for pattern in LIVE_ALBUM_PATTERNS)
 

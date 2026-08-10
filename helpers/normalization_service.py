@@ -185,6 +185,39 @@ def strip_featured_artist(
     ).strip()
 
 
+# Conservative featured-guest suffix pattern for TITLES (search queries).
+# Deliberately excludes "with" / "&" / "and" — those occur in real song
+# titles ("Better With You", "Love & Hate") and stripping them would corrupt
+# the query.  Only explicit credit markers are stripped.
+TITLE_FEAT_SUFFIX_RE = re.compile(
+    r"""
+    \s+
+    (?:\[|\()?\s*
+    (?:feat\.?|ft\.?|featuring)
+    \s+
+    [^\]\)\[]*
+    (?:\]|\)|$)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def strip_featured_guest_suffix(value: str) -> str:
+    """Strip a trailing featured-guest credit from a TITLE.
+
+    Discogs/MusicBrainz release titles rarely carry the guest credit, so a
+    local title like "Uncontrolled (feat. Charlie Rolfe of As Everything
+    Unfolds)" scores ~0.0 similarity against the plain "Uncontrolled"
+    single/EP — real singles collapse to ``single=low``.  Handles bare
+    (" feat. X") and bracketed ("(feat. X)") suffixes.  Falls back to the
+    original value when stripping would empty the title.
+    """
+    if not value:
+        return value
+    cleaned = TITLE_FEAT_SUFFIX_RE.sub("", value).strip()
+    return cleaned or value
+
+
 # =============================================================================
 # ✅ SUFFIX STRIPPING
 # =============================================================================

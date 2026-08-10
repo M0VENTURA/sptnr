@@ -17,6 +17,7 @@ from helpers.normalization_service import (
     normalize_title_for_lookup,
     strip_parentheses,
     strip_featured_artist,
+    strip_featured_guest_suffix,
     clean_discogs_biography,
     edition_annotations_compatible,
 )
@@ -204,7 +205,11 @@ class DiscogsService:
         self._artist_releases_cache: dict[str, list[dict[str, Any]]] = {}
 
     def _normalize_title(self, title: str) -> str:
-        base = strip_parentheses(title)
+        # Strip the featured-guest credit before normalization — Discogs
+        # release titles rarely carry it, so a local title like "Uncontrolled
+        # (feat. Charlie Rolfe of As Everything Unfolds)" must compare
+        # against the plain "Uncontrolled" single/EP.
+        base = strip_parentheses(strip_featured_guest_suffix(title) or title)
         return normalize_title_for_lookup(base or title)
 
     def _get_artist_releases(self, artist: str) -> list[dict[str, Any]]:
@@ -287,6 +292,11 @@ class DiscogsService:
         best_promo: dict[str, Any] | None = None
         best_commercial_score = 0.0
         best_promo_score = 0.0
+
+        # Similarity is scored against the CLEANED local title — a trailing
+        # "(feat. Guest)" credit dilutes the ratio against the plain release
+        # title and drops real singles below ``MIN_DISCOGS_SIMILARITY``.
+        title = strip_featured_guest_suffix(title) or title
 
         def _status(rel: dict[str, Any], formats: str, is_promo: bool, sim: float) -> dict[str, Any]:
             return {

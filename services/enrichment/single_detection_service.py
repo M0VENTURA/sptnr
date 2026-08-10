@@ -41,6 +41,7 @@ from helpers.normalization_service import (
     strip_remaster_suffix,
     is_remastered_only_variant,
     strip_featured_artist,
+    strip_featured_guest_suffix,
     edition_annotations_compatible,
 )
 
@@ -411,6 +412,14 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
 
         matched = False
         promo_only = False
+        # Query-sanitised title: strip the trailing featured-guest credit so
+        # "Uncontrolled (feat. Charlie Rolfe of As Everything Unfolds)" is
+        # queried as "Uncontrolled" — MusicBrainz release-group titles and
+        # Discogs release titles rarely carry the guest credit, so the raw
+        # title scored ~0.0 similarity and dropped real singles to low.
+        clean_title = strip_featured_guest_suffix(
+            strip_single_release_suffix(title) or title
+        )
         # Preferred path: scope the search to the artist's own singles/EPs
         # release-groups when the artist MBID is known. Far more reliable than
         # fuzzy recording title matching, and immune to recording-split issues
@@ -418,8 +427,8 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
         if artist_mbid and hasattr(mb_client, "search_release_groups"):
             try:
                 from difflib import SequenceMatcher as _SM
-                target = normalize_title_for_lookup(strip_single_release_suffix(title) or title)
-                lucene_title = normalize_title_for_lucene_query(strip_single_release_suffix(title) or title)
+                target = normalize_title_for_lookup(clean_title)
+                lucene_title = normalize_title_for_lucene_query(clean_title)
                 candidates: list[dict] = []
                 for _pt in ("single", "ep"):
                     # Title-scoped query first — an artist with 25+ singles
@@ -474,12 +483,12 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
         if not matched:
             # Use the client's is_single method if available, otherwise use the service.
             if hasattr(mb_client, "is_single"):
-                matched = bool(mb_client.is_single(title, artist, artist_mbid=artist_mbid,
+                matched = bool(mb_client.is_single(clean_title, artist, artist_mbid=artist_mbid,
                                                     album_track_count=album_track_count))
             else:
                 from services.enrichment.musicbrainz_service import MusicBrainzService
                 svc = MusicBrainzService(enabled=True)
-                matched = bool(svc.is_single(title, artist, album_track_count=album_track_count))
+                matched = bool(svc.is_single(clean_title, artist, album_track_count=album_track_count))
         release_date = None
         if matched:
             try:
@@ -642,7 +651,7 @@ def _detect_lastfm(artist: str, album: str, title: str, lastfm_client=None) -> b
     if count == 0 or count >= 7:
         try:
             if hasattr(lastfm_client, "search_album"):
-                target = normalize_title_for_lookup(title)
+                target = normalize_title_for_lookup(strip_featured_guest_suffix(title) or title)
                 for alb in lastfm_client.search_album(title, artist=artist, limit=30) or []:
                     alb_name = str(alb.get("name") or "").strip()
                     if not alb_name:

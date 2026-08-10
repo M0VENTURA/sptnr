@@ -809,16 +809,6 @@
       </p>
       <div class="row g-3 mb-4">
         <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Album Standout Z</label>
-          <input type="number" step="0.1" min="0.1" max="5" class="form-control form-control-sm" id="sd_album_zscore" placeholder="0.8" value="{{ config.get('single_detection', {}).get('album_zscore_threshold', 0.8) }}">
-          <small class="form-text text-muted">Min album z-score for a standalone standout flag. Default: <strong>0.8</strong></small>
-        </div>
-        <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Artist Standout Z</label>
-          <input type="number" step="0.1" min="0.1" max="5" class="form-control form-control-sm" id="sd_artist_zscore" placeholder="2.2" value="{{ config.get('single_detection', {}).get('artist_zscore_threshold', 2.2) }}">
-          <small class="form-text text-muted">Min artist-catalogue z-score for the artist-level standout flag. Default: <strong>2.2</strong></small>
-        </div>
-        <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">Artist Top %</label>
           <input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="sd_artist_pct" placeholder="0.10" value="{{ config.get('single_detection', {}).get('artist_top_percentile', 0.10) }}">
           <small class="form-text text-muted">Fraction of the artist's catalogue considered "top" for popularity marking. Tracks here earn 5★ without a single-detection source. Default: <strong>0.10</strong></small>
@@ -828,22 +818,10 @@
           <input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="sd_artist_medium_pct" placeholder="0.20" value="{{ config.get('single_detection', {}).get('artist_medium_bump_percentile', 0.20) }}">
           <small class="form-text text-muted">Widened marking band (default <strong>0.20</strong>): a track here with a MEDIUM-confidence single source is bumped to HIGH → 5★. Popularity alone below the top band never marks.</small>
         </div>
-        <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Artist Min Tracks</label>
-          <input type="number" min="1" max="100" class="form-control form-control-sm" id="sd_artist_min_tracks" placeholder="10" value="{{ config.get('single_detection', {}).get('artist_min_tracks', 10) }}">
-          <small class="form-text text-muted">Minimum tracks an artist needs before artist-level stats are trusted. Default: <strong>10</strong></small>
-        </div>
       </div>
 
       <hr class="my-3">
       <h6 class="mb-3">2 · Star Ratings</h6>
-      <div class="row g-3 mb-3">
-        <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Minimum Album Z-Score for 5★</label>
-          <input type="number" step="0.1" min="0.1" max="5.0" class="form-control form-control-sm" id="popularity_5star_z_threshold" placeholder="2.0" value="{{ config.get('single_detection', {}).get('popularity_5star_z_threshold', 2.0) }}">
-          <small class="form-text text-muted">Global floor: a non-single track cannot earn 5★ below this album z-score, no matter which path it takes. Confirmed singles are exempt. Default: <strong>2.0</strong></small>
-        </div>
-      </div>
       <p class="text-muted small mb-3">
         After 5★ tracks (confirmed singles and genuine standouts) are set, the <strong>rest of the album</strong>
         is rated purely by where each track falls in the album's own popularity distribution — no artist
@@ -855,9 +833,8 @@
           <div class="border rounded p-3 h-100">
             <h6 class="text-warning mb-2">⭐⭐⭐⭐⭐ 5★</h6>
             <div class="row g-2">
-              <div class="col-4"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star5_album_z" placeholder="1.0" value="{{ config.get('single_detection', {}).get('star_5', {}).get('album_z', 1.0) }}"></div>
-              <div class="col-4"><label class="form-label form-label-sm">Artist Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star5_artist_z" placeholder="1.2" value="{{ config.get('single_detection', {}).get('star_5', {}).get('artist_z', 1.2) }}"></div>
-              <div class="col-4"><label class="form-label form-label-sm">Top %</label><input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="star5_pct" placeholder="0.10" value="{{ config.get('single_detection', {}).get('star_5', {}).get('artist_pct', 0.10) }}"></div>
+              <div class="col-6"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star5_album_z" placeholder="1.0" value="{{ config.get('single_detection', {}).get('star_5', {}).get('album_z', 1.0) }}"></div>
+              <div class="col-6"><label class="form-label form-label-sm">Artist Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star5_artist_z" placeholder="1.2" value="{{ config.get('single_detection', {}).get('star_5', {}).get('artist_z', 1.2) }}"></div>
             </div>
             <small class="form-text text-muted d-block mt-2">Reserved for confirmed singles and genuine triple-standouts: album z <strong>and</strong> artist z above these bounds <strong>and</strong> a top-10% catalogue flag. Popularity alone never grants 5★.</small>
           </div>
@@ -866,9 +843,7 @@
           <div class="border rounded p-3 h-100">
             <h6 class="text-info mb-2">⭐⭐⭐⭐ 4★</h6>
             <div class="row g-2">
-              <div class="col-4"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star4_album_z" placeholder="0.5" value="{{ config.get('single_detection', {}).get('star_4', {}).get('album_z', 0.5) }}"></div>
-              <div class="col-4"><label class="form-label form-label-sm">Artist Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star4_artist_z" placeholder="1.0" value="{{ config.get('single_detection', {}).get('star_4', {}).get('artist_z', 1.0) }}"></div>
-              <div class="col-4"><label class="form-label form-label-sm">Top %</label><input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="star4_pct" placeholder="0.20" value="{{ config.get('single_detection', {}).get('star_4', {}).get('artist_pct', 0.20) }}"></div>
+              <div class="col-12"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star4_album_z" placeholder="0.5" value="{{ config.get('single_detection', {}).get('star_4', {}).get('album_z', 0.5) }}"></div>
             </div>
             <small class="form-text text-muted d-block mt-2">Album z ≥ this value (default <strong>0.5</strong>) → album standout / fan favourite.</small>
           </div>
@@ -909,11 +884,6 @@
             <label class="form-label form-label-sm">Listener Standout 5★ Z</label>
             <input type="number" step="0.1" min="0.1" max="5" class="form-control form-control-sm" id="listener_5star_z_threshold" placeholder="1.0" value="{{ config.get('single_detection', {}).get('listener_5star_z_threshold', 1.0) }}">
             <small class="form-text text-muted">Log-scaled listener z-score within the album for the listener-standout 5★ path (still gated by the 5★ floor). Default: <strong>1.0</strong></small>
-          </div>
-          <div class="col-12 col-sm-6 col-lg-3">
-            <label class="form-label form-label-sm">LB Rescue 5★ Percentile</label>
-            <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="lb_unreliable_5star_threshold" placeholder="0.50" value="{{ config.get('single_detection', {}).get('lb_unreliable_5star_threshold', 0.50) }}">
-            <small class="form-text text-muted">Min ListenBrainz percentile for the Last.fm-unreliable 5★ rescue (still gated by the 5★ floor). Default: <strong>0.50</strong></small>
           </div>
         </div>
       </div>
@@ -1299,6 +1269,63 @@
     </div>
   </div>
 
+  <!-- Tag Writing Section -->
+  <div class="card shadow-sm mb-3" id="tag-writing">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-pencil-square"></i> File Metadata (Tag Writing)</h5>
+      <small class="text-muted">Whether scans may modify audio file tags, or write to the database only</small>
+    </div>
+    <div class="card-body">
+      <div class="alert alert-secondary mb-3 py-2">
+        <small class="text-muted">
+          Run an external tagger (Beets, MusicBrainz Picard)? Set the master toggle off and Popularr
+          becomes a <strong>read-only database scanner / UI</strong> — scans never touch the audio files.
+          Useful for read-only or network-mounted libraries (SMB/NFS), where tag writes are slow and
+          permission mismatches crash scans.
+        </small>
+      </div>
+      {% set tagging_cfg = config.get('tagging', {}) %}
+      {% set tag_opts = tagging_cfg.get('write_options', {}) %}
+      <div class="row g-3">
+        <div class="col-12">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="tagging_write_enabled" {% if tagging_cfg.get('write_tags_to_file', True) %}checked{% endif %}>
+            <label class="form-check-label" for="tagging_write_enabled"><strong>Write Tags to Audio Files</strong></label>
+            <small class="d-block text-muted">Master toggle. When off, all scans (popularity, metadata, Essentia, covers) save to the database only — no file is modified. Default: <strong>on</strong>.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="tagging_ratings_only" {% if tag_opts.get('ratings_only', False) %}checked{% endif %}>
+            <label class="form-check-label" for="tagging_ratings_only">Ratings Only</label>
+            <small class="d-block text-muted">Write POPM (MP3) / RATING (FLAC) star ratings only — never touch text metadata, genres or cover art.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="tagging_fill_missing_only" {% if tag_opts.get('fill_missing_only', False) %}checked{% endif %}>
+            <label class="form-check-label" for="tagging_fill_missing_only">Fill Missing Only</label>
+            <small class="d-block text-muted">Only write tags whose ID3 frame / Vorbis comment is currently empty — never overwrite existing values.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="tagging_embed_lyrics" {% if tag_opts.get('embed_lyrics', False) %}checked{% endif %}>
+            <label class="form-check-label" for="tagging_embed_lyrics">Embed Lyrics</label>
+            <small class="d-block text-muted">Save lyrics to USLT/SYLT frames inside the file when lyrics are set.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="tagging_preserve_timestamps" {% if tagging_cfg.get('preserve_file_timestamps', True) %}checked{% endif %}>
+            <label class="form-check-label" for="tagging_preserve_timestamps">Preserve File Timestamps</label>
+            <small class="d-block text-muted">Restore file mtime/atime after writing tags so scanners and sync tools don't see the file as changed.</small>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
         </div><!-- /tab-files -->
 
         <!-- ===== TAB 4: MATCHING ===== -->
@@ -1477,6 +1504,57 @@
             </button>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Album Scaling (Era 5★ Caps) Section -->
+  <div class="card shadow-sm mb-3" id="album-scaling">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-stars"></i> Album Scaling — Era 5★ Caps</h5>
+      <small class="text-muted">How many singles per album can reach 5★, by where the album sits on the artist's career curve (R_eff vs the discography peak)</small>
+    </div>
+    <div class="card-body">
+      <div class="alert alert-secondary mb-3 py-2">
+        <small class="text-muted">
+          Each album is classified into an era by its effective ratio
+          (<code>R_eff = album median × age-skew / peak album median</code>).
+          A high-confidence single earns 5★ only while it clears the era's
+          catalog top-% cutoff <strong>or</strong> ranks in the album's top-N —
+          otherwise it falls to the 4★ Single Floor. The era's <strong>Max 5★
+          Slots</strong> caps how many singles one album can carry; surplus
+          (weakest by album z) are demoted to 4★.
+        </small>
+      </div>
+      <div class="row g-3">
+        {% set era_caps = [
+          ('peak', 'Peak Era (R_eff ≥ 0.75)', 0.20, 3, 4),
+          ('solid', 'Solid Era (0.40 ≤ R_eff < 0.75)', 0.15, 2, 2),
+          ('minor', 'Minor Era (R_eff < 0.40)', 0.10, 1, 1)
+        ] %}
+        {% set scaling = config.get('single_detection', {}).get('album_scaling') or {} %}
+        {% for key, label, top_pct, top_n, slots in era_caps %}
+        <div class="col-12 col-md-4">
+          <div class="border rounded p-3 h-100">
+            <h6 class="mb-2">{{ label }}</h6>
+            <div class="mb-2">
+              <label class="form-label form-label-sm">Catalog Top %</label>
+              <input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="era_{{ key }}_catalog_top_pct" placeholder="{{ top_pct }}" value="{{ scaling.get(key ~ '_catalog_top_pct', top_pct) }}">
+              <small class="form-text text-muted">Score cutoff = top this % of the artist's catalogue. Default: <strong>{{ top_pct }}</strong></small>
+            </div>
+            <div class="mb-2">
+              <label class="form-label form-label-sm">Album Top N</label>
+              <input type="number" step="1" min="1" max="20" class="form-control form-control-sm" id="era_{{ key }}_album_top_n" placeholder="{{ top_n }}" value="{{ scaling.get(key ~ '_album_top_n', top_n) }}">
+              <small class="form-text text-muted">Single must rank in the album's top N by score. Default: <strong>{{ top_n }}</strong></small>
+            </div>
+            <div>
+              <label class="form-label form-label-sm">Max 5★ Slots</label>
+              <input type="number" step="1" min="1" max="20" class="form-control form-control-sm" id="era_{{ key }}_max_5star_slots" placeholder="{{ slots }}" value="{{ scaling.get(key ~ '_max_5star_slots', slots) }}">
+              <small class="form-text text-muted">Max 5★ singles per album in this era. Default: <strong>{{ slots }}</strong></small>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
       </div>
     </div>
   </div>

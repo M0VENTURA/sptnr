@@ -397,9 +397,61 @@ def _extract_first_numeric(payload: Any, key_candidates: List[str]) -> Optional[
     return None
 
 
+def _extract_first_string(payload: Any, key_candidates: List[str]) -> Optional[str]:
+    """First non-empty string found under any candidate key (nested walk)."""
+    if isinstance(payload, dict):
+        for key in key_candidates:
+            if key in payload:
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        for value in payload.values():
+            nested = _extract_first_string(value, key_candidates)
+            if nested is not None:
+                return nested
+    elif isinstance(payload, list):
+        for item in payload:
+            nested = _extract_first_string(item, key_candidates)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _read_key_tag_from_file(file_path: str) -> Optional[str]:
+    """Read a musical-key tag from the audio file (TKEY / KEY / InitialKey)."""
+    try:
+        import mutagen
+        audio = mutagen.File(file_path)
+        if not audio or not audio.tags:
+            return None
+        for key in ("TKEY", "key", "initialkey"):
+            raw = audio.tags.get(key)
+            if raw is None:
+                continue
+            if isinstance(raw, list) and raw and str(raw[0]).strip():
+                return str(raw[0]).strip()
+            if hasattr(raw, "text"):
+                vals = getattr(raw, "text", []) or []
+                if vals and str(vals[0]).strip():
+                    return str(vals[0]).strip()
+            if str(raw).strip():
+                return str(raw).strip()
+    except Exception as exc:
+        logger.debug("Failed to read key tag from %s: %s", file_path, exc)
+    return None
+
+
 def _read_essentia_features_from_json(file_path: str, json_output_dir: str = "") -> Dict[str, Any]:
     bpm_keys = ["bpm", "tempo", "rhythm.bpm", "musicbrainz.bpm"]
     dance_keys = ["danceability", "rhythm.danceability", "highlevel.danceability.all.danceable"]
+    loudness_keys = [
+        "lowlevel.loudness_ebu128.integrated",
+        "tonal.loudness_ebu128.integrated",
+        "loudness_ebu128.integrated",
+    ]
+    replaygain_keys = ["lowlevel.replay_gain", "replay_gain", "highlevel.replay_gain"]
+    key_keys = ["tonal.key_key", "key_key", "highlevel.key.all.key"]
+    scale_keys = ["tonal.key_scale", "key_scale", "highlevel.key.all.scale"]
     for candidate in _candidate_sidecar_paths(file_path, json_output_dir=json_output_dir):
         if not candidate.is_file():
             continue
@@ -408,10 +460,27 @@ def _read_essentia_features_from_json(file_path: str, json_output_dir: str = "")
                 payload = json.load(f)
             bpm = _extract_first_numeric(payload, bpm_keys)
             danceability = _extract_first_numeric(payload, dance_keys)
-            return {"bpm": bpm, "danceability": danceability, "json_path": str(candidate)}
+            loudness = _extract_first_numeric(payload, loudness_keys)
+            replaygain = _extract_first_numeric(payload, replaygain_keys)
+            key_key = _extract_first_string(payload, key_keys)
+            key_scale = _extract_first_string(payload, scale_keys)
+            musical_key = None
+            if key_key:
+                musical_key = f"{key_key} {key_scale}" if key_scale else key_key
+            return {
+                "bpm": bpm,
+                "danceability": danceability,
+                "loudness": loudness,
+                "replaygain": replaygain,
+                "musical_key": musical_key,
+                "json_path": str(candidate),
+            }
         except Exception as exc:
             logger.debug("Failed parsing Essentia JSON sidecar %s: %s", candidate, exc)
-    return {"bpm": None, "danceability": None, "json_path": None}
+    return {
+        "bpm": None, "danceability": None, "loudness": None,
+        "replaygain": None, "musical_key": None, "json_path": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +624,9 @@ def run_essentia_mood_scan(
         cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS essentia_scan_version TEXT")
         cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS bpm DOUBLE PRECISION")
         cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS danceability DOUBLE PRECISION")
+        cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS musical_key TEXT")
+        cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS loudness_lufs DOUBLE PRECISION")
+        cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS replaygain DOUBLE PRECISION")
         conn.commit()
     except Exception as _col_err:
         try:
@@ -842,6 +914,21 @@ def run_essentia_mood_scan(
                 if features.get("danceability") is not None:
                     try:
                         updates["danceability"] = round(float(features["danceability"]), 4)
+                    except (ValueError, TypeError):
+                        pass
+                musical_key = features.get("musical_key")
+                if not musical_key:
+                    musical_key = _read_key_tag_from_file(file_path)
+                if musical_key:
+                    updates["musical_key"] = musical_key
+                if features.get("loudness") is not None:
+                    try:
+                        updates["loudness_lufs"] = round(float(features["loudness"]), 3)
+                    except (ValueError, TypeError):
+                        pass
+                if features.get("replaygain") is not None:
+                    try:
+                        updates["replaygain"] = round(float(features["replaygain"]), 3)
                     except (ValueError, TypeError):
                         pass
                 if delete_json_after_import and features.get("json_path"):

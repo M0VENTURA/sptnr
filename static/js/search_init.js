@@ -27,13 +27,6 @@ document.addEventListener('click', function (e) {
 
 // ── Initialization ──
 document.addEventListener('DOMContentLoaded', function () {
-  // MusicBrainz tab: wire up buttons
-  var mbSearchBtn = document.getElementById('mbSearchBtn');
-  if (mbSearchBtn) mbSearchBtn.addEventListener('click', performMbSearch);
-
-  var mbRefreshBtn = document.getElementById('mbRefreshBtn');
-  if (mbRefreshBtn) mbRefreshBtn.addEventListener('click', refreshMbDownloads);
-
   // Soulseek: auto-search from URL query parameter
   var params = new URLSearchParams(window.location.search);
   var queryParam = params.get('q');

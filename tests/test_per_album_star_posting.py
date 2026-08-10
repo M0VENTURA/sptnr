@@ -138,10 +138,33 @@ class TestAlbumZBandStars:
 
     def test_high_confidence_single_gets_five_regardless_of_band(self):
         # Spec rule 5: a high-confidence single is 5★ even at the bottom of a
-        # strong album — singles are exempt from the album-z-band base.
+        # strong album — singles are exempt from the album-z-band base (as
+        # long as the ORGANIC popularity floor is met: score >= 45 or >= 1000
+        # Last.fm listeners).
         assert self._stars(
-            10.0, self._album(), is_single=True, single_confidence="high"
+            10.0, self._album(), is_single=True, single_confidence="high",
+            lastfm_listeners=2000,
         ) == 5
+
+    def test_high_confidence_single_below_organic_floor_stays_on_band(self):
+        # A metadata-tagged single with almost no organic audience (e.g.
+        # Discogs-confirmed with 299 listeners and a sub-45 score) must not
+        # leapfrog genuinely popular album tracks — it keeps the album-z band
+        # rating instead of the forced single promotion.
+        from services.popularity.stages import finalise_stage as fs
+
+        assert self._stars(
+            10.0, self._album(), is_single=True, single_confidence="high",
+            lastfm_listeners=299,
+        ) == 1
+        # The same gate caps the 4★ Single Floor: a non-organic high single
+        # that misses the era bar never exceeds 3★ (era-model path).
+        track = self._track(
+            46.0, is_single=True, single_confidence="high", lastfm_listeners=299
+        )
+        album_model = {"has_benchmark": True, "era": "peak", "catalog_cutoff": 80.0,
+                       "max_5star_slots": 4}
+        assert fs._assign_stars(track, self._album(), self._album(), album_model=album_model) <= 3
 
     def test_medium_single_not_marked_follows_album_band(self):
         # A medium-confidence single that is NOT popularity-marked stays on the
@@ -283,9 +306,10 @@ class TestPostAlbumStarRatings:
         assert len(star_updates) == 2
         assert (5, "t2") in {e[1] for e in star_updates}
 
-        # Per-album summary was emitted.
-        assert any("Star Ratings - Album 'Absolution' by Muse" in m for m in logged)
-        assert any("Single Detection Scan - ===== Absolution - Detected Singles =====" in m for m in logged)
+        # Per-album tabular summary was emitted (new format).
+        assert any("📊 SCAN RESULTS: Muse — Absolution" in m for m in logged)
+        assert any("Singles Detection - Detected 1 single(s) in 'Absolution'" in m for m in logged)
+        assert any("⭐ Distribution" in m for m in logged)
 
     def test_returns_zero_for_empty_album(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
@@ -618,4 +642,4 @@ class TestPostAlbumStarRatingsResilience:
         assert results[1].get("stars") is None
         star_updates = [e for e in conn.cur.executed if "UPDATE tracks SET stars" in e[0]]
         assert len(star_updates) == 1
-        assert any("Star Ratings - Album 'Absolution' by Muse" in m for m in logged)
+        assert any("📊 SCAN RESULTS: Muse — Absolution" in m for m in logged)

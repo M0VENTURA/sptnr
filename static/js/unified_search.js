@@ -7,6 +7,11 @@
  * the shared component's searchMusicBrainzReleases() (single free-text
  * query path) so the two MB search UIs stay consistent.
  *
+ * Results render in the artist-page discography structure: ARTISTS, ALBUMS,
+ * COMPILATIONS, LIVE ALBUMS, EPS, SINGLES, TRACKS.  Local and MusicBrainz
+ * releases merge into the same buckets (year DESC → local 🟢 before
+ * external 🟡 → title ASC), with quick-queue buttons on external releases.
+ *
  * Optional advanced filters (Artist / Album / Track / Year) and the release
  * type dropdown map to the structured fields the backend already supports
  * (artist / releasegroup / recording / date / primarytype+secondarytype), so
@@ -22,8 +27,8 @@
   var SCOPE_MB = 'mb';
   var LOCAL_DEBOUNCE_MS = 50;
   var MB_DEBOUNCE_MS = 400;
-  var MB_LIMIT_ALL_TAB = 5;   // compact MB section inside the "All" tab
-  var MB_LIMIT_MB_TAB = 25;   // full MusicBrainz tab
+  var MB_LIMIT_ALL_TAB = 12;   // compact MB section inside the "All" tab
+  var MB_LIMIT_MB_TAB = 25;    // full MusicBrainz tab
   var MIN_QUERY_LENGTH = 2;
 
   var _scope = SCOPE_ALL;
@@ -65,8 +70,8 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: query })
     })
-      .then(function (res) { return res.ok ? res.json() : { artists: [], albums: [], tracks: [] }; })
-      .catch(function () { return { artists: [], albums: [], tracks: [] }; });
+      .then(function (res) { return res.ok ? res.json() : { artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] }; })
+      .catch(function () { return { artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] }; });
   }
 
   function getTypeFilter() {
@@ -137,23 +142,10 @@
       return '<a class="us-row" href="/artist/' + encodeURIComponent(a.name) + '">' +
         '<span class="us-row-icon"><i class="bi bi-person-badge"></i></span>' +
         '<span class="us-row-main">' +
-          '<span class="us-row-title d-block">' + esc(a.name) + '</span>' +
+          '<span class="us-row-title d-block">🟢 ' + esc(a.name) + '</span>' +
           '<span class="us-row-sub d-block">' + a.track_count + ' track' + (a.track_count === 1 ? '' : 's') + ' · ' + a.album_count + ' album' + (a.album_count === 1 ? '' : 's') + '</span>' +
         '</span>' +
         '<span class="us-row-meta badge bg-secondary-subtle text-secondary-emphasis">Artist</span>' +
-      '</a>';
-    }).join('');
-  }
-
-  function albumRows(albums) {
-    return albums.map(function (al) {
-      return '<a class="us-row" href="/album/' + encodeURIComponent(al.artist) + '/' + encodeURIComponent(al.album) + '">' +
-        '<span class="us-row-icon"><i class="bi bi-disc"></i></span>' +
-        '<span class="us-row-main">' +
-          '<span class="us-row-title d-block">' + esc(al.album) + '</span>' +
-          '<span class="us-row-sub d-block">' + esc(al.artist) + '</span>' +
-        '</span>' +
-        '<span class="us-row-meta badge bg-secondary-subtle text-secondary-emphasis">Album</span>' +
       '</a>';
     }).join('');
   }
@@ -185,65 +177,133 @@
     return String(r.first_release_date || r.date || r.year || '').split('-')[0] || '?';
   }
 
-  function mbRows(releases, withQueue) {
+  // Release buckets mirror the artist page discography: Albums (studio),
+  // Compilations, Live Albums, EPs, Singles.  MusicBrainz releases are
+  // classified into the SAME buckets so the "All" scope merges local 🟢 and
+  // external 🟡 results into one consistent structure.
+  var SECTION_DEFS = [
+    { key: 'albums', label: 'Albums', localLabel: 'Studio Album' },
+    { key: 'compilations', label: 'Compilations', localLabel: 'Compilation' },
+    { key: 'live_albums', label: 'Live Albums', localLabel: 'Live Album' },
+    { key: 'eps', label: 'EPs', localLabel: 'EP' },
+    { key: 'singles', label: 'Singles', localLabel: 'Single' }
+  ];
+
+  function classifyMbRelease(r) {
+    var secondary = (r.secondary_types || []).map(function (s) { return String(s).toLowerCase(); });
+    if (secondary.indexOf('live') !== -1) return 'live_albums';
+    if (secondary.indexOf('compilation') !== -1) return 'compilations';
+    if (secondary.indexOf('ep') !== -1) return 'eps';
+    if (secondary.indexOf('single') !== -1) return 'singles';
+    var pt = String(r.category || r.primary_type || '').toLowerCase();
+    if (pt === 'ep') return 'eps';
+    if (pt === 'single') return 'singles';
+    return 'albums';
+  }
+
+  function bucketTypeLabel(bucketKey) {
+    for (var i = 0; i < SECTION_DEFS.length; i++) {
+      if (SECTION_DEFS[i].key === bucketKey) return SECTION_DEFS[i].localLabel;
+    }
+    return 'Release';
+  }
+
+  function releaseRows(items, withQueue) {
     var html = '';
-    for (var i = 0; i < releases.length; i++) {
-      var r = releases[i];
-      var id = r.id || '';
-      var queued = !!_queuedIds[id];
-      _mbIndex[id] = r;
-      var topTypes = ['album', 'single', 'ep', 'compilation', 'live', 'remix'];
-      var type = String(r.category || r.primary_type || '').toLowerCase();
-      if (topTypes.indexOf(type) === -1) type = 'release';
-
-      html += '<div class="us-row">' +
-        '<span class="us-row-icon"><i class="bi bi-hexagon"></i></span>' +
-        '<span class="us-row-main">' +
-          '<span class="us-row-title d-block">' + esc(r.title) + '</span>' +
-          '<span class="us-row-sub d-block">' + esc(mbReleaseArtist(r)) + '</span>' +
-        '</span>' +
-        '<span class="us-row-meta text-nowrap">' + esc(mbReleaseYear(r)) + '</span>' +
-        '<span class="badge bg-info-subtle text-info-emphasis text-nowrap">' + esc(type) + '</span>';
-
-      if (withQueue) {
-        if (queued) {
-          html += '<button class="btn btn-sm btn-success" disabled title="Already queued"><i class="bi bi-check2"></i> Queued</button>';
-        } else {
-          html += '<button class="btn btn-sm btn-outline-primary us-queue-btn" data-mbid="' + esc(id) + '" title="Queue download via Soulseek"><i class="bi bi-plus-lg"></i> Queue</button>';
-        }
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var yearSuffix = it.year ? ' (' + esc(it.year) + ')' : '';
+      if (it.local) {
+        var href = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title);
+        html += '<a class="us-row" href="' + href + '">' +
+          '<span class="us-row-icon"><i class="bi bi-disc"></i></span>' +
+          '<span class="us-row-main">' +
+            '<span class="us-row-title d-block">🟢 ' + esc(it.title) + yearSuffix + '</span>' +
+            '<span class="us-row-sub d-block">' + esc(it.typeLabel || 'Album') + ' • In Library</span>' +
+          '</span>' +
+        '</a>';
+      } else {
+        var id = it.id || '';
+        var queued = !!_queuedIds[id];
+        _mbIndex[id] = it.release || null;
+        html += '<div class="us-row">' +
+          '<span class="us-row-icon"><i class="bi bi-hexagon"></i></span>' +
+          '<span class="us-row-main">' +
+            '<span class="us-row-title d-block">🟡 ' + esc(it.title) + yearSuffix + '</span>' +
+            '<span class="us-row-sub d-block">MusicBrainz ' + esc(it.typeLabel || 'Release') + ' • ' + esc(it.artist) + '</span>' +
+          '</span>' +
+          (withQueue ? (queued
+            ? '<button class="btn btn-sm btn-success" disabled title="Already queued"><i class="bi bi-check2"></i> Queued</button>'
+            : '<button class="btn btn-sm btn-outline-primary us-queue-btn" data-mbid="' + esc(id) + '" title="Queue download via Soulseek"><i class="bi bi-download"></i> Queue</button>')
+            : '') +
+        '</div>';
       }
-      html += '</div>';
     }
     return html;
   }
 
-  function renderLocalSections(local, mbReleases, query) {
+  function buildBuckets(local, mbReleases) {
+    var buckets = { albums: [], compilations: [], live_albums: [], eps: [], singles: [] };
+    (local.albums || []).forEach(function (al) {
+      var bucket = buckets[al.type] ? al.type : 'albums';
+      buckets[bucket].push({
+        title: al.album, artist: al.artist, year: al.year || null,
+        typeLabel: al.type_label || 'Album', local: true
+      });
+    });
+    (mbReleases || []).forEach(function (r) {
+      var bucket = classifyMbRelease(r);
+      buckets[bucket].push({
+        title: r.title, artist: mbReleaseArtist(r), year: mbReleaseYear(r),
+        typeLabel: bucketTypeLabel(bucket), local: false, id: r.id || '', release: r
+      });
+    });
+    // Sort each bucket: Release Year (newest → oldest, unknown last) →
+    // ownership (local 🟢 before external 🟡) → Title (ASC).
+    Object.keys(buckets).forEach(function (k) {
+      buckets[k].sort(function (a, b) {
+        var ay = (a.year === '?' || a.year === null || a.year === undefined) ? 0 : Number(a.year) || 0;
+        var by = (b.year === '?' || b.year === null || b.year === undefined) ? 0 : Number(b.year) || 0;
+        if ((ay > 0) !== (by > 0)) return ay > 0 ? -1 : 1;
+        if (ay !== by) return by - ay;
+        if (a.local !== b.local) return a.local ? -1 : 1;
+        return String(a.title || '').toLowerCase() < String(b.title || '').toLowerCase() ? -1 : 1;
+      });
+    });
+    return buckets;
+  }
+
+  function renderReleaseSections(buckets, withQueue) {
+    var html = '';
+    for (var i = 0; i < SECTION_DEFS.length; i++) {
+      var def = SECTION_DEFS[i];
+      var items = buckets[def.key] || [];
+      if (!items.length) continue;
+      html += section(
+        def.label + ' <span class="badge bg-secondary ms-1">' + items.length + '</span>',
+        releaseRows(items, withQueue)
+      );
+    }
+    return html;
+  }
+
+  function renderBucketedResults(local, mbReleases, query, opts) {
+    opts = opts || {};
     var html = '';
     var artists = local.artists || [];
-    var albums = local.albums || [];
-    var tracks = local.tracks || [];
-
-    // Priority order per the unified-search blueprint: in-library artists &
-    // albums first, then MusicBrainz / missing releases, then local tracks.
     if (artists.length) html += section('Artists', artistRows(artists));
-    if (albums.length) html += section('Albums', albumRows(albums));
 
-    if (_scope === SCOPE_ALL) {
-      if (mbReleases.length) {
-        html += section(
-          'MusicBrainz <span class="badge bg-secondary ms-1">' + mbReleases.length + '</span>',
-          mbRows(mbReleases, true)
-        );
-        html += '<div class="text-center my-2">' +
-          '<button type="button" class="btn btn-sm btn-outline-info" onclick="openUnifiedSearch(\'mb\')">' +
-          '<i class="bi bi-search"></i> All MusicBrainz results</button></div>';
-      } else {
-        html += '<div class="text-center text-muted py-3 small"><i class="bi bi-hexagon"></i> No MusicBrainz matches for "' + esc(query) + '"</div>';
-      }
+    html += renderReleaseSections(buildBuckets(local, mbReleases), opts.withQueue);
+
+    if (opts.allMbButton && mbReleases.length) {
+      html += '<div class="text-center my-2">' +
+        '<button type="button" class="btn btn-sm btn-outline-info" onclick="openUnifiedSearch(\'mb\')">' +
+        '<i class="bi bi-search"></i> All MusicBrainz results</button></div>';
     }
 
+    var tracks = local.tracks || [];
     if (tracks.length) html += section('Tracks', trackRows(tracks));
-    if (!artists.length && !albums.length && !tracks.length) {
+    if (!artists.length && !html) {
       html += '<div class="text-center text-muted py-4 small">No library matches for "' + esc(query) + '"</div>';
     }
     return html;
@@ -254,10 +314,7 @@
       return '<div class="text-center text-muted py-4"><i class="bi bi-hexagon" style="font-size:2rem;"></i>' +
         '<p class="mt-2 mb-0 small">No MusicBrainz releases found for "' + esc(query) + '"</p></div>';
     }
-    return section(
-      'MusicBrainz releases <span class="badge bg-secondary ms-1">' + releases.length + '</span>',
-      mbRows(releases, true)
-    );
+    return renderReleaseSections(buildBuckets({}, releases), true);
   }
 
   // ===== Search execution =====
@@ -302,21 +359,27 @@
 
     var localPromise = query.length >= MIN_QUERY_LENGTH
       ? fetchLibrary(query)
-      : Promise.resolve({ artists: [], albums: [], tracks: [] });
+      : Promise.resolve({ artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] });
     var mbPromise = _scope === SCOPE_ALL ? fetchMb(query, MB_LIMIT_ALL_TAB, mbOpts) : Promise.resolve([]);
     Promise.all([localPromise, mbPromise])
       .then(function (results) {
         if (seq !== _runSeq) return;
         var local = results[0];
         var mbReleases = results[1];
+        var releaseCount = ['albums', 'compilations', 'live_albums', 'eps', 'singles'].reduce(function (n, k) {
+          return n + ((local[k] || []).length);
+        }, 0);
         var counts = [
           (local.artists || []).length + ' artist' + ((local.artists || []).length === 1 ? '' : 's'),
-          (local.albums || []).length + ' album' + ((local.albums || []).length === 1 ? '' : 's'),
+          releaseCount + ' album' + (releaseCount === 1 ? '' : 's'),
           (local.tracks || []).length + ' track' + ((local.tracks || []).length === 1 ? '' : 's')
         ];
         if (_scope === SCOPE_ALL) counts.push(mbReleases.length + ' musicbrainz');
         if (getMetaEl()) getMetaEl().textContent = counts.join(' · ');
-        resultsEl.innerHTML = renderLocalSections(local, mbReleases, query);
+        resultsEl.innerHTML = renderBucketedResults(local, mbReleases, query, {
+          withQueue: true,
+          allMbButton: _scope === SCOPE_ALL
+        });
       });
   }
 

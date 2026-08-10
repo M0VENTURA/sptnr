@@ -645,6 +645,50 @@ def get_standout_config() -> dict[str, Any]:
 
 
 # -----------------------------------------------------------------------------
+# Tag Writing Configuration
+# -----------------------------------------------------------------------------
+
+def get_tagging_config() -> dict[str, Any]:
+    """Get file-tag writing policy from the ``tagging`` config block.
+
+    Lets Popularr act as a read-only database scanner / UI when the user
+    runs an external tagger (Beets, MusicBrainz Picard) or the music folder
+    is on a read-only/network mount:
+
+    ```yaml
+    tagging:
+      write_tags_to_file: true        # master toggle: touch audio files at all
+      write_options:
+        ratings_only: false           # only write POPM/RATING, never text frames
+        fill_missing_only: false      # only fill frames that are currently empty
+        embed_lyrics: false           # write lyrics to USLT/SYLT frames
+      preserve_file_timestamps: true  # restore mtime/atime after a write
+    ```
+
+    Defaults preserve the legacy behaviour (writes enabled, timestamps
+    preserved); the config page exposes all of them.
+    """
+    cfg = get_config() or {}
+    tagging = cfg.get("tagging") or {}
+    if not isinstance(tagging, dict):
+        tagging = {}
+    opts = tagging.get("write_options") or {}
+    if not isinstance(opts, dict):
+        opts = {}
+    try:
+        write_enabled = bool(tagging.get("write_tags_to_file", True))
+    except Exception:
+        write_enabled = True
+    return {
+        "write_tags_to_file": write_enabled,
+        "ratings_only": bool(opts.get("ratings_only", False)),
+        "fill_missing_only": bool(opts.get("fill_missing_only", False)),
+        "embed_lyrics": bool(opts.get("embed_lyrics", False)),
+        "preserve_file_timestamps": bool(tagging.get("preserve_file_timestamps", True)),
+    }
+
+
+# -----------------------------------------------------------------------------
 # Genre Aggregation Configuration
 # -----------------------------------------------------------------------------
 

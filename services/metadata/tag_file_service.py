@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from mutagen.flac import FLAC as FLACType, Picture as FLACPictureType
     from mutagen.id3 import (
         ID3 as ID3Type,
-        APIC, COMM, TALB, TBPM, TCOM, TCON,
+        APIC, COMM, POPM, TALB, TBPM, TCOM, TCON,
         TDRC, TIT2, TMOO, TPE1, TPE2, TPOS, TRCK, TXXX
     )
     from mutagen.mp3 import MP3 as MP3Type
@@ -50,7 +50,7 @@ try:
     from mutagen.flac import FLAC, Picture as FLACPicture
     from mutagen.id3 import (
         ID3,
-        APIC, COMM, TALB, TBPM, TCOM, TCON,
+        APIC, COMM, POPM, TALB, TBPM, TCOM, TCON,
         TDRC, TIT2, TMOO, TPE1, TPE2, TPOS, TRCK, TXXX
     )
     from mutagen.mp3 import MP3
@@ -66,7 +66,7 @@ except Exception:
     FLACPicture = _MissingMutagen
     ID3 = _MissingMutagen
 
-    APIC = COMM = TALB = TBPM = TCOM = TCON = _MissingMutagen
+    APIC = COMM = POPM = TALB = TBPM = TCOM = TCON = _MissingMutagen
     TDRC = TIT2 = TMOO = TPE1 = TPE2 = TPOS = TRCK = TXXX = _MissingMutagen
 
     MP3 = _MissingMutagen
@@ -76,21 +76,119 @@ except Exception:
 # PUBLIC
 # =============================================================================
 
+# MP3 frame ids per tag key (used by the fill-missing-only pre-check).
+_MP3_FRAME_FOR_FIELD = {
+    "title": "TIT2", "artist": "TPE1", "album": "TALB",
+    "album_artist": "TPE2", "albumartist": "TPE2", "composer": "TCOM",
+    "track_number": "TRCK", "disc_number": "TPOS",
+    "year": "TDRC", "date": "TDRC", "genre": "TCON", "genres": "TCON",
+    "comment": "COMM", "cover_art_data": "APIC", "rating": "POPM",
+}
+
+
+def _existing_non_empty_fields(file_path: str, tags: Dict[str, Any]) -> set[str]:
+    """Tag keys whose on-disk frame already carries a value (fill-missing-only)."""
+    present: set[str] = set()
+    if not MUTAGEN_AVAILABLE:
+        return present
+    try:
+        suffix = Path(file_path).suffix.lower()
+        if suffix == ".mp3":
+            from mutagen.id3 import ID3 as _ID3
+            tag_obj = _ID3(file_path)
+            for field, frame_id in _MP3_FRAME_FOR_FIELD.items():
+                if frame_id not in tag_obj:
+                    continue
+                if any(getattr(f, "text", None) for f in tag_obj.getall(frame_id)):
+                    present.add(field)
+        elif suffix == ".flac":
+            from mutagen.flac import FLAC as _FLAC
+            audio = _FLAC(file_path)
+            for field in tags:
+                values = audio.tags.get(field)
+                if values and any(str(v).strip() for v in values):
+                    present.add(field)
+    except Exception:
+        pass
+    return present
+
+
 def write_tags_to_file(file_path: str, tags: Dict[str, Any]) -> bool:
     if not file_path or not os.path.exists(file_path):
         logger.error("File not found: %s", file_path)
         return False
 
+    # ── Tagging policy gate ────────────────────────────────────────────────
+    # ``tagging.write_tags_to_file`` master toggle lets Popularr run as a
+    # read-only database scanner/UI (external tagger, read-only mounts,
+    # network drives).  ``ratings_only`` restricts writes to POPM/RATING
+    # frames; ``fill_missing_only`` never overwrites a populated frame;
+    # ``preserve_file_timestamps`` restores mtime/atime after the write.
+    try:
+        from helpers.config_helpers import get_tagging_config
+        cfg = get_tagging_config()
+    except Exception:
+        cfg = {}
+    if not cfg.get("write_tags_to_file", True):
+        logger.debug("[TAG] File tag writes disabled (tagging.write_tags_to_file=false) — DB only")
+        return False
+    if cfg.get("ratings_only") and not any(k == "rating" for k in (tags or {})):
+        logger.debug("[TAG] ratings_only mode — skipping non-rating write to %s", file_path)
+        return False
+
+    tags = dict(tags or {})
+
+    # fill_missing_only: never overwrite a frame that already carries a value.
+    # Empty incoming values still pass through (they are explicit "clear this
+    # frame" requests — the writers delete the frame on empty).
+    if cfg.get("fill_missing_only"):
+        already = _existing_non_empty_fields(file_path, tags)
+        tags = {
+            k: v for k, v in tags.items()
+            if k not in already or not str(v or "").strip()
+        }
+        if not tags:
+            return False
+
+    stat_before = None
+    if cfg.get("preserve_file_timestamps", True):
+        try:
+            stat_before = os.stat(file_path)
+        except OSError:
+            stat_before = None
+
     suffix = Path(file_path).suffix.lower()
 
     if suffix == ".mp3":
-        return write_id3_tags(file_path, tags)
+        ok = write_id3_tags(file_path, tags)
+    elif suffix == ".flac":
+        ok = write_flac_tags(file_path, tags)
+    else:
+        logger.warning("Unsupported file format: %s", suffix)
+        ok = False
 
-    if suffix == ".flac":
-        return write_flac_tags(file_path, tags)
+    if ok and stat_before is not None:
+        try:
+            os.utime(file_path, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+        except OSError:
+            pass
+    return ok
 
-    logger.warning("Unsupported file format: %s", suffix)
-    return False
+
+def write_rating_to_file(file_path: str, stars: int) -> bool:
+    """Write a 1-5 star rating into the file tags: POPM (MP3) / RATING (FLAC).
+
+    Gated by the ``tagging`` config — the master toggle must be enabled;
+    ``ratings_only`` mode still permits rating writes (that is its purpose).
+    """
+    try:
+        from helpers.config_helpers import get_tagging_config
+        if not get_tagging_config().get("write_tags_to_file", True):
+            return False
+    except Exception:
+        pass
+    stars = max(1, min(5, int(stars or 0)))
+    return write_tags_to_file(file_path, {"rating": stars})
 
 
 # =============================================================================
@@ -187,6 +285,15 @@ def write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
 
                 if value:
                     tag_obj.add(COMM(encoding=3, lang="eng", desc="", text=[str(value)]))
+
+            elif field == "rating" and value:
+                # POPM popularimeter: rating byte 0-255 (5★ = 255, 1★ = 51).
+                tag_obj.delall("POPM")
+                tag_obj.add(POPM(
+                    email="",
+                    rating=max(0, min(255, int(value) * 51)),
+                    count=0,
+                ))
 
             elif field in {"mbid", "musicbrainz_trackid"}:
                 _clear_txxx_variants(tag_obj, "musicbrainztrackid")

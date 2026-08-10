@@ -33,10 +33,10 @@ from services.popularity.popularity_math import (
     evaluate_listenbrainz_validity,
 )
 from services.popularity.popularity_config import (
-    LASTFM_WEIGHT,
     get_live_weight_penalty,
     get_metadata_score_floor,
     get_single_boost,
+    resolve_weights,
 )
 
 # Provider aggregation helpers (split-variant merging, cross-release lookups)
@@ -78,6 +78,49 @@ from services.popularity.popularity_cache_policy import (
     get_cache_duration_hours,
     should_use_cached_score,
 )
+
+
+# ── Consolidated per-track log helpers ────────────────────────────────────
+
+def _fmt_count(count) -> str:
+    """Format a listener/listen count compactly (14201 → '14.2k')."""
+    try:
+        value = float(count or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value >= 1000:
+        return f"{value / 1000:.1f}k"
+    return f"{value:.0f}"
+
+
+_SOURCE_LABELS = {
+    "discogs": "Discogs",
+    "musicbrainz": "MB",
+    "musicbrainz_compilation": "MB-Comp",
+    "discogs_video": "Video",
+    "lastfm": "LF",
+    "radio_edit": "Radio",
+}
+
+
+def _single_chips(sources_raw) -> str:
+    """Render the matched/unmatched single-detection sources as chips."""
+    try:
+        raw = sources_raw or ""
+        if isinstance(raw, str):
+            sources = json.loads(raw) if raw.strip() else []
+        else:
+            sources = raw
+    except Exception:
+        return ""
+    chips: list[str] = []
+    for s in sources if isinstance(sources, list) else []:
+        if not isinstance(s, dict):
+            continue
+        src = str(s.get("source") or "")
+        label = _SOURCE_LABELS.get(src, src)
+        chips.append(f"{label}: {'✓' if bool(s.get('matched')) else '✖'}")
+    return "[" + ", ".join(chips) + "]" if chips else ""
 
 # Score adjustments (album-relative only — artist-wide stats are ignored by
 # design so popularity measures strength within the album, not the catalogue).
@@ -171,18 +214,9 @@ def process_track(
     track_artist = _as_str(track.get("artist"))
     from helpers.logging_config import log_unified
 
-    # Scan-phase label so the unified log says what is happening per track
-    # (Metadata / Popularity / Singles / Full) instead of a bare track name.
-    if options.get("metadata_only"):
-        _phase = "Metadata"
-    elif options.get("singles_only") or options.get("singles_with_missing_popularity"):
-        _phase = "Singles"
-    elif options.get("popularity_only"):
-        _phase = "Popularity"
-    else:
-        _phase = "Full"
-
-    log_unified(f"[TRACK_STAGE] {_phase}: {track_artist} - {track_title}")
+    # Per-track progress is emitted ONCE, as a single consolidated line at
+    # the end of processing (score + ISRC + single verdict) — the unified log
+    # stays one line per track instead of four.
     logger.debug("[TRACK_STAGE] Processing track: %s - %s (%s)", track_artist, track_title, track_id)
 
     metadata_only = bool(options.get("metadata_only"))
@@ -210,6 +244,10 @@ def process_track(
     lb_percentile: float = 0.0
     lastfm_listeners: int = 0
     listenbrainz_listens: int = 0
+    # Consolidated per-track log parts (emitted as ONE line before returning).
+    _isrc_found: str = ""
+    _pop_summary: str = ""
+    _single_summary: str = ""
 
     if singles_detection_only or (singles_pass and _has_stored_popularity):
         # Carry the stored popularity through so the result dict and star
@@ -266,7 +304,8 @@ def process_track(
             # batch resolution when the file tags don't carry one.
             isrc = _as_str(effective_track.get("isrc") or "").strip()
             if isrc:
-                log_unified(f"[TRACK_STAGE] [ISRC_POOL] Found ISRC: {isrc}")
+                _isrc_found = isrc
+                logger.debug("[TRACK_STAGE] [ISRC_POOL] Found ISRC: %s", isrc)
 
             # ── Staleness check ───────────────────────────────────────────
             # Skip API calls if fresh-enough data is already in the DB.
@@ -535,8 +574,9 @@ def process_track(
                                     if _isrc_rec and _isrc_rec.get("recording_mbid"):
                                         recording_mbid = _isrc_rec["recording_mbid"]
                                         _lb_source = "isrc_resolved"
-                                        log_unified(
-                                            f"[TRACK_STAGE] [ISRC_POOL] ISRC {isrc} -> recording {recording_mbid}"
+                                        logger.debug(
+                                            "[TRACK_STAGE] [ISRC_POOL] ISRC %s -> recording %s",
+                                            isrc, recording_mbid,
                                         )
                                 if not recording_mbid:
                                     # Album-level batch pre-resolution first (one
@@ -622,15 +662,18 @@ def process_track(
 
                 # Dynamic Last.fm weight from artist listener context (legacy
                 # parity): boosts the Last.fm weight for catalogue outliers and
-                # reduces it for underperformers.
+                # reduces it for underperformers.  The base weight is resolved
+                # LIVE from config so popularity.weights edits apply without a
+                # process restart.
                 lastfm_weight_override = None
                 if artist_lf_context and (artist_lf_context.get("total") or 0) > 0 and lastfm_listeners > 0:
                     try:
                         from services.enrichment.single_detection_context_service import get_dynamic_lastfm_weight
+                        _live_lf_base, _, _ = resolve_weights()
                         lastfm_weight_override = get_dynamic_lastfm_weight(
                             artist_lf_context,
                             int(lastfm_listeners or 0),
-                            LASTFM_WEIGHT,
+                            _live_lf_base,
                         )
                     except Exception as exc:
                         logger.debug("[track_stage] Dynamic LF weight failed for %s: %s", track_id, exc)
@@ -778,7 +821,8 @@ def process_track(
 
         # ── Per-track step summary (scanning log) ─────────────────────────
         # One line per track showing whether popularity came from cache or a
-        # fresh fetch, the provider counts, and the resulting score.
+        # fresh fetch, the provider counts, and the resulting score.  The
+        # parts feed the single consolidated per-track log line.
         try:
             _final_score = float(update_payload.get("final_score") or 0)
             if update_payload.get("_cached"):
@@ -787,13 +831,17 @@ def process_track(
                 _src = "prefetched"
             else:
                 _src = "fresh"
-            log_unified(
-                f"[TRACK_STAGE] {track_artist} - {track_title} → popularity {_src} "
-                f"score={_final_score:.1f} "
-                f"(LF={lastfm_listeners:,} listeners, LB={listenbrainz_listens:,} listens)"
+            logger.debug(
+                "[track_stage] %s - %s popularity %s score=%.1f (LF=%d, LB=%d)",
+                track_artist, track_title, _src, _final_score,
+                int(lastfm_listeners or 0), int(listenbrainz_listens or 0),
+            )
+            _pop_summary = (
+                f"Score: {_final_score:.1f} "
+                f"(LF: {_fmt_count(lastfm_listeners)}, LB: {_fmt_count(listenbrainz_listens)})"
             )
         except Exception:
-            pass
+            _pop_summary = ""
 
     # -------------------------------------------------------------------------
     # 2. SINGLES DETECTION
@@ -974,8 +1022,10 @@ def process_track(
             else:
                 sd_result = None
                 if _sd_manual_override:
-                    log_unified(
-                        f"[TRACK_STAGE] {track_artist} - {track_title} → single=skipped (manual override)"
+                    _single_summary = "Single: SKIPPED (manual override)"
+                    logger.debug(
+                        "[track_stage] %s - %s → single=skipped (manual override)",
+                        track_artist, track_title,
                     )
                 else:
                     # Detection was skipped for this track (below the
@@ -989,8 +1039,10 @@ def process_track(
                     update_payload["single_confidence"] = "low"
                     update_payload["single_confidence_score"] = 0.0
                     update_payload["single_sources"] = ""
-                    log_unified(
-                        f"[TRACK_STAGE] {track_artist} - {track_title} → single=cleared (below top-50% album popularity)"
+                    _single_summary = "Single: LOW (below top-50% album popularity)"
+                    logger.debug(
+                        "[track_stage] %s - %s → single=cleared (below top-50%% album popularity)",
+                        track_artist, track_title,
                     )
 
             if sd_result:
@@ -1012,19 +1064,21 @@ def process_track(
                     f"video={_sd_levels.get('discogs_video')},lastfm={_sd_levels.get('lastfm')})"
                     if _sd_d else ""
                 )
-                log_unified(
-                    f"[TRACK_STAGE] {track_artist} - {track_title} → single="
-                    f"{sd_result.get('confidence', 'low')} "
-                    f"(status={sd_result.get('single_status', 'none')}, "
-                    f"sources={len(sd_result.get('sources') or [])}, "
-                    f"reasons={','.join(str(r) for r in _sd_reasons) or 'none'}{_sd_diag})"
+                _sd_conf = str(sd_result.get("confidence", "low") or "low").upper()
+                _sd_chips = _single_chips(sd_result.get("sources"))
+                _single_summary = f"Single: {_sd_conf} {_sd_chips}".strip()
+                logger.debug(
+                    "[track_stage] %s - %s → single=%s (status=%s, sources=%d, reasons=%s%s)",
+                    track_artist, track_title, sd_result.get("confidence", "low"),
+                    sd_result.get("single_status", "none"),
+                    len(sd_result.get("sources") or []),
+                    ",".join(str(r) for r in _sd_reasons) or "none", _sd_diag,
                 )
 
         except Exception as e:
             logger.debug("[track_stage][SINGLE] %s: %s", track_id, e)
-            log_unified(
-                f"[TRACK_STAGE] {track_artist} - {track_title} → single detection ERROR: {e}"
-            )
+            _single_summary = f"Single: ERROR ({e})"
+            logger.warning("[track_stage] %s - %s → single detection ERROR: %s", track_artist, track_title, e)
 
     # -------------------------------------------------------------------------
     # 3. METADATA - MusicBrainz (via enrichment service for better matching)
@@ -1477,6 +1531,30 @@ def process_track(
         or album_context.get("artist")
         or track_artist
     )
+
+    # ── Consolidated per-track log line ───────────────────────────────────
+    # One line per track in the unified log: title, popularity score with
+    # provider counts, ISRC, and the single verdict with source chips.  The
+    # metadata pre-pass (Pass 1 of a combined scan) logs at DEBUG only so the
+    # scan output is not printed twice for every track.
+    if not _single_summary:
+        _stored_conf = str(
+            update_payload.get("single_confidence")
+            or track.get("single_confidence")
+            or "low"
+        ).upper()
+        _single_summary = f"Single: {_stored_conf} (stored)"
+    _isrc_part = f" | ISRC: {_isrc_found}" if _isrc_found else ""
+    _consolidated = (
+        f"[TRACK] 🎵 \"{str(track_title or '').strip()}\""
+        f" | {_pop_summary or 'Score: —'}"
+        f"{_isrc_part}"
+        f" | {_single_summary}"
+    )
+    if metadata_only:
+        logger.debug("[TRACK_STAGE] %s", _consolidated)
+    else:
+        log_unified(_consolidated)
 
     return {
         "track_id": track_id,

@@ -10,7 +10,7 @@ from datetime import datetime
 from statistics import mean, median, stdev
 from typing import Dict, List, Optional
 
-from services.popularity.popularity_config import AGE_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT
+from services.popularity.popularity_config import resolve_weights
 
 Z_SCORE_MIDPOINT = 50.0
 Z_SCORE_TO_POPULARITY_SCALE = 16.7
@@ -459,11 +459,15 @@ def calculate_combined_popularity_score(
 
     # Live-track penalty: legacy logic halves the Last.fm weight because live
     # recordings are streamed far less than their studio counterparts.
+    # Weights are resolved LIVE from config on every call so a config.html
+    # edit applies without a process restart (the module-level constants
+    # used to freeze them at import time).
+    _live_lf_w, _live_lb_w, _live_age_w = resolve_weights()
     effective_lf_weight = lastfm_weight_override
     if effective_lf_weight is None:
-        effective_lf_weight = LASTFM_WEIGHT
+        effective_lf_weight = _live_lf_w
         if is_live_track:
-            effective_lf_weight = LASTFM_WEIGHT * max(0.0, min(1.0, live_weight_penalty))
+            effective_lf_weight = _live_lf_w * max(0.0, min(1.0, live_weight_penalty))
 
     # Build active score/weight pairs so missing sources don't dilute the blend
     active_scores: list[float] = []
@@ -492,11 +496,11 @@ def calculate_combined_popularity_score(
             active_weights.append(effective_lf_weight)
         if lb_score > 0:
             active_scores.append(lb_score)
-            active_weights.append(LISTENBRAINZ_WEIGHT)
+            active_weights.append(_live_lb_w)
 
     if age_score > 0:
         active_scores.append(age_score)
-        active_weights.append(AGE_WEIGHT)
+        active_weights.append(_live_age_w)
 
     if active_scores and active_weights:
         total_weight = sum(active_weights)

@@ -5,7 +5,7 @@
 {% block content %}
 <div class="container-fluid mt-4">
   <div class="mb-4">
-    {% set subtitle = 'Search across Soulseek, qBittorrent, MusicBrainz, and import playlists from CSV' %}
+    {% set subtitle = 'Search across Soulseek, qBittorrent, and import playlists from CSV' %}
     {% include 'components/_downloads_header.html' %}
   </div>
 
@@ -19,11 +19,6 @@
     <li class="nav-item" role="presentation">
       <button class="nav-link" id="qbittorrent-tab" data-bs-toggle="tab" data-bs-target="#qbittorrent" type="button" role="tab" aria-controls="qbittorrent" aria-selected="false">
         <i class="bi bi-cloud-download"></i> qBittorrent
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="musicbrainz-tab" data-bs-toggle="tab" data-bs-target="#musicbrainz" type="button" role="tab" aria-controls="musicbrainz" aria-selected="false">
-        <i class="bi bi-disc"></i> MusicBrainz
       </button>
     </li>
     <li class="nav-item" role="presentation">
@@ -66,20 +61,6 @@
               <a href="{{ url_for('ui.config_editor') }}">Configure it</a> in config.yaml.
             </div>
           {% endif %}
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== MusicBrainz Tab ===== -->
-    <div class="tab-pane fade" id="musicbrainz" role="tabpanel" aria-labelledby="musicbrainz-tab">
-      <div class="card mb-4">
-        <div class="card-header">
-          <h5 class="card-title mb-0">
-            <i class="bi bi-disc"></i> MusicBrainz Release Search
-          </h5>
-        </div>
-        <div class="card-body">
-          {% include 'components/search/_musicbrainz.html' %}
         </div>
       </div>
     </div>

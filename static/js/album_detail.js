@@ -2969,6 +2969,16 @@ var _pageData = window._pageData || {};
             const data = await resp.json();
             const missing = data.missing_tracks || [];
             if (countEl) countEl.textContent = missing.length + ' missing';
+            // Mirror the count into the Tracks card header badge.
+            const headerBadge = document.getElementById('albumMissingHeaderBadge');
+            if (headerBadge) {
+                if (missing.length > 0) {
+                    headerBadge.textContent = missing.length + ' Missing';
+                    headerBadge.classList.remove('d-none');
+                } else {
+                    headerBadge.classList.add('d-none');
+                }
+            }
             if (missing.length === 0) {
                 body.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> All tracks from the MusicBrainz release are in your library.</span>';
                 return;

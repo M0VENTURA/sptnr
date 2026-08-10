@@ -534,6 +534,68 @@ async def api_track_apply_mb_release(track_id):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/track/<track_id>/lyrics/fetch — LRCLIB lyrics lookup
+# ---------------------------------------------------------------------------
+
+@track_bp.route("/<track_id>/lyrics/fetch", methods=["POST"])
+async def api_fetch_track_lyrics(track_id):
+    """Fetch plain + synced lyrics from LRCLIB and store them on the track.
+
+    LRCLIB (https://lrclib.net) needs no API key.  The matched lyrics are
+    written to the track's ``lyrics`` column (the synced LRC form when
+    available, otherwise the plain text) so the track page Lyrics tab renders
+    instantly afterwards.  Returns ``{"found": bool, "lyrics": str|null,
+    "synced": bool, "source": "lrclib"}``.
+    """
+    try:
+        from api_clients.lrclib import fetch_lyrics
+
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT * FROM tracks WHERE CAST(id AS TEXT) = :id"),
+                {"id": str(track_id)},
+            ).fetchone()
+            if not row:
+                return jsonify({"error": "Track not found"}), 404
+            track = dict(row._mapping)
+
+        result = fetch_lyrics(
+            track_name=str(track.get("title") or ""),
+            artist_name=str(track.get("artist") or ""),
+            album_name=str(track.get("album") or "") or None,
+            duration=(
+                float(track["duration"])
+                if track.get("duration")
+                else None
+            ),
+        )
+        plain = result.get("plain") or ""
+        synced = result.get("synced") or ""
+        if not plain and not synced:
+            return jsonify({"found": False, "lyrics": None, "synced": False, "source": "lrclib"})
+
+        # Prefer the synced LRC form (renders a scrolling player on the page);
+        # fall back to plain text.
+        stored = synced or plain
+        with db_session() as session:
+            session.execute(
+                text("UPDATE tracks SET lyrics = :lyrics WHERE CAST(id AS TEXT) = :id"),
+                {"lyrics": stored, "id": str(track_id)},
+            )
+        return jsonify({
+            "found": True,
+            "lyrics": stored,
+            "synced": bool(synced),
+            "plain": plain,
+            "synced_lrc": synced,
+            "source": "lrclib",
+        })
+    except Exception as exc:
+        logger.error("Lyrics fetch failed for %s: %s", track_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # GET /api/track/<track_id>/mb-releases
 # ---------------------------------------------------------------------------
 

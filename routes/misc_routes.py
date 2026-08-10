@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from db.engine import db_session
 from helpers.config_helpers import get_config
+from services.catalog.album_classification_service import classify_album_type
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,9 @@ async def api_search():
                 for row in artist_result.fetchall()
             ]
             # ---------------------------------------------------------
-            # Albums
+            # Albums — bucketed by release type (albums / compilations /
+            # live_albums / eps / singles), each with its release year so the
+            # search modal can render the artist-page discography structure.
             # ---------------------------------------------------------
             album_result = session.execute(
                 text("""
@@ -85,6 +88,10 @@ async def api_search():
                         album,
                         COUNT(*) AS track_count,
                         AVG(stars) AS avg_stars,
+                        MAX(COALESCE(NULLIF(year, 0), release_year, 0)) AS album_year,
+                        MAX(COALESCE(NULLIF(musicbrainz_albumtype, ''),
+                                     NULLIF(spotify_album_type, ''),
+                                     NULLIF(album_type, ''))) AS album_type,
                         CASE
                             WHEN LOWER(COALESCE(album, '')) = :exact THEN 0
                             WHEN LOWER(COALESCE(album, '')) LIKE :starts THEN 1
@@ -106,19 +113,52 @@ async def api_search():
                     "contains": contains_pattern,
                 },
             )
-            albums = [
-                {
-                    "artist": row._mapping["artist"],
-                    "album": row._mapping["album"],
-                    "track_count": int(row._mapping["track_count"] or 0),
+
+            # Map each album into the unified-search buckets (mirrors the
+            # artist page discography).  Remix albums fold into the Albums
+            # bucket per the unified-search blueprint.
+            _bucket_map = {
+                "album": "albums",
+                "remix_album": "albums",
+                "compilation": "compilations",
+                "live_album": "live_albums",
+                "ep": "eps",
+                "single": "singles",
+            }
+            _type_labels = {
+                "albums": "Studio Album",
+                "remix_album": "Remix Album",
+                "compilations": "Compilation",
+                "live_albums": "Live Album",
+                "eps": "EP",
+                "singles": "Single",
+            }
+            albums_by_bucket: dict[str, list[dict[str, Any]]] = {
+                "albums": [],
+                "compilations": [],
+                "live_albums": [],
+                "eps": [],
+                "singles": [],
+            }
+            for row in album_result.fetchall():
+                _m = row._mapping
+                _raw_type = classify_album_type(dict(_m))
+                _bucket = _bucket_map.get(_raw_type, "albums")
+                _year = int(_m["album_year"] or 0) or None
+                albums_by_bucket[_bucket].append({
+                    "artist": _m["artist"],
+                    "album": _m["album"],
+                    "year": _year,
+                    "track_count": int(_m["track_count"] or 0),
                     "avg_stars": (
-                        float(row._mapping["avg_stars"])
-                        if row._mapping["avg_stars"] is not None
+                        float(_m["avg_stars"])
+                        if _m["avg_stars"] is not None
                         else None
                     ),
-                }
-                for row in album_result.fetchall()
-            ]
+                    "type": _bucket,
+                    "type_label": _type_labels.get(_raw_type, _type_labels[_bucket]),
+                    "in_library": True,
+                })
 
             # ---------------------------------------------------------
             # Tracks
@@ -167,7 +207,7 @@ async def api_search():
 
         return jsonify({
             "artists": artists,
-            "albums": albums,
+            **albums_by_bucket,
             "tracks": tracks,
         })
 

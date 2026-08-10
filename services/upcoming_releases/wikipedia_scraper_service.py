@@ -145,6 +145,12 @@ class WikipediaReleaseScraper:
         Returns:
             Dict with per-source results and aggregate counts.
         """
+        # Rolling import window: only releases dated within the last N months
+        # and the next M months are kept (undated/TBA rows are always kept —
+        # they are genuinely unscheduled).  Prevents out-of-window rows (e.g.
+        # the January block when the current month is August) from entering
+        # the database at all.
+        window = get_release_window()
         results: dict[str, Any] = {
             "total_found": 0,
             "total_new": 0,
@@ -163,6 +169,11 @@ class WikipediaReleaseScraper:
                     "items_found": 0,
                 }
                 continue
+
+            items = [
+                it for it in items
+                if _within_release_window(it, window)
+            ]
 
             new, updated = self._persist_releases(items, src_info["name"], src_key)
 
@@ -580,8 +591,14 @@ class WikipediaReleaseScraper:
             day_text = (values.get("day") or "").strip().upper()
             if "day" in values and day_text not in ("TBA", "TBD", "TBR"):
                 day = self._parse_day(values["day"], None)
-                month = self._month_in_cell(values["day"]) or 1
-                if day:
+                month = self._month_in_cell(values["day"])
+                if month is None:
+                    # No month context in the regex path (there is no heading
+                    # detection here) — never fabricate January: treat the row
+                    # as TBA so it cannot collapse every month into "January".
+                    date_str = None
+                    had_date = False
+                elif day:
                     date_str = f"{year}-{month:02d}-{day:02d}"
                     had_date = True
                 else:
@@ -814,6 +831,47 @@ def scrape(
     """
     scraper = WikipediaReleaseScraper(sources=sources)
     return scraper.scrape_all()
+
+
+def get_release_window() -> tuple[datetime, datetime]:
+    """Rolling window for upcoming-release imports/display.
+
+    Releases are kept when dated within the last ``lookback`` months and the
+    next ``lookahead`` months from today (default 2 / 6).  Tunable via
+    ``features.upcoming_releases_lookback_months`` and
+    ``features.upcoming_releases_lookahead_months``.
+    """
+    try:
+        from helpers.config_helpers import get_feature
+        lookback = max(0, int(get_feature("upcoming_releases_lookback_months", 2) or 2))
+        lookahead = max(0, int(get_feature("upcoming_releases_lookahead_months", 6) or 6))
+    except Exception:
+        lookback, lookahead = 2, 6
+    now = datetime.now()
+    return now - timedelta(days=30 * lookback), now + timedelta(days=30 * lookahead)
+
+
+def _within_release_window(
+    release: dict[str, Any],
+    window: tuple[datetime, datetime] | None = None,
+) -> bool:
+    """True when a release falls inside the rolling import window.
+
+    Dated releases outside ``[now - lookback, now + lookahead]`` are dropped
+    at import time.  Undated (TBA) rows are always kept — they are genuinely
+    unscheduled releases with no date to evaluate.
+    """
+    raw = str(release.get("release_date") or "").strip()
+    if not raw:
+        return True
+    try:
+        rel = datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        return True
+    if window is None:
+        window = get_release_window()
+    start, end = window
+    return start <= rel <= end
 
 
 def purge_stale_upcoming_releases(days: int | None = None) -> dict[str, Any]:

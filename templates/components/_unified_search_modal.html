@@ -5,8 +5,10 @@ Tap-to-open global search, included from base.html. Backed by
 static/js/unified_search.js.
 
 Scope rules:
-- All       : library artists/albums + a compact MusicBrainz section,
-              then in-library tracks (blueprint priority order)
+- All       : library + MusicBrainz releases merged into the artist-page
+              discography buckets (ARTISTS, ALBUMS, COMPILATIONS, LIVE
+              ALBUMS, EPS, SINGLES, TRACKS), year-sorted with local 🟢
+              results before external 🟡 (quick-queue) results
 - In Library: library results only (POST /api/search)
 - MusicBrainz: release search via the shared MB component internals
   (searchMusicBrainzReleases) with quick-queue buttons

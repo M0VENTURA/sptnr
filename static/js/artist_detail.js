@@ -3147,10 +3147,9 @@ function setArtistFilter(filter) {
 // Mobile 4-tab navigation: show/hide grouped sections on <lg viewports.
 function switchArtistMobileTab(tab) {
   document.querySelectorAll('.artist-mobile-tab').forEach(btn => {
+    // Active state is styled via CSS (underline indicator) — only the
+    // class matters, the btn-info/btn-outline-info pair was retired.
     btn.classList.toggle('active', btn.dataset.artistTab === tab);
-    const isActive = btn.dataset.artistTab === tab;
-    btn.classList.toggle('btn-info', isActive);
-    btn.classList.toggle('btn-outline-info', !isActive);
   });
   document.querySelectorAll('.mobile-tab-group').forEach(group => {
     const match = group.dataset.mobileGroup === tab;
