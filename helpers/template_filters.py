@@ -102,3 +102,19 @@ def register_filters(app):
         for char, escape in escapes.items():
             value = value.replace(char, escape)
         return value
+
+    # ----------------------------------------------------------------------
+    # Tests
+    # ----------------------------------------------------------------------
+    # ``artist_detail.html`` uses ``selectattr('sources', 'contains', src)``
+    # and Jinja has no built-in ``contains`` test, so register one.
+    @app.template_test('contains')
+    def contains_test(container, item):
+        """Return True when *item* is found in *container*.
+
+        Mirrors Python's ``item in container`` (usable as ``is contains``
+        or as a ``selectattr`` test).
+        """
+        if container is None:
+            return False
+        return item in container
