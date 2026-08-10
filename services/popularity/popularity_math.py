@@ -23,6 +23,15 @@ ALBUM_RELATIVE_MIN_SPREAD = 8.0
 # is meaningful.  Below this the raw score is kept unchanged (a 1-2 track
 # "album" has no distribution to compare against).
 ALBUM_RELATIVE_MIN_ALBUM_TRACKS = 3
+# Adaptive spread floor for low-volatility albums: the absolute
+# ``ALBUM_RELATIVE_MIN_SPREAD`` is scale-blind, so a UNIFORM high-scoring
+# album (every track ~90, MAD ≈ 0) still amplifies tiny score gaps into large
+# z-swings (a 10-point gap → z = 10/8 = 1.25 at the fixed floor).  The floor
+# grows with the reference's own median so low-variance albums at ANY
+# magnitude damp the same relative noise.  At the typical album-relative
+# median (~50) the adaptive term (0.10 × 50 = 5.0) stays below the absolute
+# floor, so normal albums are unaffected.
+ADAPTIVE_MIN_SPREAD_FRACTION = 0.10
 # Logistic growth rate for the soft-ceiling z-score→popularity mapping.
 # Chosen so the slope at z=0 matches the legacy linear scale (16.7 per z):
 # the derivative of 100/(1+e^{-kz}) at 0 is 25k, so k = 16.7/25 = 0.668.
@@ -79,6 +88,39 @@ def zscore_to_popularity(z_score: float) -> float:
         return min(100.0, max(0.0, Z_SCORE_MIDPOINT + (z_score * Z_SCORE_TO_POPULARITY_SCALE)))
     score = 100.0 / (1.0 + math.exp(-Z_SCORE_LOGISTIC_K * z_score))
     return min(100.0, max(0.0, score))
+
+
+def calculate_robust_zscore(
+    score: float,
+    reference_scores: list[float],
+    min_count: int = ALBUM_RELATIVE_MIN_ALBUM_TRACKS,
+    min_spread: float = ALBUM_RELATIVE_MIN_SPREAD,
+) -> tuple[float, float]:
+    """Robust z-score (median + scaled-MAD) against a reference distribution.
+
+    ``z = (score - reference_median) / max(reference_MAD * 1.4826, min_spread)``
+    — the SAME robust z the album/artist-relative popularity re-map uses
+    (``_remap_relative_popularity``), so star-rating bands, popularity
+    re-mapping and single-detection z-standouts all measure a track's standing
+    with identical mathematics.  No stage compares with mean/stddev z while
+    another uses median/MAD z (which made stages disagree on a track's
+    relative standing).
+
+    Returns ``(z, spread)`` — ``spread`` is the scaled-MAD denominator used,
+    letting callers convert score-point tolerances into z-units (e.g. the
+    star-tier epsilon buffer).  Returns ``(0.0, 0.0)`` when the reference has
+    too few valid positive scores (below ``min_count``) — there is no
+    distribution to compare against.
+    """
+    valid = [float(s) for s in (reference_scores or []) if float(s or 0) > 0]
+    if len(valid) < min_count:
+        return 0.0, 0.0
+    ref_median = median(valid)
+    mad = median([abs(v - ref_median) for v in valid])
+    spread = max(mad * 1.4826, min_spread, ADAPTIVE_MIN_SPREAD_FRACTION * ref_median)
+    if spread <= 0:
+        return 0.0, 0.0
+    return (float(score) - ref_median) / spread, spread
 
 
 def _remap_relative_popularity(raw_score: float, reference_scores: list[float]) -> float:

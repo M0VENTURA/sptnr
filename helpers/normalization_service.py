@@ -360,6 +360,34 @@ def normalize_title_for_lookup(
     )
 
 
+def normalize_title_for_mbid_match(
+    title: str,
+) -> str:
+    """
+    Bracket-preserving canonical normalization for MusicBrainz MBID matching.
+
+    ``normalize_title_for_lookup`` strips ALL parenthetical text, so
+    "Alcohaulin' Ass (Live)" normalizes identically to the studio
+    "Alcohaulin' Ass" — candidate similarity ties then resolve to whichever
+    recording MusicBrainz returns first (usually the more popular studio
+    version), leaking the studio MBID's ListenBrainz counts onto the live
+    bonus track.  Version descriptors ("(Live)", "(Acoustic)", "(Demo)",
+    "(feat. X)", ...) are real title content on MusicBrainz recordings and
+    must survive normalization so a version-tagged track matches its OWN
+    recording.  Single-release and remaster suffixes are still stripped —
+    those are release-group annotations, not version content.
+    """
+
+    return normalize_string(
+        clean_title(
+            title,
+            remove_brackets=False,
+            remove_single_release=True,
+            remove_remaster=True,
+        )
+    )
+
+
 def normalize_title_for_lucene_query(
     title: str,
 ) -> str:

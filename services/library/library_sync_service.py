@@ -110,8 +110,8 @@ def _run_library_sync_worker() -> None:
 
 def get_navidrome_config() -> dict[str, str] | None:
     try:
-        from services.popularity.popularity_config import load_config
-        cfg = load_config() or {}
+        from helpers.config_helpers import get_config
+        cfg = get_config() or {}
         nav_users = cfg.get("navidrome_users", []) or []
         if not nav_users:
             nav_cfg = cfg.get("navidrome", {}) or {}

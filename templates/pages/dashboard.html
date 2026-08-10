@@ -124,7 +124,7 @@
 
     <!-- ===== Scan Controls ===== -->
     <div class="row g-2 mb-3">
-        <div class="col-sm-6 col-xl-3">
+        <div class="col-sm-6 col-xl-4">
             <div class="card h-100 border-primary border-opacity-25">
                 <div class="card-header py-2 d-flex justify-content-between align-items-center">
                     <small class="fw-semibold"><i class="bi bi-graph-up"></i> Popularity</small>
@@ -151,7 +151,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-sm-6 col-xl-3">
+        <div class="col-sm-6 col-xl-4">
             <div class="card h-100 border-secondary border-opacity-25">
                 <div class="card-header py-2 d-flex justify-content-between align-items-center">
                     <small class="fw-semibold"><i class="bi bi-cloud-arrow-down"></i> Navidrome <span id="nav-connectivity" class="badge bg-secondary ms-1" style="font-size:9px">?</span></small>
@@ -161,30 +161,19 @@
                     </div>
                 </div>
                 <div class="card-body py-2">
-                    <div class="d-flex gap-1 flex-wrap mb-1">
+                    <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
+                        <div class="form-check form-check-inline mb-0" title="Full re-import of every artist (ignores the new-items / changed-album skips)">
+                            <input class="form-check-input" type="checkbox" id="navImportForce" name="force" value="1">
+                            <label class="form-check-label small" for="navImportForce">Forced</label>
+                        </div>
                         <button onclick="startNavidromeImport()" class="btn btn-secondary btn-sm py-0 px-2"><i class="bi bi-play-fill"></i> Import</button>
-                        <button onclick="startNavidromeServerScan()" class="btn btn-outline-secondary btn-sm py-0 px-2"><i class="bi bi-arrow-repeat"></i> Rescan</button>
+                        <button onclick="startNavidromeServerScan()" class="btn btn-outline-secondary btn-sm py-0 px-2" title="Trigger a Navidrome server rescan so new/changed files (e.g. completed downloads) appear in Navidrome"><i class="bi bi-arrow-repeat"></i> Sync Changes</button>
                     </div>
                     <div><span id="nav-status" class="text-muted small">Idle</span></div>
                 </div>
             </div>
         </div>
-        <div class="col-sm-6 col-xl-3">
-            <div class="card h-100 border-warning border-opacity-25">
-                <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                    <small class="fw-semibold"><i class="bi bi-server"></i> Library Sync</small>
-                    <div class="d-flex gap-1">
-                        <a href="/config#sources" class="btn btn-outline-light btn-sm py-0 px-1" title="Settings"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopLibrarySync()" class="btn btn-outline-danger btn-sm py-0 px-1" title="Stop"><i class="bi bi-stop-fill"></i></button>
-                    </div>
-                </div>
-                <div class="card-body py-2">
-                    <button onclick="startLibrarySync()" class="btn btn-warning btn-sm py-0 px-2 mb-1"><i class="bi bi-play-fill"></i> Run Sync</button>
-                    <div><span id="lib-status" class="text-muted small">Idle</span></div>
-                </div>
-            </div>
-        </div>
-        <div class="col-sm-6 col-xl-3">
+        <div class="col-sm-6 col-xl-4">
             <div class="card h-100 border-info border-opacity-25">
                 <div class="card-header py-2 d-flex justify-content-between align-items-center">
                     <small class="fw-semibold"><i class="bi bi-music-note-list"></i> Essentia</small>

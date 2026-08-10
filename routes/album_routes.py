@@ -67,8 +67,9 @@ def api_album_rename_files(artist, album):
     """Rename all files in an album based on current metadata."""
     artist, album = unquote(artist), unquote(album)
     result = rename_album_files_service(artist, album)
-    status_code = 200 if result.get("success") else 500
-    return jsonify(result), status_code
+    # Always return 200 — the payload's "success" flag drives the UI, which
+    # renders per-file errors/details even when the operation partially fails.
+    return jsonify(result), 200
 
 
 @album_bp.route("/favourite", methods=["GET", "POST", "DELETE"])

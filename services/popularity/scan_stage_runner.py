@@ -1187,6 +1187,45 @@ def run_scan(
             album_count = len(track_contexts)
             log_unified(f"[POPULARITY] Album {album_index}/{total_albums} ({scan_type}): {artist} - {album} ({album_count} tracks)")
 
+            # ── MusicBrainz album-level batch pre-resolution ────────────────
+            # The per-track MB metadata lookup is the dominant sequential API
+            # cost (a search + recording lookup per track).  Resolve every
+            # fresh track of this album in ONE batched Lucene search (chunked
+            # server-side by ``lookup_album_metadata``), then track_stage
+            # short-circuits its per-track lookup on the results.  Rate limit
+            # is unchanged — roughly one request instead of N per-track
+            # searches.  Tracks that already carry a recording MBID skip the
+            # batch (their metadata is resolved).
+            if not _singles_pass and not options.get("popularity_only"):
+                try:
+                    from services.enrichment.musicbrainz_service import (
+                        MusicBrainzService,
+                        get_shared_mb_client,
+                    )
+                    _mb_entries: list[tuple[str, str]] = []
+                    for _tc in track_contexts:
+                        if _tc.get("recording_mbid") or _tc.get("mbid") or _tc.get("musicbrainz_trackid"):
+                            continue
+                        _tt = _tc.get("title")
+                        _aa = _tc.get("artist")
+                        if _tt and _aa:
+                            _mb_entries.append((str(_tt), str(_aa)))
+                    if _mb_entries:
+                        _mb_batch = MusicBrainzService(
+                            http_client=get_shared_mb_client()
+                        ).lookup_album_metadata(_mb_entries)
+                        if _mb_batch:
+                            _existing = options.get("mb_batch_metadata") or {}
+                            options["mb_batch_metadata"] = {**_existing, **_mb_batch}
+                            log_unified(
+                                f"[POPULARITY] MusicBrainz batch resolved {len(_mb_batch)}/{len(_mb_entries)} track(s) for {artist} - {album}"
+                            )
+                except Exception as exc:
+                    logger.debug(
+                        "[scan_runner] MusicBrainz album batch failed for %s - %s: %s",
+                        artist, album, exc,
+                    )
+
             for track_context in track_contexts:
                 prepared_track = apply_context_fields_to_track(track_context)
 

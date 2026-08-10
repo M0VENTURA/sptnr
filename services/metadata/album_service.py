@@ -58,11 +58,230 @@ def rename_album_files_service(
     artist: str,
     album: str,
 ) -> dict[str, Any]:
-    """Rename all files in an album based on current metadata.
+    """Rename all files in an album based on the configured naming format.
 
-    TODO: Implement actual file renaming logic via infrastructure service.
+    The relative target path comes from ``downloads.file_name_format`` in
+    config (the "Default Naming Convention" on the File Management settings
+    tab) and is resolved under MUSIC_ROOT (e.g. ``/music``). Placeholders:
+    ``{track_number}``, ``{artist}``, ``{album_artist}``, ``{title}``,
+    ``{album}``, ``{year}``.
+
+    When conversion on import is enabled (``downloads.conversion``), FLAC
+    tracks are converted to MP3 first (metadata and cover art carried over
+    by ffmpeg) and the renamed file becomes the converted copy.
+
+    Returns a dict with ``renamed_count``, ``updated_db_count``, ``errors``
+    and per-file ``details`` for the album page's result panel.
     """
-    return {"success": True, "message": "Rename not yet implemented"}
+    import shutil
+
+    from helpers.config_helpers import get_config
+    from services.downloads.download_organize_helpers import (
+        _sanitize_path_component,
+        _normalize_album_artist_for_path,
+    )
+    from services.infrastructure.filesystem_service import cleanup_empty_parents
+
+    cfg = get_config() or {}
+    downloads_cfg = cfg.get("downloads", {}) or {}
+    file_name_format = str(
+        downloads_cfg.get("file_name_format")
+        or "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}"
+    ).strip()
+    fallback_format = "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}"
+
+    conversion_cfg = downloads_cfg.get("conversion", {}) or {}
+    conversion_enabled = bool(conversion_cfg.get("enabled", False)) and (
+        str(conversion_cfg.get("mode", "flac_to_mp3")) == "flac_to_mp3"
+    )
+    try:
+        mp3_bitrate = max(96, min(320, int(conversion_cfg.get("mp3_bitrate_kbps", 320) or 320)))
+    except (TypeError, ValueError):
+        mp3_bitrate = 320
+
+    music_root = (
+        (cfg.get("music", {}) or {}).get("root")
+        or os.environ.get("MUSIC_ROOT")
+        or os.environ.get("MUSIC_FOLDER")
+        or "/music"
+    )
+    music_root = os.path.realpath(str(music_root or "/music").strip() or "/music")
+
+    def _safe_track_number(value: Any) -> str:
+        try:
+            num = int(str(value or "").strip() or 0)
+            return f"{num:02d}" if num > 0 else "00"
+        except (TypeError, ValueError):
+            return "00"
+
+    def _resolve_existing(path_value: Any) -> str | None:
+        raw = str(path_value or "").strip()
+        if not raw:
+            return None
+        candidates = [raw]
+        if not os.path.isabs(raw):
+            candidates.append(os.path.join(music_root, raw))
+        for candidate in candidates:
+            if os.path.isfile(candidate):
+                return candidate
+        return None
+
+    def _render_target(fmt: str, fmt_vars: dict[str, str], ext: str) -> str:
+        rel = fmt.format(**fmt_vars).replace("\\", "/").strip()
+        if rel.endswith("/"):
+            # The format only defines the folder — derive a filename.
+            rel = rel + f"{fmt_vars['track_number']}. {fmt_vars['artist']} - {fmt_vars['title']}"
+        rel = rel.strip("/")
+        if not os.path.splitext(os.path.basename(rel))[1]:
+            rel = f"{rel}{ext}"
+        return rel
+
+    try:
+        with db_session() as session:
+            rows = session.execute(
+                text("""
+                    SELECT CAST(id AS TEXT) AS id, title, artist, album_artist,
+                           album, year, track_number, file_path
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND album = :album
+                    ORDER BY COALESCE(disc_number, '1'),
+                             COALESCE(track_number, 999),
+                             title
+                """),
+                {"artist": artist, "album": album},
+            ).fetchall()
+    except Exception as exc:
+        logger.error("Failed to load tracks for rename '%s' / '%s': %s", artist, album, exc, exc_info=True)
+        return {"success": False, "error": f"Failed to load album tracks: {exc}"}
+
+    if not rows:
+        return {"success": False, "error": "No tracks found for this album"}
+
+    renamed_count = 0
+    updated_db_count = 0
+    errors: list[str] = []
+    details: list[dict[str, str]] = []
+    moved_src_dirs: list[str] = []
+
+    for row in rows:
+        track = dict(row._mapping)
+        track_id = track.get("id")
+        file_path_value = track.get("file_path")
+        src_path = _resolve_existing(file_path_value)
+        if not src_path:
+            errors.append(f"{track.get('title') or '?'}: file not found on disk ({file_path_value or 'no path'})")
+            continue
+
+        ext = os.path.splitext(src_path)[1]
+        fmt_vars = {
+            "track_number": _safe_track_number(track.get("track_number")),
+            "artist": _sanitize_path_component(track.get("artist") or "Unknown Artist") or "Unknown Artist",
+            "album_artist": _normalize_album_artist_for_path(
+                _sanitize_path_component(track.get("album_artist") or "")
+            ) or _sanitize_path_component(track.get("artist") or "Unknown Artist") or "Unknown Artist",
+            "title": _sanitize_path_component(track.get("title") or "Unknown Title") or "Unknown Title",
+            "album": _sanitize_path_component(track.get("album") or "Unknown Album") or "Unknown Album",
+            "year": str(track.get("year") or "").strip()[:4] or "Unknown",
+        }
+
+        try:
+            rel_target = _render_target(file_name_format, fmt_vars, ext)
+        except Exception:
+            # Unknown placeholder in the configured format — fall back.
+            rel_target = _render_target(fallback_format, fmt_vars, ext)
+
+        # Conversion on import: FLAC → MP3 (in place) before moving.
+        actual_src = src_path
+        if conversion_enabled and ext.lower() == ".flac":
+            try:
+                from services.metadata.tag_file_service import convert_flac_to_mp3
+
+                converted = convert_flac_to_mp3(src_path, bitrate=f"{mp3_bitrate}k")
+                if not converted or not os.path.isfile(converted):
+                    errors.append(f"{fmt_vars['title']}: FLAC→MP3 conversion failed (is ffmpeg installed?)")
+                    continue
+                actual_src = converted
+                if os.path.splitext(rel_target)[1].lower() == ".flac":
+                    rel_target = os.path.splitext(rel_target)[0] + ".mp3"
+            except Exception as exc:
+                errors.append(f"{fmt_vars['title']}: conversion failed ({exc})")
+                continue
+
+        target_abs = os.path.join(music_root, rel_target)
+
+        if os.path.normpath(target_abs) == os.path.normpath(actual_src):
+            continue
+
+        if os.path.exists(target_abs):
+            stem, suffix = os.path.splitext(target_abs)
+            counter = 1
+            while os.path.exists(target_abs):
+                target_abs = f"{stem} ({counter}){suffix}"
+                counter += 1
+
+        try:
+            os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+            shutil.move(actual_src, target_abs)
+        except Exception as exc:
+            errors.append(f"{fmt_vars['title']}: move failed ({exc})")
+            continue
+
+        old_dir = os.path.dirname(os.path.abspath(actual_src))
+        if old_dir.startswith(music_root + os.sep):
+            moved_src_dirs.append(old_dir)
+
+        # Keep the stored path style: relative stays relative, absolute stays absolute.
+        store_path = (
+            os.path.relpath(target_abs, music_root)
+            if not os.path.isabs(str(file_path_value or ""))
+            else target_abs
+        )
+        try:
+            with db_session() as update_session:
+                result = update_session.execute(
+                    text(
+                        "UPDATE tracks SET file_path = :path WHERE CAST(id AS TEXT) = :id"
+                    ),
+                    {"path": store_path, "id": track_id},
+                )
+                updated_db_count += result.rowcount or 0
+        except Exception as exc:
+            errors.append(f"{fmt_vars['title']}: database update failed ({exc})")
+            # File already moved — keep counting the rename itself.
+            renamed_count += 1
+            details.append({
+                "track": fmt_vars["title"],
+                "old_path": str(file_path_value or ""),
+                "new_path": store_path,
+            })
+            continue
+
+        renamed_count += 1
+        details.append({
+            "track": fmt_vars["title"],
+            "old_path": str(file_path_value or ""),
+            "new_path": store_path,
+        })
+
+    # Remove now-empty folders left behind (only inside MUSIC_ROOT).
+    for directory in set(moved_src_dirs):
+        try:
+            cleanup_empty_parents(directory, music_root)
+        except Exception:
+            pass
+
+    return {
+        "success": renamed_count > 0 or not errors,
+        "renamed_count": renamed_count,
+        "updated_db_count": updated_db_count,
+        "errors": errors,
+        "details": details,
+        "message": (
+            f"Renamed {renamed_count} file(s)"
+            + (f", {len(errors)} error(s)" if errors else "")
+        ),
+    }
 
 
 # =============================================================================

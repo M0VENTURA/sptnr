@@ -91,7 +91,11 @@ async function pollPopularityStatus() {
 }
 
 async function startNavidromeImport() {
-  const d = await postJSON("/api/navidrome/import", { mode: "all" });
+  // "Forced" = mode:force → serial full re-import of every artist, ignoring
+  // the new-items/changed-album skips.  Unchecked = mode:all → normal import
+  // that skips unchanged albums.
+  const force = !!document.getElementById("navImportForce")?.checked;
+  const d = await postJSON("/api/navidrome/import", { mode: force ? "force" : "all" });
   const e = document.getElementById("nav-status");
   if (d.success) {
     e.innerText = d.message || "Started";
@@ -144,30 +148,6 @@ async function pollNavidromeStatus() {
     }
   } else {
     e.innerText = "Idle";
-    e.className = "text-muted small";
-  }
-}
-
-async function startLibrarySync() {
-  await fetch("/api/library/sync", { method: "POST" });
-}
-
-async function stopLibrarySync() {
-  await fetch("/scan/stop-all", { method: "POST" });
-}
-
-async function pollLibraryStatus() {
-  const r = await fetch("/api/library/status");
-  const d = await r.json();
-  if (!d.success) return;
-  const e = document.getElementById("lib-status");
-  if (!e) return;
-  if (d.running) {
-    const es = d.started_at ? ` — ${Math.floor((Date.now() / 1000 - d.started_at) / 60)}m` : "";
-    e.innerText = `${d.message || "Sync..."}${es}`;
-    e.className = "text-primary small";
-  } else {
-    e.innerText = d.message || "Idle";
     e.className = "text-muted small";
   }
 }
@@ -579,7 +559,6 @@ function updateActiveScans() {
 function updateAll() {
   pollPopularityStatus();
   pollNavidromeStatus();
-  pollLibraryStatus();
   pollEssentiaStatus();
   updateActiveScans();
   updateRecentScans();

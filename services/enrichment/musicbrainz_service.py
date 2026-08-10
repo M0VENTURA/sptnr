@@ -36,6 +36,7 @@ from helpers.normalization_service import (
     normalize_string,
     normalize_title_for_lookup,
     normalize_title_for_lucene_query,
+    normalize_title_for_mbid_match,
     strip_featured_artist,
     strip_single_release_suffix,
     edition_annotations_compatible,
@@ -44,6 +45,11 @@ from helpers.normalization_service import (
 logger = logging.getLogger(__name__)
 
 CACHE_FILE = "/tmp/mbid_cache.json" if os.path.exists("/tmp") else "mbid_cache.json"
+
+# Entries per batched MusicBrainz search (``lookup_album_metadata``).  Each
+# entry contributes a Lucene OR-group to the query — beyond ~20 the URL grows
+# unwieldy and the results get diluted across too many candidates.
+_MB_BATCH_CHUNK = 20
 
 
 # =============================================================================
@@ -114,6 +120,21 @@ def _artist_lookup_candidates(artist: str) -> list[str]:
 # MAIN SERVICE
 # =============================================================================
 
+# Process-wide shared MusicBrainz HTTP client (one throttle/rate-limit state,
+# one HTTP connection pool).  The per-track scan path constructs a
+# ``MusicBrainzService`` for every track — sharing the underlying client
+# avoids tens of thousands of throwaway sessions per scan.
+_SHARED_MB_CLIENT: MusicBrainzHttpClient | None = None
+
+
+def get_shared_mb_client() -> MusicBrainzHttpClient:
+    """Return the process-wide shared ``MusicBrainzHttpClient`` singleton."""
+    global _SHARED_MB_CLIENT
+    if _SHARED_MB_CLIENT is None:
+        _SHARED_MB_CLIENT = MusicBrainzHttpClient(enabled=True)
+    return _SHARED_MB_CLIENT
+
+
 class MusicBrainzService:
 
     def __init__(self, http_client: MusicBrainzHttpClient | None = None, enabled: bool = True):
@@ -173,8 +194,13 @@ class MusicBrainzService:
         # Punctuation in titles ("What's the Deal?") breaks Lucene phrase
         # matching — the recording index is tokenised without punctuation.
         # Normalise the query title the same way, and compare candidates
-        # against the canonical normalisation so both sides are
-        # punctuation-consistent.
+        # against a BRACKET-PRESERVING normalisation so both sides are
+        # punctuation-consistent *and* version-tagged.  Using
+        # ``normalize_title_for_lookup`` here stripped "(Live)"/"(Acoustic)"
+        # from BOTH the query title and the candidates, so a live bonus track
+        # tied with its studio version and resolved to whichever recording
+        # MusicBrainz returned first (usually the studio one) — leaking the
+        # studio MBID's ListenBrainz counts onto the alternate take.
         query_title = normalize_title_for_lucene_query(title)
         query = f'recording:"{escape_lucene_special_chars(query_title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
 
@@ -183,7 +209,7 @@ class MusicBrainzService:
 
             best_mbid = ""
             best_score = 0.0
-            norm_title = normalize_title_for_lookup(title)
+            norm_title = normalize_title_for_mbid_match(title)
 
             for rec in recordings:
                 sim = difflib.SequenceMatcher(
@@ -227,43 +253,128 @@ class MusicBrainzService:
             if not recording:
                 return {}
 
-            credits = recording.get("artist-credit", [])
-            rec_artist = ""
-            rec_artist_mbid = ""
-
-            if credits:
-                first = credits[0]
-                rec_artist = first.get("name") if isinstance(first, dict) else str(first)
-                if isinstance(first, dict):
-                    rec_artist_mbid = (
-                        (first.get("artist") or {}).get("id")
-                        if isinstance(first.get("artist"), dict)
-                        else ""
-                    ) or ""
-
-            release = (recording.get("releases") or [None])[0]
-
-            return {
-                "title": recording.get("title"),
-                "artist": rec_artist,
-                "artist_mbid": rec_artist_mbid or None,
-                "album": release.get("title") if release else None,
-                "album_artist": (
-                    release.get("artist-credit", [{}])[0].get("name")
-                    if release and release.get("artist-credit")
-                    else None
-                ),
-                "year": (
-                    int(release.get("date")[:4])
-                    if release and release.get("date")
-                    else None
-                ),
-                "recording_mbid": mbid,
-                "confidence": confidence,
-            }
+            return self._recording_to_metadata(recording, mbid, confidence)
 
         except Exception as e:
             logger.debug("[MB LOOKUP] %s", e, exc_info=True)
+            return {}
+
+    def _recording_to_metadata(self, recording: dict, mbid: str, confidence: float) -> Dict[str, Any]:
+        """Project a raw MusicBrainz recording document onto the metadata dict.
+
+        Shared by the per-track lookup (``lookup_recording_metadata``) and the
+        album batch (``lookup_album_metadata``) so both paths produce
+        identical output shapes.
+        """
+        credits = recording.get("artist-credit", [])
+        rec_artist = ""
+        rec_artist_mbid = ""
+
+        if credits:
+            first = credits[0]
+            rec_artist = first.get("name") if isinstance(first, dict) else str(first)
+            if isinstance(first, dict):
+                rec_artist_mbid = (
+                    (first.get("artist") or {}).get("id")
+                    if isinstance(first.get("artist"), dict)
+                    else ""
+                ) or ""
+
+        release = (recording.get("releases") or [None])[0]
+
+        return {
+            "title": recording.get("title"),
+            "artist": rec_artist,
+            "artist_mbid": rec_artist_mbid or None,
+            "album": release.get("title") if release else None,
+            "album_artist": (
+                release.get("artist-credit", [{}])[0].get("name")
+                if release and release.get("artist-credit")
+                else None
+            ),
+            "year": (
+                int(release.get("date")[:4])
+                if release and release.get("date")
+                else None
+            ),
+            "recording_mbid": mbid,
+            "confidence": confidence,
+        }
+
+    def lookup_album_metadata(
+        self,
+        entries: list[tuple[str, str]],
+        candidates_per_entry: int = 5,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Batch MusicBrainz metadata for many tracks in ONE search per chunk.
+
+        Builds a single Lucene OR query over ``(recording:"<title>" AND
+        artist:"<artist>")`` groups (chunked to keep URL length sane) and
+        scores each hit with the same bracket-preserving similarity used by
+        ``get_suggested_mbid``.  Metadata — album, year, artist credit,
+        recording MBID — comes straight from the search documents, replacing
+        the per-track (search + recording lookup) request pair with a single
+        batched search.
+
+        Returns ``{artist.lower()::title.lower(): metadata}`` for matched
+        entries only; unmatched entries fall back to the per-track lookup.
+        Resolved MBIDs are written to the persistent mbid cache so later
+        scans skip the search entirely.
+        """
+        if not self.enabled:
+            return {}
+        try:
+            unique = sorted(
+                {
+                    (str(t or "").strip(), str(a or "").strip())
+                    for t, a in (entries or [])
+                    if t and a
+                }
+            )
+            if not unique:
+                return {}
+
+            results: Dict[str, Dict[str, Any]] = {}
+            for chunk_start in range(0, len(unique), _MB_BATCH_CHUNK):
+                chunk = unique[chunk_start:chunk_start + _MB_BATCH_CHUNK]
+                groups = [
+                    (
+                        f'(recording:"{escape_lucene_special_chars(normalize_title_for_lucene_query(title))}" '
+                        f'AND artist:"{escape_lucene_special_chars(artist)}")'
+                    )
+                    for title, artist in chunk
+                ]
+                try:
+                    recordings = self.http.search_recordings(
+                        " OR ".join(groups),
+                        limit=min(100, len(chunk) * candidates_per_entry),
+                    )
+                except Exception:
+                    logger.debug("[MB_LOOKUP] Album batch search failed for chunk %d", chunk_start, exc_info=True)
+                    continue
+
+                for title, artist in chunk:
+                    norm_title = normalize_title_for_mbid_match(title)
+                    best = None
+                    best_score = 0.0
+                    for rec in recordings:
+                        sim = difflib.SequenceMatcher(
+                            None, norm_title, normalize_title_for_lookup(rec.get("title") or "")
+                        ).ratio()
+                        if sim > best_score:
+                            best_score = sim
+                            best = rec
+                    mbid = (best or {}).get("id", "")
+                    if not best or not mbid:
+                        continue
+                    confidence = round(best_score, 3)
+                    results[self._cache_key(title, artist)] = self._recording_to_metadata(best, mbid, confidence)
+                    self._mbid_cache[self._cache_key(title, artist)] = (mbid, confidence)
+                if self._mbid_cache:
+                    self._save_cache()
+            return results
+        except Exception:
+            logger.debug("[MB_LOOKUP] Album batch failed for %d entry(s)", len(entries or []), exc_info=True)
             return {}
 
     def is_single(self, title: str, artist: str, album_track_count: int | None = None) -> bool:

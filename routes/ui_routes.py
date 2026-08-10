@@ -161,6 +161,7 @@ async def setup():
     nav_users = cfg.get("navidrome_users", [])
     nav_first = nav_users[0] if nav_users else {}
     api = cfg.get("api_integrations", {})
+    dl = cfg.get("downloads", {})
 
     slskd_cfg = cfg.get("slskd", {})
     setup_defaults = {
@@ -189,6 +190,11 @@ async def setup():
         "essentia_enabled": bool(cfg.get("essentia", {}).get("script_path")),
         "essentia_tag_moods": cfg.get("essentia", {}).get("tag_moods", True),
         "essentia_tag_genres": cfg.get("essentia", {}).get("tag_genres", False),
+        # File management (naming + conversion)
+        "file_name_format": dl.get("file_name_format", ""),
+        "conversion_enabled": bool(dl.get("conversion", {}).get("enabled", False)),
+        "conversion_mode": dl.get("conversion", {}).get("mode", "flac_to_mp3"),
+        "conversion_bitrate": dl.get("conversion", {}).get("mp3_bitrate_kbps", 320),
     }
 
     # PG env vars

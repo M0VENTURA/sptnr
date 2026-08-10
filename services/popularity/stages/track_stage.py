@@ -17,12 +17,14 @@ import logging
 from typing import Any
 
 # API clients (updated versions)
-from api_clients.musicbrainz_http import MusicBrainzHttpClient
 from api_clients.lastfm import LastFmClient
 from api_clients.listenbrainz import ListenBrainzClient
 
 # Enrichment services (better metadata than raw API clients)
-from services.enrichment.musicbrainz_service import MusicBrainzService
+from services.enrichment.musicbrainz_service import (
+    MusicBrainzService,
+    get_shared_mb_client,
+)
 
 # Popularity
 from services.popularity.popularity_math import (
@@ -497,8 +499,23 @@ def process_track(
                         # OWN recording instead of matching the studio original.
                         if listenbrainz_listens == 0 and not recording_mbid and (raw_title or title) and artist:
                             try:
-                                from services.enrichment.musicbrainz_service import MusicBrainzService
-                                recording_mbid, _conf = MusicBrainzService().get_suggested_mbid(raw_title or title, artist)
+                                from services.enrichment.musicbrainz_service import (
+                                    MusicBrainzService,
+                                    get_shared_mb_client,
+                                )
+                                # Album-level batch pre-resolution first (one
+                                # batched search served the whole album's
+                                # MBIDs), then the per-track cached suggestion.
+                                _batch_mb = options.get("mb_batch_metadata") or {}
+                                _mb_entry = _batch_mb.get(
+                                    f"{artist.lower()}::{str(raw_title or title).lower()}"
+                                )
+                                if _mb_entry and _mb_entry.get("recording_mbid"):
+                                    recording_mbid = _mb_entry["recording_mbid"]
+                                else:
+                                    recording_mbid, _conf = MusicBrainzService(
+                                        http_client=get_shared_mb_client()
+                                    ).get_suggested_mbid(raw_title or title, artist)
                                 if recording_mbid:
                                     _lb_source = "mbid_resolved"
                                     update_payload["recording_mbid"] = recording_mbid
@@ -605,16 +622,39 @@ def process_track(
                         normalize_for_aggregation(str(t.get("title") or ""))
                         for t in (album_context.get("tracks") or [])
                     }
+                    # Deluxe/expanded albums pad the tracklist with
+                    # live/acoustic/demo/bonus cuts — their low listener
+                    # counts must not drag the core tracks' album-local z
+                    # down.  Drop every album track flagged for exclusion or
+                    # matching the live/alternate title patterns from the
+                    # distribution (same rule as the star-rating baseline).
+                    # A genuine LIVE album flags everything: fewer than 3 core
+                    # tracks then falls back to the full tracklist, so it is
+                    # still scored against itself (as before).
+                    _excluded_titles = {
+                        normalize_for_aggregation(str(t.get("title") or ""))
+                        for t in (album_context.get("tracks") or [])
+                        if bool(t.get("exclude_from_stats"))
+                        or bool(t.get("is_live"))
+                        or is_live_or_alternate_track_title(str(t.get("title") or ""))
+                    }
+                    _all_lf_vals = []
                     _lf_vals = []
                     for _k, _e in (prefetched_popularity or {}).items():
-                        if normalize_for_aggregation(str(_k or "")) not in _album_titles:
+                        _norm_k = normalize_for_aggregation(str(_k or ""))
+                        if _norm_k not in _album_titles:
                             continue
                         _lfv = int(_e.get("lastfm_listeners") or 0)
                         _lbv = int(_e.get("listenbrainz_listens") or 0)
                         if _lfv > 0:
-                            _lf_vals.append(_lfv)
-                        if _lfv > 0 and _lbv > 0:
-                            _album_lf_lb_pairs.append((_lfv, _lbv))
+                            _all_lf_vals.append(_lfv)
+                        if _norm_k not in _excluded_titles:
+                            if _lfv > 0:
+                                _lf_vals.append(_lfv)
+                            if _lfv > 0 and _lbv > 0:
+                                _album_lf_lb_pairs.append((_lfv, _lbv))
+                    if len(_lf_vals) < 3:
+                        _lf_vals = _all_lf_vals
                     if len(_lf_vals) >= 3:
                         _album_lf_listeners = _lf_vals
                 except Exception:
@@ -881,7 +921,7 @@ def process_track(
                     lastfm_listeners=int(lastfm_listeners or 0),
                     discogs_token=sd_discogs_token or None,
                     lastfm_client=sd_lastfm_client,
-                    mb_client=MusicBrainzHttpClient(),
+                    mb_client=get_shared_mb_client(),
                 )
             else:
                 sd_result = None
@@ -975,8 +1015,19 @@ def process_track(
                 if frozen_track or (_has_mbid and not _force_meta):
                     logger.debug("[track_stage] Skipping MB metadata lookup for %s (frozen or MBID already resolved)", track_id)
                 else:
-                    mb_service = MusicBrainzService()
-                    mb_data = mb_service.lookup_recording_metadata(title, artist)
+                    # Album-level batch pre-resolution first — the runner
+                    # resolved every fresh track of this album in one batched
+                    # search, so only batch misses pay the per-track
+                    # (search + recording lookup) request pair.
+                    _batch_mb = options.get("mb_batch_metadata") or {}
+                    mb_data = _batch_mb.get(f"{artist.lower()}::{title.lower()}")
+                    if not mb_data:
+                        from services.enrichment.musicbrainz_service import (
+                            MusicBrainzService,
+                            get_shared_mb_client,
+                        )
+                        mb_service = MusicBrainzService(http_client=get_shared_mb_client())
+                        mb_data = mb_service.lookup_recording_metadata(title, artist)
                     if not mb_data:
                         logger.debug(
                             "[track_stage] MB metadata lookup returned nothing for %s (%s - %s)",
@@ -1071,7 +1122,7 @@ def process_track(
             # Also fetch genre/tag data from MusicBrainz via genre-aware endpoint
             if title and artist and (not _has_genres or _force_meta):
                 try:
-                    mb_raw = MusicBrainzHttpClient()
+                    mb_raw = get_shared_mb_client()
                     recs = mb_raw.search_recordings_with_genres(
                         f'artist:"{artist.replace(chr(34), "")}" AND recording:"{title.replace(chr(34), "")}"',
                         limit=3,

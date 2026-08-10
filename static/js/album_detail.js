@@ -1888,14 +1888,35 @@ var _pageData = window._pageData || {};
         }
 
         // Reorder key sections to Overview -> Similar Artists -> Edit Album.
+        // The similar-artists card renders AFTER the edit/overview row; move it
+        // INTO the row between the two columns (wrapped in a full-width column)
+        // so the page reads Overview -> Similar Artists -> Edit Album.  The old
+        // approach moved the card's ORIGINAL wrapper before the row, which
+        // crashed with a HierarchyRequestError — the wrapper is an ancestor of
+        // the row, and insertBefore cannot move an ancestor before its own
+        // descendant.
         const overview = document.getElementById('album-overview-section');
         const similar = document.getElementById('album-similar-section');
         const edit = document.getElementById('album-information-section');
         if (overview && similar && edit) {
             const row = edit.closest('.row');
-            if (row) {
-                const similarWrapper = similar.parentElement;
-                row.parentElement.insertBefore(similarWrapper, row);
+            const editCol = edit.closest('.col-12');
+            if (row && !row.contains(similar)) {
+                const similarWrap = document.createElement('div');
+                similarWrap.className = 'col-12 order-2';
+                row.insertBefore(similarWrap, editCol || row.lastElementChild);
+                similarWrap.appendChild(similar);
+                // Keep the edit column after the new section regardless of the
+                // original col order classes (overview stays order-1).
+                if (editCol) {
+                    editCol.classList.add('order-3');
+                }
+                // The similar card now lives inside the album edit <form> —
+                // any button without an explicit type would default to
+                // "submit" and POST the form on click.
+                similarWrap.querySelectorAll('button').forEach(function (btn) {
+                    if (!btn.type) btn.type = 'button';
+                });
             }
         }
 
@@ -3122,7 +3143,7 @@ var _pageData = window._pageData || {};
                             <h6 class="card-title mb-2 fw-bold text-truncate" title="${escapeHtml(artist.name)}">${escapeHtml(artist.name)}</h6>
                             <div class="mb-2">${sourceBadge(artist)}</div>
                             <div class="btn-group-vertical btn-group-sm mt-auto" role="group">
-                                <button class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(null, '${encodeURIComponent(artist.name)}', '')" title="Search MusicBrainz for releases">
+                                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(null, '${encodeURIComponent(artist.name)}', '')" title="Search MusicBrainz for releases">
                                     <i class="bi bi-download"></i> Find Releases
                                 </button>
                                 <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
@@ -3180,7 +3201,7 @@ var _pageData = window._pageData || {};
          * 2. Move files to new locations
          * 3. Update database entries
          */
-        if (!confirm(`Are you sure you want to rename all files in "${album}" by ${artist}?\n\nFiles will be renamed based on current metadata and organized into:\n/music/<album_artist>/<year> - <album>/\n\nThis operation cannot be undone.`)) {
+        if (!confirm(`Are you sure you want to rename all files in "${album}" by ${artist}?\n\nFiles will be renamed and organized according to the "Default Naming Convention" in Settings → File Management.\n\nThis operation cannot be undone.`)) {
             return;
         }
 

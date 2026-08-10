@@ -155,6 +155,14 @@ function buildConfigObject() {
 
   return {
     navidrome_users: navidrome_users,
+    matching: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.matching) || {},
+      {
+        fuzzy_threshold: parseFloat(getValue('matching_fuzzy_threshold', '0.80')) || 0.80,
+        score_threshold: parseFloat(getValue('matching_score_threshold', '0.60')) || 0.60
+      }
+    ),
     logging: {
       level: getValue('log_level', 'info').toLowerCase()
     },
@@ -165,11 +173,80 @@ function buildConfigObject() {
       password: getValue('qbit_password'),
       downloads_folder: getValue('qbit_downloads_folder')
     },
-    slskd: {
-      enabled: getChecked('slskd_enabled'),
-      web_url: getValue('slskd_web_url'),
-      api_key: getValue('slskd_api_key')
-    },
+    slskd: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.slskd) || {},
+      {
+        enabled: getChecked('slskd_enabled'),
+        web_url: getValue('slskd_web_url'),
+        api_key: getValue('slskd_api_key'),
+        timeouts: Object.assign(
+          {},
+          ((window.pageConfig && window.pageConfig.slskd && window.pageConfig.slskd.timeouts) || {}),
+          {
+            min_retry_delay_minutes: parseInt(getValue('slskd_min_retry_delay', '60')) || 60,
+            long_retry_delay_minutes: parseInt(getValue('slskd_long_retry_delay', '1440')) || 1440,
+            remotely_queued_timeout_minutes: parseInt(getValue('slskd_remotely_queued_timeout', '60')) || 60,
+            active_state_timeout_minutes: parseInt(getValue('slskd_active_timeout', '240')) || 240,
+            inter_item_delay_seconds: parseInt(getValue('slskd_inter_item_delay', '5')) || 5
+          }
+        )
+      }
+    ),
+    wikidata: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.wikidata) || {},
+      {
+        musician_terms: getValue('wikidata_musician_terms', '')
+          .split(',')
+          .map(term => term.trim())
+          .filter(Boolean)
+      }
+    ),
+    queue: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.queue) || {},
+      {
+        matching: Object.assign(
+          {},
+          ((window.pageConfig && window.pageConfig.queue && window.pageConfig.queue.matching) || {}),
+          {
+            threshold: parseFloat(getValue('queue_match_threshold', '0.65')) || 0.65,
+            partial_match: parseFloat(getValue('queue_match_partial', '0.7')) || 0.7,
+            strict_duration_sec: parseInt(getValue('queue_strict_duration', '2')) || 2,
+            tolerance_duration_sec: parseInt(getValue('queue_tolerance_duration', '5')) || 5,
+            detect_live_tracks: getChecked('queue_detect_live', true),
+            detect_remix_tracks: getChecked('queue_detect_remix', true),
+            detect_compilations: getChecked('queue_detect_compilations', true)
+          }
+        )
+      }
+    ),
+    lastfm: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.lastfm) || {},
+      {
+        min_artist_plays: parseInt(getValue('lastfm_min_artist_plays', '20')) || 20,
+        min_similarity_score: parseFloat(getValue('lastfm_min_similarity', '0.46')) || 0.46,
+        max_similar_per_artist: parseInt(getValue('lastfm_max_similar', '5')) || 5,
+        max_albums_per_artist: parseInt(getValue('lastfm_max_albums', '5')) || 5,
+        recent_months: parseInt(getValue('lastfm_recent_months', '3')) || 3,
+        cache_ttl_hours: parseInt(getValue('lastfm_cache_ttl', '24')) || 24,
+        max_retries: parseInt(getValue('lastfm_max_retries', '3')) || 3,
+        retry_backoff: parseFloat(getValue('lastfm_retry_backoff', '1.5')) || 1.5,
+        rate_limit_delay: parseFloat(getValue('lastfm_rate_limit', '0.5')) || 0.5
+      }
+    ),
+    filesystem: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.filesystem) || {},
+      {
+        audio_formats: getValue('filesystem_audio_formats', '.mp3, .flac, .m4a, .ogg, .wav, .aac, .wma')
+          .split(',')
+          .map(ext => ext.trim())
+          .filter(Boolean)
+      }
+    ),
     playlists: {
       essential_name_template: getValue('playlists_essential_name_template', '{artist} - Essential Collection')
     },
@@ -238,7 +315,7 @@ function buildConfigObject() {
       {
         zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
         zscore_medium_threshold: parseFloat(getValue('zscore_medium_threshold', '0.6')) || 0.6,
-        standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75,
+        star_epsilon_score_points: parseFloat(getValue('star_epsilon_score_points', '0.5')) || 0.5,
         album_zscore_threshold: parseFloat(getValue('sd_album_zscore', '0.8')) || 0.8,
         artist_zscore_threshold: parseFloat(getValue('sd_artist_zscore', '2.2')) || 2.2,
         artist_top_percentile: parseFloat(getValue('sd_artist_pct', '0.10')) || 0.10,
@@ -271,15 +348,6 @@ function buildConfigObject() {
         }
       }
     ),
-    weights: Object.assign(
-      {},
-      (window.pageConfig && window.pageConfig.weights) || {},
-      {
-        lastfm: parseFloat(getValue('weight_lastfm', '0.55')) || 0.55,
-        listenbrainz: parseFloat(getValue('weight_listenbrainz', '0.35')) || 0.35,
-        age: parseFloat(getValue('weight_age', '0.10')) || 0.10
-      }
-    ),
     popularity: Object.assign(
       {},
       (window.pageConfig && window.pageConfig.popularity) || {},
@@ -301,7 +369,21 @@ function buildConfigObject() {
           audiodb: parseFloat(getValue('genre_weight_audiodb', '0.20')) || 0.20,
           essentia: parseFloat(getValue('genre_weight_essentia', '0.20')) || 0.20,
           lastfm: parseFloat(getValue('genre_weight_lastfm', '0.10')) || 0.10
-        }
+        },
+        synonyms: (() => {
+          const synonyms = {};
+          getValue('genre_synonyms', '').split('\n').forEach(line => {
+            const colonIndex = line.indexOf(':');
+            if (colonIndex > 0) {
+              const from = line.slice(0, colonIndex).trim().toLowerCase();
+              const to = line.slice(colonIndex + 1).trim().toLowerCase();
+              if (from && to) {
+                synonyms[from] = to;
+              }
+            }
+          });
+          return synonyms;
+        })()
       }
     ),
     api_integrations: {

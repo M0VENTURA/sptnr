@@ -39,6 +39,7 @@
     <div class="step-dot" data-step="2"></div>
     <div class="step-dot" data-step="3"></div>
     <div class="step-dot" data-step="4"></div>
+    <div class="step-dot" data-step="5"></div>
   </div>
 
   <!-- Step 1: Navidrome + Database -->
@@ -166,12 +167,60 @@
     </div>
     <div class="d-flex justify-content-between">
       <button class="btn btn-outline-secondary" onclick="goToStep(2)"><i class="bi bi-arrow-left"></i> Back</button>
-      <button class="btn btn-primary" onclick="goToNextStep(4,this)">Skip & Finish <i class="bi bi-arrow-right"></i></button>
+      <button class="btn btn-primary" onclick="goToNextStep(4,this)">Skip & Continue <i class="bi bi-arrow-right"></i></button>
     </div>
   </div>
 
-  <!-- Step 4: Summary & Save -->
+  <!-- Step 4: File Management (optional) -->
   <div class="step-card d-none" id="step4">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="badge bg-secondary rounded-pill">4</span>
+      <h5 class="mb-0">File Management</h5>
+      <span class="text-muted small">(optional — sensible defaults provided)</span>
+    </div>
+    <p class="text-muted small mb-3">How files are organized into your music library when downloaded or renamed. You can change this later in Settings → File Management.</p>
+    <div class="border rounded p-3 mb-3">
+      <label class="form-label"><strong>Default Naming Convention</strong></label>
+      <input type="text" class="form-control font-monospace" id="setupFileNameFormat" placeholder="{album_artist}/{year} - {album}/{track_number}. {artist} - {title}" value="{{ defaults.get('file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}') }}">
+      <div class="row g-2 mt-1">
+        <div class="col-sm-6 small text-muted"><code>{track_number}</code> — 2-digit track number</div>
+        <div class="col-sm-6 small text-muted"><code>{album_artist}</code> — album artist name</div>
+        <div class="col-sm-6 small text-muted"><code>{artist}</code> — track artist name</div>
+        <div class="col-sm-6 small text-muted"><code>{title}</code> — track title</div>
+        <div class="col-sm-6 small text-muted"><code>{album}</code> — album title</div>
+        <div class="col-sm-6 small text-muted"><code>{year}</code> — release year</div>
+      </div>
+    </div>
+    <div class="border rounded p-3 mb-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0"><i class="bi bi-arrow-repeat"></i> File Conversion</h6>
+        <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="setupConversionEnabled" onchange="toggleConversionOptions()"{% if defaults.get('conversion_enabled') %} checked{% endif %}><label class="form-check-label small" for="setupConversionEnabled">Enable</label></div>
+      </div>
+      <div id="setupConversionOptions" class="d-none">
+        <div class="row g-2">
+          <div class="col-sm-6">
+            <label class="form-label form-label-sm">Mode</label>
+            <select class="form-select form-select-sm" id="setupConversionMode">
+              <option value="flac_to_mp3" {% if defaults.get('conversion_mode', 'flac_to_mp3') == 'flac_to_mp3' %}selected{% endif %}>FLAC to MP3</option>
+              <option value="none" {% if defaults.get('conversion_mode', 'flac_to_mp3') == 'none' %}selected{% endif %}>Disabled (Move as-is)</option>
+            </select>
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label form-label-sm">MP3 Bitrate (kbps)</label>
+            <input type="number" class="form-control form-control-sm" id="setupConversionBitrate" min="96" max="320" step="1" value="{{ defaults.get('conversion_bitrate', 320) }}">
+          </div>
+        </div>
+        <small class="form-text text-muted mt-2 d-block">FLAC files are converted to MP3 when imported or renamed. Metadata and cover art are carried over during conversion.</small>
+      </div>
+    </div>
+    <div class="d-flex justify-content-between">
+      <button class="btn btn-outline-secondary" onclick="goToStep(3)"><i class="bi bi-arrow-left"></i> Back</button>
+      <button class="btn btn-primary" onclick="goToNextStep(5,this)">Skip & Finish <i class="bi bi-arrow-right"></i></button>
+    </div>
+  </div>
+
+  <!-- Step 5: Summary & Save -->
+  <div class="step-card d-none" id="step5">
     <div class="text-center mb-4">
       <i class="bi bi-check-circle" style="font-size:3rem;color:var(--spotify-green);"></i>
       <h4 class="mt-2">You're All Set!</h4>
@@ -179,9 +228,10 @@
     <div class="border rounded p-3 mb-2"><h6><i class="bi bi-server"></i> Navidrome</h6><p class="mb-0 small" id="summaryNavidrome">-</p></div>
     <div class="border rounded p-3 mb-2"><h6><i class="bi bi-database"></i> Database</h6><p class="mb-0 small text-muted" id="summaryDatabase">SQLite (first-run mode)</p></div>
     <div class="border rounded p-3 mb-2"><h6><i class="bi bi-plug"></i> APIs</h6><p class="mb-0 small text-muted" id="summaryApis">None enabled</p></div>
-    <div class="border rounded p-3 mb-3"><h6><i class="bi bi-cpu"></i> Essentia</h6><p class="mb-0 small text-muted" id="summaryEssentia">Not enabled</p></div>
+    <div class="border rounded p-3 mb-2"><h6><i class="bi bi-cpu"></i> Essentia</h6><p class="mb-0 small text-muted" id="summaryEssentia">Not enabled</p></div>
+    <div class="border rounded p-3 mb-3"><h6><i class="bi bi-folder-symlink"></i> File Management</h6><p class="mb-0 small text-muted" id="summaryFiles">-</p></div>
     <div class="d-flex justify-content-between">
-      <button class="btn btn-outline-secondary" onclick="goToStep(3)"><i class="bi bi-arrow-left"></i> Back</button>
+      <button class="btn btn-outline-secondary" onclick="goToStep(4)"><i class="bi bi-arrow-left"></i> Back</button>
       <button class="btn btn-primary btn-lg" onclick="saveSetup()"><i class="bi bi-check-circle"></i> Save & Go to Dashboard</button>
     </div>
   </div>
@@ -209,7 +259,7 @@ async function testConnection() {
   }catch(e){status.textContent='Network error: '+e.message;status.className='ms-2 small text-danger';}
   btn.disabled=false;
 }
-function goToStep(n) { for(let i=1;i<=4;i++) document.getElementById('step'+i).classList.toggle('d-none',i!==n); document.querySelectorAll('.step-dot').forEach(d=>{const s=parseInt(d.dataset.step);d.classList.toggle('active',s===n);d.classList.toggle('done',s<n);}); if(n===4) updateSummary(); }
+function goToStep(n) { for(let i=1;i<=5;i++) document.getElementById('step'+i).classList.toggle('d-none',i!==n); document.querySelectorAll('.step-dot').forEach(d=>{const s=parseInt(d.dataset.step);d.classList.toggle('active',s===n);d.classList.toggle('done',s<n);}); if(n===5) updateSummary(); }
 
 /** Build a config object from the current form state (all steps). */
 function buildSetupConfig() {
@@ -218,6 +268,7 @@ function buildSetupConfig() {
   const config={navidrome_users:[{user:document.getElementById('navUser').value,display_name:document.getElementById('navUser').value,base_url:document.getElementById('navUrl').value,pass:document.getElementById('navPass').value,listenbrainz_user_token:lbToken}],api_integrations:{spotify:{enabled:document.getElementById('spEnabled').checked,client_id:document.getElementById('spClientId').value,client_secret:document.getElementById('spClientSecret').value},lastfm:{enabled:document.getElementById('lfmEnabled').checked,api_key:document.getElementById('lfmApiKey').value},discogs:{enabled:document.getElementById('dgEnabled').checked,token:document.getElementById('dgToken').value},musicbrainz:{enabled:true},listenbrainz:{enabled:document.getElementById('lbEnabled').checked},audiodb:{enabled:false},google:{enabled:false},youtube:{enabled:false}},slskd:{enabled:document.getElementById('slskdEnabled').checked,web_url:document.getElementById('slskdUrl').value,api_key:document.getElementById('slskdApiKey').value}};
   if(pgHost){config.PG_HOST=pgHost;config.PG_PORT=document.getElementById('pgPort').value.trim()||'5432';config.PG_USER=document.getElementById('pgUser').value.trim()||'popularr';config.PG_PASSWORD=document.getElementById('pgPass').value;config.PG_DATABASE=document.getElementById('pgDb').value.trim()||'popularr';}
   if(document.getElementById('essentiaEnabled').checked) config.essentia={script_path:'/opt/Essentia-to-Metadata/tag_music.py',models_dir:'/opt/essentia_models',mood_threshold:0.005,per_file_timeout:300,tag_moods:document.getElementById('essentiaMoods').checked,tag_genres:document.getElementById('essentiaGenres').checked,parse_json_features:true,delete_json_after_import:true};
+  config.downloads={file_name_format:document.getElementById('setupFileNameFormat').value.trim()||'{album_artist}/{year} - {album}/{track_number}. {artist} - {title}',conversion:{enabled:document.getElementById('setupConversionEnabled').checked,mode:document.getElementById('setupConversionMode').value,mp3_bitrate_kbps:parseInt(document.getElementById('setupConversionBitrate').value)||320,original_handling:'move_to_original',original_subfolder:'Original'}};
   return config;
 }
 
@@ -236,6 +287,7 @@ async function goToNextStep(n, btn) {
   goToStep(n);
 }
 function toggleEssentiaOptions() { const e=document.getElementById('essentiaEnabled').checked; document.getElementById('essentiaOptions').classList.toggle('d-none',!e); if(e) checkEssentiaModels(); }
+function toggleConversionOptions() { document.getElementById('setupConversionOptions').classList.toggle('d-none',!document.getElementById('setupConversionEnabled').checked); }
 async function checkEssentiaModels() { try{const r=await fetch('/api/essentia/download-status');const d=await r.json();const btn=document.querySelector('#essentiaOptions .btn-outline-primary');const status=document.getElementById('essentiaDownloadStatus');if(d.status==='installed'){if(btn){btn.disabled=true;btn.innerHTML='<i class=\"bi bi-check-circle\"></i> Models Installed';btn.classList.remove('btn-outline-primary');btn.classList.add('btn-outline-success');}if(status)status.textContent='✅ '+d.file_count+' model files ready';}else{if(btn){btn.disabled=false;btn.innerHTML='<i class=\"bi bi-cloud-download\"></i> Download Models (~87 MB)';btn.classList.remove('btn-outline-success');btn.classList.add('btn-outline-primary');}}}catch(e){}}
 async function downloadEssentiaModels() {
   const btn=event.target, status=document.getElementById('essentiaDownloadStatus'), prog=document.getElementById('essentiaProgress'), bar=document.getElementById('essentiaProgressBar');
@@ -257,7 +309,7 @@ async function downloadEssentiaModels() {
 }
 
 // Check Essentia model status on page load if Essentia is enabled
-document.addEventListener('DOMContentLoaded', function() { if(document.getElementById('essentiaEnabled').checked) toggleEssentiaOptions(); });
+document.addEventListener('DOMContentLoaded', function() { if(document.getElementById('essentiaEnabled').checked) toggleEssentiaOptions(); if(document.getElementById('setupConversionEnabled').checked) toggleConversionOptions(); });
 function updateSummary() {
   document.getElementById('summaryNavidrome').innerHTML='<strong>'+(document.getElementById('navUser').value||'username')+'</strong> @ '+(document.getElementById('navUrl').value||'not set');
   const pgHost=document.getElementById('pgHost').value.trim();
@@ -265,9 +317,11 @@ function updateSummary() {
   const apis=[]; if(document.getElementById('spEnabled').checked) apis.push('Spotify'); if(document.getElementById('lfmEnabled').checked) apis.push('Last.fm'); if(document.getElementById('dgEnabled').checked) apis.push('Discogs'); if(document.getElementById('lbEnabled').checked) apis.push('ListenBrainz'); if(document.getElementById('slskdEnabled').checked) apis.push('Soulseek');
   document.getElementById('summaryApis').textContent=apis.length?apis.join(', '):'None enabled';
   document.getElementById('summaryEssentia').textContent=document.getElementById('essentiaEnabled').checked?'Will be enabled':'Not enabled';
+  const fmt=document.getElementById('setupFileNameFormat').value.trim()||'{album_artist}/{year} - {album}/{track_number}. {artist} - {title}';
+  document.getElementById('summaryFiles').innerHTML='<code>'+fmt+'</code> — '+(document.getElementById('setupConversionEnabled').checked?'converts FLAC → MP3 ('+document.getElementById('setupConversionBitrate').value+'kbps)':'no conversion');
 }
 async function saveSetup() {
-  const btn=document.querySelector('#step4 .btn-primary'); btn.disabled=true; btn.innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+  const btn=document.querySelector('#step5 .btn-primary'); btn.disabled=true; btn.innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
   const config=buildSetupConfig();
   try {
     const r=await fetch('/api/setup/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});

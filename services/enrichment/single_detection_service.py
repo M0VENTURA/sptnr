@@ -19,14 +19,13 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
 from datetime import datetime
-from statistics import mean as stat_mean
 from statistics import median as stat_median
-from statistics import stdev as stat_stdev
 from typing import Any
+
+from services.popularity.popularity_zscore import composite_listener_z
 
 from helpers.normalization_service import (
     strip_single_release_suffix,
@@ -223,71 +222,50 @@ def calculate_z_score_strict(popularity: float, pop_median: float, pop_mad_scale
     return (popularity - pop_median) / pop_mad_scaled
 
 
-def _log_listener_z(count: float, counts: list[float]) -> float:
-    """Log-scaled z-score of a track's listener/listen count within its album.
-
-    Listener counts are heavily right-skewed (one hit dominates), so the
-    z-score is computed over ``log1p``-transformed values.  This is the raw
-    "standout within the album" signal that blended/decay-adjusted popularity
-    scores compress.  Zero-variance distributions (all counts identical, or
-    fewer than 3 positive counts) carry no outlier signal — return 0.0.
-    """
-    logs = [math.log1p(float(c)) for c in (counts or []) if float(c) > 0]
-    if len(logs) < 3 or not any(logs):
-        return 0.0
-    mu = stat_mean(logs)
-    sigma = stat_stdev(logs) if len(logs) > 1 else 1.0
-    if not sigma or sigma <= 0:
-        return 0.0
-    return (math.log1p(float(count)) - mu) / sigma
-
-
-def _composite_album_z(
-    lastfm_listeners: int | None,
-    listenbrainz_listens: int | None,
-    artist: str,
-    album: str | None,
-    album_lf_listeners: list[float] | None = None,
-    album_lb_listens: list[float] | None = None,
-) -> float:
-    """Album-local composite z-score from the track's raw LF/LB counts.
-
-    ``z_composite = (w_LF * z_LF + w_LB * z_LB) / (w_LF + w_LB)`` where each
-    provider z is the track's log-scaled z within ITS ALBUM'S OWN tracklist
-    distribution (never the artist catalogue).  When only one provider has
-    usable data the composite collapses to that provider's z (the "LB
-    invalid/bypassed → score on Last.fm only" behaviour).
-
-    Caller-supplied album distributions are used when provided; otherwise the
-    album's stored listener counts are loaded from the DB (keyed by the album
-    artist, matching every other popularity-stats lookup).  Returns 0.0 when
-    there is not enough album data for a meaningful signal.
-    """
+def _parse_release_year(value) -> int | None:
+    """Best-effort 4-digit year from a ``YYYY-MM-DD`` / ``YYYY`` release value."""
+    if not value:
+        return None
     try:
-        if album and (album_lf_listeners is None or album_lb_listens is None):
-            from services.popularity.popularity_stats_service import calculate_album_listener_stats
-            _db_lf, _db_lb = calculate_album_listener_stats(None, artist, album)
-            if album_lf_listeners is None:
-                album_lf_listeners = _db_lf
-            if album_lb_listens is None:
-                album_lb_listens = _db_lb
-        z_lf = _log_listener_z(float(lastfm_listeners or 0), album_lf_listeners or [])
-        z_lb = _log_listener_z(float(listenbrainz_listens or 0), album_lb_listens or [])
-        if not z_lf and not z_lb:
-            return 0.0
-        if not z_lb:
-            return z_lf
-        if not z_lf:
-            return z_lb
-        from services.popularity.popularity_config import resolve_weights
-        w_lf, w_lb, _ = resolve_weights()
-        total = w_lf + w_lb
-        if total <= 0:
-            return z_lf
-        return (w_lf * z_lf + w_lb * z_lb) / total
-    except Exception as exc:
-        logger.debug("Composite album z failed for %s / %s: %s", artist, album, exc)
-        return 0.0
+        match = re.search(r"(?<!\d)(\d{4})(?!\d)", str(value).strip())
+        return int(match.group(1)) if match else None
+    except Exception:
+        return None
+
+
+def _album_release_year(artist: str, album: str | None) -> int | None:
+    """Earliest stored release year for an album (tracks table).
+
+    The album's own release metadata — the reference the single-before-album
+    check compares the matched single release date against.  ``None`` when the
+    album has no stored year (no DB access / still scanning).
+    """
+    if not album:
+        return None
+    try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session
+        with db_session() as session:
+            row = session.execute(
+                _text(
+                    "SELECT MIN(release_year) AS y FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                    "AND album = :album AND release_year IS NOT NULL"
+                ),
+                {"artist": artist, "album": album},
+            ).first()
+            year = row._mapping.get("y") if row else None
+        return int(year) if year else None
+    except Exception:
+        return None
+
+
+# A commercial single is typically issued BEFORE its parent album — the
+# matched Discogs/MB release year leads the album's stored release year.
+# The release-date signal only fires when that lead is unambiguous (at least
+# this many years), so a same-year "album track with a single release match"
+# never injects a phantom corroboration.
+SINGLE_RELEASE_LEAD_YEARS = 1
 
 
 def get_dynamic_z_threshold(track_count: int, release_year: int | None = None, is_compilation: bool = False) -> float:
@@ -887,7 +865,10 @@ def detect_single_for_track(
             if artist_vals:
                 art_med = stat_median(artist_vals)
                 art_mad = stat_median([abs(v - art_med) for v in artist_vals]) if artist_vals else 0
-                art_spread = max(art_mad * 1.4826, 10.0)
+                # Adaptive spread floor (same rule as popularity_math): a
+                # uniform high-scoring catalogue must not amplify tiny score
+                # gaps into large z-swings.
+                art_spread = max(art_mad * 1.4826, 10.0, 0.10 * art_med)
                 artist_z = (popularity - art_med) / art_spread if art_spread > 0 else 0
 
             if album:
@@ -895,7 +876,7 @@ def detect_single_for_track(
                 if album_vals:
                     alb_med = stat_median(album_vals)
                     alb_mad = stat_median([abs(v - alb_med) for v in album_vals]) if album_vals else 0
-                    alb_spread = max(alb_mad * 1.4826, 10.0)
+                    alb_spread = max(alb_mad * 1.4826, 10.0, 0.10 * alb_med)
                     album_z = (popularity - alb_med) / alb_spread if alb_spread > 0 else 0
         except Exception as exc:
             logger.debug("Z-score calculation failed: %s", exc)
@@ -910,7 +891,7 @@ def detect_single_for_track(
     # popularity-z for the single verdict and the ``z_standout`` gate.
     z_composite = 0.0
     if popularity is not None and popularity > 0 and not is_compilation:
-        z_composite = _composite_album_z(
+        z_composite = composite_listener_z(
             lastfm_listeners,
             listenbrainz_listens,
             _stats_artist,
@@ -1050,13 +1031,25 @@ def detect_single_for_track(
         if lastfm_confirmed:
             reasons.append("lastfm_confirmed")
 
-    # Single release date proximity
+    # Single release date proximity (TRUE check): a commercial single is
+    # typically issued before its parent album, so the matched release year
+    # LEADING the album's stored release year by at least
+    # ``SINGLE_RELEASE_LEAD_YEARS`` is genuine corroborating evidence.
+    # Previously this fired UNCONDITIONALLY whenever Discogs/MusicBrainz
+    # confirmed the track — injecting a phantom +1 ``medium_sources`` that
+    # distorted corroboration counts (the signal was derived from the very
+    # match it claimed to back).
     if discogs_confirmed or musicbrainz_confirmed:
-        release_date = mr.get("metadata", {}).get("release_date") or dr.get("metadata", {}).get("release_year")
-        if release_date and album:
-            from services.popularity.popularity_stats_service import calculate_album_stats
-            _, _, vals = calculate_album_stats(None, artist, album)
-            # not used directly; just signal
+        single_release_year = _parse_release_year(
+            mr.get("metadata", {}).get("release_date")
+            or dr.get("metadata", {}).get("release_year")
+        )
+        album_release_year = _album_release_year(artist, album)
+        if (
+            single_release_year
+            and album_release_year
+            and (album_release_year - single_release_year) >= SINGLE_RELEASE_LEAD_YEARS
+        ):
             single_release_date_match = True
             reasons.append("release_date_match")
 
@@ -1180,17 +1173,17 @@ def detect_single_for_track(
     # with no real sources (Tehran/Crossroads, z≈1.2) unflagged.
     #
     # Independent medium corroboration for a sub-100% Discogs match: the
-    # release-date signal is DERIVED from the Discogs/MusicBrainz match itself
-    # (not independent evidence), so it must not count as the "second medium
-    # confidence method" that promotes Discogs to high.
+    # release-date signal is now genuinely INDEPENDENT evidence (the album's
+    # STORED release year vs the matched release date — the album year comes
+    # from the tracks table, not from the Discogs match itself), so it
+    # legitimately counts toward the "second medium confidence method" that
+    # promotes Discogs to high.
     _discogs_med_slot = 1 if (
         discogs_confirmed
         and _levels.get("discogs", "high") != "low"
         and not _discogs_full_confidence
     ) else 0
-    _corroborating_medium = (
-        medium_sources - _discogs_med_slot - (1 if single_release_date_match else 0)
-    )
+    _corroborating_medium = medium_sources - _discogs_med_slot
 
     final = determine_final_status(
         discogs=discogs_confirmed, musicbrainz=musicbrainz_confirmed,

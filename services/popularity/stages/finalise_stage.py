@@ -21,7 +21,8 @@ from typing import Any
 from sqlalchemy import text
 from db.engine import db_session
 from db.utils import get_db_connection, row_get
-from services.popularity.popularity_math import calculate_track_zscore
+from services.popularity.popularity_math import calculate_robust_zscore
+from services.popularity.popularity_zscore import composite_listener_z
 from services.popularity.standout_service import STANDOUT_CONFIG
 from services.catalog.album_classification_service import is_live_or_alternate_track_title
 
@@ -49,82 +50,56 @@ STAR_4_ALBUM_Z = STANDOUT_CONFIG.get("star_4", {}).get("album_z", 0.5)
 STAR_3_ALBUM_Z = STANDOUT_CONFIG.get("star_3", {}).get("album_z", -0.5)
 STAR_2_ALBUM_Z = STANDOUT_CONFIG.get("star_2", {}).get("album_z", -1.2)
 
+# Epsilon-delta closeness buffer, in SCORE POINTS on the 0-100 scale: a track
+# within this of a tier boundary shares the HIGHER tier.  Hard cutoffs split
+# virtually identical tracks across the boundary (e.g. STRANGER at 54.1 → 5★
+# while A VIEW FROM ABOVE at 53.9 → 4★) — a single-scrobble difference decides
+# the rating.  The buffer is converted to z-units per-album via the album's
+# robust spread (``_star_epsilon_z``), so it means the same "0.5-point gap"
+# on every album regardless of how tight the distribution is, and — with the
+# robust spread floored at 8.0 — never widens a band far enough to overlap
+# the neighbouring tier, preserving a distinct gap to the tier below.
+# Tunable via config ``single_detection.star_epsilon_score_points``.
+STAR_EPSILON_SCORE_POINTS = float(STANDOUT_CONFIG.get("star_epsilon_score_points", 0.5) or 0.5)
+
 
 # ---------------------------------------------------------------------------
 # Standout detection helpers
 # ---------------------------------------------------------------------------
 
-def _compute_album_z(score: float, scores: list[float]) -> float:
-    if len(scores) < 3 or not any(scores):
-        return 0.0
-    mu = mean(scores)
-    sigma = stdev(scores) if len(scores) > 1 else 1.0
-    return calculate_track_zscore(score, mu, sigma)
+def _compute_album_z(score: float, scores: list[float]) -> tuple[float, float]:
+    """Robust album z (median + scaled-MAD) — and the spread used.
 
-
-def _compute_artist_z(score: float, artist_scores: list[float]) -> float:
-    if len(artist_scores) < 5 or not any(artist_scores):
-        return 0.0
-    mu = mean(artist_scores)
-    sigma = stdev(artist_scores) if len(artist_scores) > 1 else 1.0
-    return calculate_track_zscore(score, mu, sigma)
-
-
-def _listener_z(count: float, counts: list[float]) -> float:
-    """Log-scaled z-score of a track's listener count within its album.
-
-    Listener counts are heavily right-skewed (one hit dominates), so the
-    z-score is computed over ``log1p``-transformed values. This is the "raw"
-    standout signal from Last.fm/ListenBrainz that the blended popularity
-    score compresses — a value >= 1.0 means the track is a clear listener
-    outlier relative to its own album.
-
-    Zero-variance distributions (an album whose positive counts are all the
-    same value, e.g. a tracklist fallback that resolved every track to the
-    same count) carry no outlier signal — return 0.0 instead of dividing by
-    zero, which would crash the whole album's star-rating pass.
+    Matches ``popularity_math`` exactly (``calculate_robust_zscore``): the
+    SAME robust z the album-relative popularity re-map is built on, so a
+    track's z-band standing and its re-mapped popularity score can never
+    disagree about its position in the album.  Returns ``(z, spread)``;
+    ``(0.0, 0.0)`` when there are fewer than 3 valid scores.
     """
-    logs = [math.log1p(float(c)) for c in counts if float(c) > 0]
-    if len(logs) < 3 or not any(logs):
-        return 0.0
-    mu = mean(logs)
-    sigma = stdev(logs) if len(logs) > 1 else 1.0
-    if not sigma or sigma <= 0:
-        return 0.0
-    return (math.log1p(float(count)) - mu) / sigma
+    return calculate_robust_zscore(score, scores, min_count=3)
 
 
-def _composite_listener_z(
-    track: dict[str, Any],
-    album_lf_listeners: list[float] | None,
-    album_lb_listens: list[float] | None,
-) -> float:
-    """Album-local composite z from a track's raw LF/LB counts (log-scaled).
+def _compute_artist_z(score: float, artist_scores: list[float]) -> tuple[float, float]:
+    """Robust artist-catalogue z (median + scaled-MAD) — and the spread used.
 
-    Blends ``_listener_z`` over the track's Last.fm listeners and ListenBrainz
-    listens using the configured LF/LB weights (normalised to LF + LB = 1).
-    When only one provider has usable data the composite collapses to it; no
-    album distribution → 0.0 (verification skipped, the flag is honoured as-is).
+    Same mathematics as ``_compute_album_z``; an artist needs at least 5
+    valid scores before its catalogue is a meaningful reference.
     """
-    if album_lf_listeners is None or album_lb_listens is None:
+    return calculate_robust_zscore(score, artist_scores, min_count=5)
+
+
+def _star_epsilon_z(spread: float) -> float:
+    """Convert the score-point epsilon buffer into z-units for a spread.
+
+    Defined in score points (the domain the user sees: 54.1 vs 53.9) because
+    a fixed z-epsilon would be lax on wide-spread albums and useless on tight
+    ones.  With the robust spread floored at 8.0 the epsilon is at most
+    0.5/8.0 = 0.0625 z, so the widened band can never reach the next tier
+    boundary (bands sit >= 0.5 z apart).
+    """
+    if not spread or spread <= 0:
         return 0.0
-    lf_z = _listener_z(float(track.get("lastfm_listeners") or 0), album_lf_listeners)
-    lb_z = _listener_z(float(track.get("listenbrainz_listens") or 0), album_lb_listens)
-    if not lf_z and not lb_z:
-        return 0.0
-    if not lb_z:
-        return lf_z
-    if not lf_z:
-        return lb_z
-    try:
-        from services.popularity.popularity_config import resolve_weights
-        w_lf, w_lb, _ = resolve_weights()
-    except Exception:
-        w_lf, w_lb = 0.6, 0.4
-    total = w_lf + w_lb
-    if total <= 0:
-        return lf_z
-    return (w_lf * lf_z + w_lb * lb_z) / total
+    return STAR_EPSILON_SCORE_POINTS / spread
 
 
 def _resolve_navidrome_artist_id(cursor, artist: str) -> str | None:
@@ -218,12 +193,18 @@ def _album_z_band_star(score: float, album_scores: list[float]) -> int:
     valid = [float(s) for s in (album_scores or []) if float(s or 0) > 0]
     if len(valid) < 3:
         return 3
-    album_z = _compute_album_z(score, valid)
-    if album_z >= STAR_4_ALBUM_Z:
+    album_z, spread = _compute_album_z(score, valid)
+    # Epsilon-delta closeness buffer: a track within ``epsilon`` z of a band
+    # boundary shares the HIGHER tier, so a near-boundary track is not
+    # punished for a single-scrobble difference while a distinct gap to the
+    # next tier down is preserved (bands are >= 0.5 z apart and the epsilon
+    # is at most ~0.06 z).
+    epsilon = _star_epsilon_z(spread)
+    if album_z >= STAR_4_ALBUM_Z - epsilon:
         return 4
-    if album_z >= STAR_3_ALBUM_Z:
+    if album_z >= STAR_3_ALBUM_Z - epsilon:
         return 3
-    if album_z >= STAR_2_ALBUM_Z:
+    if album_z >= STAR_2_ALBUM_Z - epsilon:
         return 2
     return 1
 
@@ -273,8 +254,8 @@ def _assign_stars(
     if single_confidence == "user":
         return 5
 
-    album_z = _compute_album_z(score, album_scores)
-    artist_z = _compute_artist_z(score, artist_scores)
+    album_z, album_spread = _compute_album_z(score, album_scores)
+    artist_z, artist_spread = _compute_artist_z(score, artist_scores)
     popularity_marked = bool(track.get("popularity_marked"))
 
     # ── 5★: singles + standouts only ──
@@ -289,14 +270,29 @@ def _assign_stars(
     # (verification returns 0.0 and is skipped, not demoted).
     z_standout_source = _has_z_standout_source(track)
     if z_standout_source:
-        _verify_z = _composite_listener_z(track, album_lf_listeners, album_lb_listens)
+        # Shared ``composite_listener_z`` — identical math to the old local
+        # helper, plus the log-sigma noise floor.  When no album distribution
+        # is available the verification returns 0.0 and the flag is honoured
+        # as-is (passing ``None`` distributions here deliberately skips the
+        # shared helper's DB fallback — the caller has already decided the
+        # distribution is unavailable).
+        _verify_z = 0.0
+        if album_lf_listeners is not None and album_lb_listens is not None:
+            _verify_z = composite_listener_z(
+                float(track.get("lastfm_listeners") or 0),
+                float(track.get("listenbrainz_listens") or 0),
+                artist=track.get("artist"),
+                album=track.get("album"),
+                album_lf_listeners=album_lf_listeners,
+                album_lb_listens=album_lb_listens,
+            )
         if _verify_z:
             _listener_threshold = float(STANDOUT_CONFIG.get("listener_5star_z_threshold", 1.0) or 1.0)
             if _verify_z < _listener_threshold:
                 z_standout_source = False
     is_standout = (
-        album_z >= STAR_5_ALBUM_Z
-        and artist_z >= STAR_5_ARTIST_Z
+        album_z >= STAR_5_ALBUM_Z - _star_epsilon_z(album_spread)
+        and artist_z >= STAR_5_ARTIST_Z - _star_epsilon_z(artist_spread)
         and (popularity_marked or z_standout_source)
     )
     # Top-% popularity marking alone grants 5★ (spec rule 2): a track in the
@@ -653,8 +649,8 @@ def post_album_star_ratings(
                 "[finalise_stage] %s - %s → %d★ (score=%.1f, album_z=%.2f, artist_z=%.2f, single=%s/%s)",
                 artist, track.get("title"), stars,
                 float(track.get("popularity_score") or 0),
-                _compute_album_z(float(track.get("popularity_score") or 0), album_scores),
-                _compute_artist_z(float(track.get("popularity_score") or 0), artist_scores),
+                _compute_album_z(float(track.get("popularity_score") or 0), album_scores)[0],
+                _compute_artist_z(float(track.get("popularity_score") or 0), artist_scores)[0],
                 track.get("is_single"), track.get("single_confidence"),
             )
 
@@ -711,8 +707,8 @@ def post_album_star_ratings(
                     t_title = str(t.get("title") or "Unknown")
                     t_artist = str(t.get("artist") or artist)
                     t_score = float(t.get("popularity_score") or t.get("final_score") or 0)
-                    album_z = _compute_album_z(t_score, album_scores)
-                    artist_z = _compute_artist_z(t_score, artist_scores)
+                    album_z, _ = _compute_album_z(t_score, album_scores)
+                    artist_z, _ = _compute_artist_z(t_score, artist_scores)
 
                     reasons: list[str] = []
                     try:

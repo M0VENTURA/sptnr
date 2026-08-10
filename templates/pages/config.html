@@ -45,6 +45,9 @@
         <button class="nav-link text-start" data-bs-toggle="pill" data-bs-target="#tab-downloads" type="button" role="tab">
           <i class="bi bi-cloud-download"></i> Downloads
         </button>
+        <button class="nav-link text-start" data-bs-toggle="pill" data-bs-target="#tab-files" type="button" role="tab">
+          <i class="bi bi-folder-symlink"></i> File Management
+        </button>
         <button class="nav-link text-start" data-bs-toggle="pill" data-bs-target="#tab-matching" type="button" role="tab">
           <i class="bi bi-union"></i> Matching
         </button>
@@ -432,11 +435,6 @@
           <input type="text" class="form-control" id="external_export_path" placeholder="/downloads/External" value="{{ config.get('downloads', {}).get('external_export_path', '') }}">
           <div class="form-text">Base folder used when exporting a playlist to an external media player via the <em>Browse Playlists</em> page. Each playlist is saved as <code>&lt;this path&gt;/&lt;playlist name&gt;/</code> with FLAC files automatically converted to 320kbps MP3.</div>
         </div>
-        <div class="col-12">
-          <label class="form-label">Queue File Name Format</label>
-          <input type="text" class="form-control" id="downloads_file_name_format" placeholder="{album_artist}/{year} - {album}/{track_number}. {artist} - {title}" value="{{ config.get('downloads', {}).get('file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}') }}">
-          <div class="form-text">Used when organizing queue items into your music library under MUSIC_ROOT (for example /music). This format is a relative path. Available placeholders: {track_number}, {artist}, {album_artist}, {title}, {album}, {year}</div>
-        </div>
         <div class="col-12 col-md-6">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="downloads_delete_duplicate_files" {% if config.get('features', {}).get('downloads_duplicate_cleanup', {}).get('delete_duplicate_files', True) %}checked{% endif %}>
@@ -498,47 +496,6 @@
           <label class="form-label">MP3 Bitrate Tolerance (kbps)</label>
           <input type="number" class="form-control" id="downloads_quality_bitrate_tolerance" min="0" max="32" step="1" value="{{ config.get('downloads', {}).get('quality_filter', {}).get('bitrate_tolerance', 5) }}">
           <div class="form-text">Allowed variance around 320kbps (for example, 315-325 with tolerance 5).</div>
-        </div>
-
-        <div class="col-12"><hr class="my-2"></div>
-        <div class="col-12">
-          <h6 class="mb-2"><i class="bi bi-arrow-repeat"></i> Download Conversion</h6>
-          <small class="text-muted d-block mb-2">Optional conversion while importing to music library. Current implementation supports FLAC → MP3.</small>
-        </div>
-        <div class="col-12 col-md-6">
-          <div class="form-check form-switch mb-2">
-            <input class="form-check-input" type="checkbox" id="downloads_conversion_enabled" {% if config.get('downloads', {}).get('conversion', {}).get('enabled', False) %}checked{% endif %}>
-            <label class="form-check-label" for="downloads_conversion_enabled"><strong>Enable Conversion on Import</strong></label>
-            <small class="d-block text-muted">Transcode downloaded files as they are moved into the music library.</small>
-          </div>
-        </div>
-        <div class="col-12 col-md-6">
-          <label class="form-label">Conversion Mode</label>
-          <select class="form-select" id="downloads_conversion_mode">
-            {% set conversion_mode = config.get('downloads', {}).get('conversion', {}).get('mode', 'flac_to_mp3') %}
-            <option value="flac_to_mp3" {% if conversion_mode == 'flac_to_mp3' %}selected{% endif %}>FLAC to MP3</option>
-            <option value="none" {% if conversion_mode == 'none' %}selected{% endif %}>Disabled (Move as-is)</option>
-          </select>
-          <small class="form-text text-muted">Which conversion to run when enabled.</small>
-        </div>
-        <div class="col-12 col-md-6">
-          <label class="form-label">MP3 Bitrate (kbps)</label>
-          <input type="number" class="form-control" id="downloads_conversion_mp3_bitrate" min="96" max="320" step="1" value="{{ config.get('downloads', {}).get('conversion', {}).get('mp3_bitrate_kbps', 320) }}">
-          <small class="form-text text-muted">Output bitrate for FLAC → MP3 conversion.</small>
-        </div>
-        <div class="col-12 col-md-6">
-          <label class="form-label">Original File Handling</label>
-          {% set original_handling = config.get('downloads', {}).get('conversion', {}).get('original_handling', 'move_to_original') %}
-          <select class="form-select" id="downloads_conversion_original_handling">
-            <option value="move_to_original" {% if original_handling == 'move_to_original' %}selected{% endif %}>Move to Downloads/Original</option>
-            <option value="delete" {% if original_handling == 'delete' %}selected{% endif %}>Delete original after convert</option>
-          </select>
-          <small class="form-text text-muted">What happens to the original (unconverted) file after a successful conversion.</small>
-        </div>
-        <div class="col-12 col-md-6">
-          <label class="form-label">Original Archive Subfolder</label>
-          <input type="text" class="form-control" id="downloads_conversion_original_subfolder" placeholder="Original" value="{{ config.get('downloads', {}).get('conversion', {}).get('original_subfolder', 'Original') }}">
-          <div class="form-text">This folder is ignored by queue scanners.</div>
         </div>
       </div>
     </div>
@@ -851,9 +808,9 @@
           <small class="form-text text-muted">Album z-score at/above which a track is a <strong>medium</strong>-confidence single. Default: <strong>0.6</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-3">
-          <label class="form-label form-label-sm">Standout Gap Z</label>
-          <input type="number" step="0.05" min="0" max="3" class="form-control form-control-sm" id="standout_gap_z" placeholder="0.75" value="{{ config.get('single_detection', {}).get('standout_gap_z', 0.75) }}">
-          <small class="form-text text-muted">Minimum gap from the next track for the "standout" album signal. Default: <strong>0.75</strong></small>
+          <label class="form-label form-label-sm">Star Tier Epsilon Buffer (score pts)</label>
+          <input type="number" step="0.05" min="0" max="2" class="form-control form-control-sm" id="star_epsilon_score_points" placeholder="0.5" value="{{ config.get('single_detection', {}).get('star_epsilon_score_points', 0.5) }}">
+          <small class="form-text text-muted">Tracks within this many final score points of the next star tier's boundary share the higher tier, preventing single-scrobble boundary splits. Default: <strong>0.5</strong></small>
         </div>
       </div>
 
@@ -1010,24 +967,6 @@
           Weights are normalised automatically when calculating popularity. If a source has no data (e.g. no ListenBrainz MBID), its weight is ignored.
           Dynamic weighting can still override these base values when Last.fm and ListenBrainz data disagree strongly.
         </small>
-      </div>
-      <h6 class="mb-3">Top-Level Weights (<code>weights.*</code>)</h6>
-      <div class="row g-3 mb-4">
-        <div class="col-12 col-sm-6 col-lg-4">
-          <label class="form-label form-label-sm">Last.fm Weight</label>
-          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="weight_lastfm" placeholder="0.55" value="{{ config.get('weights', {}).get('lastfm', 0.55) }}">
-          <small class="form-text text-muted">Base weight for Last.fm listener / playcount scores. Default: <strong>0.55</strong></small>
-        </div>
-        <div class="col-12 col-sm-6 col-lg-4">
-          <label class="form-label form-label-sm">ListenBrainz Weight</label>
-          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="weight_listenbrainz" placeholder="0.35" value="{{ config.get('weights', {}).get('listenbrainz', 0.35) }}">
-          <small class="form-text text-muted">Base weight for ListenBrainz listen counts. Default: <strong>0.35</strong></small>
-        </div>
-        <div class="col-12 col-sm-6 col-lg-4">
-          <label class="form-label form-label-sm">Age Weight</label>
-          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="weight_age" placeholder="0.10" value="{{ config.get('weights', {}).get('age', 0.10) }}">
-          <small class="form-text text-muted">Base weight for release-date recency scoring. Default: <strong>0.10</strong></small>
-        </div>
       </div>
       <h6 class="mb-3">Popularity-Pipeline Weights (<code>popularity.weights.*</code>)</h6>
       <div class="row g-3">
@@ -1236,70 +1175,6 @@
     </div>
   </div>
 
-  <!-- Matching Configuration Section (NEW) -->
-  <div class="card shadow-sm mb-3" id="matching-config">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-union"></i> Track Matching</h5>
-      <small class="text-muted">Thresholds used when matching local library tracks to provider results</small>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12 col-md-3">
-          <label class="form-label form-label-sm">Min Accept Score</label>
-          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="matching_min_accept" placeholder="0.45" value="{{ config.get('matching', {}).get('min_accept_score', 0.45) }}">
-          <small class="form-text text-muted">Minimum similarity score before a provider result (e.g. from Spotify search) is accepted as matching a library track. Lower = more matches, higher = fewer false positives.</small>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label form-label-sm">Duration Tolerance (s)</label>
-          <input type="number" min="0" max="30" class="form-control form-control-sm" id="matching_duration_tolerance" placeholder="5" value="{{ config.get('matching', {}).get('duration_tolerance_seconds', 5) }}">
-          <small class="form-text text-muted">Allowed track-length difference (seconds) when scoring a candidate match.</small>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label form-label-sm">Early Accept Length Tol.</label>
-          <input type="number" min="0" max="30" class="form-control form-control-sm" id="matching_early_accept" placeholder="2" value="{{ config.get('matching', {}).get('early_accept_length_tolerance', 2) }}">
-          <small class="form-text text-muted">Tighter duration tolerance (seconds) required for an "early accept" — accepting a match without checking the full candidate list.</small>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label form-label-sm">Top N Candidates</label>
-          <input type="number" min="5" max="500" class="form-control form-control-sm" id="matching_top_n" placeholder="50" value="{{ config.get('matching', {}).get('top_n_candidates', 50) }}">
-          <small class="form-text text-muted">How many candidate results are scored per search. Higher = better odds of a correct match but slower searches.</small>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Download Matching Section (NEW) -->
-  <div class="card shadow-sm mb-3" id="download-matching">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-file-earmark-check"></i> Download Matching</h5>
-      <small class="text-muted">Thresholds used when matching downloaded files to the library</small>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12 col-md-3">
-          <label class="form-label form-label-sm">Min Accept Score</label>
-          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="dl_match_min_accept" placeholder="0.45" value="{{ config.get('downloads', {}).get('matching', {}).get('min_accept_score', 0.45) }}">
-          <small class="form-text text-muted">Minimum similarity before a downloaded file is accepted as matching a queued item. Raise to avoid importing wrong files, lower to accept more lenient matches.</small>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label form-label-sm">Duration Tolerance (s)</label>
-          <input type="number" min="0" max="30" class="form-control form-control-sm" id="dl_match_duration_tolerance" placeholder="5" value="{{ config.get('downloads', {}).get('matching', {}).get('duration_tolerance_seconds', 5) }}">
-          <small class="form-text text-muted">Allowed track-length difference (seconds) when matching downloaded files to the queue.</small>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label form-label-sm">Early Accept Length Tol.</label>
-          <input type="number" min="0" max="30" class="form-control form-control-sm" id="dl_match_early_accept" placeholder="2" value="{{ config.get('downloads', {}).get('matching', {}).get('early_accept_length_tolerance', 2) }}">
-          <small class="form-text text-muted">Tighter duration tolerance (seconds) for accepting a downloaded file without scanning the full candidate set.</small>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label form-label-sm">Top N Candidates</label>
-          <input type="number" min="5" max="500" class="form-control form-control-sm" id="dl_match_top_n" placeholder="50" value="{{ config.get('downloads', {}).get('matching', {}).get('top_n_candidates', 50) }}">
-          <small class="form-text text-muted">How many candidate results are scored when matching each downloaded file.</small>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- slskd Timeouts Section (NEW) -->
   <div class="card shadow-sm mb-3" id="slskd-timeouts">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -1339,6 +1214,108 @@
 
         </div><!-- /tab-downloads -->
 
+        <!-- ===== TAB: FILE MANAGEMENT ===== -->
+        <div class="tab-pane fade" id="tab-files" role="tabpanel">
+
+  <!-- File Organization Section -->
+  <div class="card shadow-sm mb-3" id="file-organization">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-folder-symlink"></i> File Organization</h5>
+      <small class="text-muted">Naming convention used when organizing files into your music library</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label"><strong>Default Naming Convention</strong></label>
+          <input type="text" class="form-control font-monospace" id="downloads_file_name_format" placeholder="{album_artist}/{year} - {album}/{track_number}. {artist} - {title}" value="{{ config.get('downloads', {}).get('file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}') }}">
+          <div class="form-text">
+            Relative path (under MUSIC_ROOT, for example <code>/music</code>) applied when <strong>organizing queue items</strong> into your library and
+            when using <strong>Rename Files</strong> on an album page. Folders are created automatically. A format ending with <code>/</code> (or any format without a filename)
+            keeps the track files grouped as <code>NN. Artist - Title</code> inside that folder.
+          </div>
+        </div>
+        <div class="col-12">
+          <h6 class="mb-2"><i class="bi bi-key"></i> Available Placeholders</h6>
+          <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle mb-2" style="max-width: 640px;">
+              <thead class="table-light">
+                <tr><th style="width: 45%;">Placeholder</th><th>Replaced with</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>{track_number}</code></td><td>Track number, zero-padded to 2 digits (e.g. <code>01</code>, <code>12</code>)</td></tr>
+                <tr><td><code>{artist}</code></td><td>Track artist name</td></tr>
+                <tr><td><code>{album_artist}</code></td><td>Album artist name (falls back to track artist; <em>Various Artists</em> for compilations)</td></tr>
+                <tr><td><code>{title}</code></td><td>Track title</td></tr>
+                <tr><td><code>{album}</code></td><td>Album title</td></tr>
+                <tr><td><code>{year}</code></td><td>Release year (first 4 digits, or <em>Unknown</em>)</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <small class="text-muted d-block mb-2">Example formats:</small>
+          <ul class="small mb-0">
+            <li><code>{album_artist}/{year} - {album}/{track_number}. {artist} - {title}</code> — <strong>(default)</strong> one folder per album under the artist</li>
+            <li><code>{album_artist}/{album} ({year})/{track_number} - {title}</code> — album folder with year in parentheses, file name without artist</li>
+            <li><code>{album_artist}/{year} - {album}/{track_number}. {title}</code> — track number and title only in the file name</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- File Conversion Section -->
+  <div class="card shadow-sm mb-3" id="file-conversion">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-arrow-repeat"></i> File Conversion</h5>
+      <small class="text-muted">Optional conversion of FLAC files (supports FLAC → MP3)</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="downloads_conversion_enabled" {% if config.get('downloads', {}).get('conversion', {}).get('enabled', False) %}checked{% endif %}>
+            <label class="form-check-label" for="downloads_conversion_enabled"><strong>Enable Conversion on Import</strong></label>
+            <small class="d-block text-muted">Transcode FLAC files to MP3 when organizing downloaded files into the music library and when renaming album files. Metadata and cover art are carried over during conversion.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Conversion Mode</label>
+          {% set conversion_mode = config.get('downloads', {}).get('conversion', {}).get('mode', 'flac_to_mp3') %}
+          <select class="form-select" id="downloads_conversion_mode">
+            <option value="flac_to_mp3" {% if conversion_mode == 'flac_to_mp3' %}selected{% endif %}>FLAC to MP3</option>
+            <option value="none" {% if conversion_mode == 'none' %}selected{% endif %}>Disabled (Move as-is)</option>
+          </select>
+          <small class="form-text text-muted">Which conversion to run when enabled.</small>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">MP3 Bitrate (kbps)</label>
+          <input type="number" class="form-control" id="downloads_conversion_mp3_bitrate" min="96" max="320" step="1" value="{{ config.get('downloads', {}).get('conversion', {}).get('mp3_bitrate_kbps', 320) }}">
+          <small class="form-text text-muted">Output bitrate for FLAC → MP3 conversion.</small>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Original File Handling</label>
+          {% set original_handling = config.get('downloads', {}).get('conversion', {}).get('original_handling', 'move_to_original') %}
+          <select class="form-select" id="downloads_conversion_original_handling">
+            <option value="move_to_original" {% if original_handling == 'move_to_original' %}selected{% endif %}>Move to Downloads/Original</option>
+            <option value="delete" {% if original_handling == 'delete' %}selected{% endif %}>Delete original after convert</option>
+          </select>
+          <small class="form-text text-muted">What happens to the original (unconverted) file after a successful conversion during download import.</small>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Original Archive Subfolder</label>
+          <input type="text" class="form-control" id="downloads_conversion_original_subfolder" placeholder="Original" value="{{ config.get('downloads', {}).get('conversion', {}).get('original_subfolder', 'Original') }}">
+          <div class="form-text">This folder is ignored by queue scanners.</div>
+        </div>
+        <div class="col-12">
+          <div class="alert alert-info mb-0 py-2 small">
+            <i class="bi bi-info-circle"></i> When <strong>Rename Files</strong> converts a FLAC track, the original FLAC is replaced by the converted MP3 in the library (the archive options above apply to download imports).
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+        </div><!-- /tab-files -->
+
         <!-- ===== TAB 4: MATCHING ===== -->
         <div class="tab-pane fade" id="tab-matching" role="tabpanel">
 
@@ -1362,6 +1339,29 @@
   <!-- Single Detection Z-Score Thresholds (expanded) -->
   <!-- ===== (filesystem card is above; kept in Matching tab for DOM continuity) ===== -->
 
+  <!-- Track Matching Section -->
+  <div class="card shadow-sm mb-3" id="matching-config">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-union"></i> Track Matching</h5>
+      <small class="text-muted">Thresholds used when matching local library tracks to provider results</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-md-4">
+          <label class="form-label form-label-sm">Fuzzy Threshold</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="matching_fuzzy_threshold" placeholder="0.80" value="{{ config.get('matching', {}).get('fuzzy_threshold', 0.80) }}">
+          <small class="form-text text-muted">Minimum fuzzy string-similarity for a candidate to be considered a match. Default: <strong>0.80</strong></small>
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label form-label-sm">Score Threshold</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="matching_score_threshold" placeholder="0.60" value="{{ config.get('matching', {}).get('score_threshold', 0.60) }}">
+          <small class="form-text text-muted">Minimum combined match score before a provider result is accepted. Default: <strong>0.60</strong></small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Search Filters -->
   <div class="card shadow-sm mb-3" id="search-filters">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
@@ -1560,8 +1560,8 @@
             'use_lastfm_single': true, 'refresh_artist_index_on_start': false,
             'discogs_min_interval_sec': 0.35, 'include_user_ratings_on_scan': true,
             'scan_worker_threads': 4,
-            'source_discogs_confidence': 'medium',
-            'source_musicbrainz_confidence': 'high',
+            'source_discogs_confidence': 'high',
+            'source_musicbrainz_confidence': 'medium',
             'source_musicbrainz_compilation_confidence': 'medium',
             'source_discogs_video_confidence': 'medium', 'source_lastfm_confidence': 'medium',
             'source_radio_edit_confidence': 'medium'

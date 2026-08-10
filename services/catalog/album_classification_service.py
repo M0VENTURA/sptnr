@@ -117,10 +117,10 @@ def is_live_or_unplugged_track_title(title: str) -> bool:
 # "Live Fast, Die Young" or "Live In Colour", capping them at 4★.
 _LIVE_ALTERNATE_TRACK_MARKERS = [
     # Trailing parenthetical version tags: "Song (Live)", "Song (Acoustic)",
-    # "Song (Live In Tokyo 1994)", "Song (Unplugged)".
-    r"\((?:live|unplugged|acoustic|orchestral)[^)]*\)",
+    # "Song (Live In Tokyo 1994)", "Song (Unplugged)", "Song (Demo)".
+    r"\((?:live|unplugged|acoustic|orchestral|demo)[^)]*\)",
     # Trailing "- Live" / "- Acoustic" separators.
-    r"[-–—]\s*(?:live|unplugged|acoustic|orchestral)\s*$",
+    r"[-–—]\s*(?:live|unplugged|acoustic|orchestral|demo)\s*$",
 ]
 
 
@@ -128,10 +128,11 @@ def is_live_or_alternate_track_title(title: str) -> bool:
     """Return True when a track TITLE flags a live/acoustic alternate version.
 
     Matches version-marker positions only (a trailing ``(Live ...)`` /
-    ``(Acoustic ...)`` parenthetical or a ``- Live``-style separator) — the
-    markers a bonus live cut on a studio album carries.  Used to give such a
-    track live status (the live weight penalty on its popularity score and the
-    4★ cap on its star rating) without treating the whole album as live.
+    ``(Acoustic ...)`` / ``(Demo ...)`` parenthetical or a ``- Live``-style
+    separator) — the markers a bonus live cut on a studio album carries.
+    Used to give such a track live status (the live weight penalty on its
+    popularity score and the 4★ cap on its star rating) without treating the
+    whole album as live.
     """
     return any(
         re.search(pattern, title or "", re.IGNORECASE)
