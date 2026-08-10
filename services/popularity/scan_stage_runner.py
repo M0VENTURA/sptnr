@@ -9,6 +9,7 @@ from typing import Any
 
 from helpers.config_helpers import get_config
 from helpers.logging_config import log_unified
+from helpers.normalization_service import strip_featured_artist
 from services.popularity.progress_tracker import finish, start, update
 from services.popularity.popularity_cache_policy import should_freeze_track
 from services.popularity.scan_hooks import (
@@ -18,6 +19,7 @@ from services.popularity.scan_hooks import (
 )
 from services.popularity.popularity_matching import normalize_for_aggregation
 from services.popularity.popularity_math import (
+    ALBUM_RELATIVE_MIN_ALBUM_TRACKS,
     apply_album_relative_popularity,
     apply_track_artist_relative_popularity,
 )
@@ -286,6 +288,69 @@ def _apply_popularity_marking_bump(album_results: list[dict[str, Any]]) -> list[
     return album_results
 
 
+def _mark_track_artist_top_band(album_results: list[dict[str, Any]]) -> None:
+    """Set ``popularity_marked`` per TRACK ARTIST on a VA-compilation album.
+
+    A VA compilation's album artist ("Various Artists") has no real catalogue,
+    so the album-level top-% cutoffs would rank one track against every other
+    compilation track across the library.  Each track is instead ranked
+    against ITS OWN track artist's stored catalogue — the same re-anchored
+    scores used for track-artist normalization, so both sides are on the
+    album-relative scale.  A track in its artist's top 10% (or the widened
+    top-20% band as a medium-confidence single) is ``popularity_marked`` and
+    can earn 5★ organically — a genuine monster hit on a soundtrack (e.g. a
+    lead single) marks like it would on its own studio album.
+
+    Tracks whose artist has no stored catalogue are not marked: their fresh
+    scores were re-mapped against the compilation's own distribution, which
+    is not comparable to any artist scale.  Same-scan album-mates (other
+    tracks on this compilation by the same primary artist) join the stored
+    catalogue so freshly-scanned tracks are ranked too; the track's own score
+    is excluded (it is not yet stored, so including it would double-count).
+    """
+    # Same-scan scores grouped by PRIMARY track artist (collab strings like
+    # "Feuerschwanz feat. Doro" resolve to the same group as "Feuerschwanz").
+    by_primary: dict[str, list[float]] = {}
+    for _tr in album_results:
+        _score = float(_tr.get("popularity_score") or 0)
+        if _score <= 0:
+            continue
+        _primary = strip_featured_artist(str(_tr.get("artist") or ""))
+        by_primary.setdefault(_primary, []).append(_score)
+
+    catalogue_cache: dict[str, list[float]] = {}
+    for _tr in album_results:
+        if bool(_tr.get("exclude_from_stats")):
+            _tr["popularity_marked"] = False
+            continue
+        _score = float(_tr.get("popularity_score") or 0)
+        _primary = strip_featured_artist(str(_tr.get("artist") or ""))
+        if not _primary:
+            _tr["popularity_marked"] = False
+            continue
+        if _primary not in catalogue_cache:
+            catalogue_cache[_primary] = _load_track_artist_scores(_primary)
+        catalogue = catalogue_cache[_primary]
+        mates = list(by_primary.get(_primary) or [])
+        _own_idx = next((i for i, s in enumerate(mates) if s == _score), None)
+        if _own_idx is not None:
+            mates.pop(_own_idx)
+        _top_cutoff, _medium_cutoff, _, _ = _artist_top_marked_cutoffs(mates, catalogue)
+        if _top_cutoff is None:
+            # No catalogue for this artist (and no same-scan mates) — never
+            # fabricate a top-% verdict from the compilation's own mix.
+            _tr["popularity_marked"] = False
+            continue
+        _top_marked = _score > 0 and _score >= _top_cutoff
+        _medium_marked = (
+            _score > 0
+            and _score >= _medium_cutoff
+            and bool(_tr.get("is_single"))
+            and str(_tr.get("single_confidence") or "low") == "medium"
+        )
+        _tr["popularity_marked"] = bool(_top_marked or _medium_marked)
+
+
 def _load_track_artist_scores(track_artist: str) -> list[float]:
     """Stored popularity scores for a track artist's own catalogue.
 
@@ -293,16 +358,54 @@ def _load_track_artist_scores(track_artist: str) -> list[float]:
     never the compilation track itself (which is stored under the
     compilation's album artist).  Used to re-map a compilation track's raw
     popularity relative to its track artist instead of the compilation album.
+
+    Collaboration strings are reduced to the PRIMARY artist first, so a
+    compilation track credited as "Feuerschwanz feat. Doro" resolves
+    Feuerschwanz's own catalogue instead of failing the lookup and falling
+    back to the compilation's distribution.  Stored ``final_score`` values
+    mix raw + album-relative scales, so each stored album is re-anchored onto
+    the album-relative scale (``reanchor_scores_to_album_relative``) — the
+    same correction the album path applies — keeping a compilation track's
+    fresh relative score comparable to the artist's stored catalogue.
     """
     if not track_artist:
         return []
+    primary = strip_featured_artist(track_artist)
+    if not primary:
+        return []
+    db_rows: list[tuple[str, str]] = []
     try:
-        from services.popularity.popularity_stats_service import calculate_artist_stats
-        _, _, values = calculate_artist_stats(None, track_artist)
-        return [float(v) for v in (values or []) if float(v or 0) > 0]
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            rows = session.execute(
+                _text(
+                    "SELECT title, album, final_score FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                    "AND final_score > 0"
+                ),
+                {"artist": primary},
+            ).fetchall()
+            # Album-relative re-anchoring needs the album grouping; bonus /
+            # alternate / live titles (whose stored scores sit on the raw
+            # scale or are padded) are excluded the same way the album path
+            # excludes them.
+            db_rows = [
+                (str(r[1] or ""), float(r[2] or 0))
+                for r in rows or []
+                if r[2] and not is_bonus_track_title(str(r[0] or ""))
+            ]
     except Exception as exc:
         logger.debug("[scan_runner] Track artist score load failed for %s: %s", track_artist, exc)
         return []
+    if not db_rows:
+        return []
+    try:
+        from services.popularity.popularity_math import reanchor_scores_to_album_relative
+        return list(reanchor_scores_to_album_relative(db_rows))
+    except Exception as exc:
+        logger.debug("[scan_runner] Track artist score re-anchor failed for %s: %s", track_artist, exc)
+        return [float(s) for _alb, s in db_rows]
 
 
 def _album_reference_scores(
@@ -390,12 +493,24 @@ def _apply_track_artist_relative_normalization(album_results: list[dict[str, Any
     Each compilation track is re-mapped relative to ITS OWN track artist's
     stored catalogue popularity (median + scaled-MAD via
     ``apply_track_artist_relative_popularity``) — not the compilation album's
-    distribution.  Artists without enough stored catalogue scores keep their
-    raw score.  Returns the number of tracks re-mapped.
+    distribution.  Collaboration strings are reduced to the PRIMARY artist
+    first ("Feuerschwanz feat. Doro" → "Feuerschwanz"), so the catalogue
+    lookup hits the main artist's discography instead of failing on the
+    literal collab string.
+
+    Artists without enough stored catalogue scores (``<
+    ALBUM_RELATIVE_MIN_ALBUM_TRACKS`` valid values) fall back to the
+    compilation's OWN internal raw-score distribution
+    (``apply_album_relative_popularity`` against the album's raw scores) —
+    the track is still normalized off a raw 85-95 peak instead of sitting on
+    it.  Returns the number of tracks re-mapped.
     """
     changed = 0
     rows: list[dict[str, Any]] = []
     artist_scores_cache: dict[str, list[float]] = {}
+    # Compilation-internal raw distribution — the fallback reference when a
+    # track artist has no usable stored catalogue.
+    album_raw_scores = _album_reference_scores(album_results, score_key="_raw_combined")
     for tr in album_results:
         raw = float(tr.get("_raw_combined") or 0)
         if raw <= 0:
@@ -403,10 +518,16 @@ def _apply_track_artist_relative_normalization(album_results: list[dict[str, Any
         track_artist = str(tr.get("artist") or "").strip()
         if not track_artist:
             continue
-        if track_artist not in artist_scores_cache:
-            artist_scores_cache[track_artist] = _load_track_artist_scores(track_artist)
-        artist_scores = artist_scores_cache[track_artist]
-        remapped = apply_track_artist_relative_popularity(raw, artist_scores)
+        primary = strip_featured_artist(track_artist)
+        if primary not in artist_scores_cache:
+            artist_scores_cache[primary] = _load_track_artist_scores(primary)
+        artist_scores = artist_scores_cache[primary]
+        if len(artist_scores) >= ALBUM_RELATIVE_MIN_ALBUM_TRACKS:
+            remapped = apply_track_artist_relative_popularity(raw, artist_scores)
+        else:
+            # No usable catalogue — normalize against the compilation's own
+            # distribution so the track still lands on the relative scale.
+            remapped = apply_album_relative_popularity(raw, album_raw_scores)
         if abs(remapped - float(tr.get("popularity_score") or 0)) > 0.001:
             tr["popularity_score"] = remapped
             tr["final_score"] = remapped
@@ -657,6 +778,7 @@ def run_scan(
         artist: str,
         album_results: list[dict[str, Any]],
         is_compilation: bool = False,
+        is_va_compilation: bool = False,
     ) -> bool:
         """Assign/persist/log/sync star ratings for ONE completed album.
 
@@ -676,16 +798,17 @@ def run_scan(
         # The final popularity score is the robust-z re-map of the freshly
         # computed raw scores.  This MUST run before the artist score
         # distribution and star ratings so they all see the relative scale.
-        # Regular albums re-map against the ALBUM's distribution; compilation /
-        # Various-Artists albums re-map each track against its OWN track
-        # artist's catalogue instead (the compilation's distribution — the
-        # "album artist" reference — is meaningless when every track has a
-        # different artist).  Singles-only passes carry no fresh raw scores
+        # Regular albums — INCLUDING single-artist compilations (Greatest
+        # Hits) — re-map against the ALBUM's distribution.  Only TRUE
+        # Various-Artists compilations re-map each track against its OWN
+        # track artist's catalogue instead (the compilation's distribution —
+        # the "album artist" reference — is meaningless when every track has
+        # a different artist).  Singles-only passes carry no fresh raw scores
         # and are skipped (self-guarded by the helper).
         try:
             _apply_album_relative_normalization(
                 album_results,
-                is_compilation=is_compilation,
+                is_compilation=is_va_compilation,
             )
         except Exception as exc:
             logger.debug("[scan_runner] Album-relative normalization failed: %s", exc)
@@ -724,29 +847,39 @@ def run_scan(
             )
         except Exception:
             _top_pct, _medium_pct = 0.10, 0.20
-        _top_cutoff, _medium_cutoff, _top_n, _medium_n = _artist_top_marked_cutoffs(
-            scan_scores, _db_scores,
-            top_percentile=_top_pct,
-            medium_percentile=_medium_pct,
-        )
-        if _top_cutoff is not None and not options.get("popularity_only"):
-            for _tr in album_results:
-                # Bonus / alternate / live tracks (``exclude_from_stats``) are
-                # not part of the artist's core catalogue popularity — they
-                # never consume a top-% slot and never earn 5★ from the
-                # marking (a padded live cut must not outrank a real single).
-                if bool(_tr.get("exclude_from_stats")):
-                    _tr["popularity_marked"] = False
-                    continue
-                _score = float(_tr.get("popularity_score") or 0)
-                _top_marked = _score >= _top_cutoff and _score > 0
-                _medium_marked = (
-                    _score >= _medium_cutoff
-                    and _score > 0
-                    and bool(_tr.get("is_single"))
-                    and str(_tr.get("single_confidence") or "low") == "medium"
-                )
-                _tr["popularity_marked"] = bool(_top_marked or _medium_marked)
+        if is_va_compilation:
+            # TRUE VA compilations rank each track against ITS OWN track
+            # artist's catalogue — the album artist ("Various Artists") has no
+            # real catalogue, so the album-level cutoffs would rank a track
+            # against every other compilation track in the library instead.
+            _top_cutoff = _medium_cutoff = None
+        else:
+            _top_cutoff, _medium_cutoff, _top_n, _medium_n = _artist_top_marked_cutoffs(
+                scan_scores, _db_scores,
+                top_percentile=_top_pct,
+                medium_percentile=_medium_pct,
+            )
+        if not options.get("popularity_only") and (is_va_compilation or _top_cutoff is not None):
+            if is_va_compilation:
+                _mark_track_artist_top_band(album_results)
+            elif _top_cutoff is not None:
+                for _tr in album_results:
+                    # Bonus / alternate / live tracks (``exclude_from_stats``) are
+                    # not part of the artist's core catalogue popularity — they
+                    # never consume a top-% slot and never earn 5★ from the
+                    # marking (a padded live cut must not outrank a real single).
+                    if bool(_tr.get("exclude_from_stats")):
+                        _tr["popularity_marked"] = False
+                        continue
+                    _score = float(_tr.get("popularity_score") or 0)
+                    _top_marked = _score >= _top_cutoff and _score > 0
+                    _medium_marked = (
+                        _score >= _medium_cutoff
+                        and _score > 0
+                        and bool(_tr.get("is_single"))
+                        and str(_tr.get("single_confidence") or "low") == "medium"
+                    )
+                    _tr["popularity_marked"] = bool(_top_marked or _medium_marked)
             _apply_popularity_marking_bump(album_results)
             try:
                 _persist_popularity_marking(album_results)
@@ -905,6 +1038,7 @@ def run_scan(
                             artist,
                             _album_skip_results,
                             is_compilation=bool(_album_context.get("is_compilation")),
+                            is_va_compilation=bool(_album_context.get("is_va_compilation")),
                         )
                 except Exception as exc:
                     logger.debug("[scan_runner] Singles-only pass failed for %s - %s: %s", artist, album, exc)
@@ -1358,6 +1492,7 @@ def run_scan(
                     artist,
                     _album_results_this,
                     is_compilation=bool(album_context.get("is_compilation")),
+                    is_va_compilation=bool(album_context.get("is_va_compilation")),
                 )
 
         except Exception as _album_exc:

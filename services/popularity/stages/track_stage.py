@@ -499,10 +499,6 @@ def process_track(
                         # OWN recording instead of matching the studio original.
                         if listenbrainz_listens == 0 and not recording_mbid and (raw_title or title) and artist:
                             try:
-                                from services.enrichment.musicbrainz_service import (
-                                    MusicBrainzService,
-                                    get_shared_mb_client,
-                                )
                                 # Album-level batch pre-resolution first (one
                                 # batched search served the whole album's
                                 # MBIDs), then the per-track cached suggestion.
@@ -858,9 +854,16 @@ def process_track(
             _sd_eligible = True
             if sd_popularity > 0:
                 try:
+                    # Only TRUE Various-Artists compilations skip the top-50%
+                    # gate (every track has a different artist, so ranking
+                    # them against each other is meaningless).  Single-artist
+                    # compilations (Greatest Hits tagged "compilation") are
+                    # treated like standard studio albums: the gate applies.
+                    # The album context's authoritative classification is
+                    # preferred; the artist/title checks only fill in when the
+                    # context is unavailable.
                     _is_comp_album = bool(
-                        "compilation" in str(sd_album_type or "").lower()
-                        or "soundtrack" in str(sd_album_type or "").lower()
+                        album_context.get("is_va_compilation")
                         or str(sd_artist or "").strip().lower()
                         in ("various artists", "various", "compilation", "soundtrack")
                         or "various artists" in str(sd_album or "").lower()
@@ -901,6 +904,10 @@ def process_track(
                     popularity=sd_popularity,
                     album_type=sd_album_type or None,
                     album=sd_album,
+                    # Authoritative VA classification from the album context:
+                    # single-artist compilations (Greatest Hits) keep the
+                    # normal z-score gates instead of the compilation bypass.
+                    is_va_compilation=bool(album_context.get("is_va_compilation")),
                     isrc=effective_track.get("isrc") or None,
                     duration=(
                         float(effective_track["duration"])
@@ -1022,10 +1029,6 @@ def process_track(
                     _batch_mb = options.get("mb_batch_metadata") or {}
                     mb_data = _batch_mb.get(f"{artist.lower()}::{title.lower()}")
                     if not mb_data:
-                        from services.enrichment.musicbrainz_service import (
-                            MusicBrainzService,
-                            get_shared_mb_client,
-                        )
                         mb_service = MusicBrainzService(http_client=get_shared_mb_client())
                         mb_data = mb_service.lookup_recording_metadata(title, artist)
                     if not mb_data:

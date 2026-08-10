@@ -190,6 +190,69 @@ def detect_alternate_takes(tracks: list) -> dict:
     return {k: v for k, v in groups.items() if len(v) > 1}
 
 
+# Album-artist values that identify a release as a TRUE Various-Artists
+# compilation — the per-track artist context is required for scoring/marking.
+# Matches the "generic artist" set used across the scan pipeline (runner /
+# album stage / finalise).
+_VA_ALBUM_ARTIST_NAMES = frozenset(
+    {
+        "various artists", "various artists -", "various",
+        "va", "v/a", "compilation", "soundtrack",
+    }
+)
+
+
+def classify_compilation_category(
+    artist: str,
+    album: str,
+    tracks: list,
+    album_artist: str | None = None,
+    spotify_album_type: str | None = None,
+    musicbrainz_album_type: str | None = None,
+) -> str:
+    """Classify a compilation candidate as ``"va"``, ``"single_artist"`` or ``""``.
+
+    MusicBrainz and Spotify both tag single-artist retrospectives ("Queen -
+    Greatest Hits") AND true Various-Artists albums ("Now That's What I Call
+    Music", movie soundtracks) with the ``compilation`` release type, but the
+    two need OPPOSITE handling:
+
+    - ``"va"``            — TRUE Various-Artists compilation: the album artist
+      is a VA alias ("Various Artists" / "Soundtrack" / ...) or the tracklist
+      spans >= 4 distinct artists that the album artist is not one of.  Every
+      track has a different artist, so scoring and marking need per-track
+      artist context and the singles z-gates are meaningless.
+    - ``"single_artist"`` — release tagged ``compilation``/``soundtrack`` but
+      the album artist is a single real artist (Greatest Hits / anthology).
+      Treated like a standard studio album: album-relative scoring, the
+      artist's own ``artist_stats`` and the normal singles gates apply.
+    - ``""``              — not a compilation.
+
+    ``detect_compilation_album`` keeps the original boolean view of this
+    classification.
+    """
+    type_text = " ".join(
+        filter(None, (spotify_album_type or "", musicbrainz_album_type or ""))
+    ).lower()
+    is_compilation_type_tag = any(token in type_text for token in COMPILATION_TYPES)
+
+    if (album_artist or "").strip().lower() in _VA_ALBUM_ARTIST_NAMES:
+        return "va"
+
+    artists = {
+        str(t.get("artist", "")).strip().lower()
+        for t in tracks or []
+        if isinstance(t, dict) and t.get("artist")
+    }
+    if len(artists) >= 4 and (artist or "").lower() not in artists:
+        return "va"
+
+    if is_compilation_type_tag:
+        return "single_artist"
+
+    return ""
+
+
 def detect_compilation_album(
     artist: str,
     album: str,
@@ -197,20 +260,22 @@ def detect_compilation_album(
     album_artist: str | None = None,
     spotify_album_type: str | None = None,
 ) -> bool:
+    """Return True when the album is ANY kind of compilation (VA or single-artist).
 
-    if is_compilation_type(spotify_album_type or ""):
-        return True
-
-    if (album_artist or "").lower() in {"various artists", "various"}:
-        return True
-
-    artists = {
-        str(t.get("artist", "")).strip().lower()
-        for t in tracks or []
-        if isinstance(t, dict) and t.get("artist")
-    }
-
-    return len(artists) >= 4 and (artist or "").lower() not in artists
+    See ``classify_compilation_category`` for the VA vs single-artist split;
+    this is the original boolean view kept for callers that only need the
+    yes/no verdict.
+    """
+    return (
+        classify_compilation_category(
+            artist=artist,
+            album=album,
+            tracks=tracks,
+            album_artist=album_artist,
+            spotify_album_type=spotify_album_type,
+        )
+        != ""
+    )
 
 
 def detect_greatest_hits_album(album: str, artist: str) -> bool:

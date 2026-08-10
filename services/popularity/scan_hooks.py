@@ -17,8 +17,8 @@ from __future__ import annotations
 from typing import Any
 
 from services.catalog.album_classification_service import (
+    classify_compilation_category,
     detect_alternate_takes,
-    detect_compilation_album,
     detect_greatest_hits_album,
     detect_live_album_type,
     is_live_or_alternate_album,
@@ -64,13 +64,21 @@ def prepare_album_context(
         not album_type_from_field and is_live_or_alternate_album(album)
     )
 
-    is_compilation = detect_compilation_album(
+    # Compilation classification is split into VA (per-track artist context
+    # required) vs single-artist (Greatest Hits — treated like a studio
+    # album).  ``is_compilation`` keeps the boolean "any compilation" view
+    # for legacy consumers; downstream stages use the subtype flags.
+    comp_category = classify_compilation_category(
         artist=artist,
         album=album,
         tracks=tracks,
         album_artist=album_artist,
         spotify_album_type=spotify_album_type,
+        musicbrainz_album_type=musicbrainz_album_type,
     )
+    is_compilation = comp_category != ""
+    is_va_compilation = comp_category == "va"
+    is_single_artist_compilation = comp_category == "single_artist"
 
     is_greatest_hits = detect_greatest_hits_album(album=album, artist=artist)
 
@@ -86,6 +94,8 @@ def prepare_album_context(
         "live_album_type": live_album_type,
         "is_live_album": is_live_album,
         "is_compilation": is_compilation,
+        "is_va_compilation": is_va_compilation,
+        "is_single_artist_compilation": is_single_artist_compilation,
         "is_greatest_hits": is_greatest_hits,
         "alternate_takes": alternate_takes,
     }

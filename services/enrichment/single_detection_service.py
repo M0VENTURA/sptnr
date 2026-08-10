@@ -810,8 +810,17 @@ def detect_single_for_track(
     lastfm_listeners: int | None = None,
     album_lf_listeners: list[float] | None = None,
     album_lb_listens: list[float] | None = None,
+    is_va_compilation: bool | None = None,
 ) -> dict[str, Any]:
     """Detect whether a track is a single using the 8-stage algorithm.
+
+    When the scan pipeline has already classified the album with the
+    VA-vs-single-artist split (``is_va_compilation`` provided, True or False),
+    that verdict REPLACES the title/type heuristic: only TRUE Various-Artists
+    compilations bypass the popularity z-gates, while single-artist
+    compilations (Greatest Hits tagged "compilation") keep the normal gates.
+    When ``None`` (standalone callers / tests), the legacy
+    ``is_compilation_album`` heuristic applies unchanged.
 
     Returns ``{is_single, confidence, sources, reasons}``.
     """
@@ -826,7 +835,17 @@ def detect_single_for_track(
     if should_skip_single_detection(title, album_type=album_type):
         return {"is_single": False, "confidence": "low", "confidence_score": 0.0, "sources": [], "reasons": ["alternate_or_live_version"]}
 
-    is_compilation = is_compilation_album(album_type, album or "")
+    # The scan pipeline's VA classification is authoritative when available:
+    # a single-artist compilation ("Queen - Greatest Hits", type
+    # "compilation") is treated like a standard studio album here — z-score
+    # gates and the popularity-standout signal run normally.  Only TRUE
+    # Various-Artists compilations bypass them (every track has a different
+    # artist, so artist/album-relative popularity is meaningless).  Without
+    # the flag (standalone calls) the legacy title/type heuristic applies.
+    if is_va_compilation is not None:
+        is_compilation = is_va_compilation
+    else:
+        is_compilation = is_compilation_album(album_type, album or "")
     is_special = is_special_edition_album(album or "")
     is_remastered = is_remastered_only_variant(title)
 
