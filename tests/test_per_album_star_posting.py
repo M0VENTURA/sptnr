@@ -478,7 +478,7 @@ class TestFinaliseScanPerAlbumFlag:
             "post_album_star_ratings",
             lambda **kw: posted.append(kw) or {"star_ratings": 3, "navidrome_synced": 0},
         )
-        monkeypatch.setattr(fs, "_create_nsp_playlist", lambda artist, tracks: None)
+        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist, cursor: None)
         monkeypatch.setattr(fs, "log_unified", lambda msg: None)
 
         fs.finalise_scan(
@@ -505,7 +505,7 @@ class TestFinaliseScanPerAlbumFlag:
             "post_album_star_ratings",
             lambda **kw: posted.append(kw),
         )
-        monkeypatch.setattr(fs, "_create_nsp_playlist", lambda artist, tracks: None)
+        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist, cursor: None)
         logged = []
         monkeypatch.setattr(fs, "log_unified", lambda msg: logged.append(msg))
 
@@ -535,7 +535,7 @@ class TestFinaliseScanPerAlbumFlag:
             "post_album_star_ratings",
             lambda **kw: posted.append(kw) or {"star_ratings": 2, "navidrome_synced": 0},
         )
-        monkeypatch.setattr(fs, "_create_nsp_playlist", lambda artist, tracks: None)
+        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist, cursor: None)
         monkeypatch.setattr(fs, "log_unified", lambda msg: None)
 
         fs.finalise_scan(
