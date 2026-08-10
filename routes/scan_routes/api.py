@@ -87,9 +87,9 @@ def _runtime_status_payload() -> dict:
 # -------------------------------------------------------------------------
 
 @scans_bp.route("/api/scan/artist", methods=["POST"])
-def api_scan_single_artist():
+async def api_scan_single_artist():
     """Start an artist scan from JSON input."""
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
 
     artist = str(data.get("artist", "")).strip()
     force = bool(data.get("force", False))

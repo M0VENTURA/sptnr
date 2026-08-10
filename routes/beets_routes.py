@@ -102,9 +102,9 @@ def beets_status():
 
 
 @beets_bp.route("/import", methods=["POST"])
-def beets_import():
+async def beets_import():
     """Import files from a given path using ``beet import``."""
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     path = str(data.get("path", "")).strip()
     if not path:
         return jsonify({"error": "path required"}), 400
@@ -140,9 +140,9 @@ def beets_configure():
 
 
 @beets_bp.route("/auto-import", methods=["POST"])
-def beets_auto_import():
+async def beets_auto_import():
     """Auto-import the entire library (``beet import -A``)."""
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     artist_path = str(data.get("artist", "")).strip()
     if not _beets_installed():
         return jsonify({"error": "beets not installed"}), 400
@@ -183,9 +183,9 @@ def beets_sync_metadata():
 
 
 @beets_bp.route("/update-album", methods=["POST"])
-def beets_update_album():
+async def beets_update_album():
     """Write beets metadata for a specific album, then trigger ``beet write``."""
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = str(data.get("artist", "")).strip()
     album = str(data.get("album", "")).strip()
     if not artist or not album:

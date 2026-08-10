@@ -298,7 +298,7 @@ async def api_album_upload_art():
 @album_bp.route("/submit-musicbrainz", methods=["POST"])
 async def api_album_submit_musicbrainz():
     """Generate a MusicBrainz submission URL for an album."""
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     artist = str(data.get("artist", "")).strip()
     album = str(data.get("album", "")).strip()
     if not artist or not album:

@@ -428,7 +428,7 @@ def track_genre_recommendations():
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/rescan-single", methods=["POST"])
-def api_rescan_single_track(track_id):
+async def api_rescan_single_track(track_id):
     """Force a fresh single detection scan for one track.
 
     When a ``source`` key is supplied (from the per-source Re-check buttons),
@@ -441,7 +441,7 @@ def api_rescan_single_track(track_id):
         with db_session() as session:
             source = ""
             try:
-                body = request.get_json(silent=True) or {}
+                body = (await request.get_json(silent=True)) or {}
                 source = str(body.get("source") or "").strip()
             except Exception:
                 source = ""

@@ -184,9 +184,9 @@ async def playlists_import():
 # --------------------------------------------------
 
 @playlists_bp.route("/api/import_playlist_url", methods=["POST"])
-def api_import_playlist_url():
+async def api_import_playlist_url():
     try:
-        data = request.get_json() or {}
+        data = (await request.get_json(silent=True)) or {}
         url = (data.get("url") or "").strip()
 
         if not url:
@@ -213,9 +213,9 @@ def api_import_playlist_url():
 # --------------------------------------------------
 
 @playlists_bp.route("/api/playlist/import", methods=["POST"])
-def api_playlist_import():
+async def api_playlist_import():
     try:
-        data = request.get_json() or {}
+        data = (await request.get_json(silent=True)) or {}
         spotify_tracks = data.get("tracks", [])
 
         if not spotify_tracks:
@@ -257,9 +257,9 @@ def api_playlist_import():
 # --------------------------------------------------
 
 @playlists_bp.route("/api/playlist/create", methods=["POST"])
-def api_playlist_create():
+async def api_playlist_create():
     try:
-        data = request.get_json() or {}
+        data = (await request.get_json(silent=True)) or {}
 
         name = data.get("playlist_name")
         description = data.get("playlist_description", "")
@@ -311,9 +311,9 @@ def api_playlist_list():
 # --------------------------------------------------
 
 @playlists_bp.route("/api/playlist/load", methods=["POST"])
-def api_playlist_load():
+async def api_playlist_load():
     try:
-        data = request.get_json() or {}
+        data = (await request.get_json(silent=True)) or {}
         playlist_id = data.get("playlist_id")
 
         if not playlist_id:
@@ -341,9 +341,9 @@ def api_playlist_load():
 # --------------------------------------------------
 
 @playlists_bp.route("/api/playlist/search-songs", methods=["POST"])
-def api_playlist_search():
+async def api_playlist_search():
     try:
-        data = request.get_json() or {}
+        data = (await request.get_json(silent=True)) or {}
         query = data.get("query", "").strip()
 
         if not query:
@@ -363,9 +363,9 @@ def api_playlist_search():
 # --------------------------------------------------
 
 @playlists_bp.route("/api/playlist/session", methods=["POST"])
-def api_playlist_session():
+async def api_playlist_session():
     try:
-        data = request.get_json() or {}
+        data = (await request.get_json(silent=True)) or {}
         tracks = data.get("tracks", [])
         playlist_name = data.get("playlist_name", "Imported Playlist")
 
@@ -422,9 +422,9 @@ def api_recommended_playlists():
 
 
 @playlists_bp.route("/api/recommended-playlists/create", methods=["POST"])
-def api_recommended_playlists_create():
+async def api_recommended_playlists_create():
     """Create a Navidrome playlist from a recommendation category/type."""
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     category = data.get("category", "")
     playlist_type = data.get("type", "")
 
@@ -541,14 +541,14 @@ def api_playlists_all():
 
 
 @playlists_bp.route("/api/playlists/tracks", methods=["POST"])
-def api_playlists_tracks():
+async def api_playlists_tracks():
     """Return the track list of one playlist.
 
     ``source`` selects the backend: ``file`` reads the .nsp JSON directly
     (falling back to a Navidrome name lookup for rule-based files), while
     ``navidrome`` loads the playlist from the Subsonic API.
     """
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     source = str(data.get("source") or "")
     playlist_id = str(data.get("id") or "")
 
@@ -628,13 +628,13 @@ def api_playlists_tracks():
 
 
 @playlists_bp.route("/api/playlists/rename", methods=["POST"])
-def api_playlists_rename():
+async def api_playlists_rename():
     """Rename a playlist.
 
     File-backed smart playlists also rename the .nsp file on disk
     (``file_name``); Navidrome playlists are renamed via the Subsonic API.
     """
-    data = request.get_json(silent=True) or {}
+    data = (await request.get_json(silent=True)) or {}
     source = str(data.get("source") or "")
     name = str(data.get("name") or "").strip()
     if not name:
