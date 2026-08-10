@@ -141,6 +141,7 @@ TABLES_TO_ENSURE: dict[str, str] = {
             artist_name TEXT NOT NULL,
             album_name TEXT NOT NULL,
             source TEXT NOT NULL DEFAULT 'wikipedia',
+            source_key TEXT,
             release_date TEXT,
             release_year INTEGER,
             artist_in_collection BOOLEAN DEFAULT FALSE,
@@ -268,6 +269,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
     "track_popularity_cache": {"lastfm_tags": "TEXT"},
     "upcoming_releases": {
         "release_year": "INTEGER",
+        "source_key": "TEXT",
         "artist_in_collection": "BOOLEAN DEFAULT FALSE",
         "album_in_collection": "BOOLEAN DEFAULT FALSE",
         "mbid_match_status": "TEXT DEFAULT 'unmatched'",

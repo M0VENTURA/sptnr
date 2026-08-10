@@ -164,7 +164,7 @@ class WikipediaReleaseScraper:
                 }
                 continue
 
-            new, updated = self._persist_releases(items, src_info["name"])
+            new, updated = self._persist_releases(items, src_info["name"], src_key)
 
             results["total_found"] += len(items)
             results["total_new"] += new
@@ -263,11 +263,18 @@ class WikipediaReleaseScraper:
             # Reconstruct with rowspan/colspan handling
             reconstructed = self._reconstruct_rows(data_rows)
 
+            # Whether this table actually carries a day column.  Date tables
+            # may contain TBA rows whose first cell is not date-like, while
+            # TBA/Unscheduled tables have no day column at all — deciding once
+            # per table keeps the column mapping aligned for both.
+            table_has_day = self._table_has_day_column(reconstructed)
+
             for cells in reconstructed:
                 if len(cells) < 2:
                     continue
                 release = self._parse_row(
-                    cells, column_order, year, current_month, last_seen_day
+                    cells, column_order, year, current_month, last_seen_day,
+                    table_has_day=table_has_day,
                 )
                 if release:
                     releases.append(release)
@@ -315,18 +322,46 @@ class WikipediaReleaseScraper:
 
     @staticmethod
     def _skip_header_rows(rows: list[Any]) -> list[Any]:
-        """Skip header rows (rows with mostly TH elements)."""
+        """Skip leading navigation/header rows.
+
+        Walks the first few rows and skips:
+          - wide single-cell navigation rows (the "Go to:" jump bar on the
+            List of <year> albums pages) that precede the real header;
+          - header rows made up mostly of ``<th>`` cells;
+          - ``<td>``-based header rows (rare) detected by cell contents.
+
+        Stops at the first row that looks like data.
+        """
         start = 0
-        for i, row in enumerate(rows[:5]):
+        for i, row in enumerate(rows[:6]):
             cells = row.find_all(["td", "th"])
             if not cells:
                 continue
+            texts = [c.get_text(strip=True) for c in cells]
             th_count = sum(1 for c in cells if c.name == "th")
             td_count = sum(1 for c in cells if c.name == "td")
+
+            # Single-cell navigation row (e.g. "Go to: February | March | ...")
+            if len(cells) == 1:
+                colspan = cells[0].get("colspan")
+                try:
+                    colspan = int(colspan) if colspan else 1
+                except (TypeError, ValueError):
+                    colspan = 1
+                if colspan > 1:
+                    start = i + 1
+                    continue
+
             if th_count >= 3 and th_count > td_count:
                 start = i + 1
-            else:
-                break
+                continue
+
+            # TD-rendered header row (rare but present on some pages).
+            if texts and WikipediaReleaseScraper._is_header_row(texts):
+                start = i + 1
+                continue
+
+            break
         return rows[start:]
 
     @staticmethod
@@ -373,6 +408,20 @@ class WikipediaReleaseScraper:
 
         return reconstructed
 
+    @staticmethod
+    def _table_has_day_column(rows: list[list[str]]) -> bool:
+        """True when the (already reconstructed) table rows carry a day column.
+
+        Scans the first few rows: if any first cell looks like a date, the
+        table is a date table (TBA rows are still handled — they simply get a
+        NULL release date).  Used so that TBA/Unscheduled tables (no day
+        column) are not misread as date tables.
+        """
+        for row in rows[:5]:
+            if row and WikipediaReleaseScraper._looks_like_date_cell(row[0]):
+                return True
+        return False
+
     def _parse_row(
         self,
         cells: list[str],
@@ -380,18 +429,31 @@ class WikipediaReleaseScraper:
         year: int,
         current_month: int,
         last_seen_day: int | None,
+        table_has_day: bool = True,
     ) -> dict[str, Any] | None:
         """Parse a single row of cells into a release dict."""
-        # Clean citation brackets
-        cells = [re.sub(r"\s*\[\d+\]\s*", " ", c).strip() for c in cells]
+        # Clean citation brackets (e.g. "[58]") and interlanguage markers
+        # (e.g. a trailing "[ko]"), then drop trailing empty cells (an unused
+        # genre/label column).
+        cells = [self._clean_cell_text(c) for c in cells]
+        while cells and not cells[-1]:
+            cells.pop()
+        if len(cells) < 2:
+            return None
+
+        # Skip header rows (e.g. ["Release date", "Artist", ...]) that were
+        # rendered with <td> cells and escaped the structural header skip.
+        if self._is_header_row(cells):
+            return None
 
         # Detect if first cell is a date
-        first = cells[0] if cells else ""
+        first = cells[0]
         has_date = self._looks_like_date_cell(first)
-        actual_cols = column_order.copy()
 
-        if "day" in actual_cols and not has_date:
-            actual_cols.remove("day")
+        # Map columns to values.  When the row has no day column (TBA/
+        # Unscheduled tables) the 'day' slot is dropped and the remaining
+        # columns shift left.
+        actual_cols = column_order if (has_date or table_has_day) else [c for c in column_order if c != "day"]
 
         # Map columns to values
         values: dict[str, str] = {}
@@ -400,16 +462,22 @@ class WikipediaReleaseScraper:
             if ci >= len(cells):
                 break
             val = cells[ci].strip()
+            if col_type == "day":
+                # Always consume the day cell, even a single digit ("1".."9") —
+                # previously the len<2 junk filter dropped these and every row
+                # collapsed onto 2026-01-01.
+                values["day"] = val
+                ci += 1
+                continue
             if not val:
                 ci += 1
                 continue
             if col_type == "genre":
                 ci += 1
                 continue
-            if val.upper() in ("TBA", "TBD", "TBR") or len(val) < 2:
-                ci += 1
-                continue
-            if self._is_genre(val):
+            if val.upper() in ("TBA", "TBD", "TBR") or self._is_genre(val):
+                # Junk/skip cell (a TBA day with a shifted row, or a genre
+                # leak) — drop it so the following columns stay aligned.
                 ci += 1
                 continue
             values[col_type] = val
@@ -480,11 +548,15 @@ class WikipediaReleaseScraper:
             cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL)
             # Clean HTML tags and citation brackets
             cells = [re.sub(r"<[^>]+>", "", c).strip() for c in cells]
-            cells = [re.sub(r"\s*\[\d+\]\s*", " ", c).strip() for c in cells]
-            
+            cells = [self._clean_cell_text(c) for c in cells]
+
             if len(cells) < 2:
                 continue
-                
+
+            # Skip header rows (e.g. ["Release date", "Artist", ...])
+            if self._is_header_row(cells):
+                continue
+
             # Check if first cell is a date
             has_date = self._looks_like_date_cell(cells[0]) if cells else False
             actual_cols = column_order.copy()
@@ -548,6 +620,43 @@ class WikipediaReleaseScraper:
         return int(match.group(1)) if match else datetime.now().year
 
     @staticmethod
+    def _clean_cell_text(text: str) -> str:
+        """Normalize a table cell: strip citation/interlanguage brackets."""
+        if not text:
+            return ""
+        # Citation brackets like "[58]" (optionally glued to the previous word).
+        text = re.sub(r"\s*\[\d+\]\s*", " ", text)
+        # Trailing interlanguage marker (e.g. "Shin Soo-hyun[ko]").
+        text = re.sub(r"\s*\[\s*[a-z]{2,3}\s*\]\s*$", "", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    _HEADER_FIRST_LABELS: frozenset[str] = frozenset({
+        "release date", "day", "date", "artist",
+    })
+    _HEADER_CELL_LABELS: frozenset[str] = frozenset({
+        "release date", "day", "date", "artist", "artist(s)",
+        "album", "genre", "label", "ref", "reference",
+    })
+
+    @classmethod
+    def _is_header_row(cls, cells: list[str]) -> bool:
+        """True when a row consists mostly of generic column labels.
+
+        Catches header rows that are rendered with ``<td>`` cells (so the
+        structural TH-based skip in ``_skip_header_rows`` misses them).
+        The first cell must be a first-column label (e.g. "Release date") so a
+        real data row like ``["January 9", "Artist", "Album"]`` is not
+        mistaken for a header.
+        """
+        low = [str(c).strip().lower() for c in cells if str(c).strip()]
+        if len(low) < 2:
+            return False
+        if low[0] not in cls._HEADER_FIRST_LABELS:
+            return False
+        hits = sum(1 for c in low if c in cls._HEADER_CELL_LABELS)
+        return hits >= 2
+
+    @staticmethod
     def _parse_day(day_str: str | None, last_seen: int | None) -> int | None:
         """Parse day number from a string."""
         if not day_str:
@@ -601,7 +710,7 @@ class WikipediaReleaseScraper:
 
     @staticmethod
     def _persist_releases(
-        releases: list[dict[str, Any]], source_name: str
+        releases: list[dict[str, Any]], source_name: str, source_key: str | None = None
     ) -> tuple[int, int]:
         """Save scraped releases to the database.
 
@@ -611,6 +720,10 @@ class WikipediaReleaseScraper:
         ``last_seen_at``.  Against an existing Wikipedia row the new date/year
         are applied, falling back to the stored values when the scrape found
         no valid date (TBA).
+
+        ``source_key`` records the exact scraper rule (e.g. ``2026_kpop``) that
+        produced each row so the UI can render a per-rule source badge and
+        filter by it.
 
         Returns:
             Tuple of (new_count, updated_count).
@@ -632,9 +745,9 @@ class WikipediaReleaseScraper:
                     result = session.execute(
                         text("""
                             INSERT INTO upcoming_releases
-                                (artist_name, album_name, source, release_date,
+                                (artist_name, album_name, source, source_key, release_date,
                                  release_year, status, last_seen_at, updated_at)
-                            VALUES (:artist, :album, :source, :date,
+                            VALUES (:artist, :album, :source, :source_key, :date,
                                     :year, 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             ON CONFLICT (artist_name, album_name) DO UPDATE SET
                                 last_seen_at = CURRENT_TIMESTAMP,
@@ -642,6 +755,11 @@ class WikipediaReleaseScraper:
                                     WHEN upcoming_releases.source = 'MusicBrainz Daily Collection'
                                         THEN upcoming_releases.source
                                     ELSE EXCLUDED.source
+                                END,
+                                source_key = CASE
+                                    WHEN upcoming_releases.source = 'MusicBrainz Daily Collection'
+                                        THEN upcoming_releases.source_key
+                                    ELSE EXCLUDED.source_key
                                 END,
                                 release_date = CASE
                                     WHEN upcoming_releases.source = 'MusicBrainz Daily Collection'
@@ -661,6 +779,7 @@ class WikipediaReleaseScraper:
                             "date": rel_date,
                             "year": rel_year,
                             "source": source_name,
+                            "source_key": source_key,
                         },
                     )
                     if result.rowcount == 1:

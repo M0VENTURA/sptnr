@@ -424,10 +424,13 @@ function renderUpcomingReleasesTable(releases) {
     // (stored as "MusicBrainz Daily Collection" in the database). Any other source
     // is treated as Wikipedia (e.g., "2026 Albums", "Heavy Metal 2026").
     const sourceStr = String(r.source || "").trim();
+    const sourceKey = String(r.source_key || "").trim();
     const isMusicBrainz = sourceStr.toLowerCase().includes("musicbrainz daily collection");
-    const sourceBadge = isMusicBrainz
-      ? '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>'
-      : '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>';
+    const sourceBadge = sourceKey
+      ? `<span class="source-key-badge" title="Scraper rule: ${escapeHtml(sourceKey)}"><i class="bi bi-wikipedia"></i> ${escapeHtml(sourceKey)}</span>`
+      : (isMusicBrainz
+          ? '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>'
+          : '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>');
 
     const dateBadge = new Date(releaseDate) > new Date() ? '<span class="badge bg-success">Upcoming</span>' : '<span class="badge bg-primary">Recent</span>';
     const colBadge = r.artist_in_collection ? '<span class="badge bg-success ms-1" title="Artist in collection"><i class="bi bi-check"></i></span>' : "";
