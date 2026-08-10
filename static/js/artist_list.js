@@ -71,6 +71,74 @@ function jumpToLetter(letter) {
     }
 }
 
+// ===== Live search + health filter =====
+
+function applyArtistFilters() {
+    var list = document.getElementById('artistsList');
+    if (!list) return;
+
+    var query = (document.getElementById('artistSearchInput')?.value || '').trim().toLowerCase();
+    var activeFilter = document.querySelector('.artist-health-filter.active');
+    var filter = activeFilter ? activeFilter.getAttribute('data-filter') : 'all';
+
+    var rows = list.querySelectorAll(':scope > .list-group-item');
+    var anyVisible = false;
+
+    rows.forEach(function (row) {
+        var isHeader = row.hasAttribute('data-letter-header');
+        if (isHeader) {
+            row.classList.add('filtered-out');
+            return;
+        }
+        var name = (row.getAttribute('data-artist-name') || row.getAttribute('data-artist') || '').toLowerCase();
+        var matchesQuery = !query || name.indexOf(query) !== -1;
+        var matchesFilter = filter !== 'issues' || row.getAttribute('data-has-corrections') === '1';
+        var visible = matchesQuery && matchesFilter;
+        row.classList.toggle('filtered-out', !visible);
+        if (visible) anyVisible = true;
+    });
+
+    if (!anyVisible) {
+        var noResults = document.getElementById('artistNoResults');
+        if (noResults) noResults.classList.remove('d-none');
+        return;
+    }
+
+    // Re-show the letter headers that still have visible artists beneath them.
+    var showHeader = false;
+    rows.forEach(function (row) {
+        if (row.hasAttribute('data-letter-header')) {
+            showHeader = false;
+            row.classList.add('filtered-out');
+            return;
+        }
+        if (!row.classList.contains('filtered-out')) {
+            if (!showHeader && row.previousElementSibling &&
+                row.previousElementSibling.hasAttribute('data-letter-header')) {
+                row.previousElementSibling.classList.remove('filtered-out');
+            }
+            showHeader = true;
+        }
+    });
+
+    var noResults = document.getElementById('artistNoResults');
+    if (noResults) noResults.classList.add('d-none');
+}
+
+function setupArtistFilters() {
+    var searchInput = document.getElementById('artistSearchInput');
+    if (searchInput) {
+        searchInput.addEventListener('input', applyArtistFilters);
+    }
+    document.querySelectorAll('.artist-health-filter').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            document.querySelectorAll('.artist-health-filter').forEach(function (b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            applyArtistFilters();
+        });
+    });
+}
+
 // ===== Scan from letter =====
 
 async function scanLetterArtists(letter) {
@@ -125,6 +193,7 @@ async function loadArtistCorrections() {
             var correctionsUrl = info.corrections_url || '#';
 
             if (info.needs_correction) {
+                row.setAttribute('data-has-corrections', '1');
                 var parts = [];
                 if (info.duplicate_track_count > 0) parts.push(info.duplicate_track_count + ' duplicate track(s)');
                 if (info.disc_inconsistent_count > 0) parts.push(info.disc_inconsistent_count + ' album(s) with disc number issues');
@@ -175,6 +244,7 @@ async function loadArtistCorrections() {
                     }
                 }
             } else if (info.duplicate_artist_count > 0) {
+                row.setAttribute('data-has-corrections', '1');
                 var actionSpan = row.querySelector('.correction-action-btns');
                 if (actionSpan) {
                     actionSpan.innerHTML = '';
@@ -275,7 +345,7 @@ async function toggleCorrectionDetail(row, artistName, info, triggerEl) {
             sorted.forEach(function (a) {
                 var issueBadges = '';
                 if (a.disc_issues) issueBadges += '<span class="badge bg-info text-dark me-1" title="Disc number issues"><i class="bi bi-disc"></i> Disc</span>';
-                if (a.mbid_issues) issueBadges += '<span class="badge bg-danger me-1" title="Missing MBIDs"><i class="bi bi-music-note-list"></i> MBID</span>';
+                if (a.mbid_issues) issueBadges += '<button class="btn btn-sm btn-outline-danger fix-mbid-btn me-1" title="Link this album to a MusicBrainz release" data-artist="' + artistName.replace(/"/g, '&quot;') + '" data-album="' + escHtml(a.album).replace(/"/g, '&quot;') + '"><i class="bi bi-link-45deg"></i> Link MBID</button>';
                 if (a.missing_tracks) issueBadges += '<span class="badge bg-secondary me-1" title="Missing file paths"><i class="bi bi-file-earmark-x"></i> Missing</span>';
                 if (!issueBadges) issueBadges = '<span class="badge bg-success me-1"><i class="bi bi-check-circle"></i> OK</span>';
 
@@ -287,7 +357,6 @@ async function toggleCorrectionDetail(row, artistName, info, triggerEl) {
                     '</div>' +
                     '<div class="d-flex gap-1 flex-wrap mt-1 mt-sm-0">' +
                     (a.disc_issues ? '<button class="btn btn-sm btn-outline-info clear-disc-btn" data-artist="' + artistName.replace(/"/g, '&quot;') + '" data-album="' + escHtml(a.album).replace(/"/g, '&quot;') + '"><i class="bi bi-eraser"></i> Clear Disc#</button>' : '') +
-                    (a.mbid_issues ? '<button class="btn btn-sm btn-outline-danger fix-mbid-btn" data-artist="' + artistName.replace(/"/g, '&quot;') + '" data-album="' + escHtml(a.album).replace(/"/g, '&quot;') + '"><i class="bi bi-search"></i> Fix MBID</button>' : '') +
                     (a.missing_tracks ? '<button class="btn btn-sm btn-outline-secondary" onclick="alert(\'Re-scan this album to recover missing tracks.\')"><i class="bi bi-arrow-repeat"></i> Re-scan</button>' : '') +
                     '</div></div>';
             });
@@ -394,6 +463,7 @@ function escHtml(str) {
 // ===== Expandable Album Rows =====
 
 document.addEventListener('DOMContentLoaded', function () {
+    setupArtistFilters();
     document.querySelectorAll('.btn-expand-albums').forEach(function (btn) {
         btn.addEventListener('click', function () {
             var artist = this.getAttribute('data-artist');
@@ -478,7 +548,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                     var trackBadge = '<span class="badge bg-secondary me-2">' + album.track_count + ' tracks</span>';
                                     var corrBadges = '';
                                     if (album.disc_issues) corrBadges += '<span class="badge bg-info text-dark me-1" title="Disc number issues"><i class="bi bi-disc"></i> Disc</span>';
-                                    if (album.mbid_issues) corrBadges += '<span class="badge bg-danger me-1" title="Missing MBIDs"><i class="bi bi-music-note-list"></i> MBID</span>';
+                                    if (album.mbid_issues) corrBadges += '<button class="btn btn-sm btn-outline-danger fix-mbid-btn me-1" title="Link this album to a MusicBrainz release" data-artist="' + escHtml(artist).replace(/"/g, '&quot;') + '" data-album="' + escHtml(album.album).replace(/"/g, '&quot;') + '"><i class="bi bi-link-45deg"></i> Link MBID</button>';
                                     if (album.missing_tracks && !album.is_missing) corrBadges += '<span class="badge bg-secondary me-1" title="Missing file paths"><i class="bi bi-file-earmark-x"></i> Missing Tracks</span>';
                                     if (!corrBadges) corrBadges = '<span class="badge bg-success me-1"><i class="bi bi-check-circle"></i> OK</span>';
 
@@ -491,9 +561,6 @@ document.addEventListener('DOMContentLoaded', function () {
                                     html += '<span class="d-flex gap-1 flex-shrink-0">';
                                     if (album.disc_issues) {
                                         html += '<button class="btn btn-sm btn-outline-info clear-disc-btn" title="Clear disc numbers" data-artist="' + escHtml(artist).replace(/"/g, '&quot;') + '" data-album="' + escHtml(album.album).replace(/"/g, '&quot;') + '"><i class="bi bi-eraser"></i></button>';
-                                    }
-                                    if (album.mbid_issues) {
-                                        html += '<button class="btn btn-sm btn-outline-danger fix-mbid-btn" title="Fix MBID" data-artist="' + escHtml(artist).replace(/"/g, '&quot;') + '" data-album="' + escHtml(album.album).replace(/"/g, '&quot;') + '"><i class="bi bi-search"></i></button>';
                                     }
                                     html += '<a href="/album/' + encodeURIComponent(artist) + '/' + encodeURIComponent(album.album) + '" class="btn btn-sm btn-outline-secondary" title="View album"><i class="bi bi-arrow-right"></i></a>';
                                     html += '</span></div>';
