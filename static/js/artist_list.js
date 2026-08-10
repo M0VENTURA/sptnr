@@ -141,11 +141,10 @@ function setupArtistFilters() {
 
 // ===== Scan from letter =====
 
-async function scanLetterArtists(letter) {
-    var forceCheck = document.querySelector('.letter-force-check[data-letter="' + letter + '"]');
-    var fullScan = !!(forceCheck && forceCheck.checked);
-    var scanMode = fullScan ? 'forced' : 'changes';
-    var message = 'Start ' + (fullScan ? 'Full' : 'Changes') + ' scan from letter "' + letter + '"?\n\nThis will resolve the first matching artist from your local library and scan from there.';
+async function scanLetterArtists(letter, scanMode) {
+    var fullScan = scanMode === 'forced';
+    var scanModeValue = fullScan ? 'forced' : 'changes';
+    var message = 'Start ' + (fullScan ? 'Full (Forced)' : 'Changes') + ' scan from letter "' + letter + '"?\n\nThis will resolve the first matching artist from your local library and scan from there.';
 
     if (!confirm(message)) {
         return;
@@ -157,7 +156,7 @@ async function scanLetterArtists(letter) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 letter: letter,
-                scan_mode: scanMode
+                scan_mode: scanModeValue
             })
         });
 
@@ -345,7 +344,7 @@ async function toggleCorrectionDetail(row, artistName, info, triggerEl) {
             sorted.forEach(function (a) {
                 var issueBadges = '';
                 if (a.disc_issues) issueBadges += '<span class="badge bg-info text-dark me-1" title="Disc number issues"><i class="bi bi-disc"></i> Disc</span>';
-                if (a.mbid_issues) issueBadges += '<button class="btn btn-sm btn-outline-danger fix-mbid-btn me-1" title="Link this album to a MusicBrainz release" data-artist="' + artistName.replace(/"/g, '&quot;') + '" data-album="' + escHtml(a.album).replace(/"/g, '&quot;') + '"><i class="bi bi-link-45deg"></i> Link MBID</button>';
+                if (a.mbid_issues) issueBadges += '<button class="btn btn-sm album-row-btn fix-mbid-btn me-1" title="Link this album to a MusicBrainz release" data-artist="' + artistName.replace(/"/g, '&quot;') + '" data-album="' + escHtml(a.album).replace(/"/g, '&quot;') + '"><i class="bi bi-link-45deg me-1"></i> Link MBID</button>';
                 if (a.missing_tracks) issueBadges += '<span class="badge bg-secondary me-1" title="Missing file paths"><i class="bi bi-file-earmark-x"></i> Missing</span>';
                 if (!issueBadges) issueBadges = '<span class="badge bg-success me-1"><i class="bi bi-check-circle"></i> OK</span>';
 
@@ -464,6 +463,9 @@ function escHtml(str) {
 
 document.addEventListener('DOMContentLoaded', function () {
     setupArtistFilters();
+    // Load correction badges asynchronously so the page renders quickly first,
+    // and so the "Has Issues" health filter has data to match against.
+    loadArtistCorrections();
     document.querySelectorAll('.btn-expand-albums').forEach(function (btn) {
         btn.addEventListener('click', function () {
             var artist = this.getAttribute('data-artist');
@@ -548,7 +550,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                     var trackBadge = '<span class="badge bg-secondary me-2">' + album.track_count + ' tracks</span>';
                                     var corrBadges = '';
                                     if (album.disc_issues) corrBadges += '<span class="badge bg-info text-dark me-1" title="Disc number issues"><i class="bi bi-disc"></i> Disc</span>';
-                                    if (album.mbid_issues) corrBadges += '<button class="btn btn-sm btn-outline-danger fix-mbid-btn me-1" title="Link this album to a MusicBrainz release" data-artist="' + escHtml(artist).replace(/"/g, '&quot;') + '" data-album="' + escHtml(album.album).replace(/"/g, '&quot;') + '"><i class="bi bi-link-45deg"></i> Link MBID</button>';
+                                    if (album.mbid_issues) corrBadges += '<button class="btn btn-sm album-row-btn fix-mbid-btn me-1" title="Link this album to a MusicBrainz release" data-artist="' + escHtml(artist).replace(/"/g, '&quot;') + '" data-album="' + escHtml(album.album).replace(/"/g, '&quot;') + '"><i class="bi bi-link-45deg me-1"></i> Link MBID</button>';
                                     if (album.missing_tracks && !album.is_missing) corrBadges += '<span class="badge bg-secondary me-1" title="Missing file paths"><i class="bi bi-file-earmark-x"></i> Missing Tracks</span>';
                                     if (!corrBadges) corrBadges = '<span class="badge bg-success me-1"><i class="bi bi-check-circle"></i> OK</span>';
 
@@ -560,9 +562,9 @@ document.addEventListener('DOMContentLoaded', function () {
                                     html += '<span class="d-flex flex-wrap gap-1 align-items-center">' + corrBadges + '</span>';
                                     html += '<span class="d-flex gap-1 flex-shrink-0">';
                                     if (album.disc_issues) {
-                                        html += '<button class="btn btn-sm btn-outline-info clear-disc-btn" title="Clear disc numbers" data-artist="' + escHtml(artist).replace(/"/g, '&quot;') + '" data-album="' + escHtml(album.album).replace(/"/g, '&quot;') + '"><i class="bi bi-eraser"></i></button>';
+                                        html += '<button class="btn btn-sm album-row-btn clear-disc-btn" title="Clear disc numbers" data-artist="' + escHtml(artist).replace(/"/g, '&quot;') + '" data-album="' + escHtml(album.album).replace(/"/g, '&quot;') + '"><i class="bi bi-eraser"></i></button>';
                                     }
-                                    html += '<a href="/album/' + encodeURIComponent(artist) + '/' + encodeURIComponent(album.album) + '" class="btn btn-sm btn-outline-secondary" title="View album"><i class="bi bi-arrow-right"></i></a>';
+                                    html += '<a href="/album/' + encodeURIComponent(artist) + '/' + encodeURIComponent(album.album) + '" class="btn btn-sm album-row-btn" title="View album"><i class="bi bi-arrow-right"></i></a>';
                                     html += '</span></div>';
                                 });
                                 html += '</div></div>';
