@@ -30,17 +30,22 @@
       </div>
     </div>
     <div class="card-body">
-      <ul class="nav nav-pills mb-3" id="upcomingTabs">
-        <li class="nav-item">
-          <button class="nav-link active" type="button" data-filter="all">All</button>
-        </li>
-        <li class="nav-item">
-          <button class="nav-link" type="button" data-filter="collection">Collection Artists</button>
-        </li>
-        <li class="nav-item">
-          <button class="nav-link" type="button" data-filter="discovered">Discovered / Wikipedia</button>
-        </li>
-      </ul>
+      <div class="d-flex align-items-center gap-2 flex-wrap mb-3">
+        <ul class="nav nav-pills mb-0" id="upcomingTabs">
+          <li class="nav-item">
+            <button class="nav-link active" type="button" data-filter="all">All</button>
+          </li>
+          <li class="nav-item">
+            <button class="nav-link" type="button" data-filter="collection">Collection Artists</button>
+          </li>
+          <li class="nav-item">
+            <button class="nav-link" type="button" data-filter="discovered">Discovered / Wikipedia</button>
+          </li>
+        </ul>
+        <select id="upcomingSourceFilter" class="form-select form-select-sm ms-auto" style="width:auto;max-width:320px;" title="Filter by scraper rule">
+          <option value="all">All Sources</option>
+        </select>
+      </div>
 
       <div id="upcomingStatus" class="alert alert-info" style="display:none;">
         <div class="d-flex">
@@ -143,6 +148,7 @@
 
   var PAGE_SIZE = 50;
   var currentFilter = 'all';
+  var currentSource = 'all';
 
   // ── Progress badge + polling ─────────────────────────────────────────
   var progressTimer = null;
@@ -243,6 +249,7 @@
     try {
       var data = await S.fetchReleases({
         filter: currentFilter === 'all' ? undefined : currentFilter,
+        source: currentSource === 'all' ? undefined : currentSource,
         include_queue: true,
         page: S.state.filters.page,
         limit: PAGE_SIZE,
@@ -258,6 +265,25 @@
       if (error && error.name === 'AbortError') return;
       container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0">Nothing to show yet.</p></div>';
       showError(error.message || 'Failed to load upcoming releases');
+    }
+  }
+
+  // ── Source filter dropdown ──────────────────────────────────────────
+  async function loadSourceFilter() {
+    var select = document.getElementById('upcomingSourceFilter');
+    if (!select) return;
+    try {
+      var sources = await S.fetchSources();
+      var html = '<option value="all">All Sources (' + sources.length + ')</option>';
+      (sources || []).forEach(function (s) {
+        var label = s.label || s.key;
+        html += '<option value="' + S.escapeHtml(s.key) + '">' +
+          S.escapeHtml(label) + ' (' + (s.count || 0) + ')</option>';
+      });
+      select.innerHTML = html;
+      select.value = currentSource;
+    } catch (_e) {
+      // Non-fatal: the dropdown just stays on "All Sources".
     }
   }
 
@@ -330,11 +356,21 @@
         refreshPage();
       });
     });
+
+    var sourceSelect = document.getElementById('upcomingSourceFilter');
+    if (sourceSelect) {
+      sourceSelect.addEventListener('change', function () {
+        currentSource = this.value || 'all';
+        S.state.filters.page = 1;
+        refreshPage();
+      });
+    }
   }
 
   document.addEventListener('DOMContentLoaded', function () {
     bindActions();
     S.onRefresh = refreshPage;
+    loadSourceFilter();
 
     // Resume polling if a refresh is already running (e.g. triggered from
     // the monitor page earlier).

@@ -13,6 +13,20 @@
 (function () {
   'use strict';
 
+  // Self-contained styles for the specific source-rule badge (rendered from
+  // JS so every page that loads this service gets the same pill).
+  (function injectSourceBadgeStyles() {
+    if (document.getElementById('upcomingSourceBadgeStyles')) return;
+    var style = document.createElement('style');
+    style.id = 'upcomingSourceBadgeStyles';
+    style.textContent =
+      '.source-key-badge{display:inline-block;padding:0 0.5rem;font-size:10px;' +
+      'font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;line-height:1.5;' +
+      'color:#c4b5fd;background:rgba(88,28,135,0.55);border:1px solid rgba(168,85,247,0.45);' +
+      'border-radius:0.25rem;white-space:nowrap}';
+    document.head.appendChild(style);
+  })();
+
   var state = {
     items: [],
     filters: { source: 'all', page: 1, limit: 50 },
@@ -66,6 +80,7 @@
     var filters = Object.assign({}, state.filters, params || {});
     var qs = new URLSearchParams();
     if (filters.filter && filters.filter !== 'all') qs.set('filter', filters.filter);
+    if (filters.source && filters.source !== 'all') qs.set('source', filters.source);
     if (filters.include_queue) qs.set('include_queue', 'true');
     qs.set('page', filters.page || 1);
     qs.set('limit', filters.limit || 50);
@@ -76,6 +91,12 @@
     state.hasMore = !!data.has_more;
     state.filters = filters;
     return data;
+  }
+
+  /** Distinct release sources + counts, for the Source filter dropdown. */
+  async function fetchSources() {
+    var data = await fetchJson('/api/upcoming-releases/sources', {}, 10000);
+    return data.sources || [];
   }
 
   async function triggerScrape() {
@@ -123,7 +144,20 @@
   // Row rendering
   // ------------------------------------------------------------------
 
+  /**
+   * Source badge for a release row.
+   *
+   * Wikipedia rows carry the exact scraper-rule key (e.g. ``2026_heavy_metal``)
+   * in ``release.source_key`` — render it as a monospace pill so a mis-parsed
+   * album instantly points at the rule that produced it.  Rows scraped before
+   * ``source_key`` existed (or MusicBrainz rows) fall back to the generic badge.
+   */
   function sourceBadge(release) {
+    var sourceKey = String(release.source_key || '').trim();
+    if (sourceKey) {
+      return '<span class="source-key-badge" title="Scraper rule: ' + escapeHtml(sourceKey) + '">' +
+        '<i class="bi bi-wikipedia"></i> ' + escapeHtml(sourceKey) + '</span>';
+    }
     var isMusicBrainz = String(release.source || '').toLowerCase().includes('musicbrainz');
     return isMusicBrainz
       ? '<span class="badge bg-info"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>'
@@ -304,6 +338,7 @@
     state: state,
     set onRefresh(fn) { onRefresh = fn; },
     fetchReleases: fetchReleases,
+    fetchSources: fetchSources,
     triggerScrape: triggerScrape,
     fetchScrapeStatus: fetchScrapeStatus,
     matchRelease: matchRelease,

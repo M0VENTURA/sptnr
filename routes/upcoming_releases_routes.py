@@ -53,6 +53,9 @@ def api_upcoming_releases():
     Query params:
         filter (str): "all" (default), "collection" (artist/album in library),
                       or "discovered" (Wikipedia-sourced rows only).
+        source (str): Optional exact scraper-rule key to filter by
+                      (e.g. "2026_kpop", or "musicbrainz_daily_collection" for
+                      the MusicBrainz daily scan rows).
         include_queue (str): If "true", include in_queue flag per release.
         page (int): 1-based page number (default 1).
         limit (int): Page size (default 50, max 200).
@@ -65,15 +68,30 @@ def api_upcoming_releases():
         # "artists already in my library only".
         if (request.args.get("collection") or "").strip().lower() == "true":
             release_filter = "collection"
+        source_filter = (request.args.get("source", "") or "").strip()
         include_queue = request.args.get("include_queue", "").strip().lower() == "true"
         page = max(1, request.args.get("page", 1, type=int))
         limit = max(1, min(request.args.get("limit", 50, type=int), 200))
 
+        where_sql = ""
+        params: dict[str, Any] = {}
+        if source_filter and source_filter != "all":
+            if source_filter == "musicbrainz_daily_collection":
+                where_sql = " WHERE source = 'MusicBrainz Daily Collection'"
+            else:
+                # Matches both new rows (source_key) and legacy rows scraped
+                # before source_key existed (fall back to the source label).
+                where_sql = " WHERE COALESCE(source_key, source) = :source_key"
+                params["source_key"] = source_filter
+
         with db_session() as session:
-            total = session.execute(text("SELECT COUNT(*) FROM upcoming_releases")).scalar() or 0
+            total = session.execute(
+                text(f"SELECT COUNT(*) FROM upcoming_releases{where_sql}"),
+                params,
+            ).scalar() or 0
             result = session.execute(
-                text("SELECT * FROM upcoming_releases ORDER BY release_date ASC NULLS LAST, id ASC LIMIT :limit OFFSET :offset"),
-                {"limit": limit + 1, "offset": (page - 1) * limit},
+                text(f"SELECT * FROM upcoming_releases{where_sql} ORDER BY release_date ASC NULLS LAST, id ASC LIMIT :limit OFFSET :offset"),
+                {**params, "limit": limit + 1, "offset": (page - 1) * limit},
             )
             rows = result.fetchall()
 
@@ -174,6 +192,40 @@ def api_upcoming_releases():
         })
     except Exception as exc:
         logger.error("Failed to fetch upcoming releases: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@upcoming_bp.route("/sources", methods=["GET"])
+def api_upcoming_sources():
+    """Distinct release sources with counts, for the Source filter dropdown.
+
+    Wikipedia rows expose their exact scraper-rule key (e.g. ``2026_kpop``);
+    MusicBrainz rows are grouped under the ``musicbrainz_daily_collection``
+    pseudo-key so the filter can select them too.
+    """
+    try:
+        with db_session() as session:
+            rows = session.execute(
+                text("""
+                    SELECT
+                        CASE
+                            WHEN source = 'MusicBrainz Daily Collection' THEN 'musicbrainz_daily_collection'
+                            ELSE COALESCE(source_key, source)
+                        END AS key,
+                        CASE
+                            WHEN source = 'MusicBrainz Daily Collection' THEN 'MusicBrainz Daily Collection'
+                            ELSE COALESCE(source_key, source)
+                        END AS label,
+                        COUNT(*) AS count
+                    FROM upcoming_releases
+                    GROUP BY key, label
+                    ORDER BY count DESC, label ASC
+                """)
+            ).fetchall()
+        sources = [{"key": str(r[0]), "label": str(r[1]), "count": int(r[2] or 0)} for r in rows]
+        return jsonify({"success": True, "sources": sources})
+    except Exception as exc:
+        logger.error("Failed to fetch upcoming release sources: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
