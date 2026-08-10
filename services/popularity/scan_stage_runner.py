@@ -71,6 +71,82 @@ def _refresh_album_live_context(album, album_context, track_contexts, album_type
         )
 
 
+def _collapse_album_mb_batch(
+    mb_batch: dict[str, dict[str, Any]],
+    track_contexts: list[dict[str, Any]],
+    current_album: str,
+) -> None:
+    """Rewrite every entry of an album's MB batch to ONE canonical album name.
+
+    The per-track MusicBrainz lookup resolves each track to whichever release
+    the recording is listed under FIRST — for multi-edition albums ("OPVS
+    NOIR Vol. 3" vs "OPVS NOIR Vol. 3 (Instrumental)") different tracks of the
+    SAME folder can therefore resolve to different release titles.  Each track
+    then writes its own name to the ``album`` column, splitting one folder into
+    several albums on every metadata scan.
+
+    The folder name from the tracks' file paths is authoritative: the canonical
+    album name is the batch entry that best matches that folder (ties broken by
+    how often MB returned it).  With no folder anchor, the most frequent batch
+    name wins.  Every entry is rewritten in place so the whole album agrees.
+    """
+    folder_counts: dict[str, int] = {}
+    for _tc in track_contexts or []:
+        _fp = str((_tc.get("track") or {}).get("file_path") or "")
+        if not _fp:
+            continue
+        _parts = _fp.replace("\\", "/").rstrip("/").split("/")
+        if len(_parts) >= 2 and _parts[-2]:
+            _folder = _parts[-2].strip()
+            folder_counts[_folder] = folder_counts.get(_folder, 0) + 1
+    anchor = (
+        max(folder_counts.items(), key=lambda kv: (kv[1], len(kv[0])))[0]
+        if folder_counts
+        else str(current_album or "").strip()
+    )
+
+    from collections import Counter
+
+    album_counts: Counter = Counter()
+    distinct_albums: list[str] = []
+    for _meta in (mb_batch or {}).values():
+        _album = str((_meta or {}).get("album") or "").strip()
+        if not _album:
+            continue
+        album_counts[_album] += 1
+        if _album not in distinct_albums:
+            distinct_albums.append(_album)
+
+    canonical = None
+    if anchor and distinct_albums:
+        from difflib import SequenceMatcher
+
+        def _score(name: str) -> float:
+            return SequenceMatcher(None, anchor.lower(), name.lower()).ratio()
+
+        best_score = 0.0
+        for _name in distinct_albums:
+            _sim = _score(_name)
+            _tie = album_counts[_name]
+            if (
+                _sim > best_score
+                or (_sim == best_score and _tie > album_counts.get(canonical, 0))
+            ):
+                best_score = _sim
+                canonical = _name
+        if best_score < 0.6:
+            canonical = None
+    if not canonical and distinct_albums:
+        canonical = max(distinct_albums, key=lambda n: (album_counts[n], len(n)))
+
+    if not canonical:
+        return
+
+    for _meta in (mb_batch or {}).values():
+        if _meta and str(_meta.get("album") or "").strip():
+            _meta["album"] = canonical
+
+
 def _resolve_scan_type(options: dict[str, Any]) -> str:
     """Return a human-readable scan-type label from the runner options."""
     if options.get("metadata_only"):
@@ -1349,6 +1425,13 @@ def run_scan(
                             http_client=get_shared_mb_client()
                         ).lookup_album_metadata(_mb_entries)
                         if _mb_batch:
+                            # Per-track MB releases for multi-edition albums
+                            # ("OPVS NOIR Vol. 3" vs "... (Instrumental)") can
+                            # resolve to different releases per track, which
+                            # would split this folder into several albums on
+                            # every metadata scan.  Collapse the whole batch
+                            # onto ONE folder-anchored album name first.
+                            _collapse_album_mb_batch(_mb_batch, track_contexts, album)
                             _existing = options.get("mb_batch_metadata") or {}
                             options["mb_batch_metadata"] = {**_existing, **_mb_batch}
                             log_unified(
