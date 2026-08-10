@@ -3693,6 +3693,23 @@ function switchAlbumMobileTab(tab) {
     });
 }
 
+// Toggle the hero "Top Genres" +X more popover (album genre tag management).
+function toggleAlbumHeroGenres(toggle) {
+    if (!toggle) return;
+    const extra = document.getElementById('albumHeroGenresExtra');
+    if (!extra) return;
+    const showing = toggle.dataset.open === '1';
+    extra.style.display = showing ? 'none' : 'flex';
+    toggle.textContent = showing ? `+${toggle.dataset.count || 'X'} more` : 'less';
+    toggle.dataset.open = showing ? '0' : '1';
+}
+document.addEventListener('DOMContentLoaded', function () {
+    const toggle = document.getElementById('albumHeroGenresToggle');
+    if (toggle) {
+        toggle.dataset.count = String(toggle.textContent.replace(/\D/g, ''));
+    }
+});
+
 // Clamp per-track genre badges to the top 3, hiding the rest behind "+X more".
 function initAlbumGenreClamp() {
     document.querySelectorAll('.genre-badge').forEach(function (badge) {

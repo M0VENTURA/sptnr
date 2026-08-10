@@ -1226,6 +1226,32 @@ async def album_detail(artist: str, album: str):
         genres_str = (form.get("album_genres") or "").strip()
         cover_url = (form.get("cover_art_url") or "").strip()
 
+        # Release Information fields (moved from the track page to the album page)
+        release_fields = [
+            "recordlabel",
+            "catalognumber",
+            "barcode",
+            "asin",
+            "releasedate",
+            "media",
+            "releasetype",
+            "releasestatus",
+            "releasecountry",
+            "copyright",
+            "language",
+            "explicitstatus",
+            "originalyear",
+            "originaldate",
+            "tracktotal",
+            "disctotal",
+            "script",
+            "discsubtitle",
+        ]
+        release_values = {
+            f: (form.get(f"album_{f}") or "").strip()
+            for f in release_fields
+        }
+
         updated_count = 0
         reverted_live_count = 0
 
@@ -1277,6 +1303,12 @@ async def album_detail(artist: str, album: str):
             # Cover art URL
             if cover_url:
                 payload["cover_art_url"] = cover_url
+
+            # Release Information — push the same values to every track
+            # on the album so the release-level fields stay in sync.
+            for field, value in release_values.items():
+                if value:
+                    payload[field] = value
 
             # Genres — write to both DB and audio file
             if genres_str:
@@ -1472,6 +1504,22 @@ async def album_detail(artist: str, album: str):
         "spotify_album_type": first_value("musicbrainz_albumtype", "spotify_album_type", "album_type"),
         "record_label": first_value("record_label", "label"),
         "catalog_number": first_value("catalog_number", "catalog"),
+        "recordlabel": first_value("recordlabel"),
+        "catalognumber": first_value("catalognumber", "catalog_number", "catalog"),
+        "barcode": first_value("barcode"),
+        "asin": first_value("asin"),
+        "releasedate": first_value("releasedate", "release_date", "date"),
+        "media": first_value("media"),
+        "releasetype": first_value("releasetype", "album_type", "musicbrainz_albumtype"),
+        "releasestatus": first_value("releasestatus"),
+        "releasecountry": first_value("releasecountry"),
+        "copyright": first_value("copyright"),
+        "language": first_value("language"),
+        "explicitstatus": first_value("explicitstatus"),
+        "originalyear": first_value("originalyear"),
+        "originaldate": first_value("originaldate"),
+        "tracktotal": first_value("tracktotal"),
+        "disctotal": first_value("disctotal"),
         "last_scanned": first_value("last_scanned", "updated_at", "created_at"),
         "musicbrainz_album_mbid": first_value("musicbrainz_album_mbid", "musicbrainz_releaseid", "musicbrainz_albumid"),
         "musicbrainz_releasegroupid": first_value("musicbrainz_releasegroupid", "musicbrainz_release_group_id"),
@@ -1527,6 +1575,40 @@ async def album_detail(artist: str, album: str):
         "musicbrainz_albumartistid",
     ) or ""
 
+    def collect_hero_genres() -> list[str]:
+        """Ranked album genres for the hero badge row.
+
+        Saved/top genres lead; then every aggregated source tag is merged by
+        frequency so the highest-confidence (most repeated) tags surface first.
+        """
+        ranked: dict[str, int] = {}
+        for source_key, tags in (genre_sources or {}).items():
+            for tag in tags or []:
+                name = str(tag.get("name") or "").strip()
+                if not name:
+                    continue
+                try:
+                    count = int(tag.get("count") or 0)
+                except (TypeError, ValueError):
+                    count = 1
+                ranked[name] = ranked.get(name, 0) + max(count, 1)
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for genre in album_genres:
+            key = genre.lower()
+            if key not in seen:
+                seen.add(key)
+                ordered.append(genre)
+        for name, _count in sorted(ranked.items(), key=lambda x: x[1], reverse=True):
+            key = name.lower()
+            if key not in seen:
+                seen.add(key)
+                ordered.append(name)
+        return ordered
+
+    hero_genres = collect_hero_genres()
+
     return await render_template(
         "pages/album_detail.html",
 
@@ -1544,6 +1626,7 @@ async def album_detail(artist: str, album: str):
         tracks_by_disc=tracks_by_disc,
         album_genres=album_genres,
         genre_sources=genre_sources,
+        hero_genres=hero_genres,
         album_artist_mbid=album_artist_mbid,
 
         is_album_favourite=is_album_favourite,
