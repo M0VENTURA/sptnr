@@ -3675,3 +3675,101 @@ function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
     }
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Reorganisation Plan (#867) — album hero, mobile tabs, correction banner
+// actions, genre tag clamp.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Mobile 4-tab navigation on <lg viewports.
+function switchAlbumMobileTab(tab) {
+    document.querySelectorAll('.album-mobile-tab').forEach(function (btn) {
+        const active = btn.dataset.albumTab === tab;
+        btn.classList.toggle('active', active);
+        btn.classList.toggle('btn-info', active);
+        btn.classList.toggle('btn-outline-info', !active);
+    });
+    document.querySelectorAll('.album-mobile-group').forEach(function (group) {
+        group.classList.toggle('album-mobile-active', group.dataset.albumGroup === tab);
+    });
+}
+
+// Clamp per-track genre badges to the top 3, hiding the rest behind "+X more".
+function initAlbumGenreClamp() {
+    document.querySelectorAll('.genre-badge').forEach(function (badge) {
+        const container = badge.closest('.d-flex.align-items-center');
+        if (!container) return;
+        const badges = Array.from(container.querySelectorAll('.genre-badge'));
+        if (badges.length <= 3) return;
+        // Hide extras, append a "+N more" toggle.
+        badges.slice(3).forEach(function (b) { b.style.display = 'none'; });
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'btn btn-link p-0 genre-badge-more';
+        more.style.textDecoration = 'none';
+        more.textContent = `+${badges.length - 3} more`;
+        more.addEventListener('click', function () {
+            const showing = more.dataset.open === '1';
+            badges.slice(3).forEach(function (b) { b.style.display = showing ? 'none' : ''; });
+            more.textContent = showing ? `+${badges.length - 3} more` : 'less';
+            more.dataset.open = showing ? '0' : '1';
+        });
+        container.insertBefore(more, badges[3].nextSibling);
+    });
+}
+
+// Auto-Link All MBIDs: resolve unlinked tracks against the official release
+// tracklist and persist the Recording IDs.
+async function autoLinkAllMbids() {
+    const btn = document.querySelector('#album-correction-banner button');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+    }
+    try {
+        const releaseId = (document.getElementById('album_mbid') || {}).value || '';
+        const resp = await fetch('/api/musicbrainz/link-album-mbids', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                artist: _pageData.artistName || document.getElementById('album_artist')?.value || '',
+                album: _pageData.albumName || document.getElementById('album_title')?.value || '',
+                release_id: releaseId
+            })
+        });
+        const data = await resp.json();
+        if (data.success) {
+            alert(`✅ ${data.message || 'Tracks linked.'}`);
+            window.location.reload();
+        } else {
+            alert(`❌ ${data.error || 'Failed to link MBIDs'}`);
+        }
+    } catch (e) {
+        alert('❌ Network error: ' + e.message);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-link-45deg"></i> ⚡ Auto-Link All MBIDs';
+        }
+    }
+}
+
+// Align Tracklist: open the MusicBrainz lookup modal so the official release
+// tracklist can be compared and applied.
+function alignTracklist() {
+    if (typeof openAlbumLookupModal === 'function') {
+        openAlbumLookupModal();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    const albumTabBar = document.getElementById('albumMobileTabBar');
+    if (albumTabBar) {
+        albumTabBar.querySelectorAll('.album-mobile-tab').forEach(function (btn) {
+            btn.addEventListener('click', function () { switchAlbumMobileTab(btn.dataset.albumTab); });
+        });
+        switchAlbumMobileTab('tracks');
+    }
+    initAlbumGenreClamp();
+});
+
+

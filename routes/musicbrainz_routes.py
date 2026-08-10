@@ -14,7 +14,7 @@ from sqlalchemy import text
 from db.engine import db_session
 from helpers.config_helpers import get_config
 from helpers.response_helpers import _ok, _fail
-from api_clients.musicbrainz_http import MusicBrainzHttpClient
+from api_clients.musicbrainz_http import MusicBrainzHttpClient, MUSICBRAINZ_UUID_RE
 
 from services.downloads.download_pipeline_service import start_release_download
 from services.downloads.download_processing_service import queue_add
@@ -801,6 +801,175 @@ async def api_musicbrainz_download():
     except Exception as exc:
         logger.error("[MB_DOWNLOAD] Error: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# POST /api/musicbrainz/link-album-mbids
+# ---------------------------------------------------------------------------
+
+def _normalise_track_key(value: Any) -> str:
+    """Normalise a track title for fuzzy matching (lowercase, non-alphanumerics stripped)."""
+    return re.sub(r"[^a-z0-9]+", "", (str(value or "").lower()))
+
+
+def _match_release_tracklist(
+    local_tracks: list[dict[str, Any]],
+    mb_tracks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Match local tracks (missing Recording IDs) to MusicBrainz release tracks.
+
+    ``local_tracks`` entries carry ``id``/``title``/``track_number``/
+    ``disc_number``.  ``mb_tracks`` entries carry ``position``/``number``/
+    ``title``/``recording_mbid``.  Matching is by (disc, position) first, then
+    by normalised title.  Returns a list of ``{"track_id", "title",
+    "recording_mbid"}`` for every local track that resolved.
+    """
+    by_position: dict[tuple[int, int], dict[str, Any]] = {}
+    by_title: dict[str, list[dict[str, Any]]] = {}
+    for track in mb_tracks:
+        if not (track.get("recording_mbid") or "").strip():
+            continue
+        position = track.get("position")
+        if isinstance(position, int) and position > 0:
+            by_position.setdefault((1, position), track)
+        title_key = _normalise_track_key(track.get("title"))
+        if title_key:
+            by_title.setdefault(title_key, []).append(track)
+
+    matched: list[dict[str, Any]] = []
+    for track in local_tracks:
+        target = None
+        try:
+            position = int(track.get("track_number"))
+        except (TypeError, ValueError):
+            position = None
+        try:
+            disc = int(track.get("disc_number") or 1)
+        except (TypeError, ValueError):
+            disc = 1
+        if position is not None and position > 0:
+            if disc != 1:
+                target = by_position.get((disc, position))
+            else:
+                target = by_position.get((1, position))
+        if not target:
+            title_key = _normalise_track_key(track.get("title"))
+            candidates = by_title.get(title_key) or []
+            if candidates:
+                target = candidates[0]
+        if not target or not (target.get("recording_mbid") or "").strip():
+            continue
+        matched.append({
+            "track_id": track.get("id"),
+            "title": track.get("title"),
+            "recording_mbid": target["recording_mbid"],
+        })
+    return matched
+
+
+@mb_bp.route("/link-album-mbids", methods=["POST"])
+async def api_link_album_mbids():
+    """Auto-link local tracks missing Recording MBIDs.
+
+    Accepts ``{artist, album, release_id?}``.  When a MusicBrainz ``release_id``
+    is provided the official release tracklist is fetched (recordings inc) and
+    matched to local tracks by disc/position first, then by normalised title.
+    Every linked Recording ID is written to both ``musicbrainz_trackid`` and
+    ``recording_mbid``.
+    """
+    data = (await request.get_json(silent=True)) or {}
+    artist = str(data.get("artist") or "").strip()
+    album = str(data.get("album") or "").strip()
+    release_id = str(data.get("release_id") or "").strip()
+
+    if not artist or not album:
+        return jsonify({"success": False, "error": "artist and album are required"}), 400
+
+    # ── Fetch the official MusicBrainz release tracklist (recordings) ──────
+    mb_tracks: list[dict[str, Any]] = []
+    release_title = album
+    if release_id and re.fullmatch(MUSICBRAINZ_UUID_RE, release_id):
+        try:
+            release = _get_mb_client().get_release(release_id, inc="recordings", timeout=15)
+        except Exception as exc:
+            logger.warning("[LINK_MBIDS] Could not fetch release %s: %s", release_id, exc)
+            release = {}
+        release_title = str(release.get("title") or album)
+        for medium in release.get("media") or []:
+            for track in medium.get("tracks") or []:
+                recording = track.get("recording") or {}
+                mb_tracks.append({
+                    "position": track.get("position"),
+                    "number": track.get("number"),
+                    "title": str(track.get("title") or "").strip(),
+                    "length": track.get("length"),
+                    "recording_mbid": str(recording.get("id") or "").strip(),
+                })
+
+    # ── Load local tracks missing a Recording ID ───────────────────────────
+    try:
+        with db_session() as session:
+            rows = session.execute(
+                text("""
+                    SELECT id, title, track_number, disc_number,
+                           musicbrainz_trackid, recording_mbid
+                    FROM tracks
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                      AND LOWER(COALESCE(album, '')) = LOWER(:album)
+                    ORDER BY COALESCE(disc_number, '1'), track_number
+                """),
+                {"artist": artist, "album": album},
+            ).fetchall()
+            local_tracks = [dict(r._mapping) for r in rows]
+    except Exception as exc:
+        logger.error("[LINK_MBIDS] Failed to load local tracks: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+    unlinked = [
+        t for t in local_tracks
+        if not (t.get("musicbrainz_trackid") or t.get("recording_mbid"))
+    ]
+
+    if not unlinked:
+        return jsonify({
+            "success": True,
+            "linked": 0,
+            "message": "All tracks already have Recording IDs.",
+        })
+
+    if not mb_tracks:
+        return jsonify({
+            "success": False,
+            "error": "No MusicBrainz release tracklist available — select a release first (Lookup → Apply).",
+        })
+
+    # ── Match by (disc, position) then by normalised title ─────────────────
+    matched: list[dict[str, Any]] = []
+    linked = 0
+    try:
+        with db_session() as session:
+            for track in _match_release_tracklist(unlinked, mb_tracks):
+                session.execute(
+                    text("""
+                        UPDATE tracks
+                        SET musicbrainz_trackid = :mbid, recording_mbid = :mbid
+                        WHERE id = :id
+                    """),
+                    {"mbid": track["recording_mbid"], "id": track["track_id"]},
+                )
+                matched.append(track)
+                linked += 1
+    except Exception as exc:
+        logger.error("[LINK_MBIDS] Failed to link MBIDs: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+    return jsonify({
+        "success": True,
+        "linked": linked,
+        "matched": matched,
+        "release_title": release_title,
+        "message": f"Linked {linked} of {len(unlinked)} tracks on “{release_title}”.",
+    })
 
 
 # ---------------------------------------------------------------------------
