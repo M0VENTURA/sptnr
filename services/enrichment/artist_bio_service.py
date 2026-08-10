@@ -108,13 +108,28 @@ class ArtistBioService:
             return None
             
         try:
-            # Search for matching entities
-            results = self.http.search_entities(artist_name, limit=5)
-            if not results:
-                return None
-                
-            # Disambiguate and select best entity
-            entity_id = self.pick_best_entity(artist_name, results)
+            # Single-word names (e.g. "Poppy", "Cher") are notoriously ambiguous
+            # on Wikidata — a plain search surfaces the plant, films, people,
+            # etc. before the musician.  Append a musician qualifier to the
+            # search query for those names so the artist entity surfaces first,
+            # falling back to the bare name when the qualified queries miss.
+            queries: list[str] = []
+            stripped = artist_name.strip()
+            if stripped and " " not in stripped:
+                queries = [f"{stripped} (singer)", f"{stripped} (musician)", stripped]
+            else:
+                queries = [artist_name]
+
+            entity_id = None
+            for query in queries:
+                # Search for matching entities
+                results = self.http.search_entities(query, limit=5)
+                if not results:
+                    continue
+                # Disambiguate and select best entity
+                entity_id = self.pick_best_entity(artist_name, results)
+                if entity_id:
+                    break
             if not entity_id:
                 return None
                 

@@ -67,6 +67,11 @@ def _categorize_release(release_group: dict[str, Any]) -> str:
 
     Mirrors legacy behaviour: EPs and singles stay in their own buckets;
     secondary types decide Compilation / Live Album / Remix; otherwise Album.
+
+    MusicBrainz routinely tags short-form releases as ``primary-type: album``
+    with a ``secondary-type`` of ``single`` or ``ep`` (e.g. Poppy's
+    *Guardian* single).  Those secondary types are honoured so the release
+    lands in the Singles / EPs bucket instead of cluttering Albums.
     """
     primary_type = (release_group.get("primary-type") or release_group.get("primary_type") or "").lower()
     if primary_type not in ("album", "ep", "single"):
@@ -74,6 +79,10 @@ def _categorize_release(release_group: dict[str, Any]) -> str:
 
     secondary = [s.lower() for s in (release_group.get("secondary-types") or release_group.get("secondary_types") or [])]
 
+    if "single" in secondary:
+        return "Single"
+    if "ep" in secondary:
+        return "EP"
     if primary_type == "ep":
         return "EP"
     if primary_type == "single":
