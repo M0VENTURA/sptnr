@@ -10,6 +10,13 @@ import logging
 import re
 from typing import Dict, List, Optional
 
+try:  # C-speed fuzzy matching — see _token_similarity
+    from rapidfuzz import fuzz as _fuzz  # type: ignore[import-untyped]
+    _HAVE_RAPIDFUZZ = True
+except ImportError:  # pragma: no cover — stdlib fallback keeps matching working
+    from difflib import SequenceMatcher as _difflib_matcher
+    _HAVE_RAPIDFUZZ = False
+
 from api_clients.lastfm import LastFmClient
 from api_clients.listenbrainz import (
     get_recording_popularity_batch as lb_get_recording_popularity_batch,
@@ -28,6 +35,129 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LISTENBRAINZ_BATCH_SIZE = 100
 _lastfm_artist_catalog_cache: dict[str, list[dict]] = {}
+
+
+def _token_similarity(a: str, b: str) -> float:
+    """Title similarity on a 0-1 scale.
+
+    RapidFuzz ``token_set_ratio`` (C-speed, order- and suffix-insensitive)
+    with a ``difflib`` fallback so matching works without the optional dep.
+    """
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if _HAVE_RAPIDFUZZ:
+        return _fuzz.token_set_ratio(a, b) / 100.0
+    return _difflib_matcher(None, a, b).ratio()
+
+
+_FEATURED_ARTIST_RE = re.compile(
+    r"^(.*?)\s+(?:feat\.?|ft\.?|featuring)\s+(.*)$",
+    re.IGNORECASE,
+)
+
+
+def invert_featured_artist(artist_name: str) -> str:
+    """Swap a "Primary feat. Guest" credit to "Guest feat. Primary".
+
+    Discogs / Last.fm frequently index the feat. single under the inverted
+    credit, so a failed primary lookup retries the inverted name.  Only
+    ``feat.``/``ft.``/``featuring`` credits invert — ``&``/``x`` joins are
+    left alone (they are real band names: "Hall & Oates").
+    """
+    match = _FEATURED_ARTIST_RE.match(artist_name or "")
+    if not match:
+        return artist_name or ""
+    primary, featured = match.group(1).strip(), match.group(2).strip()
+    if not primary or not featured:
+        return artist_name
+    return f"{featured} feat. {primary}"
+
+
+def _is_featured_artist(artist_name: str) -> bool:
+    return bool(_FEATURED_ARTIST_RE.match(artist_name or ""))
+
+
+def resolve_isrc_recording(
+    isrc: str,
+    *,
+    mb_client=None,
+    title: str = "",
+    artist: str = "",
+) -> dict | None:
+    """Resolve an ISRC to its MusicBrainz recording (MBID + title + artist).
+
+    ISRCs are unique per recording, so the ``isrc/<code>`` lookup is the most
+    precise key MusicBrainz offers — it bypasses every string-formatting
+    issue (feat. credits, version suffixes, punctuation).  When several
+    recordings share the ISRC (re-issues), the one whose title/artist match
+    the local track is preferred.
+
+    Returns ``{"recording_mbid", "title", "artist"}`` or None.
+    """
+    isrc = str(isrc or "").strip()
+    if not isrc:
+        return None
+    try:
+        if mb_client is None:
+            from api_clients.musicbrainz_http import MusicBrainzHttpClient
+            mb_client = MusicBrainzHttpClient(enabled=True)
+        recordings = mb_client.lookup_by_isrc(isrc) or []
+        if not recordings:
+            return None
+        if not title and not artist:
+            first = recordings[0]
+            return {
+                "recording_mbid": str(first.get("id") or "").strip() or None,
+                "title": str(first.get("title") or "").strip(),
+                "artist": _first_credit_name(first),
+            }
+
+        # Prefer the recording whose title/artist match the local track so a
+        # re-issued ISRC lands on the right performance.
+        target_title = normalize_for_aggregation(title)
+        target_artist = str(artist or "").casefold().strip()
+        best = None
+        best_score = 0.0
+        for rec in recordings:
+            rec_title = normalize_for_aggregation(str(rec.get("title") or ""))
+            rec_artist = str(_first_credit_name(rec) or "").casefold().strip()
+            score = _token_similarity(target_title, rec_title)
+            if target_artist and rec_artist:
+                artist_hit = (
+                    target_artist == rec_artist
+                    or target_artist == get_primary_artist_preserve_case(rec_artist).casefold()
+                )
+                score = score * 0.7 + (1.0 if artist_hit else 0.0) * 0.3
+            if score > best_score:
+                best_score = score
+                best = rec
+        if best is None:
+            return None
+        return {
+            "recording_mbid": str(best.get("id") or "").strip() or None,
+            "title": str(best.get("title") or "").strip(),
+            "artist": _first_credit_name(best),
+        }
+    except Exception as exc:
+        logger.debug(
+            "[ISRC_POOL] ISRC lookup failed for %s: %s", isrc, exc,
+        )
+        return None
+
+
+def _first_credit_name(recording: dict) -> str:
+    """Primary artist name from a recording's artist-credit."""
+    credits = recording.get("artist-credit") or []
+    for credit in credits:
+        if isinstance(credit, dict):
+            name = credit.get("name") or ""
+            if name:
+                return str(name)
+        elif credit:
+            return str(credit)
+    return ""
 
 # Version annotations that denote a DIFFERENT performance of the song — live
 # recordings, acoustic takes, remixes, etc. have their own listen audiences
@@ -85,7 +215,6 @@ def _resolve_release_mbid(artist: str, album: str, tracks: List[dict]) -> str:
         if mbid:
             return mbid
     try:
-        from difflib import SequenceMatcher
         from api_clients.musicbrainz_http import MusicBrainzHttpClient, escape_lucene_special_chars
         client = MusicBrainzHttpClient(enabled=True)
         query = (
@@ -108,7 +237,7 @@ def _resolve_release_mbid(artist: str, album: str, tracks: List[dict]) -> str:
                     names.append(art.get("name") or credit.get("name") or "")
             if names and not any(_normalize_artist(n) == artist_norm for n in names):
                 continue
-            score = SequenceMatcher(None, title.lower(), album.lower()).ratio()
+            score = _token_similarity(title.lower(), album.lower())
             if score > best_score:
                 best_score = score
                 best_mbid = str(rel.get("id") or "").strip()
@@ -414,7 +543,13 @@ def get_lastfm_artist_max_listeners(
         return 0
 
 
-def get_aggregated_lastfm_popularity(artist: str, track_title: str, lastfm_client=None) -> dict:
+def get_aggregated_lastfm_popularity(
+    artist: str,
+    track_title: str,
+    lastfm_client=None,
+    isrc: str | None = None,
+    recording_mbid: str | None = None,
+) -> dict:
     """Aggregate Last.fm counts across locally matched title variants.
 
     Featured-artist tracks are handled specially: the album version (usually
@@ -422,6 +557,15 @@ def get_aggregated_lastfm_popularity(artist: str, track_title: str, lastfm_clien
     return, while the single version carries the real popularity.  For those
     tracks we search Last.fm for every published version of the song and keep
     the higher combined count.
+
+    When the primary (artist + title) lookups come back empty, two fallback
+    arms run and the MAX wins (best-of-three):
+      1. ISRC arm — resolve the ISRC to its MusicBrainz recording and query
+         ``track.getInfo`` by recording MBID.  ISRCs bypass every
+         string-formatting issue (feat. credits, version suffixes, dots).
+      2. Inverted-arm — "Primary feat. Guest" is re-queried as
+         "Guest feat. Primary"; Last.fm often only indexes the feat. single
+         under the inverted credit.
     """
     if lastfm_client is None:
         return {"listeners": 0, "track_play": 0, "matched_tracks": []}
@@ -471,9 +615,81 @@ def get_aggregated_lastfm_popularity(artist: str, track_title: str, lastfm_clien
         return {"listeners": listeners, "track_play": playcount, "matched_tracks": matched}
     try:
         info = lastfm_client.get_track_info(artist, track_title)
-        return {"listeners": int(info.get("listeners", 0) or 0), "track_play": int(info.get("track_play", 0) or 0), "matched_tracks": []}
+        primary = {
+            "listeners": int(info.get("listeners", 0) or 0),
+            "track_play": int(info.get("track_play", 0) or 0),
+            "matched_tracks": [],
+        }
     except Exception:
-        return {"listeners": 0, "track_play": 0, "matched_tracks": []}
+        primary = {"listeners": 0, "track_play": 0, "matched_tracks": []}
+
+    # ── ISRC + inverted-artist fallback arms (best-of-three) ──────────────
+    # Only worth the extra API calls when the primary lookup produced
+    # nothing (or the credit is a feat. split that Last.fm only indexes
+    # under the inverted artist name).
+    variants: dict[str, tuple[int, int]] = {"Primary": (primary["listeners"], primary["track_play"])}
+    best = primary
+    best_key = "Primary"
+
+    def _consider(arm: str, stats: dict) -> None:
+        nonlocal best, best_key
+        listeners = int((stats or {}).get("listeners") or 0)
+        playcount = int((stats or {}).get("track_play") or (stats or {}).get("playcount") or 0)
+        variants[arm] = (listeners, playcount)
+        if listeners > best["listeners"] or (listeners == best["listeners"] and playcount > best["track_play"]):
+            best = {"listeners": listeners, "track_play": playcount, "matched_tracks": []}
+            best_key = arm
+
+    need_fallback = (
+        best["listeners"] == 0 and best["track_play"] == 0
+    ) or _is_featured_artist(artist)
+    if need_fallback:
+        # 1. ISRC arm: ISRC → MusicBrainz recording → track.getInfo by MBID.
+        if isrc or recording_mbid:
+            try:
+                _isrc_rec = None
+                if isrc:
+                    _isrc_rec = resolve_isrc_recording(
+                        isrc, title=track_title, artist=artist,
+                    )
+                _arm_mbid = (
+                    (_isrc_rec or {}).get("recording_mbid") or recording_mbid
+                )
+                _arm_artist = (_isrc_rec or {}).get("artist") or artist
+                _arm_title = (_isrc_rec or {}).get("title") or track_title
+                if _arm_mbid:
+                    _isrc_stats = lastfm_client.get_track_info(
+                        _arm_artist, _arm_title, track_mbid=_arm_mbid,
+                    )
+                    _consider("ISRC", _isrc_stats)
+            except Exception as exc:
+                logger.debug("[ISRC_POOL] Last.fm ISRC arm failed for %s: %s", isrc or recording_mbid, exc)
+
+        # 2. Inverted arm: "Primary feat. Guest" → "Guest feat. Primary".
+        if _is_featured_artist(artist):
+            try:
+                inverted = invert_featured_artist(artist)
+                if inverted != artist:
+                    _inv_stats = lastfm_client.get_track_info(inverted, track_title)
+                    _consider("Inverted", _inv_stats)
+            except Exception as exc:
+                logger.debug("[ISRC_POOL] Last.fm inverted arm failed for %s: %s", artist, exc)
+
+    if best_key != "Primary":
+        _detail = {k: v[0] for k, v in variants.items() if v[0] > 0}
+        logger.info(
+            "[POPULARITY] Queried %d variant(s) -> Max listeners: %d (%s)",
+            len(variants), best["listeners"],
+            " | ".join(f"{k}: {v:,}" for k, v in _detail.items()),
+        )
+        return {
+            "listeners": best["listeners"],
+            "track_play": best["track_play"],
+            "matched_tracks": best["matched_tracks"],
+            "sources_queried": len(variants),
+            "variant_detail": _detail,
+        }
+    return best
 
 
 def get_search_aggregated_lastfm_popularity(
@@ -518,7 +734,12 @@ def get_search_aggregated_lastfm_popularity(
                 continue
             # Only keep versions of THIS song — normalised title comparison
             # correlates "Herzblut", "Herzblut (feat. Melissa Bonny)", etc.
-            if normalize_for_aggregation(item_title) != target:
+            # A rapidfuzz fallback (token_set_ratio >= 90) catches residual
+            # split-variant drift the normalizer misses ("Song (Mix)" vs
+            # "Song", apostrophe/punctuation drift) without ever merging two
+            # different songs.
+            _item_key = normalize_for_aggregation(item_title)
+            if _item_key != target and _token_similarity(_item_key, target) < 0.90:
                 continue
             url = str(item.get("url") or "").strip()
             key = url or f"{str(item.get('artist') or '').casefold()}::{item_title.casefold()}"
@@ -567,6 +788,7 @@ def get_aggregated_listenbrainz_popularity(
     title: str,
     artist: str,
     primary_mbid: Optional[str] = None,
+    isrc: Optional[str] = None,
     lb_client=None,
     mb_client=None,
 ) -> dict:
@@ -574,12 +796,26 @@ def get_aggregated_listenbrainz_popularity(
 
     Searches MusicBrainz for every recording of the track by the same artist
     (single vs album versions are separate recordings) and sums their
-    ListenBrainz listen counts.
+    ListenBrainz listen counts.  When the track has an ISRC but no recording
+    MBID, the ISRC resolves the recording first — the most precise key
+    available, bypassing string matching entirely.
     """
     logger.debug("[POPULARITY_SOURCES] Fetching aggregated ListenBrainz popularity")
     mbids: set[str] = set()
     if primary_mbid:
         mbids.add(primary_mbid)
+    if isrc and not primary_mbid:
+        try:
+            _isrc_rec = resolve_isrc_recording(isrc, title=title, artist=artist)
+            _isrc_mbid = (_isrc_rec or {}).get("recording_mbid")
+            if _isrc_mbid:
+                mbids.add(_isrc_mbid)
+                logger.debug(
+                    "[ISRC_POOL] LB aggregation resolved ISRC %s -> recording %s",
+                    isrc, _isrc_mbid,
+                )
+        except Exception:
+            pass
     if mb_client is None:
         try:
             from api_clients.musicbrainz_http import MusicBrainzHttpClient
@@ -588,7 +824,6 @@ def get_aggregated_listenbrainz_popularity(
             mb_client = None
     if mb_client and hasattr(mb_client, "search_recordings"):
         try:
-            from difflib import SequenceMatcher as _SM
             from helpers.normalization_service import (
                 normalize_title_for_lucene_query,
                 normalize_title_for_lookup,
@@ -611,7 +846,7 @@ def get_aggregated_listenbrainz_popularity(
                 if _is_alternate_performance_title(rec_title):
                     continue
                 norm_rec = normalize_title_for_lookup(strip_single_release_suffix(rec_title) or rec_title)
-                if norm_rec == norm_target or _SM(None, norm_rec, norm_target).ratio() >= 0.85:
+                if norm_rec == norm_target or _token_similarity(norm_rec, norm_target) >= 0.85:
                     mbids.add(rec_id)
         except Exception:
             pass

@@ -24,8 +24,6 @@ from typing import Any, List, Dict, Tuple
 import httpx
 import time
 
-
-
 from api_clients.musicbrainz_http import (
     MUSICBRAINZ_UUID_RE,
     MusicBrainzHttpClient,
@@ -259,7 +257,23 @@ class MusicBrainzService:
             logger.debug("[MB LOOKUP] %s", e, exc_info=True)
             return {}
 
-    def _recording_to_metadata(self, recording: dict, mbid: str, confidence: float) -> Dict[str, Any]:
+    def _first_isrc(recording: dict) -> str | None:
+    """First ISRC from a MusicBrainz recording or search document.
+
+    Both the JSON search docs and the recording entity expose ISRCs as an
+    ``isrcs`` array; a defensive ``isrc-list`` alias covers older payloads.
+    """
+    isrcs = recording.get("isrcs") or recording.get("isrc-list") or []
+    if isinstance(isrcs, list):
+        for raw in isrcs:
+            value = str(raw or "").strip()
+            if value:
+                return value
+    value = str(recording.get("isrc") or "").strip()
+    return value or None
+
+
+def _recording_to_metadata(self, recording: dict, mbid: str, confidence: float) -> Dict[str, Any]:
         """Project a raw MusicBrainz recording document onto the metadata dict.
 
         Shared by the per-track lookup (``lookup_recording_metadata``) and the
@@ -292,6 +306,7 @@ class MusicBrainzService:
                 if release and release.get("artist-credit")
                 else None
             ),
+            "isrc": _first_isrc(recording),
             "year": (
                 int(release.get("date")[:4])
                 if release and release.get("date")

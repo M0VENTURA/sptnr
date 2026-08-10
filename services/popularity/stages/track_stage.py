@@ -260,6 +260,13 @@ def process_track(
                 or effective_track.get("mbid")
                 or effective_track.get("musicbrainz_trackid")
             )
+            # ISRC pool — the most precise cross-source key a track can carry
+            # (unique per recording).  Used for the ISRC fallback arms of the
+            # Last.fm / ListenBrainz lookups and persisted from MusicBrainz
+            # batch resolution when the file tags don't carry one.
+            isrc = _as_str(effective_track.get("isrc") or "").strip()
+            if isrc:
+                log_unified(f"[TRACK_STAGE] [ISRC_POOL] Found ISRC: {isrc}")
 
             # ── Staleness check ───────────────────────────────────────────
             # Skip API calls if fresh-enough data is already in the DB.
@@ -388,11 +395,26 @@ def process_track(
                                 # Prefer the aggregated fetch which merges split
                                 # Last.fm variants ("Song" vs "Song (Radio Edit)")
                                 # and falls back to a single track.getInfo lookup.
-                                agg = get_aggregated_lastfm_popularity(artist, raw_title or title, lastfm_client=lf)
+                                # ``isrc`` + ``recording_mbid`` feed the ISRC
+                                # fallback arm when the primary lookup is empty.
+                                agg = get_aggregated_lastfm_popularity(
+                                    artist,
+                                    raw_title or title,
+                                    lastfm_client=lf,
+                                    isrc=isrc or None,
+                                    recording_mbid=recording_mbid or None,
+                                )
                                 if agg and (agg.get("listeners") or 0) > 0:
                                     lastfm_listeners = _as_int(agg.get("listeners") or 0)
                                     lastfm_playcount = _as_int(agg.get("track_play") or agg.get("playcount") or 0)
                                     lf_result = {}
+                                    _variant_detail = agg.get("variant_detail") or {}
+                                    if _variant_detail:
+                                        log_unified(
+                                            f"[TRACK_STAGE] [POPULARITY] Queried {agg.get('sources_queried')} variants -> "
+                                            f"Max listeners: {lastfm_listeners:,} "
+                                            f"({' | '.join(f'{k}: {v:,}' for k, v in _variant_detail.items())})"
+                                        )
                                 else:
                                     lf_result = lf.get_track_info(artist, title)
                                     lastfm_listeners = _as_int(lf_result.get("listeners") if isinstance(lf_result, dict) else 0)
@@ -499,21 +521,39 @@ def process_track(
                         # OWN recording instead of matching the studio original.
                         if listenbrainz_listens == 0 and not recording_mbid and (raw_title or title) and artist:
                             try:
-                                # Album-level batch pre-resolution first (one
-                                # batched search served the whole album's
-                                # MBIDs), then the per-track cached suggestion.
-                                _batch_mb = options.get("mb_batch_metadata") or {}
-                                _mb_entry = _batch_mb.get(
-                                    f"{artist.lower()}::{str(raw_title or title).lower()}"
-                                )
-                                if _mb_entry and _mb_entry.get("recording_mbid"):
-                                    recording_mbid = _mb_entry["recording_mbid"]
-                                else:
-                                    recording_mbid, _conf = MusicBrainzService(
-                                        http_client=get_shared_mb_client()
-                                    ).get_suggested_mbid(raw_title or title, artist)
+                                # ISRC arm FIRST: an ISRC is a unique recording
+                                # key, so its MusicBrainz lookup is exact —
+                                # far more reliable than the fuzzy title search
+                                # (and one fewer request when it hits).
+                                if isrc:
+                                    from services.popularity.popularity_sources import (
+                                        resolve_isrc_recording,
+                                    )
+                                    _isrc_rec = resolve_isrc_recording(
+                                        isrc, title=raw_title or title, artist=artist,
+                                    )
+                                    if _isrc_rec and _isrc_rec.get("recording_mbid"):
+                                        recording_mbid = _isrc_rec["recording_mbid"]
+                                        _lb_source = "isrc_resolved"
+                                        log_unified(
+                                            f"[TRACK_STAGE] [ISRC_POOL] ISRC {isrc} -> recording {recording_mbid}"
+                                        )
+                                if not recording_mbid:
+                                    # Album-level batch pre-resolution first (one
+                                    # batched search served the whole album's
+                                    # MBIDs), then the per-track cached suggestion.
+                                    _batch_mb = options.get("mb_batch_metadata") or {}
+                                    _mb_entry = _batch_mb.get(
+                                        f"{artist.lower()}::{str(raw_title or title).lower()}"
+                                    )
+                                    if _mb_entry and _mb_entry.get("recording_mbid"):
+                                        recording_mbid = _mb_entry["recording_mbid"]
+                                    else:
+                                        recording_mbid, _conf = MusicBrainzService(
+                                            http_client=get_shared_mb_client()
+                                        ).get_suggested_mbid(raw_title or title, artist)
                                 if recording_mbid:
-                                    _lb_source = "mbid_resolved"
+                                    _lb_source = _lb_source or "mbid_resolved"
                                     update_payload["recording_mbid"] = recording_mbid
                                     update_payload["mbid"] = recording_mbid
                             except Exception:
@@ -553,6 +593,7 @@ def process_track(
                             title=title,
                             artist=artist,
                             primary_mbid=recording_mbid,
+                            isrc=isrc or None,
                         )
                         agg_total = _as_int((agg_lb or {}).get("total_listen_count") or 0)
                         if agg_total > listenbrainz_listens:
@@ -1077,6 +1118,13 @@ def process_track(
                     _artist_mbid = mb_data.get("artist_mbid")
                     if _artist_mbid and not _as_str(track.get("musicbrainz_artistid") or track.get("musicbrainz_artist_id")):
                         update_payload["musicbrainz_artistid"] = _artist_mbid
+                    # ISRC pool backfill: recordings expose their ISRCs, so a
+                    # track whose file tags lack one picks it up here — the
+                    # ISRC then feeds the popularity fallback arms (Last.fm /
+                    # ListenBrainz by-recording lookups) on later passes.
+                    _mb_isrc = _as_str(mb_data.get("isrc") or "").strip()
+                    if _mb_isrc and not _as_str(track.get("isrc") or "").strip():
+                        update_payload["isrc"] = _mb_isrc
                     if mb_data.get("album"):
                         # Use the folder name from file_path as the primary
                         # reference for album matching — it reflects the actual

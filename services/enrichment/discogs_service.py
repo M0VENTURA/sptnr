@@ -108,6 +108,9 @@ def _clean_title_for_comparison(title: str) -> str:
     return normalize_title_for_lookup(value)
 
 
+INVERTED_RETRY_MIN_SIMILARITY = 0.50
+
+
 def _discogs_title_similarity(local_title: str, candidate_title: str) -> float:
     """Token-aware similarity between a local track title and a Discogs candidate.
 
@@ -313,7 +316,11 @@ class DiscogsService:
             rel_title = self._normalize_title(str(rel.get("title") or ""))
             if not rel_title:
                 continue
-            sim = SequenceMatcher(None, title_key, rel_title).ratio()
+            # Token-aware rapidfuzz scoring: handles Discogs release-title
+            # noise ("They're All Around Us (Single)", "- EP" suffixes) that
+            # plain SequenceMatcher dilutes.  Subset/order-insensitive by
+            # construction, so "A / B" split singles match their primary side.
+            sim = _discogs_title_similarity(title, str(rel.get("title") or ""))
             if sim < MIN_DISCOGS_SIMILARITY:
                 continue
             is_promo = "promo" in formats
@@ -371,10 +378,44 @@ class DiscogsService:
             results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 25})
             status = self._scan_releases(title, title_key, results or [], artist_verified=False)
 
+        # ── Inverted-artist retry (feat. splits) ───────────────────────────
+        # "Lord of the Lost feat. Feuerschwanz" has no Discogs artist page —
+        # Discogs credits the single to "Feuerschwanz feat. Lord of the Lost".
+        # When the standard match fails or is sub-threshold, retry under the
+        # inverted credit before declaring "not a single".
+        _inv_used = False
+        if (status is None or float(status.get("similarity") or 0.0) < INVERTED_RETRY_MIN_SIMILARITY):
+            from services.popularity.popularity_sources import invert_featured_artist
+            inverted = invert_featured_artist(artist)
+            if inverted != artist:
+                _std_sim = float(status.get("similarity") or 0.0) if status else 0.0
+                inv_status = self._scan_releases(
+                    title, title_key, self._get_artist_releases(inverted) or [],
+                    artist_verified=True,
+                )
+                if inv_status is None:
+                    inv_results = self.http.search_database(
+                        {"q": f"{inverted} {title_key}", "type": "release", "per_page": 25}
+                    )
+                    inv_status = self._scan_releases(title, title_key, inv_results or [], artist_verified=False)
+                if inv_status and float(inv_status.get("similarity") or 0.0) > _std_sim:
+                    inv_status["inverted_match_used"] = True
+                    status = inv_status
+                    _inv_used = True
+                    _sim = inv_status.get("similarity", 0.0)
+                    logger.info(
+                        "[DISCOGS_MATCH] Standard match %.2f -> Inverted retry: %s -> %s (%.2f)",
+                        _std_sim, inverted,
+                        "MATCHED" if inv_status.get("is_single") else "partial",
+                        _sim,
+                    )
+
         if status is None:
             status = {"is_single": False, "is_promo": False, "release_year": None,
                       "release_id": None, "format": "", "similarity": 0.0,
                       "artist_verified": False}
+        if _inv_used:
+            status["inverted_match_used"] = True
 
         self._single_cache[cache_key] = status
         return status

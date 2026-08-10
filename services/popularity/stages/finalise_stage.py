@@ -1101,6 +1101,42 @@ def post_album_star_ratings(
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
+def _sync_isrc_popularity(cursor) -> int:
+    """Sync popularity stats across tracks sharing the same ISRC.
+
+    A recording is a unique performance — every track in the library that
+    carries the same ISRC is the same recording regardless of how its file
+    tags spelled the title/artist.  After a scan completes, any duplicate
+    row inherits the HIGHEST popularity score and single status found for
+    that ISRC, so a badly-tagged copy can never drag the shared recording's
+    scores down.  ``final_score`` and ``popularity`` are written in lockstep
+    everywhere, so both columns are synced together.
+    """
+    try:
+        cursor.execute(
+            """
+            UPDATE tracks
+            SET popularity = subquery.max_score,
+                final_score = subquery.max_score,
+                is_single = subquery.max_single_status
+            FROM (
+                SELECT isrc,
+                       MAX(COALESCE(popularity, final_score)) AS max_score,
+                       MAX(CASE WHEN is_single THEN 1 ELSE 0 END) = 1 AS max_single_status
+                FROM tracks
+                WHERE isrc IS NOT NULL AND isrc != ''
+                GROUP BY isrc
+            ) AS subquery
+            WHERE tracks.isrc = subquery.isrc
+              AND COALESCE(tracks.popularity, tracks.final_score) < subquery.max_score
+            """
+        )
+        return cursor.rowcount
+    except Exception as exc:
+        logger.debug("[finalise_stage] ISRC popularity sync failed: %s", exc)
+        return 0
+
+
 def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> None:
     """Finalise the scan: assign star ratings, sync to Navidrome, create playlists, log summary.
 
@@ -1239,6 +1275,20 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
             # Create essential playlist
             if options.get("create_playlists", True):
                 _create_nsp_playlist(artist, artist_results)
+
+        # ── ISRC popularity sync (recording-level inheritance) ─────────────
+        # Runs once per scan, after every track is persisted: duplicate rows
+        # sharing an ISRC inherit the strongest popularity/single evidence so
+        # the recording is scored identically everywhere.
+        try:
+            _isrc_updated = _sync_isrc_popularity(cursor)
+            conn.commit()
+            if _isrc_updated:
+                log_unified(
+                    f"[FINALISE_STAGE] ISRC sync: {_isrc_updated} track(s) inherited higher popularity across shared ISRCs"
+                )
+        except Exception as exc:
+            logger.debug("[finalise_stage] ISRC sync commit failed: %s", exc)
 
     except Exception as exc:
         logger.error("[finalise_stage] Finalisation failed: %s", exc)

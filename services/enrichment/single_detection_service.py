@@ -25,6 +25,13 @@ from datetime import datetime
 from statistics import median as stat_median
 from typing import Any
 
+try:  # C-speed fuzzy matching — see _detect_musicbrainz title fallback
+    from rapidfuzz import fuzz as _fuzz  # type: ignore[import-untyped]
+    _HAVE_RAPIDFUZZ = True
+except ImportError:  # pragma: no cover — stdlib fallback keeps matching working
+    from difflib import SequenceMatcher as _difflib_matcher
+    _HAVE_RAPIDFUZZ = False
+
 from services.popularity.popularity_zscore import composite_listener_z
 
 from helpers.normalization_service import (
@@ -450,7 +457,13 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                     norm_rg = normalize_title_for_lookup(strip_single_release_suffix(rg_title) or rg_title)
                     # Exact normalized equality first, then fuzzy fallback for
                     # residual punctuation/case drift between sources.
-                    if norm_rg == target or _SM(None, norm_rg, target).ratio() >= 0.85:
+                    # RapidFuzz token_set_ratio (C-speed, order-insensitive)
+                    # with a difflib fallback for the non-rapidfuzz installs.
+                    if norm_rg == target or (
+                        (_fuzz.token_set_ratio(norm_rg, target) / 100.0) >= 0.85
+                        if _HAVE_RAPIDFUZZ
+                        else _SM(None, norm_rg, target).ratio() >= 0.85
+                    ):
                         matched = True
                         promo_only = _is_promo_only_group(group)
                         break

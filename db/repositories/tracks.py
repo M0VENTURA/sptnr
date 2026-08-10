@@ -400,10 +400,69 @@ def find_library_track(
 
             row = result.fetchone()
 
-            if not row:
-                return None
+            if row:
+                return dict(row._mapping)
 
-            return dict(row._mapping)
+            # ---------------------------------------------------------
+            # PASS 3
+            # Fuzzy title fallback (RapidFuzz token_set_ratio)
+            # ---------------------------------------------------------
+            # Playlist-import sources frequently spell titles slightly
+            # differently from the library copy ("Into the Fire (Radio
+            # Mix)" vs "Into the Fire").  Same normalized ARTIST, title
+            # within a near-exact token-set distance — high threshold
+            # (>= 0.92) so two different songs sharing a title prefix
+            # can never collide.  Exact album match is preferred as a
+            # tie-breaker when ``strict_album`` is set.
+            try:
+                from rapidfuzz import fuzz as _fz  # type: ignore[import-untyped]
+            except ImportError:
+                _fz = None
+            if _fz is not None:
+                try:
+                    result = session.execute(
+                        text("""
+                            SELECT id, title, album, file_path
+                            FROM tracks
+                            WHERE LOWER(
+                                COALESCE(
+                                    NULLIF(album_artist, ''),
+                                    artist
+                                )
+                            ) = :artist
+                              AND file_path IS NOT NULL
+                              AND file_path NOT LIKE '__queued_for_download__%%'
+                            LIMIT 500
+                        """),
+                        {"artist": artist_norm},
+                    )
+                    candidates = result.fetchall() or []
+                except Exception:
+                    candidates = []
+                best_row = None
+                best_score = 0.0
+                best_album_hit = False
+                for cand in candidates:
+                    cand_title = normalize_title_for_lookup(str(cand._mapping.get("title") or ""))
+                    if not cand_title:
+                        continue
+                    score = _fz.token_set_ratio(title_norm, cand_title) / 100.0
+                    if score < 0.92 or score < best_score:
+                        continue
+                    album_hit = bool(
+                        strict_album
+                        and album_norm
+                        and normalize_album(str(cand._mapping.get("album") or "")) == album_norm
+                    )
+                    if album_hit and not best_album_hit:
+                        best_row = cand
+                        best_score = score
+                        best_album_hit = True
+                    elif album_hit == best_album_hit and score > best_score:
+                        best_row = cand
+                        best_score = score
+                if best_row is not None:
+                    return dict(best_row._mapping)
 
     except Exception as exc:
         logger.error(
