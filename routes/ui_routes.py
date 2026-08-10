@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -658,8 +659,9 @@ async def artist_detail(name: str):
         if "remix" in raw_type or "remix" in album_name:
             return "remix_album"
 
-        # EP
-        if raw_type == "ep" or raw_type.startswith("ep") or " ep" in raw_type:
+        # EP — catches "ep", "album+ep", "ep+mix", etc. (MusicBrainz combines
+        # primary+secondary types into a single "+"-joined string).
+        if "ep" in raw_type:
             return "ep"
 
         # Single
@@ -917,23 +919,45 @@ async def artist_detail(name: str):
                     "avg_stars": None,
                     "total_duration": 0,
                     "is_missing": True,
+                    "is_upcoming": bool(
+                        release_year
+                        and release_year > datetime.now().year
+                    ),
                     "first_release_date": first_release,
                     "cover_art_url": mr.get("cover_art_url") or "",
                     "release_id": mr.get("release_id") or "",
                 }
 
-                # Determine category based on MusicBrainz primary type
-                primary_type = str(mr.get("primary_type") or mr.get("category") or "").lower()
-                if primary_type in ("ep", "single", "compilation"):
-                    missing_entry["_category"] = primary_type
-                elif primary_type == "live":
-                    missing_entry["_category"] = "live_album"
-                elif primary_type in ("remix", "remix+compilation"):
-                    missing_entry["_category"] = "remix_album"
-                elif primary_type == "soundtrack":
-                    missing_entry["_category"] = "compilation"
+                # Determine category.  The scan service's ``category`` column
+                # is authoritative (it already honours MusicBrainz secondary
+                # types — e.g. a release-group tagged ``album`` + ``single``
+                # is stored as "Single").  Fall back to the raw primary_type
+                # only when no category was persisted.
+                category = str(mr.get("category") or "").strip()
+                if category:
+                    category_key = category.lower().replace(" ", "_")
+                    missing_entry["_category"] = {
+                        "album": "album",
+                        "ep": "ep",
+                        "single": "single",
+                        "compilation": "compilation",
+                        "live_album": "live_album",
+                        "live": "live_album",
+                        "remix": "remix_album",
+                        "soundtrack": "compilation",
+                    }.get(category_key, "album")
                 else:
-                    missing_entry["_category"] = "album"
+                    primary_type = str(mr.get("primary_type") or "").lower()
+                    if primary_type in ("ep", "single", "compilation"):
+                        missing_entry["_category"] = primary_type
+                    elif primary_type == "live":
+                        missing_entry["_category"] = "live_album"
+                    elif primary_type in ("remix", "remix+compilation"):
+                        missing_entry["_category"] = "remix_album"
+                    elif primary_type == "soundtrack":
+                        missing_entry["_category"] = "compilation"
+                    else:
+                        missing_entry["_category"] = "album"
 
                 missing_entries.append(missing_entry)
     except Exception as exc:

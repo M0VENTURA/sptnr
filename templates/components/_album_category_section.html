@@ -2,7 +2,10 @@
 {% set safe_artist = artist_name|safe_id %}
 {% set safe_album = (album.get('album') or album.get('title') or '')|safe_id %}
 {% set album_id = safe_artist + '_' + safe_album %}
-<div class="accordion-item album-row" data-year="{{ album.get('album_year') or (album.get('first_release_date') or '')[:4] or 0 }}" data-status="{% if album.get('is_downloading') %}downloading{% elif is_missing %}missing{% else %}discovered{% endif %}" data-album="{{ album.get('album') or album.get('title') }}" {% if not is_missing and album.get('musicbrainz_album_mbid') %}data-mb-mbid="{{ album.get('musicbrainz_album_mbid') }}" data-artist="{{ artist_name|e }}" data-album-name="{{ (album.get('album') or album.get('title'))|e }}"{% endif %}>
+{% set album_is_downloading = album.get('is_downloading') %}
+{% set album_release_year = album.get('album_year') or (album.get('first_release_date') or '')[:4] or 0 %}
+{% set is_upcoming = album.get('is_upcoming') %}
+<div class="accordion-item album-row" data-year="{{ album_release_year }}" data-status="{% if album_is_downloading %}downloading{% elif is_missing %}missing{% else %}discovered{% endif %}" data-album="{{ album.get('album') or album.get('title') }}" {% if not is_missing and album.get('musicbrainz_album_mbid') %}data-mb-mbid="{{ album.get('musicbrainz_album_mbid') }}" data-artist="{{ artist_name|e }}" data-album-name="{{ (album.get('album') or album.get('title'))|e }}"{% endif %} style="{% if album_is_downloading %}border-color: rgba(34,211,238,0.5);{% elif is_missing %}border-style: dashed; border-color: rgba(245,158,11,0.4);{% endif %}">
   <h2 class="accordion-header" id="heading-{{ album_id }}">
     <div class="accordion-header-row d-flex align-items-center gap-3 w-100 flex-wrap py-2 px-3">
       <button type="button" class="accordion-chevron-btn flex-shrink-0 p-0 border-0 bg-transparent"
@@ -38,9 +41,26 @@
               {{ album.get('album') or album.get('title') }}
             </a>
           {% endif %}
+          {% if album_is_downloading %}
+            <span class="badge ms-2" style="background-color: rgba(34,211,238,0.15); color: #22d3ee; border: 1px solid rgba(34,211,238,0.5);" title="This release is currently in the download queue">
+              🔵 Queued
+            </span>
+          {% elif is_missing and is_upcoming %}
+            <span class="badge ms-2" style="background-color: rgba(100,116,139,0.2); color: #cbd5e1; border: 1px solid var(--border-color);" title="Release is not out yet">
+              📅 {{ album_release_year }}
+            </span>
+          {% elif is_missing %}
+            <span class="badge ms-2" style="background-color: rgba(245,158,11,0.12); color: #f59e0b; border: 1px dashed rgba(245,158,11,0.4);" title="Release exists on MusicBrainz but is not in your library">
+              🟡 Missing
+            </span>
+          {% else %}
+            <span class="badge ms-2" style="background-color: rgba(34,197,94,0.12); color: #22c55e; border: 1px solid rgba(34,197,94,0.35);" title="Release is in your library">
+              🟢 In Library
+            </span>
+          {% endif %}
         </div>
         <!-- Year -->
-        <span class="text-muted small flex-shrink-0" style="width: 50px; text-align: center;">
+        <span class="text-muted small flex-shrink-0" style="white-space: nowrap; min-width: 4ch; text-align: center;">
           {{ album.get('album_year') or (album.get('first_release_date') or '')[:4] or '-' }}
         </span>
         <!-- Track Count -->

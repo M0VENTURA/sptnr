@@ -34,6 +34,36 @@
         overflow: hidden;
         text-overflow: ellipsis;
     }
+
+    /* Ghost row actions — transparent by default, highlighted on row hover */
+    #artistsList .list-group-item .artist-row-actions .btn {
+        background: transparent;
+        color: var(--text-secondary, #9ca3af);
+        border-color: transparent;
+    }
+    #artistsList .list-group-item:hover .artist-row-actions .btn {
+        color: #22d3ee;
+        border-color: var(--border-color, #333);
+    }
+    #artistsList .list-group-item .artist-row-actions .btn:hover {
+        background: rgba(34, 211, 238, 0.12);
+        color: #22d3ee;
+    }
+    #artistsList .list-group-item .artist-row-actions .btn-outline-danger {
+        color: #f87171;
+    }
+    #artistsList .list-group-item:hover .artist-row-actions .btn-outline-danger {
+        color: #f87171;
+        border-color: rgba(248, 113, 113, 0.4);
+    }
+
+    /* Live filter highlight */
+    #artistsList .list-group-item.filtered-out {
+        display: none !important;
+    }
+    #artistsList > .list-group-item[data-letter-header].filtered-out {
+        display: none !important;
+    }
 </style>
 <div class="container-fluid mt-4">
     <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-md-items-center mb-4 gap-2">
@@ -88,14 +118,28 @@
         <!-- Letter Navigation (mobile-friendly: horizontally scrollable with larger touch targets) -->
         <div class="card mb-3">
             <div class="card-body py-2">
+                <!-- Live search + health filter -->
+                <div class="d-flex flex-column flex-sm-row align-items-stretch gap-2 mb-2">
+                    <div class="input-group flex-grow-1">
+                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                        <input type="search" class="form-control" id="artistSearchInput"
+                               placeholder="Search {{ artists|length }} artists..." aria-label="Filter artists">
+                    </div>
+                    <div class="btn-group" role="group" aria-label="Artist health filter">
+                        <button type="button" class="btn btn-outline-secondary artist-health-filter active" data-filter="all">All</button>
+                        <button type="button" class="btn btn-outline-warning artist-health-filter" data-filter="issues">
+                            <i class="bi bi-exclamation-triangle"></i> Has Issues
+                        </button>
+                    </div>
+                </div>
                 <div class="d-flex align-items-center gap-1">
                     <span class="text-muted small me-1 flex-shrink-0">Jump:</span>
-                    <div class="d-flex flex-nowrap overflow-auto gap-1 py-1" style="scrollbar-width: none; -webkit-overflow-scrolling: touch;">
-                        <button class="btn btn-outline-secondary flex-shrink-0" style="min-width:44px;min-height:44px;" onclick="jumpToLetter('all')">All</button>
+                    <div class="artist-jump-bar d-flex flex-nowrap overflow-auto gap-1 py-1" style="scrollbar-width: none; -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;">
+                        <button class="btn btn-outline-secondary flex-shrink-0 jump-btn" style="min-width:44px;min-height:44px;scroll-snap-align:start;" onclick="jumpToLetter('all')">All</button>
                         {% for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' %}
-                        <button class="btn btn-outline-secondary flex-shrink-0" style="min-width:44px;min-height:44px;" onclick="jumpToLetter('{{ letter }}')">{{ letter }}</button>
+                        <button class="btn btn-outline-secondary flex-shrink-0 jump-btn" style="min-width:44px;min-height:44px;scroll-snap-align:start;" onclick="jumpToLetter('{{ letter }}')">{{ letter }}</button>
                         {% endfor %}
-                        <button class="btn btn-outline-secondary flex-shrink-0" style="min-width:44px;min-height:44px;" onclick="jumpToLetter('#')">#</button>
+                        <button class="btn btn-outline-secondary flex-shrink-0 jump-btn" style="min-width:44px;min-height:44px;scroll-snap-align:start;" onclick="jumpToLetter('#')">#</button>
                     </div>
                 </div>
             </div>
@@ -127,7 +171,7 @@
                 {% endif %}
                 
                 <!-- Artist Item -->
-                <div class="list-group-item" data-letter="{{ letter_key }}" data-artist="{{ artist.link_artist }}">
+                <div class="list-group-item" data-letter="{{ letter_key }}" data-artist="{{ artist.link_artist }}" data-artist-name="{{ artist.display_name|lower }}">
                     <div class="d-flex justify-content-between align-items-center gap-2">
                         <div class="flex-grow-1 min-width-0">
                             <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="text-decoration-none fw-semibold">
@@ -138,7 +182,7 @@
                             <span class="d-none d-md-inline text-muted small ms-2">{{ artist.album_count or 0 }} albums</span>
                             <span class="d-none d-md-inline text-muted small ms-1">• {{ artist.track_count or 0 }} tracks</span>
                             {% if artist.five_star_count and artist.five_star_count > 0 %}
-                                <span class="d-none d-md-inline ms-1"><span class="badge bg-warning text-dark" title="5 Star Songs">{{ artist.five_star_count }}</span></span>
+                                <span class="d-none d-md-inline ms-1"><span class="badge bg-warning text-dark" title="5 Star Songs"><i class="bi bi-star-fill me-1"></i>{{ artist.five_star_count }}</span></span>
                             {% endif %}
                             <span class="d-none d-lg-inline text-muted small ms-2">
                                 {% if artist.last_updated %}
@@ -148,7 +192,7 @@
                                 {% endif %}
                             </span>
                         </div>
-                        <div class="btn-group btn-group-sm flex-shrink-0" role="group">
+                        <div class="btn-group btn-group-sm flex-shrink-0 artist-row-actions" role="group">
                             <span class="correction-action-btns"></span>
                             <button class="btn btn-outline-info btn-expand-albums" type="button" data-artist="{{ artist.link_artist }}" title="Show albums">
                                 <i class="bi bi-collection"></i>
@@ -168,7 +212,7 @@
                         <span class="ms-1">{{ artist.track_count or 0 }} tracks</span>
                         {% if artist.five_star_count and artist.five_star_count > 0 %}
                             <span class="ms-1">•</span>
-                            <span class="ms-1"><span class="badge bg-warning text-dark">{{ artist.five_star_count }} ★★★★★</span></span>
+                            <span class="ms-1"><span class="badge bg-warning text-dark"><i class="bi bi-star-fill me-1"></i>{{ artist.five_star_count }}</span></span>
                         {% endif %}
                         <span class="correction-badge-mobile"></span>
                     </div>
@@ -183,6 +227,10 @@
                     </div>
                 </div>
                 {% endfor %}
+            </div>
+            <div class="text-center text-muted py-4 d-none" id="artistNoResults">
+                <i class="bi bi-inbox"></i>
+                <div class="mt-1">No artists match your search / filters.</div>
             </div>
         </div>
     {% endif %}
