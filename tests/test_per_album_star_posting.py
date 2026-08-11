@@ -572,26 +572,27 @@ class TestFinaliseScanPerAlbumFlag:
 
 
 class TestListenerZRobustness:
-    """_listener_z must never divide by zero.
+    """log_listener_z must never divide by zero.
 
     An album whose positive listener/listen counts are all the same value
     (e.g. a tracklist fallback that resolved every track to the same count)
     has zero variance — the old code computed ``stdev == 0`` and crashed the
     whole album's star-rating pass with ``ZeroDivisionError``, leaving every
-    track unrated.
+    track unrated.  The helper now lives in ``popularity_zscore`` (shared by
+    single detection and the star-rating stage).
     """
 
     def test_zero_variance_distribution_returns_zero(self):
-        from services.popularity.stages import finalise_stage as fs
+        from services.popularity.popularity_zscore import log_listener_z
 
         # 3+ identical positive counts → sigma == 0 → must not raise.
-        assert fs._listener_z(300, [300, 300, 300]) == 0.0
-        assert fs._listener_z(500, [500, 500, 500, 500]) == 0.0
+        assert log_listener_z(300, [300, 300, 300]) == 0.0
+        assert log_listener_z(500, [500, 500, 500, 500]) == 0.0
 
     def test_mixed_counts_still_score(self):
-        from services.popularity.stages import finalise_stage as fs
+        from services.popularity.popularity_zscore import log_listener_z
 
-        z = fs._listener_z(1000, [100, 200, 300, 1000])
+        z = log_listener_z(1000, [100, 200, 300, 1000])
         assert z > 1.0
 
     def test_assign_stars_survives_identical_counts(self):

@@ -319,6 +319,8 @@ function buildConfigObject() {
         single_boost: parseFloat(getValue('single_boost', '1.15')) || 1.15,
         metadata_score_floor: parseFloat(getValue('metadata_score_floor', '5.0')) || 5.0,
         live_weight_penalty: parseFloat(getValue('live_weight_penalty', '0.5')) || 0.5,
+        single_organic_floor_score: parseFloat(getValue('single_organic_floor_score', '45.0')) || 45.0,
+        single_organic_floor_listeners: parseFloat(getValue('single_organic_floor_listeners', '1000')) || 1000,
         star_5: {
           album_z: parseNumber('star5_album_z', 1.0),
           artist_z: parseNumber('star5_artist_z', 1.2)
@@ -332,9 +334,6 @@ function buildConfigObject() {
         star_2: {
           album_z: parseNumber('star2_album_z', -1.2)
         },
-        star_1: {
-          album_z: parseNumber('star1_album_z', -1.2)
-        },
         album_scaling: {
           peak_catalog_top_pct: parseFloat(getValue('era_peak_catalog_top_pct', '0.20')) || 0.20,
           peak_album_top_n: parseInt(getValue('era_peak_album_top_n', '3')) || 3,
@@ -344,7 +343,9 @@ function buildConfigObject() {
           solid_max_5star_slots: parseInt(getValue('era_solid_max_5star_slots', '2')) || 2,
           minor_catalog_top_pct: parseFloat(getValue('era_minor_catalog_top_pct', '0.10')) || 0.10,
           minor_album_top_n: parseInt(getValue('era_minor_album_top_n', '1')) || 1,
-          minor_max_5star_slots: parseInt(getValue('era_minor_max_5star_slots', '1')) || 1
+          minor_max_5star_slots: parseInt(getValue('era_minor_max_5star_slots', '1')) || 1,
+          peak_era_min_ratio: parseFloat(getValue('peak_era_min_ratio', '0.75')) || 0.75,
+          solid_era_min_ratio: parseFloat(getValue('solid_era_min_ratio', '0.40')) || 0.40
         }
       }
     ),
