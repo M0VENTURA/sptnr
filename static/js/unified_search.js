@@ -518,8 +518,10 @@
     modalEl.classList.remove('d-none');
     if (backdrop) backdrop.classList.remove('d-none');
 
-    // Focus synchronously — keeps the user-gesture chain on mobile browsers.
-    input.focus();
+    // Focus the pill itself — it IS the search entry now; the flyout input
+    // mirrors it so existing key handlers (Enter, debounce) keep working.
+    var navInput = document.getElementById('navSearchInput');
+    if (navInput && navInput !== document.activeElement) navInput.focus();
 
     clearTimeout(_debounceTimer);
     runSearch();
@@ -531,6 +533,21 @@
     modalEl.classList.add('d-none');
     var backdrop = document.getElementById('searchBackdrop');
     if (backdrop) backdrop.classList.add('d-none');
+  };
+
+  // The navbar/dashboard pill is the live search entry: mirror its value
+  // into the flyout input and run the debounced query (the flyout stays
+  // open underneath so results appear directly below the navbar).
+  window.syncNavSearchQuery = function () {
+    var navEl = document.getElementById('navSearchInput');
+    var dashEl = document.getElementById('dashboardTopSearchInput');
+    var input = getInputEl();
+    if (!input) return;
+    var value = (navEl && navEl.value) || (dashEl && dashEl.value) || '';
+    if (input.value !== value) input.value = value;
+    if (getErrorEl()) getErrorEl().classList.add('d-none');
+    clearTimeout(_debounceTimer);
+    scheduleSearch();
   };
 
   // ===== Wiring =====
@@ -550,7 +567,14 @@
     });
 
     // Debounced input (per-scope rate handled in scheduleSearch).
-    input.addEventListener('input', scheduleSearch);
+    input.addEventListener('input', function () {
+      // Keep the navbar pill in sync when typing inside the flyout.
+      var navEl = document.getElementById('navSearchInput');
+      if (navEl && navEl.value !== input.value) navEl.value = input.value;
+      var dashEl = document.getElementById('dashboardTopSearchInput');
+      if (dashEl && dashEl.value !== input.value) dashEl.value = input.value;
+      scheduleSearch();
+    });
     input.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') {
         e.preventDefault();
@@ -559,17 +583,8 @@
       }
     });
 
-    // Advanced filters toggle (slide-down panel).
-    var filtersToggle = document.getElementById('unifiedFiltersToggle');
-    var filtersPanel = document.getElementById('unifiedAdvancedFilters');
-    if (filtersToggle && filtersPanel) {
-      filtersToggle.addEventListener('click', function () {
-        var shown = filtersPanel.classList.toggle('show');
-        filtersToggle.setAttribute('aria-expanded', shown ? 'true' : 'false');
-      });
-    }
-
-    // Advanced filter fields + type dropdown re-run the search.
+    // Advanced filter fields + type dropdown re-run the search (filters are
+    // always visible in the flyout — no collapse toggle).
     var filterInputs = document.querySelectorAll('#unifiedAdvancedFilters input, #unifiedSearchType');
     for (var i = 0; i < filterInputs.length; i++) {
       filterInputs[i].addEventListener('input', function () {

@@ -30,13 +30,18 @@
           <i class="bi bi-gear fs-5"></i>
         </a>
       </div>
-      <!-- Persistent global search bar — every page, every breakpoint. Tapping
-           opens the header flyout (see _unified_search_modal.html). -->
-      <div class="w-100 mt-1 mb-1" id="navSearchForm" onclick="openUnifiedSearch()" title="Search library or MusicBrainz" style="cursor:pointer;">
+      <!-- Persistent global search bar — every page, every breakpoint.  The
+           pill itself is the search entry: typing here mirrors into the
+           flyout input and runs the debounced query; results appear in the
+           panel below the navbar. -->
+      <div class="w-100 mt-1 mb-1" id="navSearchForm" title="Search library or MusicBrainz" style="cursor:pointer;">
         <div class="input-group input-group-sm">
           <span class="input-group-text bg-dark border-secondary text-muted"><i class="bi bi-search"></i></span>
-          <input type="text" id="navSearchInput" class="form-control bg-dark text-light border-secondary shadow-none" placeholder="Search library or MusicBrainz…" autocomplete="off" readonly aria-label="Search library or MusicBrainz">
-          <button class="btn btn-outline-secondary btn-sm" type="button" title="Search" aria-label="Search"><i class="bi bi-search"></i></button>
+          <input type="text" id="navSearchInput" class="form-control bg-dark text-light border-secondary shadow-none" placeholder="Search library or MusicBrainz…" autocomplete="off" aria-label="Search library or MusicBrainz"
+                 onfocus="openUnifiedSearch()"
+                 oninput="syncNavSearchQuery()"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();syncNavSearchQuery();}">
+          <button class="btn btn-outline-secondary btn-sm" type="button" title="Search" aria-label="Search" onclick="openUnifiedSearch()"><i class="bi bi-search"></i></button>
         </div>
       </div>
       <div class="collapse navbar-collapse" id="navbarNav">

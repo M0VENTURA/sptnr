@@ -861,15 +861,15 @@ body:has(#globalPlayerBar:not(.d-none)) .sticky-save-bar {
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
-/* Tap-to-open search pills (navbar + dashboard) keep a visible search look */
-#navSearchInput[readonly],
-#dashboardTopSearchInput[readonly] {
-    cursor: pointer;
+/* Tap-to-open search pills (navbar + dashboard) — the pill is the live
+   search entry: clicking focuses it and drops the result flyout below. */
+#navSearchInput,
+#dashboardTopSearchInput {
+    cursor: text;
     color: var(--text-secondary);
 }
 
-#navSearchInput[readonly]:focus,
-#dashboardTopSearchInput[readonly]:focus {
-    border-color: var(--border-color);
-    box-shadow: none;
+#navSearchInput::placeholder,
+#dashboardTopSearchInput::placeholder {
+    color: var(--text-tertiary);
 }

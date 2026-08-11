@@ -820,6 +820,14 @@ async def api_musicbrainz_release_picker():
         key=lambda r: (str(r["status"]).lower() != "official", -r["track_count"])
     )
 
+    # JSON mode: the release-picker flyout probes the group first and
+    # auto-queues when it contains exactly ONE release (no flyout needed).
+    if request.args.get("format", "").strip().lower() == "json":
+        return jsonify({
+            "releases": processed,
+            "count": len(processed),
+        })
+
     return await _render(
         """
         <div class="p-3">

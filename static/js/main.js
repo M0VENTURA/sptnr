@@ -357,7 +357,28 @@ window.openReleasePicker = function(releaseGroupId, title, artist, onQueued) {
   var url = '/api/musicbrainz/release-picker?rg_id=' + encodeURIComponent(releaseGroupId) +
     '&artist=' + encodeURIComponent(artist || '') +
     '&album=' + encodeURIComponent(title || '');
-  window.openSlideOver(url, 'Select Version: ' + (title || ''));
+
+  // Probe the release group first: a group with exactly ONE release is
+  // queued directly (no flyout); multi-version groups open the picker so
+  // the user can choose the exact edition (CD / deluxe / promo).
+  fetch(url + '&format=json', { headers: { 'Accept': 'application/json' } })
+    .then(function (r) { return r.json().catch(function () { return null; }); })
+    .then(function (data) {
+      var releases = (data && Array.isArray(data.releases)) ? data.releases : null;
+      if (releases && releases.length === 1) {
+        var rel = releases[0];
+        // queueSpecificRelease fires the onQueued callback (marked via
+        // _releasePickerOnQueued) and shows the success toast.
+        return window.queueSpecificRelease(rel.id, rel.title || title || '', artist || '');
+      }
+      // Zero or multiple releases → show the flyout as before (the flyout
+      // itself renders an error card when nothing was found).
+      window.openSlideOver(url, 'Select Version: ' + (title || ''));
+    })
+    .catch(function () {
+      // Network failure → fall back to the flyout, which surfaces the error.
+      window.openSlideOver(url, 'Select Version: ' + (title || ''));
+    });
 };
 
 window.queueSpecificRelease = async function(releaseId, releaseTitle, artist) {

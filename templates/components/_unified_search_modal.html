@@ -41,32 +41,32 @@ position:fixed flyout anchored below the navbar.
         aria-label="Search library or MusicBrainz"
         style="min-height: 44px;"
       />
-      <button type="button" class="btn btn-outline-secondary" id="unifiedFiltersToggle" title="Advanced filters" aria-expanded="false" aria-controls="unifiedAdvancedFilters">
-        <i class="bi bi-sliders"></i> <span class="d-none d-sm-inline">Filters</span>
-      </button>
     </div>
 
-    <div class="collapse" id="unifiedAdvancedFilters">
-      <div class="border rounded p-2 mb-2" style="background: var(--primary-bg);">
-        <div class="row g-2 align-items-end">
-          <div class="col-6 col-md-3">
-            <label class="form-label small mb-1 text-muted">Artist</label>
-            <input type="text" class="form-control form-control-sm" id="unifiedFilterArtist" placeholder="Artist name" autocomplete="off">
-          </div>
-          <div class="col-6 col-md-3">
-            <label class="form-label small mb-1 text-muted">Album</label>
-            <input type="text" class="form-control form-control-sm" id="unifiedFilterAlbum" placeholder="Album title" autocomplete="off">
-          </div>
-          <div class="col-6 col-md-3">
-            <label class="form-label small mb-1 text-muted">Track</label>
-            <input type="text" class="form-control form-control-sm" id="unifiedFilterTrack" placeholder="Track title" autocomplete="off">
-          </div>
-          <div class="col-6 col-md-3">
-            <label class="form-label small mb-1 text-muted">Year</label>
-            <input type="text" class="form-control form-control-sm" id="unifiedFilterYear" placeholder="2024" maxlength="4" autocomplete="off">
-          </div>
+    <!-- Advanced filters — always visible (no collapse) so structured
+         Artist / Album / Track / Year queries are one tap away. -->
+    <div class="border rounded p-2 mb-2" id="unifiedAdvancedFilters" style="background: var(--primary-bg);">
+      <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+        <small class="text-muted fw-semibold"><i class="bi bi-sliders"></i> Advanced Filters</small>
+        <small class="text-muted" style="font-size: 0.75rem;"><i class="bi bi-info-circle"></i> Target MusicBrainz discovery results — cleared fields fall back to the single search bar.</small>
+      </div>
+      <div class="row g-2 align-items-end">
+        <div class="col-6 col-md-3">
+          <label class="form-label small mb-1 text-muted">Artist</label>
+          <input type="text" class="form-control form-control-sm" id="unifiedFilterArtist" placeholder="Artist name" autocomplete="off">
         </div>
-        <small class="text-muted d-block mt-2"><i class="bi bi-info-circle"></i> Advanced filters target MusicBrainz discovery results. Cleared fields fall back to the single search bar.</small>
+        <div class="col-6 col-md-3">
+          <label class="form-label small mb-1 text-muted">Album</label>
+          <input type="text" class="form-control form-control-sm" id="unifiedFilterAlbum" placeholder="Album title" autocomplete="off">
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label small mb-1 text-muted">Track</label>
+          <input type="text" class="form-control form-control-sm" id="unifiedFilterTrack" placeholder="Track title" autocomplete="off">
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label small mb-1 text-muted">Year</label>
+          <input type="text" class="form-control form-control-sm" id="unifiedFilterYear" placeholder="2024" maxlength="4" autocomplete="off">
+        </div>
       </div>
     </div>
 
