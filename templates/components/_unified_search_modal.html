@@ -30,7 +30,10 @@ position:fixed flyout anchored below the navbar.
       <h6 class="mb-0"><i class="bi bi-search"></i> Search</h6>
       <button type="button" class="btn-close" aria-label="Close" onclick="closeUnifiedSearch()"></button>
     </div>
-    <div class="input-group mb-2">
+    <!-- The navbar/dashboard pill is the live search entry — typing there
+         mirrors into this hidden input (kept for the JS engine's element
+         lookups), so the flyout no longer shows a duplicate search bar. -->
+    <div class="input-group mb-2 d-none" aria-hidden="true">
       <span class="input-group-text" id="unifiedSearchIcon"><i class="bi bi-search"></i></span>
       <input
         type="text"
@@ -40,6 +43,7 @@ position:fixed flyout anchored below the navbar.
         autocomplete="off"
         aria-label="Search library or MusicBrainz"
         style="min-height: 44px;"
+        tabindex="-1"
       />
     </div>
 
