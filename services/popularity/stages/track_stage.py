@@ -31,6 +31,7 @@ from services.popularity.popularity_math import (
     calculate_combined_popularity_score,
     calculate_listenbrainz_percentile,
     evaluate_listenbrainz_validity,
+    fmt_count as _fmt_count,
 )
 from services.popularity.popularity_config import (
     get_live_weight_penalty,
@@ -81,17 +82,6 @@ from services.popularity.popularity_cache_policy import (
 
 
 # ── Consolidated per-track log helpers ────────────────────────────────────
-
-def _fmt_count(count) -> str:
-    """Format a listener/listen count compactly (14201 → '14.2k')."""
-    try:
-        value = float(count or 0)
-    except (TypeError, ValueError):
-        value = 0.0
-    if value >= 1000:
-        return f"{value / 1000:.1f}k"
-    return f"{value:.0f}"
-
 
 _SOURCE_LABELS = {
     "discogs": "Discogs",
@@ -195,7 +185,6 @@ def process_track(
     album_context: dict[str, Any],
     album_result: dict[str, Any],
     options: dict[str, Any],
-    album_lb_data: dict[str, dict[str, int | None]] | None = None,
     album_lb_listens: list[int] | None = None,
     artist_max_lf_listeners: int = 0,
     artist_lf_context: dict[str, Any] | None = None,
@@ -303,6 +292,22 @@ def process_track(
             # Last.fm / ListenBrainz lookups and persisted from MusicBrainz
             # batch resolution when the file tags don't carry one.
             isrc = _as_str(effective_track.get("isrc") or "").strip()
+            if not isrc:
+                # The album-level MusicBrainz batch (run once per album by the
+                # scan runner) resolves each fresh track to its recording —
+                # including the ISRC — in one batched search.  Adopt it HERE,
+                # before the popularity fetch and singles detection run, so the
+                # ISRC fallback arms (Last.fm / ListenBrainz by-recording) and
+                # the ISRC single check can use it on the FIRST scan (the
+                # metadata step previously only persisted it for later scans).
+                _batch_mb = options.get("mb_batch_metadata") or {}
+                _mb_entry = _batch_mb.get(
+                    f"{artist.lower()}::{str(raw_title or title).lower()}"
+                )
+                _batch_isrc = _as_str((_mb_entry or {}).get("isrc") or "").strip()
+                if _batch_isrc:
+                    isrc = _batch_isrc
+                    update_payload["isrc"] = _batch_isrc
             if isrc:
                 _isrc_found = isrc
                 logger.debug("[TRACK_STAGE] [ISRC_POOL] Found ISRC: %s", isrc)
@@ -542,12 +547,6 @@ def process_track(
                             update_payload["recording_mbid"] = _album_rec_mbid
                             update_payload["mbid"] = _album_rec_mbid
                     else:
-                        if album_lb_data and recording_mbid and recording_mbid in album_lb_data:
-                            _lb_source = "album_batch"
-                            lb_entry = album_lb_data[recording_mbid]
-                            if lb_entry:
-                                listenbrainz_listens = _as_int(lb_entry.get("total_listen_count") or 0)
-                                listenbrainz_users = _as_int(lb_entry.get("total_user_count") or 0)
                         # Single-MBID fallback. ListenBrainz popularity is
                         # keyed by recording MBID — resolve one via the cached
                         # MusicBrainz suggestion when the track has none,

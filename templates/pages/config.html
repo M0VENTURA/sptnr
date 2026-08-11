@@ -869,11 +869,7 @@
         <div class="col-12 col-md-3">
           <div class="border rounded p-3 h-100">
             <h6 class="text-muted mb-2">⭐ 1★</h6>
-            <div class="row g-2">
-              <div class="col-6"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="-5" max="0" class="form-control form-control-sm" id="star1_album_z" placeholder="-1.2" value="{{ config.get('single_detection', {}).get('star_1', {}).get('album_z', -1.2) }}"></div>
-              <div class="col-6 d-flex align-items-end"><small class="form-text text-muted">Below this album z → 1★</small></div>
-            </div>
-            <small class="form-text text-muted d-block mt-2">Album z below this value (default <strong>-1.2</strong>) → filler / outlier.</small>
+            <small class="form-text text-muted d-block mt-2">Album z below the 2★ band (<strong>-1.2</strong>) → filler / outlier. There is no separate 1★ boundary to configure — everything below the 2★ band is 1★.</small>
           </div>
         </div>
       </div>
@@ -905,6 +901,16 @@
           <label class="form-label form-label-sm">Live Weight Penalty</label>
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="live_weight_penalty" placeholder="0.5" value="{{ config.get('single_detection', {}).get('live_weight_penalty', 0.5) }}">
           <small class="form-text text-muted">Fraction applied to the Last.fm weight for live tracks. Default: <strong>0.5</strong> (50% reduction)</small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Organic Floor Score</label>
+          <input type="number" step="0.5" min="0" max="100" class="form-control form-control-sm" id="single_organic_floor_score" placeholder="45.0" value="{{ config.get('single_detection', {}).get('single_organic_floor_score', 45.0) }}">
+          <small class="form-text text-muted">Minimum popularity score a confirmed single needs before it can earn 5★ / the 4★ Single Floor (a metadata-tagged single with almost no audience must not leapfrog popular album tracks). Default: <strong>45.0</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Organic Floor Listeners</label>
+          <input type="number" step="50" min="0" class="form-control form-control-sm" id="single_organic_floor_listeners" placeholder="1000" value="{{ config.get('single_detection', {}).get('single_organic_floor_listeners', 1000) }}">
+          <small class="form-text text-muted">Last.fm listener alternative to the organic floor score — a confirmed single at or above this many listeners also qualifies. Default: <strong>1000</strong></small>
         </div>
       </div>
     </div>
@@ -1555,6 +1561,21 @@
           </div>
         </div>
         {% endfor %}
+        <div class="col-12 col-md-4">
+          <div class="border rounded p-3 h-100">
+            <h6 class="mb-2">Era Boundaries</h6>
+            <div class="mb-2">
+              <label class="form-label form-label-sm">Peak Era Min Ratio</label>
+              <input type="number" step="0.01" min="0" max="1" class="form-control form-control-sm" id="peak_era_min_ratio" placeholder="0.75" value="{{ scaling.get('peak_era_min_ratio', 0.75) }}">
+              <small class="form-text text-muted">R_eff at/above which an album is a <strong>peak</strong>-era album. Default: <strong>0.75</strong></small>
+            </div>
+            <div>
+              <label class="form-label form-label-sm">Solid Era Min Ratio</label>
+              <input type="number" step="0.01" min="0" max="1" class="form-control form-control-sm" id="solid_era_min_ratio" placeholder="0.40" value="{{ scaling.get('solid_era_min_ratio', 0.40) }}">
+              <small class="form-text text-muted">R_eff at/above which (but below peak) an album is a <strong>solid</strong>-era album; below it is <strong>minor</strong>. Default: <strong>0.40</strong></small>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1570,7 +1591,7 @@
         <div class="row g-3">
           {% set feature_groups = {
             'General Operation': ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'full_scan', 'auto_boot_navidrome_scan', 'artist'],
-            'Single Detection & Scoring': ['album_skip_days', 'album_skip_min_tracks', 'clamp_min', 'clamp_max', 'cap_top4_pct', 'title_sim_threshold', 'short_release_counts_as_match', 'secondary_single_lookup_enabled', 'secondary_lookup_metric', 'secondary_lookup_delta', 'secondary_required_strong_sources', 'median_gate_strategy', 'use_lastfm_single', 'refresh_artist_index_on_start', 'discogs_min_interval_sec', 'include_user_ratings_on_scan', 'scan_worker_threads'],
+            'Single Detection & Scoring': ['album_skip_days', 'album_skip_min_tracks'],
             'Single Detection Sources': ['source_discogs_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence']
           } %}
           {% set source_confidence_fields = ['source_discogs_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence'] %}
@@ -1586,21 +1607,6 @@
             'artist': 'Comma-separated list of artist names to prioritize.',
             'album_skip_days': 'Days before rescanning an album.',
             'album_skip_min_tracks': 'Minimum tracks for a valid album.',
-            'clamp_min': 'Minimum normalization clamp value.',
-            'clamp_max': 'Maximum normalization clamp value.',
-            'cap_top4_pct': 'Max % weight for top 4 sources.',
-            'title_sim_threshold': 'Title similarity threshold (0-1) for album matching.',
-            'short_release_counts_as_match': 'Treat short releases as valid matches.',
-            'secondary_single_lookup_enabled': 'Enable secondary single lookup step.',
-            'secondary_lookup_metric': 'Metric for secondary lookup.',
-            'secondary_lookup_delta': 'Score delta triggering secondary lookup.',
-            'secondary_required_strong_sources': 'Strong sources required for secondary confirmation.',
-            'median_gate_strategy': 'Strategy for ambiguous matches: hard or soft.',
-            'use_lastfm_single': 'Use Last.fm data for single detection.',
-            'refresh_artist_index_on_start': 'Refresh artist index on startup.',
-            'discogs_min_interval_sec': 'Min seconds between Discogs API calls.',
-            'include_user_ratings_on_scan': 'Include user ratings during scanning.',
-            'scan_worker_threads': 'Parallel worker threads for scanning.',
             'source_discogs_confidence': 'How much a Discogs single/EP release match counts toward the single-detection confidence (high/medium/low). "Low" excludes the source entirely.',
             'source_musicbrainz_confidence': 'How much a MusicBrainz release-group single match counts toward single-detection confidence.',
             'source_musicbrainz_compilation_confidence': 'Confidence weight for MusicBrainz matches found on compilation/single tracks.',
@@ -1615,14 +1621,7 @@
             'dry_run': false, 'sync': true, 'force': false, 'verbose': false,
             'perpetual': true, 'batchrate': false, 'full_scan': false,
             'auto_boot_navidrome_scan': false, 'artist': [],
-            'album_skip_days': 7, 'album_skip_min_tracks': 1, 'clamp_min': 0.75,
-            'clamp_max': 1.25, 'cap_top4_pct': 0.25, 'title_sim_threshold': 0.92,
-            'short_release_counts_as_match': false, 'secondary_single_lookup_enabled': true,
-            'secondary_lookup_metric': 'score', 'secondary_lookup_delta': 0.05,
-            'secondary_required_strong_sources': 2, 'median_gate_strategy': 'hard',
-            'use_lastfm_single': true, 'refresh_artist_index_on_start': false,
-            'discogs_min_interval_sec': 0.35, 'include_user_ratings_on_scan': true,
-            'scan_worker_threads': 4,
+            'album_skip_days': 7, 'album_skip_min_tracks': 1,
             'source_discogs_confidence': 'high',
             'source_musicbrainz_confidence': 'medium',
             'source_musicbrainz_compilation_confidence': 'medium',

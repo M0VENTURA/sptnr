@@ -56,6 +56,17 @@ SINGLE_BOOST_FADE_START = 60.0
 SINGLE_BOOST_FADE_END = 92.0
 
 
+def fmt_count(count) -> str:
+    """Format a listener/listen count compactly (14201 → '14.2k')."""
+    try:
+        value = float(count or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value >= 1000:
+        return f"{value / 1000:.1f}k"
+    return f"{value:.0f}"
+
+
 def single_boost_fade(score: float) -> float:
     """Return the boost multiplier taper for a raw combined score."""
     if score <= SINGLE_BOOST_FADE_START:

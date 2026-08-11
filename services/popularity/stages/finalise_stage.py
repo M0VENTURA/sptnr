@@ -28,6 +28,7 @@ from services.popularity.popularity_math import (
     apply_album_relative_popularity,
     calculate_robust_zscore,
     effective_album_ratio,
+    fmt_count as _fmt_count,
 )
 from services.popularity.popularity_zscore import composite_listener_z
 from services.catalog.album_classification_service import is_live_or_alternate_track_title
@@ -57,17 +58,6 @@ def _safe_float(value: Any, default: float) -> float:
         return float(value) if value is not None else float(default)
     except (TypeError, ValueError):
         return float(default)
-
-
-def _fmt_count(count) -> str:
-    """Format a listener count compactly (14201 → '14.2k')."""
-    try:
-        value = float(count or 0)
-    except (TypeError, ValueError):
-        value = 0.0
-    if value >= 1000:
-        return f"{value / 1000:.1f}k"
-    return f"{value:.0f}"
 
 
 def _live_star_thresholds() -> dict[str, float]:
