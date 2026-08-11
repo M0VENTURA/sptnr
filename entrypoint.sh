@@ -109,7 +109,9 @@ run_schema_bootstrap() {
 check_ffmpeg() {
     log "Checking ffmpeg availability..."
     if command -v ffmpeg >/dev/null 2>&1; then
-        ok2 "ffmpeg found: version $(ffmpeg -version | head -n 1 | awk '{print $2}')"
+        # `ffmpeg -version` line 1 is "ffmpeg version X.Y.Z …" — $2 is the
+        # literal word "version", $3 is the actual version number.
+        ok2 "ffmpeg found: version $(ffmpeg -version | head -n 1 | awk '{print $3}')"
         return 0
     fi
     warn "ffmpeg not found in PATH. FLAC→MP3 conversion will be unavailable."

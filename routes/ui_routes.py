@@ -21,6 +21,7 @@ from sqlalchemy import text
 
 from db.engine import db_session
 from helpers.config_helpers import get_config
+from services.catalog.album_classification_service import classify_album_type
 from services.scanning.scan_history_service import get_recent_album_scans
 
 logger = logging.getLogger(__name__)
