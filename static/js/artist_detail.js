@@ -3219,6 +3219,20 @@ function quickQueueRelease(releaseId, releaseTitle, artist) {
   showQueueToast('⚠️ Release picker unavailable — cannot queue');
 }
 
+// Play the artist's top tracks in the built-in player (Zone D primary CTA).
+function playArtistTopTracks() {
+  const tracks = window._artistPlaylist || [];
+  if (typeof Player === 'undefined' || typeof Player.playQueue !== 'function') {
+    showQueueToast('⚠️ Player unavailable');
+    return;
+  }
+  if (!tracks.length) {
+    showQueueToast('⚠️ No playable tracks for this artist');
+    return;
+  }
+  Player.playQueue(tracks);
+}
+
 // Init: single-expansion listener.  Mobile tabs are driven by the shared
 // engine in main.js ([data-mobile-tabs]).
 document.addEventListener('DOMContentLoaded', () => {

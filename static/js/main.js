@@ -542,6 +542,34 @@ window.addBookmark = function(type, name, artist, album, trackId) {
   });
 };
 
+// Toggle the track favourite heart (bookmarks-backed, no page reload).
+window.toggleTrackFavourite = function(trackId) {
+  var icon = document.getElementById('trackFavouriteIcon');
+  if (!icon || !trackId) return;
+
+  function setState(fav) {
+    icon.classList.remove(fav ? 'bi-heart' : 'bi-heart-fill');
+    icon.classList.add(fav ? 'bi-heart-fill' : 'bi-heart');
+  }
+
+  fetch('/api/track/favourite?track_id=' + encodeURIComponent(trackId))
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.is_favourite) {
+        return fetch('/api/track/favourite?track_id=' + encodeURIComponent(trackId), { method: 'DELETE' })
+          .then(function () { setState(false); });
+      }
+      return fetch('/api/track/favourite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ track_id: trackId })
+      }).then(function () { setState(true); });
+    })
+    .catch(function (error) {
+      console.error('Error toggling track favourite:', error);
+    });
+};
+
 // Toggle the album favourite heart (bookmarks-backed, no page reload).
 window.toggleAlbumFavourite = function(artistName, albumName) {
   var icon = document.getElementById('albumFavouriteIcon');

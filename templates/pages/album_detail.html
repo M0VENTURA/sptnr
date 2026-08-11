@@ -105,6 +105,10 @@
                             <span class="badge bg-warning-subtle text-warning border border-warning-subtle ms-1"><i class="bi bi-lightning-charge-fill"></i> {{ album_data.singles_count }} Detected Singles</span>
                         {% endif %}
                     </div>
+                    {% if album_data and album_data.spotify_album_type %}
+                    <!-- Entity type badge (Zone B: neutral solid pill) -->
+                    <span class="badge bg-secondary" style="font-size:0.7rem;">{{ album_data.spotify_album_type|title }}</span>
+                    {% endif %}
                     {% if hero_genres %}
                     <div class="d-flex align-items-center gap-1 flex-wrap mt-1">
                         {% for genre in hero_genres[:2] %}
@@ -133,30 +137,11 @@
                     </div>
                 </div>
                 <div class="col-6 col-md-3 border-md-end border-secondary">
-                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Type</div>
-                    <div class="fw-bold small">
-                        {% if album_data and album_data.spotify_album_type %}
-                            {% set _atype = album_data.spotify_album_type|lower %}
-                            {% if 'compilation' in _atype %}
-                                <span class="badge bg-info">Compilation</span>
-                            {% elif 'live' in _atype %}
-                                <span class="badge bg-info">Live</span>
-                            {% elif 'remix' in _atype %}
-                                <span class="badge bg-info">Remix</span>
-                            {% elif 'soundtrack' in _atype %}
-                                <span class="badge bg-info">Soundtrack</span>
-                            {% elif 'spokenword' in _atype %}
-                                <span class="badge bg-info">Spoken Word</span>
-                            {% elif _atype == 'ep' %}
-                                <span class="badge bg-info">EP</span>
-                            {% elif _atype == 'single' %}
-                                <span class="badge bg-info">Single</span>
-                            {% else %}
-                                <span class="badge bg-info">{{ album_data.spotify_album_type|title }}</span>
-                            {% endif %}
-                        {% else %}
-                            <span class="badge bg-secondary">Unknown</span>
-                        {% endif %}
+                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Rating</div>
+                    <div class="fw-bold small text-success">
+                        {% if album_data and album_data.avg_stars is not none and album_data.avg_stars != '' and album_data.avg_stars|float > 0 %}
+                            {{ (album_data.avg_stars|float)|round(2) }}★
+                        {% else %}—{% endif %}
                     </div>
                 </div>
                 <div class="col-6 col-md-3 border-md-end border-secondary">

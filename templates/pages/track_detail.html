@@ -52,8 +52,15 @@
     </nav>
     
     <!-- Unified hero: 80px art + title + metadata strip + action toolbar -->
-    <div class="card mb-4" id="track-details-section">
+    <div class="card mb-4 position-relative" id="track-details-section">
         <div class="card-body p-3">
+            <!-- Borderless top-right favourite heart -->
+            <button type="button" class="btn btn-link p-0 text-danger border-0 shadow-none position-absolute top-0 end-0 m-2"
+                    id="trackFavouriteBtn"
+                    onclick="toggleTrackFavourite('{{ track.id|escapejs }}')"
+                    title="Favourite this track" aria-label="Favourite this track">
+                <i class="bi {{ 'bi-heart-fill' if is_track_favourite else 'bi-heart' }} fs-5" id="trackFavouriteIcon"></i>
+            </button>
             <!-- 1. Header: artwork + title + artist + rating -->
             <div class="d-flex align-items-start gap-3 mb-2">
                 <div class="flex-shrink-0">
@@ -66,14 +73,8 @@
                 </div>
                 <div class="overflow-hidden flex-grow-1 min-w-0">
                     <div class="d-flex align-items-center justify-content-between gap-2">
-                        <h1 class="h5 fw-bold mb-0 text-truncate">
-                            <i class="bi bi-music-note-list"></i> {{ track.title|title_case }}
-                            {% if track.stars %}
-                                <span class="badge badge-success ms-1 align-middle">{{ track.stars }}★</span>
-                            {% endif %}
-                            {% if is_track_favourite %}
-                                <span class="badge bg-warning text-dark ms-1 align-middle">Favourite</span>
-                            {% endif %}
+                        <h1 class="h5 fw-bold mb-0 text-truncate pe-4">
+                            {{ track.title|title_case }}
                         </h1>
                     </div>
                     <div class="small text-muted my-1">
@@ -81,6 +82,10 @@
                         {% for artist_name in artist_parts %}
                             <a href="javascript:void(0)" onclick="navigateToArtist('{{ artist_name|escapejs }}', event)" class="text-success text-decoration-none fw-semibold" style="cursor: pointer;">{{ artist_name }}</a>{% if not loop.last %} / {% endif %}
                         {% endfor %}
+                        {% if track.album %}
+                        <span class="text-muted">·</span>
+                        <a href="/album/{{ (artist_parts[0] if artist_parts else track.artist)|path_segment }}/{{ track.album|path_segment }}" class="text-decoration-none text-info fw-semibold">{{ track.album }}</a>
+                        {% endif %}
                     </div>
                     {% if track.is_single == 1 %}
                     <span class="badge bg-primary-subtle text-primary border border-primary-subtle" style="font-size:0.7rem;">Single</span>
@@ -91,12 +96,6 @@
             <!-- 2. Metadata strip (2x2 mobile / 4-col desktop) -->
             <div class="row g-2 text-center py-2 my-2 border-top border-bottom border-secondary rounded" style="background: var(--tertiary-bg, #282828);">
                 <div class="col-6 col-md-3 border-md-end border-secondary">
-                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Album</div>
-                    <div class="fw-bold small text-truncate px-1">
-                        <a href="/album/{{ (artist_parts[0] if artist_parts else track.artist)|path_segment }}/{{ track.album|path_segment }}" class="text-success text-decoration-none">{{ track.album }}</a>
-                    </div>
-                </div>
-                <div class="col-6 col-md-3 border-md-end border-secondary">
                     <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Year</div>
                     <div class="fw-bold small">{{ track.year or '—' }}</div>
                 </div>
@@ -104,9 +103,13 @@
                     <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Track #</div>
                     <div class="fw-bold small">{{ track.track_number or '—' }}{% if track.disc_number and track.disc_number|int > 1 %} <span class="text-muted">(D{{ track.disc_number }})</span>{% endif %}</div>
                 </div>
-                <div class="col-6 col-md-3">
+                <div class="col-6 col-md-3 border-md-end border-secondary">
                     <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Duration</div>
                     <div class="fw-bold small">{% if track.duration %}{{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}{% else %}—{% endif %}</div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Rating</div>
+                    <div class="fw-bold small text-warning">{% if track.stars %}{{ track.stars }}★{% else %}—{% endif %}</div>
                 </div>
                 {% if track.bpm is defined and track.bpm is not none and track.bpm != '' %}
                 <div class="col-6 col-md-3">
@@ -122,29 +125,38 @@
                 {% endif %}
             </div>
 
-            <!-- 3. Bottom toolbar: play / scan / overflow (one set for all sizes) -->
-            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 pt-1">
-                <div class="d-flex align-items-center gap-2 flex-wrap">
-                    <button type="button" class="btn btn-success btn-sm d-flex align-items-center gap-1 px-3" onclick="Player.playTrack('{{ track_id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')" title="Play in the built-in player">
-                        <i class="bi bi-play-fill"></i> <span class="d-none d-sm-inline">Play</span>
-                    </button>
-                    <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" id="rescanTrackForm" class="m-0">
-                        <button class="btn btn-warning btn-sm" type="submit" title="Rescan this track (Navidrome + Popularity + Singles)">
-                            <i class="bi bi-lightning-fill"></i> <span class="d-none d-sm-inline">Rescan</span>
-                        </button>
-                    </form>
-                    <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" id="essentiaScanForm" class="m-0">
-                        <input type="hidden" name="track_id" value="{{ track.id }}">
-                        <button class="btn btn-outline-secondary btn-sm" type="submit" title="Run Essentia ML mood/genre scan for this track">
-                            <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia</span>
-                        </button>
-                    </form>
-                </div>
-                <div class="dropdown ms-auto">
-                    <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
+            <!-- 3. Primary CTA: full-width play -->
+            <button type="button" class="btn btn-success w-100 fw-bold d-flex align-items-center justify-content-center gap-2 py-2 mt-3 shadow-sm"
+                    onclick="Player.playTrack('{{ track_id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')"
+                    title="Play in the built-in player">
+                <i class="bi bi-play-circle-fill fs-5"></i>
+                <span>PLAY TRACK{% if track.duration %} · {{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}{% endif %}</span>
+            </button>
+
+            <!-- Hidden forms — submitted from the Actions dropdown via form= buttons -->
+            <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" id="rescanTrackForm" class="d-none"></form>
+            <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" id="essentiaScanForm" class="d-none">
+                <input type="hidden" name="track_id" value="{{ track.id }}">
+            </form>
+
+            <!-- 4. Secondary actions — technical/admin tools tucked under overflow -->
+            <div class="d-flex align-items-center justify-content-end pt-2">
+                <div class="dropdown">
+                    <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
                         <i class="bi bi-three-dots-vertical"></i> <span class="d-none d-sm-inline">Actions</span>
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end">
+                        <li>
+                            <button type="submit" form="rescanTrackForm" class="dropdown-item">
+                                <i class="bi bi-lightning-fill me-2 text-warning"></i>Rescan Track
+                            </button>
+                        </li>
+                        <li>
+                            <button type="submit" form="essentiaScanForm" class="dropdown-item">
+                                <i class="bi bi-cpu me-2 text-info"></i>Essentia Mood Scan
+                            </button>
+                        </li>
+                        <li><hr class="dropdown-divider"></li>
                         {% if qbit_config.enabled %}
                         <li><a class="dropdown-item" href="javascript:void(0)" onclick="openQbitSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-cloud-download me-2"></i>Search qBittorrent</a></li>
                         {% endif %}

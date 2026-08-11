@@ -20,11 +20,6 @@
       </button>
     </li>
     <li class="nav-item" role="presentation">
-      <button class="nav-link" id="musicbrainz-tab" data-bs-toggle="tab" data-bs-target="#musicbrainz" type="button" role="tab" aria-selected="false">
-        <i class="bi bi-disc"></i> MusicBrainz
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
       <button class="nav-link" id="playlists-tab" data-bs-toggle="tab" data-bs-target="#playlists" type="button" role="tab" aria-selected="false">
         <i class="bi bi-collection-play"></i> Playlists
       </button>
@@ -44,10 +39,6 @@
 
     <div class="tab-pane fade" id="qbittorrent" role="tabpanel" aria-labelledby="qbittorrent-tab">
       {% include 'components/search/_qbittorrent.html' %}
-    </div>
-
-    <div class="tab-pane fade" id="musicbrainz" role="tabpanel" aria-labelledby="musicbrainz-tab">
-      {% include 'components/search/_musicbrainz.html' %}
     </div>
 
     <div class="tab-pane fade" id="playlists" role="tabpanel" aria-labelledby="playlists-tab">
@@ -889,140 +880,6 @@ window.addEventListener('beforeunload', () => {
 // ===== MusicBrainz Search & Download Management =====
 
 let mbDownloadRefreshInterval = null;
-
-function performMbSearch() {
-    // Read the shared modal's structured fields when present, falling back to
-    // the downloads panel's single free-text input.  Each field maps to its
-    // MusicBrainz index on the backend (artist / releasegroup / recording / date).
-    const artist = document.getElementById('mbSearchArtist')?.value?.trim() || '';
-    const album  = document.getElementById('mbSearchAlbum')?.value?.trim() || '';
-    const track  = document.getElementById('mbSearchTrack')?.value?.trim() || '';
-    const year   = document.getElementById('mbSearchYear')?.value?.trim() || '';
-    const singleInput = document.getElementById('mbSearchInput')?.value?.trim() || '';
-
-    const query = [artist, album, track, year].filter(Boolean).join(' ') || singleInput;
-    if (!query) return;
-
-    // Artist-only detection (only the artist field filled → search releases
-    // BY the artist, not releases whose title matches the artist name).
-    let artistOnly = false;
-    if (artist && !album && !track && !year) {
-        artistOnly = true;
-    }
-    if (query.toLowerCase().startsWith('artist:')) {
-        artistOnly = true;
-        artist = query.substring(7).trim();
-    }
-
-    const payload = { artist, album, track, year };
-    if (!artist && !album && !track && !year) {
-        payload.query = query; // legacy single free-text input
-    }
-    if (artistOnly) payload.artist_only = true;
-    const releaseTypeServer = document.getElementById('mbReleaseType')?.value || '';
-    if (releaseTypeServer) payload.type = releaseTypeServer; // server-side primarytype/secondarytype filter
-
-    document.getElementById('mbLoading').style.display = 'block';
-    document.getElementById('mbResults').innerHTML = '';
-
-    fetch('/api/musicbrainz/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    })
-    .then(response => response.json())
-    .then(data => {
-        document.getElementById('mbLoading').style.display = 'none';
-
-        if (data.error) {
-            document.getElementById('mbResults').innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="bi bi-exclamation-triangle"></i> ${data.error}
-                </div>
-            `;
-            return;
-        }
-
-        let releases = data.releases || [];
-
-        // Apply the release-type dropdown filter (modal field), if present.
-        // Derive the category client-side (secondary types take precedence)
-        // so "Album" never admits remix/live/compilation release-groups and
-        // stale primary_type values can't leak other types in.
-        const releaseType = document.getElementById('mbReleaseType')?.value || '';
-        if (releaseType) {
-            const want = releaseType.toLowerCase();
-            releases = releases.filter(function(r) {
-                const cat = (typeof window.mbDerivedCategory === 'function')
-                    ? window.mbDerivedCategory(r)
-                    : (r.category || r.primary_type || '');
-                return String(cat).toLowerCase() === want;
-            });
-        }
-
-        // Honour the results-limit dropdown (12/25/50).
-        const limitEl = document.getElementById('mbResultLimit');
-        const max = parseInt(limitEl ? limitEl.value : '25', 10) || 25;
-        if (releases.length > max) releases = releases.slice(0, max);
-
-        if (releases.length === 0) {
-            document.getElementById('mbResults').innerHTML = `
-                <div class="alert alert-info">
-                    <i class="bi bi-info-circle"></i> No releases found for "${query}"
-                </div>
-            `;
-            return;
-        }
-
-        let html = '<div class="list-group">';
-        releases.forEach((release, index) => {
-            const coverArt = release.cover_art_url || 'https://via.placeholder.com/100x100?text=No+Art';
-            const releaseDate = release.first_release_date || 'Unknown';
-            const category = release.category || release.primary_type || 'Release';
-            const artistName = release.artist || release['artist-credit']?.[0]?.name || 'Unknown Artist';
-            const source = release.source || 'musicbrainz';
-            const sourceBadge = source === 'local' 
-                ? '<span class="badge bg-success"><i class="bi bi-database"></i> Cached</span>'
-                : '<span class="badge bg-info"><i class="bi bi-cloud"></i> MusicBrainz</span>';
-            
-            html += `
-                <div class="list-group-item">
-                    <div class="d-flex gap-3 align-items-start">
-                        <img src="${coverArt}" class="rounded" style="width: 80px; height: 80px; object-fit: cover;" alt="${release.title}">
-                        <div class="flex-grow-1">
-                            <h6 class="mb-1">${release.title}</h6>
-                            <p class="mb-1 text-muted small">${artistName}</p>
-                            <div class="d-flex gap-2 align-items-center mb-2">
-                                <span class="badge bg-secondary">${category}</span>
-                                ${sourceBadge}
-                                <span class="text-muted small">${releaseDate}</span>
-                            </div>
-                        </div>
-                        <div class="btn-group" role="group">
-                            <button class="btn btn-sm btn-success" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artistName)}', 'slskd')" title="Download via Soulseek">
-                                <i class="bi bi-music-note-list"></i> Soulseek
-                            </button>
-                            <button class="btn btn-sm btn-primary" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artistName)}', 'qbittorrent')" title="Download via qBittorrent">
-                                <i class="bi bi-cloud-download"></i> qBittorrent
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            `;
-        });
-        html += '</div>';
-        
-        document.getElementById('mbResults').innerHTML = html;
-    })
-    .catch(error => {
-        document.getElementById('mbLoading').style.display = 'none';
-        document.getElementById('mbResults').innerHTML = `
-            <div class="alert alert-danger">
-                <i class="bi bi-exclamation-triangle"></i> Error: ${error.message}
-            </div>
-        `;
-    });
-}
 
 function downloadMbRelease(releaseId, releaseTitle, artist, method) {
     const persistentSearch = document.getElementById('persistentSearchCheck').checked;
