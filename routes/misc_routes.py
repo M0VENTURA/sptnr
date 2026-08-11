@@ -744,12 +744,22 @@ async def api_bookmarks():
         btype = str(data.get("type") or "custom").strip()
         name = str(data.get("name") or "").strip()
         url = str(data.get("url") or "").strip()
+        artist_name = str(data.get("artist") or data.get("artist_name") or "").strip()
+        album_name = str(data.get("album") or data.get("album_name") or "").strip()
+        title = str(data.get("title") or "").strip()
         if not name:
             return jsonify({"error": "name required"}), 400
         with db_session() as session:
             result = session.execute(
-                text("INSERT INTO bookmarks (type, name, url) VALUES (:type, :name, :url) RETURNING id"),
-                {"type": btype, "name": name, "url": url},
+                text("""
+                    INSERT INTO bookmarks (type, name, url, artist_name, album_name, title)
+                    VALUES (:type, :name, :url, :artist_name, :album_name, :title)
+                    RETURNING id
+                """),
+                {
+                    "type": btype, "name": name, "url": url,
+                    "artist_name": artist_name, "album_name": album_name, "title": title,
+                },
             )
             return jsonify({"success": True, "id": result.scalar()}), 201
     return jsonify({"error": "Unsupported method"}), 405

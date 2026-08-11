@@ -217,7 +217,11 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
 
     # ── Download queue processor ──────────────────────────────────────────
     if jobs.get("download_queue_processor", {}).get("enabled", True):
-        interval_seconds = jobs.get("download_queue_processor", {}).get("interval_seconds", 30)
+        # A single Soulseek batch can outlast the tick interval — keep the
+        # interval conservative and never stack overlapping runs (coalesce
+        # missed ticks into one) so the orchestrator stops logging
+        # "maximum number of running instances reached" / lock contention.
+        interval_seconds = jobs.get("download_queue_processor", {}).get("interval_seconds", 60)
         try:
             from services.queue.queue_orchestrator import process_next_batch
             if scheduler.get_job("download_queue_processor") is None:
@@ -227,6 +231,9 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
                     id="download_queue_processor",
                     name="Process download queue",
                     replace_existing=True,
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=30,
                 )
                 logger.info("APScheduler: registered download_queue_processor (every %s s)", interval_seconds)
             else:

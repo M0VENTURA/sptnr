@@ -1561,14 +1561,14 @@ def get_queue_worker_config() -> dict[str, Any]:
         ``max_in_flight``.
 
     Default Values:
-        - interval_seconds: 30
+        - interval_seconds: 60
         - batch_size: 50
         - max_in_flight: 15
     """
     cfg = get_config()
     worker = cfg.get("queue", {}).get("worker", {})
     return {
-        "interval_seconds": int(worker.get("interval_seconds", 30)),
+        "interval_seconds": int(worker.get("interval_seconds", 60)),
         "batch_size": int(worker.get("batch_size", 50)),
         "max_in_flight": int(worker.get("max_in_flight", 15)),
     }

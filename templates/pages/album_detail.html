@@ -70,8 +70,15 @@
     </nav>
     
     <!-- Album Hero: art + title + top genres + metadata grid + scanner/action toolbar -->
-    <div class="card mb-4" id="album-details-section">
+    <div class="card mb-4 position-relative" id="album-details-section">
         <div class="card-body p-3">
+            <!-- Borderless top-right favourite heart -->
+            <button type="button" class="btn btn-link p-0 text-danger border-0 shadow-none position-absolute top-0 end-0 m-2"
+                    id="albumFavouriteBtn"
+                    onclick='toggleAlbumFavourite({{ artist_name|tojson }}, {{ album_name|tojson }})'
+                    title="Favourite this album" aria-label="Favourite this album">
+                <i class="bi {{ 'bi-heart-fill' if is_album_favourite else 'bi-heart' }} fs-5" id="albumFavouriteIcon"></i>
+            </button>
             <!-- 1. Header: artwork + title + artist + rating + top 2 genres -->
             <div class="d-flex align-items-start gap-3 mb-3">
                 <div class="flex-shrink-0">
@@ -86,11 +93,8 @@
                     </div>
                 </div>
                 <div class="overflow-hidden flex-grow-1 min-w-0">
-                    <h1 class="h5 fw-bold mb-0 album-hero-title text-truncate">
+                    <h1 class="h5 fw-bold mb-0 album-hero-title text-truncate pe-4">
                         {{ album_name }}
-                        {% if is_album_favourite %}
-                            <span class="badge bg-warning text-dark ms-1">Favourite</span>
-                        {% endif %}
                     </h1>
                     <div class="small text-muted mb-1 album-hero-sub">
                         by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}" class="text-success text-decoration-none fw-semibold">{{ artist_name }}</a>
@@ -183,15 +187,9 @@
                 {% endif %}
             </div>
 
-            <!-- 3. Bottom toolbar: player + scanner + actions (one set for all sizes) -->
+            <!-- 3. Horizontal scanner toolbar (scan selector + force + run + actions) -->
             <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 pt-1">
                 <div class="d-flex align-items-center gap-2 flex-wrap">
-                    <button class="btn btn-success btn-sm" onclick="playAlbum()" title="Play all downloaded tracks">
-                        <i class="bi bi-play-circle-fill"></i> <span class="d-none d-sm-inline">Play Album</span>
-                    </button>
-                    <button class="btn btn-outline-success btn-sm" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites" id="albumFavBtn">
-                        <i class="bi {{ 'bi-star-fill' if is_album_favourite else 'bi-star' }}" id="albumFavIcon"></i> <span class="d-none d-sm-inline" id="albumFavLabel">{{ 'Favourited' if is_album_favourite else 'Favourite' }}</span>
-                    </button>
                     <form method="POST" action="{{ url_for('scans.scan_album_custom') }}" class="d-flex align-items-center gap-2 flex-wrap">
                         <input type="hidden" name="artist" value="{{ artist_name }}">
                         <input type="hidden" name="album" value="{{ album_name }}">
@@ -227,6 +225,13 @@
                     </ul>
                 </div>
             </div>
+
+            <!-- 4. Full-width Play Album action bar -->
+            <button type="button" class="btn btn-success w-100 fw-bold d-flex align-items-center justify-content-center gap-2 py-2 mt-3 shadow-sm"
+                    onclick="playAlbum()" title="Play all downloaded tracks">
+                <i class="bi bi-play-circle-fill fs-5"></i>
+                <span>PLAY ALBUM{% if album_data and album_data.track_count %} ({{ album_data.track_count }} TRACKS){% endif %}</span>
+            </button>
         </div>
     </div>
 

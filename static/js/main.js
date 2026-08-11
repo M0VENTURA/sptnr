@@ -506,6 +506,38 @@ window.addBookmark = function(type, name, artist, album, trackId) {
   });
 };
 
+// Toggle the album favourite heart (bookmarks-backed, no page reload).
+window.toggleAlbumFavourite = function(artistName, albumName) {
+  var icon = document.getElementById('albumFavouriteIcon');
+  if (!icon) return;
+
+  function setState(fav) {
+    icon.classList.remove(fav ? 'bi-heart' : 'bi-heart-fill');
+    icon.classList.add(fav ? 'bi-heart-fill' : 'bi-heart');
+  }
+
+  fetch('/api/bookmarks')
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      var existing = (data.bookmarks || []).filter(function (b) {
+        return b.type === 'album' && b.name === albumName
+          && (!b.artist_name || b.artist_name === artistName);
+      })[0];
+      if (existing) {
+        return fetch('/api/bookmarks/' + existing.id, { method: 'DELETE' })
+          .then(function () { setState(false); });
+      }
+      return fetch('/api/bookmarks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'album', name: albumName, artist: artistName, album: albumName })
+      }).then(function () { setState(true); });
+    })
+    .catch(function (error) {
+      console.error('Error toggling album favourite:', error);
+    });
+};
+
 window.updateAlbumWithBeets = function(artist, album) {
   if (!confirm('Update "' + album + '" by "' + artist + '" with beets?')) return;
   var btn = event.target.closest('button');

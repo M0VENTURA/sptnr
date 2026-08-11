@@ -211,6 +211,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "popularity_frozen": "BOOLEAN DEFAULT FALSE",
         "popularity_frozen_at": "TIMESTAMP", "mbid": "TEXT", "suggested_mbid": "TEXT",
         "musicbrainz_id": "TEXT", "musicbrainz_trackid": "TEXT", "musicbrainz_albumid": "TEXT",
+        "recording_mbid": "TEXT",
         "musicbrainz_album_mbid": "TEXT", "musicbrainz_artistid": "TEXT", "musicbrainz_albumartistid": "TEXT",
         "musicbrainz_releasegroupid": "TEXT", "musicbrainz_releasetrackid": "TEXT",
         "musicbrainz_workid": "TEXT", "musicbrainz_albumstatus": "TEXT", "musicbrainz_albumtype": "TEXT",
