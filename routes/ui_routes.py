@@ -1150,7 +1150,7 @@ async def artist_detail(name: str):
         logger.debug("Failed to load similar artists for '%s': %s", name, exc)
 
     return await render_template(
-        "pages/artist_detail.html",
+        "pages/artist_detail_v2.html",
         artist_name=name,
         albums=albums,
         stats=stats,

@@ -443,6 +443,83 @@ option:checked { background-color: var(--spotify-green); color: #000; }
     display: none !important;
 }
 
+/* ── Artist detail v2: hero card, avatar overlay, category rows ────────── */
+.hero-card {
+    background-color: var(--secondary-bg, #1e1e1e);
+    border: 1px solid var(--border-color, #282828);
+    border-radius: 0.75rem;
+}
+
+.hero-card .btn-success.btn-lg {
+    background-color: var(--accent-color, #1db954);
+    border-color: var(--accent-color, #1db954);
+    color: #000000;
+    letter-spacing: 0.5px;
+    padding: 0.75rem 1rem;
+}
+
+.hero-card .btn-success.btn-lg:hover {
+    background-color: var(--accent-hover, #1ed760);
+    border-color: var(--accent-hover, #1ed760);
+}
+
+.hero-avatar-wrap {
+    position: relative;
+    display: inline-block;
+    cursor: pointer;
+}
+
+.hero-avatar-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+    pointer-events: none;
+}
+
+.hero-avatar-wrap:hover .hero-avatar-overlay {
+    opacity: 1;
+}
+
+/* Category accordion chevron rotation */
+.accordion-header-btn .accordion-chevron {
+    transition: transform 0.15s ease;
+}
+
+.accordion-header-btn:not(.collapsed) .accordion-chevron {
+    transform: rotate(180deg);
+}
+
+/* Album rows inside category sections */
+.artist-page .album-row {
+    transition: background-color 0.15s ease-in-out;
+}
+
+.artist-page .album-row:hover {
+    background-color: var(--tertiary-bg, #282828) !important;
+}
+
+/* Similar artist pills */
+.artist-similar-card {
+    border: 1px solid var(--border-color);
+    background-color: var(--secondary-bg);
+    color: var(--text-primary) !important;
+}
+
+.artist-similar-card:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-color) !important;
+}
+
+/* Former band members: muted outline pills */
+.artist-member-former {
+    background-color: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    opacity: 0.7;
+}
+
 /* ── Downloads page: smooth quick-jump scrolling ───────────────────────── */
 html {
     scroll-behavior: smooth;

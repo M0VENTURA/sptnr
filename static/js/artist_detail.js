@@ -842,7 +842,7 @@ function checkMissingReleases(artistName, silent = false, background = false) {
 
   const safeForDomId = (value) => String(value || '').replace(/\s+/g, '_').replace(/[^\w\-]/g, '_');
   const categoryToSection = {
-    album: 'albums',
+    album: 'studio-albums',
     live_album: 'live-albums',
     remix_album: 'remix-albums',
     ep: 'eps',
@@ -916,75 +916,42 @@ function checkMissingReleases(artistName, silent = false, background = false) {
         const artUrl = item.cover_art_url || fallbackArt;
         const safeArtist = safeForDomId(artistName);
         const safeAlbum = safeForDomId(item.title);
-        const contentId = `tracklist-content-${safeArtist}-${safeAlbum}`;
-        const collapseId = `collapse-${safeArtist}-${safeAlbum}`;
-        const headingId = `heading-${safeArtist}-${safeAlbum}`;
 
         const artistEnc = encodeURIComponent(JSON.stringify(artistName || "")).replace(/'/g, '%27');
         const titleEnc = encodeURIComponent(JSON.stringify(item.title || "")).replace(/'/g, '%27');
         const releaseIdEnc = encodeURIComponent(JSON.stringify(item.id || "")).replace(/'/g, '%27');
 
+        // Simple row matching the v2 category-row markup (no accordion chevron).
         const row = document.createElement('div');
-        row.className = 'accordion-item album-row';
+        row.className = 'album-row mb-1 border-0 rounded p-2 d-flex align-items-center justify-content-between gap-2 opacity-75';
+        row.style.backgroundColor = 'var(--secondary-bg)';
+        row.style.border = '1px solid var(--border-color)';
         row.setAttribute('data-year', year === '????' ? '0' : year);
         row.setAttribute('data-status', 'missing');
         row.setAttribute('data-source', 'live-missing');
         row.setAttribute('data-album', item.title || '');
-        row.style.borderStyle = 'dashed';
-        row.style.borderColor = 'rgba(245,158,11,0.4)';
 
         row.innerHTML = `
-          <h2 class="accordion-header" id="${headingId}">
-            <div class="accordion-header-row d-flex align-items-center gap-3 w-100 flex-wrap py-2 px-3">
-              <button type="button" class="accordion-chevron-btn flex-shrink-0 p-0 border-0 bg-transparent"
-                      data-bs-toggle="collapse" data-bs-target="#${collapseId}"
-                      aria-expanded="false" aria-controls="${collapseId}"
-                      title="Expand / collapse tracklist">
-                <i class="bi bi-chevron-right album-chevron-icon"></i>
-              </button>
-              <div class="d-flex align-items-center gap-3 w-100 flex-wrap" style="min-width:0;">
-                <!-- Album Art -->
-                <div class="album-art-wrapper flex-shrink-0" style="width: 48px; height: 48px;">
-                  <img src="${artUrl}" alt="${escapeHtml(item.title)}"
-                       style="width: 48px; height: 48px; object-fit: cover; border-radius: 4px; background: var(--tertiary-bg);"
-                       onerror="this.src='${fallbackArt}'">
-                </div>
-                <!-- Album Name + Missing badge -->
-                <div class="flex-grow-1" style="min-width: 120px;">
-                  <span class="fw-semibold">${escapeHtml(item.title)}</span>
-                  <span class="badge ms-2" style="background-color: rgba(245,158,11,0.12); color: #f59e0b; border: 1px dashed rgba(245,158,11,0.4);" title="Release exists on MusicBrainz but is not in your library">
-                    🟡 Missing
-                  </span>
-                </div>
-                <!-- Year -->
-                <span class="text-muted small flex-shrink-0" style="white-space: nowrap; min-width: 4ch; text-align: center;">${year}</span>
-                <!-- Track count placeholder -->
-                <span class="badge bg-secondary flex-shrink-0">—</span>
-                <!-- Actions -->
-                <div class="d-flex gap-1 flex-shrink-0" onclick="event.stopPropagation();">
-                  <button type="button" class="btn btn-outline-info btn-sm" title="Show tracklist" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" aria-controls="${collapseId}">
-                    <i class="bi bi-list-ul"></i>
-                  </button>
-                  <button type="button" class="btn btn-outline-success btn-sm" onclick="importReleaseFromEncoded('${artistEnc}', '${releaseIdEnc}', '${titleEnc}')" title="Import this release">
-                    <i class="bi bi-download"></i> Import
-                  </button>
-                  <button type="button" class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(event, '${artistEnc}', '${titleEnc}')" title="Search MusicBrainz">
-                    <i class="bi bi-search"></i>
-                  </button>
-                </div>
+          <div class="d-flex align-items-center gap-3 min-w-0">
+            <img src="${artUrl}" alt="${escapeHtml(item.title)}"
+                 class="rounded flex-shrink-0"
+                 style="width: 48px; height: 48px; object-fit: cover; background-color: #2a2a2a;"
+                 onerror="this.src='${fallbackArt}'">
+            <div class="min-w-0">
+              <div class="fw-bold text-truncate small text-secondary">${escapeHtml(item.title)}</div>
+              <div class="extra-small text-muted d-flex align-items-center gap-2">
+                <span>${year}</span>
+                <span class="badge bg-warning text-dark extra-small" title="Release exists on MusicBrainz but is not in your library">Missing</span>
               </div>
             </div>
-          </h2>
-          <div id="${collapseId}" class="accordion-collapse collapse" aria-labelledby="${headingId}" data-bs-parent="#accordion-${sectionKey}">
-            <div class="accordion-body py-2 px-3 text-muted small">
-              <div class="tracklist-container">
-                <button class="btn btn-sm btn-outline-info me-2 btn-tracklist-load" onclick="loadTracklistFromEncoded('${artistEnc}', '${titleEnc}', this, '${releaseIdEnc}')">
-                  <span class="spinner-border spinner-border-sm me-2" style="display:none;"></span>
-                  <i class="bi bi-music-note-list"></i> Load Tracklist from MusicBrainz
-                </button>
-                <div id="${contentId}" class="mt-3"></div>
-              </div>
-            </div>
+          </div>
+          <div class="btn-group btn-group-sm flex-shrink-0">
+            <button type="button" class="btn btn-outline-success btn-sm" onclick="importReleaseFromEncoded('${artistEnc}', '${releaseIdEnc}', '${titleEnc}')" title="Import this release">
+              <i class="bi bi-download"></i> <span class="d-none d-sm-inline ms-1">Import</span>
+            </button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(event, '${artistEnc}', '${titleEnc}')" title="Search MusicBrainz">
+              <i class="bi bi-search"></i>
+            </button>
           </div>
         `;
 
@@ -993,7 +960,7 @@ function checkMissingReleases(artistName, silent = false, background = false) {
         addedCount += 1;
       });
 
-      ['albums', 'live-albums', 'remix-albums', 'eps', 'singles', 'compilations'].forEach(sectionKey => {
+      ['studio-albums', 'live-albums', 'remix-albums', 'eps', 'singles', 'compilations'].forEach(sectionKey => {
         const container = document.getElementById(`accordion-${sectionKey}`);
         if (container) {
           // A previously-empty category shows a server-rendered placeholder
@@ -2676,11 +2643,22 @@ async function toggleArtistFavourite(artistName) {
   }
 }
 
-// Hero bio "[more]" → jump to the full About tab (mobile tab engine).
+// Hero bio "[more]" → jump to the full About tab.  The artist page uses the
+// Bootstrap pill tab bar (#artistPageTabs); falls back to the old mobile
+// tab engine if that bar isn't present.
 function goToArtistAbout() {
+  var btn = document.querySelector('#artistPageTabs [data-bs-target="#tab-about"]');
+  if (btn) {
+    if (window.bootstrap && bootstrap.Tab) {
+      bootstrap.Tab.getOrCreateInstance(btn).show();
+    } else {
+      btn.click();
+    }
+    return;
+  }
   var bar = document.getElementById('artistMobileTabBar');
-  var btn = bar && bar.querySelector('[data-tab="about"]');
-  if (btn) btn.click();
+  var oldBtn = bar && bar.querySelector('[data-tab="about"]');
+  if (oldBtn) oldBtn.click();
 }
 
 // ── Artist Edit Track Modal (comprehensive) ────────────────────────────────
