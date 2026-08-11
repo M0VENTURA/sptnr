@@ -1187,7 +1187,8 @@ def _coerce_track_numerics(track: dict[str, Any]) -> dict[str, Any]:
 
 
 @ui_bp.route("/album/<path:artist>/<path:album>", methods=["GET", "POST"])
-async def album_detail(artist: str, album: str):    artist_name = unquote(artist or "").strip()
+async def album_detail(artist: str, album: str):
+    artist_name = unquote(artist or "").strip()
     album_name = unquote(album or "").strip()
     cfg = get_config()
 
