@@ -402,6 +402,7 @@ def _move_and_import(item: dict, abs_path: str, match_source: str) -> dict[str, 
             "artist": item.get("artist"),
             "title": item.get("title"),
             "track_number": item.get("track_number"),
+            "disc_number": item.get("disc_number"),
         }
         release_metadata = {
             "album_artist": item.get("album_artist") or item.get("artist"),
@@ -420,9 +421,19 @@ def _move_and_import(item: dict, abs_path: str, match_source: str) -> dict[str, 
             _reset_to_downloading("move returned no target path")
             return {"success": False, "error": "missing target path"}
 
+        # Re-apply the stored metadata to the FINAL file: FLAC→MP3 conversion
+        # rewrites the container, and ffmpeg's ``-map_metadata 0`` may drop or
+        # rename custom frames (e.g. MUSICBRAINZ ids). Writing the tags again
+        # on the target guarantees the library copy carries the queue's
+        # MusicBrainz information (artist, track name, track number, MBIDs).
+        if os.path.isfile(target_path):
+            _apply_stored_metadata(item, target_path)
+
         # Persist the duration if the row lacks it (added without MusicBrainz data).
         if not item.get("duration"):
-            duration = _extract_duration_seconds(abs_path)
+            # Prefer the final file — the original source may have been
+            # converted/deleted by FLAC→MP3 conversion.
+            duration = _extract_duration_seconds(target_path) or _extract_duration_seconds(abs_path)
             if duration:
                 try:
                     update_queue_item(queue_id, duration=duration)
@@ -571,9 +582,20 @@ def _reconcile_stale_moving(stale_minutes: int = 10) -> dict[str, int]:
                         item.get("title"),
                         item.get("track_number"),
                         item.get("file_path") or "track.mp3",
+                        disc_number=item.get("disc_number"),
                     )
                 except Exception:
                     target = None
+
+            # FLAC→MP3 conversion rewrites the extension — a crash between the
+            # conversion and the status update leaves the .mp3 in the library.
+            if not (target and os.path.isfile(str(target))) and target:
+                try:
+                    mp3_variant = f"{os.path.splitext(str(target))[0]}.mp3"
+                    if os.path.isfile(mp3_variant):
+                        target = mp3_variant
+                except Exception:
+                    pass
 
             if target and os.path.isfile(str(target)):
                 update_queue_item(
