@@ -2121,13 +2121,28 @@ async function refreshUpcomingReleases() {
   
   try {
     const response = await fetch(`/api/upcoming-releases?collection=${filterCollection}`);
-    const data = await response.json();
-    
     if (!response.ok) {
-      throw new Error(data.error || 'Failed to load releases');
+      // Parse the error body best-effort (may be non-JSON on proxy errors).
+      let errorMsg = `HTTP ${response.status}: ${response.statusText}`;
+      try {
+        const errBody = await response.json();
+        if (errBody && errBody.error) errorMsg = errBody.error;
+      } catch (e) { /* non-JSON error body — keep the HTTP message */ }
+      throw new Error(errorMsg);
     }
-    
-    if (!data.releases || data.releases.length === 0) {
+
+    const data = await response.json();
+
+    // Resolve the payload shape defensively: the endpoint returns
+    // {success, releases, ...}; accept {items} or a raw array too so a shape
+    // change can never leave the spinner stuck or crash mid-render.
+    const releases = Array.isArray(data)
+      ? data
+      : (Array.isArray(data.releases)
+          ? data.releases
+          : (Array.isArray(data.items) ? data.items : []));
+
+    if (releases.length === 0) {
       container.innerHTML = `
         <div class="alert alert-info">
           <i class="bi bi-info-circle"></i>
@@ -2138,7 +2153,6 @@ async function refreshUpcomingReleases() {
     }
     
     // Filter to only show albums NOT in collection
-    let releases = data.releases;
     if (filterCollection) {
       releases = releases.filter(r => !r.album_in_collection);
       if (releases.length === 0) {
@@ -2244,9 +2258,14 @@ async function refreshUpcomingReleases() {
   } catch (error) {
     console.error('Error loading releases:', error);
     container.innerHTML = `
-      <div class="alert alert-danger">
-        <i class="bi bi-exclamation-triangle"></i>
-        <strong>Error loading releases:</strong> ${error.message}
+      <div class="alert alert-danger d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div>
+          <i class="bi bi-exclamation-triangle-fill me-1"></i>
+          <strong>Error loading releases:</strong> ${escapeHtml(error.message)}
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="refreshUpcomingReleases()">
+          <i class="bi bi-arrow-clockwise me-1"></i> Retry
+        </button>
       </div>
     `;
   }
@@ -2393,6 +2412,7 @@ if (upcomingTabEl) {
 async function autoLoadUpcomingReleases() {
   try {
     const response = await fetch('/api/upcoming-releases?collection=false');
+    if (!response.ok) return;
     const data = await response.json();
     
     if (data.releases && data.releases.length > 0) {
@@ -2767,6 +2787,7 @@ function renderCompletedQueue(completed) {
                     <button class="btn btn-sm btn-outline-primary" onclick="openEditTrackFromDownloads(${item.id})" title="Edit track metadata">
                       <i class="bi bi-pencil"></i>
                     </button>
+                    ${(item.status === 'unmatched' || isDuplicate) && hasFile ? `<button class="btn btn-sm btn-outline-info" onclick="openManualMatchFlyout(${item.id})" title="Manually link this file to a track in your library"><i class="bi bi-link-45deg"></i> Match</button>` : ''}
                     ${isMoving
                       ? '<button class="btn btn-sm btn-warning" onclick="resetMovingItem(' + item.id + ')" title="Stuck in moving — reset so it can be transferred again"><i class="bi bi-arrow-counterclockwise"></i> Reset</button>'
                       : (alreadyCopied
@@ -2837,6 +2858,7 @@ function renderCompletedQueue(completed) {
                 <button class="btn btn-sm btn-outline-primary" onclick="openEditTrackFromDownloads(${item.id})" title="Edit track metadata">
                   <i class="bi bi-pencil"></i>
                 </button>
+                ${(item.status === 'unmatched' || isDuplicate) && hasFile ? `<button class="btn btn-sm btn-outline-info" onclick="openManualMatchFlyout(${item.id})" title="Manually link this file to a track in your library"><i class="bi bi-link-45deg"></i> Match</button>` : ''}
                 ${isMoving
                   ? '<button class="btn btn-sm btn-warning" onclick="resetMovingItem(' + item.id + ')" title="Stuck in moving — reset so it can be transferred again"><i class="bi bi-arrow-counterclockwise"></i> Reset</button>'
                   : (alreadyCopied
@@ -3005,6 +3027,27 @@ function renderQueueItem(item, statusColor) {
        </button>`
     : '';
 
+  // Force Start: bypass retry/backoff timers for queued/failed items.
+  const canForceStart = ['queued', 'failed', 'backed_off', 'pending_release'].includes(item.status);
+  const forceStartBtn = canForceStart
+    ? `<button class="btn btn-sm btn-outline-warning" onclick="forceStartQueueItem(${item.id})" title="Force immediate search/download now — bypasses retry timers">
+         <i class="bi bi-arrow-clockwise"></i>
+       </button>`
+    : '';
+
+  // Orphan rows (no usable artist, or unmatched/duplicate) get a manual
+  // Match button so the file can be linked to a library track.
+  const isOrphan = !(item.artist || '').trim()
+    || ['Unknown', 'Unidentified Artist'].includes(String(item.artist).trim())
+    || String(item.artist || '').trim().toLowerCase().startsWith('unidentified')
+    || item.status === 'unmatched'
+    || item.status === 'possible_duplicate';
+  const matchBtn = (hasFile && isOrphan)
+    ? `<button class="btn btn-sm btn-outline-info" onclick="openManualMatchFlyout(${item.id})" title="Manually link this file to a track in your library">
+         <i class="bi bi-link-45deg"></i>
+       </button>`
+    : '';
+
   return `
     <div class="list-group-item queue-item">
       <div class="d-flex justify-content-between align-items-start">
@@ -3018,10 +3061,12 @@ function renderQueueItem(item, statusColor) {
         <div class="d-flex flex-column align-items-end gap-1">
           <div class="d-flex gap-1 align-items-center flex-wrap justify-content-end">
             <span class="badge ${statusBg}">${statusLabel}</span>
-            ${sourceBadge}${priBadge}${yearBadge}${tnBadge}
+            <span class="queue-item-meta d-flex gap-1 align-items-center flex-wrap">${sourceBadge}${priBadge}${yearBadge}${tnBadge}</span>
           </div>
           <div class="d-flex gap-1 mt-1">
             ${cancelBtn}
+            ${forceStartBtn}
+            ${matchBtn}
             ${copyBtn}
             <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
               <i class="bi bi-x"></i>
@@ -3224,6 +3269,31 @@ async function retryQueueItem(queueId) {
   }
 }
 
+async function forceStartQueueItem(queueId) {
+  try {
+    const response = await fetch(`/api/queue/${queueId}/force-start`, {
+      method: 'POST'
+    });
+
+    if (!response.ok) {
+      console.error(`HTTP Error ${response.status}: ${response.statusText}`);
+      alert('❌ Server error: ' + response.statusText);
+      return;
+    }
+
+    const data = await response.json();
+
+    if (data.success) {
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Could not force processing'));
+    }
+  } catch (error) {
+    console.error('Error forcing start:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
 async function resetMovingItem(queueId) {
   if (!confirm('Reset this stuck "moving" item back to completed so it can be transferred again?')) {
     return;
@@ -3294,6 +3364,77 @@ async function deleteQueueItem(queueId, deleteDownloadsFile = false) {
     }
   } catch (error) {
     console.error('Error deleting item:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+// ===== Manual Match Flyout =====
+
+let _matchQueueId = null;
+
+async function openManualMatchFlyout(queueId) {
+  _matchQueueId = queueId;
+  const input = document.getElementById('matchSearchInput');
+  if (input) input.value = '';
+  const list = document.getElementById('matchTargetList');
+  if (list) list.innerHTML = '<div class="text-center text-muted py-3 small"><span class="spinner-border spinner-border-sm me-1" role="status"></span>Loading tracks…</div>';
+
+  const modalEl = document.getElementById('manualMatchModal');
+  if (modalEl && window.bootstrap) {
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  }
+  await searchMatchTargets('');
+}
+
+async function searchMatchTargets(query) {
+  const list = document.getElementById('matchTargetList');
+  if (!list || _matchQueueId == null) return;
+  const q = (query || (document.getElementById('matchSearchInput') || {}).value || '').trim();
+
+  try {
+    const response = await fetch(`/api/queue/${_matchQueueId}/match-targets?q=${encodeURIComponent(q)}`);
+    const data = await response.json();
+    if (!data.success) {
+      list.innerHTML = `<div class="text-danger small p-2">${escapeHtml(data.error || 'Failed to load')}</div>`;
+      return;
+    }
+    const tracks = data.tracks || [];
+    if (!tracks.length) {
+      list.innerHTML = '<div class="text-center text-muted py-3 small">No matching tracks in your library.</div>';
+      return;
+    }
+    list.innerHTML = tracks.map(t => `
+      <button class="list-group-item list-group-item-action bg-transparent border-secondary p-2 text-start"
+              onclick="linkQueueToTrack(${_matchQueueId}, '${escapeHtml(String(t.id))}')">
+        <div class="fw-semibold small text-success">${escapeHtml(t.artist)}</div>
+        <div class="small text-light">${escapeHtml(t.title)}</div>
+        ${t.album ? `<div class="extra-small text-muted">${escapeHtml(t.album)}${t.year ? ' · ' + escapeHtml(String(t.year)) : ''}</div>` : ''}
+      </button>`).join('');
+  } catch (error) {
+    console.error('Error loading match targets:', error);
+    list.innerHTML = '<div class="text-danger small p-2">Network error loading targets.</div>';
+  }
+}
+
+async function linkQueueToTrack(queueId, trackId) {
+  try {
+    const response = await fetch(`/api/queue/${queueId}/link-track`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ track_id: trackId })
+    });
+    const data = await response.json();
+    if (data.success) {
+      const modalEl = document.getElementById('manualMatchModal');
+      if (modalEl && bootstrap.Modal.getInstance(modalEl)) {
+        bootstrap.Modal.getInstance(modalEl).hide();
+      }
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to link track'));
+    }
+  } catch (error) {
+    console.error('Error linking track:', error);
     alert('❌ Network error: ' + error.message);
   }
 }
@@ -4128,6 +4269,29 @@ function openDownloadSearch(artist) {
 </div>
 
 <!-- Modal: Organize Group with Metadata -->
+<!-- Manual Match Modal: link an orphan queue file to a library track -->
+<div class="modal fade" id="manualMatchModal" tabindex="-1" aria-labelledby="manualMatchModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="manualMatchModalLabel">
+          <i class="bi bi-link-45deg text-info"></i> Match Queue Item to Library Track
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="extra-small text-muted">
+          Search your library and pick the track this orphan file belongs to. The queue item's
+          metadata is updated and it moves to Completed, ready to transfer.
+        </p>
+        <input type="text" id="matchSearchInput" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
+               placeholder="Search artist, album, or track…" onkeyup="searchMatchTargets(this.value)">
+        <div id="matchTargetList" class="list-group list-group-flush extra-small overflow-auto" style="max-height: 60vh;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="organizeGroupModal" tabindex="-1" aria-labelledby="organizeGroupModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">

@@ -334,6 +334,85 @@ window.openSlideOver = function(url, title) {
     .catch(function(err) { contentEl.innerHTML = '<div class="alert alert-danger m-3">Error loading details: ' + err.message + '</div>'; });
 };
 
+// ==========================================================================
+// MusicBrainz Release Picker (slide-over)
+// --------------------------------------------------------------------------
+// Opens the /api/musicbrainz/release-picker flyout for a release GROUP so
+// the user can choose the exact physical release (15-track CD, 18-track
+// deluxe, 5-track promo, ...) before anything is queued.  Queueing a chosen
+// version posts its concrete release MBID, which resolve_release_id accepts
+// as-is (no re-resolution to the biggest official release).
+// ==========================================================================
+
+window._releasePickerOnQueued = null;
+
+window.openReleasePicker = function(releaseGroupId, title, artist, onQueued) {
+  if (!releaseGroupId) {
+    if (typeof showToast === 'function') showToast('Error', 'Missing Release Group ID', 'error');
+    else alert('❌ Error: Missing Release Group ID');
+    return;
+  }
+  window._releasePickerOnQueued = typeof onQueued === 'function' ? onQueued : null;
+  var url = '/api/musicbrainz/release-picker?rg_id=' + encodeURIComponent(releaseGroupId) +
+    '&artist=' + encodeURIComponent(artist || '') +
+    '&album=' + encodeURIComponent(title || '');
+  window.openSlideOver(url, 'Select Version: ' + (title || ''));
+};
+
+window.queueSpecificRelease = async function(releaseId, releaseTitle, artist) {
+  if (!releaseId) return;
+  try {
+    var resp = await fetch('/api/musicbrainz/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        release_id: releaseId,
+        release_title: releaseTitle,
+        artist: artist,
+        method: 'slskd',
+        queue_items_only: true
+      })
+    });
+    var data = await resp.json().catch(function () { return {}; });
+
+    if (resp.ok && (data.success || data.tracking_id)) {
+      if (typeof showToast === 'function') {
+        showToast('Success', '📥 Queued ' + releaseTitle + ' (' + artist + ')', 'success');
+      } else {
+        alert('✅ Queued version "' + releaseTitle + '" to download queue!');
+      }
+      var cb = window._releasePickerOnQueued;
+      window._releasePickerOnQueued = null;
+      if (typeof cb === 'function') { try { cb(releaseId); } catch (e) { /* ignore */ } }
+
+      var slideOverEl = document.getElementById('detailSlideOver');
+      if (slideOverEl && window.bootstrap) {
+        var inst = bootstrap.Offcanvas.getInstance(slideOverEl);
+        if (inst) inst.hide();
+      }
+    } else {
+      alert('❌ Error queuing release: ' + (data.error || 'Unknown error'));
+    }
+  } catch (e) {
+    alert('❌ Network error while queuing release: ' + e.message);
+  }
+};
+
+window.toggleReleaseTracklistPreview = function(releaseId) {
+  var el = document.getElementById('preview-rel-' + releaseId);
+  if (!el) return;
+  if (el.classList.contains('d-none')) {
+    el.classList.remove('d-none');
+    el.innerHTML = '<div class="text-center py-2"><span class="spinner-border spinner-border-sm" role="status"></span></div>';
+    fetch('/api/musicbrainz/release-picker?release_id=' + encodeURIComponent(releaseId))
+      .then(function (r) { return r.text(); })
+      .then(function (html) { el.innerHTML = html; })
+      .catch(function () { el.innerHTML = '<div class="text-danger small">Failed to load tracklist.</div>'; });
+  } else {
+    el.classList.add('d-none');
+  }
+};
+
 window.formatFilePath = function(filePath) {
   if (!filePath) return 'Not available';
   var musicMatch = filePath.match(/[\/\\]music[\/\\](.+)$/i);

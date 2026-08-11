@@ -288,8 +288,27 @@ a:not(.btn) { color: var(--spotify-green); }
 a:not(.btn):hover { color: var(--spotify-green-hover); }
 strong, b { color: var(--text-primary); }
 
-/* ── List group dark theme ─────────────────────────────────────────────── */
-.list-group {
+/* ── Dashboard desktop layout cleanup ─────────────────────────────────── */
+/* Columns size to their content — no stretched cards / empty black voids */
+#dashboardRow { align-items: flex-start; }
+#dashboardRow .card { height: auto !important; }
+#dashboardRow .card-body.p-0 { min-height: 0 !important; }
+
+/* Extra-small buttons for compact card-header toggles */
+.btn-xs {
+    padding: 0.15rem 0.4rem;
+    font-size: 0.7rem;
+    border-radius: 0.2rem;
+}
+
+/* Thin scrollbar for the Recent Scans stream (WebKit/Chromium) */
+#recentScansCard .overflow-y-auto::-webkit-scrollbar { width: 4px; }
+#recentScansCard .overflow-y-auto::-webkit-scrollbar-thumb {
+    background: var(--border-color, #333);
+    border-radius: 2px;
+}
+
+/* ── List group dark theme ─────────────────────────────────────────────── */.list-group {
   background-color: var(--secondary-bg);
   border-color: var(--border-color);
 }
@@ -548,13 +567,14 @@ option:checked { background-color: var(--spotify-green); color: #000; }
 }
 
 /* 3. Metadata chips (MBID / duration / track # / source) — translucent
-   pill on dark, full opacity, secondary text — never near-black on dark */
+   pill on dark, high-contrast secondary text — never near-black on dark */
 .queue-item .badge.bg-light,
-.queue-item .badge.bg-secondary {
-    background-color: rgba(255, 255, 255, 0.08) !important;
-    color: var(--text-secondary, #cccccc) !important;
-    border: 1px solid var(--border-color, #333333) !important;
-    font-weight: 400 !important;
+.queue-item .badge.bg-secondary,
+.queue-item-meta .badge {
+    background-color: rgba(255, 255, 255, 0.12) !important;
+    color: #e0e0e0 !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    font-weight: 500 !important;
     opacity: 1 !important;
 }
 

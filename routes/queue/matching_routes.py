@@ -34,6 +34,96 @@ async def api_queue_move_to_music(queue_id: int):
 
 
 # -----------------------------------------------------------------------------
+# Manual match: link an orphan queue item to a library track
+# -----------------------------------------------------------------------------
+
+@queue_matching_bp.route("/api/queue/<int:queue_id>/match-targets", methods=["GET"])
+def api_queue_match_targets(queue_id: int):
+    """Search library tracks to manually link an orphan queue item."""
+    query = (request.args.get("q") or "").strip()
+    try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session
+
+        with db_session() as session:
+            if query:
+                like = f"%{query}%"
+                rows = session.execute(
+                    _text("""
+                        SELECT id, artist, album, title, album_artist, year
+                        FROM tracks
+                        WHERE artist ILIKE :like OR title ILIKE :like OR album ILIKE :like
+                        ORDER BY artist, album, title
+                        LIMIT 30
+                    """),
+                    {"like": like},
+                ).fetchall()
+            else:
+                rows = session.execute(
+                    _text("""
+                        SELECT id, artist, album, title, album_artist, year
+                        FROM tracks
+                        ORDER BY artist, album, title
+                        LIMIT 30
+                    """)
+                ).fetchall()
+        return _json_response({
+            "success": True,
+            "queue_id": queue_id,
+            "tracks": [dict(r._mapping) for r in rows],
+        })
+    except Exception as exc:
+        return _json_response({"success": False, "error": str(exc)})
+
+
+@queue_matching_bp.route("/api/queue/<int:queue_id>/link-track", methods=["POST"])
+async def api_queue_link_track(queue_id: int):
+    """Point an orphan queue item at a library track.
+
+    Copies the track's metadata onto the queue row, stores
+    ``collection_track_id`` and moves the item to ``completed`` so it shows up
+    under Completed with the Transfer button (organize_track builds the
+    library path from the corrected metadata).
+    """
+    payload = (await request.get_json(silent=True)) or {}
+    track_id = str(payload.get("track_id") or "").strip()
+    if not track_id:
+        return _json_response({"success": False, "error": "track_id is required"})
+
+    try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session
+        from db.repositories.queue import get_queue_item, update_queue_item
+
+        with db_session() as session:
+            row = session.execute(
+                _text("SELECT id, artist, album, title, album_artist, year FROM tracks WHERE id = :tid"),
+                {"tid": track_id},
+            ).fetchone()
+        if row is None:
+            return _json_response({"success": False, "error": "Track not found"})
+
+        track = dict(row._mapping)
+        item = get_queue_item(queue_id)
+        if item is None:
+            return _json_response({"success": False, "error": "Queue item not found"})
+
+        updated = update_queue_item(
+            queue_id,
+            artist=track.get("artist") or item.get("artist"),
+            title=track.get("title") or item.get("title"),
+            album=track.get("album") or item.get("album") or "",
+            album_artist=track.get("album_artist") or track.get("artist"),
+            year=str(track.get("year") or "")[:4] if track.get("year") else None,
+            collection_track_id=str(track.get("id")),
+            status="completed",
+        )
+        return _json_response({"success": True, "item": updated})
+    except Exception as exc:
+        return _json_response({"success": False, "error": str(exc)})
+
+
+# -----------------------------------------------------------------------------
 # Organize
 # -----------------------------------------------------------------------------
 

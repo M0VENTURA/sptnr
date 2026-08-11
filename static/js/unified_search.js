@@ -442,12 +442,25 @@
   function queueRelease(rel, btn) {
     var id = rel.id || '';
     if (!id || _queuedIds[id]) return;
+    var artist = mbReleaseArtist(rel);
+
+    // Open the Release Picker flyout first — the user picks the exact
+    // version; the onQueued callback then marks this row as queued.
+    if (typeof window.openReleasePicker === 'function') {
+      window.openReleasePicker(id, rel.title || '', artist, function () {
+        _queuedIds[id] = true;
+        btn.classList.replace('btn-outline-primary', 'btn-success');
+        btn.innerHTML = '<i class="bi bi-check2"></i> Queued';
+        btn.disabled = true;
+      });
+      return;
+    }
+
     _queuedIds[id] = true;
 
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
 
-    var artist = mbReleaseArtist(rel);
     fetch('/api/musicbrainz/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

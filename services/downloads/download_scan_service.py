@@ -148,6 +148,8 @@ def _extract_discovered_metadata(file_path: str, filename: str) -> dict[str, str
     track_raw = str(meta.get("track_number") or "").strip()
 
     stem = os.path.splitext(filename or os.path.basename(file_path or ""))[0]
+    # Strip slskd-style trailing hashes ("Holler_639220186280397812" → "Holler").
+    stem = re.sub(r"[\s_\-]?\d{10,}\s*$", "", stem).strip()
     folder = os.path.basename(os.path.dirname(file_path or "") or "")
 
     # Filename fallback: split "Artist - Album - 01 - Title" style names.
@@ -155,12 +157,21 @@ def _extract_discovered_metadata(file_path: str, filename: str) -> dict[str, str
     if (not title or not artist) and parts:
         if not artist and len(parts) >= 2:
             artist = parts[0]
+        # Album from "Artist - Album - 01 - Title" (4+ parts) or the
+        # "Artist - Album - 12" pattern whose last part is a track number.
+        if not album:
+            if len(parts) >= 4:
+                album = parts[1]
+            elif len(parts) == 3 and re.match(r"^\d{1,3}$", parts[2]):
+                album = parts[1]
         if not title:
             _rest = parts[1:] if len(parts) >= 2 else parts
             # Skip a leading track-number part ("01").
             if _rest and re.match(r"^\d{1,3}$", _rest[0]):
                 _rest = _rest[1:]
             title = " - ".join(_rest) if _rest else parts[-1]
+            # Drop a trailing track number ("Holler - 12" → "Holler").
+            title = re.sub(r"\s*[-–]\s*\d{1,3}\s*$", "", title).strip()
         if not track_raw and parts and re.match(r"^\d{1,3}$", parts[0]):
             track_raw = parts[0]
 
@@ -240,6 +251,13 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
         meta = _extract_discovered_metadata(f.full_path, f.filename)
         if _queue_has_active_match(meta):
             already_in_queue += 1
+            # Auto-prune: when the same artist+title already has a file in
+            # the queue, compare audio quality and remove the inferior copy.
+            try:
+                from services.downloads.quality_dedup_service import prune_inferior_duplicate
+                prune_inferior_duplicate(meta, f.full_path)
+            except Exception as _exc:
+                logger.debug("[DISCOVER] duplicate prune skipped: %s", _exc)
             continue
         insert_discovered_file(
             artist=str(meta["artist"] or "Unidentified Artist"),

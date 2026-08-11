@@ -48,6 +48,8 @@ UPDATE_ALLOWED_COLUMNS = frozenset({
     "release_date",
     # State
     "status",
+    # Library linkage (manual match)
+    "collection_track_id", "in_collection",
     # Copy tracking (legacy)
     "copied_individually", "copied_individually_at",
 })

@@ -3209,29 +3209,14 @@ function dismissQueueToast() {
 
 // One-Tap Quick Queue: send a MusicBrainz release straight to the download
 // queue using the default quality profile (no confirmation modal).
-async function quickQueueRelease(releaseId, releaseTitle, artist) {
-  if (!releaseId || !releaseTitle || !artist) return;
-  try {
-    const resp = await fetch('/api/musicbrainz/download', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        release_id: releaseId,
-        release_title: releaseTitle,
-        artist: artist,
-        method: 'slskd',
-        queue_items_only: true
-      })
-    });
-    const data = await resp.json();
-    if (data.success || (resp.status >= 200 && resp.status < 300)) {
-      showQueueToast(`📥 ${releaseTitle} sent to queue`);
-    } else {
-      showQueueToast(`⚠️ Could not queue “${releaseTitle}”: ${data.error || 'Unknown error'}`);
-    }
-  } catch (e) {
-    showQueueToast(`⚠️ Network error while queueing “${releaseTitle}”`);
+function quickQueueRelease(releaseId, releaseTitle, artist) {
+  // Route through the Release Picker flyout so the user can choose the exact
+  // version (15-track CD vs 5-track promo) before anything hits the queue.
+  if (typeof window.openReleasePicker === 'function') {
+    window.openReleasePicker(releaseId, releaseTitle, artist);
+    return;
   }
+  showQueueToast('⚠️ Release picker unavailable — cannot queue');
 }
 
 // Init: single-expansion listener.  Mobile tabs are driven by the shared

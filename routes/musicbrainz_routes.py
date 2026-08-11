@@ -714,6 +714,164 @@ def api_musicbrainz_search_releases_modal():
 
 
 # ---------------------------------------------------------------------------
+# GET /api/musicbrainz/release-picker  (slide-over Release Picker flyout)
+# ---------------------------------------------------------------------------
+
+def _picker_total_tracks(release: dict[str, Any]) -> int:
+    """Sum track counts across all media (CDs/discs)."""
+    return sum(int((m.get("track-count") or 0)) for m in (release.get("media") or []))
+
+
+def _picker_formats(release: dict[str, Any]) -> str:
+    """Unique media formats, deduped, preserving order."""
+    formats = [
+        str(m.get("format") or "").strip()
+        for m in (release.get("media") or [])
+        if str(m.get("format") or "").strip()
+    ]
+    return ", ".join(dict.fromkeys(formats)) or "Digital/CD"
+
+
+def _picker_tracklist_html(client, release_id: str) -> str:
+    """HTML fragment for the per-release 'Preview Tracks' toggle."""
+    import html as _html
+
+    try:
+        release = client.get_release(release_id, inc="media+recordings")
+    except Exception as exc:
+        logger.error("[MB_PICKER] tracklist failed for %s: %s", release_id, exc)
+        return "<div class='text-danger small'>Failed to load tracklist.</div>"
+    if not release:
+        return "<div class='text-muted small'>No tracklist available.</div>"
+
+    rows = []
+    for medium in release.get("media") or []:
+        medium_format = str(medium.get("format") or "").strip()
+        for track in medium.get("tracks") or []:
+            number = str(track.get("number") or "").strip()
+            title = str(track.get("title") or "?")
+            prefix = f"<small class='text-muted'>{_html.escape(number)}.</small> " if number else ""
+            rows.append(
+                f"<div class='d-flex justify-content-between py-1 border-bottom border-secondary-subtle'>"
+                f"<span class='small'>{prefix}{_html.escape(title)}</span>"
+                f"<span class='small text-muted flex-shrink-0'>{_html.escape(medium_format)}</span>"
+                f"</div>"
+            )
+    if not rows:
+        return "<div class='text-muted small'>No tracklist available.</div>"
+    return "".join(rows)
+
+
+@mb_bp.route("/release-picker", methods=["GET"])
+def api_musicbrainz_release_picker():
+    """Slide-over release picker for a MusicBrainz release group.
+
+    Modes:
+      ``?rg_id=...&artist=...&album=...`` → HTML cards for every release
+          under the release group, sorted official-first then by track count
+          desc (mirrors ``resolve_release_id`` so the default view matches
+          what blind queueing would have picked).
+      ``?release_id=<mbid>`` → HTML tracklist fragment for one release
+          (used by the "Preview Tracks" toggle).
+    """
+    from quart import render_template_string as _render
+
+    client = _get_mb_client()
+
+    release_id = (request.args.get("release_id") or "").strip()
+    if release_id:
+        return _picker_tracklist_html(client, release_id)
+
+    rg_id = (request.args.get("rg_id") or "").strip()
+    artist = (request.args.get("artist") or "").strip()
+    album = (request.args.get("album") or "").strip()
+    if not rg_id:
+        return "<div class='alert alert-danger m-3'>Missing Release Group ID</div>", 400
+
+    try:
+        releases = client.browse_releases_for_group(rg_id, inc="media", limit=100)
+        if not releases:
+            # The id may already be a concrete release — hop to its group.
+            release = client.get_release(rg_id, inc="release-groups")
+            group_id = ((release or {}).get("release-group") or {}).get("id")
+            if group_id:
+                releases = client.browse_releases_for_group(group_id, inc="media", limit=100)
+    except Exception as exc:
+        logger.error("[MB_PICKER] browse failed for %s: %s", rg_id, exc)
+        return "<div class='alert alert-danger m-3'>Failed to fetch releases from MusicBrainz.</div>", 500
+
+    processed = []
+    for rel in releases:
+        processed.append({
+            "id": rel.get("id"),
+            "title": rel.get("title") or album,
+            "status": rel.get("status") or "Official",
+            "disambiguation": rel.get("disambiguation") or "",
+            "country": rel.get("country") or "Global",
+            "date": rel.get("date") or "Unknown Date",
+            "track_count": _picker_total_tracks(rel),
+            "format": _picker_formats(rel),
+            "artist": artist,
+        })
+
+    # Official editions first, then most tracks — the same ranking the smart
+    # resolver uses, so the top card equals what a blind queue would get.
+    processed.sort(
+        key=lambda r: (str(r["status"]).lower() != "official", -r["track_count"])
+    )
+
+    return _render(
+        """
+        <div class="p-3">
+          <p class="extra-small text-muted mb-3">
+            Found <strong>{{ releases|length }}</strong> release version{{ 's' if releases|length != 1 else '' }}
+            under <em>{{ album }}</em>. Select the exact version you want to queue:
+          </p>
+
+          <div class="d-flex flex-column gap-2">
+            {% for rel in releases %}
+              <div class="card border-secondary p-3 shadow-sm">
+                <div class="d-flex align-items-start justify-content-between gap-2">
+                  <div class="overflow-hidden">
+                    <div class="fw-bold text-light extra-small text-truncate">
+                      {{ rel.title }}
+                      {% if rel.disambiguation %}
+                        <span class="text-info fw-normal">({{ rel.disambiguation }})</span>
+                      {% endif %}
+                    </div>
+                    <div class="text-muted extra-small mt-1 d-flex align-items-center gap-1 flex-wrap">
+                      <span class="badge bg-secondary extra-small">{{ rel.status }}</span>
+                      <span>{{ rel.format }}</span> &bull; <span>{{ rel.country }}</span> &bull; <span>{{ rel.date }}</span>
+                    </div>
+                  </div>
+                  <span class="badge bg-success-subtle text-success border border-success-subtle extra-small flex-shrink-0">
+                    <i class="bi bi-music-note-beamed me-1"></i>{{ rel.track_count }} tracks
+                  </span>
+                </div>
+
+                <div class="d-flex align-items-center justify-content-between mt-3 pt-2 border-top border-secondary">
+                  <button type="button" class="btn btn-sm btn-outline-info" onclick="toggleReleaseTracklistPreview('{{ rel.id }}')">
+                    <i class="bi bi-list-ul"></i> Preview Tracks
+                  </button>
+                  <button type="button" class="btn btn-sm btn-success d-flex align-items-center gap-1"
+                          onclick='queueSpecificRelease("{{ rel.id }}", {{ rel.title|tojson }}, {{ rel.artist|tojson }})'>
+                    <i class="bi bi-download"></i> Queue This Version
+                  </button>
+                </div>
+
+                <div id="preview-rel-{{ rel.id }}" class="mt-2 d-none extra-small text-muted border-top border-secondary pt-2"></div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+        """,
+        releases=processed,
+        album=album,
+        artist=artist,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /api/musicbrainz/releases/active
 # ---------------------------------------------------------------------------
 

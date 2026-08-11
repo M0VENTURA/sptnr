@@ -402,6 +402,24 @@ def _score_result(
     filename = str(result.get("filename", ""))
     parts = _parse_filename_parts(filename)
 
+    # Normalise the target strings: pre-sanitization-era queue rows can hold a
+    # raw downloaded filename ("Artist - Album - 12 - Title_hash.flac") and an
+    # "Unknown" artist.  Comparing those verbatim makes every clean candidate
+    # fail — strip hash/ext/track-number junk, then use the last " - " segment
+    # as the title key (first segment as artist when the stored artist is
+    # unknown), mirroring how candidate filenames are parsed.
+    exp_artist = _sanitize_slskd_query(expected_artist or "")
+    exp_title = _sanitize_slskd_query(expected_title or "")
+    exp_segments = [p.strip() for p in re.split(r"\s*[-–]\s*", exp_title) if p.strip()] if exp_title else []
+    if len(exp_segments) >= 2:
+        exp_title = exp_segments[-1]
+        if not exp_artist or exp_artist.lower() in ("unknown", "unidentified", "unidentified artist"):
+            exp_artist = exp_segments[0]
+    expected_artist = exp_artist or expected_artist
+    expected_title = exp_title or expected_title
+    if expected_album:
+        expected_album = _sanitize_slskd_query(expected_album) or expected_album
+
     # Artist match
     art_score = _similarity(str(parts.get("artist") or ""), expected_artist)
     if art_score > 0.7:
@@ -538,6 +556,16 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             queue_id, item.get("file_path"),
         )
         return {"success": False, "status": "local_file_skip", "skipped": True}
+
+    # Pre-search sanitizer: pre-sanitization-era rows can carry an "Unknown"
+    # artist and a hash-suffixed raw filename as the title — searching/scoring
+    # against that verbatim makes every clean candidate fail.  Clean and
+    # persist the metadata before building queries or comparing results.
+    try:
+        from services.queue_cleaner import clean_mangled_queue_item
+        item = clean_mangled_queue_item(item)
+    except Exception as exc:
+        logger.debug("[QUEUE_CLEAN] pre-search cleaner skipped: %s", exc)
 
     expected_artist = (item.get("artist") or "").strip()
     expected_title = (item.get("title") or "").strip()

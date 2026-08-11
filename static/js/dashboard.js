@@ -438,11 +438,22 @@ function renderUpcomingReleasesTable(releases) {
   if (countEl) countEl.textContent = `${releases.length} release(s)`;
 
   if (!releases || releases.length === 0) {
-    body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No upcoming releases found.</td></tr>';
+    // Compact empty state: hide the fixed-height table box entirely so the
+    // card collapses around a one-line confirmation instead of a dark void.
+    const wrap = document.getElementById("upcomingTableWrap");
+    if (wrap) wrap.classList.add("d-none");
+    const empty = document.getElementById("upcomingEmptyState");
+    if (empty) empty.classList.remove("d-none");
+    body.innerHTML = "";
     const cardsEl = document.getElementById("upcoming-releases-cards");
-    if (cardsEl) cardsEl.innerHTML = '<div class="text-center text-muted py-4 small">No upcoming releases found.</div>';
+    if (cardsEl) cardsEl.innerHTML = "";
     return;
   }
+
+  const wrap = document.getElementById("upcomingTableWrap");
+  if (wrap) wrap.classList.remove("d-none");
+  const empty = document.getElementById("upcomingEmptyState");
+  if (empty) empty.classList.add("d-none");
 
   const rows = releases.map(r => {
     const releaseDate = r.release_date || "TBA";

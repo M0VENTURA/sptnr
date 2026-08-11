@@ -211,6 +211,41 @@ def queue_requeue(queue_id: int) -> Dict[str, Any]:
     return {"success": True, "queue_id": queue_id, "status": "queued"}
 
 
+def queue_force_start(queue_id: int) -> Dict[str, Any]:
+    """Bypass retry/backoff timers and push an item straight back to 'queued'.
+
+    Unlike ``queue_requeue`` (which only resets failed/removed/cancelled),
+    this also clears ``next_retry_at`` for ``backed_off`` / ``pending_release``
+    items so the very next worker cycle picks them up immediately.
+    """
+    try:
+        from db.repositories.queue import get_queue_item, update_queue_item
+
+        item = get_queue_item(queue_id)
+        if not item:
+            return {"success": False, "error": "Queue item not found"}
+        if item.get("file_path"):
+            return {"success": False, "error": "Item already has a downloaded file — use Transfer or Match instead"}
+        if str(item.get("status") or "").lower() in ("completed", "imported", "in_collection"):
+            return {"success": False, "error": "Item is already completed"}
+
+        updated = update_queue_item(
+            queue_id,
+            status="queued",
+            retry_count=0,
+            failure_reason=None,
+            next_retry_at=None,
+        )
+        return {
+            "success": bool(updated),
+            "queue_id": queue_id,
+            "status": "queued",
+            "message": f"Item #{queue_id} forced back to active processing",
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 def queue_requeue_all_unmatched() -> Dict[str, Any]:
     try:
         with db_session() as session:
@@ -383,7 +418,10 @@ def queue_delete(queue_id: int, delete_download_file: bool = False) -> Dict[str,
         if delete_download_file:
             item = get_queue_item(queue_id)
             if item:
-                file_path = item.get("file_path") or item.get("found_filename") or ""
+                file_path = (
+                    item.get("file_path") or item.get("music_file_path")
+                    or item.get("matched_file_path") or item.get("found_filename") or ""
+                )
                 if file_path and os.path.isfile(file_path):
                     try:
                         os.remove(file_path)
