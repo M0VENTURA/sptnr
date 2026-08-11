@@ -9,17 +9,22 @@
       {% set subtitle = 'Search and download music from qBittorrent and Soulseek' %}
       {% include 'components/_downloads_header.html' ignore missing %}
     </div>
-    <a href="/downloads/banned-words" class="btn btn-outline-danger btn-sm align-self-center">
-      <i class="bi bi-slash-circle"></i> Banned Words
-    </a>
+    <div class="d-flex gap-2 flex-shrink-0">
+      <a href="#upcoming-releases" class="btn btn-outline-success btn-sm align-self-center" title="Jump to the upcoming releases list">
+        <i class="bi bi-arrow-down-circle"></i> Upcoming Releases
+      </a>
+      <a href="/downloads/banned-words" class="btn btn-outline-danger btn-sm align-self-center">
+        <i class="bi bi-slash-circle"></i> Banned Words
+      </a>
+    </div>
   </div>
 
-  <!-- Modularized UI Sections -->
-  {% include 'components/search/_queue_add_form.html' ignore missing %}
-  {% include 'components/search/_monitor_upcoming.html' ignore missing %}
-  {% include 'components/search/_monitor_discovery.html' ignore missing %}
+  <!-- Modularized UI Sections — order follows the page spec:
+       queue health stats + active queue → auto-discover → upcoming releases
+       (docked at the bottom with a quick-jump anchor) -->
   {% include 'components/search/_monitor_queue_section.html' ignore missing %}
-
+  {% include 'components/search/_monitor_discovery.html' ignore missing %}
+  {% include 'components/search/_monitor_upcoming.html' ignore missing %}
 </div>
 {% endblock %}
 

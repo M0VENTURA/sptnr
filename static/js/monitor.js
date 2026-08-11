@@ -181,7 +181,9 @@
 let queueLogPaused = false;
 let searchLogPaused = false;
 
-// ===== Queue Groups (legacy MusicBrainz folder groups were removed — the\n// queue groups match the folders and support expand/stop/delete) =====\nasync function loadFolderGroups(options) {
+// ===== Queue Groups (legacy MusicBrainz folder groups were removed — the
+// queue groups match the folders and support expand/stop/delete) =====
+async function loadFolderGroups(options) {
   options = options || {};
   var section = document.getElementById('folderGroupsSection');
   var list = document.getElementById('folderGroupsList');

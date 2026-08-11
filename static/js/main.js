@@ -176,6 +176,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 const LOG_SOURCE_FILES = {
   scanner: 'unified_scan.log',
+  queue: 'queue.log',
   soulseek: 'search.log',
   navidrome: 'info.log',
   system: 'error.log',

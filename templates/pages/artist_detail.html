@@ -928,7 +928,7 @@
     </div>
   </div>
 
-  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="compilations-section" {% if albums_by_category.compilation|length == 0 and total_missing_compilations == 0 %}style="display:none;"{% endif %}>
+  <div class="card mb-4 mobile-tab-group mobile-tab-active{% if albums_by_category.compilation|length == 0 and total_missing_compilations == 0 %} category-empty{% endif %}" data-mobile-group="disco" id="compilations-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <div>
         <h5 class="card-title mb-0">
@@ -953,7 +953,7 @@
     </div>
   </div>
 
-  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="live-albums-section" {% if albums_by_category.live_album|length == 0 and total_missing_live_albums == 0 %}style="display:none;"{% endif %}>
+  <div class="card mb-4 mobile-tab-group mobile-tab-active{% if albums_by_category.live_album|length == 0 and total_missing_live_albums == 0 %} category-empty{% endif %}" data-mobile-group="disco" id="live-albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-broadcast"></i> Live Albums
@@ -983,7 +983,7 @@
     </div>
   </div>
 
-  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="remix-albums-section" {% if albums_by_category.remix_album|length == 0 and total_missing_remix_albums == 0 %}style="display:none;"{% endif %}>
+  <div class="card mb-4 mobile-tab-group mobile-tab-active{% if albums_by_category.remix_album|length == 0 and total_missing_remix_albums == 0 %} category-empty{% endif %}" data-mobile-group="disco" id="remix-albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-soundwave"></i> Remix Albums
@@ -1013,7 +1013,7 @@
     </div>
   </div>
 
-  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="eps-section" {% if albums_by_category.ep|length == 0 and total_missing_eps == 0 %}style="display:none;"{% endif %}>
+  <div class="card mb-4 mobile-tab-group mobile-tab-active{% if albums_by_category.ep|length == 0 and total_missing_eps == 0 %} category-empty{% endif %}" data-mobile-group="disco" id="eps-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-disc"></i> EPs
@@ -1043,7 +1043,7 @@
     </div>
   </div>
 
-  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="singles-section" {% if albums_by_category.single|length == 0 and total_missing_singles == 0 %}style="display:none;"{% endif %}>
+  <div class="card mb-4 mobile-tab-group mobile-tab-active{% if albums_by_category.single|length == 0 and total_missing_singles == 0 %} category-empty{% endif %}" data-mobile-group="disco" id="singles-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-music-note-beamed"></i> Singles

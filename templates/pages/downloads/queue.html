@@ -6,9 +6,14 @@
 <div class="container-fluid mt-4">
   <div class="mb-4 d-flex align-items-start justify-content-between gap-2 flex-wrap">
     {% include 'components/_downloads_header.html' %}
-    <button type="button" class="btn btn-sm btn-outline-success flex-shrink-0" onclick="jumpToUpcomingReleases()" title="Jump to the upcoming releases list">
-      <i class="bi bi-arrow-down-circle"></i> <span class="d-none d-sm-inline">Upcoming Releases</span>
-    </button>
+    <div class="d-flex gap-2 flex-shrink-0">
+      <button type="button" class="btn btn-sm btn-outline-success flex-shrink-0" onclick="jumpToUpcomingReleases()" title="Jump to the upcoming releases list">
+        <i class="bi bi-arrow-down-circle"></i> <span class="d-none d-sm-inline">Upcoming Releases</span>
+      </button>
+      <a href="/downloads/banned-words" class="btn btn-sm btn-outline-danger flex-shrink-0" title="Manage banned words">
+        <i class="bi bi-slash-circle"></i> <span class="d-none d-sm-inline">Banned Words</span>
+      </a>
+    </div>
   </div>
 
   <ul class="nav nav-tabs mb-4" id="searchTabs" role="tablist">
@@ -2151,22 +2156,16 @@ if (upcomingTabEl) {
   });
 }
 
-// Jump straight to the Upcoming Releases section: activate the Active Queue
-// tab + the nested Upcoming tab, then smooth-scroll to the container.
+// Jump straight to the Upcoming Releases section.  The queue page no longer
+// hosts an upcoming tab — the Upcoming Releases section lives at the bottom
+// of /downloads/monitor (anchor #upcoming-releases) — so navigate there.
 function jumpToUpcomingReleases() {
-  const queueTab = document.getElementById('queue-tab');
-  if (queueTab && !queueTab.classList.contains('active')) {
-    bootstrap.Tab.getOrCreateInstance(queueTab).show();
-  }
-  const upcomingTab = document.getElementById('upcomingTab');
-  if (upcomingTab && !upcomingTab.classList.contains('active')) {
-    bootstrap.Tab.getOrCreateInstance(upcomingTab).show();
-  }
-  const target = document.getElementById('upcomingReleases');
+  const target = document.getElementById('upcoming-releases') || document.getElementById('upcomingReleases');
   if (target) {
-    // Wait a tick for the tab panes to become visible before scrolling.
-    setTimeout(function () { target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 60);
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
   }
+  window.location.href = '/downloads/monitor#upcoming-releases';
 }
 
 // Auto-load upcoming releases on page load if data exists

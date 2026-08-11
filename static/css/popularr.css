@@ -434,6 +434,38 @@ option:checked { background-color: var(--spotify-green); color: #000; }
   li.nav-nav-search .input-group { max-width: none !important; }
 }
 
+/* ── Artist category sections: empty state (hidden but kept in the DOM) ── */
+/* Empty category cards are rendered server-side with the ``category-empty``
+   class so checkMissingReleases always has a landing target, then hidden.
+   Must use !important to beat the [data-mobile-group] display rules above —
+   both the mobile (max-width) and desktop (min-width) variants. */
+.category-empty {
+    display: none !important;
+}
+
+/* ── Downloads page: smooth quick-jump scrolling ───────────────────────── */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Anchor targets sit below the fixed navbar / sticky bars. */
+#upcoming-releases,
+#upcomingReleasesMonitorCard {
+    scroll-margin-top: 1.5rem;
+}
+
+/* GPU layer + dark canvas for the downloads page (prevents white repaint
+   flicker while queue/upcoming cards re-render every few seconds). */
+.downloads-page,
+#folderGroupsList,
+#activeQueueList,
+#upcoming-releases {
+    background-color: var(--primary-bg, #121212);
+    contain: content;
+    transform: translateZ(0);
+    backface-visibility: hidden;
+}
+
 /* ── Genre/mood source brand colors ─────────────────────────────────────── */
 :root {
     --brand-spotify: #1db954;

@@ -1002,10 +1002,12 @@ function checkMissingReleases(artistName, silent = false, background = false) {
           sortAccordionByYear(container);
         }
         // Un-hide the section card if this check populated a previously-empty
-        // category (empty sections are rendered but display:none server-side).
+        // category (empty sections carry the ``category-empty`` class and are
+        // hidden via CSS, so the JS must remove the class — clearing the
+        // inline style would lose to the ``!important`` mobile-tab rules).
         if (touchedSections.has(sectionKey)) {
           const section = document.getElementById(`${sectionKey}-section`);
-          if (section) section.style.display = '';
+          if (section) section.classList.remove('category-empty');
         }
       });
 
@@ -2402,17 +2404,20 @@ function initializeMissingToggle() {
     const button = section.querySelector('.toggle-missing-btn');
     if (!accordion || !button) return;
     
-    // Load preference from localStorage (default is false = hidden)
-    const showMissing = localStorage.getItem('showMissing-' + category) === 'true';
+    // Default is SHOWING missing rows (legacy parity: the old table-based
+    // toggle selectors never matched anything, so missing albums were always
+    // visible).  Only a stored "false" (user explicitly hid them) hides them
+    // again — a fresh device must not look like albums vanished.
+    const showMissing = localStorage.getItem('showMissing-' + category) !== 'false';
     const missingRows = accordion.querySelectorAll('.album-row[data-status="missing"]');
     
     if (!showMissing) {
-      // Hide by default
+      // Hide
       missingRows.forEach(row => row.style.display = 'none');
       button.setAttribute('data-show', 'false');
       button.innerHTML = '<i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>';
     } else {
-      // Show if saved preference is true
+      // Show (default)
       missingRows.forEach(row => row.style.display = '');
       button.setAttribute('data-show', 'true');
       button.innerHTML = '<i class="bi bi-eye"></i> <span class="d-none d-sm-inline">Hide Missing</span>';

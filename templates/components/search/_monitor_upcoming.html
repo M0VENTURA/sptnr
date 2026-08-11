@@ -1,6 +1,8 @@
-<!-- Upcoming Album Releases Section -->
-<div class="card mb-4" id="upcomingReleasesMonitorCard">
-  <div class="card-header d-flex justify-content-between align-items-center">
+<!-- Upcoming Album Releases Section (docked at the bottom of the downloads
+     page — quick-jump anchor target) -->
+<span id="upcomingReleasesMonitorCard" class="d-block" style="scroll-margin-top: 1.5rem;" aria-hidden="true"></span>
+<div class="card mb-4" id="upcoming-releases" style="scroll-margin-top: 1.5rem;">
+  <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
     <h5 class="card-title mb-0">
       <i class="bi bi-calendar-event"></i> Upcoming Album Releases
     </h5>
@@ -20,6 +22,9 @@
       <button class="btn btn-sm btn-outline-danger" onclick="clearUpcomingReleasesMonitor()" title="Clear old entries and start fresh">
         <i class="bi bi-trash"></i> Clear Database
       </button>
+      <a href="#top" class="btn btn-sm btn-outline-secondary" title="Back to top">
+        <i class="bi bi-arrow-up-circle"></i> <span class="d-none d-sm-inline">Back to Top</span>
+      </a>
     </div>
   </div>
   <div class="card-body">
