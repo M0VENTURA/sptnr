@@ -573,37 +573,9 @@ async function loadUpcomingReleasesTable() {
   }
 }
 
-// ===== Unified Log =====
-let logPaused = false;
-let logModalVisible = false;
-
-function openUnifiedLogModal() {
-  const modalEl = document.getElementById("unifiedLogModal");
-  if (!modalEl) return;
-  bootstrap.Modal.getOrCreateInstance(modalEl).show();
-}
-
-function updateUnifiedLog() {
-  if (logPaused) return;
-  // Self-healing poll: a hung request must not freeze the log panel forever.
-  // Abort after 8s so the next poll tick recovers on its own.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  fetch("/api/unified-log?lines=200&last_hour=1", { signal: controller.signal })
-    .then(r => r.json())
-    .then(data => {
-      const logEl = document.getElementById("unifiedLog");
-      if (logEl && Array.isArray(data && data.lines)) {
-        logEl.textContent = data.lines.join("\n");
-        logEl.scrollTop = logEl.scrollHeight;
-      }
-    })
-    .catch(() => {})
-    .finally(() => clearTimeout(timer));
-}
-
 // ===== Active Scans Progress Panel =====
-/* One-line summary for the sticky bottom status bar. */
+/* One-line summary for the sticky bottom status bar (global bar lives in
+   base.html; the global log modal is driven by main.js). */
 function updateScanStatusBar(active) {
   const line = document.getElementById("scanStatusLine");
   const icon = document.getElementById("scanStatusIcon");
@@ -682,29 +654,8 @@ document.addEventListener("DOMContentLoaded", function () {
   setTimeout(loadUpcomingReleasesTable, 400);
   setInterval(loadUpcomingReleasesTable, 30 * 60 * 1000);
 
-  const pauseBtn = document.getElementById("pauseLogBtn");
-  if (pauseBtn) {
-    pauseBtn.addEventListener("click", function () {
-      logPaused = !logPaused;
-      pauseBtn.innerHTML = logPaused ? '<i class="bi bi-play"></i> Resume' : '<i class="bi bi-pause"></i> Pause';
-    });
-  }
-
   updateAll();
   setInterval(updateAll, 5000);
-
-  // Full-screen log modal: only fetch log lines while it is visible.
-  const logModalEl = document.getElementById("unifiedLogModal");
-  if (logModalEl) {
-    logModalEl.addEventListener("shown.bs.modal", function () {
-      logModalVisible = true;
-      updateUnifiedLog();
-    });
-    logModalEl.addEventListener("hidden.bs.modal", function () {
-      logModalVisible = false;
-    });
-  }
-  setInterval(function () { if (logModalVisible) updateUnifiedLog(); }, 5000);
 
   // Lift the sticky scan status bar above the global player bar when it appears.
   setInterval(function () {

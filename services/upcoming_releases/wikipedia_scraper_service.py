@@ -766,6 +766,56 @@ class WikipediaReleaseScraper:
                 rel_year = release.get("release_year")
 
                 try:
+                    # Case/punctuation-insensitive dedupe: "Tanzneid" and
+                    # "TANZNEID" are the same release — merge into the existing
+                    # row instead of creating a duplicate (the unique index is
+                    # exact-match only).
+                    dup = session.execute(
+                        text("""
+                            SELECT id FROM upcoming_releases
+                            WHERE LOWER(REGEXP_REPLACE(artist_name, '[^a-zA-Z0-9]', '', 'g'))
+                                  = LOWER(REGEXP_REPLACE(:artist, '[^a-zA-Z0-9]', '', 'g'))
+                              AND LOWER(REGEXP_REPLACE(album_name, '[^a-zA-Z0-9]', '', 'g'))
+                                  = LOWER(REGEXP_REPLACE(:album, '[^a-zA-Z0-9]', '', 'g'))
+                            LIMIT 1
+                        """),
+                        {"artist": artist, "album": album},
+                    ).fetchone()
+                    if dup:
+                        # Same precedence as the ON CONFLICT branch below.
+                        session.execute(
+                            text("""
+                                UPDATE upcoming_releases SET
+                                    last_seen_at = CURRENT_TIMESTAMP,
+                                    source = CASE
+                                        WHEN upcoming_releases.source = 'MusicBrainz Daily Collection'
+                                            THEN upcoming_releases.source
+                                        ELSE :source
+                                    END,
+                                    source_key = CASE
+                                        WHEN upcoming_releases.source = 'MusicBrainz Daily Collection'
+                                            THEN upcoming_releases.source_key
+                                        ELSE :source_key
+                                    END,
+                                    release_date = CASE
+                                        WHEN upcoming_releases.source = 'MusicBrainz Daily Collection'
+                                            THEN upcoming_releases.release_date
+                                        ELSE COALESCE(:date, upcoming_releases.release_date)
+                                    END,
+                                    release_year = CASE
+                                        WHEN upcoming_releases.source = 'MusicBrainz Daily Collection'
+                                            THEN upcoming_releases.release_year
+                                        ELSE COALESCE(:year, upcoming_releases.release_year)
+                                    END,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = :id
+                            """),
+                            {"id": dup[0], "source": source_name, "source_key": source_key,
+                             "date": rel_date, "year": rel_year},
+                        )
+                        updated_count += 1
+                        continue
+
                     result = session.execute(
                         text("""
                             INSERT INTO upcoming_releases

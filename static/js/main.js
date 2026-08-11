@@ -153,7 +153,9 @@ document.addEventListener("DOMContentLoaded", () => {
     source.addEventListener('message', (e) => {
       if (!e.data) return;
       try {
-        showScanProgressToast(JSON.parse(e.data));
+        const data = JSON.parse(e.data);
+        showScanProgressToast(data);
+        updateGlobalScanBar(data);
       } catch (_) {
         /* malformed frame — ignore */
       }
@@ -161,6 +163,100 @@ document.addEventListener("DOMContentLoaded", () => {
   } catch (_) {
     /* SSE unavailable — dashboard polling still covers progress */
   }
+});
+
+// ==========================================================================
+// Global log viewer + sticky scan bar (every page)
+// --------------------------------------------------------------------------
+// The sticky bottom bar and the fullscreen log modal live in base.html.
+// The dashboard's own polling (dashboard.js) drives the bar there; on every
+// other page the SSE stream updates it.  The modal reads per-source log
+// files and can export the last hour with one tap.
+// ==========================================================================
+
+const LOG_SOURCE_FILES = {
+  scanner: 'unified_scan.log',
+  soulseek: 'search.log',
+  navidrome: 'info.log',
+  system: 'error.log',
+};
+
+let activeLogSource = 'scanner';
+let logPaused = false;
+let logModalVisible = false;
+
+function openUnifiedLogModal() {
+  const modalEl = document.getElementById('unifiedLogModal');
+  if (!modalEl) return;
+  bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+
+function toggleLogPause() {
+  logPaused = !logPaused;
+  const pauseBtn = document.getElementById('pauseLogBtn');
+  if (pauseBtn) pauseBtn.innerHTML = logPaused ? '<i class="bi bi-play"></i> <span class="d-none d-sm-inline">Resume</span>' : '<i class="bi bi-pause"></i> <span class="d-none d-sm-inline">Pause</span>';
+}
+
+function switchLogSource(source) {
+  activeLogSource = LOG_SOURCE_FILES[source] ? source : 'scanner';
+  document.querySelectorAll('.log-source-tab').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.source === activeLogSource);
+  });
+  updateUnifiedLog();
+}
+
+function downloadActiveLogLastHour() {
+  const link = document.createElement('a');
+  link.href = '/api/logs/export?source=' + encodeURIComponent(activeLogSource) + '&hours=1';
+  link.download = activeLogSource + '_log_last_1hr.log';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+function updateUnifiedLog() {
+  if (logPaused) return;
+  const logEl = document.getElementById('unifiedLog');
+  if (!logEl) return;
+  // Self-healing poll: a hung request must not freeze the log panel forever.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  fetch('/api/log-file?name=' + encodeURIComponent(LOG_SOURCE_FILES[activeLogSource]) + '&lines=300', { signal: controller.signal })
+    .then((r) => r.json())
+    .then((data) => {
+      if (Array.isArray(data && data.lines)) {
+        logEl.textContent = data.lines.join('\n');
+        if (logModalVisible) logEl.scrollTop = logEl.scrollHeight;
+      }
+    })
+    .catch(() => {})
+    .finally(() => clearTimeout(timer));
+}
+
+// The dashboard's own polling (dashboard.js) owns the bar there.
+function updateGlobalScanBar(data) {
+  if (document.getElementById('dashboardFlags')) return;
+  const bar = document.getElementById('scanStatusBar');
+  const line = document.getElementById('scanStatusLine');
+  const icon = document.getElementById('scanStatusIcon');
+  if (!bar || !line || !icon) return;
+  const active = (data && (data.active_scans || [])) || [];
+  const scan = active[0];
+  if (!scan || !scan.is_running) return;
+  const pct = Math.min(scan.progress || 0, 100);
+  const name = String(scan.scan_type || 'scan').replace(/_/g, ' ');
+  line.textContent = `${name} — ${pct}%` + (scan.current_item ? ` · ${scan.current_item}` : '');
+  icon.className = 'scan-status-active';
+  icon.innerHTML = '<i class="bi bi-activity"></i>';
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const logModalEl = document.getElementById('unifiedLogModal');
+  if (logModalEl) {
+    logModalEl.addEventListener('shown.bs.modal', () => { logModalVisible = true; updateUnifiedLog(); });
+    logModalEl.addEventListener('hidden.bs.modal', () => { logModalVisible = false; });
+  }
+  setInterval(() => { if (logModalVisible) updateUnifiedLog(); }, 5000);
 });
 
 // ==========================================================================

@@ -7,6 +7,7 @@ to ensure proper rate limiting, User-Agent, and Lucene-escaping.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -135,6 +136,9 @@ def api_upcoming_releases():
         include_queue = request.args.get("include_queue", "").strip().lower() == "true"
         page = max(1, request.args.get("page", 1, type=int))
         limit = max(1, min(request.args.get("limit", 50, type=int), 200))
+        # Hide albums that already exist in the local library (normalized
+        # artist+album match).  Default ON — the feed shows only new drops.
+        hide_in_library = request.args.get("hide_in_library", "1").strip().lower() != "0"
         # Optional tight window (days): dashboard snapshot uses ±7 so only
         # releases from last week → next week are queried.  ``total`` keeps
         # the FULL rolling-window count so the dashboard can render a
@@ -173,24 +177,25 @@ def api_upcoming_releases():
         except Exception:
             pass
 
-        with db_session() as session:
-            total = session.execute(
-                text(f"SELECT COUNT(*) FROM upcoming_releases{where_sql}"),
-                params,
-            ).scalar() or 0
-
-            # Tight ±N-day snapshot window (applied AFTER the total count so
-            # ``total`` still reflects the full rolling window).  Undated (TBA)
-            # rows are excluded — the snapshot is strictly last-week → next-week.
-            if window_days > 0:
-                _today = datetime.now().date()
-                _w_start = (_today - timedelta(days=window_days)).strftime("%Y-%m-%d")
-                _w_end = (_today + timedelta(days=window_days)).strftime("%Y-%m-%d")
-                _win_clause = "release_date BETWEEN :win7_start AND :win7_end"
+            # Hide releases whose (artist, album) already exists in the local
+            # library — normalized comparison (case + punctuation-insensitive)
+            # so "Tanzneid" vs "TANZNEID" never slips through as a new release.
+            if hide_in_library:
+                _lib_clause = """NOT EXISTS (
+                    SELECT 1 FROM tracks t
+                    WHERE LOWER(REGEXP_REPLACE(
+                              COALESCE(NULLIF(t.album_artist, ''), t.artist),
+                              '[^a-zA-Z0-9]', '', 'g'))
+                          = LOWER(REGEXP_REPLACE(upcoming_releases.artist_name,
+                              '[^a-zA-Z0-9]', '', 'g'))
+                      AND LOWER(REGEXP_REPLACE(t.album, '[^a-zA-Z0-9]', '', 'g'))
+                          = LOWER(REGEXP_REPLACE(upcoming_releases.album_name,
+                              '[^a-zA-Z0-9]', '', 'g'))
+                )"""
                 where_sql = (
-                    f" WHERE {_win_clause}"
+                    f" WHERE {_lib_clause}"
                     if not where_sql
-                    else where_sql + f" AND {_win_clause}"
+                    else where_sql + f" AND {_lib_clause}"
                 )
                 params["win7_start"] = _w_start
                 params["win7_end"] = _w_end
@@ -212,15 +217,26 @@ def api_upcoming_releases():
 
         artist_names = list({r.get("artist_name", "") or "" for r in releases if r.get("artist_name")})
 
+        # Normalized comparison key (lowercase, punctuation-stripped) so
+        # casing/punctuation differences never break library matching.
+        def _norm(value: str) -> str:
+            return re.sub(r"[^a-zA-Z0-9]", "", (value or "").lower())
+
         # Batch: artists in collection
         artists_in_collection: set[str] = set()
         if artist_names:
             try:
                 with db_session() as session:
                     placeholders = ", ".join(f":a{i}" for i in range(len(artist_names)))
-                    params = {f"a{i}": name.lower() for i, name in enumerate(artist_names)}
+                    params = {f"a{i}": _norm(name) for i, name in enumerate(artist_names)}
                     batch = session.execute(
-                        text(f"SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS aname FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) IN ({placeholders})"),
+                        text(f"""SELECT DISTINCT LOWER(REGEXP_REPLACE(
+                                      COALESCE(NULLIF(album_artist, ''), artist),
+                                      '[^a-zA-Z0-9]', '', 'g')) AS aname
+                                FROM tracks
+                                WHERE LOWER(REGEXP_REPLACE(
+                                      COALESCE(NULLIF(album_artist, ''), artist),
+                                      '[^a-zA-Z0-9]', '', 'g')) IN ({placeholders})"""),
                         params,
                     )
                     artists_in_collection = {row[0] for row in batch.fetchall()}
@@ -235,15 +251,19 @@ def api_upcoming_releases():
             try:
                 with db_session() as session:
                     pair_conditions = " OR ".join(
-                        f"(LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = :a{i} AND LOWER(album) = :b{i})"
+                        f"(LOWER(REGEXP_REPLACE(COALESCE(NULLIF(album_artist, ''), artist), '[^a-zA-Z0-9]', '', 'g')) = :a{i} "
+                        f"AND LOWER(REGEXP_REPLACE(album, '[^a-zA-Z0-9]', '', 'g')) = :b{i})"
                         for i in range(len(album_pairs))
                     )
                     pair_params = {}
                     for i, (a, b) in enumerate(album_pairs):
-                        pair_params[f"a{i}"] = a.lower()
-                        pair_params[f"b{i}"] = b.lower()
+                        pair_params[f"a{i}"] = _norm(a)
+                        pair_params[f"b{i}"] = _norm(b)
                     batch2 = session.execute(
-                        text(f"SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)), LOWER(album) FROM tracks WHERE {pair_conditions}"),
+                        text(f"""SELECT DISTINCT
+                                LOWER(REGEXP_REPLACE(COALESCE(NULLIF(album_artist, ''), artist), '[^a-zA-Z0-9]', '', 'g')),
+                                LOWER(REGEXP_REPLACE(album, '[^a-zA-Z0-9]', '', 'g'))
+                              FROM tracks WHERE {pair_conditions}"""),
                         pair_params,
                     )
                     albums_in_collection = {(row[0], row[1]) for row in batch2.fetchall()}
@@ -256,15 +276,20 @@ def api_upcoming_releases():
             try:
                 with db_session() as session:
                     q_conditions = " OR ".join(
-                        f"(LOWER(artist) = :qa{i} AND LOWER(album) = :qb{i})"
+                        f"(LOWER(REGEXP_REPLACE(artist, '[^a-zA-Z0-9]', '', 'g')) = :qa{i} "
+                        f"AND LOWER(REGEXP_REPLACE(album, '[^a-zA-Z0-9]', '', 'g')) = :qb{i})"
                         for i in range(len(album_pairs))
                     )
                     q_params = {}
                     for i, (a, b) in enumerate(album_pairs):
-                        q_params[f"qa{i}"] = a.lower()
-                        q_params[f"qb{i}"] = b.lower()
+                        q_params[f"qa{i}"] = _norm(a)
+                        q_params[f"qb{i}"] = _norm(b)
                     batch3 = session.execute(
-                        text(f"SELECT DISTINCT LOWER(artist), LOWER(album) FROM download_queue WHERE ({q_conditions}) AND status IN ('queued', 'downloading', 'processing')"),
+                        text(f"""SELECT DISTINCT
+                                LOWER(REGEXP_REPLACE(artist, '[^a-zA-Z0-9]', '', 'g')),
+                                LOWER(REGEXP_REPLACE(album, '[^a-zA-Z0-9]', '', 'g'))
+                              FROM download_queue
+                              WHERE ({q_conditions}) AND status IN ('queued', 'downloading', 'processing')"""),
                         q_params,
                     )
                     queued_pairs = {(row[0], row[1]) for row in batch3.fetchall()}
@@ -273,8 +298,8 @@ def api_upcoming_releases():
 
         # Annotate each release using batch data
         for release in releases:
-            artist_name = (release.get("artist_name") or "").lower()
-            album_name = (release.get("album_name") or "").lower()
+            artist_name = _norm(release.get("artist_name"))
+            album_name = _norm(release.get("album_name"))
             release["artist_in_collection"] = artist_name in artists_in_collection
             release["album_in_collection"] = (artist_name, album_name) in albums_in_collection
             if include_queue and artist_name and album_name:

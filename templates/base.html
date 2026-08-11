@@ -175,6 +175,42 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
   {% endif %}
   
+  <!-- Global sticky scan status bar — tap to open the log viewer (every page) -->
+  <div id="scanStatusBar" role="button" tabindex="0" onclick="openUnifiedLogModal()" title="Open scanning log">
+    <span id="scanStatusIcon" class="scan-status-idle"><i class="bi bi-circle"></i></span>
+    <span id="scanStatusLine" class="text-truncate">Idle</span>
+    <span class="scan-status-open"><i class="bi bi-terminal"></i> Log</span>
+  </div>
+
+  <!-- Global log viewer: source tabs + one-tap export -->
+  <div class="modal fade modal-fullscreen" id="unifiedLogModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-fullscreen">
+      <div class="modal-content">
+        <div class="modal-header py-2 px-3 d-flex flex-column align-items-stretch gap-2">
+          <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <h6 class="modal-title mb-0"><i class="bi bi-terminal"></i> System Logs</h6>
+            <div class="d-flex gap-2 align-items-center log-toolbar">
+              <button type="button" class="btn btn-sm btn-outline-success py-0" onclick="downloadActiveLogLastHour()" title="Export the last 60 minutes for the active source">
+                <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Last 1hr</span>
+              </button>
+              <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm py-0" onclick="toggleLogPause()"><i class="bi bi-pause"></i> <span class="d-none d-sm-inline">Pause</span></button>
+              <button type="button" class="btn-close ms-2" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+          </div>
+          <div class="d-flex align-items-center gap-1 overflow-x-auto pb-1 flex-nowrap">
+            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab active" data-source="scanner" onclick="switchLogSource('scanner')"><i class="bi bi-lightning-charge me-1"></i>Scanner</button>
+            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="soulseek" onclick="switchLogSource('soulseek')"><i class="bi bi-search me-1"></i>Soulseek</button>
+            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="navidrome" onclick="switchLogSource('navidrome')"><i class="bi bi-cloud-arrow-down me-1"></i>Navidrome</button>
+            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="system" onclick="switchLogSource('system')"><i class="bi bi-gear me-1"></i>System</button>
+          </div>
+        </div>
+        <div class="modal-body p-2">
+          <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0" style="height: 100%; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="{{ url_for('static', filename='js/player.js') }}"></script>
   <script src="{{ url_for('static', filename='js/musicbrainz-folder-groups.js') }}"></script>
   <script src="{{ url_for('static', filename='js/main.js') }}"></script>

@@ -202,6 +202,67 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                     continue
                 rel_date = rel.get("first_release_date") or ""
                 release_year = int(rel_date[:4]) if len(rel_date) >= 4 and rel_date[:4].isdigit() else None
+                # Case/punctuation-insensitive dedupe: a Wikipedia-scraped row
+                # with different casing ("Tanzneid" vs "TANZNEID") must merge
+                # into this row instead of creating a duplicate.
+                dup = session.execute(
+                    text("""
+                        SELECT id FROM upcoming_releases
+                        WHERE LOWER(REGEXP_REPLACE(artist_name, '[^a-zA-Z0-9]', '', 'g'))
+                              = LOWER(REGEXP_REPLACE(:artist, '[^a-zA-Z0-9]', '', 'g'))
+                          AND LOWER(REGEXP_REPLACE(album_name, '[^a-zA-Z0-9]', '', 'g'))
+                              = LOWER(REGEXP_REPLACE(:album, '[^a-zA-Z0-9]', '', 'g'))
+                        LIMIT 1
+                    """),
+                    {"artist": _artist, "album": album},
+                ).fetchone()
+
+                _mbid = rel.get("id") or None
+                if dup:
+                    # Same precedence as the ON CONFLICT branch below.
+                    session.execute(
+                        text("""
+                            UPDATE upcoming_releases SET
+                                last_seen_at = CURRENT_TIMESTAMP,
+                                source = :source,
+                                release_date = CASE
+                                    WHEN upcoming_releases.release_date IS NULL
+                                         OR :date IS NULL
+                                        THEN COALESCE(:date, upcoming_releases.release_date)
+                                    WHEN :date < upcoming_releases.release_date
+                                        THEN :date
+                                    ELSE upcoming_releases.release_date
+                                END,
+                                release_year = COALESCE(:year, upcoming_releases.release_year),
+                                artist_in_collection = TRUE,
+                                release_group_mbid = COALESCE(:mbid, upcoming_releases.release_group_mbid),
+                                mbid_match_status = CASE
+                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_status
+                                    ELSE 'matched'
+                                END,
+                                mbid_confidence = CASE
+                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_confidence
+                                    ELSE 'high'
+                                END,
+                                mbid_source = CASE
+                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_source
+                                    ELSE :source
+                                END,
+                                mbid_match_score = CASE
+                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_score
+                                    ELSE 1.0
+                                END,
+                                mbid_last_checked_at = :checked,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = :id
+                        """),
+                        {"id": dup[0], "source": SOURCE_NAME, "date": rel_date,
+                         "year": release_year, "mbid": _mbid,
+                         "checked": datetime.now().isoformat()},
+                    )
+                    updated += 1
+                    continue
+
                 result = session.execute(
                     text("""
                         INSERT INTO upcoming_releases (
@@ -256,7 +317,7 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                         "date": rel_date,
                         "year": release_year,
                         "source": SOURCE_NAME,
-                        "mbid": rel.get("id") or None,
+                        "mbid": _mbid,
                         "checked": datetime.now().isoformat(),
                     },
                 )

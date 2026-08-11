@@ -131,6 +131,70 @@ def _filter_lines_last_hour(lines: list[str]) -> list[str]:
             kept.append(line)
     return kept
 
+
+_LOG_SOURCE_FILES = {
+    "scanner": "unified_scan.log",
+    "soulseek": "search.log",
+    "navidrome": "info.log",
+    "system": "error.log",
+}
+
+
+def _filter_lines_since(lines: list[str], hours: float) -> list[str]:
+    """Keep only lines whose leading timestamp falls within the last *hours*.
+
+    Lines without a parseable ``YYYY-MM-DD HH:MM:SS`` prefix (multi-line
+    tracebacks, continuation lines) are kept when the log already has content.
+    """
+    if not lines or hours <= 0:
+        return lines
+    from datetime import datetime as _dt, timezone, timedelta
+
+    cutoff = _dt.now(timezone.utc) - timedelta(hours=hours)
+    _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
+    kept: list[str] = []
+    for line in lines:
+        match = _TS_RE.match(line)
+        if not match:
+            if kept:
+                kept.append(line)  # traceback continuation
+            continue
+        try:
+            text = match.group(1).replace(" ", "T")
+            ts = _dt.fromisoformat(text)
+            if ts.tzinfo is None:
+                ts = ts.astimezone()  # naive stamps are host-local time
+            else:
+                ts = ts.astimezone(timezone.utc)
+            if ts >= cutoff:
+                kept.append(line)
+        except Exception:
+            if kept:
+                kept.append(line)
+    return kept
+
+
+def export_log_lines_since(source: str, hours: int = 1) -> str:
+    """Return the last *hours* of log lines for a named source as text.
+
+    Source mapping: scanner → unified_scan.log, soulseek → search.log,
+    navidrome → info.log, system → error.log.
+    """
+    name = _LOG_SOURCE_FILES.get(str(source or "").strip().lower(), "unified_scan.log")
+    path = resolve_log_file_path(name)
+    if not path or not os.path.exists(path):
+        return f"No log entries found for '{source}' in the last {hours} hour(s)."
+    try:
+        with open(path, "rb") as fh:
+            lines = fh.read().decode("utf-8", errors="ignore").splitlines()
+    except OSError as exc:
+        return f"Could not read log file: {exc}"
+    filtered = _filter_lines_since(lines, hours)
+    if not filtered:
+        return f"No log entries found for '{source}' in the last {hours} hour(s)."
+    return "\n".join(filtered) + "\n"
+
+
 def _resolve_log_path(log_type: str) -> str | None:
     log_dir = resolve_log_dir()
     mapping = {

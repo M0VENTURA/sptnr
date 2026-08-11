@@ -23,6 +23,7 @@ from services.log_service import (
     download_log,
     resolve_log_file_path,
     stream_append_log,
+    export_log_lines_since,
 )
 
 logs_bp = Blueprint(
@@ -118,6 +119,34 @@ async def api_download_log(log_type: str):
     if isinstance(result, tuple) and len(result) == 2:
         payload, status = result
         return jsonify(payload), status
+
+
+# =============================================================================
+# EXPORT LOGS (last N hours, per source)
+# =============================================================================
+
+@logs_bp.route("/api/logs/export", methods=["GET"])
+def api_export_logs():
+    """Export the last N hours of a log source as a downloadable .log file.
+
+    Query params:
+        source - scanner | soulseek | navidrome | system (default scanner)
+        hours  - hours of history (1-24, default 1)
+    """
+    source = (request.args.get("source") or "scanner").strip().lower()
+    try:
+        hours = max(1, min(int(request.args.get("hours", 1)), 24))
+    except (TypeError, ValueError):
+        hours = 1
+
+    content = export_log_lines_since(source, hours)
+    return Response(
+        content,
+        mimetype="text/plain",
+        headers={
+            "Content-Disposition": f"attachment; filename={source}_log_last_{hours}h.log"
+        },
+    )
 
     return jsonify(result)
 
