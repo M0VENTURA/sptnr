@@ -459,8 +459,18 @@
 
     bootstrap.Modal.getOrCreateInstance(modalEl, { focus: true }).show();
 
+    // Focus the input for immediate typing. Attempt synchronously first (keeps
+    // the user-gesture chain on mobile browsers, where deferred focus is
+    // ignored), then again once the modal finishes its transition — the
+    // modal's focus trap otherwise lands on the header close button.
+    input.focus();
+    var onShown = function () {
+      modalEl.removeEventListener('shown.bs.modal', onShown);
+      setTimeout(function () { input.focus(); }, 30);
+    };
+    modalEl.addEventListener('shown.bs.modal', onShown);
+
     clearTimeout(_debounceTimer);
-    setTimeout(function () { input.focus(); }, 350);
     runSearch();
   };
 
