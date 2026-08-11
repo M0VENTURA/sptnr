@@ -101,6 +101,16 @@
   -webkit-line-clamp: unset;
   display: block;
 }
+/* Hero bio snippet: strictly 2 lines with an inline [more] prompt */
+.bio-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.35;
+  max-height: 2.7em;
+}
   /* Mobile 4-tab grouping: only the active group is visible on phones.
      The default "Albums" group is pre-marked mobile-tab-active in the
      template so the page is never blank before/without JS. */
@@ -156,9 +166,92 @@
       <li class="breadcrumb-item"><a href="{{ url_for('ui.artists') }}">Artists</a></li>
       <li class="breadcrumb-item active" aria-current="page">{{ artist_name }}</li>
     </ol>
-  </nav>
+  <!-- Mobile-only compact hero (desktop keeps the full header + About section) -->
+  <div class="card mb-4 d-lg-none" id="artist-mobile-hero">
+    <div class="card-body p-3">
+      <!-- 1. Header: avatar + name + genres + 2-line bio snippet -->
+      <div class="d-flex align-items-start gap-3">
+        <img src="{{ url_for('artist.api_artist_image', name=artist_name) }}"
+             alt="{{ artist_name }}"
+             class="rounded-circle border border-secondary flex-shrink-0"
+             style="width: 80px; height: 80px; object-fit: cover; background-color: #2a2a2a;"
+             onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect fill=%22%232a2a2a%22 width=%2280%22 height=%2280%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2212%22%3ENo Image%3C/text%3E%3C/svg%3E';"
+             onclick='openArtistImageModal({{ artist_name|tojson }})'
+             title="Change artist image">
+        <div class="overflow-hidden w-100">
+          <h4 class="fw-bold mb-0 text-truncate">{{ artist_name }}
+            {% if artist_country %}
+            <span class="badge bg-info align-middle" style="font-size: 0.7rem; vertical-align: middle;">{{ artist_country }}</span>
+            {% endif %}
+          </h4>
+          <div class="d-flex align-items-center gap-1 flex-wrap my-1">
+            {% for genre in (genres or [])[:2] %}
+            <span class="badge bg-primary-subtle text-primary border border-primary-subtle" style="font-size: 0.7rem;">{{ genre }}</span>
+            {% endfor %}
+          </div>
+          {% if artist_bio %}
+          <div class="small text-muted bio-clamp-2">{{ artist_bio|e|replace('&lt;br /&gt;', '<br>')|replace('&lt;br/&gt;', '<br>')|replace('&lt;br&gt;', '<br>')|replace('\n', '<br>')|safe }}</div>
+          <a href="javascript:void(0)" onclick="goToArtistAbout()" class="text-info text-decoration-none fw-bold small">[more]</a>
+          {% endif %}
+        </div>
+      </div>
 
-  <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-3">
+      <!-- 2. Stats strip (2x2) -->
+      <div class="row g-2 text-center py-2 my-3 border-top border-bottom border-secondary rounded" style="background: var(--tertiary-bg, #282828);">
+        <div class="col-3 border-end border-secondary">
+          <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Albums</div>
+          <div class="fw-bold small">{{ stats.album_count or 0 }}</div>
+        </div>
+        <div class="col-3 border-end border-secondary">
+          <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Tracks</div>
+          <div class="fw-bold small">{{ stats.track_count or 0 }}</div>
+        </div>
+        <div class="col-3 border-end border-secondary">
+          <div class="small text-muted text-uppercase" style="font-size:0.65rem;">5★</div>
+          <div class="fw-bold small text-warning">{{ stats.five_star_count or 0 }}</div>
+        </div>
+        <div class="col-3">
+          <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Rating</div>
+          <div class="fw-bold small text-success">{{ (stats.avg_stars|round(2) if stats.avg_stars is not none and stats.avg_stars else '—') }}★</div>
+        </div>
+      </div>
+
+      <!-- 3. Toolbar: scan + favourite + actions -->
+      <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 pt-1">
+        <form id="artistScanFormMobile" action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
+          <input type="hidden" name="artist" value="{{ artist_name }}">
+          {% include 'components/_scan_selector.html' ignore missing %}
+          <div class="form-check form-check-inline mb-0" title="Force rescan (ignore change detection)">
+            <input class="form-check-input" type="checkbox" id="artistForceScanMobile" name="force" value="1">
+            <label class="form-check-label small" for="artistForceScanMobile">Force</label>
+          </div>
+          <button type="submit" class="btn btn-warning btn-sm" title="Run selected scan for this artist">
+            <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan</span>
+          </button>
+        </form>
+        <div class="d-flex align-items-center gap-2 ms-auto">
+          <button data-artist-fav-btn class="btn btn-outline-danger btn-sm" onclick='toggleArtistFavourite({{ artist_name|tojson }})' title="Favourite this artist — new albums will be auto-queued for download">
+            <i class="bi bi-heart" data-artist-fav-icon></i>
+          </button>
+          <div class="dropdown">
+            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More options">
+              <i class="bi bi-three-dots"></i> <span class="d-none d-sm-inline">Actions</span>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li><a class="dropdown-item" href="{{ url_for('ui.artist_corrections', name=artist_name) }}"><i class="bi bi-wrench-adjustable me-2"></i> Corrections</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('ui.artist_genre_management', name=artist_name) }}"><i class="bi bi-tags me-2"></i> Genre Management</a></li>
+              <li><a class="dropdown-item" href="javascript:void(0)" onclick="openEditArtistIdsModal()"><i class="bi bi-pencil me-2"></i> Edit External IDs</a></li>
+              <li><button class="dropdown-item" type="button" onclick="forceArtistMetadataRefresh()" title="Force a full rescan for this artist"><i class="bi bi-arrow-repeat me-2"></i> Force Metadata Refresh</button></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="{{ url_for('ui.artists') }}"><i class="bi bi-arrow-left me-2"></i> Back to Artists</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-none d-lg-flex flex-column flex-lg-row justify-content-between align-items-start mb-4 gap-3">
     <div class="flex-grow-1">
       <h1 class="h2 mb-2" data-artist-name="{{ artist_name|e }}">
         <i class="bi bi-person-music"></i> {{ artist_name }}
@@ -174,8 +267,8 @@
         <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
       </button>
       {% endif %}
-      <button id="artistFavouriteBtn" class="btn btn-outline-danger" onclick='toggleArtistFavourite({{ artist_name|tojson }})' title="Favourite this artist — new albums will be auto-queued for download" aria-label="Favourite this artist to auto-queue new albums for download">
-        <i class="bi bi-heart" id="artistFavouriteIcon"></i> <span class="d-none d-sm-inline" id="artistFavouriteLabel">Favourite</span>
+      <button data-artist-fav-btn id="artistFavouriteBtn" class="btn btn-outline-danger" onclick='toggleArtistFavourite({{ artist_name|tojson }})' title="Favourite this artist — new albums will be auto-queued for download" aria-label="Favourite this artist to auto-queue new albums for download">
+        <i class="bi bi-heart" data-artist-fav-icon id="artistFavouriteIcon"></i> <span class="d-none d-sm-inline" data-artist-fav-label id="artistFavouriteLabel">Favourite</span>
       </button>
       <form id="artistScanForm" action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2">
         <input type="hidden" name="artist" value="{{ artist_name }}">

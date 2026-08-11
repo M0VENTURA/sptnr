@@ -2607,26 +2607,33 @@ async function loadArtistFavouriteState(artistName) {
 }
 
 function updateFavouriteButtonState(isFavourite) {
-  const btn = document.getElementById('artistFavouriteBtn');
-  const icon = document.getElementById('artistFavouriteIcon');
-  const label = document.getElementById('artistFavouriteLabel');
-  if (!btn) return;
-  if (isFavourite) {
-    btn.classList.remove('btn-outline-danger');
-    btn.classList.add('btn-danger');
-    if (icon) { icon.classList.remove('bi-heart'); icon.classList.add('bi-heart-fill'); }
-    if (label) label.textContent = 'Favourited';
-  } else {
-    btn.classList.remove('btn-danger');
-    btn.classList.add('btn-outline-danger');
-    if (icon) { icon.classList.remove('bi-heart-fill'); icon.classList.add('bi-heart'); }
-    if (label) label.textContent = 'Favourite';
-  }
+  // Updates every favourite button on the page (desktop header + mobile hero).
+  document.querySelectorAll('[data-artist-fav-btn]').forEach(function (btn) {
+    if (isFavourite) {
+      btn.classList.remove('btn-outline-danger');
+      btn.classList.add('btn-danger');
+    } else {
+      btn.classList.remove('btn-danger');
+      btn.classList.add('btn-outline-danger');
+    }
+  });
+  document.querySelectorAll('[data-artist-fav-icon]').forEach(function (icon) {
+    if (isFavourite) {
+      icon.classList.remove('bi-heart');
+      icon.classList.add('bi-heart-fill');
+    } else {
+      icon.classList.remove('bi-heart-fill');
+      icon.classList.add('bi-heart');
+    }
+  });
+  document.querySelectorAll('[data-artist-fav-label]').forEach(function (label) {
+    label.textContent = isFavourite ? 'Favourited' : 'Favourite';
+  });
 }
 
 async function toggleArtistFavourite(artistName) {
   try {
-    const btn = document.getElementById('artistFavouriteBtn');
+    const btn = document.querySelector('[data-artist-fav-btn]');
     const isFavourite = btn && btn.classList.contains('btn-danger');
 
     if (isFavourite) {
@@ -2644,6 +2651,13 @@ async function toggleArtistFavourite(artistName) {
     console.error('Error toggling favourite:', e);
     alert('Error updating favourite status: ' + e.message);
   }
+}
+
+// Hero bio "[more]" → jump to the full About tab (mobile tab engine).
+function goToArtistAbout() {
+  var bar = document.getElementById('artistMobileTabBar');
+  var btn = bar && bar.querySelector('[data-tab="about"]');
+  if (btn) btn.click();
 }
 
 // ── Artist Edit Track Modal (comprehensive) ────────────────────────────────
