@@ -240,12 +240,14 @@ def _scan_activity_filter() -> re.Pattern:
     Soulseek Search logs, not the dashboard's scanning panel.
     """
     return re.compile(
-        r'\[POPULARITY\]|\[TRACK_STAGE\]|\[ALBUM_STAGE\]|\[FINALISE_STAGE\]|'
-        r'\[LOAD_STAGE\]|\[scan_runner\]|\[LIBRARY_SYNC\]|'
+        r'\[POPULARITY\]|\[TRACK_STAGE\]|\[TRACK\]|\[TRACK_RESULT\]|'
+        r'\[ALBUM_STAGE\]|\[FINALISE_STAGE\]|\[LOAD_STAGE\]|'
+        r'\[scan_runner\]|\[LIBRARY_SYNC\]|'
         r'\[SINGLE\]|Navidrome Import|Artist scan|'
         r'popularity scan|Popularity |popularity_scan|'
         r'Full library scan|Boot scan|Scan complete|Scan failed|'
-        r'Scan stopped|single detection|star ratings',
+        r'Scan stopped|single detection|Singles Detection|SCAN RESULTS|'
+        r'SINGLE CONF|Distribution:|Navidrome: synced|star ratings|★',
         re.I,
     )
 
