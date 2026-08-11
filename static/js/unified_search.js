@@ -70,8 +70,10 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: query })
     })
-      .then(function (res) { return res.ok ? res.json() : { artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] }; })
-      .catch(function () { return { artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] }; });
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      });
   }
 
   function getTypeFilter() {
@@ -358,7 +360,7 @@
     }
 
     var localPromise = query.length >= MIN_QUERY_LENGTH
-      ? fetchLibrary(query)
+      ? fetchLibrary(query).catch(function (e) { return { error: e.message }; })
       : Promise.resolve({ artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] });
     var mbPromise = _scope === SCOPE_ALL ? fetchMb(query, MB_LIMIT_ALL_TAB, mbOpts) : Promise.resolve([]);
     Promise.all([localPromise, mbPromise])
@@ -376,7 +378,10 @@
         ];
         if (_scope === SCOPE_ALL) counts.push(mbReleases.length + ' musicbrainz');
         if (getMetaEl()) getMetaEl().textContent = counts.join(' · ');
-        resultsEl.innerHTML = renderBucketedResults(local, mbReleases, query, {
+        var warnHtml = local.error
+          ? '<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle-fill"></i> Library search failed (' + esc(local.error) + ') — showing MusicBrainz only.</div>'
+          : '';
+        resultsEl.innerHTML = warnHtml + renderBucketedResults(local, mbReleases, query, {
           withQueue: true,
           allMbButton: _scope === SCOPE_ALL
         });

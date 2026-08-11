@@ -88,7 +88,13 @@ async def api_search():
                         album,
                         COUNT(*) AS track_count,
                         AVG(stars) AS avg_stars,
-                        MAX(COALESCE(NULLIF(year, 0), release_year, 0)) AS album_year,
+                        -- year is stored as TEXT; extract the leading 4-digit
+                        -- year (tolerates junk like "1990-05-01" or "TBA")
+                        MAX(COALESCE(
+                            NULLIF(SUBSTRING(year FROM '^[0-9]{4}'), '')::INTEGER,
+                            release_year,
+                            0
+                        )) AS album_year,
                         MAX(COALESCE(NULLIF(musicbrainz_albumtype, ''),
                                      NULLIF(spotify_album_type, ''),
                                      NULLIF(album_type, ''))) AS album_type,
