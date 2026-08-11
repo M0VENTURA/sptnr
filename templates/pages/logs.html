@@ -19,10 +19,16 @@
                 </select>
             </div>
             <div class="col-auto">
-                <button id="refreshLogBtn" class="btn btn-primary btn-sm"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                <button id="refreshLogBtn" class="btn btn-primary btn-sm" title="Reload the log tail"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
             </div>
             <div class="col-auto">
-                <button id="toggleAutoRefresh" class="btn btn-outline-secondary btn-sm"><i class="bi bi-play"></i> Auto-refresh</button>
+                <button id="streamLogBtn" class="btn btn-outline-success btn-sm" title="Stream new log lines live (SSE)"><i class="bi bi-broadcast"></i> <span id="streamLogLabel">Live Stream</span></button>
+            </div>
+            <div class="col-auto">
+                <button id="downloadLogBtn" class="btn btn-outline-info btn-sm" title="Download the raw log file"><i class="bi bi-download"></i> Download</button>
+            </div>
+            <div class="col-auto">
+                <button id="copyLogBtn" class="btn btn-outline-secondary btn-sm" title="Copy the displayed log contents"><i class="bi bi-clipboard"></i> Copy</button>
             </div>
             <div class="col-auto">
                 <button id="clearLogBtn" class="btn btn-warning btn-sm"><i class="bi bi-trash"></i> Clear</button>
@@ -30,16 +36,35 @@
         </div>
     </div>
 
+    <div class="mb-2 d-flex flex-wrap gap-2 align-items-center">
+        <div class="input-group input-group-sm" style="max-width: 360px;">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input type="text" id="logFilterInput" class="form-control" placeholder="Filter log output... (e.g. Soilwork, ISRC)" autocomplete="off">
+        </div>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Log level filter" id="logLevelFilters">
+            <button type="button" class="btn btn-outline-secondary active" data-level="all">All</button>
+            <button type="button" class="btn btn-outline-danger" data-level="error" title="ERROR / CRITICAL"><i class="bi bi-x-octagon"></i> Errors</button>
+            <button type="button" class="btn btn-outline-warning" data-level="warning" title="WARNING"><i class="bi bi-exclamation-triangle"></i> Warnings</button>
+            <button type="button" class="btn btn-outline-info" data-level="info" title="INFO"><i class="bi bi-info-circle"></i> Info</button>
+            <button type="button" class="btn btn-outline-secondary" data-level="debug" title="DEBUG"><i class="bi bi-bug"></i> Debug</button>
+        </div>
+        <div class="form-check form-switch ms-auto">
+            <input class="form-check-input" type="checkbox" id="wrapLinesCheck" role="switch">
+            <label class="form-check-label small" for="wrapLinesCheck">Wrap</label>
+        </div>
+    </div>
+
     <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center py-2 px-3">
             <span class="fw-semibold"><i class="bi bi-terminal"></i> <span id="currentLogLabel">{{ log_files[0].name if log_files else 'No logs' }}</span></span>
-            <div class="d-flex gap-2 align-items-center">
-                <label class="form-check-label small me-1" for="wrapLinesCheck">Wrap</label>
-                <input class="form-check-input" type="checkbox" id="wrapLinesCheck" style="margin-top:0;">
+            <div id="tailBanner" class="d-none align-items-center gap-2 flex-wrap">
+                <span id="tailBannerText" class="small text-muted"></span>
+                <button type="button" id="loadFullLogBtn" class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-down-up"></i> Load Entire Log</button>
+                <button type="button" id="downloadRawBtn" class="btn btn-sm btn-outline-info"><i class="bi bi-download"></i> Download Raw</button>
             </div>
         </div>
         <div class="card-body p-2">
-            <pre id="logOutput" class="bg-dark text-light p-3 mb-0" style="height: 600px; overflow-y: scroll; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; line-height: 1.4; white-space: pre; word-wrap: normal;"></pre>
+            <div id="logOutput" class="bg-dark text-light p-3 mb-0" style="height: 600px; overflow-y: scroll; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; line-height: 1.45; white-space: pre; word-wrap: normal;"></div>
         </div>
     </div>
 </div>
@@ -50,84 +75,235 @@
     var logSelector = document.getElementById('logSelector');
     var currentLogLabel = document.getElementById('currentLogLabel');
     var refreshBtn = document.getElementById('refreshLogBtn');
-    var toggleAutoBtn = document.getElementById('toggleAutoRefresh');
+    var streamBtn = document.getElementById('streamLogBtn');
+    var downloadBtn = document.getElementById('downloadLogBtn');
+    var copyBtn = document.getElementById('copyLogBtn');
     var clearBtn = document.getElementById('clearLogBtn');
     var wrapCheck = document.getElementById('wrapLinesCheck');
-    var autoRefreshInterval = null;
-    var autoRefreshOn = false;
+    var filterInput = document.getElementById('logFilterInput');
+    var tailBanner = document.getElementById('tailBanner');
+    var tailBannerText = document.getElementById('tailBannerText');
 
-    // Manual loads show the FULL history of unified_scan.log; the 5s
-    // auto-refresh polling stays bounded (last 2000 lines) so the page
-    // doesn't re-download the whole file on every tick.
-    function linesFor(name, autoRefresh) {
-        if (autoRefresh) return '2000';
-        return name === 'unified_scan.log' ? 'all' : '500';
+    var rawLines = [];          // full raw lines of the current view
+    var filterText = '';
+    var levelFilter = 'all';
+    var streamSource = null;    // active EventSource
+    var loadingAll = false;     // true once the full file is loaded
+
+    // ── Tail loading: never dump a 24MB file into the DOM at once ──
+    function linesFor(name, opts) {
+        opts = opts || {};
+        if (opts.all || loadingAll) return 'all';
+        return name === 'unified_scan.log' ? '500' : '500';
     }
 
-    function loadLog(autoRefresh) {
+    // ── Log level + stage-tag parsing ──
+    var LEVEL_RE = /\[(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\]/;
+    var TAG_RE = /\[([A-Za-z0-9_.\-]+)\]/;
+    var TS_RE = /^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})/;
+
+    function lineLevel(line) {
+        var m = LEVEL_RE.exec(line);
+        if (!m) return null;
+        var lvl = m[1].toLowerCase();
+        if (lvl === 'warn') return 'warning';
+        return lvl;
+    }
+
+    function esc(text) {
+        return String(text)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function renderLineHtml(line) {
+        var lvl = lineLevel(line) || 'info';
+        var html = '';
+        var rest = line;
+        var tsMatch = TS_RE.exec(rest);
+        if (tsMatch) {
+            html += '<span class="log-ts">' + esc(tsMatch[1]) + '</span> ';
+            rest = rest.slice(tsMatch[0].length);
+        }
+        var lvlMatch = LEVEL_RE.exec(rest);
+        if (lvlMatch) {
+            html += '<span class="log-level log-level-' + esc(lvl) + '">' + esc(lvlMatch[1]) + '</span> ';
+            rest = rest.slice(0, lvlMatch.index) + rest.slice(lvlMatch.index + lvlMatch[0].length);
+        }
+        var tagMatch = TAG_RE.exec(rest);
+        if (tagMatch && tagMatch.index < 12) {
+            html += '<span class="log-tag">' + esc(tagMatch[1]) + '</span>';
+            rest = rest.slice(0, tagMatch.index) + rest.slice(tagMatch.index + tagMatch[0].length);
+        }
+        return '<div class="log-line log-level-' + esc(lvl) + '">' + html + esc(rest) + '</div>';
+    }
+
+    function matchesFilters(line, lvl) {
+        if (filterText && line.toLowerCase().indexOf(filterText) === -1) return false;
+        if (levelFilter === 'all') return true;
+        if (levelFilter === 'error') return lvl === 'error' || lvl === 'critical';
+        return lvl === levelFilter;
+    }
+
+    // ── Render with client-side filtering ──
+    function render() {
+        var html = '';
+        var visible = 0;
+        for (var i = 0; i < rawLines.length; i++) {
+            var lvl = lineLevel(rawLines[i]) || 'info';
+            if (!matchesFilters(rawLines[i], lvl)) continue;
+            html += renderLineHtml(rawLines[i]);
+            visible++;
+        }
+        logOutput.innerHTML = html || '<div class="text-muted small p-2">No lines match the current filter.</div>';
+        return visible;
+    }
+
+    // ── Smart auto-scroll: only follow the bottom while already there ──
+    function atBottom() {
+        return logOutput.scrollTop + logOutput.clientHeight >= logOutput.scrollHeight - 40;
+    }
+    function scrollToBottom() {
+        logOutput.scrollTop = logOutput.scrollHeight;
+    }
+
+    // ── Load / append ──
+    function loadLog(opts) {
+        opts = opts || {};
         var selected = logSelector.options[logSelector.selectedIndex];
         if (!selected) return;
         var name = selected.value;
         currentLogLabel.textContent = name;
-        logOutput.textContent = 'Loading...';
-        fetch('/api/log-file?name=' + encodeURIComponent(name) + '&lines=' + linesFor(name, autoRefresh))
-            .then(function(r) {
-                var contentType = (r.headers.get('content-type') || '').toLowerCase();
-                if (!contentType.includes('application/json')) {
-                    // Non-JSON response (e.g. 404/500 HTML page from a stale
-                    // build, or an auth redirect) — surface a clear message.
-                    throw new Error('Server returned ' + r.status + ' ' + r.statusText +
-                        ' (expected JSON; the API may not be available in this build)');
-                }
-                return r.json();
-            })
-            .then(function(data) {
-                if (data && data.lines) {
-                    logOutput.textContent = data.lines.join('\n');
-                } else if (data && data.error) {
-                    logOutput.textContent = 'Error: ' + data.error;
+        tailBanner.classList.add('d-none');
+        logOutput.innerHTML = '<div class="text-muted small p-2">Loading...</div>';
+        fetch('/api/log-file?name=' + encodeURIComponent(name) + '&lines=' + linesFor(name, opts))
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.error) { logOutput.textContent = 'Error: ' + data.error; return; }
+                rawLines = (data && data.lines) || [];
+                loadingAll = opts.all || data.truncated === false;
+                if (data.truncated && !opts.all) {
+                    tailBannerText.textContent = 'Showing last ' + rawLines.length + ' lines of ' + name +
+                        (data.total_lines ? ' (' + data.total_lines.toLocaleString() + ' total)' : '') + '.';
+                    tailBanner.classList.remove('d-none');
+                    tailBanner.classList.add('d-flex');
                 } else {
-                    logOutput.textContent = 'No log content available.';
+                    tailBanner.classList.add('d-none');
+                    tailBanner.classList.remove('d-flex');
                 }
-                logOutput.scrollTop = logOutput.scrollHeight;
+                render();
+                scrollToBottom();
             })
-            .catch(function(err) {
-                logOutput.textContent = 'Error loading log: ' + err.message;
-            });
+            .catch(function (err) { logOutput.textContent = 'Error loading log: ' + err.message; });
     }
 
-    refreshBtn.addEventListener('click', function() { loadLog(false); });
+    // ── Live stream (SSE) ──
+    function startStream() {
+        var selected = logSelector.options[logSelector.selectedIndex];
+        if (!selected) return;
+        var name = selected.value;
+        if (typeof EventSource === 'undefined') { alert('Live streaming is not supported by this browser.'); return; }
+        streamSource = new EventSource('/api/logs/stream?name=' + encodeURIComponent(name));
+        streamSource.addEventListener('message', function (e) {
+            if (!e.data) return;
+            try {
+                var payload = JSON.parse(e.data);
+                var lines = payload.lines || [];
+                if (!lines.length) return;
+                var follow = atBottom();
+                Array.prototype.push.apply(rawLines, lines);
+                if (rawLines.length > 5000) rawLines = rawLines.slice(-5000);
+                render();
+                if (follow) scrollToBottom();
+            } catch (_) { /* ignore malformed frame */ }
+        });
+        streamSource.addEventListener('error', function () {
+            // EventSource reconnects automatically; nothing to do here.
+        });
+        streamBtn.classList.remove('btn-outline-success');
+        streamBtn.classList.add('btn-danger');
+        document.getElementById('streamLogLabel').textContent = 'Stop';
+        refreshBtn.disabled = true;
+    }
 
-    clearBtn.addEventListener('click', function() {
-        logOutput.textContent = '';
+    function stopStream() {
+        if (streamSource) { streamSource.close(); streamSource = null; }
+        streamBtn.classList.add('btn-outline-success');
+        streamBtn.classList.remove('btn-danger');
+        document.getElementById('streamLogLabel').textContent = 'Live Stream';
+        refreshBtn.disabled = false;
+    }
+
+    // ── Toolbar wiring ──
+    refreshBtn.addEventListener('click', function () { loadLog({}); });
+
+    streamBtn.addEventListener('click', function () {
+        if (streamSource) stopStream();
+        else startStream();
     });
 
-    toggleAutoBtn.addEventListener('click', function() {
-        if (autoRefreshOn) {
-            clearInterval(autoRefreshInterval);
-            autoRefreshOn = false;
-            toggleAutoBtn.innerHTML = '<i class="bi bi-play"></i> Auto-refresh';
-            toggleAutoBtn.classList.remove('btn-danger');
-            toggleAutoBtn.classList.add('btn-outline-secondary');
+    downloadBtn.addEventListener('click', function () {
+        var selected = logSelector.options[logSelector.selectedIndex];
+        if (!selected) return;
+        window.location = '/api/logs/download?name=' + encodeURIComponent(selected.value);
+    });
+
+    copyBtn.addEventListener('click', function () {
+        var text = rawLines.join('\n');
+        if (!text) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () {
+                copyBtn.innerHTML = '<i class="bi bi-check-lg"></i> Copied';
+                setTimeout(function () { copyBtn.innerHTML = '<i class="bi bi-clipboard"></i> Copy'; }, 1500);
+            }).catch(function () { });
         } else {
-            loadLog(true);
-            autoRefreshInterval = setInterval(function() { loadLog(true); }, 5000);
-            autoRefreshOn = true;
-            toggleAutoBtn.innerHTML = '<i class="bi bi-stop"></i> Stop';
-            toggleAutoBtn.classList.remove('btn-outline-secondary');
-            toggleAutoBtn.classList.add('btn-danger');
+            // Fallback for older browsers
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); } catch (_) { }
+            document.body.removeChild(ta);
         }
     });
 
-    wrapCheck.addEventListener('change', function() {
+    clearBtn.addEventListener('click', function () { rawLines = []; logOutput.innerHTML = ''; });
+
+    wrapCheck.addEventListener('change', function () {
         logOutput.style.whiteSpace = this.checked ? 'pre-wrap' : 'pre';
         logOutput.style.wordWrap = this.checked ? 'break-word' : 'normal';
     });
 
-    logSelector.addEventListener('change', function() { loadLog(false); });
+    filterInput.addEventListener('input', function () { filterText = this.value.trim().toLowerCase(); render(); });
 
-    // Initial load
-    loadLog(false);
+    document.querySelectorAll('#logLevelFilters button').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            document.querySelectorAll('#logLevelFilters button').forEach(function (b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            levelFilter = btn.getAttribute('data-level');
+            render();
+        });
+    });
+
+    // "Load Entire Log" — full-history reload (banner button).
+    document.getElementById('loadFullLogBtn')?.addEventListener('click', function () {
+        loadingAll = true;
+        tailBanner.classList.add('d-none');
+        tailBanner.classList.remove('d-flex');
+        loadLog({ all: true });
+    });
+    document.getElementById('downloadRawBtn')?.addEventListener('click', function () {
+        var selected = logSelector.options[logSelector.selectedIndex];
+        if (!selected) return;
+        window.location = '/api/logs/download?name=' + encodeURIComponent(selected.value);
+    });
+
+    logSelector.addEventListener('change', function () {
+        stopStream();
+        loadLog({});
+    });
+
+    // Initial load: tail by default
+    loadLog({});
 })();
 </script>
 

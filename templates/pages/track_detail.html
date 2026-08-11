@@ -215,7 +215,7 @@
         </div>
     </div>
 
-    <form method="POST" action="{{ url_for('ui.track_detail', track_id=track.id) }}">
+    <form method="POST" action="{{ url_for('ui.track_detail', track_id=track.id) }}" id="trackMetadataForm" data-sticky-save>
         <div class="row g-2 g-md-3">
             <!-- Left Column: Track Metadata & Editing -->
             <div class="col-12 col-lg-7">
@@ -446,6 +446,15 @@
                     </h2>
                     <div id="track-credits-collapse" class="accordion-collapse collapse" aria-labelledby="track-credits-heading" data-bs-parent="#trackEditAccordion">
                         <div class="accordion-body">
+                        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                            <span class="text-muted small">Credits &amp; Personnel</span>
+                            <span class="d-flex align-items-center gap-2">
+                                <button type="button" class="btn btn-sm btn-outline-primary" data-fetch-credits onclick="fetchTrackCredits('{{ track.id }}')" title="Fetch composer/lyricist/producer credits from MusicBrainz (no full rescan needed)">
+                                    <i class="bi bi-magic"></i> Fetch Credits
+                                </button>
+                                <span id="creditsFetchStatus" class="small text-muted"></span>
+                            </span>
+                        </div>
                         <div class="row g-2">
                             <div class="col-6">
                                 <label for="artists" class="form-label">Artists (multi)</label>
@@ -1656,6 +1665,40 @@ async function fetchLyricsFromLrclib(trackId) {
 </script>
 
 <script>
+// ── Credits quick-fill: fetch recording credits from MusicBrainz ──
+async function fetchTrackCredits(trackId) {
+    const btn = document.querySelector('[data-fetch-credits]');
+    const status = document.getElementById('creditsFetchStatus');
+    if (btn) btn.disabled = true;
+    if (status) { status.textContent = 'Fetching…'; status.className = 'small text-muted'; }
+    try {
+        const resp = await fetch(`/api/track/${encodeURIComponent(trackId)}/fetch-credits`, {
+            method: 'POST'
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.found) {
+            if (status) { status.textContent = data.error || 'No credits found on MusicBrainz.'; status.className = 'small text-warning'; }
+            return;
+        }
+        let filled = 0;
+        ['composer', 'lyricist', 'producer', 'engineer', 'conductor'].forEach(function (field) {
+            const el = document.getElementById(field);
+            if (el && data[field]) { el.value = data[field]; filled++; }
+        });
+        if (status) {
+            status.textContent = filled ? '✓ Filled ' + filled + ' credit field(s)' : 'No credits found.';
+            status.className = 'small text-success';
+        }
+        if (window.markFormDirty) window.markFormDirty('trackMetadataForm');
+    } catch (e) {
+        if (status) { status.textContent = 'Network error: ' + e.message; status.className = 'small text-danger'; }
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+</script>
+
+<script>
 // ── Mobile segmented tabs (Score / Details / Lyrics / Audio) ──
 // Driven by the shared engine in main.js ([data-mobile-tabs] bar + the
 // global ``[data-mobile-tab]`` visibility CSS in popularr.css).
@@ -2051,6 +2094,8 @@ function updateGenresDisplay() {
     
     container.innerHTML = html;
     hiddenInput.value = Array.from(currentGenres).join(', ');
+    // Chip edits are programmatic — mark the sticky save bar dirty explicitly.
+    if (window.markFormDirty) window.markFormDirty('trackMetadataForm');
 }
 
 // Initialize genre loading on page load

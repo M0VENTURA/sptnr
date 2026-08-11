@@ -154,6 +154,61 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ==========================================================================
+// Sticky save bar (dirty-state tracking)
+// --------------------------------------------------------------------------
+// Forms opt in with ``data-sticky-save``.  Any input/change marks the form
+// dirty and slides up a fixed bottom bar (Discard / Save Metadata).  JS-driven
+// edits (chip inputs, quick-fill buttons) call ``markFormDirty(formId)``.
+// ==========================================================================
+
+window.markFormDirty = function (formId) {
+  const form = document.getElementById(formId);
+  if (form && form._setDirty) form._setDirty(true);
+};
+
+function initStickySaveBar(form) {
+  let bar = document.getElementById('stickySaveBar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'stickySaveBar';
+    bar.className = 'sticky-save-bar d-none';
+    bar.innerHTML =
+      '<div class="sticky-save-bar-inner">' +
+        '<span class="sticky-save-bar-msg text-warning small"><i class="bi bi-exclamation-circle me-1"></i>You have unsaved metadata changes</span>' +
+        '<div class="d-flex gap-2">' +
+          '<button type="button" class="btn btn-outline-secondary btn-sm" data-discard><i class="bi bi-x-lg me-1"></i>Discard</button>' +
+          '<button type="button" class="btn btn-success btn-sm" data-save><i class="bi bi-check-lg me-1"></i>Save Metadata</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(bar);
+  }
+
+  const setDirty = (dirty) => {
+    if (dirty === form._dirty) return;
+    form._dirty = dirty;
+    bar.classList.toggle('d-none', !dirty);
+  };
+  form._setDirty = setDirty;
+
+  form.addEventListener('input', () => setDirty(true));
+  form.addEventListener('change', () => setDirty(true));
+  form.addEventListener('submit', () => setDirty(false));
+
+  bar.querySelector('[data-discard]').addEventListener('click', () => {
+    form.reset();
+    setDirty(false);
+  });
+  bar.querySelector('[data-save]').addEventListener('click', () => {
+    if (typeof form.requestSubmit === 'function') form.requestSubmit();
+    else form.submit();
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll('form[data-sticky-save]').forEach(initStickySaveBar);
+});
+
+// ==========================================================================
 // Global functions (moved from inline base.html <script> block)
 // These must be on window because they are called by inline onclick/onsubmit
 // handlers in templates (e.g. navSearch, openSlideOver).

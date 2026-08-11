@@ -24,7 +24,7 @@
 
   <div class="row g-3">
     <!-- ======================= LEFT: PLAYLIST LIST ======================= -->
-    <div class="col-12 col-lg-4">
+    <div class="col-12 col-lg-4" id="playlistListPanel">
       <div class="card shadow-sm">
         <div class="card-header py-2">
           <div class="d-flex justify-content-between align-items-center">
@@ -47,11 +47,14 @@
     </div>
 
     <!-- ======================= RIGHT: PLAYLIST DETAIL ======================= -->
-    <div class="col-12 col-lg-8">
+    <div class="col-12 col-lg-8" id="playlistDetailPanel">
       <div class="card shadow-sm h-100">
         <div class="card-header py-2 d-none" id="detailHeader">
           <div class="d-flex justify-content-between align-items-center gap-2">
             <div class="d-flex align-items-center gap-2" style="min-width:0">
+              <button type="button" class="btn btn-sm btn-outline-secondary d-lg-none" onclick="showPlaylistList()" title="Back to playlists">
+                <i class="bi bi-arrow-left"></i> Back
+              </button>
               <span id="detailIcon" class="fs-5"></span>
               <div style="min-width:0">
                 <h6 class="mb-0 text-truncate" id="detailName"></h6>

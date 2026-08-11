@@ -20,6 +20,36 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// Guarantee JSON: an HTML response (404 page, stale build) must surface a
+// readable message instead of "Unexpected token '<' ... is not valid JSON".
+async function parseJsonOrThrow(response) {
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.includes('application/json')) {
+    const text = await response.text().catch(() => '');
+    if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+      throw new Error(
+        'Server returned HTML (HTTP ' + response.status + ') — the API route may be ' +
+        'unavailable in this build. Check /logs for the error.'
+      );
+    }
+    throw new Error('Server returned HTTP ' + response.status + ' ' + response.statusText);
+  }
+  return response.json();
+}
+
+// ── Mobile panel switching (single panel at a time < 992px) ──
+function switchToDetail() {
+  if (window.innerWidth < 992) {
+    document.getElementById('playlistListPanel').classList.add('d-none');
+    document.getElementById('playlistDetailPanel').classList.remove('d-none');
+  }
+}
+
+function showPlaylistList() {
+  document.getElementById('playlistListPanel').classList.remove('d-none');
+  document.getElementById('playlistDetailPanel').classList.add('d-none');
+}
+
 function formatDuration(seconds) {
   seconds = Number(seconds) || 0;
   const mins = Math.floor(seconds / 60);
@@ -52,10 +82,11 @@ async function loadPlaylists() {
 
   try {
     const response = await fetch('/api/playlists/all');
-    const data = await response.json();
+    const data = await parseJsonOrThrow(response);
     if (!response.ok) throw new Error(data.error || 'Failed to load playlists');
     playlists = data.playlists || [];
     renderList();
+    showPlaylistList();
   } catch (err) {
     console.error('loadPlaylists:', err);
     listEl.innerHTML = '<p class="text-center text-muted py-4 small">Could not load playlists</p>';
@@ -131,6 +162,7 @@ function playlistCard(playlist) {
 async function selectPlaylist(playlist) {
   currentPlaylist = playlist;
   renderList(); // re-render for active highlighting
+  switchToDetail(); // mobile: show the detail panel, hide the list
 
   const header = document.getElementById('detailHeader');
   const empty = document.getElementById('detailEmpty');
@@ -156,7 +188,7 @@ async function selectPlaylist(playlist) {
         file_path: playlist.file_path || null,
       }),
     });
-    const data = await response.json();
+    const data = await parseJsonOrThrow(response);
     if (!response.ok) throw new Error(data.error || 'Failed to load tracks');
     renderTracks(data.tracks || []);
   } catch (err) {
@@ -239,7 +271,7 @@ async function submitRename() {
           : null,
       }),
     });
-    const data = await response.json();
+    const data = await parseJsonOrThrow(response);
     if (!response.ok) throw new Error(data.error || 'Rename failed');
 
     bootstrap.Modal.getInstance(document.getElementById('renameModal')).hide();

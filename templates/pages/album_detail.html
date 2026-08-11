@@ -310,7 +310,7 @@
     </div>
 
     <!-- Two-Column Layout for Edit & Overview -->
-    <form method="POST" action="/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}" id="albumMetadataForm">
+    <form method="POST" action="/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}" id="albumMetadataForm" data-sticky-save>
         <div class="row g-3 mb-4">
             <!-- EDIT FORM -->
             <div class="col-12 order-2">

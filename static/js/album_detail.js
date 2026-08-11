@@ -2013,7 +2013,7 @@ var _pageData = window._pageData || {};
         currentAlbumGenres.delete(String(genre));
         updateAlbumGenresDisplay();
     }
-    
+
     function updateAlbumGenresDisplay() {
         const container = document.getElementById('albumGenresContainer');
         const hiddenInput = document.getElementById('album_genres');
@@ -2021,21 +2021,22 @@ var _pageData = window._pageData || {};
         if (currentAlbumGenres.size === 0) {
             container.innerHTML = '<span class="text-muted small">No genres set</span>';
             hiddenInput.value = '';
-            return;
+        } else {
+            let html = '';
+            Array.from(currentAlbumGenres).sort().forEach(genre => {
+                html += `
+                    <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
+                        ${escapeHtml(genre)}
+                        <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick='stageRemoveAlbumGenre("${escapeHtml(genre)}")' aria-label="Remove"></button>
+                    </span>
+                `;
+            });
+            
+            container.innerHTML = html;
+            hiddenInput.value = Array.from(currentAlbumGenres).join(', ');
         }
-        
-        let html = '';
-        Array.from(currentAlbumGenres).sort().forEach(genre => {
-            html += `
-                <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
-                    ${escapeHtml(genre)}
-                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick='stageRemoveAlbumGenre("${escapeHtml(genre)}")' aria-label="Remove"></button>
-                </span>
-            `;
-        });
-        
-        container.innerHTML = html;
-        hiddenInput.value = Array.from(currentAlbumGenres).join(', ');
+        // Chip edits are programmatic — mark the sticky save bar dirty explicitly.
+        if (window.markFormDirty) window.markFormDirty('albumMetadataForm');
     }
     
     function escapeJsString(str) {

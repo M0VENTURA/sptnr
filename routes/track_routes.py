@@ -596,6 +596,57 @@ async def api_fetch_track_lyrics(track_id):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/track/<track_id>/fetch-credits — MusicBrainz recording credits
+# ---------------------------------------------------------------------------
+
+@track_bp.route("/<track_id>/fetch-credits", methods=["POST"])
+async def api_fetch_track_credits(track_id):
+    """Fetch recording credits from MusicBrainz artist relations.
+
+    Returns composer / lyricist / producer / engineer / conductor names so the
+    track page's Credits form can be quick-filled without a full rescan.
+    Requires the track to have a MusicBrainz recording MBID resolved.
+    """
+    try:
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT recording_mbid, musicbrainz_trackid FROM tracks WHERE CAST(id AS TEXT) = :id"),
+                {"id": str(track_id)},
+            ).fetchone()
+            if not row:
+                return jsonify({"error": "Track not found"}), 404
+            rec_mbid = str(row[0] or row[1] or "").strip()
+
+        if not rec_mbid:
+            return jsonify({
+                "found": False,
+                "error": "Track has no MusicBrainz recording ID — run a MusicBrainz lookup first.",
+            })
+
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        data = MusicBrainzHttpClient().get_recording(rec_mbid, inc="artist-rels") or {}
+        relations = data.get("relations") or []
+
+        credits: dict[str, list[str]] = {
+            "composer": [], "lyricist": [], "producer": [],
+            "engineer": [], "conductor": [],
+        }
+        for rel in relations:
+            rtype = str(rel.get("type") or "").lower()
+            if rtype not in credits:
+                continue
+            name = str((rel.get("artist") or {}).get("name") or "").strip()
+            if name and name not in credits[rtype]:
+                credits[rtype].append(name)
+
+        found = {k: "; ".join(v) for k, v in credits.items() if v}
+        return jsonify({"found": bool(found), **found})
+    except Exception as exc:
+        logger.error("Credits fetch failed for %s: %s", track_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # GET /api/track/<track_id>/mb-releases
 # ---------------------------------------------------------------------------
 

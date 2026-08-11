@@ -411,6 +411,66 @@ body:has(#globalPlayerBar:not(.d-none)) .scan-progress-toast {
     bottom: calc(var(--player-bar-height) + 0.75rem);
 }
 
+/* ── Sticky save bar (dirty-form tracking) ─────────────────────────────── */
+.sticky-save-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 2020;
+    background: rgba(18, 18, 18, 0.98);
+    border-top: 1px solid rgba(34, 197, 94, 0.5);
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+    padding: 0.6rem 1rem;
+}
+.sticky-save-bar.d-none { display: none; }
+.sticky-save-bar-inner {
+    max-width: 1400px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+body:has(#globalPlayerBar:not(.d-none)) .sticky-save-bar {
+    bottom: var(--player-bar-height);
+}
+
+/* ── Log viewer line styling (/logs page) ───────────────────────────────── */
+.log-line {
+    padding: 0 0.25rem;
+    border-radius: 0.2rem;
+    white-space: inherit;  /* follow the container's Wrap toggle */
+}
+#logOutput { white-space: pre; }
+#logOutput:has(.log-line) { padding: 0.5rem !important; }
+.log-line:hover { background-color: rgba(255, 255, 255, 0.04); }
+.log-ts { color: var(--text-tertiary); }
+.log-level {
+    font-weight: 700;
+    padding: 0 0.3rem;
+    border-radius: 0.2rem;
+}
+.log-level-info { color: #5bc0de; }
+.log-level-debug { color: var(--text-tertiary); }
+.log-level-warning { color: #f0ad4e; }
+.log-level-error, .log-level-critical {
+    background-color: rgba(231, 76, 60, 0.25);
+    color: #ff8a80;
+    font-weight: 700;
+}
+.log-tag {
+    display: inline-block;
+    margin: 0 0.35rem 0 0.15rem;
+    padding: 0 0.35rem;
+    border-radius: 0.35rem;
+    background-color: var(--tertiary-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 0.95em;
+}
+
 /* ── Misc utilities ──────────────────────────────────────────────────────── */
 .sticky-header thead th {
     position: sticky;

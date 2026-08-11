@@ -44,6 +44,59 @@ def _read_all_lines(path):
     return data.decode("utf-8", errors="ignore").splitlines()
 
 
+def _count_lines(path: str) -> int:
+    """Count newline-terminated lines without loading the file into memory.
+
+    A 24MB access.log would otherwise be read fully just to report how many
+    lines exist for the "showing last N of M" banner.
+    """
+    count = 0
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(1 << 20)  # 1 MiB
+            if not chunk:
+                break
+            count += chunk.count(b"\n")
+    return count
+
+
+def stream_append_log(name: str, start_offset: int, pending: str):
+    """Return ``(new_lines, new_offset, new_pending)`` for SSE log streaming.
+
+    Reads everything appended to ``name`` since ``start_offset``, splits it
+    into complete lines (a trailing partial line is carried in ``pending``),
+    and applies the same unified_scan.log filters the page view uses.
+    Handles rotation/truncation by resetting the offset.
+    """
+    log_path = resolve_log_file_path(name)
+    if not log_path or not os.path.exists(log_path):
+        return [], start_offset, pending
+    try:
+        size = os.path.getsize(log_path)
+    except OSError:
+        return [], start_offset, pending
+    if size < start_offset:
+        start_offset = 0
+        pending = ""
+    if size == start_offset:
+        return [], start_offset, pending
+    try:
+        with open(log_path, "rb") as fh:
+            fh.seek(start_offset)
+            pending += fh.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return [], start_offset, pending
+    new_offset = size
+    pieces = pending.split("\n")
+    new_pending = pieces.pop()  # may be a partial line
+    lines = [p for p in pieces if p]
+    if name == "unified_scan.log":
+        noise_pattern = _scheduler_noise_filter()
+        scan_pattern = _scan_activity_filter()
+        lines = [l for l in lines if not noise_pattern.search(l) and scan_pattern.search(l)]
+    return lines, new_offset, new_pending
+
+
 def _filter_lines_last_hour(lines: list[str]) -> list[str]:
     """Keep only lines whose leading timestamp falls within the last hour.
 
@@ -236,7 +289,14 @@ def get_log_file_content(name: str, lines: int | str = 500):
                 l for l in log_lines
                 if not noise_pattern.search(l) and scan_pattern.search(l)
             ]
-        return {"lines": log_lines if all_lines else log_lines[-lines:]}
+        # Truncation metadata for the "showing last N of M lines" banner.
+        total_lines = _count_lines(log_path)
+        visible = log_lines if all_lines else log_lines[-lines:]
+        return {
+            "lines": visible,
+            "total_lines": total_lines,
+            "truncated": bool(not all_lines and total_lines > len(visible)),
+        }
     except Exception as exc:
         logger.error("[LOG] read error for %s: %s", name, exc)
         return {"error": str(exc), "lines": []}, 500
