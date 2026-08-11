@@ -12,6 +12,16 @@
 
 // Global initialization runs after DOM is ready
 document.addEventListener("DOMContentLoaded", () => {
+  // Keep --navbar-height in sync with the real two-row navbar height so main
+  // content padding, sticky bars and the search flyout all align.
+  const syncNavbarHeight = () => {
+    const nav = document.querySelector("nav.navbar.fixed-top");
+    if (!nav || !nav.offsetHeight) return;
+    document.documentElement.style.setProperty("--navbar-height", nav.offsetHeight + "px");
+  };
+  syncNavbarHeight();
+  window.addEventListener("resize", syncNavbarHeight);
+
   // Initialize Bootstrap tooltips if Bootstrap loaded
   if (typeof bootstrap !== "undefined" && bootstrap.Tooltip) {
     const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');

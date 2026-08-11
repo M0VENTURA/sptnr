@@ -463,18 +463,16 @@
     input.value = prefill;
     if (getErrorEl()) getErrorEl().classList.add('d-none');
 
-    bootstrap.Modal.getOrCreateInstance(modalEl, { focus: true }).show();
+    // Anchor the flyout directly under the fixed navbar (measured so the
+    // two-row header never overlaps the panel).
+    var nav = document.querySelector('nav.navbar.fixed-top') || document.querySelector('nav.navbar');
+    if (nav && nav.offsetHeight > 0) modalEl.style.top = nav.offsetHeight + 'px';
+    var backdrop = document.getElementById('searchBackdrop');
+    modalEl.classList.remove('d-none');
+    if (backdrop) backdrop.classList.remove('d-none');
 
-    // Focus the input for immediate typing. Attempt synchronously first (keeps
-    // the user-gesture chain on mobile browsers, where deferred focus is
-    // ignored), then again once the modal finishes its transition — the
-    // modal's focus trap otherwise lands on the header close button.
+    // Focus synchronously — keeps the user-gesture chain on mobile browsers.
     input.focus();
-    var onShown = function () {
-      modalEl.removeEventListener('shown.bs.modal', onShown);
-      setTimeout(function () { input.focus(); }, 30);
-    };
-    modalEl.addEventListener('shown.bs.modal', onShown);
 
     clearTimeout(_debounceTimer);
     runSearch();
@@ -483,8 +481,9 @@
   window.closeUnifiedSearch = function () {
     var modalEl = getModalEl();
     if (!modalEl) return;
-    var instance = bootstrap.Modal.getInstance(modalEl);
-    if (instance) instance.hide();
+    modalEl.classList.add('d-none');
+    var backdrop = document.getElementById('searchBackdrop');
+    if (backdrop) backdrop.classList.add('d-none');
   };
 
   // ===== Wiring =====
@@ -494,6 +493,14 @@
     var input = getInputEl();
     var resultsEl = getResultsEl();
     if (!modalEl || !input || !resultsEl) return;
+
+    // Escape closes the flyout (no Bootstrap modal to do it for us anymore).
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !modalEl.classList.contains('d-none')) {
+        closeUnifiedSearch();
+        input.blur();
+      }
+    });
 
     // Debounced input (per-scope rate handled in scheduleSearch).
     input.addEventListener('input', scheduleSearch);

@@ -1,15 +1,4 @@
 /* Dashboard page styles — only dashboard-specific rules, global styles in popularr.css */
-.dashboard-mobile-search {
-    width: 100%;
-    max-width: 480px;
-}
-
-@media (max-width: 576px) {
-    .dashboard-mobile-search {
-        max-width: 100%;
-    }
-}
-
 .upcoming-source-chip {
     font-size: 0.70rem;
     padding: 0.15rem 0.4rem;
@@ -115,16 +104,6 @@ body {
 }
 
 /* ─── Mobile layout fixes ─────────────────────────────────────────────── */
-
-/* Stat badges: single-line horizontal swipe strip instead of 2-row wrap */
-.dashboard-stat-strip {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-}
-.dashboard-stat-strip::-webkit-scrollbar {
-    display: none;
-}
 
 @media (max-width: 575.98px) {
     /* 44px+ touch targets for the scanning-log toolbar */

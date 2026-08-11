@@ -26,8 +26,33 @@
     --text-muted: var(--text-secondary);
 
     /* Mobile stacking heights */
-    --navbar-height: 56px;
+    /* Two-row navbar (brand row + persistent search bar); kept in sync with
+       the measured height by main.js (syncNavbarHeight). */
+    --navbar-height: 112px;
     --player-bar-height: 64px;
+}
+
+/* ── Header search flyout ──────────────────────────────────────────────── */
+/* Overlay panel sliding down from under the fixed navbar; the page layout
+   underneath is untouched (position: fixed). */
+.search-flyout {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: var(--navbar-height, 112px);
+    z-index: 1035;
+    background: var(--secondary-bg, #1c1c1c);
+    border-bottom: 1px solid var(--border-color);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    max-height: calc(100vh - var(--navbar-height, 112px) - 8px);
+    overflow-y: auto;
+}
+
+.search-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1030;
+    background: rgba(0, 0, 0, 0.55);
 }
 
 /* Keep fixed bottom audio player from covering page content when visible */

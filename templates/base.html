@@ -19,31 +19,32 @@
 <body>
   <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
     <div class="container-fluid">
-      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-        <span class="navbar-toggler-icon"></span>
-      </button>
-      <a class="navbar-brand" href="{{ url_for('ui.dashboard') }}">
-        <i class="bi bi-music-note-beamed"></i> Popularr
-      </a>
-      <button class="btn btn-outline-secondary btn-sm d-lg-none ms-auto me-2" type="button" onclick="openUnifiedSearch()" aria-label="Search" title="Search" style="min-width:44px;min-height:44px;">
-        <i class="bi bi-search"></i>
-      </button>
+      <div class="d-flex align-items-center w-100">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <a class="navbar-brand" href="{{ url_for('ui.dashboard') }}">
+          <i class="bi bi-music-note-beamed"></i> Popularr
+        </a>
+        <a href="/config" class="btn btn-link text-muted p-0 d-lg-none ms-auto" aria-label="Settings" title="Settings">
+          <i class="bi bi-gear fs-5"></i>
+        </a>
+      </div>
+      <!-- Persistent global search bar — every page, every breakpoint. Tapping
+           opens the header flyout (see _unified_search_modal.html). -->
+      <div class="w-100 mt-1 mb-1" id="navSearchForm" onclick="openUnifiedSearch()" title="Search library or MusicBrainz" style="cursor:pointer;">
+        <div class="input-group input-group-sm">
+          <span class="input-group-text bg-dark border-secondary text-muted"><i class="bi bi-search"></i></span>
+          <input type="text" id="navSearchInput" class="form-control bg-dark text-light border-secondary shadow-none" placeholder="Search library or MusicBrainz…" autocomplete="off" readonly aria-label="Search library or MusicBrainz">
+          <button class="btn btn-outline-secondary btn-sm" type="button" title="Search" aria-label="Search"><i class="bi bi-search"></i></button>
+        </div>
+      </div>
       <div class="collapse navbar-collapse" id="navbarNav">
         <ul class="navbar-nav ms-auto">
           <li class="nav-item">
             <a class="nav-link" href="{{ url_for('ui.dashboard') }}">
               <i class="bi bi-speedometer2"></i> Dashboard
             </a>
-          </li>
-          <li class="nav-item nav-nav-search d-none d-lg-flex align-items-center">
-            <div class="d-flex w-100" id="navSearchForm" onclick="openUnifiedSearch()" title="Search library or MusicBrainz" style="cursor:pointer;">
-              <div class="input-group input-group-sm" style="width: 100%; max-width: 320px;">
-                <input type="text" id="navSearchInput" class="form-control form-control-sm" placeholder="Search library or MusicBrainz…" autocomplete="off" readonly>
-                <button class="btn btn-outline-secondary btn-sm" type="button" title="Search" aria-label="Search">
-                  <i class="bi bi-search"></i>
-                </button>
-              </div>
-            </div>
           </li>
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="artistsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">

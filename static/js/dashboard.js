@@ -668,7 +668,7 @@ function updateActiveScans() {
       const active = data.active_scans || [];
       updateScanStatusBar(active);
       if (badge) {
-        badge.textContent = active.length ? "Active" : "Idle";
+        badge.innerHTML = '<i class="bi bi-circle-fill me-1 small"></i> ' + (active.length ? "Active" : "Idle");
         badge.className = "badge " + (active.length ? "bg-success" : "bg-secondary");
         badge.style.fontSize = "0.65rem";
       }

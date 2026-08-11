@@ -9,41 +9,6 @@
          data-first-full-scan-done="{{ 'true' if first_full_scan_done else 'false' }}"
          hidden></div>
 
-    <div class="mb-4">
-        <div>
-            <h1 class="h2 mb-1">
-                <i class="bi bi-speedometer2"></i> Dashboard
-            </h1>
-            <p class="text-muted mb-0">Music library overview and scan controls</p>
-            <form class="dashboard-mobile-search d-lg-none mt-2" onclick="openUnifiedSearch()" style="cursor:pointer;">
-                <div class="input-group">
-                    <input
-                        type="text"
-                        id="dashboardTopSearchInput"
-                        class="form-control"
-                        placeholder="Search library or MusicBrainz…"
-                        autocomplete="off"
-                        aria-label="Search library"
-                        readonly
-                        style="font-size:16px;min-height:44px;"
-                    />
-                    <button class="btn btn-outline-secondary" type="button" title="Search" style="min-height:44px;">
-                        <i class="bi bi-search"></i>
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <div class="d-flex flex-nowrap align-items-center gap-2 mb-3 dashboard-stat-strip d-xl-none">
-        <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-music-note"></i> {{ stats.tc if stats else '?' }} tracks</span>
-        <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-disc"></i> {{ stats.ac if stats else '?' }} albums</span>
-        <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-people"></i> {{ stats.artists_c if stats else '?' }} artists</span>
-        {% if stats and stats.avg_stars is not none %}
-        <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-star-fill text-warning"></i> {{ stats.avg_stars }}</span>
-        {% endif %}
-    </div>
-
     {% if error %}
     <div class="alert alert-danger alert-dismissible fade show" role="alert">
         <i class="bi bi-exclamation-triangle-fill"></i>
@@ -52,106 +17,86 @@
     </div>
     {% endif %}
 
-    <!-- ===== Quick Links (compact — full nav lives in the navbar) ===== -->
-    <div class="d-flex flex-wrap gap-1 mb-3">
-        <a href="/artists" class="btn btn-sm btn-outline-secondary"><i class="bi bi-people"></i> Artists</a>
-        <a href="/missing" class="btn btn-sm btn-outline-secondary"><i class="bi bi-exclamation-circle"></i> Missing</a>
-        <a href="/analytics/genres-moods" class="btn btn-sm btn-outline-secondary"><i class="bi bi-bar-chart-line"></i> Analytics</a>
-        <a href="/config" class="btn btn-sm btn-outline-secondary"><i class="bi bi-gear"></i> Settings</a>
-    </div>
-
-    <!-- ===== Unified Scanner Engine (left column) ===== -->
+    <!-- ===== Unified Scanner Engine + feeds (single responsive row) ===== -->
     <div class="row g-3 mb-4">
-    <div class="col-12 col-xl-8">
+        <!-- LEFT COLUMN: scanner engine + upcoming feed -->
+        <div class="col-12 col-lg-7 col-xl-8">
     <div class="card mb-3" id="scannerControlsCard">
-        <div class="card-header py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
-            <div class="d-flex align-items-center gap-2">
-                <small class="fw-semibold"><i class="bi bi-lightning-charge"></i> Scanner Engine</small>
-                <span id="scannerStatusBadge" class="badge bg-secondary" style="font-size:0.65rem;">Idle</span>
-            </div>
-            <div class="d-flex align-items-center gap-2 flex-wrap">
-            <ul class="nav nav-pills gap-1" id="scannerTabs" role="tablist" style="--bs-nav-link-padding-y: 0.35rem;">
-                <li class="nav-item" role="presentation">
-                    <button type="button" class="nav-link active" data-bs-toggle="pill" data-bs-target="#scannerPanePopularity" role="tab" aria-controls="scannerPanePopularity" aria-selected="true">
-                        <i class="bi bi-graph-up"></i> Popularity
-                    </button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button type="button" class="nav-link" data-bs-toggle="pill" data-bs-target="#scannerPaneNavidrome" role="tab" aria-controls="scannerPaneNavidrome" aria-selected="false">
-                        <i class="bi bi-cloud-arrow-down"></i> Navidrome
-                    </button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button type="button" class="nav-link" data-bs-toggle="pill" data-bs-target="#scannerPaneEssentia" role="tab" aria-controls="scannerPaneEssentia" aria-selected="false">
-                        <i class="bi bi-music-note-list"></i> Essentia
-                    </button>
-                </li>
-            </ul>
-            <button class="btn btn-outline-danger btn-sm py-0" onclick="stopAllScans()" title="Stop all scans">
-                <i class="bi bi-stop-fill"></i> Stop All
-            </button>
-            </div>
+        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+            <h6 class="mb-0 fw-semibold"><i class="bi bi-lightning-charge-fill text-success"></i> Scanner Engine</h6>
+            <span id="scannerStatusBadge" class="badge bg-secondary" style="font-size:0.65rem;"><i class="bi bi-circle-fill me-1 small"></i> Idle</span>
         </div>
         <div class="card-body py-2">
-            <div class="tab-content">
-                <div class="tab-pane fade show active" id="scannerPanePopularity" role="tabpanel" aria-labelledby="scannerTabPopularity">
-                    <div class="d-flex justify-content-end gap-1 mb-1">
-                        <a href="/config#popularity-weights" class="btn btn-outline-light btn-sm py-1 px-2" title="Settings"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopPopularityScan()" class="btn btn-outline-danger btn-sm py-1 px-2" title="Stop"><i class="bi bi-stop-fill"></i></button>
-                    </div>
-                    <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
-                        <select id="popScanSelector" class="form-select form-select-sm" style="min-width: 130px; width: auto;" title="Select popularity scan type">
-                            <option value="all">All</option>
-                            <option value="popularity">Popularity</option>
-                            <option value="singles">Singles</option>
-                            <option value="metadata">Metadata</option>
-                        </select>
-                        <div class="form-check form-check-inline mb-0" title="Force rescan (ignore album-skip/cache)">
-                            <input class="form-check-input" type="checkbox" id="popScanForce" name="force" value="1">
-                            <label class="form-check-label small" for="popScanForce">Forced</label>
+            <!-- Row 1: Mode tabs -->
+            <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+                <small class="text-muted text-uppercase fw-semibold" style="font-size:0.7rem;">Mode</small>
+                <ul class="nav nav-pills gap-1" id="scannerTabs" role="tablist" style="--bs-nav-link-padding-y: 0.3rem; --bs-nav-link-padding-x: 0.7rem;">
+                    <li class="nav-item" role="presentation">
+                        <button type="button" class="nav-link active" data-bs-toggle="pill" data-bs-target="#scannerPanePopularity" role="tab" aria-controls="scannerPanePopularity" aria-selected="true">
+                            <i class="bi bi-graph-up"></i> Popularity
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button type="button" class="nav-link" data-bs-toggle="pill" data-bs-target="#scannerPaneNavidrome" role="tab" aria-controls="scannerPaneNavidrome" aria-selected="false">
+                            <i class="bi bi-cloud-arrow-down"></i> Navidrome
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button type="button" class="nav-link" data-bs-toggle="pill" data-bs-target="#scannerPaneEssentia" role="tab" aria-controls="scannerPaneEssentia" aria-selected="false">
+                            <i class="bi bi-music-note-list"></i> Essentia
+                        </button>
+                    </li>
+                </ul>
+            </div>
+            <!-- Row 2: per-mode controls + Stop All -->
+            <div class="d-flex align-items-start gap-2">
+                <div class="tab-content flex-grow-1">
+                    <div class="tab-pane fade show active" id="scannerPanePopularity" role="tabpanel" aria-labelledby="scannerTabPopularity">
+                        <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
+                            <select id="popScanSelector" class="form-select form-select-sm" style="min-width: 130px; width: auto;" title="Select popularity scan type">
+                                <option value="all">All</option>
+                                <option value="popularity">Popularity</option>
+                                <option value="singles">Singles</option>
+                                <option value="metadata">Metadata</option>
+                            </select>
+                            <div class="form-check form-check-inline mb-0" title="Force rescan (ignore album-skip/cache)">
+                                <input class="form-check-input" type="checkbox" id="popScanForce" name="force" value="1">
+                                <label class="form-check-label small" for="popScanForce">Forced</label>
+                            </div>
+                            <button id="popScanRunBtn" onclick="runDashboardPopularityScan()" class="btn btn-primary btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Run</button>
                         </div>
-                        <button id="popScanRunBtn" onclick="runDashboardPopularityScan()" class="btn btn-primary btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Run</button>
+                        <div><span id="pop-status" class="text-muted small">Idle</span></div>
                     </div>
-                    <div><span id="pop-status" class="text-muted small">Idle</span></div>
-                </div>
-                <div class="tab-pane fade" id="scannerPaneNavidrome" role="tabpanel" aria-labelledby="scannerTabNavidrome">
-                    <div class="d-flex justify-content-end gap-1 mb-1">
-                        <a href="/config#users" class="btn btn-outline-light btn-sm py-1 px-2" title="Settings"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopNavidromeSync()" class="btn btn-outline-danger btn-sm py-1 px-2" title="Stop"><i class="bi bi-stop-fill"></i></button>
-                    </div>
-                    <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
-                        <span id="nav-connectivity" class="badge bg-secondary" style="font-size:9px">?</span>
-                        <div class="form-check form-check-inline mb-0" title="Full re-import of every artist (ignores the new-items / changed-album skips)">
-                            <input class="form-check-input" type="checkbox" id="navImportForce" name="force" value="1">
-                            <label class="form-check-label small" for="navImportForce">Forced</label>
+                    <div class="tab-pane fade" id="scannerPaneNavidrome" role="tabpanel" aria-labelledby="scannerTabNavidrome">
+                        <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
+                            <span id="nav-connectivity" class="badge bg-secondary" style="font-size:9px">?</span>
+                            <div class="form-check form-check-inline mb-0" title="Full re-import of every artist (ignores the new-items / changed-album skips)">
+                                <input class="form-check-input" type="checkbox" id="navImportForce" name="force" value="1">
+                                <label class="form-check-label small" for="navImportForce">Forced</label>
+                            </div>
+                            <button onclick="startNavidromeImport()" class="btn btn-secondary btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Import</button>
+                            <button onclick="startNavidromeServerScan()" class="btn btn-outline-secondary btn-sm py-1 px-3" style="min-height:44px;" title="Trigger a Navidrome server rescan so new/changed files (e.g. completed downloads) appear in Navidrome"><i class="bi bi-arrow-repeat"></i> Sync Changes</button>
                         </div>
-                        <button onclick="startNavidromeImport()" class="btn btn-secondary btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Import</button>
-                        <button onclick="startNavidromeServerScan()" class="btn btn-outline-secondary btn-sm py-1 px-3" style="min-height:44px;" title="Trigger a Navidrome server rescan so new/changed files (e.g. completed downloads) appear in Navidrome"><i class="bi bi-arrow-repeat"></i> Sync Changes</button>
+                        <div><span id="nav-status" class="text-muted small">Idle</span></div>
                     </div>
-                    <div><span id="nav-status" class="text-muted small">Idle</span></div>
-                </div>
-                <div class="tab-pane fade" id="scannerPaneEssentia" role="tabpanel" aria-labelledby="scannerTabEssentia">
-                    <div class="d-flex justify-content-end gap-1 mb-1">
-                        <a href="/config#essentia-mood-scan" class="btn btn-outline-light btn-sm py-1 px-2" title="Settings"><i class="bi bi-gear"></i></a>
-                        <button onclick="stopEssentiaScan()" class="btn btn-outline-danger btn-sm py-1 px-2" title="Stop"><i class="bi bi-stop-fill"></i></button>
+                    <div class="tab-pane fade" id="scannerPaneEssentia" role="tabpanel" aria-labelledby="scannerTabEssentia">
+                        <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
+                            <button onclick="startEssentiaScan()" class="btn btn-info btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Run</button>
+                        </div>
+                        <div><span id="ess-status" class="text-muted small">Idle</span></div>
                     </div>
-                    <button onclick="startEssentiaScan()" class="btn btn-info btn-sm py-1 px-3 mb-1" style="min-height:44px;"><i class="bi bi-play-fill"></i> Run</button>
-                    <div><span id="ess-status" class="text-muted small">Idle</span></div>
                 </div>
+                <button class="btn btn-outline-danger btn-sm py-1 flex-shrink-0" onclick="stopAllScans()" title="Stop all scans">
+                    <i class="bi bi-stop-fill"></i> Stop All
+                </button>
+            </div>
+            <!-- Active progress (hidden while idle) -->
+            <div id="activeScansPanel" class="border-top pt-2 mt-2" style="display:none;">
+                <div class="small fw-semibold text-muted text-uppercase mb-1"><i class="bi bi-activity"></i> Active Progress</div>
+                <div id="activeScansBody"></div>
             </div>
         </div>
-        <!-- Active progress — merged into the scanner panel (hidden while idle) -->
-        <div id="activeScansPanel" class="border-top pt-2 mt-2" style="display:none;">
-            <div class="small fw-semibold text-muted text-uppercase mb-1"><i class="bi bi-activity"></i> Active Progress</div>
-            <div id="activeScansBody"></div>
-        </div>
-        </div>
     </div>
-    </div>
-    </div>
-
-    <div class="row g-3 mb-4">
-        <div class="col-12 col-xl-8">
             <!-- Upcoming Releases (left column — under the scanner engine) -->
             <div class="card h-100">
                 <div class="card-header py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -169,7 +114,7 @@
                     </div>
                 </div>
                 <div class="table-responsive d-none d-lg-block" style="height: 320px; overflow-y: auto;">
-                    <table class="table table-hover mb-0 table-sm" style="min-width: 680px;">
+                    <table class="table table-hover mb-0 table-sm" style="min-width: 560px;">
                         <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
                             <tr>
                                 <th style="width: 28%"><i class="bi bi-person"></i> Artist</th>
@@ -186,9 +131,10 @@
                 <div id="upcoming-releases-cards" class="d-lg-none p-1"></div>
             </div>
         </div>
-        <div class="col-12 col-xl-4">
-            <!-- Library Quick Stats (right rail, desktop) -->
-            <div class="card mb-3 d-none d-xl-block">
+        <!-- RIGHT COLUMN: library stats + activity feed -->
+        <div class="col-12 col-lg-5 col-xl-4">
+            <!-- Library Quick Stats (2x2 grid) -->
+            <div class="card mb-3">
                 <div class="card-header py-2">
                     <h6 class="mb-0"><i class="bi bi-bar-chart"></i> Library Quick Stats</h6>
                 </div>
@@ -227,13 +173,13 @@
                     <h6 class="mb-0"><i class="bi bi-clock-history"></i> Recent Scans</h6>
                 </div>
                 <div class="table-responsive" style="height: 320px; overflow-y: auto;">
-                    <table class="table table-hover mb-0 table-sm" style="min-width: 620px;">
+                    <table class="table table-hover mb-0 table-sm">
                         <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
                             <tr>
-                                <th style="width: 28%"><i class="bi bi-person"></i> Artist</th>
-                                <th style="width: 28%"><i class="bi bi-disc"></i> Album</th>
-                                <th style="width: 24%">Scan Types</th>
-                                <th style="width: 20%; text-align: right;">Last Scanned</th>
+                                <th style="width: 32%"><i class="bi bi-person"></i> Artist</th>
+                                <th style="width: 36%"><i class="bi bi-disc"></i> Album</th>
+                                <th style="width: 16%">Types</th>
+                                <th style="width: 16%; text-align: right;">Scanned</th>
                             </tr>
                         </thead>
                         <tbody id="recent-scans-body">

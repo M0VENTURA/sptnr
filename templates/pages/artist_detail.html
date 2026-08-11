@@ -224,7 +224,7 @@
     {% set ns_totals.library = ns_totals.library + (albums_by_category.get(key) or [])|selectattr('is_missing', 'equalto', False)|list|length %}
     {% set ns_totals.missing = ns_totals.missing + (albums_by_category.get(key) or [])|selectattr('is_missing', 'equalto', True)|list|length %}
   {% endfor %}
-  <div class="card mb-4 sticky-top" style="top: 4rem; z-index: 1000;">
+  <div class="card mb-4 sticky-top" style="top: var(--navbar-height, 4rem); z-index: 1000;">
     <div class="card-body py-2 px-3">
       <ul class="nav nav-pills gap-2 small d-none d-lg-flex">
         <li class="nav-item"><a class="nav-link" href="#artist-overview-section">Overview</a></li>

@@ -96,8 +96,7 @@ async def api_search():
                             0
                         )) AS album_year,
                         MAX(COALESCE(NULLIF(musicbrainz_albumtype, ''),
-                                     NULLIF(spotify_album_type, ''),
-                                     NULLIF(album_type, ''))) AS album_type,
+                                     NULLIF(spotify_album_type, ''))) AS album_type,
                         CASE
                             WHEN LOWER(COALESCE(album, '')) = :exact THEN 0
                             WHEN LOWER(COALESCE(album, '')) LIKE :starts THEN 1
