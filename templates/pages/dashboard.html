@@ -134,24 +134,13 @@
         </div>
         <!-- RIGHT COLUMN: live activity feed (scans) -->
         <div class="col-12 col-lg-5 col-xl-4">
-            <!-- Recent Scans (stretched to fill the column) -->
+            <!-- Recent Scans (stretched to fill the column) — stacked stream -->
             <div class="card h-100">
                 <div class="card-header py-2">
                     <h6 class="mb-0"><i class="bi bi-clock-history"></i> Recent Scans</h6>
                 </div>
-                <div class="table-responsive" style="height: 320px; overflow-y: auto;">
-                    <table class="table table-hover mb-0 table-sm">
-                        <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
-                            <tr>
-                                <th style="width: 34%"><i class="bi bi-person"></i> Artist</th>
-                                <th style="width: 38%"><i class="bi bi-disc"></i> Album</th>
-                                <th style="width: 28%">Type</th>
-                                <th class="d-none d-sm-table-cell text-end" style="width: 16%;">Scanned</th>
-                            </tr>
-                        </thead>
-                        <tbody id="recent-scans-body">
-                        </tbody>
-                    </table>
+                <div class="card-body p-0 overflow-y-auto" style="max-height: 320px; scrollbar-width: thin;">
+                    <div class="list-group list-group-flush" id="recent-scans-body"></div>
                 </div>
             </div>
         </div>

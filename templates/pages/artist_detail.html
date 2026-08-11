@@ -167,7 +167,11 @@
       <li class="breadcrumb-item active" aria-current="page">{{ artist_name }}</li>
     </ol>
   <!-- Mobile-only compact hero (desktop keeps the full header + About section) -->
-  <div class="card mb-4 d-lg-none" id="artist-mobile-hero">
+  <div class="card mb-4 d-lg-none position-relative" id="artist-mobile-hero">
+    <!-- Borderless top-right favourite heart -->
+    <button data-artist-fav-btn class="btn btn-link p-0 text-danger border-0 shadow-none position-absolute top-0 end-0 m-2" onclick='toggleArtistFavourite({{ artist_name|tojson }})' title="Favourite this artist — new albums will be auto-queued for download" aria-label="Favourite this artist">
+      <i class="bi bi-heart fs-5" data-artist-fav-icon></i>
+    </button>
     <div class="card-body p-3">
       <!-- 1. Header: avatar + name + genres + 2-line bio snippet -->
       <div class="d-flex align-items-start gap-3">
@@ -229,14 +233,10 @@
             <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan</span>
           </button>
         </form>
-        <div class="d-flex align-items-center gap-2 ms-auto">
-          <button data-artist-fav-btn class="btn btn-outline-danger btn-sm" onclick='toggleArtistFavourite({{ artist_name|tojson }})' title="Favourite this artist — new albums will be auto-queued for download">
-            <i class="bi bi-heart" data-artist-fav-icon></i>
+        <div class="dropdown ms-auto">
+          <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More options">
+            <i class="bi bi-three-dots"></i> <span class="d-none d-sm-inline">Actions</span>
           </button>
-          <div class="dropdown">
-            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More options">
-              <i class="bi bi-three-dots"></i> <span class="d-none d-sm-inline">Actions</span>
-            </button>
             <ul class="dropdown-menu dropdown-menu-end">
               <li><a class="dropdown-item" href="{{ url_for('ui.artist_corrections', name=artist_name) }}"><i class="bi bi-wrench-adjustable me-2"></i> Corrections</a></li>
               <li><a class="dropdown-item" href="{{ url_for('ui.artist_genre_management', name=artist_name) }}"><i class="bi bi-tags me-2"></i> Genre Management</a></li>
@@ -251,7 +251,7 @@
     </div>
   </div>
 
-  <div class="d-none d-lg-flex flex-column flex-lg-row justify-content-between align-items-start mb-4 gap-3">
+  <div class="d-none d-lg-flex flex-column flex-lg-row justify-content-between align-items-start mb-4 gap-3 position-relative">
     <div class="flex-grow-1">
       <h1 class="h2 mb-2" data-artist-name="{{ artist_name|e }}">
         <i class="bi bi-person-music"></i> {{ artist_name }}
@@ -262,17 +262,22 @@
       <p class="text-muted mb-0">Artist overview</p>
     </div>
     <div class="d-flex gap-2 flex-row flex-wrap align-items-center">
+      <!-- Borderless favourite heart (top-right of the hero) -->
+      <button data-artist-fav-btn class="btn btn-link p-0 text-danger border-0 shadow-none" onclick='toggleArtistFavourite({{ artist_name|tojson }})' title="Favourite this artist — new albums will be auto-queued for download" aria-label="Favourite this artist to auto-queue new albums for download">
+        <i class="bi bi-heart fs-5" data-artist-fav-icon></i>
+      </button>
       {% if (qbit_config.enabled and qbit_config.web_url) or slskd_config.enabled %}
       <button class="btn btn-outline-info" onclick='openDownloadSearch({{ artist_name|tojson }})' title="Download {{ artist_name }} releases">
         <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
       </button>
       {% endif %}
-      <button data-artist-fav-btn id="artistFavouriteBtn" class="btn btn-outline-danger" onclick='toggleArtistFavourite({{ artist_name|tojson }})' title="Favourite this artist — new albums will be auto-queued for download" aria-label="Favourite this artist to auto-queue new albums for download">
-        <i class="bi bi-heart" data-artist-fav-icon id="artistFavouriteIcon"></i> <span class="d-none d-sm-inline" data-artist-fav-label id="artistFavouriteLabel">Favourite</span>
-      </button>
-      <form id="artistScanForm" action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2">
+      <form id="artistScanForm" action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 flex-wrap">
         <input type="hidden" name="artist" value="{{ artist_name }}">
         {% include 'components/_scan_selector.html' ignore missing %}
+        <div class="form-check form-check-inline m-0 extra-small text-muted" title="Force rescan (ignore change detection)">
+          <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
+          <label class="form-check-label small" for="artistForceScan">Force</label>
+        </div>
         <button type="submit" class="btn btn-warning" title="Run selected scan for this artist">
           <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan Artist</span>
         </button>
@@ -281,14 +286,6 @@
             <i class="bi bi-three-dots"></i> <span class="d-none d-lg-inline">More</span>
           </button>
           <ul class="dropdown-menu dropdown-menu-end">
-            <li>
-              <div class="dropdown-item">
-                <div class="form-check mb-0">
-                  <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
-                  <label class="form-check-label small" for="artistForceScan">Force rescan (ignore change detection)</label>
-                </div>
-              </div>
-            </li>
             <li><hr class="dropdown-divider"></li>
             <li>
               <a class="dropdown-item" href="{{ url_for('ui.artist_corrections', name=artist_name) }}">
@@ -324,7 +321,6 @@
       <ul class="nav nav-pills gap-2 small d-none d-lg-flex">
         <li class="nav-item"><a class="nav-link" href="#artist-overview-section">Overview</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-stats-section">Stats</a></li>
-        <li class="nav-item"><a class="nav-link" href="#artist-similar-section">Similar</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-top-tracks-section">Top Tracks</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-genres-section">Genres and Moods</a></li>
         <li class="nav-item"><a class="nav-link" href="#albums-section">Albums</a></li>
@@ -334,7 +330,6 @@
       <div class="mobile-tab-bar d-lg-none mt-2 mt-lg-0" role="tablist" aria-label="Artist sections" id="artistMobileTabBar" data-mobile-tabs data-group-attr="data-mobile-group" data-active-class="mobile-tab-active">
         <button type="button" class="tab-btn active" data-tab="disco" role="tab" aria-selected="true"><i class="bi bi-vinyl"></i> Albums</button>
         <button type="button" class="tab-btn" data-tab="top" role="tab" aria-selected="false"><i class="bi bi-star"></i> Top</button>
-        <button type="button" class="tab-btn" data-tab="similar" role="tab" aria-selected="false"><i class="bi bi-people"></i> Similar</button>
         <button type="button" class="tab-btn" data-tab="about" role="tab" aria-selected="false"><i class="bi bi-info-circle"></i> About</button>
       </div>
       <div class="d-flex align-items-center gap-2 mt-3 flex-wrap" id="artistFilterBar">
@@ -514,93 +509,6 @@
           </div>
           <div class="h4 mb-0">{{ stats.five_star_count or 0 }}</div>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card mb-4 mobile-tab-group" data-mobile-group="similar" id="artist-similar-section">
-    <div class="card-header p-0" id="artist-similar-heading">
-      <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#artist-similar-collapse" aria-expanded="false" aria-controls="artist-similar-collapse" style="color: inherit;">
-        <h5 class="card-title mb-0">
-          <i class="bi bi-person-heart"></i> Similar Artists
-        </h5>
-        <i class="bi bi-chevron-down similar-chevron"></i>
-      </button>
-    </div>
-    <div id="artist-similar-collapse" class="collapse">
-      <div class="card-body" style="background-color: var(--secondary-bg);">
-      <div id="artistSimilarArtistsContainer">
-        {% set display_list = similar_artists.display if similar_artists else [] %}
-        {% if display_list %}
-          {% set owned = display_list|selectattr('in_collection')|list %}
-          {% set recommended = display_list|rejectattr('in_collection')|list %}
-          {% if owned %}
-            <div class="mb-3">
-              <small class="text-muted d-block mb-2"><i class="bi bi-check-circle-fill text-success"></i> In Collection <span class="badge bg-success ms-1">{{ owned|length }}</span></small>
-              <div class="d-flex flex-wrap gap-2">
-                {% for sa in owned %}
-                  <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="text-decoration-none" title="Open artist page">
-                    <span class="badge bg-success similar-artist-pill"><i class="bi bi-check-lg me-1"></i>{{ sa.name }}</span>
-                  </a>
-                {% endfor %}
-              </div>
-            </div>
-          {% endif %}
-          {% if recommended %}
-            <div>
-              <small class="text-muted d-block mb-2"><i class="bi bi-stars"></i> Recommended
-                <span class="badge bg-secondary ms-1">{{ recommended|length }}</span>
-                <span class="ms-1" style="font-size: 0.85rem;">
-                  {%- for src in ['lastfm', 'listenbrainz'] -%}
-                    {%- if display_list|selectattr('sources')|list|selectattr('sources', 'contains', src)|list|length > 0 -%}
-                      <span class="badge" style="background-color: {{ '#D51007' if src == 'lastfm' else '#0066FF' }}; color: #fff;">{{ 'Last.fm' if src == 'lastfm' else 'ListenBrainz' }}</span>
-                    {%- endif -%}
-                  {%- endfor -%}
-                </span>
-              </small>
-              <div class="row g-2 row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-5">
-                {% for sa in recommended %}
-                <div class="col">
-                  <div class="card h-100 artist-similar-card overflow-hidden">
-                    <div style="aspect-ratio: 1 / 1; background: var(--tertiary-bg); position: relative;">
-                      <img src="{{ url_for('artist.api_artist_image', name=sa.name) }}" alt="{{ sa.name }}" loading="lazy"
-                           class="w-100 h-100" style="object-fit: cover;"
-                           onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                      <div style="display:none; position:absolute; inset:0; align-items:center; justify-content:center; color: var(--text-secondary); font-size: 2rem;">
-                        <i class="bi bi-music-note-beamed"></i>
-                      </div>
-                    </div>
-                    <div class="card-body p-2 text-center d-flex flex-column gap-1">
-                      <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="fw-semibold text-decoration-none text-truncate" title="{{ sa.name }}" style="font-size: 0.85rem;">{{ sa.name }}</a>
-                      <div class="d-flex justify-content-center gap-1 flex-wrap">
-                        {% for src in sa.sources %}
-                          {% if src == 'lastfm' %}
-                            <span class="badge" style="background-color: #D51007; color: #fff; font-size: 0.6rem;">Last.fm</span>
-                          {% elif src == 'listenbrainz' %}
-                            <span class="badge" style="background-color: #0066FF; color: #fff; font-size: 0.6rem;">ListenBrainz</span>
-                          {% endif %}
-                        {% endfor %}
-                      </div>
-                      <div class="mt-auto d-flex gap-1 justify-content-center">
-                        <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="btn btn-sm btn-outline-secondary" title="Open artist page"><i class="bi bi-person"></i></a>
-                        <button type="button" class="btn btn-sm btn-outline-info" title="Find releases on MusicBrainz" onclick="searchMusicBrainzForAllReleases('{{ sa.name|replace("'", "\\'") }}')"><i class="bi bi-search"></i></button>
-                        <a href="https://www.last.fm/music/{{ sa.name|urlencode }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-danger" title="View on Last.fm"><i class="bi bi-music-note-list"></i></a>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                {% endfor %}
-              </div>
-            </div>
-          {% endif %}
-        {% else %}
-          <div class="text-center py-3 text-muted">
-            <i class="bi bi-info-circle"></i>
-            <span>No similar artists available yet.</span>
-            <br><small>Similar artists are collected during popularity scans from Last.fm and ListenBrainz.</small>
-          </div>
-        {% endif %}
-      </div>
       </div>
     </div>
   </div>
@@ -867,7 +775,103 @@
   {% set total_missing_eps = albums_by_category.ep|selectattr('is_missing', 'equalto', True)|list|length %}
   {% set total_discovered_singles = albums_by_category.single|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_singles = albums_by_category.single|selectattr('is_missing', 'equalto', True)|list|length %}
-  
+
+  <!-- Expandable "Similar Artists" envelope (collapsed by default, directly above Discography) -->
+  {% set similar_count = (similar_artists.display if similar_artists else [])|length %}
+  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="artist-similar-section">
+    <div class="card-header bg-transparent border-secondary p-2" id="artist-similar-heading">
+      <button class="btn btn-sm text-light text-decoration-none d-flex align-items-center justify-content-between w-100 p-1 similar-artists-toggle collapsed"
+              type="button"
+              data-bs-toggle="collapse"
+              data-bs-target="#artist-similar-collapse"
+              aria-expanded="false"
+              aria-controls="artist-similar-collapse">
+        <div class="fw-bold extra-small text-uppercase d-flex align-items-center gap-2">
+          <i class="bi bi-people-fill text-info"></i>
+          <span>Similar Artists</span>
+          <span class="badge bg-dark text-muted border border-secondary extra-small">{{ similar_count or '•' }}</span>
+        </div>
+        <i class="bi bi-chevron-down similar-chevron text-muted"></i>
+      </button>
+    </div>
+    <div id="artist-similar-collapse" class="collapse">
+      <div class="card-body" style="background-color: var(--secondary-bg);">
+      <div id="artistSimilarArtistsContainer">
+        {% set display_list = similar_artists.display if similar_artists else [] %}
+        {% if display_list %}
+          {% set owned = display_list|selectattr('in_collection')|list %}
+          {% set recommended = display_list|rejectattr('in_collection')|list %}
+          {% if owned %}
+            <div class="mb-3">
+              <small class="text-muted d-block mb-2"><i class="bi bi-check-circle-fill text-success"></i> In Collection <span class="badge bg-success ms-1">{{ owned|length }}</span></small>
+              <div class="d-flex flex-wrap gap-2">
+                {% for sa in owned %}
+                  <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="text-decoration-none" title="Open artist page">
+                    <span class="badge bg-success similar-artist-pill"><i class="bi bi-check-lg me-1"></i>{{ sa.name }}</span>
+                  </a>
+                {% endfor %}
+              </div>
+            </div>
+          {% endif %}
+          {% if recommended %}
+            <div>
+              <small class="text-muted d-block mb-2"><i class="bi bi-stars"></i> Recommended
+                <span class="badge bg-secondary ms-1">{{ recommended|length }}</span>
+                <span class="ms-1" style="font-size: 0.85rem;">
+                  {%- for src in ['lastfm', 'listenbrainz'] -%}
+                    {%- if display_list|selectattr('sources')|list|selectattr('sources', 'contains', src)|list|length > 0 -%}
+                      <span class="badge" style="background-color: {{ '#D51007' if src == 'lastfm' else '#0066FF' }}; color: #fff;">{{ 'Last.fm' if src == 'lastfm' else 'ListenBrainz' }}</span>
+                    {%- endif -%}
+                  {%- endfor -%}
+                </span>
+              </small>
+              <div class="row g-2 row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-5">
+                {% for sa in recommended %}
+                <div class="col">
+                  <div class="card h-100 artist-similar-card overflow-hidden">
+                    <div style="aspect-ratio: 1 / 1; background: var(--tertiary-bg); position: relative;">
+                      <img src="{{ url_for('artist.api_artist_image', name=sa.name) }}" alt="{{ sa.name }}" loading="lazy"
+                           class="w-100 h-100" style="object-fit: cover;"
+                           onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                      <div style="display:none; position:absolute; inset:0; align-items:center; justify-content:center; color: var(--text-secondary); font-size: 2rem;">
+                        <i class="bi bi-music-note-beamed"></i>
+                      </div>
+                    </div>
+                    <div class="card-body p-2 text-center d-flex flex-column gap-1">
+                      <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="fw-semibold text-decoration-none text-truncate" title="{{ sa.name }}" style="font-size: 0.85rem;">{{ sa.name }}</a>
+                      <div class="d-flex justify-content-center gap-1 flex-wrap">
+                        {% for src in sa.sources %}
+                          {% if src == 'lastfm' %}
+                            <span class="badge" style="background-color: #D51007; color: #fff; font-size: 0.6rem;">Last.fm</span>
+                          {% elif src == 'listenbrainz' %}
+                            <span class="badge" style="background-color: #0066FF; color: #fff; font-size: 0.6rem;">ListenBrainz</span>
+                          {% endif %}
+                        {% endfor %}
+                      </div>
+                      <div class="mt-auto d-flex gap-1 justify-content-center">
+                        <a href="{{ url_for('ui.artist_detail', name=sa.name) }}" class="btn btn-sm btn-outline-secondary" title="Open artist page"><i class="bi bi-person"></i></a>
+                        <button type="button" class="btn btn-sm btn-outline-info" title="Find releases on MusicBrainz" onclick="searchMusicBrainzForAllReleases('{{ sa.name|replace("'", "\\'") }}')"><i class="bi bi-search"></i></button>
+                        <a href="https://www.last.fm/music/{{ sa.name|urlencode }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-danger" title="View on Last.fm"><i class="bi bi-music-note-list"></i></a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+          {% endif %}
+        {% else %}
+          <div class="text-center py-3 text-muted">
+            <i class="bi bi-info-circle"></i>
+            <span>No similar artists available yet.</span>
+            <br><small>Similar artists are collected during popularity scans from Last.fm and ListenBrainz.</small>
+          </div>
+        {% endif %}
+      </div>
+      </div>
+    </div>
+  </div>
+
   <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
@@ -1107,7 +1111,7 @@
     </div>
   </div>
 
-  <div class="card mb-4 mobile-tab-group" data-mobile-group="similar" id="artist-appears-on-section">
+  <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="artist-appears-on-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-people"></i> Appears On

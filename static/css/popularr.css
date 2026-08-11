@@ -216,6 +216,72 @@ main.container-fluid {
   transform: rotate(180deg);
 }
 
+/* ── Extra-small text utility ─────────────────────────────────────────── */
+.extra-small { font-size: 0.72rem; }
+
+/* ── Windows Phone style Metro jump grid overlay ──────────────────────── */
+.metro-jump-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2050;
+    background: rgba(10, 10, 10, 0.88);
+    backdrop-filter: blur(10px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+.metro-jump-content {
+    width: min(92vw, 380px);
+    background: var(--secondary-bg, #1e1e1e);
+    border: 1px solid var(--border-color, #333);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+}
+.metro-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.6rem;
+}
+.metro-tile {
+    aspect-ratio: 1;
+    background-color: var(--accent-color, #1db954);
+    color: #000000;
+    border: none;
+    border-radius: 0.35rem;
+    font-size: 1.35rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.1s ease, background-color 0.15s ease;
+    cursor: pointer;
+}
+.metro-tile:hover:not(:disabled) {
+    transform: scale(1.06);
+    background-color: var(--accent-hover, #1ed760);
+}
+.metro-tile:active:not(:disabled) {
+    transform: scale(0.95);
+}
+.metro-tile:disabled,
+.metro-tile.disabled {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    color: rgba(255, 255, 255, 0.2) !important;
+    cursor: not-allowed;
+    transform: none !important;
+}
+.metro-jump-trigger {
+    width: 42px;
+    height: 42px;
+    font-size: 1.2rem;
+    border-radius: 0.4rem;
+}
+
+/* ── Artist list row utilities ────────────────────────────────────────── */
+.min-w-0 { min-width: 0; }
+.hover-bg-dark:hover { background-color: var(--tertiary-bg, #282828); }
+
 
 p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th { color: var(--text-primary); }
 a:not(.btn) { color: var(--spotify-green); }

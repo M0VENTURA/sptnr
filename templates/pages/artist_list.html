@@ -4,119 +4,43 @@
 
 {% block content %}
 <style>
-    /* Sticky letter headers — stick below the fixed navbar */
-    #artistsList > .list-group-item[data-letter-header] {
+    /* Letter sections: keep jump targets clear of the fixed navbar */
+    [id^="section-"] {
+        scroll-margin-top: calc(var(--navbar-height, 112px) + 0.5rem);
+    }
+
+    /* Metro section headers stick below the fixed navbar */
+    .metro-section-header {
         position: sticky;
-        top: var(--navbar-height, 3.5rem);
+        top: calc(var(--navbar-height, 112px) - 1px);
         z-index: 10;
-        scroll-margin-top: calc(var(--navbar-height, 3.5rem) + 0.5rem);
-    }
-
-    /* Correction & albums detail rows */
-    .correction-album-row {
         background: var(--secondary-bg, #1e1e1e);
-        border: 1px solid var(--border-color, #333);
-        transition: background 0.15s ease;
-    }
-    .correction-album-row:hover {
-        background: var(--tertiary-bg, #282828);
-    }
-
-    .correction-detail-content,
-    .albums-detail-content {
-        border-left: 3px solid var(--spotify-green, #1db954);
-        border-radius: 0 6px 6px 0;
-    }
-
-    /* Prevent artist name from overflowing on small screens */
-    #artistsList .min-width-0 {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    /* Ghost row actions — transparent by default, highlighted on row hover */
-    #artistsList .list-group-item .artist-row-actions .btn {
-        background: transparent;
-        color: var(--text-secondary, #9ca3af);
-        border-color: transparent;
-    }
-    #artistsList .list-group-item:hover .artist-row-actions .btn {
-        color: #22d3ee;
-        border-color: var(--border-color, #333);
-    }
-    #artistsList .list-group-item .artist-row-actions .btn:hover {
-        background: rgba(34, 211, 238, 0.12);
-        color: #22d3ee;
-    }
-    #artistsList .list-group-item .artist-row-actions .btn-outline-danger {
-        color: #f87171;
-    }
-    #artistsList .list-group-item:hover .artist-row-actions .btn-outline-danger {
-        color: #f87171;
-        border-color: rgba(248, 113, 113, 0.4);
-    }
-
-    /* Album sub-row actions — uniform slate ghost styling */
-    #artistsList .album-row-btn {
-        background: transparent;
-        color: #9ca3af;
-        border-color: #4b5563;
-    }
-    #artistsList .album-row-btn:hover,
-    #artistsList .album-row-btn:focus {
-        background: rgba(34, 211, 238, 0.08);
-        color: #22d3ee;
-        border-color: #22d3ee;
-    }
-
-    /* Live filter highlight */
-    #artistsList .list-group-item.filtered-out {
-        display: none !important;
-    }
-    #artistsList > .list-group-item[data-letter-header].filtered-out {
-        display: none !important;
     }
 </style>
 <div class="container-fluid">
-    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-md-items-center mb-4 gap-2">
-        <h1 class="h2 mb-0">
-            <i class="bi bi-people"></i> Artists
-            <a href="/help/FEATURES_LIBRARY" class="btn btn-sm btn-outline-success ms-2" title="Help for Artists">
-                <i class="bi bi-question-circle"></i>
-            </a>
-        </h1>
-        <div class="d-flex gap-2 align-items-center">
-            <button class="btn btn-success" onclick="showAddArtistModal()">
-                <i class="bi bi-plus-circle"></i> Add Artist
-            </button>
-            <span class="badge badge-success" style="font-size: 0.9rem; white-space: nowrap;">
-                {{ artists|length }} artists
-            </span>
-        </div>
-    </div>
-
     {% if total_stats %}
-        <!-- Total Items Section -->
-        <div class="card mb-3 border-primary">
-            <div class="card-header bg-primary bg-opacity-10 border-primary">
-                <h5 class="mb-0">
-                    <i class="bi bi-collection"></i> Total Library Items
-                </h5>
+        <!-- Consolidated Total Library Items Card (includes artist count) -->
+        <div class="card mb-3 shadow-sm">
+            <div class="card-header bg-transparent py-2 px-3 fw-bold text-light extra-small d-flex align-items-center gap-2">
+                <i class="bi bi-collection-play-fill text-success"></i> Total Library Items
             </div>
-            <div class="card-body">
-                <div class="row text-center">
-                    <div class="col-md-4">
-                        <div class="h3 mb-0 text-primary">{{ total_stats.album_count or 0 }}</div>
-                        <small class="text-muted">Albums</small>
+            <div class="card-body p-2">
+                <div class="row g-2 text-center">
+                    <div class="col-3 border-end border-secondary">
+                        <div class="fw-bold text-success fs-5">{{ total_artists or artists|length }}</div>
+                        <div class="extra-small text-muted text-uppercase">Artists</div>
                     </div>
-                    <div class="col-md-4">
-                        <div class="h3 mb-0 text-primary">{{ total_stats.track_count or 0 }}</div>
-                        <small class="text-muted">Tracks</small>
+                    <div class="col-3 border-end border-secondary">
+                        <div class="fw-bold text-info fs-5">{{ total_stats.album_count or 0 }}</div>
+                        <div class="extra-small text-muted text-uppercase">Albums</div>
                     </div>
-                    <div class="col-md-4">
-                        <div class="h3 mb-0 text-warning">{{ total_stats.five_star_count or 0 }}</div>
-                        <small class="text-muted">5 Star Songs</small>
+                    <div class="col-3 border-end border-secondary">
+                        <div class="fw-bold text-light fs-5">{{ total_stats.track_count or 0 }}</div>
+                        <div class="extra-small text-muted text-uppercase">Tracks</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="fw-bold text-warning fs-5">{{ total_stats.five_star_count or 0 }}</div>
+                        <div class="extra-small text-muted text-uppercase">5★ Songs</div>
                     </div>
                 </div>
             </div>
@@ -128,163 +52,96 @@
             <i class="bi bi-info-circle"></i> No artists found. Run a scan to populate the database.
         </div>
     {% else %}
-        <!-- Letter Navigation (mobile-friendly: horizontally scrollable with larger touch targets) -->
-        <div class="card mb-3">
-            <div class="card-body py-2">
-                <!-- Live search + health filter -->
-                <div class="d-flex flex-column flex-sm-row align-items-stretch gap-2 mb-2">
-                    <div class="input-group flex-grow-1">
-                        <span class="input-group-text"><i class="bi bi-search"></i></span>
-                        <input type="search" class="form-control" id="artistSearchInput"
-                               placeholder="Search {{ artists|length }} artists..." aria-label="Filter artists">
-                    </div>
-                    <div class="btn-group" role="group" aria-label="Artist health filter">
-                        <button type="button" class="btn btn-outline-secondary artist-health-filter active" data-filter="all">All</button>
-                        <button type="button" class="btn btn-outline-warning artist-health-filter" data-filter="issues">
-                            <i class="bi bi-exclamation-triangle"></i> Has Issues
-                        </button>
-                    </div>
-                </div>
-                <div class="d-flex align-items-center gap-1">
-                    <span class="text-muted small me-1 flex-shrink-0">Jump:</span>
-                    <div class="artist-jump-bar d-flex flex-nowrap overflow-auto gap-1 py-1" style="scrollbar-width: none; -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;">
-                        <button class="btn btn-outline-secondary flex-shrink-0 jump-btn" style="min-width:44px;min-height:44px;scroll-snap-align:start;" onclick="jumpToLetter('all')">All</button>
-                        {% for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' %}
-                        <button class="btn btn-outline-secondary flex-shrink-0 jump-btn" style="min-width:44px;min-height:44px;scroll-snap-align:start;" onclick="jumpToLetter('{{ letter }}')">{{ letter }}</button>
-                        {% endfor %}
-                        <button class="btn btn-outline-secondary flex-shrink-0 jump-btn" style="min-width:44px;min-height:44px;scroll-snap-align:start;" onclick="jumpToLetter('#')">#</button>
-                    </div>
+        <!-- Letter-grouped artist sections with Metro jump trigger tiles -->
+        {% for group in artist_groups %}
+        <div id="section-{{ 'num' if group.letter == '#' else group.letter }}" class="artist-letter-section">
+            <!-- Sticky section header: Metro jump tile + Scan Group -->
+            <div class="metro-section-header d-flex align-items-center justify-content-between py-2 px-1 border-bottom border-secondary mb-2">
+                <button type="button"
+                        class="btn btn-success fw-bold metro-jump-trigger d-flex align-items-center justify-content-center shadow-sm"
+                        onclick="openJumpPicker()"
+                        title="Tap to jump to letter">
+                    {{ group.letter }}
+                </button>
+                <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-success dropdown-toggle d-flex align-items-center gap-1" data-bs-toggle="dropdown" aria-expanded="false" title="Scan options for letter {{ group.letter }}">
+                        <i class="bi bi-lightning-charge-fill"></i> Scan Group
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end shadow">
+                        <li>
+                            <button class="dropdown-item" type="button" onclick="scanLetterArtists('{{ group.letter }}', 'changes')">
+                                <i class="bi bi-arrow-repeat me-1"></i> Scan (Changes Only)
+                            </button>
+                        </li>
+                        <li>
+                            <button class="dropdown-item" type="button" onclick="scanLetterArtists('{{ group.letter }}', 'forced')">
+                                <i class="bi bi-lightning-charge-fill me-1"></i> Force Re-scan
+                            </button>
+                        </li>
+                    </ul>
                 </div>
             </div>
-        </div>
-        
-        <div class="card">
-            <div class="list-group list-group-flush" id="artistsList">
-                {% set ns = namespace(current_letter='') %}
-                {% for artist in artists %}
-                {% set letter_key = artist.sort_letter if artist.sort_letter else '#' %}
-                
-                <!-- Letter Section Header -->
-                {% if letter_key != ns.current_letter %}
-                <div class="list-group-item bg-primary bg-opacity-10" id="letter-header-{{ letter_key }}" data-letter-header="{{ letter_key }}" style="scroll-margin-top: calc(var(--navbar-height, 3.5rem) + 0.5rem);">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0 fw-bold">{{ letter_key }}</h5>
-                        <div class="btn-group btn-group-sm" role="group" aria-label="Scan from letter {{ letter_key }}">
-                            <button class="btn btn-outline-primary" onclick="scanLetterArtists('{{ letter_key }}', 'changes')" title="Scan changes from letter {{ letter_key }}">
-                                <i class="bi bi-lightning"></i> Scan Group
-                            </button>
-                            <button type="button" class="btn btn-outline-primary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" aria-expanded="false" title="Scan options">
-                                <span class="visually-hidden">Toggle scan options</span>
-                            </button>
-                            <ul class="dropdown-menu dropdown-menu-end">
-                                <li>
-                                    <button class="dropdown-item" type="button" onclick="scanLetterArtists('{{ letter_key }}', 'changes')">
-                                        <i class="bi bi-arrow-repeat me-1"></i> Scan (Changes Only)
-                                    </button>
-                                </li>
-                                <li>
-                                    <button class="dropdown-item" type="button" onclick="scanLetterArtists('{{ letter_key }}', 'forced')">
-                                        <i class="bi bi-lightning-charge-fill me-1"></i> Force Re-scan
-                                    </button>
-                                </li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-                {% set ns.current_letter = letter_key %}
-                {% endif %}
-                
-                <!-- Artist Item -->
-                <div class="list-group-item" data-letter="{{ letter_key }}" data-artist="{{ artist.link_artist }}" data-artist-name="{{ artist.display_name|lower }}">
-                    <div class="d-flex justify-content-between align-items-center gap-2">
-                        <div class="flex-grow-1 min-width-0">
-                            <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="text-decoration-none fw-semibold">
-                                {{ artist.display_name }}
-                            </a>
-                            <span class="correction-badge-desktop"></span>
-                            <!-- Desktop-only stats inline -->
-                            <span class="d-none d-md-inline text-muted small ms-2">{{ artist.album_count or 0 }} albums</span>
-                            <span class="d-none d-md-inline text-muted small ms-1">• {{ artist.track_count or 0 }} tracks</span>
+
+            <div class="list-group list-group-flush mb-4">
+                {% for artist in group.artists %}
+                <div class="list-group-item bg-transparent border-secondary p-2 d-flex align-items-center justify-content-between gap-2 hover-bg-dark rounded">
+                    <div class="overflow-hidden min-w-0">
+                        <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="fw-bold text-success text-decoration-none fs-6 d-block text-truncate">
+                            {{ artist.display_name }}
+                        </a>
+                        <div class="extra-small text-muted d-flex align-items-center gap-2 mt-1 flex-wrap">
+                            <span>{{ artist.album_count or 0 }} albums</span>
+                            <span>•</span>
+                            <span>{{ artist.track_count or 0 }} tracks</span>
                             {% if artist.five_star_count and artist.five_star_count > 0 %}
-                                <span class="d-none d-md-inline ms-1"><span class="badge bg-warning text-dark" title="5 Star Songs"><i class="bi bi-star-fill me-1"></i>{{ artist.five_star_count }}</span></span>
+                            <span>•</span>
+                            <span class="badge bg-warning-subtle text-warning border border-warning-subtle extra-small">★ {{ artist.five_star_count }}</span>
                             {% endif %}
-                            <span class="d-none d-lg-inline text-muted small ms-2">
-                                {% if artist.last_updated %}
-                                    • {{ artist.last_updated|format_datetime }}
-                                {% else %}
-                                    • Never
-                                {% endif %}
-                            </span>
-                        </div>
-                        <div class="btn-group btn-group-sm flex-shrink-0 artist-row-actions" role="group">
-                            <span class="correction-action-btns"></span>
-                            <button class="btn btn-outline-info btn-expand-albums" type="button" data-artist="{{ artist.link_artist }}" title="Show albums">
-                                <i class="bi bi-collection"></i>
-                            </button>
                         </div>
                     </div>
-                    <!-- Mobile-only stats row -->
-                    <div class="d-md-none small text-muted mt-1">
-                        <span>{{ artist.album_count or 0 }} albums</span>
-                        <span class="ms-1">•</span>
-                        <span class="ms-1">{{ artist.track_count or 0 }} tracks</span>
-                        {% if artist.five_star_count and artist.five_star_count > 0 %}
-                            <span class="ms-1">•</span>
-                            <span class="ms-1"><span class="badge bg-warning text-dark"><i class="bi bi-star-fill me-1"></i>{{ artist.five_star_count }}</span></span>
-                        {% endif %}
-                        <span class="correction-badge-mobile"></span>
-                    </div>
-                    <!-- Expandable albums detail (nested div — valid HTML) -->
-                    <div class="albums-detail-row d-none mt-2" data-artist="{{ artist.link_artist }}">
-                        <div class="albums-detail-content p-3" style="background:var(--tertiary-bg);">
-                            <div class="albums-loading text-center small py-2 d-none">
-                                <span class="spinner-border spinner-border-sm me-2" role="status"></span>Loading albums…
-                            </div>
-                            <div class="albums-body"></div>
-                        </div>
+                    <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                        <a href="{{ url_for('ui.artist_corrections', name=artist.link_artist) }}" class="btn btn-sm btn-link text-muted p-1" title="Corrections &amp; Edit IDs">
+                            <i class="bi bi-tools"></i>
+                        </a>
+                        <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="btn btn-sm btn-link text-muted p-1" title="View Artist">
+                            <i class="bi bi-archive"></i>
+                        </a>
                     </div>
                 </div>
                 {% endfor %}
             </div>
-            <div class="text-center text-muted py-4 d-none" id="artistNoResults">
-                <i class="bi bi-inbox"></i>
-                <div class="mt-1">No artists match your search / filters.</div>
+        </div>
+        {% endfor %}
+
+        <!-- Windows Phone style Metro jump grid overlay -->
+        <div id="metroJumpOverlay" class="metro-jump-overlay d-none" onclick="closeJumpPicker(event)">
+            <div class="metro-jump-content shadow-lg" onclick="event.stopPropagation()">
+                <div class="d-flex align-items-center justify-content-between mb-3 border-bottom border-secondary pb-2">
+                    <h6 class="fw-bold text-light m-0 d-flex align-items-center gap-2">
+                        <i class="bi bi-grid-3x3-gap-fill text-success"></i>
+                        <span>Jump to Letter</span>
+                    </h6>
+                    <button type="button" class="btn-close btn-close-white extra-small" onclick="closeJumpPicker()" aria-label="Close"></button>
+                </div>
+
+                <!-- 4x7 tile grid: # + A-Z -->
+                <div class="metro-grid">
+                    <button type="button" class="metro-tile" onclick="jumpToLetter('#')">#</button>
+                    {% for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" %}
+                    {% set has_artists = char in existing_group_letters %}
+                    <button type="button"
+                            class="metro-tile {{ 'disabled' if not has_artists else '' }}"
+                            {% if has_artists %}onclick="jumpToLetter('{{ char }}')"{% else %}disabled{% endif %}>
+                        {{ char|lower }}
+                    </button>
+                    {% endfor %}
+                </div>
             </div>
         </div>
     {% endif %}
 </div>
 
 
-
-<!-- Add Artist Modal -->
-<div class="modal fade" id="addArtistModal" tabindex="-1" aria-labelledby="addArtistModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="addArtistModalLabel">
-                    <i class="bi bi-plus-circle"></i> Add Artist
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted">
-                    Enter an artist name to search releases and queue downloads from MusicBrainz/Discogs.
-                </p>
-                <div class="mb-3">
-                    <label for="artistNameInput" class="form-label">Artist Name</label>
-                    <input type="text" class="form-control" id="artistNameInput" placeholder="e.g. Pink Floyd" autofocus>
-                </div>
-                <div id="addArtistStatus" class="alert" style="display: none;"></div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-success" id="addArtistBtn" onclick="addArtist()">
-                    <i class="bi bi-search"></i> Search Releases
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
 
 <script src="{{ url_for('static', filename='js/artist_list.js') }}"></script>
 

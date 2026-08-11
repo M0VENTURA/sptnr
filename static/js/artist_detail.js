@@ -2609,6 +2609,7 @@ async function loadArtistFavouriteState(artistName) {
 function updateFavouriteButtonState(isFavourite) {
   // Updates every favourite button on the page (desktop header + mobile hero).
   document.querySelectorAll('[data-artist-fav-btn]').forEach(function (btn) {
+    if (btn.classList.contains('btn-link')) return; // borderless heart: fill via icon only
     if (isFavourite) {
       btn.classList.remove('btn-outline-danger');
       btn.classList.add('btn-danger');
@@ -2633,8 +2634,11 @@ function updateFavouriteButtonState(isFavourite) {
 
 async function toggleArtistFavourite(artistName) {
   try {
+    const icon = document.querySelector('[data-artist-fav-icon]');
     const btn = document.querySelector('[data-artist-fav-btn]');
-    const isFavourite = btn && btn.classList.contains('btn-danger');
+    const isFavourite = icon
+      ? icon.classList.contains('bi-heart-fill')
+      : !!(btn && btn.classList.contains('btn-danger'));
 
     if (isFavourite) {
       await fetch('/api/artist/favourite?artist=' + encodeURIComponent(artistName), { method: 'DELETE' });

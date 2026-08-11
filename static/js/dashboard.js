@@ -246,7 +246,7 @@ function renderRecentScans(scans) {
   const body = document.getElementById("recent-scans-body");
   if (!body) return;
   if (!scans || scans.length === 0) {
-    body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No recent scans yet</td></tr>';
+    body.innerHTML = '<div class="p-3 text-center text-muted small">No recent scan history.</div>';
     return;
   }
 
@@ -306,9 +306,10 @@ function renderRecentScans(scans) {
       const isRunning = group.status === "started";
       const statusIcon = isRunning ? "bi-hourglass-split text-primary" : group.status === "failed" ? "bi-x-circle-fill text-danger" : "bi-check-circle-fill text-success";
       const statusLabel = isRunning ? "running" : group.status === "failed" ? "failed" : "completed";
-      const rowClass = isRunning ? 'table-primary' : group.status === "failed" ? 'table-danger' : 'table-success bg-opacity-10';
       const spinnerHtml = isRunning ? '<span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span>' : '';
-      return `<tr class="${rowClass}"><td colspan="4" class="py-1 ps-3"><small class="${isRunning ? 'text-primary' : group.status === 'failed' ? 'text-danger' : 'text-success'}">${spinnerHtml}<i class="bi ${statusIcon} me-1"></i><strong>${typeName}</strong> ${statusLabel} — ${formatScanTimestamp(group.latest_timestamp)}</small></td><td></td></tr>`;
+      return `<div class="list-group-item bg-transparent p-2">
+        <small class="${isRunning ? 'text-primary' : group.status === 'failed' ? 'text-danger' : 'text-success'}">${spinnerHtml}<i class="bi ${statusIcon} me-1"></i><strong>${typeName}</strong> ${statusLabel} — ${formatScanTimestamp(group.latest_timestamp)}</small>
+      </div>`;
     }
 
     const artistUrl = `/artist/${encodeURIComponent(group.artist)}`;
@@ -346,12 +347,19 @@ function renderRecentScans(scans) {
       return `<span class="badge ${badgeClass}" title="${escapeHtml(st.timestamp || '')}">${typeMap[st.type] || escapeHtml(st.type)}</span>`;
     }).join(" ");
 
-    return `<tr ${group._inProgress ? 'class="table-active"' : ''}>
-      <td class="text-truncate" style="max-width: 120px;"><a href='${artistUrl}' class="text-success text-decoration-none fw-semibold">${escapeHtml(group.artist)}</a></td>
-      <td class="text-truncate" style="max-width: 140px;">${group.album && group.album !== "…" ? `<a href='${albumUrl}' class="text-light text-decoration-none">${escapeHtml(group.album)}</a>` : '<span class="text-muted fst-italic">…</span>'}</td>
-      <td><div class='d-flex flex-wrap gap-1'>${badges}</div></td>
-      <td class='d-none d-sm-table-cell text-muted text-end'><small>${group._inProgress ? "now" : formatScanTimestamp(group.latest_timestamp)}</small></td>
-    </tr>`;
+    const albumHtml = group.album && group.album !== "…"
+      ? `<span class="text-muted mx-1">•</span><a href='${albumUrl}' class="text-light text-decoration-none">${escapeHtml(group.album)}</a>`
+      : '';
+
+    return `<div class="list-group-item bg-transparent p-2 d-flex flex-column gap-1">
+      <div class="d-flex align-items-center justify-content-between gap-2 overflow-hidden">
+        <div class="text-truncate small min-w-0">
+          <a href='${artistUrl}' class="text-success text-decoration-none fw-semibold">${escapeHtml(group.artist)}</a>${albumHtml}
+        </div>
+        <span class="text-muted small flex-shrink-0">${group._inProgress ? "now" : formatScanTimestamp(group.latest_timestamp)}</span>
+      </div>
+      <div class="d-flex align-items-center gap-1 flex-wrap">${badges}</div>
+    </div>`;
   }).join("");
 }
 

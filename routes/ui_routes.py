@@ -514,9 +514,24 @@ async def artists():
             "five_star_count": 0,
         }
 
+    # Group artists by first-letter so the template can render Metro-style
+    # jump sections (one sticky header + row list per letter).
+    artist_groups: list[dict[str, Any]] = []
+    current_letter: str | None = None
+    for artist in artists_data:
+        letter = artist["sort_letter"]
+        if letter != current_letter:
+            current_letter = letter
+            artist_groups.append({"letter": letter, "artists": [artist]})
+        else:
+            artist_groups[-1]["artists"].append(artist)
+
     return await render_template(
         "pages/artist_list.html",
         artists=artists_data,
+        artist_groups=artist_groups,
+        existing_group_letters={g["letter"] for g in artist_groups},
+        total_artists=len(artists_data),
         total_stats=total_stats,
     )
 

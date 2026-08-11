@@ -177,31 +177,64 @@ def api_upcoming_releases():
         except Exception:
             pass
 
-            # Hide releases whose (artist, album) already exists in the local
-            # library — normalized comparison (case + punctuation-insensitive)
-            # so "Tanzneid" vs "TANZNEID" never slips through as a new release.
-            if hide_in_library:
-                _lib_clause = """NOT EXISTS (
-                    SELECT 1 FROM tracks t
-                    WHERE LOWER(REGEXP_REPLACE(
-                              COALESCE(NULLIF(t.album_artist, ''), t.artist),
-                              '[^a-zA-Z0-9]', '', 'g'))
-                          = LOWER(REGEXP_REPLACE(upcoming_releases.artist_name,
-                              '[^a-zA-Z0-9]', '', 'g'))
-                      AND LOWER(REGEXP_REPLACE(t.album, '[^a-zA-Z0-9]', '', 'g'))
-                          = LOWER(REGEXP_REPLACE(upcoming_releases.album_name,
-                              '[^a-zA-Z0-9]', '', 'g'))
-                )"""
-                where_sql = (
-                    f" WHERE {_lib_clause}"
-                    if not where_sql
-                    else where_sql + f" AND {_lib_clause}"
-                )
-                params["win7_start"] = _w_start
-                params["win7_end"] = _w_end
+        # Snapshot the params BEFORE the tight window is applied: the count
+        # query below intentionally excludes the ±N-day window so the
+        # dashboard's "View All N" link reflects the full manager view.
+        count_params = dict(params)
 
+        # Optional tight window (days): dashboard snapshot uses ±7 so only
+        # releases from last week → next week are returned.  Undated (TBA)
+        # rows stay visible, matching the rolling-window behaviour above.
+        if window_days > 0:
+            _today = datetime.now().date()
+            _tight_clause = (
+                " (release_date IS NULL OR release_date BETWEEN :win7_start AND :win7_end)"
+            )
+            where_sql = (
+                f" WHERE {_tight_clause}"
+                if not where_sql
+                else where_sql + f" AND {_tight_clause}"
+            )
+            params["win7_start"] = (_today - timedelta(days=window_days)).isoformat()
+            params["win7_end"] = (_today + timedelta(days=window_days)).isoformat()
+
+        # Hide releases whose (artist, album) already exists in the local
+        # library — normalized comparison (case + punctuation-insensitive)
+        # so "Tanzneid" vs "TANZNEID" never slips through as a new release.
+        total_where_sql = where_sql
+        if hide_in_library:
+            _lib_clause = """NOT EXISTS (
+                SELECT 1 FROM tracks t
+                WHERE LOWER(REGEXP_REPLACE(
+                          COALESCE(NULLIF(t.album_artist, ''), t.artist),
+                          '[^a-zA-Z0-9]', '', 'g'))
+                      = LOWER(REGEXP_REPLACE(upcoming_releases.artist_name,
+                          '[^a-zA-Z0-9]', '', 'g'))
+                  AND LOWER(REGEXP_REPLACE(t.album, '[^a-zA-Z0-9]', '', 'g'))
+                      = LOWER(REGEXP_REPLACE(upcoming_releases.album_name,
+                          '[^a-zA-Z0-9]', '', 'g'))
+            )"""
+            where_sql = (
+                f" WHERE {_lib_clause}"
+                if not where_sql
+                else where_sql + f" AND {_lib_clause}"
+            )
+            total_where_sql = (
+                f" WHERE {_lib_clause}"
+                if not total_where_sql
+                else total_where_sql + f" AND {_lib_clause}"
+            )
+
+        with db_session() as session:
+            total = session.execute(
+                text(f"SELECT COUNT(*) FROM upcoming_releases{total_where_sql}"),
+                count_params,
+            ).scalar() or 0
             result = session.execute(
-                text(f"SELECT * FROM upcoming_releases{where_sql} ORDER BY release_date ASC NULLS LAST, id ASC LIMIT :limit OFFSET :offset"),
+                text(
+                    f"SELECT * FROM upcoming_releases{where_sql} "
+                    "ORDER BY release_date ASC NULLS LAST, id ASC LIMIT :limit OFFSET :offset"
+                ),
                 {**params, "limit": limit + 1, "offset": (page - 1) * limit},
             )
             rows = result.fetchall()
