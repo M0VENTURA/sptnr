@@ -60,6 +60,22 @@ def test_rowspan_dates_are_carried_forward():
     assert by_artist["Rawayana"]["release_date"] == "2026-01-01"
 
 
+def test_rowspan_with_glued_month_day_cell():
+    """The real List of 2026 albums page writes dates as 'January1' (no space)
+    and spans them over multiple rows.  The carried date must be prepended so
+    the second row's artist/album are not shifted into the date column."""
+    html = _rows_html(
+        _tr('<td rowspan="2">January1</td><td>Joost Klein</td><td>Kleinkunst</td><td>Gabberpop</td>'),
+        _tr("<td>Rawayana</td><td>¿Dónde es el after?</td><td></td>"),
+    )
+    res = _parse(html, ["day", "artist", "album"])
+    by_artist = {r["artist_name"]: r for r in res}
+    assert by_artist["Joost Klein"]["album_name"] == "Kleinkunst"
+    assert by_artist["Joost Klein"]["release_date"] == "2026-01-01"
+    assert by_artist["Rawayana"]["album_name"] == "¿Dónde es el after?"
+    assert by_artist["Rawayana"]["release_date"] == "2026-01-01"
+
+
 def test_tba_row_is_kept_with_null_date():
     """A TBA day cell must not shift the columns or drop the release."""
     html = _rows_html(
