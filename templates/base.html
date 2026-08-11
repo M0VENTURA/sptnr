@@ -211,9 +211,9 @@
     </div>
   </div>
 
-  <script src="{{ url_for('static', filename='js/player.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/musicbrainz-folder-groups.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  <script src="{{ versioned_static('js/player.js') }}"></script>
+  <script src="{{ versioned_static('js/musicbrainz-folder-groups.js') }}"></script>
+  <script src="{{ versioned_static('js/main.js') }}"></script>
   <script src="{{ versioned_static('js/unified_search.js') }}"></script>
 
   {% block scripts %}{% endblock %}

@@ -484,6 +484,42 @@ window.escapeHtml = function(text) {
   return div.innerHTML;
 };
 
+// Global toast helper — works on every page without page-specific markup.
+// Pages that define their own showToast (config, bookmarks, discover, ...)
+// keep it — their scripts run later and shadow this one; every other page
+// finally gets working toasts instead of silent no-ops.
+window.showToast = function(title, message, type) {
+  var wrap = document.getElementById('popularrToastWrap');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'popularrToastWrap';
+    wrap.style.cssText = 'position:fixed;bottom:1rem;left:1rem;z-index:2200;' +
+      'display:flex;flex-direction:column;gap:0.5rem;max-width:min(90vw,420px);';
+    document.body.appendChild(wrap);
+  }
+  var el = document.createElement('div');
+  var kind = type === 'success' ? 'bg-success'
+    : (type === 'error' || type === 'danger') ? 'bg-danger'
+    : type === 'warning' ? 'bg-warning text-dark' : 'bg-dark';
+  var icon = type === 'success' ? 'bi-check-circle-fill'
+    : (type === 'error' || type === 'danger') ? 'bi-x-circle-fill'
+    : type === 'warning' ? 'bi-exclamation-triangle-fill' : 'bi-info-circle-fill';
+  el.className = 'shadow-sm ' + kind;
+  el.style.cssText = 'padding:0.65rem 1rem;border-radius:0.5rem;font-size:0.85rem;' +
+    'display:flex;align-items:center;gap:0.5rem;opacity:0;transition:opacity 0.2s ease;';
+  el.innerHTML = '<i class="bi ' + icon + '"></i><span></span>';
+  // textContent — user-supplied titles/messages must never be injected as HTML.
+  el.querySelector('span').textContent = title && message
+    ? title + ': ' + message
+    : (message || title || '');
+  wrap.appendChild(el);
+  requestAnimationFrame(function () { el.style.opacity = '1'; });
+  setTimeout(function () {
+    el.style.opacity = '0';
+    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 250);
+  }, 4000);
+};
+
 window.addBookmark = function(type, name, artist, album, trackId) {
   fetch('/api/bookmarks', {
     method: 'POST',

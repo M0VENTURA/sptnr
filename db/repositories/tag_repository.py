@@ -16,6 +16,19 @@ from sqlalchemy import text
 from db.engine import db_session
 from services.metadata.tag_constants import ALBUM_LEVEL_FIELDS, EDITABLE_FIELDS, JSON_ARRAY_FIELDS
 
+# The new tracks schema keeps only a subset of the legacy tag columns
+# (registry is the single source of truth, auto-ensured at boot).  Tag
+# queries must never SELECT/UPDATE columns that do not exist — filtering
+# here makes every tag read/write tolerate the real schema.
+from db.schema import COLUMN_REGISTRY
+
+_TRACK_COLUMNS = frozenset({"id"}) | frozenset(COLUMN_REGISTRY["tracks"])
+
+
+def _existing_fields(fields: set[str]) -> list[str]:
+    """Keep only tag fields that physically exist on the tracks table."""
+    return sorted(f for f in fields if f in _TRACK_COLUMNS)
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,7 +60,9 @@ def _encode_updates(tag_updates: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_track_tags(track_id: str) -> dict[str, Any]:
-    fields = sorted(EDITABLE_FIELDS)
+    fields = _existing_fields(EDITABLE_FIELDS)
+    if not fields:
+        return {}
     try:
         with db_session() as session:
             result = session.execute(
@@ -64,7 +79,9 @@ def get_track_tags(track_id: str) -> dict[str, Any]:
 
 
 def get_album_tags(album: str, artist: str) -> dict[str, Any]:
-    fields = sorted(ALBUM_LEVEL_FIELDS)
+    fields = _existing_fields(ALBUM_LEVEL_FIELDS)
+    if not fields:
+        return {}
     try:
         with db_session() as session:
             result = session.execute(
@@ -87,20 +104,15 @@ def check_field_conflicts(album: str, artist: str) -> dict[str, Any]:
     try:
         with db_session() as session:
             result = session.execute(
-                text("SELECT DISTINCT album_artist, albumartist FROM tracks WHERE album = :album AND artist = :artist"),
+                text("SELECT DISTINCT album_artist FROM tracks WHERE album = :album AND artist = :artist"),
                 {"album": album, "artist": artist},
             )
             rows = result.fetchall() or []
             conflicts: dict[str, Any] = {}
             album_artists = {str(row[0]) for row in rows if row[0]}
-            albumartists = {str(row[1]) for row in rows if row[1]}
         if len(album_artists) > 1:
             conflicts["album_artist"] = sorted(album_artists)
-        if len(albumartists) > 1:
-            conflicts["albumartist"] = sorted(albumartists)
-        if album_artists and albumartists and album_artists != albumartists:
-            conflicts["album_artist_vs_albumartist"] = {"album_artist": sorted(album_artists), "albumartist": sorted(albumartists)}
-        for field in ["label", "releasecountry", "releasetype"]:
+        for field in _existing_fields({"label", "releasecountry", "releasetype"}):
             result = session.execute(
                 text(f"SELECT DISTINCT {field} FROM tracks WHERE album = :album AND artist = :artist AND {field} IS NOT NULL AND {field} <> ''"),
                 {"album": album, "artist": artist},
@@ -118,6 +130,11 @@ def update_track_tags(track_id: str, tag_updates: dict[str, Any]) -> bool:
     validated = _encode_updates(tag_updates)
     if not validated:
         return False
+    # Never UPDATE columns that do not exist on the real tracks table — an
+    # unknown field would abort the whole statement (UndefinedColumn).
+    validated = {k: v for k, v in validated.items() if k in _TRACK_COLUMNS}
+    if not validated:
+        return False
     try:
         with db_session() as session:
             set_clause = ', '.join([f"{field} = :{field}" for field in validated])
@@ -131,6 +148,10 @@ def update_track_tags(track_id: str, tag_updates: dict[str, Any]) -> bool:
 
 def update_album_tags(album: str, artist: str, tag_updates: dict[str, Any], selected_tracks: list[str] | None = None) -> int:
     validated = _encode_updates(tag_updates)
+    if not validated:
+        return 0
+    # Never UPDATE columns that do not exist on the real tracks table.
+    validated = {k: v for k, v in validated.items() if k in _TRACK_COLUMNS}
     if not validated:
         return 0
     set_clause = ', '.join([f"{field} = :{field}" for field in validated])

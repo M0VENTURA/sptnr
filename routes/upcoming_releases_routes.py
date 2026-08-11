@@ -177,9 +177,11 @@ def api_upcoming_releases():
         except Exception:
             pass
 
-        # Snapshot the params BEFORE the tight window is applied: the count
-        # query below intentionally excludes the ±N-day window so the
-        # dashboard's "View All N" link reflects the full manager view.
+        # Snapshot the pre-window SQL + params for the count query: the count
+        # intentionally excludes the ±N-day tight window so the dashboard's
+        # "View All N" link reflects the full manager view (and so the count
+        # never references win7_* placeholders the params dict lacks).
+        total_where_sql = where_sql
         count_params = dict(params)
 
         # Optional tight window (days): dashboard snapshot uses ±7 so only
@@ -201,7 +203,6 @@ def api_upcoming_releases():
         # Hide releases whose (artist, album) already exists in the local
         # library — normalized comparison (case + punctuation-insensitive)
         # so "Tanzneid" vs "TANZNEID" never slips through as a new release.
-        total_where_sql = where_sql
         if hide_in_library:
             _lib_clause = """NOT EXISTS (
                 SELECT 1 FROM tracks t

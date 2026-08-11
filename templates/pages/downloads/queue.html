@@ -78,6 +78,7 @@
   };
 </script>
 
+<link rel="stylesheet" href="{{ versioned_static('css/downloads.css') }}">
 <script src="{{ url_for('static', filename='js/downloads.js') }}"></script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 
@@ -3467,12 +3468,6 @@ async function cleanupCopiedSources() {
     console.error('Error cleaning copied sources:', error);
     alert('❌ Network error: ' + error.message);
   }
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 // ===== Organize Group Modal Functions =====

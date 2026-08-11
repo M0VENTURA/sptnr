@@ -389,7 +389,9 @@ option:checked { background-color: var(--spotify-green); color: #000; }
 .badge-success { background-color: rgba(29,185,84,0.25); color: var(--spotify-green); border-color: var(--spotify-green); }
 .bg-success { background-color: #1db954 !important; color: #000 !important; }
 .bg-danger { background-color: #e74c3c !important; color: #fff !important; }
-.bg-info { background-color: #3498db !important; color: #fff !important; }
+/* Note: .bg-info deliberately keeps NO color override so Bootstrap's
+   text-* utilities (e.g. text-dark on bg-info chips) still win. */
+.bg-info { background-color: #3498db !important; }
 
 /* Modals */
 .modal-content { background-color: var(--secondary-bg); border: 1px solid var(--border-color); }
