@@ -1,21 +1,12 @@
-"""DB-backed popularity adjustment helpers.
+"""Legacy popularity adjustment helpers.
 
-Handles artist-context and album-level popularity adjustments.
-These functions modify raw popularity scores based on statistical context.
+The artist-context (median+MAD) and album-deviation adjustments previously
+defined here are superseded by the native z-score path in ``popularity_math``
+and ``finalise_stage``.  The module keeps only the raw-blend constant, which
+tests still import (``ARTIST_ADJUSTMENT_RAW_BLEND``).
 """
 
 from __future__ import annotations
-
-import logging
-from statistics import median
-from typing import Optional
-
-from sqlalchemy import text
-from db.engine import db_session
-from db.utils import get_db_connection, row_get
-from services.popularity.popularity_math import zscore_to_popularity
-
-logger = logging.getLogger(__name__)
 
 # The artist-context re-map is damped by blending it back with the raw
 # popularity.  Legacy behaviour replaced the score entirely with

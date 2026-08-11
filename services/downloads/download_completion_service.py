@@ -92,6 +92,13 @@ def _db_now_naive() -> datetime:
         with db_session() as session:
             value = session.execute(text("SELECT CURRENT_TIMESTAMP")).scalar()
         if value is not None:
+            if isinstance(value, str):
+                # SQLite returns CURRENT_TIMESTAMP as a string — parse it so
+                # callers always receive a datetime (test_db_now_naive_parses_sqlite_string).
+                try:
+                    value = datetime.fromisoformat(value)
+                except ValueError:
+                    return value
             if getattr(value, "tzinfo", None) is not None:
                 # psycopg2 returns timestamptz in the session timezone; dropping
                 # the offset keeps the same wall-clock that was stored in the

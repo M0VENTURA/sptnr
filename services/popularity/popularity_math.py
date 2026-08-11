@@ -23,6 +23,34 @@ ALBUM_RELATIVE_MIN_SPREAD = 8.0
 # is meaningful.  Below this the raw score is kept unchanged (a 1-2 track
 # "album" has no distribution to compare against).
 ALBUM_RELATIVE_MIN_ALBUM_TRACKS = 3
+
+
+# ── Shared fuzzy string similarity ──────────────────────────────────────────
+try:  # C-speed token-set matching; difflib fallback keeps CI working
+    from rapidfuzz import fuzz as _fuzz  # type: ignore[import-untyped]
+    _HAVE_RAPIDFUZZ = True
+    _fuzz = _fuzz
+except Exception:
+    _HAVE_RAPIDFUZZ = False
+    _fuzz = None
+from difflib import SequenceMatcher as _SequenceMatcher
+
+
+def fuzzy_match_score(str1: str, str2: str) -> float:
+    """Token-aware string similarity on a 0-1 scale (shared helper).
+
+    RapidFuzz ``token_set_ratio`` (C-speed, order- and word-subset
+    insensitive) with a ``difflib`` fallback so matching works without the
+    optional dependency.  Domain-specific matchers (e.g. Discogs' split-title
+    escalation) should layer their own logic on top of this.
+    """
+    if not str1 or not str2:
+        return 0.0
+    if str1 == str2:
+        return 1.0
+    if _HAVE_RAPIDFUZZ:
+        return _fuzz.token_set_ratio(str1, str2) / 100.0
+    return _SequenceMatcher(None, str1, str2).ratio()
 # Adaptive spread floor for low-volatility albums: the absolute
 # ``ALBUM_RELATIVE_MIN_SPREAD`` is scale-blind, so a UNIFORM high-scoring
 # album (every track ~90, MAD ≈ 0) still amplifies tiny score gaps into large

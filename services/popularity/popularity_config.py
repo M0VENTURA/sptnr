@@ -44,9 +44,6 @@ def resolve_weights(config: dict | None = None) -> Tuple[float, float, float]:
     return lastfm / total, listenbrainz / total, age / total
 
 
-LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT = resolve_weights()
-
-
 def get_zscore_thresholds(config: dict | None = None) -> dict:
     """Load single-detection z-score confidence boundaries from config.
 

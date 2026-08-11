@@ -158,13 +158,6 @@ def is_non_canonical_version_strict(title: str) -> bool:
     return any(re.search(p, t) for p in markers)
 
 
-def duration_matches_strict(d1: float | None, d2: float | None) -> bool:
-    """Duration must match within ±2 seconds (Stage 6)."""
-    if d1 is None or d2 is None:
-        return True
-    return abs(d1 - d2) <= 2.0
-
-
 def has_single_or_radio_edit_marker(title: str) -> bool:
     """Return True when title contains canonical single/radio edit markers."""
     return bool(re.search(r'\b(?:radio\s+(?:edit|mix|version)|single\s+(?:version|edit|mix))\b',

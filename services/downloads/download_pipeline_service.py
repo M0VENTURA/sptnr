@@ -427,8 +427,44 @@ def _score_result(
     elif _normalise(expected_artist) in _normalise(filename):
         score += 20  # partial match
 
+    # ── Artist evidence gate ───────────────────────────────────────────────
+    # A filename that merely contains a word from the expected TITLE (e.g.
+    # "...Into the Darkness..." for the track "Darkness") can otherwise score
+    # as a full title match for a DIFFERENT artist's track (Rush vs Ignea),
+    # grabbing the wrong download.  A real artist name must be evidenced in
+    # the candidate before it may qualify — otherwise the score is capped
+    # below the qualification threshold.
+    artist_evidenced = True  # generic/unknown artists skip the gate
+    if expected_artist and expected_artist.lower() not in {
+        "unknown", "unidentified", "unidentified artist", "various", "various artists", "-",
+    }:
+        from helpers.config_helpers import _FEAT_SUFFIX_RE
+        gate_artist = _FEAT_SUFFIX_RE.sub("", expected_artist).strip()
+        filename_tokens = set(re.findall(r"[a-z0-9]+", _normalise(filename)))
+        significant_words = [
+            w for w in re.findall(r"[a-z0-9]+", _normalise(gate_artist))
+            if len(w) >= 4
+        ]
+        artist_evidenced = (
+            art_score >= 0.6
+            or (significant_words and any(w in filename_tokens for w in significant_words))
+        )
+    if not artist_evidenced:
+        score = min(score, 20.0)  # below min_score (30) — never qualifies
+
     # Title match
     title_score = _similarity(str(parts.get("title") or ""), expected_title)
+
+    # Title subset guard: token_set_ratio treats a short expected title as a
+    # perfect subset of a long multi-part candidate title ("Darkness" ⊂
+    # "Into the Darkness + Under the Shadow + ...").  When the candidate
+    # title is far longer, the subset match is weak evidence — downgrade it
+    # so it can't carry a wrong grab on its own.
+    exp_word_count = len(re.findall(r"[a-z0-9]+", _normalise(expected_title)))
+    cand_title_words = re.findall(r"[a-z0-9]+", _normalise(str(parts.get("title") or "")))
+    if title_score >= 0.95 and cand_title_words and len(cand_title_words) > 2 * max(1, exp_word_count):
+        title_score = 0.6
+
     if title_score > 0.7:
         score += 25 * min(1.0, title_score)
     elif _normalise(expected_title) in _normalise(filename):

@@ -134,18 +134,6 @@ def calculate_artist_stats(conn, artist: str) -> tuple[float, float, list[float]
     return avg, sd, values
 
 
-def calculate_artist_popularity_stats(artist_name: str, conn) -> dict:
-    avg, sd, values = calculate_artist_stats(conn, artist_name)
-
-    return {
-        "mean": avg,
-        "median": median(values) if values else 0.0,
-        "stdev": sd,
-        "count": len(values),
-        "max": max(values) if values else 0.0,
-    }
-
-
 def calculate_album_listener_stats(conn, artist: str, album: str) -> tuple[list[float], list[float]]:
     """Return ``(lastfm_listeners[], listenbrainz_listens[])`` for an album.
 
@@ -215,50 +203,3 @@ def calculate_album_listener_stats(conn, artist: str, album: str) -> tuple[list[
                 lb_listens.append(_lb)
     return lf_listeners, lb_listens
 
-
-def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict | None = None):
-    """Return set of track IDs to exclude from popularity statistics."""
-    excluded = set()
-
-    for track in tracks_with_scores or []:
-        if should_exclude_track_from_stats(
-            track.get("title", ""),
-            track.get("album", ""),
-            int(track.get("is_live") or 0),
-            int(track.get("album_context_live") or 0),
-        ):
-            excluded.add(track.get("id"))
-
-    for _, variants in (alternate_takes_map or {}).items():
-        for variant in variants[1:]:
-            if isinstance(variant, dict):
-                excluded.add(variant.get("id"))
-
-    return excluded
-
-
-def is_top_artist_catalog_score(cursor, canonical_artist, popularity_score, threshold=0.25):
-    """Return True when a score is in the top *threshold* fraction of the artist's catalog."""
-    if not canonical_artist or popularity_score <= 0:
-        return False
-
-    cursor.execute(
-        """
-        SELECT COUNT(*),
-               SUM(CASE WHEN final_score > %s THEN 1 ELSE 0 END)
-        FROM tracks
-        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-          AND final_score > 0
-        """,
-        (popularity_score, canonical_artist),
-    )
-
-    row = cursor.fetchone()
-
-    if not row:
-        return False
-
-    total = row[0] or 0
-    above = row[1] or 0
-
-    return bool(total and (above / total) <= threshold)

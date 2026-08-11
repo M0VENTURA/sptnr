@@ -121,7 +121,6 @@ class TestTrackStageLiveTitleWiring:
         monkeypatch.setattr("services.enrichment.musicbrainz_service.MusicBrainzService", FakeMB)
         monkeypatch.setattr(ts, "MusicBrainzService", FakeMB)
         monkeypatch.setattr(ts, "ListenBrainzClient", FakeLB)
-        monkeypatch.setattr(ts, "MusicBrainzHttpClient", lambda *a, **k: None)
         monkeypatch.setattr(ts, "LastFmClient", lambda *a, **k: None)
         monkeypatch.setattr(ts, "get_aggregated_lastfm_popularity", lambda *a, **k: {})
         monkeypatch.setattr(ts, "get_search_aggregated_lastfm_popularity", lambda *a, **k: {})

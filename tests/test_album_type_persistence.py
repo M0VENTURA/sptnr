@@ -195,7 +195,6 @@ class TestSinglesOnlyPass:
 
         # Patch the expensive API clients so no network/DB is touched, and
         # record which sections actually ran by wrapping detection entry points.
-        monkeypatch.setattr(ts, "MusicBrainzHttpClient", lambda *a, **k: object())
         monkeypatch.setattr(ts, "LastFmClient", lambda *a, **k: object())
         monkeypatch.setattr(ts, "ListenBrainzClient", lambda *a, **k: object())
         monkeypatch.setattr(ts, "MusicBrainzService", lambda *a, **k: object())
@@ -304,7 +303,6 @@ class TestSinglesPassPopularityGating:
         import services.popularity.stages.track_stage as ts
 
         calls = {"fetch_popularity": 0, "singles": 0}
-        monkeypatch.setattr(ts, "MusicBrainzHttpClient", lambda *a, **k: object())
         monkeypatch.setattr(ts, "LastFmClient", lambda *a, **k: object())
         monkeypatch.setattr(ts, "ListenBrainzClient", lambda *a, **k: object())
         monkeypatch.setattr(ts, "MusicBrainzService", lambda *a, **k: object())

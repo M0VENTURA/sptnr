@@ -48,19 +48,9 @@ logger = logging.getLogger(__name__)
 
 
 def _similarity(a: str, b: str) -> float:
-    """String similarity on a 0-1 scale.
-
-    RapidFuzz ``token_set_ratio`` (C-speed, order- and word-subset
-    insensitive) with a ``difflib`` fallback so matching keeps working
-    without the optional dependency.
-    """
-    if not a or not b:
-        return 0.0
-    if a == b:
-        return 1.0
-    if _HAVE_RAPIDFUZZ:
-        return _rapidfuzz_fuzz.token_set_ratio(a, b) / 100.0
-    return _difflib.SequenceMatcher(None, a, b).ratio()
+    """String similarity on a 0-1 scale (shared ``fuzzy_match_score``)."""
+    from services.popularity.popularity_math import fuzzy_match_score
+    return fuzzy_match_score(a, b)
 
 
 def _mbid_similarity(a: str, b: str) -> float:

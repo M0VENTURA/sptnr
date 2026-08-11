@@ -552,42 +552,6 @@ def get_queue_matching_config_legacy() -> dict:
     }
 
 # -----------------------------------------------------------------------------
-# Popularity Scoring Configuration
-# -----------------------------------------------------------------------------
-
-def get_popularity_weights() -> dict[str, float]:
-    """Get popularity scoring weights from config.
-    
-    Returns:
-        Dict with keys 'lastfm', 'listenbrainz', 'age' with float values that sum to 1.0.
-        
-    Default Values:
-        - lastfm: 0.55 (55% weight)
-        - listenbrainz: 0.35 (35% weight)
-        - age: 0.10 (10% weight)
-    """
-    cfg = get_config()
-    weights = cfg.get("popularity", {}).get("weights", {})
-    
-    defaults = {
-        "lastfm": 0.55,
-        "listenbrainz": 0.35,
-        "age": 0.10,
-    }
-    
-    result = {
-        key: float(weights.get(key, default))
-        for key, default in defaults.items()
-    }
-    
-    # Normalize to sum to 1.0
-    total = sum(result.values())
-    if total > 0:
-        result = {k: v / total for k, v in result.items()}
-    
-    return result
-
-
 def get_standout_config() -> dict[str, Any]:
     """Get standout track detection and star rating configuration.
     

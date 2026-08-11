@@ -44,6 +44,18 @@ class QueueItem(TypedDict, total=False):
 
 _CLEANUP_SIBLING_MIN_AGE_SECONDS: int = 30
 
+# Re-scanning /downloads on EVERY worker cycle re-adds files the user has
+# explicitly removed from the queue (the files still exist on disk) and
+# spams "Duplicate skipped" every cycle.  Discovery is rate-limited to once
+# per interval (legacy auto-discovery behaviour); the manual "Discover
+# Files" action and the downloads route still trigger it instantly.
+# Overridable via DISCOVERY_INTERVAL_SECONDS.
+_CLEANUP_DISCOVERY_MIN_INTERVAL_SECONDS: int = int(
+    os.getenv("DISCOVERY_INTERVAL_SECONDS", "300")
+)
+
+_discovery_last_run_at: float = 0.0
+
 
 # ==============================================================================
 # PUBLIC BUSINESS LOGIC
@@ -51,8 +63,17 @@ _CLEANUP_SIBLING_MIN_AGE_SECONDS: int = 30
 
 def cleanup_stale_downloads() -> dict[str, int]:
     """Clean up stale/orphaned download entries."""
-    from services.downloads.download_scan_service import discover_files
-    result = discover_files()
+    global _discovery_last_run_at
+
+    now = time.time()
+    if now - _discovery_last_run_at >= _CLEANUP_DISCOVERY_MIN_INTERVAL_SECONDS:
+        _discovery_last_run_at = now
+        from services.downloads.download_scan_service import discover_files
+        result = discover_files()
+    else:
+        # Inside the rate-limit window: skip the folder re-scan so files the
+        # user removed from the queue are not re-added every cycle.
+        result = []
     # Legacy parity: download folders whose files were all imported into the
     # library (queue rows matched/moved) are stale — delete them so the
     # monitor page's folder lists stay clean.

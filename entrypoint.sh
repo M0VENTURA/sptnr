@@ -223,7 +223,11 @@ start_web_app() {
     }
     start_log_rotation
 
-    exec hypercorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class asyncio             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile "${_error_log}"             --log-level "${SPTNR_LOG_LEVEL:-info}"             "app:app"
+    # Default log level is WARNING so error.log carries only real server
+    # problems (bind failures, worker crashes), not the INFO "Running on ..."
+    # banner that Hypercorn writes to its error stream on every start/restart.
+    # Set SPTNR_LOG_LEVEL=info to restore full hypercorn output (incl. access).
+    exec hypercorn             --bind "${SPTNR_GUNICORN_BIND:-0.0.0.0:5000}"             --workers "${SPTNR_GUNICORN_WORKERS:-4}"             --worker-class asyncio             --keep-alive "${SPTNR_GUNICORN_KEEP_ALIVE:-5}"             --access-logfile "${SPTNR_ACCESS_LOG:-/config/access.log}"             --error-logfile "${_error_log}"             --log-level "${SPTNR_LOG_LEVEL:-warning}"             "app:app"
 }
 
 main() {

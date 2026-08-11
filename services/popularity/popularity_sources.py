@@ -38,18 +38,9 @@ _lastfm_artist_catalog_cache: dict[str, list[dict]] = {}
 
 
 def _token_similarity(a: str, b: str) -> float:
-    """Title similarity on a 0-1 scale.
-
-    RapidFuzz ``token_set_ratio`` (C-speed, order- and suffix-insensitive)
-    with a ``difflib`` fallback so matching works without the optional dep.
-    """
-    if not a or not b:
-        return 0.0
-    if a == b:
-        return 1.0
-    if _HAVE_RAPIDFUZZ:
-        return _fuzz.token_set_ratio(a, b) / 100.0
-    return _difflib_matcher(None, a, b).ratio()
+    """Title similarity on a 0-1 scale (shared ``fuzzy_match_score``)."""
+    from services.popularity.popularity_math import fuzzy_match_score
+    return fuzzy_match_score(a, b)
 
 
 _FEATURED_ARTIST_RE = re.compile(

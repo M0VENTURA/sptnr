@@ -4,8 +4,11 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <div class="mb-4">
+  <div class="mb-4 d-flex align-items-start justify-content-between gap-2 flex-wrap">
     {% include 'components/_downloads_header.html' %}
+    <button type="button" class="btn btn-sm btn-outline-success flex-shrink-0" onclick="jumpToUpcomingReleases()" title="Jump to the upcoming releases list">
+      <i class="bi bi-arrow-down-circle"></i> <span class="d-none d-sm-inline">Upcoming Releases</span>
+    </button>
   </div>
 
   <ul class="nav nav-tabs mb-4" id="searchTabs" role="tablist">
@@ -56,6 +59,7 @@
 {% include 'components/modals/_track_edit.html' %}
 {% include 'components/modals/_organize_group.html' %}
 {% include 'components/modals/_slskd_results.html' %}
+{% include 'components/modals/_manual_match.html' %}
 
 {% endblock %}
 
@@ -1093,7 +1097,7 @@ function refreshMbDownloads() {
 // Queue status display config — injected from queue_status_constants.STATUS_DISPLAY_CONFIG
 // by Flask context processor.  Use this single source of truth instead of
 // hardcoded if/else chains scattered across the JS.
-const queueStatusConfig = {{ queue_status_config | tojson }};
+const queueStatusConfig = window.AppConfig.queueStatusConfig || {};
 
 /**
  * Return a Bootstrap badge HTML string for the given queue status.
@@ -2264,6 +2268,24 @@ if (upcomingTabEl) {
       refreshUpcomingReleases();
     }
   });
+}
+
+// Jump straight to the Upcoming Releases section: activate the Active Queue
+// tab + the nested Upcoming tab, then smooth-scroll to the container.
+function jumpToUpcomingReleases() {
+  const queueTab = document.getElementById('queue-tab');
+  if (queueTab && !queueTab.classList.contains('active')) {
+    bootstrap.Tab.getOrCreateInstance(queueTab).show();
+  }
+  const upcomingTab = document.getElementById('upcomingTab');
+  if (upcomingTab && !upcomingTab.classList.contains('active')) {
+    bootstrap.Tab.getOrCreateInstance(upcomingTab).show();
+  }
+  const target = document.getElementById('upcomingReleases');
+  if (target) {
+    // Wait a tick for the tab panes to become visible before scrolling.
+    setTimeout(function () { target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 60);
+  }
 }
 
 // Auto-load upcoming releases on page load if data exists
@@ -4078,206 +4100,7 @@ function openDownloadSearch(artist) {
 
 </script>
 
-<!-- Modal for Soulseek search results -->
-<div class="modal fade" id="slskdResultsModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">
-                    <i class="bi bi-music-note-list"></i> Select File to Download
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div id="slskdResultsLoading" class="text-center py-4">
-                    <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                    </div>
-                    <p class="mt-2">Searching for results...</p>
-                </div>
-                <div id="slskdResultsError" class="alert alert-danger" style="display:none"></div>
-                <div id="slskdResultsList" style="display:none">
-                    <div id="slskdResultsEmpty" class="alert alert-info" style="display:none">
-                        <i class="bi bi-info-circle"></i> No results found with acceptable match score.
-                    </div>
-                    <div id="slskdResultsTable" style="display:none">
-                        <div class="list-group" id="slskdResultsBody"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <div id="slskdSearchAgainDiv" style="display:none" class="w-100 me-2">
-                    <div class="input-group">
-                        <input type="text" class="form-control" id="slskdNewQuery" placeholder="Enter new search query...">
-                        <button class="btn btn-outline-secondary" onclick="searchAgainSlskd()" title="Search with different keywords">
-                            <i class="bi bi-search"></i> Search Again
-                        </button>
-                    </div>
-                </div>
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-            </div>
-        </div>
-    </div>
-</div>
-
 <!-- Modal: Organize Group with Metadata -->
-<!-- Manual Match Modal: link an orphan queue file to a library track -->
-<div class="modal fade" id="manualMatchModal" tabindex="-1" aria-labelledby="manualMatchModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-scrollable">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="manualMatchModalLabel">
-          <i class="bi bi-link-45deg text-info"></i> Match Queue Item to Library Track
-        </h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <p class="extra-small text-muted">
-          Search your library and pick the track this orphan file belongs to. The queue item's
-          metadata is updated and it moves to Completed, ready to transfer.
-        </p>
-        <input type="text" id="matchSearchInput" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
-               placeholder="Search artist, album, or track…" onkeyup="searchMatchTargets(this.value)">
-        <div id="matchTargetList" class="list-group list-group-flush extra-small overflow-auto" style="max-height: 60vh;"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="modal fade" id="organizeGroupModal" tabindex="-1" aria-labelledby="organizeGroupModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="organizeGroupModalLabel">
-                    <i class="bi bi-folder-check"></i> Organize Album Download
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <!-- Group Info -->
-                <div class="alert alert-info mb-4">
-                    <strong id="groupInfoText">Album Group</strong>
-                    <p class="small mb-0 mt-2">
-                        <span id="groupItemCount">Loading...</span> tracks to organize
-                    </p>
-                </div>
-
-                <!-- Tabs for Metadata and Folder Structure -->
-                <ul class="nav nav-tabs mb-3" role="tablist">
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link active" id="metadataTab" data-bs-toggle="tab" 
-                            data-bs-target="#metadataContent" type="button" role="tab">
-                            <i class="bi bi-file-earmark-music"></i> Metadata
-                        </button>
-                    </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="folderTab" data-bs-toggle="tab" 
-                            data-bs-target="#folderContent" type="button" role="tab">
-                            <i class="bi bi-folder"></i> Folder Structure
-                        </button>
-                    </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="mbTab" data-bs-toggle="tab" 
-                            data-bs-target="#mbContent" type="button" role="tab">
-                            <i class="bi bi-disc"></i> MusicBrainz Lookup
-                        </button>
-                    </li>
-                </ul>
-
-                <div class="tab-content">
-                    <!-- Metadata Tab -->
-                    <div class="tab-pane fade show active" id="metadataContent" role="tabpanel">
-                        <div class="row g-3">
-                            <div class="col-md-6">
-                                <label for="orgArtist" class="form-label">Artist *</label>
-                                <input type="text" class="form-control" id="orgArtist" placeholder="e.g., The Beatles">
-                            </div>
-                            <div class="col-md-6">
-                                <label for="orgAlbumArtist" class="form-label">Album Artist</label>
-                                <input type="text" class="form-control" id="orgAlbumArtist" placeholder="e.g., The Beatles">
-                                <small class="text-muted">If different from artist</small>
-                            </div>
-                            <div class="col-md-9">
-                                <label for="orgAlbum" class="form-label">Album *</label>
-                                <input type="text" class="form-control" id="orgAlbum" placeholder="e.g., Abbey Road">
-                            </div>
-                            <div class="col-md-3">
-                                <label for="orgYear" class="form-label">Year</label>
-                                <input type="text" class="form-control" id="orgYear" placeholder="e.g., 1969" maxlength="4">
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Folder Structure Tab -->
-                    <div class="tab-pane fade" id="folderContent" role="tabpanel">
-                        <div class="mb-3">
-                            <label for="orgFolderFormat" class="form-label">Folder Structure Format</label>
-                            <select class="form-select" id="orgFolderFormat">
-                                <option value="{album_artist}/{year} - {album}">Album Artist / Year - Album (Recommended)</option>
-                                <option value="{artist}/{album}">Artist / Album</option>
-                                <option value="{artist}/{year} - {album}">Artist / Year - Album</option>
-                                <option value="{album_artist}/{album}">Album Artist / Album</option>
-                                <option value="{year}/{album_artist} - {album}">Year / Album Artist - Album</option>
-                                <option value="custom">Custom...</option>
-                            </select>
-                            <div id="customFormatDiv" style="display:none" class="mt-2">
-                                <input type="text" class="form-control" id="orgCustomFormat" 
-                                    placeholder="e.g., {album_artist}/{year} - {album}">
-                                <small class="text-muted d-block mt-2">Available variables: {album_artist}, {artist}, {album}, {year}</small>
-                            </div>
-                        </div>
-                        <div class="alert alert-info">
-                            <strong>File Format:</strong> <code>&lt;number&gt;. &lt;artist&gt; - &lt;track&gt;.mp3</code>
-                        </div>
-                        <div class="alert alert-warning">
-                            <strong>Preview:</strong>
-                            <div id="folderPreview" class="mt-2 font-monospace">
-                                Music / Album Artist / 2025 - Album Name / 01. Artist - Track Title.mp3
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- MusicBrainz & Discogs Lookup Tab -->
-                    <div class="tab-pane fade" id="mbContent" role="tabpanel">
-                        <p class="text-muted mb-3">Search MusicBrainz or Discogs to auto-fill metadata fields</p>
-                        <div class="input-group mb-3">
-                            <input type="text" class="form-control" id="mbSearchQuery" 
-                                placeholder="Search by artist & album...">
-                            <button class="btn btn-primary" onclick="searchMBForOrganize()">
-                                <i class="bi bi-disc"></i> MusicBrainz
-                            </button>
-                            <button class="btn btn-outline-primary" onclick="searchDiscogsForOrganize()">
-                                <i class="bi bi-vinyl"></i> Discogs
-                            </button>
-                        </div>
-                        <div id="mbSearchResults" class="mb-3"></div>
-                        <div id="mbSearchLoading" class="d-flex align-items-center gap-2" style="display:none;">
-                            <div class="spinner-border spinner-border-sm text-primary" role="status">
-                                <span class="visually-hidden">Loading...</span>
-                            </div>
-                            <small class="text-muted" id="searchStatusText">Searching...</small>
-                        </div>
-                        <div id="mbSelectedMatch" class="alert alert-success d-none mt-3">
-                            <strong>Selected Match:</strong>
-                            <div id="mbSelectedInfo"></div>
-                            <button class="btn btn-sm btn-outline-secondary mt-2" onclick="clearMBSelection()">
-                                Choose Different
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" onclick="confirmOrganizeGroup()">
-                    <i class="bi bi-check-circle"></i> Organize & Move
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
 <!-- Queue State Management & Batch Operations -->
 <script>
 
@@ -5278,150 +5101,5 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 </script>
-
-<!-- Comprehensive Track Edit Modal -->
-<div class="modal fade" id="editTrackModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">
-                    <i class="bi bi-pencil-square"></i> Edit Track: <span id="editTrackTitle"></span>
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <form id="editTrackForm">
-                    <input type="hidden" id="editTrackId" name="track_id">
-                    
-                    <!-- Basic Info -->
-                    <div class="row g-3 mb-4">
-                        <div class="col-md-12">
-                            <label for="editTrackTitleField" class="form-label">Title</label>
-                            <input type="text" class="form-control" id="editTrackTitleField" name="title" required>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="editTrackArtistField" class="form-label">Artist</label>
-                            <input type="text" class="form-control" id="editTrackArtistField" name="artist">
-                        </div>
-                        <div class="col-md-6">
-                            <label for="editTrackAlbumField" class="form-label">Album</label>
-                            <input type="text" class="form-control" id="editTrackAlbumField" name="album">
-                        </div>
-                    </div>
-                    
-                    <!-- Metadata -->
-                    <div class="row g-3 mb-4">
-                        <div class="col-md-3">
-                            <label for="editTrackYearField" class="form-label">Year</label>
-                            <input type="number" class="form-control" id="editTrackYearField" name="year" placeholder="YYYY">
-                        </div>
-                        <div class="col-md-3">
-                            <label for="editTrackTrackNumberField" class="form-label">Track #</label>
-                            <input type="text" class="form-control" id="editTrackTrackNumberField" name="track_number" placeholder="e.g., 1 or 1/12">
-                        </div>
-                        <div class="col-md-3">
-                            <label for="editTrackDiscNumberField" class="form-label">Disc #</label>
-                            <input type="number" class="form-control" id="editTrackDiscNumberField" name="disc_number" placeholder="e.g., 1">
-                        </div>
-                        <div class="col-md-3">
-                            <label for="editTrackStarsField" class="form-label">Rating</label>
-                            <select class="form-select" id="editTrackStarsField" name="stars">
-                                <option value="0">Unrated</option>
-                                <option value="1">⭐ 1 Star</option>
-                                <option value="2">⭐⭐ 2 Stars</option>
-                                <option value="3">⭐⭐⭐ 3 Stars</option>
-                                <option value="4">⭐⭐⭐⭐ 4 Stars</option>
-                                <option value="5">⭐⭐⭐⭐⭐ 5 Stars</option>
-                            </select>
-                        </div>
-                    </div>
-                    
-                    <!-- Album & Composer -->
-                    <div class="row g-3 mb-4">
-                      <div class="col-md-4">
-                            <label for="editTrackAlbumArtistField" class="form-label">Album Artist</label>
-                            <input type="text" class="form-control" id="editTrackAlbumArtistField" name="album_artist" placeholder="Leave empty to use artist">
-                        </div>
-                      <div class="col-md-4">
-                            <label for="editTrackComposerField" class="form-label">Composer</label>
-                            <input type="text" class="form-control" id="editTrackComposerField" name="composer" placeholder="Composer name">
-                        </div>
-                      <div class="col-md-4">
-                        <label for="editTrackWriterField" class="form-label">Writer</label>
-                        <input type="text" class="form-control" id="editTrackWriterField" name="writer" placeholder="Writer / lyricist">
-                      </div>
-                    </div>
-                    
-                    <!-- Genres -->
-                    <div class="mb-4">
-                        <label for="editTrackGenreInput" class="form-label">Genres</label>
-                        <div class="input-group mb-2">
-                            <input type="text" class="form-control" id="editTrackGenreInput" placeholder="Add genre (e.g., Rock, Jazz)" list="genreDatalist">
-                            <button type="button" class="btn btn-outline-secondary" onclick="addEditTrackGenre()">Add</button>
-                        </div>
-                        <div id="editTrackGenresDisplay" class="d-flex flex-wrap gap-1">
-                            <span class="text-muted small">No genres set</span>
-                        </div>
-                        <input type="hidden" id="editTrackGenresField" name="genres">
-                    </div>
-                    
-                    <!-- Single Detection -->
-                    <div class="row g-3 mb-4">
-                        <div class="col-md-6">
-                            <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="editTrackSingleField" name="is_single">
-                                <label class="form-check-label" for="editTrackSingleField">
-                                    <strong>Single/Compilation</strong>
-                                </label>
-                            </div>
-                            <small class="text-muted">Mark as single, EP, or compilation track</small>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="editTrackConfidenceField" class="form-label">Detection Confidence</label>
-                            <select class="form-select" id="editTrackConfidenceField" name="single_confidence">
-                                <option value="low">Low</option>
-                                <option value="medium">Medium</option>
-                                <option value="high">High</option>
-                            </select>
-                        </div>
-                    </div>
-                    
-                    <!-- MusicBrainz ID -->
-                    <div class="mb-4">
-                        <label for="editTrackMBIDField" class="form-label">MusicBrainz ID</label>
-                        <input type="text" class="form-control" id="editTrackMBIDField" name="mbid" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
-                        <small class="text-muted">Used for accurate metadata matching</small>
-                    </div>
-
-                    <!-- External Lookups -->
-                    <div class="mb-4">
-                      <h6 class="mb-2"><i class="bi bi-database"></i> External Lookups</h6>
-                      <div class="d-grid gap-2">
-                        <button type="button" class="btn btn-outline-info" onclick="lookupEditTrackMetadata('musicbrainz')">
-                          <i class="bi bi-search"></i> MusicBrainz Lookup
-                        </button>
-                        <button type="button" class="btn btn-outline-warning" onclick="lookupEditTrackMetadata('discogs')">
-                          <i class="bi bi-search"></i> Discogs Lookup
-                        </button>
-                      </div>
-                      <div id="editTrackLookupSummary" class="alert d-none mt-2 mb-0"></div>
-                    </div>
-                    
-                    <!-- Comment -->
-                    <div class="mb-3">
-                        <label for="editTrackCommentField" class="form-label">Comment</label>
-                        <textarea class="form-control" id="editTrackCommentField" name="comment" rows="2" placeholder="Add notes or comments"></textarea>
-                    </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" onclick="saveComprehensiveEditedTrack()">
-                    <i class="bi bi-check-circle"></i> Save Changes
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
 
 
