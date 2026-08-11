@@ -59,7 +59,7 @@ async def scan_navidrome():
         runtime_state.scan_process_navidrome = {"thread": thread, "type": "navidrome"}
 
     await flash("✅ Navidrome import started", "success")
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("ui.dashboard"))
 
 
 @navidrome_bp.route("/scan/stop-navidrome", methods=["POST"])
@@ -69,4 +69,4 @@ async def scan_stop_navidrome():
         request_scan_stop(progress_path("navidrome_scan_progress.json"), "navidrome_scan")
         runtime_state.scan_process_navidrome = None
     await flash("Navidrome sync scan stop requested", "info")
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("ui.dashboard"))

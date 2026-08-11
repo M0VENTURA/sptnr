@@ -75,7 +75,7 @@ async def scan_artist_custom():
 
     if not artist:
         await flash("Error: No artist name provided", "danger")
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("ui.dashboard"))
 
     mode_label = "Forced" if force else "Changes Only"
 
@@ -121,7 +121,7 @@ async def scan_album_custom():
 
     if not artist or not album:
         await flash("Error: Artist and album name are required", "danger")
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("ui.dashboard"))
 
     mode_label = "Forced" if force else "Changes Only"
 

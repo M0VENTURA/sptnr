@@ -885,85 +885,6 @@ window.addEventListener('beforeunload', () => {
 
 let mbDownloadRefreshInterval = null;
 
-function downloadMbRelease(releaseId, releaseTitle, artist, method) {
-    const persistentSearch = document.getElementById('persistentSearchCheck').checked;
-    const sessionSelector = document.getElementById('mbSessionSelector');
-    const selectedSession = sessionSelector.value;
-    
-    // Handle "create new session" option
-    if (selectedSession === 'create') {
-        const sessionName = prompt('Enter name for new playlist session:');
-        if (!sessionName) return;
-        
-        // Create session first, then add download to it
-        fetch('/api/playlist-downloads/create', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session_name: sessionName,
-                total_tracks: 1,
-                priority_queue: false
-            })
-        })
-        .then(response => response.json())
-        .then(sessionData => {
-            if (sessionData.error) {
-                alert('Error creating session: ' + sessionData.error);
-                return;
-            }
-            // Now add the download to the session
-            addDownloadToSession(releaseId, releaseTitle, artist, method, persistentSearch, sessionData.session_id);
-        })
-        .catch(error => {
-            alert('Error creating session: ' + error.message);
-        });
-        return;
-    }
-    
-    if (!confirm(`Download "${releaseTitle}" by ${artist} via ${method}?${persistentSearch ? '\n\nPersistent search enabled - will auto-retry if failed.' : ''}`)) {
-        return;
-    }
-    
-    addDownloadToSession(releaseId, releaseTitle, artist, method, persistentSearch, selectedSession || null);
-}
-
-function addDownloadToSession(releaseId, releaseTitle, artist, method, persistentSearch, sessionId) {
-    fetch('/api/musicbrainz/download', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            release_id: releaseId,
-            release_title: releaseTitle,
-            artist: artist,
-            method: method,
-            persistent_search: persistentSearch,
-            max_retries: 3,
-            session_id: sessionId,
-            queue_items_only: true
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.error) {
-            alert('Error: ' + data.error);
-        } else {
-            let msg = `Download queued: ${releaseTitle}\nTracking ID: ${data.tracking_id || 'N/A'}`;
-            if (data.persistent_search) {
-                msg += '\n\n✓ Persistent search enabled - will retry automatically on failure';
-            }
-            if (data.session_id) {
-                msg += `\n✓ Added to session ID: ${data.session_id}`;
-            }
-            alert(msg);
-            // Refresh downloads list
-            setTimeout(refreshMbDownloads, 1000);
-        }
-    })
-    .catch(error => {
-        alert('Error initiating download: ' + error.message);
-    });
-}
-
 async function loadMbSessionSelector() {
     try {
         const response = await fetch('/api/playlist-downloads');
@@ -1128,45 +1049,6 @@ function formatTimestamp(timestamp) {
     if (!timestamp) return 'N/A';
     const date = new Date(timestamp);
     return date.toLocaleString();
-}
-
-function retryMbDownload(downloadId) {
-    if (!confirm('Retry this download?')) return;
-    
-    fetch(`/api/musicbrainz/download/${downloadId}/retry`, {
-        method: 'POST'
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            alert('Download retry initiated');
-            refreshMbDownloads();
-        } else {
-            alert('Error: ' + (data.error || 'Unknown error'));
-        }
-    })
-    .catch(error => {
-        alert('Error retrying download: ' + error.message);
-    });
-}
-
-function removeMbDownload(downloadId) {
-    if (!confirm('Remove this download from the list?')) return;
-    
-    fetch(`/api/musicbrainz/download/${downloadId}`, {
-        method: 'DELETE'
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            refreshMbDownloads();
-        } else {
-            alert('Error: ' + (data.error || 'Unknown error'));
-        }
-    })
-    .catch(error => {
-        alert('Error removing download: ' + error.message);
-    });
 }
 
 // Soulseek result selection functions
@@ -1955,11 +1837,6 @@ async function scrapeUpcomingReleases() {
       <strong>Error scraping Wikipedia:</strong> ${error.message}
     `;
   }
-}
-
-async function checkForUpdates() {
-  localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
-  await refreshUpcomingReleases();
 }
 
 async function refreshUpcomingReleases() {

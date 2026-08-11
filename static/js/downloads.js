@@ -2242,6 +2242,15 @@ document.addEventListener('DOMContentLoaded', function() {
     refreshMbDownloads();
   }
 
+  // Populate the session selector when the organize modal's MusicBrainz
+  // tab is opened (legacy inline binding preserved from the template).
+  var mbTabEl = document.getElementById('mbTab');
+  if (mbTabEl) {
+    mbTabEl.addEventListener('click', function () {
+      setTimeout(loadMbSessionSelector, 200);
+    });
+  }
+
   // Populate the monitor page's queue section + logs and the /downloads
   // Active Queue tab on load (loadQueueStatus refreshes counts AND these).
   if (document.getElementById('folderGroupsSection') || document.getElementById('statQueuedNum')) {

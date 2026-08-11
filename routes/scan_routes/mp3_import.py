@@ -74,4 +74,4 @@ async def scan_stop_mp3_import():
     clear_runtime("mp3_import")
 
     await flash("MP3 import scan stop requested", "info")
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("ui.dashboard"))
