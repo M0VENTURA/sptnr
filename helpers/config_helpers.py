@@ -605,6 +605,14 @@ def get_standout_config() -> dict[str, Any]:
         if star_key in sd_config and isinstance(sd_config[star_key], dict):
             result.setdefault(star_key, {}).update(sd_config[star_key])
 
+    # The 3-step album scaling model (era rules + boundaries) is not a star
+    # tier — pass the whole block through so era gating in finalise_stage
+    # honours config.html values.  Without this, every saved era setting
+    # (catalog top %, album top N, max 5★ slots, era boundaries) was silently
+    # dropped and the scan always used the hardcoded defaults.
+    if isinstance(sd_config.get("album_scaling"), dict):
+        result["album_scaling"] = sd_config["album_scaling"]
+
     return result
 
 
