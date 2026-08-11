@@ -273,8 +273,7 @@ def scan_artist_to_db(
     client: NavidromeClient | None = None,
 ):
     """Scan one Navidrome artist and upsert local PostgreSQL track rows."""
-    logger.info("[NAVIDROME_IMPORT] Importing artist: %s (artist_id=%s, force=%s, processed=%s)",
-                 artist_name, artist_id or "none", force, processed_artists)
+    log_unified(f"[NAVIDROME_IMPORT] Importing artist: {artist_name} (artist_id={artist_id or 'none'}, force={force}, processed={processed_artists})")
 
     if not artist_id:
         logging.warning("[NAVIDROME_SCAN] No artist_id for '%s'", artist_name)

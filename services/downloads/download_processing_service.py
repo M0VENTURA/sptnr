@@ -599,7 +599,10 @@ def process_queue_item(item: dict[str, Any]) -> dict[str, Any]:
             )
             try:
                 from helpers.logging_config import log_unified
-                log_unified(f"[QUEUE] {(item.get('artist') or '')} - {(item.get('title') or '')} → failed: soulseek_unavailable (slskd disabled/misconfigured)")
+                from services.queue.queue_diagnostics_service import log_queue_event
+                _queue_msg = f"{(item.get('artist') or '')} - {(item.get('title') or '')} → failed: soulseek_unavailable (slskd disabled/misconfigured)"
+                log_unified(f"[QUEUE] {_queue_msg}")
+                log_queue_event("failed", _queue_msg, queue_id=queue_id)
             except Exception:
                 pass
             # mark_failed (not a raw status update) sets next_retry_at so the

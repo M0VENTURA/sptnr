@@ -583,6 +583,10 @@ def _reconcile_stale_moving(stale_minutes: int = 10) -> dict[str, int]:
                     "[COMPLETE] Queue %s: recovered stale 'moving' item — file found in library at %s",
                     queue_id, target,
                 )
+                try:
+                    _log_queue_event("imported", f"Recovered stale 'moving' item — file found in library: {os.path.basename(str(target))}", queue_id)
+                except Exception:
+                    pass
             else:
                 # File not yet in /music: put the item back into the normal
                 # 'downloading' flow so matching/moving is retried (or the
@@ -593,6 +597,10 @@ def _reconcile_stale_moving(stale_minutes: int = 10) -> dict[str, int]:
                     "[COMPLETE] Queue %s: recovered stale 'moving' item — reset to downloading for re-match",
                     queue_id,
                 )
+                try:
+                    _log_queue_event("downloading", "Recovered stale 'moving' item — reset to downloading for re-match", queue_id)
+                except Exception:
+                    pass
         except Exception as exc:
             logger.warning("[COMPLETE] Queue %s: stale 'moving' recovery failed: %s", queue_id, exc)
             stats["skipped"] += 1
@@ -627,6 +635,7 @@ def _reconcile_transfer_state(
             logger.warning("[COMPLETE] Queue %s: missing from slskd transfers and stale — scheduling retry", queue_id)
             from db.repositories.queue import mark_failed
             mark_failed(queue_id, "Transfer missing from slskd API while marked downloading")
+            _log_queue_event("failed", "Missing from slskd transfers and stale — scheduling retry", queue_id)
             return True
         return False
 
@@ -646,6 +655,7 @@ def _reconcile_transfer_state(
             logger.warning("[COMPLETE] Queue %s: transfer not found and item stale — scheduling retry", queue_id)
             from db.repositories.queue import mark_failed
             mark_failed(queue_id, "Transfer missing from slskd API while marked downloading")
+            _log_queue_event("failed", "Transfer not found and item stale — scheduling retry", queue_id)
             return True
         return False
 
@@ -657,6 +667,7 @@ def _reconcile_transfer_state(
         _remember_failed_peer(transfer)
         from db.repositories.queue import mark_failed
         mark_failed(queue_id, f"slskd transfer failed: {state}")
+        _log_queue_event("failed", f"slskd transfer failed: {state} — scheduling retry", queue_id)
         return True
 
     if slskd.is_success_state(state):
@@ -687,6 +698,7 @@ def _reconcile_transfer_state(
             logger.debug("[COMPLETE] Queue %s: could not remove stale transfer: %s", queue_id, exc)
         from db.repositories.queue import mark_failed
         mark_failed(queue_id, "slskd transfer succeeded but local file not found")
+        _log_queue_event("failed", "slskd transfer succeeded but local file not found — retrying", queue_id)
         return True
 
     if state == slskd.STATE_QUEUED_REMOTELY:
@@ -702,6 +714,7 @@ def _reconcile_transfer_state(
             _remember_failed_peer(transfer)
             from db.repositories.queue import mark_failed
             mark_failed(queue_id, "Remotely queued too long")
+            _log_queue_event("failed", "Remotely queued too long — cancelling and retrying", queue_id)
             return True
         return False
 
@@ -718,6 +731,7 @@ def _reconcile_transfer_state(
             _remember_failed_peer(transfer)
             from db.repositories.queue import mark_failed
             mark_failed(queue_id, f"slskd download timed out ({state})")
+            _log_queue_event("failed", f"slskd download timed out ({state}) — cancelling and retrying", queue_id)
             return True
 
     return False

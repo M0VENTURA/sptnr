@@ -28,11 +28,21 @@ def normalize_download_queue() -> None:
     """
 
     logger.info("[QUEUE] Running normalization")
+    try:
+        from helpers.logging_config import log_queue
+        log_queue("[QUEUE] Running normalization")
+    except Exception:
+        pass
 
     normalize_invalid_status()
     normalize_stuck_items()
 
     logger.info("[QUEUE] Normalization complete")
+    try:
+        from helpers.logging_config import log_queue
+        log_queue("[QUEUE] Normalization complete")
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -64,6 +74,11 @@ def normalize_invalid_status() -> None:
 
     if count:
         logger.warning("[QUEUE] Fixed %s invalid statuses", count)
+        try:
+            from helpers.logging_config import log_queue
+            log_queue(f"[QUEUE] Fixed {count} invalid statuses")
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -87,6 +102,11 @@ def normalize_stuck_items() -> None:
 
     if count:
         logger.warning("[QUEUE] Reset %s stuck items", count)
+        try:
+            from helpers.logging_config import log_queue
+            log_queue(f"[QUEUE] Reset {count} stuck items")
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -109,3 +129,8 @@ def cleanup_failed_retries() -> None:
 
     if count:
         logger.info("[QUEUE] Reset retry count on %s items", count)
+        try:
+            from helpers.logging_config import log_queue
+            log_queue(f"[QUEUE] Reset retry count on {count} items")
+        except Exception:
+            pass

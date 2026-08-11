@@ -34,6 +34,7 @@ Performance Notes:
 import logging
 from services.scanning.album_scanner import scan_album
 from db.repositories.library import get_albums_for_artist
+from helpers.logging_config import log_unified
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ def scan_artist(artist, force=False):
         - No metadata logic here
         - Pure orchestration layer
     """
-    logger.info("[ARTIST_SCANNER] Starting scan for artist: %s (force=%s)", artist, force)
+    log_unified(f"[ARTIST_SCANNER] Starting scan for artist: {artist} (force={force})")
 
     albums = get_albums_for_artist(artist)
 

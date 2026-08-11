@@ -634,6 +634,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 notes="no_results",
             )
             log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: no_results ({elapsed:.0f}s)")
+            _log_queue_event("failed", f"{expected_artist} - {expected_title} → failed: no_results ({elapsed:.0f}s)", queue_id)
             _schedule_search_retry(queue_id, item, f"no_results ({elapsed:.0f}s)")
             return {"success": False, "status": "no_results"}
 
@@ -654,6 +655,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 results=all_results,
             )
             log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: no_qualifying_result ({len(all_results)} candidates)")
+            _log_queue_event("failed", f"{expected_artist} - {expected_title} → failed: no_qualifying_result ({len(all_results)} candidates)", queue_id)
             _schedule_search_retry(queue_id, item, f"no_qualifying_result ({len(all_results)} candidates)")
             return {"success": False, "status": "no_qualifying_result"}
 
@@ -772,6 +774,17 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
         log_unified(
             f"[QUEUE] {expected_artist} - {expected_title} → downloading from {chosen.get('username')} "
             f"({chosen.get('filename') or ''})"
+        )
+        _log_search_event(
+            search_type="automatic",
+            query=query,
+            queue_id=queue_id,
+            item=item,
+            result_count=len(results),
+            duration_seconds=elapsed,
+            notes="download_started",
+            selected_result=chosen or best,
+            results=results,
         )
         _log_queue_event(
             "downloading",
@@ -1006,6 +1019,11 @@ def start_release_download(release_id, release_title, artist, method='slskd', cr
 
     try:
         logger.info(f"[START_DOWNLOAD] {release_id}")
+        try:
+            from helpers.logging_config import log_queue
+            log_queue(f"[START_DOWNLOAD] {release_id} — {artist} - {release_title}")
+        except Exception:
+            pass
 
         # The MB search UI hands over a release-group MBID (the search endpoint
         # returns release-groups). /ws/2/release/{id} 404s for a release-group

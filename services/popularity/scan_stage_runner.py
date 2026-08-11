@@ -276,9 +276,8 @@ def _run_album_cover_detection(
             force=bool(options.get("force")),
         )
         if _cover_results:
-            logger.info(
-                "[COVER_DETECT] %s - %s: %d cover(s) found",
-                artist, album, len(_cover_results),
+            log_unified(
+                f"[COVER_DETECT] {artist} - {album}: {len(_cover_results)} cover(s) found",
             )
     except Exception as exc:
         logger.debug(
@@ -357,9 +356,8 @@ def _apply_popularity_marking_bump(album_results: list[dict[str, Any]]) -> list[
         ]
         sources.append({"source": "popularity_marked", "matched": True, "confidence": 0.5})
         tr["single_sources"] = json.dumps(sources, default=str)
-        logger.info(
-            "[scan_runner] Popularity marking upgraded '%s' to high-confidence single (artist top band)",
-            tr.get("title"),
+        log_unified(
+            f"[scan_runner] Popularity marking upgraded '{tr.get('title')}' to high-confidence single (artist top band)",
         )
     return album_results
 
@@ -996,7 +994,7 @@ def run_scan(
 
         # ✅ Graceful stop support
         if effective_stop_file and is_stop_requested(effective_stop_file):
-            logger.info("Scan stopped by user request")
+            log_unified("Scan stopped by user request")
             finish(success=False)
             return False
 
@@ -1383,9 +1381,8 @@ def run_scan(
                                     "listenbrainz_users": _cur["listenbrainz_users"],
                                     "source": "album_tracklist",
                                 })
-                                logger.info(
-                                    "[scan_runner] Album-tracklist LB match for '%s' (%s - %s): %s listens",
-                                    _t.get("title"), artist, album, _cur["listenbrainz_listens"],
+                                log_unified(
+                                    f"[scan_runner] Album-tracklist LB match for '{_t.get('title')}' ({artist} - {album}): {_cur['listenbrainz_listens']} listens",
                                 )
                         if _cache_rows:
                             try:
@@ -1551,13 +1548,8 @@ def run_scan(
                         sp = track_result.get("spotify_score")
                         lf = track_result.get("lastfm_score")
                         lb = track_result.get("listenbrainz_score")
-                        logger.info(
-                            "[TRACK_RESULT] '%s' -> Final: %.1f (SP: %.1f | LF: %.1f | LB: %.1f)",
-                            title,
-                            float(f_score or 0.0),
-                            float(sp or 0.0),
-                            float(lf or 0.0),
-                            float(lb or 0.0),
+                        log_unified(
+                            f"[TRACK_RESULT] '{title}' -> Final: {float(f_score or 0.0):.1f} (SP: {float(sp or 0.0):.1f} | LF: {float(lf or 0.0):.1f} | LB: {float(lb or 0.0):.1f})",
                         )
 
                 tracks_processed += 1

@@ -667,7 +667,6 @@ def run_essentia_mood_scan(
                 _saved_checkpoint = (_saved.get("resume_from_artist") or "").strip()
                 if _saved_status not in ("complete", "completed", "stopped") and _saved_checkpoint:
                     resume_from_artist = _saved_checkpoint
-                    logger.info("Essentia auto-resume: continuing from checkpoint artist '%s'", resume_from_artist)
                     log_unified(f"Essentia Scan - Auto-resuming from checkpoint artist '{resume_from_artist}'")
             except Exception as _pr_err:
                 logger.debug("Could not read essentia resume checkpoint: %s", _pr_err)
@@ -760,7 +759,6 @@ def run_essentia_mood_scan(
             if artist_key.lower() != resume_from_artist.lower():
                 continue
             resume_started = True
-            logger.info("Essentia resume: continuing from artist '%s'", artist_key)
             log_unified(f"Essentia Scan - Resuming from Artist {artist_key}")
 
         if file_path and not os.path.isabs(file_path):

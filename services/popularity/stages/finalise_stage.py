@@ -1398,7 +1398,7 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         is_single, single_confidence, is_live, album_context_live
     """
     track_count = len(results) if results else 0
-    logger.info("[FINALISE_STAGE] Finalising scan — %s tracks processed", track_count)
+    log_unified(f"[FINALISE_STAGE] Finalising scan — {track_count} tracks processed")
     if not results:
         return
 
@@ -1557,17 +1557,16 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         # Star ratings were assigned/persisted during the scan loop — count
         # them from the results for the summary instead of 0.
         total_star_ratings = sum(1 for r in results if (r.get("stars") or 0) > 0)
-    logger.info("[FINALISE_STAGE] Star ratings assigned: %d", total_star_ratings)
-    logger.info("[FINALISE_STAGE] Navidrome syncs: %d", navidrome_synced)
+    log_unified(f"[FINALISE_STAGE] Star ratings assigned: {total_star_ratings}")
+    log_unified(f"[FINALISE_STAGE] Navidrome syncs: {navidrome_synced}")
 
     star_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
     for r in results:
         s = r.get("stars", 0) or 0
         if 1 <= s <= 5:
             star_counts[s] += 1
-    logger.info(
-        "[FINALISE_STAGE] Star distribution — 5★: %d, 4★: %d, 3★: %d, 2★: %d, 1★: %d",
-        star_counts[5], star_counts[4], star_counts[3], star_counts[2], star_counts[1],
+    log_unified(
+        f"[FINALISE_STAGE] Star distribution — 5★: {star_counts[5]}, 4★: {star_counts[4]}, 3★: {star_counts[3]}, 2★: {star_counts[2]}, 1★: {star_counts[1]}",
     )
 
     return None

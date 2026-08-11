@@ -22,6 +22,7 @@ import time
 from typing import Any
 
 from api_clients.navidrome import NavidromeClient
+from helpers.logging_config import log_unified
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ def build_artist_index_from_albums(client: NavidromeClient, page_size: int = 500
         artist_map[artist_name]["album_count"] += 1
         artist_map[artist_name]["track_count"] += int(album.get("songCount", 0) or 0)
 
-    logger.info("Built album-derived Navidrome index for %s artists", len(artist_map))
+    log_unified(f"Built album-derived Navidrome index for {len(artist_map)} artists")
     return artist_map
 
 
@@ -124,7 +125,7 @@ def build_artist_index(client: NavidromeClient) -> dict[str, dict[str, Any]]:
                 "last_updated": None,
             }
 
-    logger.info("Built fallback Navidrome index for %s artists", len(fallback))
+    log_unified(f"Built fallback Navidrome index for {len(fallback)} artists")
     return fallback
 
 
@@ -200,7 +201,7 @@ def fetch_changed_albums(
                 break
             offset += page_size
 
-    logger.info("Delta album fetch returned %s changed albums", len(albums))
+    log_unified(f"Delta album fetch returned {len(albums)} changed albums")
     return albums
 
 
@@ -241,7 +242,7 @@ def fetch_changed_songs(
         offset += page_size
 
     if songs:
-        logger.info("Delta song fetch returned %s changed songs", len(songs))
+        log_unified(f"Delta song fetch returned {len(songs)} changed songs")
     else:
         logger.debug("Delta song fetch returned no songs (modified filter likely unsupported)")
     return songs
@@ -306,7 +307,7 @@ def build_delta_artist_index(
         })
         entry["track_count"] += 1
 
-    logger.info("Delta artist index: %s artists with changed content", len(artist_map))
+    log_unified(f"Delta artist index: {len(artist_map)} artists with changed content")
     return artist_map
 
 
