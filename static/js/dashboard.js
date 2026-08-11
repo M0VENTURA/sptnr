@@ -390,9 +390,27 @@ async function addUpcomingReleaseToQueueDashboard(encodedArtist, encodedAlbum, e
     
     if (buttonEl) { buttonEl.disabled = true; buttonEl.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>'; }
 
-    // Matched to a MusicBrainz release-group → queue the FULL tracklist via
-    // the same pipeline as the MusicBrainz modal (per-track queue rows).
+    // Matched to a MusicBrainz release-group → let the user pick the exact
+    // physical version (CD / deluxe / promo) via the release-picker flyout,
+    // then queue the FULL tracklist through the same pipeline as the
+    // MusicBrainz modal (per-track queue rows).  Falls back to a direct
+    // queue of the release group when the picker is unavailable.
     if (releaseGroupMbid) {
+      if (typeof window.openReleasePicker === "function") {
+        window.openReleasePicker(decodeURIComponent(releaseGroupMbid), album, artist, function () {
+          if (buttonEl) {
+            buttonEl.disabled = true;
+            buttonEl.classList.replace("btn-outline-primary", "btn-outline-success");
+            buttonEl.innerHTML = '<i class="bi bi-check2"></i>';
+            buttonEl.title = "Queued — exact version chosen";
+          }
+          setTimeout(loadUpcomingReleasesTable, 800);
+        });
+        // The flyout is now in charge — restore the button in case the user
+        // closes it without queueing (the onQueued callback re-disables it).
+        if (buttonEl) { buttonEl.disabled = false; buttonEl.innerHTML = '<i class="bi bi-plus-circle"></i>'; }
+        return;
+      }
       const result = await postJSON("/api/musicbrainz/download", {
         release_id: decodeURIComponent(releaseGroupMbid),
         release_title: album,

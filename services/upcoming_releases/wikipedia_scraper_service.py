@@ -892,17 +892,31 @@ def _sanitize_stored_rows() -> int:
                 artist, album = sanitize_wiki_entry(row[1] or "", row[2] or "")
                 if artist == (row[1] or "") and album == (row[2] or ""):
                     continue
+                # Use a savepoint per row: a unique-constraint violation on
+                # the UPDATE aborts the whole Postgres transaction, which
+                # would make the follow-up DELETE fail with
+                # "current transaction is aborted" and roll back the entire
+                # sanitize pass.  ``begin_nested`` scopes the failure to the
+                # row so the DELETE (and the rest of the pass) still works.
                 try:
-                    session.execute(
-                        text("UPDATE upcoming_releases SET artist_name = :a, album_name = :b WHERE id = :id"),
-                        {"a": artist, "b": album, "id": row_id},
-                    )
+                    with session.begin_nested():
+                        session.execute(
+                            text("UPDATE upcoming_releases SET artist_name = :a, album_name = :b WHERE id = :id"),
+                            {"a": artist, "b": album, "id": row_id},
+                        )
                 except Exception:
-                    # Clean duplicate exists → drop the malformed row.
-                    session.execute(
-                        text("DELETE FROM upcoming_releases WHERE id = :id"),
-                        {"id": row_id},
-                    )
+                    # Clean duplicate exists → drop the malformed row.  The
+                    # savepoint already rolled back the failed UPDATE, so the
+                    # transaction is still usable.
+                    try:
+                        with session.begin_nested():
+                            session.execute(
+                                text("DELETE FROM upcoming_releases WHERE id = :id"),
+                                {"id": row_id},
+                            )
+                    except Exception as exc:
+                        logger.debug("[SCRAPER] Sanitize delete failed for row %s: %s", row_id, exc)
+                        continue
                 fixed += 1
     except Exception as exc:
         logger.warning("[SCRAPER] Stored-row sanitize pass failed: %s", exc)

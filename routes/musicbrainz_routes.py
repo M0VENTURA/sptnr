@@ -763,7 +763,7 @@ def _picker_tracklist_html(client, release_id: str) -> str:
 
 
 @mb_bp.route("/release-picker", methods=["GET"])
-def api_musicbrainz_release_picker():
+async def api_musicbrainz_release_picker():
     """Slide-over release picker for a MusicBrainz release group.
 
     Modes:
@@ -820,7 +820,7 @@ def api_musicbrainz_release_picker():
         key=lambda r: (str(r["status"]).lower() != "official", -r["track_count"])
     )
 
-    return _render(
+    return await _render(
         """
         <div class="p-3">
           <p class="extra-small text-muted mb-3">

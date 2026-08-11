@@ -210,9 +210,14 @@
     if (release.in_queue) {
       actions.push('<span class="badge bg-info text-dark align-middle">In Queue</span>');
     } else if (isReleased(release)) {
+      // Picker-aware queue: matched rows open the release-picker flyout so
+      // the user chooses the exact version (CD/deluxe/promo); unmatched rows
+      // fall back to the plain queue-by-id.
       actions.push(
         '<button type="button" class="btn btn-sm btn-success" ' +
-        'onclick="UpcomingReleasesService.queueById(' + releaseId + ', this)" ' +
+        'onclick="UpcomingReleasesService.queueFromRow(' + releaseId + ', ' +
+        JSON.stringify(release.release_group_mbid || '') + ', ' +
+        artistEnc + ', ' + albumEnc + ', this)" ' +
         'title="Queue download (release is out)"><i class="bi bi-download"></i> Queue</button>'
       );
     }
@@ -373,6 +378,29 @@
     if (onRefresh) onRefresh();
   }
 
+  /**
+   * Queue an upcoming release, preferring the release-picker flyout when the
+   * row is matched to a MusicBrainz release-group (so the user picks the
+   * exact version — CD vs deluxe vs promo — instead of the server resolving
+   * it blindly).  Falls back to the plain row queue when unmatched or when
+   * the picker is unavailable.
+   */
+  function queueFromRow(releaseId, rgMbid, artistEnc, albumEnc, buttonEl) {
+    var picker = window.openReleasePicker;
+    if (rgMbid && typeof picker === 'function') {
+      picker(
+        rgMbid,
+        decodeInlineArg(albumEnc, ''),
+        decodeInlineArg(artistEnc, ''),
+        function () {
+          if (onRefresh) onRefresh();
+        }
+      );
+      return;
+    }
+    queueById(releaseId, buttonEl);
+  }
+
   window.UpcomingReleasesService = {
     state: state,
     set onRefresh(fn) { onRefresh = fn; },
@@ -388,6 +416,7 @@
     autoMatchById: autoMatchById,
     confirmCandidateById: confirmCandidateById,
     queueById: queueById,
+    queueFromRow: queueFromRow,
     isReleased: isReleased,
     escapeHtml: escapeHtml,
     encodeInlineArg: encodeInlineArg,
