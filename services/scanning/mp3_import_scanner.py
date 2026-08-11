@@ -28,6 +28,7 @@ from typing import Any
 from sqlalchemy import text
 from db.engine import db_session
 from helpers.metadata_reader import read_mp3_metadata
+from helpers.logging_config import log_unified
 from services.scanning.scan_state import (
     get_scan_progress_path,
     read_progress_file,
@@ -129,7 +130,7 @@ class MP3ImportScanner:
 
     def scan(self) -> dict[str, Any]:
         """Run the scan and return a results dict."""
-        logger.info("[MP3_SCANNER] Starting MP3 import scan from: %s", self.music_root)
+        log_unified(f"[MP3_SCANNER] Starting MP3 import scan from: {self.music_root}")
         self.start_time = datetime.now()
 
         _write_progress(True, status="starting")
@@ -148,11 +149,9 @@ class MP3ImportScanner:
 
         elapsed = (datetime.now() - self.start_time).total_seconds()
         _write_progress(False, status="complete")
-        logger.info(
-            "MP3 import done: %d processed, %d imported, %d matched, "
-            "%d skipped, %d errors in %.1fs",
-            self.processed, self.imported, self.matched,
-            self.skipped, self.errors, elapsed,
+        log_unified(
+            f"MP3 import done: {self.processed} processed, {self.imported} imported, "
+            f"{self.matched} matched, {self.skipped} skipped, {self.errors} errors in {elapsed:.1f}s"
         )
         return self._results(success=True, elapsed=elapsed)
 
@@ -162,7 +161,7 @@ class MP3ImportScanner:
 
     def _scan_from_database(self) -> None:
         """Iterate over tracks that have a file_path and update from file."""
-        logger.info("Scanning from database tracks …")
+        log_unified("Scanning from database tracks …")
 
         rows = self._load_database_tracks()
         self.total_files = len(rows)
@@ -173,7 +172,7 @@ class MP3ImportScanner:
 
         for idx, (track_id, file_path, db_artist, db_title, db_album) in enumerate(rows, 1):
             if _stop_requested():
-                logger.info("Graceful stop requested — aborting scan")
+                log_unified("Graceful stop requested — aborting scan")
                 break
 
             self._update_track_from_file(track_id, file_path, db_artist, db_title, db_album)
@@ -231,7 +230,7 @@ class MP3ImportScanner:
 
         for idx, file_path in enumerate(audio_files, 1):
             if _stop_requested():
-                logger.info("Graceful stop requested — aborting scan")
+                log_unified("Graceful stop requested — aborting scan")
                 break
 
             self._scan_single_file(file_path)

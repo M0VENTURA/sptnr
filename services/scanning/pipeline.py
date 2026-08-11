@@ -120,7 +120,7 @@ def run_artist_scan_pipeline(artist_name: str, force: bool = False):
 
 
 def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False):
-    logger.info("[SCAN_PIPELINE] Starting artist pipeline: %s (force=%s)", artist_name, force)
+    log_unified(f"[SCAN_PIPELINE] Starting artist pipeline: {artist_name} (force={force})")
     record_scan("artist", "started", message=f"Artist scan: {artist_name}", artist=artist_name)
     try:
         log_unified(f"Artist scan started: {artist_name}")
@@ -143,10 +143,7 @@ def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False):
                 for _name, _info in index.items():
                     if _info.get("id") and _norm_key(_name) == target_key:
                         artist_id = str(_info.get("id"))
-                        logger.info(
-                            "[SCAN_PIPELINE] Resolved Navidrome artist id for '%s' from index (artist_stats empty)",
-                            artist_name,
-                        )
+                        log_unified(f"[SCAN_PIPELINE] Resolved Navidrome artist id for '{artist_name}' from index (artist_stats empty)")
                         break
             except Exception as _idx_exc:
                 logger.debug("[SCAN_PIPELINE] Navidrome index fallback failed for '%s': %s", artist_name, _idx_exc)

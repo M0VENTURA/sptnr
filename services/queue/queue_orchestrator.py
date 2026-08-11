@@ -405,6 +405,15 @@ def process_queue_item(
     except Exception as exc:
         logger.exception("Queue item processing failed: %s", queue_id)
         _mark_failed(claimed, str(exc))
+        try:
+            from services.queue.queue_diagnostics_service import log_queue_event
+            log_queue_event(
+                "failed",
+                f"{str(claimed.get('artist') or '')} - {str(claimed.get('title') or '')} → processing failed: {exc}",
+                queue_id=queue_id,
+            )
+        except Exception:
+            pass
         return _fail(str(exc), 500, queue_id=queue_id)
 
 

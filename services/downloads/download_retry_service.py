@@ -48,6 +48,11 @@ def requeue_failed_items(limit: int = 50) -> int:
         requeued = requeue_due_failed_items(limit=limit)
         if requeued:
             logger.info("[RETRY_SCHEDULER] Requeued %s failed item(s)", len(requeued))
+            try:
+                from helpers.logging_config import log_queue
+                log_queue(f"[RETRY_SCHEDULER] Requeued {len(requeued)} failed item(s)")
+            except Exception:
+                pass
         return len(requeued)
     except Exception as exc:
         logger.error("[RETRY_SCHEDULER] Failed to requeue items: %s", exc)
@@ -188,6 +193,11 @@ def run_retry_manager_with_navidrome_check(
                                     "[RETRY] Queue %s (%s - %s) already in Navidrome — marked completed",
                                     queue_id, artist, title,
                                 )
+                                try:
+                                    from services.queue.queue_diagnostics_service import log_queue_event
+                                    log_queue_event("completed", f"{artist} - {title} → already in Navidrome, marked completed", queue_id=queue_id)
+                                except Exception:
+                                    pass
                                 continue
                     except Exception as nav_err:
                         logger.debug("[RETRY] Navidrome check failed for %s: %s", queue_id, nav_err)

@@ -84,8 +84,8 @@ def run_popularity_scan(
     **extra_kwargs: Any,
 ):
     """Run the popularity scan pipeline. Entry point for CLI, WebUI, and scheduler."""
-    logger.info("[POPULARITY_PIPELINE] Starting scan (artist=%s, verbose=%s, force=%s)",
-                 artist_filter or "ALL", verbose, force)
+    from helpers.logging_config import log_unified
+    log_unified(f"[POPULARITY_PIPELINE] Starting scan (artist={artist_filter or 'ALL'}, verbose={verbose}, force={force})")
 
     # ✅ CLEAR STALE STOP FLAGS: Ensure the scan starts with a clean slate
     if progress_file:
@@ -141,9 +141,8 @@ def run_popularity_scan(
 
     kwargs.update(extra_kwargs)
 
-    logger.info("Running popularity scan via %s", scanner_module.__name__)
+    log_unified(f"Running popularity scan via {scanner_module.__name__}")
 
-    from helpers.logging_config import log_unified
     try:
         result = scanner(**kwargs)
 
@@ -227,6 +226,8 @@ def run_popularity_from_artist(
     verbose: bool = False,
 ):
     logger.info("Starting popularity scan from artist '%s'", artist)
+    from helpers.logging_config import log_unified
+    log_unified(f"Starting popularity scan from artist '{artist}'")
 
     if progress_file:
         payload: dict[str, Any] = {
@@ -265,12 +266,12 @@ def run_popularity_from_artist(
             if completed is False or (isinstance(completed, dict) and completed.get("status") == "stopped"):
                 payload["status"] = "stopped"
                 payload["exit_code"] = 1
-                logger.info("Scan stopped for '%s'", artist)
+                log_unified(f"Scan stopped for '{artist}'")
             else:
                 payload["status"] = "complete"
                 payload["exit_code"] = 0
                 payload["percent_complete"] = 100
-                logger.info("Scan complete for '%s'", artist)
+                log_unified(f"Scan complete for '{artist}'")
 
             write_progress_with_current_artist(
                 progress_file,
