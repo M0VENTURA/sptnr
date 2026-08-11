@@ -7,7 +7,7 @@ to ensure proper rate limiting, User-Agent, and Lucene-escaping.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from quart import Blueprint, jsonify, request
@@ -135,6 +135,11 @@ def api_upcoming_releases():
         include_queue = request.args.get("include_queue", "").strip().lower() == "true"
         page = max(1, request.args.get("page", 1, type=int))
         limit = max(1, min(request.args.get("limit", 50, type=int), 200))
+        # Optional tight window (days): dashboard snapshot uses ±7 so only
+        # releases from last week → next week are queried.  ``total`` keeps
+        # the FULL rolling-window count so the dashboard can render a
+        # "View All N" link to the full manager.
+        window_days = max(0, request.args.get("window", 0, type=int))
 
         where_sql = ""
         params: dict[str, Any] = {}
@@ -173,6 +178,23 @@ def api_upcoming_releases():
                 text(f"SELECT COUNT(*) FROM upcoming_releases{where_sql}"),
                 params,
             ).scalar() or 0
+
+            # Tight ±N-day snapshot window (applied AFTER the total count so
+            # ``total`` still reflects the full rolling window).  Undated (TBA)
+            # rows are excluded — the snapshot is strictly last-week → next-week.
+            if window_days > 0:
+                _today = datetime.now().date()
+                _w_start = (_today - timedelta(days=window_days)).strftime("%Y-%m-%d")
+                _w_end = (_today + timedelta(days=window_days)).strftime("%Y-%m-%d")
+                _win_clause = "release_date BETWEEN :win7_start AND :win7_end"
+                where_sql = (
+                    f" WHERE {_win_clause}"
+                    if not where_sql
+                    else where_sql + f" AND {_win_clause}"
+                )
+                params["win7_start"] = _w_start
+                params["win7_end"] = _w_end
+
             result = session.execute(
                 text(f"SELECT * FROM upcoming_releases{where_sql} ORDER BY release_date ASC NULLS LAST, id ASC LIMIT :limit OFFSET :offset"),
                 {**params, "limit": limit + 1, "offset": (page - 1) * limit},

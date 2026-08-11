@@ -2975,7 +2975,9 @@ function renderQueueItem(item, statusColor) {
     ? `<span class="badge bg-light text-dark border" title="Priority"><i class="bi bi-lightning-charge"></i>${item.priority}</span>`
     : '';
   const yearBadge = item.year ? `<span class="badge bg-light text-dark border">${escapeHtml(String(item.year))}</span>` : '';
-  const tnBadge = item.track_number ? `<span class="badge bg-light text-dark border" title="Track #">T${escapeHtml(String(item.track_number))}</span>` : '';
+  const tnBadge = (item.track_number || item.disc_number)
+    ? `<span class="badge bg-light text-dark border" title="Disc / Track #">${item.disc_number && Number(item.disc_number) > 1 ? `D${escapeHtml(String(item.disc_number))} · ` : ''}T${escapeHtml(String(item.track_number || '?'))}</span>`
+    : '';
 
   const hasFile = item.file_path || item.found_filename;
   const isMoving = item.status === 'moving';

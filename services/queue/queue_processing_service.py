@@ -19,6 +19,7 @@ Architecture:
 import difflib
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -258,6 +259,12 @@ def add_release_tracks_to_queue(
 
             import_group = f"mbid_{release_id}"
 
+            # Dedupe by recording MBID (fallback: normalized title).  The same
+            # recording frequently appears on multiple discs / bonus editions
+            # of one release — queue it exactly once instead of creating
+            # duplicate searches (e.g. "Holler" on D1 T11 AND D2 T12).
+            seen_recordings: set[str] = set()
+
             for track in tracks:
 
                 track_title = (
@@ -282,6 +289,23 @@ def add_release_tracks_to_queue(
                 recording_mbid = track.get(
                     "recording_mbid"
                 )
+
+                # -----------------------------------------------------
+                # Skip duplicate recordings within this release
+                # -----------------------------------------------------
+
+                dedupe_key = str(recording_mbid or "").strip().lower()
+                if not dedupe_key:
+                    dedupe_key = re.sub(
+                        r"[^a-z0-9]+", " ", track_title.lower()
+                    ).strip()
+                if dedupe_key in seen_recordings:
+                    logger.info(
+                        "[QUEUE_ADD] Skipping duplicate recording: "
+                        f"{track_artist} - {track_title}"
+                    )
+                    continue
+                seen_recordings.add(dedupe_key)
 
                 # MusicBrainz track length in ms — normalised to SECONDS for
                 # storage so the download pipeline can score candidates by

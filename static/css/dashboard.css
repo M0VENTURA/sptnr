@@ -1,4 +1,29 @@
 /* Dashboard page styles — only dashboard-specific rules, global styles in popularr.css */
+
+/* Scanner mode selector: joined segmented control (keeps the Bootstrap
+   pill-tab engine — ids/data-bs attributes drive the per-mode panes). */
+.scanner-mode-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 !important;
+    border: 1px solid var(--border-color, #444);
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+.scanner-mode-tabs .nav-item {
+    flex: 1 1 auto;
+}
+
+.scanner-mode-tabs .nav-link {
+    border-radius: 0;
+    border-right: 1px solid var(--border-color, #444);
+}
+
+.scanner-mode-tabs .nav-link:last-child {
+    border-right: none;
+}
+
 .upcoming-source-chip {
     font-size: 0.70rem;
     padding: 0.15rem 0.4rem;

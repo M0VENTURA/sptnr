@@ -101,14 +101,16 @@
   -webkit-line-clamp: unset;
   display: block;
 }
-/* Mobile 4-tab grouping: only the active group is visible on phones */
-@media (max-width: 991.98px) {
-  .mobile-tab-group { display: none; }
-  .mobile-tab-group.mobile-tab-active { display: block; }
-}
-@media (min-width: 992px) {
-  .mobile-tab-group { display: block !important; }
-}
+  /* Mobile 4-tab grouping: only the active group is visible on phones.
+     The default "Albums" group is pre-marked mobile-tab-active in the
+     template so the page is never blank before/without JS. */
+  @media (max-width: 991.98px) {
+    .mobile-tab-group { display: none; }
+    .mobile-tab-group.mobile-tab-active { display: block; }
+  }
+  @media (min-width: 992px) {
+    .mobile-tab-group { display: block !important; }
+  }
 /* Sticky queue toast */
 .queue-toast {
   position: fixed;

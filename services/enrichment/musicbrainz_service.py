@@ -928,22 +928,32 @@ def resolve_release_id(release_id: str) -> str:
         pass
 
     try:
-        releases = http.browse_releases_for_group(release_id, inc="media", limit=25)
+        releases = http.browse_releases_for_group(release_id, inc="media", limit=50)
         if releases:
-            # Prefer a release that actually carries media/tracks — the
-            # default browse order can surface trackless promos or box-set
-            # reissues before the canonical album.
-            for rel in releases:
-                media = rel.get("media") or []
-                if any((m.get("tracks") or []) for m in media):
-                    resolved = rel["id"]
-                    logger.info(
-                        "[MB_RESOLVE] Release-group %s resolved to release %s",
-                        release_id,
-                        resolved,
-                    )
-                    return resolved
-            return releases[0]["id"]
+            # Smart selector: prefer OFFICIAL releases, then the one with the
+            # MOST tracks (summed across all media).  The default browse order
+            # frequently surfaces 4-track promos / sampler editions before the
+            # canonical full album (e.g. a 15-track Greatest Hits).
+            def _total_tracks(rel: dict) -> int:
+                return sum(
+                    int((m.get("track-count") or 0))
+                    for m in (rel.get("media") or [])
+                )
+
+            official = [
+                r for r in releases
+                if str(r.get("status") or "").strip().lower() == "official"
+            ]
+            candidates = [r for r in (official or releases) if _total_tracks(r) > 0]
+            candidates = candidates or (official or releases)
+            best = max(candidates, key=_total_tracks)
+            resolved = best["id"]
+            logger.info(
+                "[MB_RESOLVE] Release-group %s resolved to release %s "
+                "(%s tracks, status %s)",
+                release_id, resolved, _total_tracks(best), best.get("status"),
+            )
+            return resolved
     except Exception as exc:
         logger.warning("[MB_RESOLVE] Failed to resolve release-group %s: %s", release_id, exc)
 

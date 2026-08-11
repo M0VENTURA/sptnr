@@ -82,6 +82,7 @@
     if (filters.filter && filters.filter !== 'all') qs.set('filter', filters.filter);
     if (filters.source && filters.source !== 'all') qs.set('source', filters.source);
     if (filters.include_queue) qs.set('include_queue', 'true');
+    if (filters.window) qs.set('window', filters.window);
     qs.set('page', filters.page || 1);
     qs.set('limit', filters.limit || 50);
 

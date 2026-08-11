@@ -201,14 +201,15 @@ async function loadArtistCorrections() {
                 var titleText = parts.join(', ');
 
                 function makeBadgeToggle(extraClass) {
-                    var toggle = document.createElement('span');
+                    var toggle = document.createElement('a');
                     toggle.className = extraClass + ' correction-toggle text-decoration-none';
+                    toggle.href = '#';
                     toggle.style.cursor = 'pointer';
                     toggle.title = titleText + ' — click to expand';
-                    var badge = document.createElement('span');
-                    badge.className = 'badge bg-danger';
-                    badge.textContent = 'Needs Correcting';
-                    toggle.appendChild(badge);
+                    var icon = document.createElement('i');
+                    icon.className = 'bi bi-wrench-adjustable-circle-fill text-warning';
+                    icon.setAttribute('aria-hidden', 'true');
+                    toggle.appendChild(icon);
                     toggle.addEventListener('click', function (e) {
                         e.preventDefault();
                         toggleCorrectionDetail(row, artistName, info, toggle);

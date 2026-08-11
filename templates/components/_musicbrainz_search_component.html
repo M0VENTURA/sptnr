@@ -345,7 +345,7 @@ window.performMbSearch = async function() {
         html += '<p class="card-text small text-muted mb-1 text-truncate">' + escHtml(artistName) + '</p>';
         // Horizontal metadata badge row: type + source + year/country.
         html += '<div class="d-flex align-items-center gap-2 flex-wrap small text-muted mb-1">';
-        html += '<span class="badge bg-secondary-subtle text-secondary-emphasis">' + escHtml(t) + '</span>';
+        html += '<span class="badge bg-secondary-subtle text-secondary-emphasis">' + escHtml(type) + '</span>';
         html += '<span class="badge bg-info-subtle text-info-emphasis"><i class="bi bi-music-note-beamed"></i> MusicBrainz</span>';
         html += '<span>' + year + (r.country ? ' · ' + escHtml(r.country) : '') + '</span>';
         html += '</div>';

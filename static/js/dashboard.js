@@ -347,10 +347,10 @@ function renderRecentScans(scans) {
     }).join(" ");
 
     return `<tr ${group._inProgress ? 'class="table-active"' : ''}>
-      <td><a href='${artistUrl}'>${escapeHtml(group.artist)}</a></td>
-      <td>${group.album && group.album !== "…" ? `<a href='${albumUrl}'>${escapeHtml(group.album)}</a>` : '<span class="text-muted fst-italic">…</span>'}</td>
-      <td><div class='d-flex flex-wrap gap-2'>${badges}</div></td>
-      <td class='text-muted text-end'><small>${group._inProgress ? "now" : formatScanTimestamp(group.latest_timestamp)}</small></td>
+      <td class="text-truncate" style="max-width: 120px;"><a href='${artistUrl}' class="text-success text-decoration-none fw-semibold">${escapeHtml(group.artist)}</a></td>
+      <td class="text-truncate" style="max-width: 140px;">${group.album && group.album !== "…" ? `<a href='${albumUrl}' class="text-light text-decoration-none">${escapeHtml(group.album)}</a>` : '<span class="text-muted fst-italic">…</span>'}</td>
+      <td><div class='d-flex flex-wrap gap-1'>${badges}</div></td>
+      <td class='d-none d-sm-table-cell text-muted text-end'><small>${group._inProgress ? "now" : formatScanTimestamp(group.latest_timestamp)}</small></td>
     </tr>`;
   }).join("");
 }
@@ -427,12 +427,7 @@ function renderUpcomingReleasesTable(releases) {
   if (!body) return;
 
   const countEl = document.getElementById("upcomingTableCount");
-  if (countEl) {
-    countEl.textContent =
-      total && total > releases.length
-        ? `${releases.length} of ${total} (±7d)`
-        : `${releases.length} release(s)`;
-  }
+  if (countEl) countEl.textContent = `${releases.length} release(s)`;
 
   if (!releases || releases.length === 0) {
     body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No upcoming releases found.</td></tr>';
@@ -532,44 +527,7 @@ function setUpcomingTableFilter(filter) {
   loadUpcomingReleasesTable();
 }
 
-// ===== Upcoming Releases: ±7-day window (client-side) =====
-let dashboardUpcomingAll = [];
-let dashboardUpcomingShowAll = false;
-
-function _inSevenDayWindow(release) {
-  const raw = String(release.release_date || "").slice(0, 10);
-  if (raw.length !== 10) return false;
-  const d = new Date(raw + "T00:00:00");
-  if (isNaN(d.getTime())) return false;
-  const now = new Date();
-  const start = new Date(now.getTime() - 7 * 86400000);
-  const end = new Date(now.getTime() + 7 * 86400000);
-  return d >= start && d <= end;
-}
-
-function renderUpcomingFromStore() {
-  const all = dashboardUpcomingAll;
-  const windowed = all.filter(_inSevenDayWindow);
-  const visible = dashboardUpcomingShowAll ? all : windowed;
-  renderUpcomingReleasesTable(visible, all.length);
-
-  const btn = document.getElementById("upcomingShowAllBtn");
-  if (!btn) return;
-  if (dashboardUpcomingShowAll) {
-    btn.classList.remove("d-none");
-    btn.innerHTML = '<i class="bi bi-chevron-up"></i> ±7 days only';
-  } else if (all.length > windowed.length) {
-    btn.classList.remove("d-none");
-    btn.innerHTML = `<i class="bi bi-chevron-down"></i> Show all ${all.length} releases`;
-  } else {
-    btn.classList.add("d-none");
-  }
-}
-
-function toggleUpcomingShowAll() {
-  dashboardUpcomingShowAll = !dashboardUpcomingShowAll;
-  renderUpcomingFromStore();
-}
+// ===== Upcoming Releases: server-side ±7-day snapshot =====
 
 /** One-click confirm of a pipeline candidate match (yellow 🔗 button). */
 async function confirmUpcomingCandidate(releaseId, mbidEnc, buttonEl) {
@@ -596,14 +554,20 @@ async function loadUpcomingReleasesTable() {
     const data = await UpcomingReleasesService.fetchReleases({
       filter: dashboardTableFilter === "collection" ? "collection" : undefined,
       include_queue: true,
+      window: 7,
     });
     let releases = data.releases || [];
 
     if (dashboardTableFilter === "collection") releases = releases.filter(r => r.artist_in_collection);
 
     releases.sort((a, b) => (a.release_date || "9999-12-31").localeCompare(b.release_date || "9999-12-31"));
-    dashboardUpcomingAll = releases;
-    renderUpcomingFromStore();
+    renderUpcomingReleasesTable(releases);
+
+    // Footer link to the full manager, labelled with the full-window count.
+    const link = document.getElementById("upcomingViewAllLink");
+    if (link && data.total) {
+      link.textContent = `View All ${data.total} Releases & Management Tools `;
+    }
   } catch (error) {
     console.error("Error loading upcoming releases table:", error);
   }
