@@ -4,39 +4,6 @@
   <meta charset="utf-8">
   <title>{% block title %}Popularr Dashboard{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  
-  <style>
-    :root {
-      --primary-bg: #121212;
-      --secondary-bg: #1e1e1e;
-      --tertiary-bg: #282828;
-      --spotify-green: #1db954;
-      --spotify-green-hover: #1ed760;
-      --text-primary: #ffffff;
-      --text-secondary: #d0d0d0;
-      --text-tertiary: #a0a0a0;
-      --border-color: #282828;
-    }
-    
-    html, body { 
-        background-color: var(--primary-bg) !important; 
-        color: var(--text-primary) !important;
-        color-scheme: dark;
-    }
-    
-    .card, .card-body, .card-header, .table, .table th, .table td {
-      background-color: var(--secondary-bg) !important;
-      color: var(--text-primary) !important;
-      border-color: var(--border-color) !important;
-    }
-    
-    /* Ensure navbar stays dark and opaque */
-    .navbar {
-        background-color: rgba(18,18,18,0.98) !important;
-        border-bottom: 1px solid var(--border-color) !important;
-        backdrop-filter: blur(10px);
-    }
-  </style>
 
   {% set dist = url_for('static', filename='dist') %}
   {% if config.get('features', {}).get('use_local_assets', False) %}
@@ -47,7 +14,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
   {% endif %}
   
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/popularr.css') }}?v=3">
+  <link rel="stylesheet" href="{{ versioned_static('css/popularr.css') }}">
 </head>
 <body>
   <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
@@ -210,7 +177,7 @@
   <script src="{{ url_for('static', filename='js/player.js') }}"></script>
   <script src="{{ url_for('static', filename='js/musicbrainz-folder-groups.js') }}"></script>
   <script src="{{ url_for('static', filename='js/main.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/unified_search.js') }}?v=1"></script>
+  <script src="{{ versioned_static('js/unified_search.js') }}"></script>
 
   {% block scripts %}{% endblock %}
 </body>

@@ -123,26 +123,26 @@
                                     <i class="bi bi-pencil-square"></i> <span class="d-none d-sm-inline">Rename File</span>
                                 </button>
                             </div>
-                            <!-- Mobile overflow menu -->
-                            <div class="btn-group d-lg-none">
-                                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
-                                    <i class="bi bi-three-dots-vertical"></i> Actions
-                                </button>
-                                <ul class="dropdown-menu dropdown-menu-end">
-                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="document.getElementById('rescanTrackForm').submit()"><i class="bi bi-arrow-repeat"></i> Rescan Track</a></li>
-                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="Player.playTrack('{{ track_id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')"><i class="bi bi-play-circle"></i> Preview</a></li>
-                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="document.getElementById('essentiaScanForm').submit()"><i class="bi bi-cpu"></i> Essentia Scan</a></li>
-                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameTrackFile('{{ track.id }}')"><i class="bi bi-pencil-square"></i> Rename File</a></li>
-                                    {% if qbit_config.enabled or slskd_config.enabled %}
-                                    <li><hr class="dropdown-divider"></li>
-                                    {% endif %}
-                                    {% if qbit_config.enabled %}
-                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openQbitSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-cloud-download"></i> Search qBittorrent</a></li>
-                                    {% endif %}
-                                    {% if slskd_config.enabled %}
-                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openSlskdSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-music-note-beamed"></i> Search Soulseek</a></li>
-                                    {% endif %}
-                                </ul>
+                            <!-- Mobile CTA row (standardized hero component) -->
+                            {% from 'components/_hero.html' import hero_cta %}
+                            <div class="d-lg-none w-100">
+                            {% call hero_cta(
+                                play_onclick="Player.playTrack('{{ track_id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')",
+                                scan_form_action=url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id),
+                                scan_selector=false
+                            ) %}
+                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="document.getElementById('essentiaScanForm').submit()"><i class="bi bi-cpu me-2"></i> Essentia Scan</a></li>
+                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameTrackFile('{{ track.id }}')"><i class="bi bi-pencil-square me-2"></i> Rename File</a></li>
+                                {% if qbit_config.enabled or slskd_config.enabled %}
+                                <li><hr class="dropdown-divider"></li>
+                                {% endif %}
+                                {% if qbit_config.enabled %}
+                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="openQbitSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-cloud-download me-2"></i> Search qBittorrent</a></li>
+                                {% endif %}
+                                {% if slskd_config.enabled %}
+                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="openSlskdSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-music-note-beamed me-2"></i> Search Soulseek</a></li>
+                                {% endif %}
+                            {% endcall %}
                             </div>
                         </div>
                     </div>
@@ -206,11 +206,11 @@
                     <i class="bi bi-arrows-angle-contract"></i> Collapse All
                 </button>
             </div>
-            <div class="d-lg-none btn-group w-100" role="group" aria-label="Track sections" id="mobileTabBar">
-                <button type="button" class="btn btn-info active" data-tab="scoring"><i class="bi bi-graph-up"></i> Score</button>
-                <button type="button" class="btn btn-outline-info" data-tab="details"><i class="bi bi-info-circle"></i> Details</button>
-                <button type="button" class="btn btn-outline-info" data-tab="lyrics"><i class="bi bi-chat-quote"></i> Lyrics</button>
-                <button type="button" class="btn btn-outline-info" data-tab="tech"><i class="bi bi-gear"></i> Audio</button>
+            <div class="mobile-tab-bar d-lg-none" role="tablist" aria-label="Track sections" id="mobileTabBar" data-mobile-tabs data-group-attr="data-mobile-tab" data-active-class="mobile-tab-active">
+                <button type="button" class="tab-btn active" data-tab="scoring" role="tab" aria-selected="true"><i class="bi bi-graph-up"></i> Score</button>
+                <button type="button" class="tab-btn" data-tab="details" role="tab" aria-selected="false"><i class="bi bi-info-circle"></i> Details</button>
+                <button type="button" class="tab-btn" data-tab="lyrics" role="tab" aria-selected="false"><i class="bi bi-chat-quote"></i> Lyrics</button>
+                <button type="button" class="tab-btn" data-tab="tech" role="tab" aria-selected="false"><i class="bi bi-gear"></i> Audio</button>
             </div>
         </div>
     </div>
@@ -1656,39 +1656,9 @@ async function fetchLyricsFromLrclib(trackId) {
 </script>
 
 <script>
-// ── Mobile segmented tabs: Scoring / Details / Lyrics / Audio ──
-(function () {
-    var mq = window.matchMedia('(min-width: 992px)');
-    var currentTab = 'scoring';
-
-    function applyMobileTabs() {
-        var isDesktop = mq.matches;
-        document.querySelectorAll('[data-mobile-tab]').forEach(function (el) {
-            var visible = isDesktop || el.getAttribute('data-mobile-tab') === currentTab;
-            el.style.display = visible ? '' : 'none';
-        });
-        document.querySelectorAll('#mobileTabBar button[data-tab]').forEach(function (btn) {
-            var active = btn.getAttribute('data-tab') === currentTab && !isDesktop;
-            btn.classList.toggle('btn-info', active);
-            btn.classList.toggle('btn-outline-info', !active);
-            btn.classList.toggle('active', active);
-        });
-    }
-
-    var bar = document.getElementById('mobileTabBar');
-    if (bar) {
-        bar.addEventListener('click', function (e) {
-            var btn = e.target.closest('button[data-tab]');
-            if (!btn) return;
-            currentTab = btn.getAttribute('data-tab');
-            applyMobileTabs();
-        });
-    }
-    if (mq.addEventListener) {
-        mq.addEventListener('change', applyMobileTabs);
-    }
-    applyMobileTabs();
-})();
+// ── Mobile segmented tabs (Score / Details / Lyrics / Audio) ──
+// Driven by the shared engine in main.js ([data-mobile-tabs] bar + the
+// global ``[data-mobile-tab]`` visibility CSS in popularr.css).
 </script>
 
 <!-- External Lookup Modal -->

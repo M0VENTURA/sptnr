@@ -15,9 +15,11 @@ Runtime state is read through services.scanning.runtime_state.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime
 
-from quart import jsonify, request
+from quart import jsonify, make_response, request
 from sqlalchemy import text
 from db.engine import db_session
 from routes.scan_routes import scans_bp
@@ -231,6 +233,49 @@ def api_scan_progress():
             "active_scan_count": 0,
             "error": str(exc),
         }), 500
+
+
+@scans_bp.route("/api/scan-progress/stream")
+async def api_scan_progress_stream():
+    """Server-Sent Events stream of unified scan progress.
+
+    Pushes the same payload as ``/api/scan-progress`` whenever it changes
+    (checked on a 1s tick) and keeps the connection alive with heartbeat
+    comments between updates.  Lets any page — the mobile live-scan toast,
+    the dashboard status bar — render scan progress without polling.
+
+    Event format: ``data: {json}\n\n`` with the unified progress payload
+    (``is_running``, ``active_scans``, ``active_scan_count``).
+    """
+    async def event_stream():
+        last_sig: str | None = None
+        while True:
+            try:
+                from services.scanning.pipelines.progress_service import get_scan_progress
+                result = get_scan_progress()
+            except Exception:
+                result = {"is_running": False, "active_scans": []}
+            try:
+                sig = json.dumps(result, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                sig = json.dumps({"is_running": False, "active_scans": []})
+            if sig != last_sig:
+                last_sig = sig
+                yield f"data: {sig}\n\n"
+            else:
+                yield ": keepalive\n\n"
+            await asyncio.sleep(1.0)
+
+    response = await make_response(
+        event_stream(),
+        {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+    response.timeout = None
+    return response
 
 @scans_bp.route("/api/popularity/run", methods=["POST"])
 async def api_popularity_run_compat():

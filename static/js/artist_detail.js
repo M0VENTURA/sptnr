@@ -3144,20 +3144,8 @@ function setArtistFilter(filter) {
   }
 }
 
-// Mobile 4-tab navigation: show/hide grouped sections on <lg viewports.
-function switchArtistMobileTab(tab) {
-  document.querySelectorAll('.artist-mobile-tab').forEach(btn => {
-    // Active state is styled via CSS (underline indicator) — only the
-    // class matters, the btn-info/btn-outline-info pair was retired.
-    btn.classList.toggle('active', btn.dataset.artistTab === tab);
-  });
-  document.querySelectorAll('.mobile-tab-group').forEach(group => {
-    const match = group.dataset.mobileGroup === tab;
-    group.classList.toggle('mobile-tab-active', match);
-    // Also keep the section reachable for desktop pill nav on large screens.
-    if (window.innerWidth >= 992) group.style.display = '';
-  });
-}
+// Mobile 4-tab navigation now runs from the shared engine in main.js
+// (``[data-mobile-tabs]`` bars) — see initMobileTabs().
 
 // Accordion single-expansion across all artist release categories: opening an
 // album tracklist collapses every other open album tracklist on the page.
@@ -3228,15 +3216,9 @@ async function quickQueueRelease(releaseId, releaseTitle, artist) {
   }
 }
 
-// Init: mobile tabs default to "disco", single-expansion listener.
+// Init: single-expansion listener.  Mobile tabs are driven by the shared
+// engine in main.js ([data-mobile-tabs]).
 document.addEventListener('DOMContentLoaded', () => {
-  const tabBar = document.getElementById('artistMobileTabBar');
-  if (tabBar) {
-    tabBar.querySelectorAll('.artist-mobile-tab').forEach(btn => {
-      btn.addEventListener('click', () => switchArtistMobileTab(btn.dataset.artistTab));
-    });
-    switchArtistMobileTab('disco');
-  }
   initArtistSingleExpansion();
 });
 

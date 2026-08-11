@@ -34,6 +34,7 @@ from helpers.app_hooks import register_app_hooks
 from helpers.template_filters import register_filters
 from helpers.file_manager import ensure_default_log_files
 from helpers.task_manager import initialize_app_services
+from helpers.asset_helpers import register_asset_helpers
 
 # SQLAlchemy engine — initialises the connection pool on startup.
 # Gracefully degrades if sqlalchemy is not installed (e.g. older Docker image).
@@ -90,6 +91,7 @@ register_flash_helpers(app)
 register_filters(app)
 register_all_blueprints(app)
 register_app_hooks(app)
+register_asset_helpers(app)
 
 # NOTE: Database schema initialisation and Alembic migrations are handled
 # by entrypoint.sh BEFORE Hypercorn workers are spawned.  This avoids

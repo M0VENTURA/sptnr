@@ -20,6 +20,140 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ==========================================================================
+// Generic mobile tab engine (artist / album / track pages)
+// --------------------------------------------------------------------------
+// A tab bar with ``data-mobile-tabs`` gets:
+//   - data-group-attr    : section attribute grouping content (default
+//                          ``data-mobile-group``)
+//   - data-active-class  : class toggled on the active section (default
+//                          ``mobile-tab-active``)
+// Sections are shown/hidden via the active class, so each page's desktop
+// media query (all sections visible >= 992px) keeps working untouched.
+// Active tab persists to the URL hash on user clicks only.
+// ==========================================================================
+
+function initMobileTabs(bar, options) {
+  options = options || {};
+  const groupAttr = options.groupAttr || 'data-mobile-group';
+  const activeClass = options.activeClass || 'mobile-tab-active';
+  const buttons = Array.prototype.slice.call(bar.querySelectorAll('[data-tab]'));
+  if (!buttons.length) return;
+
+  function apply(tab, persistHash) {
+    buttons.forEach((b) => {
+      const isActive = b.getAttribute('data-tab') === tab;
+      b.classList.toggle('active', isActive);
+      b.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+    document.querySelectorAll('[' + groupAttr + ']').forEach((section) => {
+      section.classList.toggle(activeClass, section.getAttribute(groupAttr) === tab);
+    });
+    if (persistHash && window.history && history.replaceState) {
+      history.replaceState(null, '', '#' + tab);
+    }
+  }
+
+  bar.addEventListener('click', (e) => {
+    const btn = e.target.closest ? e.target.closest('[data-tab]') : null;
+    if (!btn) return;
+    e.preventDefault();
+    apply(btn.getAttribute('data-tab'), true);
+  });
+
+  // Initial state: URL hash wins, else the pre-marked active button, else
+  // the first tab.  The hash is never written at load time so desktop
+  // scrollspy anchors keep working.
+  const hash = window.location.hash ? window.location.hash.replace('#', '') : '';
+  const initial =
+    hash && buttons.some((b) => b.getAttribute('data-tab') === hash)
+      ? hash
+      : (bar.querySelector('.active') || buttons[0]).getAttribute('data-tab');
+  apply(initial, false);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll('[data-mobile-tabs]').forEach((bar) => {
+    initMobileTabs(bar, {
+      groupAttr: bar.getAttribute('data-group-attr') || 'data-mobile-group',
+      activeClass: bar.getAttribute('data-active-class') || 'mobile-tab-active',
+    });
+  });
+});
+
+// ==========================================================================
+// Live scan progress toast (SSE)
+// --------------------------------------------------------------------------
+// Subscribes to /api/scan-progress/stream on every page and shows a compact
+// bottom toast while a scan runs (current artist / album + progress bar).
+// EventSource reconnects automatically; the toast reappears per scan and is
+// dismissible.  Falls back silently to the dashboard's polling UI when SSE
+// is unavailable.
+// ==========================================================================
+
+function showScanProgressToast(data) {
+  let toast = document.getElementById('scanProgressToast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'scanProgressToast';
+    toast.className = 'scan-progress-toast d-none';
+    toast.innerHTML =
+      '<div class="scan-progress-toast-body">' +
+        '<div class="scan-progress-toast-title">' +
+          '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>' +
+          '<strong id="scanProgressTitle">Scanning…</strong>' +
+        '</div>' +
+        '<div id="scanProgressText" class="small text-muted"></div>' +
+        '<div class="progress mt-2" style="height:4px;"><div id="scanProgressBar" class="progress-bar bg-success" style="width:0%;"></div></div>' +
+      '</div>' +
+      '<button type="button" class="scan-progress-toast-close" aria-label="Dismiss" title="Dismiss">' +
+        '<i class="bi bi-x-lg"></i>' +
+      '</button>';
+    toast.querySelector('.scan-progress-toast-close').addEventListener('click', function () {
+      toast.classList.add('d-none');
+    });
+    document.body.appendChild(toast);
+  }
+
+  const active = (data.active_scans || []).filter((s) => s && s.is_running);
+  if (!active.length) {
+    toast.classList.add('d-none');
+    return;
+  }
+  const scan = active[0];
+  const pct = Math.min(Number(scan.percent_complete) || 0, 100);
+  const typeLabel = String(scan.scan_type || 'scan')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  toast.querySelector('#scanProgressTitle').textContent = typeLabel + ' — ' + pct + '%';
+  let detail = '';
+  if (scan.current_artist) detail += scan.current_artist;
+  if (scan.current_album) detail += (detail ? ' · ' : '') + scan.current_album;
+  if (scan.current_stage && String(scan.current_stage) !== 'complete') {
+    detail += (detail ? ' — ' : '') + String(scan.current_stage);
+  }
+  toast.querySelector('#scanProgressText').textContent = detail || scan.message || 'Working…';
+  toast.querySelector('#scanProgressBar').style.width = pct + '%';
+  toast.classList.remove('d-none');
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  if (typeof EventSource === 'undefined') return;
+  try {
+    const source = new EventSource('/api/scan-progress/stream');
+    source.addEventListener('message', (e) => {
+      if (!e.data) return;
+      try {
+        showScanProgressToast(JSON.parse(e.data));
+      } catch (_) {
+        /* malformed frame — ignore */
+      }
+    });
+  } catch (_) {
+    /* SSE unavailable — dashboard polling still covers progress */
+  }
+});
+
+// ==========================================================================
 // Global functions (moved from inline base.html <script> block)
 // These must be on window because they are called by inline onclick/onsubmit
 // handlers in templates (e.g. navSearch, openSlideOver).

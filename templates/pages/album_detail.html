@@ -169,19 +169,32 @@
                             </ul>
                         </div>
                     </div>
-                    <!-- Mobile rescan form (compact) -->
-                    <form method="POST" action="{{ url_for('scans.scan_album_custom') }}" class="d-lg-none d-flex align-items-center gap-2 flex-wrap mt-2">
-                        <input type="hidden" name="artist" value="{{ artist_name }}">
-                        <input type="hidden" name="album" value="{{ album_name }}">
-                        {% include 'components/_scan_selector.html' %}
-                        <div class="form-check form-check-inline mb-0" title="Force full rescan for this album">
-                            <input class="form-check-input" type="checkbox" id="albumForceScanMobile" name="force" value="1">
-                            <label class="form-check-label small" for="albumForceScanMobile">Force</label>
-                        </div>
-                        <button class="btn btn-warning btn-sm" type="submit" title="Run selected scan for this album">
-                            <i class="bi bi-arrow-repeat"></i> Rescan
-                        </button>
-                    </form>
+                    <!-- Mobile CTA row (standardized hero component) -->
+                    {% from 'components/_hero.html' import hero_cta %}
+                    <div class="d-lg-none">
+                    {% call hero_cta(
+                        play_onclick="playAlbum()",
+                        scan_form_action=url_for('scans.scan_album_custom'),
+                        scan_artist=artist_name,
+                        scan_album=album_name,
+                        scan_force=true,
+                        favourite_onclick="addBookmark('album', '" ~ album_name|escapejs ~ "', '" ~ artist_name|escapejs ~ "', '" ~ album_name|escapejs ~ "', null)",
+                        favourite_checked=is_album_favourite
+                    ) %}
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumLookupModal()"><i class="bi bi-search me-2"></i> Lookup</a></li>
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumArtModal()"><i class="bi bi-image me-2"></i> Change Album Art</a></li>
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-files me-2"></i> Rename Files</a></li>
+                        {% if (qbit_config is defined and qbit_config.enabled) or (slskd_config is defined and slskd_config.enabled) %}
+                        <li><hr class="dropdown-divider"></li>
+                        {% endif %}
+                        {% if qbit_config is defined and qbit_config.enabled %}
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openQbitSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-cloud-download me-2"></i> Search qBittorrent</a></li>
+                        {% endif %}
+                        {% if slskd_config is defined and slskd_config.enabled %}
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openSlskdSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-music-note-beamed me-2"></i> Search Soulseek</a></li>
+                        {% endif %}
+                    {% endcall %}
+                    </div>
                     <hr class="my-3">
                     <div class="row g-2">
                         <div class="col-6 col-md-3">
@@ -287,11 +300,11 @@
                 <li class="nav-item"><a class="nav-link" href="#album-similar-section">Similar</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-tracks-section">Tracks</a></li>
             </ul>
-            <div class="btn-group d-lg-none w-100" role="group" aria-label="Album sections" id="albumMobileTabBar">
-                <button type="button" class="btn btn-info active album-mobile-tab" data-album-tab="tracks"><i class="bi bi-music-note-list"></i> Tracks</button>
-                <button type="button" class="btn btn-outline-info album-mobile-tab" data-album-tab="details"><i class="bi bi-info-circle"></i> Details</button>
-                <button type="button" class="btn btn-outline-info album-mobile-tab" data-album-tab="genres"><i class="bi bi-tags"></i> Genres</button>
-                <button type="button" class="btn btn-outline-info album-mobile-tab" data-album-tab="similar"><i class="bi bi-people"></i> Similar</button>
+            <div class="mobile-tab-bar d-lg-none" role="tablist" aria-label="Album sections" id="albumMobileTabBar" data-mobile-tabs data-group-attr="data-album-group" data-active-class="album-mobile-active">
+                <button type="button" class="tab-btn active" data-tab="tracks" role="tab" aria-selected="true"><i class="bi bi-music-note-list"></i> Tracks</button>
+                <button type="button" class="tab-btn" data-tab="details" role="tab" aria-selected="false"><i class="bi bi-info-circle"></i> Details</button>
+                <button type="button" class="tab-btn" data-tab="genres" role="tab" aria-selected="false"><i class="bi bi-tags"></i> Genres</button>
+                <button type="button" class="tab-btn" data-tab="similar" role="tab" aria-selected="false"><i class="bi bi-people"></i> Similar</button>
             </div>
         </div>
     </div>
@@ -1169,7 +1182,7 @@
 
 <script id="page-data" type="application/json">{{ {"artistName": artist_name, "albumName": album_name} | tojson | safe }}</script>
 <script>var _pd = JSON.parse(document.getElementById('page-data').textContent); window._pageData = _pd;</script>
-<script src="{{ url_for('static', filename='js/album_detail.js') }}?v=3"></script>
+<script src="{{ versioned_static('js/album_detail.js') }}"></script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 
 <!-- Missing Tracks (MusicBrainz release vs library) — Tracks tab only, so it

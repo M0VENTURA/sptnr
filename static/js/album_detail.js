@@ -3691,17 +3691,8 @@ function applyAlbumTrackMbRelease(releaseMbid, releaseGroupMbid, releaseTitle) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Mobile 4-tab navigation on <lg viewports.
-function switchAlbumMobileTab(tab) {
-    document.querySelectorAll('.album-mobile-tab').forEach(function (btn) {
-        const active = btn.dataset.albumTab === tab;
-        btn.classList.toggle('active', active);
-        btn.classList.toggle('btn-info', active);
-        btn.classList.toggle('btn-outline-info', !active);
-    });
-    document.querySelectorAll('.album-mobile-group').forEach(function (group) {
-        group.classList.toggle('album-mobile-active', group.dataset.albumGroup === tab);
-    });
-}
+// Mobile 4-tab navigation now runs from the shared engine in main.js
+// (``[data-mobile-tabs]`` bars) — see initMobileTabs().
 
 // Toggle the hero "Top Genres" +X more popover (album genre tag management).
 function toggleAlbumHeroGenres(toggle) {
@@ -3789,13 +3780,8 @@ function alignTracklist() {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
-    const albumTabBar = document.getElementById('albumMobileTabBar');
-    if (albumTabBar) {
-        albumTabBar.querySelectorAll('.album-mobile-tab').forEach(function (btn) {
-            btn.addEventListener('click', function () { switchAlbumMobileTab(btn.dataset.albumTab); });
-        });
-        switchAlbumMobileTab('tracks');
-    }
+    // Mobile tabs are driven by the shared engine in main.js
+    // ([data-mobile-tabs] bar) — see initMobileTabs().
     initAlbumGenreClamp();
 });
 

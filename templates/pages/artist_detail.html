@@ -21,25 +21,7 @@
   #artist-stats-section .text-muted { margin-bottom: 0.2rem !important; font-size: 0.75rem !important; }
 }
 
-/* ── Mobile tab bar: underline indicator instead of solid colour blocks ── */
-#artistMobileTabBar .artist-mobile-tab {
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  border-radius: 0;
-  border-bottom: 2px solid transparent;
-  padding: 0.5rem 0.25rem;
-  flex: 1 1 0;
-}
-#artistMobileTabBar .artist-mobile-tab:hover { color: var(--text-primary); }
-#artistMobileTabBar .artist-mobile-tab.active {
-  background: transparent;
-  color: var(--accent-color, #0dcaf0);
-  border-bottom-color: var(--accent-color, #0dcaf0);
-  font-weight: 600;
-}
-
-/* ── Former band members: muted outline pills (active members stay solid) ── */
+/* Former band members: muted outline pills (active members stay solid) */
 .artist-member-former {
   background-color: transparent;
   border: 1px solid var(--border-color);
@@ -254,11 +236,11 @@
         <li class="nav-item"><a class="nav-link" href="#artist-covers-section">Covers</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-appears-on-section">Appears On</a></li>
       </ul>
-      <div class="btn-group d-lg-none w-100 mt-2 mt-lg-0" role="group" aria-label="Artist sections" id="artistMobileTabBar">
-        <button type="button" class="btn artist-mobile-tab active" data-artist-tab="disco"><i class="bi bi-vinyl"></i> Albums</button>
-        <button type="button" class="btn artist-mobile-tab" data-artist-tab="top"><i class="bi bi-star"></i> Top</button>
-        <button type="button" class="btn artist-mobile-tab" data-artist-tab="similar"><i class="bi bi-people"></i> Similar</button>
-        <button type="button" class="btn artist-mobile-tab" data-artist-tab="about"><i class="bi bi-info-circle"></i> About</button>
+      <div class="mobile-tab-bar d-lg-none mt-2 mt-lg-0" role="tablist" aria-label="Artist sections" id="artistMobileTabBar" data-mobile-tabs data-group-attr="data-mobile-group" data-active-class="mobile-tab-active">
+        <button type="button" class="tab-btn active" data-tab="disco" role="tab" aria-selected="true"><i class="bi bi-vinyl"></i> Albums</button>
+        <button type="button" class="tab-btn" data-tab="top" role="tab" aria-selected="false"><i class="bi bi-star"></i> Top</button>
+        <button type="button" class="tab-btn" data-tab="similar" role="tab" aria-selected="false"><i class="bi bi-people"></i> Similar</button>
+        <button type="button" class="tab-btn" data-tab="about" role="tab" aria-selected="false"><i class="bi bi-info-circle"></i> About</button>
       </div>
       <div class="d-flex align-items-center gap-2 mt-3 flex-wrap" id="artistFilterBar">
         <span class="small text-muted me-1"><i class="bi bi-funnel"></i> Filter:</span>
@@ -664,7 +646,7 @@
     <div id="artist-top-tracks-collapse" class="collapse">
     <div class="card-body p-0">
       <div class="table-responsive">
-        <table class="table table-hover mb-0">
+        <table class="table table-hover mb-0" data-mobile-cards>
           <thead>
             <tr>
               <th style="width: 60px;" class="text-center">#</th>
@@ -1038,7 +1020,7 @@
       <small class="text-muted">Featured on other artists' releases</small>
     </div>
     <div class="table-responsive">
-      <table class="table table-hover mb-0">
+      <table class="table table-hover mb-0" data-mobile-cards>
         <thead class="d-none d-md-table-header-group">
           <tr>
             <th style="width: 100px;">Art</th>

@@ -35,7 +35,7 @@
 </script>
 
 <!-- 2. Load the external logic -->
-<script src="{{ url_for('static', filename='js/upcoming_releases.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/monitor.js') }}?v=5"></script>
-<script src="{{ url_for('static', filename='js/downloads.js') }}?v=3"></script>
+<script src="{{ versioned_static('js/upcoming_releases.js') }}"></script>
+<script src="{{ versioned_static('js/monitor.js') }}"></script>
+<script src="{{ versioned_static('js/downloads.js') }}"></script>
 {% endblock %}

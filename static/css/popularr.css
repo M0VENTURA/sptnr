@@ -3,6 +3,38 @@
    Loaded from base.html on every page.
    ========================================================================== */
 
+/* ── Theme tokens (single source of truth — was inline in base.html) ───── */
+:root {
+    /* Surface colors */
+    --primary-bg: #121212;
+    --secondary-bg: #1e1e1e;
+    --tertiary-bg: #282828;
+    --border-color: #282828;
+
+    /* Accent colors (Spotify green heritage) */
+    --accent-color: #1db954;
+    --accent-hover: #1ed760;
+    --accent-rgb: 29, 185, 84;
+    --spotify-green: var(--accent-color);
+    --spotify-green-hover: var(--accent-hover);
+
+    /* Text tones */
+    --text-primary: #ffffff;
+    --text-secondary: #d0d0d0;
+    --text-tertiary: #a0a0a0;
+    --text-main: var(--text-primary);
+    --text-muted: var(--text-secondary);
+
+    /* Mobile stacking heights */
+    --navbar-height: 56px;
+    --player-bar-height: 64px;
+}
+
+/* Keep fixed bottom audio player from covering page content when visible */
+body:has(#globalPlayerBar:not(.d-none)) main.container-fluid {
+    padding-bottom: calc(var(--player-bar-height) + 1rem);
+}
+
 /* ── Modern card aesthetics ─────────────────────────────────────────────── */
 /* handled in Card & Table dark overrides section below */
 
@@ -46,21 +78,23 @@
     }
 }
 
-/* ── Mobile: tables → stacked cards ──────────────────────────────────────── */
-@media (max-width: 767px) {
-    .table-responsive table,
-    .table-responsive tbody,
-    .table-responsive tr,
-    .table-responsive td {
+/* ── Mobile: tables → stacked cards (OPT-IN via table[data-mobile-cards]) ── */
+/* Pages with hand-built mobile rows (album/track detail) never opt in, so the
+   injected ``data-label`` text can never concatenate into a title again. */
+@media (max-width: 767.98px) {
+    table[data-mobile-cards],
+    table[data-mobile-cards] tbody,
+    table[data-mobile-cards] tr,
+    table[data-mobile-cards] td {
         display: block;
         width: 100%;
     }
 
-    .table-responsive thead {
+    table[data-mobile-cards] thead {
         display: none;
     }
 
-    .table-responsive tr {
+    table[data-mobile-cards] tr {
         background-color: var(--secondary-bg, #1e1e1e);
         border: 1px solid var(--border-color, #333);
         border-radius: 0.5rem;
@@ -68,7 +102,7 @@
         padding: 0.5rem;
     }
 
-    .table-responsive td {
+    table[data-mobile-cards] td {
         border: none !important;
         padding: 0.4rem 0.5rem !important;
         text-align: left !important;
@@ -77,25 +111,25 @@
         align-items: center;
     }
 
-    .table-responsive td.text-center {
+    table[data-mobile-cards] td.text-center {
         justify-content: flex-end;
     }
 
     /* Keep nested tables inside cards as compact inline tables */
-    .table-responsive .table-responsive td {
+    .table-responsive table[data-mobile-cards] td {
         display: table-cell;
         padding: 0.25rem !important;
     }
 
     /* Inject column headers via data-label attributes */
-    .table-responsive td::before {
+    table[data-mobile-cards] td::before {
         content: attr(data-label);
         font-weight: 600;
-        color: var(--text-secondary);
+        color: var(--text-muted, var(--text-secondary));
         margin-right: 0.5rem;
         flex-shrink: 0;
     }
-    .table-responsive td:empty::before {
+    table[data-mobile-cards] td:empty::before {
         content: none;
     }
 }
@@ -300,6 +334,81 @@ option:checked { background-color: var(--spotify-green); color: #000; }
 .nav-pills .nav-link.active {
     background-color: var(--spotify-green, #1db954) !important;
     color: #000 !important;
+}
+
+/* ── Unified mobile segmented tab bar (artist / album / track) ─────────── */
+.mobile-tab-bar {
+    display: flex;
+    background-color: var(--secondary-bg);
+    border-bottom: 1px solid var(--border-color);
+    overflow-x: auto;
+}
+
+.mobile-tab-bar .tab-btn {
+    flex: 1 1 0;
+    padding: 0.65rem 0.4rem;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-weight: 600;
+    white-space: nowrap;
+    border-radius: 0;
+}
+
+.mobile-tab-bar .tab-btn:hover {
+    color: var(--text-primary);
+}
+
+.mobile-tab-bar .tab-btn.active {
+    color: var(--accent-color);
+    border-bottom-color: var(--accent-color);
+}
+
+/* ── Mobile tab section visibility (generic class engine) ──────────────── */
+@media (max-width: 991.98px) {
+    [data-mobile-tab] { display: none !important; }
+    [data-mobile-tab].mobile-tab-active { display: block !important; }
+}
+@media (min-width: 992px) {
+    [data-mobile-tab] { display: block !important; }
+}
+
+/* ── Live scan progress toast (SSE, every page) ────────────────────────── */
+.scan-progress-toast {
+    position: fixed;
+    bottom: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2050;
+    width: min(92vw, 420px);
+    background: rgba(20, 30, 24, 0.97);
+    border: 1px solid rgba(34, 197, 94, 0.5);
+    color: var(--text-primary);
+    border-radius: 0.6rem;
+    padding: 0.65rem 0.9rem;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-size: 0.9rem;
+}
+.scan-progress-toast.d-none { display: none; }
+.scan-progress-toast-body { flex: 1; min-width: 0; }
+.scan-progress-toast-title { display: flex; align-items: center; }
+.scan-progress-toast-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    padding: 0.1rem 0.2rem;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.scan-progress-toast-close:hover { color: var(--text-primary); }
+/* Sit above the fixed bottom audio player when it is visible */
+body:has(#globalPlayerBar:not(.d-none)) .scan-progress-toast {
+    bottom: calc(var(--player-bar-height) + 0.75rem);
 }
 
 /* ── Misc utilities ──────────────────────────────────────────────────────── */
