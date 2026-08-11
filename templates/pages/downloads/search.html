@@ -78,7 +78,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/downloads.js') }}"></script>
-<script src="{{ url_for('static', filename='js/playlist_import.js') }}"></script>
-<script src="{{ url_for('static', filename='js/search_init.js') }}"></script>
+<script src="{{ versioned_static('js/downloads.js') }}"></script>
+<script src="{{ versioned_static('js/playlist_import.js') }}"></script>
+<script src="{{ versioned_static('js/search_init.js') }}"></script>
 {% endblock %}

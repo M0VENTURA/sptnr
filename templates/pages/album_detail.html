@@ -842,7 +842,7 @@
 <script id="page-data" type="application/json">{{ {"artistName": artist_name, "albumName": album_name} | tojson | safe }}</script>
 <script>var _pd = JSON.parse(document.getElementById('page-data').textContent); window._pageData = _pd;</script>
 <script src="{{ versioned_static('js/album_detail.js') }}"></script>
-<script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
+<script src="{{ versioned_static('js/genre-utils.js') }}"></script>
 
 <!-- Bulk Genre Tagger Modal (used by the Tracks toolbar "Add Tags" button) -->
 <div class="modal fade" id="bulkGenreTaggerModal" tabindex="-1" aria-hidden="true">

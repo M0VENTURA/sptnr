@@ -67,7 +67,7 @@
 </div>
 
 <!-- Include JavaScript -->
-<script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+<script src="{{ versioned_static('js/downloads.js') }}"></script>
 <script>
   document.getElementById('mbSearchBtn').addEventListener('click', performMbSearch);
   document.getElementById('mbRefreshBtn').addEventListener('click', refreshMbDownloads);

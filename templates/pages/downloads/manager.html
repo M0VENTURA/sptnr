@@ -236,7 +236,7 @@
 
 {% endblock %}
 
-<script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+<script src="{{ versioned_static('js/downloads.js') }}"></script>
 <script>
     function scanDownloads() {
         document.getElementById('loadingState').style.display = 'block';
