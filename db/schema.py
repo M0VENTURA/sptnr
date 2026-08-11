@@ -278,6 +278,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "mbid_match_score": "REAL",
         "mbid_last_checked_at": "TEXT",
         "mbid_manual_override": "BOOLEAN DEFAULT FALSE",
+        "candidate_release_group_mbid": "TEXT",
         "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
     },
 }

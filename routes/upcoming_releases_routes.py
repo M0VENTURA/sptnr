@@ -46,6 +46,69 @@ def _search_musicbrainz_release_group(artist: str, album: str, track: str = "") 
     return client.search_release_groups(query, limit=20)
 
 
+def _persist_match_result(release_id: int, result: dict[str, Any]) -> None:
+    """Persist a pipeline match outcome (matched / candidate / unmatched).
+
+    - matched:   release_group_mbid set, high confidence, linked.
+    - candidate: candidate_mbid stored WITHOUT linking (UI offers one-click
+      confirm) so queue flows never act on an unconfirmed match.
+    - unmatched: cleared back to text-only.
+    """
+    status = result.get("status", "unmatched")
+    score = float(result.get("score") or 0.0)
+    now = datetime.now().isoformat()
+    with db_session() as session:
+        if status == "matched":
+            best = result["candidates"][0]
+            release_date = (best.get("first_release_date") or "")[:10]
+            primary_type = str(best.get("primary_type") or "")
+            session.execute(
+                text("""UPDATE upcoming_releases SET
+                        release_group_mbid = :mbid,
+                        match_source = 'auto_match',
+                        mbid_match_status = 'matched',
+                        mbid_match_score = :score,
+                        mbid_confidence = 'high',
+                        mbid_source = 'auto_match',
+                        mbid_last_checked_at = :checked,
+                        candidate_release_group_mbid = NULL,
+                        release_date = CASE
+                            WHEN release_date IS NULL OR (:date IS NOT NULL AND :date < release_date)
+                                THEN :date
+                            ELSE release_date
+                        END,
+                        primary_type = :ptype
+                    WHERE id = :id"""),
+                {"mbid": best["mbid"], "score": score, "checked": now,
+                 "date": release_date or None, "ptype": primary_type, "id": release_id},
+            )
+        elif status == "candidate":
+            best = result["candidates"][0]
+            session.execute(
+                text("""UPDATE upcoming_releases SET
+                        candidate_release_group_mbid = :mbid,
+                        mbid_match_status = 'candidate',
+                        mbid_match_score = :score,
+                        mbid_confidence = 'medium',
+                        mbid_source = 'auto_candidate',
+                        mbid_last_checked_at = :checked
+                    WHERE id = :id"""),
+                {"mbid": best["mbid"], "score": score, "checked": now, "id": release_id},
+            )
+        else:
+            session.execute(
+                text("""UPDATE upcoming_releases SET
+                        mbid_match_status = 'unmatched',
+                        mbid_match_score = :score,
+                        mbid_confidence = NULL,
+                        mbid_source = NULL,
+                        mbid_last_checked_at = :checked,
+                        candidate_release_group_mbid = NULL
+                    WHERE id = :id"""),
+                {"score": score, "checked": now, "id": release_id},
+            )
+
+
 @upcoming_bp.route("", methods=["GET"])
 def api_upcoming_releases():
     """Get upcoming releases with collection/queue annotations and pagination.
@@ -265,14 +328,24 @@ async def api_match_upcoming_release(release_id):
     try:
         if rg_mbid:
             with db_session() as session:
-                session.execute(text("UPDATE upcoming_releases SET release_group_mbid = :mbid, match_source = :source, mbid_last_checked_at = :checked WHERE id = :id"),
-                              {"mbid": rg_mbid, "source": source, "id": release_id, "checked": datetime.now().isoformat()})
+                session.execute(
+                    text("""UPDATE upcoming_releases SET
+                            release_group_mbid = :mbid,
+                            match_source = :source,
+                            mbid_match_status = 'matched',
+                            mbid_confidence = 'high',
+                            mbid_source = :source,
+                            mbid_last_checked_at = :checked,
+                            candidate_release_group_mbid = NULL
+                        WHERE id = :id"""),
+                    {"mbid": rg_mbid, "source": source, "id": release_id, "checked": datetime.now().isoformat()},
+                )
             return jsonify({"success": True, "release_group_mbid": rg_mbid, "match_source": source})
 
-        # ── Fallback: no MBID supplied → look the row up and search MB ──
+        # ── Fallback: no MBID supplied → run the two-pass matching pipeline ──
         with db_session() as session:
             row = session.execute(
-                text("SELECT id, artist_name, album_name FROM upcoming_releases WHERE id = :id"),
+                text("SELECT id, artist_name, album_name, release_date FROM upcoming_releases WHERE id = :id"),
                 {"id": release_id},
             ).fetchone()
         if row is None:
@@ -283,38 +356,19 @@ async def api_match_upcoming_release(release_id):
         if not artist or not album:
             return jsonify({"error": "release has no artist/album to search"}), 400
 
-        results = _search_musicbrainz_release_group(artist, album)
-        if not results:
-            return jsonify({"error": "no MusicBrainz release group found", "artist": artist, "album": album}), 404
+        from services.upcoming_releases.matching_service import match_to_musicbrainz
+        result = match_to_musicbrainz(artist, album, str(row[3] or "").strip() or None)
+        _persist_match_result(release_id, result)
 
-        best = results[0]
-        best_mbid = (best.get("id") or "").strip()
-        if not best_mbid:
-            return jsonify({"error": "no MusicBrainz release group found", "artist": artist, "album": album}), 404
-
-        release_date = (best.get("first-release-date") or "")[:10]
-        primary_type = (best.get("primary-type") or best.get("type") or "")
-        with db_session() as session:
-            session.execute(
-                text("""UPDATE upcoming_releases
-                        SET release_group_mbid = :mbid,
-                            match_source = 'auto_search',
-                            release_date = CASE
-                                WHEN release_date IS NULL OR (:date IS NOT NULL AND :date < release_date)
-                                    THEN :date
-                                ELSE release_date
-                            END,
-                            primary_type = :ptype,
-                            mbid_match_status = 'matched',
-                            mbid_source = 'auto_search',
-                            mbid_last_checked_at = :checked
-                        WHERE id = :id"""),
-                {"mbid": best_mbid, "date": release_date or None, "ptype": primary_type,
-                 "id": release_id, "checked": datetime.now().isoformat()},
-            )
-        logger.info("Auto-matched upcoming release %s (%s - %s) -> %s", release_id, artist, album, best_mbid)
-        return jsonify({"success": True, "release_group_mbid": best_mbid,
-                        "match_source": "auto_search", "artist": artist, "album": album})
+        return jsonify({
+            "success": True,
+            "status": result["status"],
+            "score": result["score"],
+            "release_group_mbid": result["mbid"],
+            "artist": artist,
+            "album": album,
+            "candidates": result["candidates"],
+        })
     except Exception as exc:
         logger.error("Failed to match upcoming release %s: %s", release_id, exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
@@ -381,40 +435,62 @@ def api_upcoming_scrape_status():
 
 @upcoming_bp.route("/refresh-musicbrainz", methods=["POST"])
 def api_refresh_upcoming_releases_musicbrainz():
-    """Refresh upcoming releases with MusicBrainz metadata."""
+    """Refresh upcoming releases with MusicBrainz metadata.
+
+    Runs the two-pass matching pipeline (sanitize → local MBID / global search
+    → rapidfuzz scoring) over every row without a linked release-group.
+    Scores ≥0.85 auto-link; 0.65–0.85 are stored as candidates for one-click
+    confirmation; manual overrides are never touched.
+    """
     try:
         with db_session() as session:
-            result = session.execute(text("SELECT id, artist_name, album_name FROM upcoming_releases WHERE release_group_mbid IS NULL ORDER BY id"))
+            result = session.execute(
+                text("""SELECT id, artist_name, album_name, release_date
+                        FROM upcoming_releases
+                       WHERE release_group_mbid IS NULL
+                         AND COALESCE(mbid_manual_override, FALSE) = FALSE
+                       ORDER BY id""")
+            )
             rows = result.fetchall()
 
-        updated = 0
+        from services.upcoming_releases.matching_service import match_to_musicbrainz
+
+        matched = 0
+        candidates = 0
+        unmatched = 0
         for row in rows:
             release_id = row[0]
             artist = row[1] or ""
             album = row[2] or ""
+            release_date = row[3] or ""
             if not artist or not album:
                 continue
 
             try:
-                results = _search_musicbrainz_release_group(artist, album)
-                if results:
-                    best = results[0]
-                    rg_mbid = best.get("id")
-                    release_date = (best.get("first-release-date") or "")[:10]
-                    primary_type = (best.get("primary-type") or best.get("type") or "")
-                    with db_session() as session:
-                        session.execute(
-                            text("""UPDATE upcoming_releases
-                                   SET release_group_mbid = :mbid, release_date = :date, primary_type = :ptype
-                                   WHERE id = :id"""),
-                            {"mbid": rg_mbid, "date": release_date or None, "ptype": primary_type, "id": release_id},
-                        )
-                    updated += 1
+                mresult = match_to_musicbrainz(artist, album, str(release_date).strip() or None)
             except Exception:
                 continue
 
-        logger.info("Refreshed %s upcoming releases from MusicBrainz", updated)
-        return jsonify({"success": True, "message": f"Refreshed {updated} releases"})
+            _persist_match_result(release_id, mresult)
+            if mresult["status"] == "matched":
+                matched += 1
+            elif mresult["status"] == "candidate":
+                candidates += 1
+            else:
+                unmatched += 1
+
+        logger.info(
+            "Refreshed %s upcoming releases from MusicBrainz (%s matched, %s candidates, %s unmatched)",
+            len(rows), matched, candidates, unmatched,
+        )
+        return jsonify({
+            "success": True,
+            "message": f"Refreshed {len(rows)} releases ({matched} matched, {candidates} candidates)",
+            "matched": matched,
+            "candidates": candidates,
+            "unmatched": unmatched,
+            "total": len(rows),
+        })
     except Exception as exc:
         logger.error("Failed to refresh from MusicBrainz: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500

@@ -115,7 +115,9 @@
    * When `mbid` is null the server falls back to its own MB search.
    */
   async function matchRelease(releaseId, mbid) {
-    var body = mbid ? { release_group_mbid: mbid } : {};
+    var body = mbid
+      ? { release_group_mbid: mbid, source: 'candidate_confirm' }
+      : { source: 'auto_search' };
     var resp = await fetch('/api/upcoming-releases/' + releaseId + '/match', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -188,7 +190,15 @@
       'title="Search / Download on MusicBrainz"><i class="bi bi-search"></i></button>'
     );
 
-    if (!release.release_group_mbid) {
+    var isCandidate = release.mbid_match_status === 'candidate' && !!release.candidate_release_group_mbid;
+    if (!release.release_group_mbid && isCandidate) {
+      // Pending candidate from the scoring pipeline — one click confirms.
+      actions.push(
+        '<button type="button" class="btn btn-sm btn-outline-warning" ' +
+        'onclick="UpcomingReleasesService.confirmCandidateById(' + releaseId + ', \'' + release.candidate_release_group_mbid + '\', this)" ' +
+        'title="Confirm MusicBrainz match (score ' + escapeHtml(String(release.mbid_match_score || '')) + ')"><i class="bi bi-link-45deg"></i> Match</button>'
+      );
+    } else if (!release.release_group_mbid) {
       actions.push(
         '<button type="button" class="btn btn-sm btn-outline-warning" ' +
         'onclick="UpcomingReleasesService.autoMatchById(' + releaseId + ', this)" ' +
@@ -206,13 +216,21 @@
       );
     }
 
+    var linkedBadge = release.release_group_mbid
+      ? '<span class="badge bg-info-subtle text-info-emphasis ms-1" ' +
+        'title="Linked to MusicBrainz' + (release.mbid_match_score ? ' (score ' + escapeHtml(String(release.mbid_match_score)) + ')' : '') + '">' +
+        '<i class="bi bi-hexagon-fill"></i></span>'
+      : '';
+
     var mbidCell = release.release_group_mbid
       ? '<code class="small">' + escapeHtml(String(release.release_group_mbid).slice(0, 8)) + '…</code>'
-      : '<span class="text-muted small">unmatched</span>';
+      : (isCandidate
+          ? '<span class="text-warning small">candidate · ' + escapeHtml(String(release.mbid_match_score || '')) + '</span>'
+          : '<span class="text-muted small">unmatched</span>');
 
     return '<tr>' +
       '<td>' + escapeHtml(release.artist_name || '') + '</td>' +
-      '<td>' + escapeHtml(release.album_name || '') + '</td>' +
+      '<td>' + escapeHtml(release.album_name || '') + linkedBadge + '</td>' +
       '<td><small>' + escapeHtml(releaseDate) + ' ' + dateBadge + '</small></td>' +
       '<td>' + sourceBadge(release) + '</td>' +
       '<td>' + mbidCell + '</td>' +
@@ -312,6 +330,26 @@
     if (onRefresh) onRefresh();
   }
 
+  /** Confirm a pipeline candidate (one click) — links the stored MBID. */
+  async function confirmCandidateById(releaseId, mbid, buttonEl) {
+    if (!releaseId || !mbid) return;
+    if (buttonEl) {
+      buttonEl.disabled = true;
+      buttonEl.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    }
+    try {
+      await matchRelease(releaseId, mbid);
+    } catch (error) {
+      if (buttonEl) {
+        buttonEl.disabled = false;
+        buttonEl.innerHTML = '<i class="bi bi-link-45deg"></i> Match';
+      }
+      alert('Error confirming match: ' + error.message);
+      return;
+    }
+    if (onRefresh) onRefresh();
+  }
+
   async function queueById(releaseId, buttonEl) {
     if (!releaseId) return;
     if (buttonEl) {
@@ -347,6 +385,7 @@
     renderProgressBadge: renderProgressBadge,
     searchFromEncoded: searchFromEncoded,
     autoMatchById: autoMatchById,
+    confirmCandidateById: confirmCandidateById,
     queueById: queueById,
     isReleased: isReleased,
     escapeHtml: escapeHtml,

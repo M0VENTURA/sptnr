@@ -354,6 +354,55 @@ async def api_queue_upcoming():
             }), 400
 
         year = int(rel_date[:4]) if len(rel_date) >= 4 and rel_date[:4].isdigit() else None
+        release_mbid = (release.get("release_group_mbid") or "").strip() or None
+
+        # Prefer the full MusicBrainz pipeline: resolve the release-group to a
+        # concrete release and queue one download_queue row PER TRACK (the
+        # same flow the MusicBrainz modal uses).  Falls back to a single
+        # album-typed item when no MBID is matched yet or MB data can't be
+        # fetched.
+        if release_mbid:
+            try:
+                from services.downloads.download_pipeline_service import start_release_download
+                cfg = get_config() or {}
+                slskd_enabled = bool((cfg.get("slskd") or {}).get("enabled", False))
+                result = start_release_download(
+                    release_mbid,
+                    album,
+                    artist,
+                    method="slskd" if slskd_enabled else "qbittorrent",
+                    create_folder_group=False,
+                )
+                if result.get("success"):
+                    queued_tracks = int(result.get("queue_items_created") or 0)
+                    with db_session() as session:
+                        session.execute(
+                            text("UPDATE upcoming_releases SET status = 'queued' WHERE id = :id"),
+                            {"id": release_id},
+                        )
+                    try:
+                        from services.queue.queue_signal import signal_new_item
+                        signal_new_item()
+                    except Exception:
+                        pass
+                    return jsonify({
+                        "success": True,
+                        "total_tracks": queued_tracks,
+                        "queued_tracks": queued_tracks,
+                        "artist": artist,
+                        "album": album,
+                        "release_group_mbid": release_mbid,
+                    })
+                logger.warning(
+                    "[QUEUE_UPCOMING] MB pipeline failed for %s (%s): %s — falling back to single item",
+                    release_id, album, result.get("error"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[QUEUE_UPCOMING] MB pipeline error for %s (%s): %s — falling back to single item",
+                    release_id, album, exc,
+                )
+
         queued = insert_queue_item(
             artist=artist,
             title=album,
@@ -361,7 +410,7 @@ async def api_queue_upcoming():
             source="qbittorrent",
             priority=5,
             year=year,
-            release_mbid=(release.get("release_group_mbid") or "") or None,
+            release_mbid=release_mbid,
             import_type="album",
         )
 

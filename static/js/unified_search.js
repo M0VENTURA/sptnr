@@ -428,9 +428,15 @@
       .then(function (res) { return res.json().catch(function () { return {}; }).then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (out) {
         if (!out.ok) throw new Error(out.data.error || 'Queue request failed');
+        var total = out.data.total_tracks || out.data.queued_tracks || 0;
         btn.classList.replace('btn-outline-primary', 'btn-success');
         btn.innerHTML = '<i class="bi bi-check2"></i> Queued';
-        btn.title = 'Queued: ' + (rel.title || '');
+        btn.title = total ? ('Queued ' + total + ' track' + (total === 1 ? '' : 's') + ': ' + (rel.title || '')) : ('Queued: ' + (rel.title || ''));
+        // The backend falls back to a single search-item when the MusicBrainz
+        // data can't be fetched — surface that so it's not mistaken for a
+        // full tracklist queue.
+        var msg = String(out.data.message || '');
+        if (!total && msg.indexOf('simple search') !== -1) notifyError(msg);
       })
       .catch(function (e) {
         _queuedIds[id] = false;

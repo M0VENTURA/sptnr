@@ -753,8 +753,13 @@ class WikipediaReleaseScraper:
 
         with db_session() as session:
             for release in releases:
-                artist = release["artist_name"]
-                album = release["album_name"]
+                # Clean Wikipedia scraping artifacts before storing so the
+                # DISPLAYED name and the MusicBrainz lookup both see the
+                # sanitized form (e.g. "AkinmusireandMary" → "Akinmusire and Mary").
+                from services.upcoming_releases.matching_service import sanitize_wiki_entry
+                artist, album = sanitize_wiki_entry(
+                    release["artist_name"], release["album_name"]
+                )
                 rel_date = release.get("release_date")
                 rel_year = release.get("release_year")
 

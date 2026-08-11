@@ -928,20 +928,22 @@ def resolve_release_id(release_id: str) -> str:
         pass
 
     try:
-        releases = http.get(
-            "release/",
-            params={"fmt": "json", "release-group": release_id, "limit": 1},
-            timeout=10.0,
-        )
-        releases = releases.get("releases") if isinstance(releases, dict) else []
-        if releases and releases[0].get("id"):
-            resolved = releases[0]["id"]
-            logger.info(
-                "[MB_RESOLVE] Release-group %s resolved to release %s",
-                release_id,
-                resolved,
-            )
-            return resolved
+        releases = http.browse_releases_for_group(release_id, inc="media", limit=25)
+        if releases:
+            # Prefer a release that actually carries media/tracks — the
+            # default browse order can surface trackless promos or box-set
+            # reissues before the canonical album.
+            for rel in releases:
+                media = rel.get("media") or []
+                if any((m.get("tracks") or []) for m in media):
+                    resolved = rel["id"]
+                    logger.info(
+                        "[MB_RESOLVE] Release-group %s resolved to release %s",
+                        release_id,
+                        resolved,
+                    )
+                    return resolved
+            return releases[0]["id"]
     except Exception as exc:
         logger.warning("[MB_RESOLVE] Failed to resolve release-group %s: %s", release_id, exc)
 

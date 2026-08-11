@@ -144,6 +144,7 @@ def ensure_upcoming_releases_schema() -> bool:
                 "status": "TEXT NOT NULL DEFAULT 'discovered'",
                 "last_seen_at": "TIMESTAMP",
                 "source_key": "TEXT",
+                "candidate_release_group_mbid": "TEXT",
             })
 
             # Dedupe: drop non-MusicBrainz rows where a MusicBrainz row exists

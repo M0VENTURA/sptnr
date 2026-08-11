@@ -374,15 +374,37 @@ function updateRecentScans() {
 // ===== Upcoming Releases =====
 var dashboardTableFilter = "all";
 
-async function addUpcomingReleaseToQueueDashboard(encodedArtist, encodedAlbum, encodedDate, buttonEl) {
-  try {
+async function addUpcomingReleaseToQueueDashboard(encodedArtist, encodedAlbum, encodedDate, buttonEl, releaseGroupMbid) {  try {
     const artist = decodeURIComponent(encodedArtist || "").trim();
     const album = decodeURIComponent(encodedAlbum || "").trim();
     const dateText = decodeURIComponent(encodedDate || "").trim();
     if (!artist || !album) return;
     
     if (buttonEl) { buttonEl.disabled = true; buttonEl.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>'; }
-    
+
+    // Matched to a MusicBrainz release-group → queue the FULL tracklist via
+    // the same pipeline as the MusicBrainz modal (per-track queue rows).
+    if (releaseGroupMbid) {
+      const result = await postJSON("/api/musicbrainz/download", {
+        release_id: decodeURIComponent(releaseGroupMbid),
+        release_title: album,
+        artist,
+        method: "slskd",
+        queue_items_only: true,
+      });
+      if (result.error) throw new Error(result.error);
+      const total = result.total_tracks || result.queued_tracks || 0;
+      if (buttonEl) {
+        buttonEl.disabled = true;
+        buttonEl.classList.replace("btn-outline-primary", "btn-outline-success");
+        buttonEl.innerHTML = '<i class="bi bi-check2"></i>';
+        buttonEl.title = total ? `${total} track${total === 1 ? "" : "s"} queued` : (result.message || "Added to queue");
+      }
+      return;
+    }
+
+    // No MusicBrainz match yet → plain single-item queue add (worker searches
+    // the album by artist + title).
     const result = await postJSON("/api/queue/add", {
       artist, title: album, album,
       import_type: "album", source: "qbittorrent", release_source: "dashboard_upcoming",
@@ -442,6 +464,7 @@ function renderUpcomingReleasesTable(releases) {
     
     const eArtist = encodeURIComponent(r.artist_name || "");
     const eAlbum = encodeURIComponent(r.album_name || "");
+    const eMbid = r.release_group_mbid ? encodeURIComponent(r.release_group_mbid) : "";
     const sArtist = JSON.stringify(String(r.artist_name || ""));
     const sAlbum = JSON.stringify(String(r.album_name || ""));
 
@@ -451,24 +474,34 @@ function renderUpcomingReleasesTable(releases) {
     const inQueue = r.in_queue === true || r.queue_status === "queued";
     const queueBtn = inQueue
       ? '<button class="btn btn-sm btn-outline-success" disabled title="Already in queue"><i class="bi bi-check2-circle"></i></button>'
-      : `<button class="btn btn-sm btn-outline-primary" title="Add to queue" onclick="addUpcomingReleaseToQueueDashboard('${eArtist}', '${eAlbum}', '${encodeURIComponent(r.release_date || "")}', this)"><i class="bi bi-plus-circle"></i></button>`;
+      : `<button class="btn btn-sm btn-outline-primary" title="Add to queue" onclick="addUpcomingReleaseToQueueDashboard('${eArtist}', '${eAlbum}', '${encodeURIComponent(r.release_date || "")}', this, '${eMbid}')"><i class="bi bi-plus-circle"></i></button>`;
+
+    // MusicBrainz match badges: 🟩 linked (has release_group_mbid) / 🟨
+    // candidate (scoring pipeline found a >=0.65 match awaiting one click).
+    const linkedBadge = r.release_group_mbid
+      ? `<span class="badge bg-info-subtle text-info-emphasis ms-1" title="Linked to MusicBrainz${r.mbid_match_score ? ' (score ' + escapeHtml(String(r.mbid_match_score)) + ')' : ''}"><i class="bi bi-hexagon-fill"></i></span>`
+      : "";
+    const isCandidate = !r.release_group_mbid && r.mbid_match_status === "candidate" && !!r.candidate_release_group_mbid;
+    const matchBtn = isCandidate
+      ? `<button class="btn btn-sm btn-outline-warning" title="Confirm MusicBrainz match (score ${escapeHtml(String(r.mbid_match_score || ""))})" onclick="confirmUpcomingCandidate(${r.id || 0}, '${encodeURIComponent(r.candidate_release_group_mbid)}', this)"><i class="bi bi-link-45deg"></i></button>`
+      : "";
 
     return {
       html: `<tr>
         <td>${escapeHtml(r.artist_name)}${colBadge}</td>
-        <td>${escapeHtml(r.album_name)}</td>
+        <td>${escapeHtml(r.album_name)}${linkedBadge}</td>
         <td>${escapeHtml(releaseDate)} ${dateBadge}</td>
         <td>${sourceBadge}</td>
-        <td class="text-center"><div class="d-flex gap-1 justify-content-center">${searchBtn}${queueBtn}</div></td>
+        <td class="text-center"><div class="d-flex gap-1 justify-content-center">${searchBtn}${matchBtn}${queueBtn}</div></td>
       </tr>`,
       // Stacked mobile card (shown below lg — the table is hidden on small screens)
       card: `<div class="upcoming-card p-2 mb-2 rounded border">
         <div class="d-flex justify-content-between align-items-start gap-2">
           <div class="min-w-0">
             <div class="fw-semibold text-truncate">${escapeHtml(r.artist_name)}${colBadge}</div>
-            <div class="small text-muted text-truncate">${escapeHtml(r.album_name)}</div>
+            <div class="small text-muted text-truncate">${escapeHtml(r.album_name)}${linkedBadge}</div>
           </div>
-          <div class="d-flex gap-1 flex-shrink-0">${searchBtn}${queueBtn}</div>
+          <div class="d-flex gap-1 flex-shrink-0">${searchBtn}${matchBtn}${queueBtn}</div>
         </div>
         <div class="d-flex align-items-center gap-2 mt-1 flex-wrap small">
           <span class="text-muted"><i class="bi bi-calendar"></i> ${escapeHtml(releaseDate)}</span>${dateBadge}${sourceBadge}
@@ -536,6 +569,26 @@ function renderUpcomingFromStore() {
 function toggleUpcomingShowAll() {
   dashboardUpcomingShowAll = !dashboardUpcomingShowAll;
   renderUpcomingFromStore();
+}
+
+/** One-click confirm of a pipeline candidate match (yellow 🔗 button). */
+async function confirmUpcomingCandidate(releaseId, mbidEnc, buttonEl) {
+  const mbid = decodeURIComponent(mbidEnc || "");
+  if (!releaseId || !mbid) return;
+  if (buttonEl) { buttonEl.disabled = true; buttonEl.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>'; }
+  try {
+    const result = await postJSON(`/api/upcoming-releases/${releaseId}/match`, {
+      release_group_mbid: mbid,
+      source: "candidate_confirm",
+    });
+    if (result.error) throw new Error(result.error);
+    buttonEl.classList.replace("btn-outline-warning", "btn-outline-success");
+    buttonEl.innerHTML = '<i class="bi bi-check2"></i>';
+    buttonEl.title = "Linked to MusicBrainz";
+    setTimeout(loadUpcomingReleasesTable, 800);
+  } catch (error) {
+    if (buttonEl) { buttonEl.disabled = false; buttonEl.innerHTML = '<i class="bi bi-link-45deg"></i>'; }
+  }
 }
 
 async function loadUpcomingReleasesTable() {
