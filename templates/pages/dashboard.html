@@ -35,7 +35,7 @@
         </div>
     </div>
 
-    <div class="d-flex flex-nowrap align-items-center gap-2 mb-3 dashboard-stat-strip">
+    <div class="d-flex flex-nowrap align-items-center gap-2 mb-3 dashboard-stat-strip d-xl-none">
         <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-music-note"></i> {{ stats.tc if stats else '?' }} tracks</span>
         <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-disc"></i> {{ stats.ac if stats else '?' }} albums</span>
         <span class="badge bg-dark px-3 py-2 rounded-pill flex-shrink-0"><i class="bi bi-people"></i> {{ stats.artists_c if stats else '?' }} artists</span>
@@ -52,44 +52,24 @@
     </div>
     {% endif %}
 
-    <!-- ===== Quick Nav Grid ===== -->
-    <div class="row g-2 mb-4">
-        <div class="col-6 col-md-4 col-xl-2">
-            <a href="/artists" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-people fs-4"></i> <span class="small fw-semibold">Artists</span>
-            </a>
-        </div>
-        <div class="col-6 col-md-4 col-xl-2">
-            <a href="/missing" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-exclamation-circle fs-4"></i> <span class="small fw-semibold">Missing</span>
-            </a>
-        </div>
-        <div class="col-6 col-md-4 col-xl-2">
-            <a href="/analytics/genres-moods" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-bar-chart-line fs-4"></i> <span class="small fw-semibold">Analytics</span>
-            </a>
-        </div>
-        <div class="col-6 col-md-4 col-xl-2">
-            <a href="/config" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-gear fs-4"></i> <span class="small fw-semibold">Settings</span>
-            </a>
-        </div>
-        <div class="col-6 col-md-4 col-xl-2">
-            <button onclick="openUnifiedSearch('all')" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-search fs-4"></i> <span class="small fw-semibold">Search</span>
-            </button>
-        </div>
-        <div class="col-6 col-md-4 col-xl-2">
-            <button onclick="stopAllScans()" class="btn btn-dark border-secondary w-100 py-3 rounded-3 shadow-sm d-flex flex-column align-items-center gap-2">
-                <i class="bi bi-stop-circle fs-4"></i> <span class="small fw-semibold">Stop</span>
-            </button>
-        </div>
+    <!-- ===== Quick Links (compact — full nav lives in the navbar) ===== -->
+    <div class="d-flex flex-wrap gap-1 mb-3">
+        <a href="/artists" class="btn btn-sm btn-outline-secondary"><i class="bi bi-people"></i> Artists</a>
+        <a href="/missing" class="btn btn-sm btn-outline-secondary"><i class="bi bi-exclamation-circle"></i> Missing</a>
+        <a href="/analytics/genres-moods" class="btn btn-sm btn-outline-secondary"><i class="bi bi-bar-chart-line"></i> Analytics</a>
+        <a href="/config" class="btn btn-sm btn-outline-secondary"><i class="bi bi-gear"></i> Settings</a>
     </div>
 
-    <!-- ===== Scanner Controls (segmented switcher) ===== -->
+    <!-- ===== Unified Scanner Engine (left column) ===== -->
+    <div class="row g-3 mb-4">
+    <div class="col-12 col-xl-8">
     <div class="card mb-3" id="scannerControlsCard">
         <div class="card-header py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
-            <small class="fw-semibold"><i class="bi bi-lightning-charge"></i> Scanner Controls</small>
+            <div class="d-flex align-items-center gap-2">
+                <small class="fw-semibold"><i class="bi bi-lightning-charge"></i> Scanner Engine</small>
+                <span id="scannerStatusBadge" class="badge bg-secondary" style="font-size:0.65rem;">Idle</span>
+            </div>
+            <div class="d-flex align-items-center gap-2 flex-wrap">
             <ul class="nav nav-pills gap-1" id="scannerTabs" role="tablist" style="--bs-nav-link-padding-y: 0.35rem;">
                 <li class="nav-item" role="presentation">
                     <button type="button" class="nav-link active" data-bs-toggle="pill" data-bs-target="#scannerPanePopularity" role="tab" aria-controls="scannerPanePopularity" aria-selected="true">
@@ -107,6 +87,10 @@
                     </button>
                 </li>
             </ul>
+            <button class="btn btn-outline-danger btn-sm py-0" onclick="stopAllScans()" title="Stop all scans">
+                <i class="bi bi-stop-fill"></i> Stop All
+            </button>
+            </div>
         </div>
         <div class="card-body py-2">
             <div class="tab-content">
@@ -156,51 +140,29 @@
                 </div>
             </div>
         </div>
-    </div>
-
-    <div id="activeScansPanel" class="card mb-4 border-success" style="display:none;">
-        <div class="card-header py-2 d-flex justify-content-between align-items-center">
-            <h6 class="mb-0"><i class="bi bi-activity"></i> Active Scans</h6>
-            <button class="btn btn-outline-danger btn-sm py-0" onclick="stopAllScans()" title="Stop all scans">
-                <i class="bi bi-stop-fill"></i> Stop All
-            </button>
+        <!-- Active progress — merged into the scanner panel (hidden while idle) -->
+        <div id="activeScansPanel" class="border-top pt-2 mt-2" style="display:none;">
+            <div class="small fw-semibold text-muted text-uppercase mb-1"><i class="bi bi-activity"></i> Active Progress</div>
+            <div id="activeScansBody"></div>
         </div>
-        <div class="card-body py-2" id="activeScansBody">
-            </div>
+        </div>
+    </div>
+    </div>
     </div>
 
     <div class="row g-3 mb-4">
-        <div class="col-12 col-xl-6">
+        <div class="col-12 col-xl-8">
+            <!-- Upcoming Releases (left column — under the scanner engine) -->
             <div class="card h-100">
-                <div class="card-header py-2">
-                    <h6 class="mb-0"><i class="bi bi-clock-history"></i> Recent Scans</h6>
-                </div>
-                <div class="table-responsive" style="height: 320px; overflow-y: auto;">
-                    <table class="table table-hover mb-0 table-sm" style="min-width: 620px;">
-                        <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
-                            <tr>
-                                <th style="width: 28%"><i class="bi bi-person"></i> Artist</th>
-                                <th style="width: 28%"><i class="bi bi-disc"></i> Album</th>
-                                <th style="width: 24%">Scan Types</th>
-                                <th style="width: 20%; text-align: right;">Last Scanned</th>
-                            </tr>
-                        </thead>
-                        <tbody id="recent-scans-body">
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        <div class="col-12 col-xl-6">
-            <div class="card h-100">
-                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
                     <h6 class="mb-0"><i class="bi bi-calendar-event"></i> Upcoming Releases</h6>
-                    <div class="d-flex gap-2 align-items-center">
+                    <div class="d-flex gap-2 align-items-center flex-wrap">
                         <small class="text-muted" id="upcomingTableCount"></small>
                         <div class="btn-group btn-group-sm" role="group">
                             <button type="button" class="btn btn-info btn-sm py-0" id="upcomingTableFilterAll" onclick="setUpcomingTableFilter('all')">All</button>
                             <button type="button" class="btn btn-outline-info btn-sm py-0" id="upcomingTableFilterCollection" onclick="setUpcomingTableFilter('collection')">Collection</button>
                         </div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary py-0 d-none" id="upcomingShowAllBtn" onclick="toggleUpcomingShowAll()"></button>
                         <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-info py-0">
                             <i class="bi bi-arrow-right"></i>
                         </a>
@@ -221,7 +183,63 @@
                         </tbody>
                     </table>
                 </div>
-                <div id="upcoming-releases-cards" class="d-lg-none p-2"></div>
+                <div id="upcoming-releases-cards" class="d-lg-none p-1"></div>
+            </div>
+        </div>
+        <div class="col-12 col-xl-4">
+            <!-- Library Quick Stats (right rail, desktop) -->
+            <div class="card mb-3 d-none d-xl-block">
+                <div class="card-header py-2">
+                    <h6 class="mb-0"><i class="bi bi-bar-chart"></i> Library Quick Stats</h6>
+                </div>
+                <div class="card-body py-3">
+                    <div class="row g-2 text-center">
+                        <div class="col-6">
+                            <div class="border rounded p-2" style="background: var(--tertiary-bg, #282828);">
+                                <div class="small text-muted"><i class="bi bi-music-note"></i> Tracks</div>
+                                <div class="fw-bold">{{ stats.tc if stats else '?' }}</div>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="border rounded p-2" style="background: var(--tertiary-bg, #282828);">
+                                <div class="small text-muted"><i class="bi bi-disc"></i> Albums</div>
+                                <div class="fw-bold">{{ stats.ac if stats else '?' }}</div>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="border rounded p-2" style="background: var(--tertiary-bg, #282828);">
+                                <div class="small text-muted"><i class="bi bi-people"></i> Artists</div>
+                                <div class="fw-bold">{{ stats.artists_c if stats else '?' }}</div>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="border rounded p-2" style="background: var(--tertiary-bg, #282828);">
+                                <div class="small text-muted"><i class="bi bi-star-fill text-warning"></i> Avg Rating</div>
+                                <div class="fw-bold">{{ stats.avg_stars if stats and stats.avg_stars is not none else '—' }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Recent Scans (right rail) -->
+            <div class="card h-100">
+                <div class="card-header py-2">
+                    <h6 class="mb-0"><i class="bi bi-clock-history"></i> Recent Scans</h6>
+                </div>
+                <div class="table-responsive" style="height: 320px; overflow-y: auto;">
+                    <table class="table table-hover mb-0 table-sm" style="min-width: 620px;">
+                        <thead style="position: sticky; top: 0; background: var(--primary-bg, #121212); z-index: 10;">
+                            <tr>
+                                <th style="width: 28%"><i class="bi bi-person"></i> Artist</th>
+                                <th style="width: 28%"><i class="bi bi-disc"></i> Album</th>
+                                <th style="width: 24%">Scan Types</th>
+                                <th style="width: 20%; text-align: right;">Last Scanned</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recent-scans-body">
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>

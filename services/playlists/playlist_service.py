@@ -53,6 +53,35 @@ def _playlists_dir() -> str:
     return os.path.join(os.environ.get("MUSIC_FOLDER", "/music"), "Playlists")
 
 
+def create_m3u_file(playlist_name: str, tracks: list[dict]) -> str | None:
+    """Write an ``{name}.m3u`` into the Playlists directory.
+
+    ``tracks`` entries: ``{file_path, title, artist, duration}``.  Returns the
+    written path, or None on failure.
+    """
+    try:
+        playlists_dir = _playlists_dir()
+        os.makedirs(playlists_dir, exist_ok=True)
+        path = os.path.join(playlists_dir, f"{sanitize_playlist_name(playlist_name)}.m3u")
+        lines = ["#EXTM3U"]
+        for t in tracks or []:
+            artist = str(t.get("artist") or "")
+            title = str(t.get("title") or "")
+            duration = 0
+            try:
+                duration = max(0, int(float(t.get("duration") or 0) or 0))
+            except (TypeError, ValueError):
+                duration = 0
+            lines.append(f"#EXTINF:{duration},{artist} - {title}")
+            lines.append(str(t.get("file_path") or title))
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        return path
+    except Exception as exc:
+        logging.getLogger(__name__).warning("M3U write failed for %s: %s", playlist_name, exc)
+        return None
+
+
 def list_nsp_playlists() -> list[dict]:
     """Return all smart-playlist .nsp files found in the Playlists directory."""
     playlists_dir = _playlists_dir()
@@ -63,7 +92,76 @@ def list_nsp_playlists() -> list[dict]:
     for file_name in sorted(os.listdir(playlists_dir)):
         if not file_name.lower().endswith(".nsp"):
             continue
+def _count_m3u_tracks(file_path: str) -> int:
+    """Count ``#EXTINF`` entries in an M3U file without parsing the whole thing."""
+    count = 0
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+            for raw in handle:
+                if raw.startswith("#EXTINF:"):
+                    count += 1
+    except Exception:
+        pass
+    return count
+
+
+def read_m3u_file(file_path: str) -> list[dict]:
+    """Parse an .m3u/.m3u8 file into ``{title, artist, duration, file_path}``."""
+    tracks: list[dict] = []
+    pending_extinf: str | None = None
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line == "#EXTM3U":
+                    continue
+                if line.startswith("#EXTINF:"):
+                    pending_extinf = line[len("#EXTINF:"):]
+                    continue
+                if line.startswith("#"):
+                    continue
+                title, artist, duration = line, "", 0
+                if pending_extinf:
+                    dur_part, _, label = pending_extinf.partition(",")
+                    try:
+                        duration = max(0, int(float(dur_part)))
+                    except ValueError:
+                        duration = 0
+                    artist, _, title = label.rpartition(" - ") if " - " in label else ("", "", label)
+                    pending_extinf = None
+                tracks.append({"title": title, "artist": artist, "duration": duration, "file_path": line})
+    except Exception as exc:
+        logging.getLogger(__name__).warning("M3U read failed for %s: %s", file_path, exc)
+    return tracks
+
+
+def list_nsp_playlists() -> list[dict]:
+    """Return smart .nsp files AND generated .m3u playlists from the Playlists dir."""
+    playlists_dir = _playlists_dir()
+    if not os.path.isdir(playlists_dir):
+        return []
+
+    found = []
+    for file_name in sorted(os.listdir(playlists_dir)):
+        lower = file_name.lower()
+        is_m3u = lower.endswith(".m3u") or lower.endswith(".m3u8")
+        if not (lower.endswith(".nsp") or is_m3u):
+            continue
         file_path = os.path.join(playlists_dir, file_name)
+
+        if is_m3u:
+            found.append({
+                "name": os.path.splitext(file_name)[0],
+                "file_name": file_name,
+                "file_path": file_path,
+                "comment": "Generated playlist",
+                "rules": {},
+                "track_count": _count_m3u_tracks(file_path),
+                "rule_based": False,
+                "kind": "m3u",
+            })
+            continue
+
         try:
             with open(file_path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
@@ -86,6 +184,7 @@ def list_nsp_playlists() -> list[dict]:
             "rules": rules if isinstance(rules, dict) else {},
             "track_count": embedded_count or id_count,
             "rule_based": bool(rules),
+            "kind": "nsp",
         })
     return found
 

@@ -405,7 +405,12 @@ function renderUpcomingReleasesTable(releases) {
   if (!body) return;
 
   const countEl = document.getElementById("upcomingTableCount");
-  if (countEl) countEl.textContent = `${releases.length} release(s)`;
+  if (countEl) {
+    countEl.textContent =
+      total && total > releases.length
+        ? `${releases.length} of ${total} (±7d)`
+        : `${releases.length} release(s)`;
+  }
 
   if (!releases || releases.length === 0) {
     body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No upcoming releases found.</td></tr>';
@@ -494,6 +499,45 @@ function setUpcomingTableFilter(filter) {
   loadUpcomingReleasesTable();
 }
 
+// ===== Upcoming Releases: ±7-day window (client-side) =====
+let dashboardUpcomingAll = [];
+let dashboardUpcomingShowAll = false;
+
+function _inSevenDayWindow(release) {
+  const raw = String(release.release_date || "").slice(0, 10);
+  if (raw.length !== 10) return false;
+  const d = new Date(raw + "T00:00:00");
+  if (isNaN(d.getTime())) return false;
+  const now = new Date();
+  const start = new Date(now.getTime() - 7 * 86400000);
+  const end = new Date(now.getTime() + 7 * 86400000);
+  return d >= start && d <= end;
+}
+
+function renderUpcomingFromStore() {
+  const all = dashboardUpcomingAll;
+  const windowed = all.filter(_inSevenDayWindow);
+  const visible = dashboardUpcomingShowAll ? all : windowed;
+  renderUpcomingReleasesTable(visible, all.length);
+
+  const btn = document.getElementById("upcomingShowAllBtn");
+  if (!btn) return;
+  if (dashboardUpcomingShowAll) {
+    btn.classList.remove("d-none");
+    btn.innerHTML = '<i class="bi bi-chevron-up"></i> ±7 days only';
+  } else if (all.length > windowed.length) {
+    btn.classList.remove("d-none");
+    btn.innerHTML = `<i class="bi bi-chevron-down"></i> Show all ${all.length} releases`;
+  } else {
+    btn.classList.add("d-none");
+  }
+}
+
+function toggleUpcomingShowAll() {
+  dashboardUpcomingShowAll = !dashboardUpcomingShowAll;
+  renderUpcomingFromStore();
+}
+
 async function loadUpcomingReleasesTable() {
   try {
     const data = await UpcomingReleasesService.fetchReleases({
@@ -505,7 +549,8 @@ async function loadUpcomingReleasesTable() {
     if (dashboardTableFilter === "collection") releases = releases.filter(r => r.artist_in_collection);
 
     releases.sort((a, b) => (a.release_date || "9999-12-31").localeCompare(b.release_date || "9999-12-31"));
-    renderUpcomingReleasesTable(releases);
+    dashboardUpcomingAll = releases;
+    renderUpcomingFromStore();
   } catch (error) {
     console.error("Error loading upcoming releases table:", error);
   }
@@ -566,8 +611,14 @@ function updateActiveScans() {
     .then(data => {
       const panel = document.getElementById("activeScansPanel");
       const body = document.getElementById("activeScansBody");
+      const badge = document.getElementById("scannerStatusBadge");
       const active = data.active_scans || [];
       updateScanStatusBar(active);
+      if (badge) {
+        badge.textContent = active.length ? "Active" : "Idle";
+        badge.className = "badge " + (active.length ? "bg-success" : "bg-secondary");
+        badge.style.fontSize = "0.65rem";
+      }
       if (!panel || !body) return;
       if (active.length === 0) {
         panel.style.display = "none";

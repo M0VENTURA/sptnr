@@ -274,16 +274,9 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
     if scan_enabled:
         # Daily 03:00 — scrape the Wikipedia sources + purge stale rows.
         try:
-            from services.upcoming_releases.wikipedia_scraper_service import scrape as scrape_wikipedia, purge_stale_upcoming_releases
             if scheduler.get_job("upcoming_wikipedia_scrape") is None:
-                def _run_wikipedia_scrape() -> None:
-                    try:
-                        scrape_wikipedia()
-                    finally:
-                        purge_stale_upcoming_releases()
-
                 scheduler.add_job(
-                    _run_wikipedia_scrape,
+                    _run_wikipedia_scrape_task,
                     trigger=CronTrigger(hour=3, minute=0),
                     id="upcoming_wikipedia_scrape",
                     name="Upcoming releases: Wikipedia scrape + stale purge",
@@ -311,6 +304,24 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
                 logger.info("APScheduler: upcoming_musicbrainz_scan already registered")
         except Exception as exc:
             logger.warning("APScheduler: failed to register upcoming_musicbrainz_scan: %s", exc)
+
+
+def _run_wikipedia_scrape_task() -> None:
+    """Scrape Wikipedia upcoming-releases sources, then purge stale rows.
+
+    Module-level (not a closure) so APScheduler's persistent SQLAlchemy job
+    store can serialize the callable by ``module:function`` reference — a
+    local closure inside ``_register_default_jobs`` fails with "This Job
+    cannot be serialized".
+    """
+    from services.upcoming_releases.wikipedia_scraper_service import (
+        scrape as scrape_wikipedia,
+        purge_stale_upcoming_releases,
+    )
+    try:
+        scrape_wikipedia()
+    finally:
+        purge_stale_upcoming_releases()
 
 
 # ---------------------------------------------------------------------------

@@ -10,8 +10,10 @@ Handles:
 
 from __future__ import annotations
 
-from quart import Blueprint, render_template, redirect, url_for, session, request, jsonify
+import asyncio
 import logging
+
+from quart import Blueprint, render_template, redirect, url_for, session, request, jsonify
 
 from helpers.config_helpers import get_config
 
@@ -508,16 +510,18 @@ def api_playlists_all():
 
         merged = []
         for entry in file_playlists:
+            is_m3u = entry.get("kind") == "m3u"
             merged.append({
                 "id": f"file::{entry['file_name']}",
                 "source": "file",
-                "type": "smart",
+                "type": "regular" if is_m3u else "smart",
                 "name": entry["name"],
                 "file_name": entry["file_name"],
                 "file_path": entry["file_path"],
                 "comment": entry["comment"],
                 "track_count": entry["track_count"],
                 "rule_based": entry["rule_based"],
+                "kind": entry.get("kind", "nsp"),
             })
 
         for nav in nav_playlists:
@@ -546,6 +550,32 @@ def api_playlists_all():
         return jsonify({"error": f"Failed to list playlists: {exc}", "playlists": []}), 500
 
 
+@playlists_bp.route("/api/playlists/generate/recommendations", methods=["POST"])
+async def api_playlists_generate():
+    """Generate a recommendations playlist from Last.fm / ListenBrainz.
+
+    Candidates are grounded in the library's top artists, matched against the
+    local tracks table, written to an ``{name}.m3u`` when matches exist, and
+    missing tracks are queued to Soulseek via ``queue_add``.  The work runs in
+    a worker thread (``asyncio.to_thread``) so the per-source API throttling
+    (Last.fm ~3 req/s, ListenBrainz 1 req/s) never blocks the event loop.
+    """
+    try:
+        data = (await request.get_json(silent=True)) or {}
+        source = str(data.get("source") or "both").strip().lower()
+        name = str(data.get("name") or "Recommended Mix").strip()
+        limit = max(1, min(int(data.get("limit") or 12), 25))
+        if source not in ("lastfm", "listenbrainz", "both"):
+            return jsonify({"error": "source must be 'lastfm', 'listenbrainz' or 'both'"}), 400
+
+        from services.playlists.generator_service import generate_recommendations
+        result = await asyncio.to_thread(generate_recommendations, source, name, limit)
+        return jsonify(result)
+    except Exception as exc:
+        logging.error("Playlist generation failed: %s", exc, exc_info=True)
+        return jsonify({"error": f"Playlist generation failed: {exc}"}), 500
+
+
 @playlists_bp.route("/api/playlists/tracks", methods=["POST"])
 async def api_playlists_tracks():
     """Return the track list of one playlist.
@@ -566,6 +596,24 @@ async def api_playlists_tracks():
             file_path = str(data.get("file_path") or "")
             if not file_path or not _os.path.exists(file_path):
                 return jsonify({"error": "Playlist file not found"}), 404
+
+            # Generated .m3u playlists are plain text — parse directly.
+            if str(file_path).lower().endswith((".m3u", ".m3u8")):
+                from services.playlists.playlist_service import read_m3u_file
+                tracks = read_m3u_file(file_path)
+                return jsonify({
+                    "playlist": {
+                        "id": playlist_id,
+                        "source": "file",
+                        "type": "regular",
+                        "name": _os.path.splitext(_os.path.basename(file_path))[0],
+                        "file_name": _os.path.basename(file_path),
+                        "file_path": file_path,
+                        "comment": "Generated playlist",
+                        "rule_based": False,
+                    },
+                    "tracks": tracks,
+                })
 
             playlist = read_nsp_playlist(file_path)
             if not playlist:
@@ -656,6 +704,15 @@ async def api_playlists_rename():
             file_path = str(data.get("file_path") or "")
             if not file_path or not _os.path.exists(file_path):
                 return jsonify({"error": "Playlist file not found"}), 404
+            # Generated .m3u playlists are renamed as plain text files.
+            if str(file_path).lower().endswith((".m3u", ".m3u8")):
+                from services.playlists.playlist_service import sanitize_playlist_name
+                new_file_name = str(data.get("file_name") or name or "").strip()
+                base = sanitize_playlist_name(new_file_name or name)
+                new_path = _os.path.join(_os.path.dirname(file_path), f"{base}.m3u")
+                if new_path != file_path:
+                    _os.rename(file_path, new_path)
+                return jsonify({"success": True, "file_path": new_path})
             try:
                 result = rename_nsp_playlist(file_path, name, data.get("file_name"))
             except ValueError as exc:

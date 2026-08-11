@@ -15,6 +15,7 @@ QUEUE_PID=""
 log()  { echo "$*"; }
 warn() { echo "⚠ $*"; }
 ok()   { echo "✓ $*"; }
+ok2()  { echo "  ✓ $*"; }
 
 cleanup() {
     log "Stopping Popularr..."
@@ -44,13 +45,13 @@ wait_for_db() {
     for i in $(seq 1 $retries); do
         if command -v pg_isready >/dev/null 2>&1; then
             if pg_isready -h "$host" -p "$port" -U "$user" >/dev/null 2>&1; then
-                ok "PostgreSQL is ready (attempt $i)"
+                ok2 "PostgreSQL connected (attempt $i)"
                 return 0
             fi
         else
             # Fallback: try a TCP connection using python
             if python3 -c "import socket; s=socket.create_connection(('$host',$port), timeout=3); s.close()" 2>/dev/null; then
-                ok "PostgreSQL port is open (attempt $i)"
+                ok2 "PostgreSQL connected (attempt $i)"
                 return 0
             fi
         fi
@@ -63,11 +64,13 @@ wait_for_db() {
 }
 
 run_queue_startup_schema() {
-    log "Running minimal queue startup schema bootstrap..."
-    if python3 migrations/ensure_queue_startup_schema.py; then
-        ok "Minimal queue startup schema bootstrap complete"
+    # Silent on success — the queue schema is ensured before the processor
+    # starts; only failures surface (bootstrap also covers these columns).
+    if python3 migrations/ensure_queue_startup_schema.py >/dev/null 2>&1; then
+        return 0
     else
         warn "Minimal queue startup schema bootstrap failed (non-fatal)"
+        return 1
     fi
 }
 
@@ -77,12 +80,12 @@ run_alembic_migrations() {
         # This avoids DDL conflicts when db.bootstrap has already created the
         # tables (which it always does at startup).
         if python3 -m alembic stamp head 2>/dev/null; then
-            ok "Alembic schema stamped (head)"
+            ok2 "Alembic schema stamped (head)"
         else
             # If stamping fails (e.g. first run, no alembic_version table yet),
             # try a fresh upgrade instead.
             if python3 -m alembic upgrade head 2>/dev/null; then
-                ok "Alembic migrations applied"
+                ok2 "Alembic migrations applied"
             else
                 warn "Alembic skipped — schema bootstrap handles table creation"
             fi
@@ -91,18 +94,22 @@ run_alembic_migrations() {
 }
 
 run_schema_bootstrap() {
-    log "Running database schema bootstrap..."
-    if python3 -m db.bootstrap 2>&1; then
-        ok "Database schema bootstrap complete"
+    # Silent on success — bootstrap prints its own banner/table-group lines;
+    # we surface a single compact confirmation instead.
+    if python3 -m db.bootstrap >/dev/null 2>&1; then
+        ok2 "All 9 table groups verified"
+        return 0
     else
-        warn "Database schema bootstrap failed (non-fatal — app will retry on startup)"
+        warn "Database schema bootstrap failed — retrying with output"
+        python3 -m db.bootstrap || true
+        return 1
     fi
 }
 
 check_ffmpeg() {
     log "Checking ffmpeg availability..."
     if command -v ffmpeg >/dev/null 2>&1; then
-        ok "ffmpeg found: $(ffmpeg -version | head -n 1)"
+        ok2 "ffmpeg found: version $(ffmpeg -version | head -n 1 | awk '{print $2}')"
         return 0
     fi
     warn "ffmpeg not found in PATH. FLAC→MP3 conversion will be unavailable."
@@ -124,7 +131,7 @@ start_queue_processor() {
     if python3 -m services.queue.queue_worker "$interval" > "$log_file" 2>&1 &
     then
         QUEUE_PID=$!
-        ok "Queue processor started (PID: $QUEUE_PID)"
+        ok2 "Queue processor started (PID: $QUEUE_PID)"
     else
         warn "Queue processor failed to start (non-fatal, continuing)"
     fi
@@ -164,7 +171,7 @@ preflight_python() {
         printf "%b" "$failed_files"
         warn "Continuing despite syntax errors (non-fatal)"
     else
-        ok "Python syntax checks passed"
+        ok2 "Python syntax checks passed"
     fi
 }
 
@@ -172,7 +179,7 @@ start_web_app() {
     local _error_log="${SPTNR_ERROR_LOG:-/config/error.log}"
     log "Starting web server (hypercorn, ${SPTNR_GUNICORN_WORKERS:-4} workers)..."
     echo ""
-    log "Log files (accessible via docker exec):"
+    log "Log files (viewable at /logs or via docker exec):"
     log "  Access:  ${SPTNR_ACCESS_LOG:-/config/access.log}"
     log "  Errors:  ${_error_log}"
     log "  Debug:   /config/debug.log"
@@ -221,31 +228,32 @@ main() {
     trap cleanup SIGTERM SIGINT EXIT
     trap 'warn "Fatal error on line $LINENO — see above for details"' ERR
 
-    log "── Startup ─────────────────────────────────────────────────"
-
-    wait_for_db
-
-    run_queue_startup_schema || true
-    run_alembic_migrations || true
-    run_schema_bootstrap || true
-    check_ffmpeg || true
-
-    echo ""
-    log "── Background Services ──────────────────────────────────────"
-
-    start_queue_processor || true
-
-    echo ""
     log "── Pre-flight Checks ───────────────────────────────────────"
 
     preflight_python || true
 
     # Test Quart app import BEFORE hypercorn
     if python3 -c "import sys; sys.path.insert(0, '.'); from app import app" 2>&1; then
-        ok "App import OK"
+        ok2 "App import OK"
     else
         warn "App import FAILED — see error above"
     fi
+
+    check_ffmpeg || true
+
+    echo ""
+    log "── Database ────────────────────────────────────────────────"
+
+    wait_for_db
+
+    run_queue_startup_schema || true
+    run_alembic_migrations || true
+    run_schema_bootstrap || true
+
+    echo ""
+    log "── Background Services ──────────────────────────────────────"
+
+    start_queue_processor || true
 
     echo ""
     log "── Launch ──────────────────────────────────────────────────"

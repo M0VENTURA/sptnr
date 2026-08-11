@@ -292,6 +292,62 @@ async function submitRename() {
 }
 
 // ===============================
+// GENERATOR (Last.fm / ListenBrainz recommendations)
+// ===============================
+
+function openGeneratorModal() {
+  document.getElementById('genResult').classList.add('d-none');
+  document.getElementById('genResult').innerHTML = '';
+  const modal = new bootstrap.Modal(document.getElementById('generatorModal'));
+  modal.show();
+  document.getElementById('genName').focus();
+}
+
+async function submitGenerator() {
+  const btn = document.getElementById('genSubmitBtn');
+  const resultEl = document.getElementById('genResult');
+  const name = document.getElementById('genName').value.trim() || 'Recommended Mix';
+  const limit = Math.max(1, Math.min(parseInt(document.getElementById('genLimit').value, 10) || 12, 25));
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Generating…';
+  resultEl.classList.remove('d-none');
+  resultEl.className = 'alert alert-info small py-2';
+  resultEl.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Fetching recommendations — this can take a minute (API rate limits).';
+
+  try {
+    const response = await fetch('/api/playlists/generate/recommendations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: document.getElementById('genSource').value, name: name, limit: limit }),
+    });
+    const data = await parseJsonOrThrow(response);
+    if (!response.ok) throw new Error(data.error || 'Generation failed');
+
+    const queuedNote = data.queued_failed > 0
+      ? ` <span class="text-danger">(${data.queued_failed} failed to queue)</span>`
+      : '';
+    resultEl.className = 'alert alert-success small py-2';
+    resultEl.innerHTML =
+      '<i class="bi bi-check-circle me-1"></i>' +
+      `Playlist "<strong>${escapeHtml(data.playlist_name)}</strong>" ready — ` +
+      `<strong>${data.added_now}</strong> track(s) from the library` +
+      (data.playlist_path ? ` (<code>${escapeHtml(data.playlist_path.split('/').pop())}</code>)` : '') +
+      ` · <strong>${data.queued_ok}</strong> missing track(s) queued to Soulseek${queuedNote}.`;
+
+    // Refresh the list so the new .m3u appears; close on success.
+    bootstrap.Modal.getInstance(document.getElementById('generatorModal')).hide();
+    await loadPlaylists();
+  } catch (err) {
+    resultEl.className = 'alert alert-danger small py-2';
+    resultEl.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + escapeHtml(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-magic"></i> Generate';
+  }
+}
+
+// ===============================
 // INIT
 // ===============================
 

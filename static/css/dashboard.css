@@ -95,6 +95,15 @@ body {
 .upcoming-card {
     background: var(--secondary-bg);
     border-color: var(--border-color) !important;
+    /* Compact: fit ~3-4 releases per screen */
+    padding: 0.45rem 0.6rem !important;
+    margin-bottom: 0.4rem !important;
+    font-size: 0.85rem;
+    border-radius: 0.5rem;
+}
+
+.upcoming-card .fw-semibold {
+    font-size: 0.88rem;
 }
 
 .upcoming-card .min-w-0 {
