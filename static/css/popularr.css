@@ -746,14 +746,16 @@ html {
 }
 
 /* When the global player bar is visible, sit above it instead of overlapping. */
-body.player-visible #scanStatusBar {
-    bottom: 68px;
+body.player-visible #scanStatusBar,
+body:has(#globalPlayerBar:not(.d-none)) #scanStatusBar {
+    bottom: var(--player-bar-height);
 }
 
 /* ── Live scan progress toast (SSE, every page) ────────────────────────── */
 .scan-progress-toast {
     position: fixed;
-    bottom: 1rem;
+    /* sit above the fixed bottom scan status bar (2.4rem) instead of overlapping its controls */
+    bottom: calc(2.4rem + 0.75rem);
     left: 50%;
     transform: translateX(-50%);
     z-index: 2050;
@@ -782,9 +784,13 @@ body.player-visible #scanStatusBar {
     flex-shrink: 0;
 }
 .scan-progress-toast-close:hover { color: var(--text-primary); }
-/* Sit above the fixed bottom audio player when it is visible */
+/* Sit above the fixed bottom audio player + scan status bar when the player is visible */
 body:has(#globalPlayerBar:not(.d-none)) .scan-progress-toast {
-    bottom: calc(var(--player-bar-height) + 0.75rem);
+    bottom: calc(var(--player-bar-height) + 2.4rem + 0.75rem);
+}
+/* Never cover the fullscreen log viewer while it is open */
+body:has(#unifiedLogModal.show) .scan-progress-toast {
+    display: none;
 }
 
 /* ── Sticky save bar (dirty-form tracking) ─────────────────────────────── */
