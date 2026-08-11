@@ -1151,9 +1151,42 @@ async def artist_detail(name: str):
         slskd_config=cfg.get("slskd", {}),
     )
 
+
+def _coerce_track_numerics(track: dict[str, Any]) -> dict[str, Any]:
+    """Coerce numeric track fields to float/int (or None) for safe Jinja rounds.
+
+    ``stars`` stays an int (templates use ``range(track.stars)``); the rest
+    become float or None so ``|round`` can never receive a string or Undefined.
+    """
+    float_fields = (
+        "duration", "final_score", "popularity", "lastfm_score",
+        "listenbrainz_score", "bpm", "loudness_lufs", "replaygain",
+        "bitrate", "sample_rate",
+    )
+    int_fields = ("stars",)
+    for field in int_fields:
+        value = track.get(field)
+        if value in (None, ""):
+            track[field] = None
+            continue
+        try:
+            track[field] = int(float(value))
+        except (TypeError, ValueError):
+            track[field] = None
+    for field in float_fields:
+        value = track.get(field)
+        if value in (None, ""):
+            track[field] = None
+            continue
+        try:
+            track[field] = float(value)
+        except (TypeError, ValueError):
+            track[field] = None
+    return track
+
+
 @ui_bp.route("/album/<path:artist>/<path:album>", methods=["GET", "POST"])
-async def album_detail(artist: str, album: str):
-    artist_name = unquote(artist or "").strip()
+async def album_detail(artist: str, album: str):    artist_name = unquote(artist or "").strip()
     album_name = unquote(album or "").strip()
     cfg = get_config()
 
@@ -1174,6 +1207,11 @@ async def album_detail(artist: str, album: str):
             {"artist": artist_name, "album": album_name},
         )
         tracks = [dict(r._mapping) for r in result.fetchall()]
+
+    # Normalize numeric fields so Jinja's round() filters never see
+    # None/string values (fixes "type 'Undefined' doesn't define __round__"
+    # crashes for tracks with sparse metadata).
+    tracks = [_coerce_track_numerics(t) for t in tracks]
 
     if request.method == "POST":
         form = await request.form
@@ -2024,6 +2062,9 @@ async def track_detail(track_id: str):
 
             raw_db_columns = set(row._mapping.keys())
             track = apply_track_template_aliases(dict(row._mapping))
+            # Normalize numeric fields before template rendering so round()
+            # filters never receive None/string values.
+            track = _coerce_track_numerics(track)
             # Use the original DB column names (not aliased) for UPDATE checks
             existing_columns = raw_db_columns
 

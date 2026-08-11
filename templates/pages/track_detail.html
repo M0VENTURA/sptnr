@@ -164,10 +164,10 @@
                             <strong>{{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}</strong>
                         </div>
                         {% endif %}
-                        {% if track.bpm %}
+                        {% if track.bpm is defined and track.bpm is not none and track.bpm != '' %}
                         <div class="col-6 col-md-3">
                             <small class="text-muted d-block">BPM</small>
-                            <strong>{{ track.bpm|round(0)|int }}</strong>
+                            <strong>{{ (track.bpm if track.bpm is not none else 0)|round(0)|int }}</strong>
                         </div>
                         {% endif %}
                         {% if track.musical_key %}
@@ -817,7 +817,7 @@
                                     </div>
                                     <div class="d-flex justify-content-between small">
                                         <span class="text-muted">Score</span>
-                                        <strong>{{ track.lastfm_score|round(1) if track.lastfm_score is not none else '—' }}</strong>
+                                        <strong>{{ track.lastfm_score|round(1) if track.lastfm_score is defined and track.lastfm_score is not none else '—' }}</strong>
                                     </div>
                                 </div>
                             </div>
@@ -834,7 +834,7 @@
                                     </div>
                                     <div class="d-flex justify-content-between small">
                                         <span class="text-muted">Score</span>
-                                        <strong>{{ track.listenbrainz_score|round(1) if track.listenbrainz_score is not none else '—' }}</strong>
+                                        <strong>{{ track.listenbrainz_score|round(1) if track.listenbrainz_score is defined and track.listenbrainz_score is not none else '—' }}</strong>
                                     </div>
                                 </div>
                             </div>
@@ -842,7 +842,7 @@
                                 <div class="p-2 border rounded h-100 d-flex flex-column justify-content-center" style="background: var(--tertiary-bg, #2b2b2b);">
                                     <div class="text-muted small fw-semibold mb-2"><i class="bi bi-activity me-1"></i>Popularity</div>
                                     <div>
-                                        {% if track.popularity is not none and track.popularity != '' %}
+                                        {% if track.popularity is defined and track.popularity is not none and track.popularity != '' %}
                                             <span class="badge badge-success" style="font-size: 0.95rem;">{{ track.popularity|round(1) }}</span>
                                         {% else %}<span class="text-muted">—</span>{% endif %}
                                     </div>
@@ -1010,7 +1010,7 @@
                             <div class="row g-3 text-center">
                                 <div class="col-4">
                                     <div class="text-muted small fw-semibold mb-1"><i class="bi bi-speedometer2"></i> BPM</div>
-                                    <div class="fs-4 fw-bold">{{ track.bpm|round|int if track.bpm is not none else '—' }}</div>
+                                    <div class="fs-4 fw-bold">{{ track.bpm|round|int if track.bpm is defined and track.bpm is not none else '—' }}</div>
                                 </div>
                                 <div class="col-4">
                                     <div class="text-muted small fw-semibold mb-1"><i class="bi bi-music-note"></i> Key</div>
@@ -1137,13 +1137,13 @@
                                     <div class="metadata-value small">{{ track.musical_key }}</div>
                                 </div>
                                 {% endif %}
-                                {% if track.loudness_lufs is not none %}
+                                {% if track.loudness_lufs is defined and track.loudness_lufs is not none %}
                                 <div class="metadata-row">
                                     <div class="metadata-label small">Loudness</div>
                                     <div class="metadata-value small">{{ track.loudness_lufs|round(1) }} LUFS</div>
                                 </div>
                                 {% endif %}
-                                {% if track.replaygain is not none %}
+                                {% if track.replaygain is defined and track.replaygain is not none %}
                                 <div class="metadata-row">
                                     <div class="metadata-label small">ReplayGain</div>
                                     <div class="metadata-value small">{{ track.replaygain|round(2) }} dB</div>

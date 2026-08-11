@@ -1298,7 +1298,7 @@ var _pageData = window._pageData || {};
             row.innerHTML = `
                 <td></td>
                 <td class="fst-italic">${safeTrackNum || '?'}</td>
-                <td colspan="6" class="fst-italic">
+                <td colspan="4" class="fst-italic">
                     ${safeTitle}
                     <span class="badge bg-warning text-dark ms-2" style="font-size: 0.65rem; vertical-align: middle;">Missing</span>
                 </td>
@@ -1442,7 +1442,7 @@ var _pageData = window._pageData || {};
             const subRow = document.createElement('tr');
             subRow.className = 'mb-extra-row';
             subRow.innerHTML = `
-                <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                <td colspan="7" style="padding: 0.3rem 0.75rem; border-top: none;">
                     <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
                          style="background: rgba(108,117,125,0.12); border: 1px solid rgba(108,117,125,0.35);">
                         <small class="text-secondary">
@@ -1574,7 +1574,7 @@ var _pageData = window._pageData || {};
                 updateRow.dataset.mbComp = JSON.stringify(trackComp);
                 updateRow.dataset.mbField = field;
                 updateRow.innerHTML = `
-                    <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                    <td colspan="7" style="padding: 0.3rem 0.75rem; border-top: none;">
                         <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
                              style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
                             <small class="text-warning-emphasis">
@@ -2953,72 +2953,186 @@ var _pageData = window._pageData || {};
     // Genre sources are now pre-rendered server-side from database data populated during scans.
     // External source fetching only happens during the popularity/singles detection scan.
 
-    async function loadAlbumMissingTracks() {
-        const body = document.getElementById('albumMissingTracksBody');
-        const countEl = document.getElementById('albumMissingCount');
-        if (!body) return;
+    // ===== Unified inline tracklist =====
+    // Missing MusicBrainz tracks are merged INTO the main track table at their
+    // Disc#/Track# position (dimmed, ⚠️ Missing badge, queue/match/ignore
+    // actions) instead of a separate card.
+
+    function _buildInlineMissingRow(mt, artist, album) {
+        const num = escapeHtml(mt.track_number != null ? String(mt.track_number) : '?');
+        const disc = Number(mt.disc_number || 1);
+        const title = escapeHtml(mt.title || '—');
+        const sArtist = escapeJsString(artist);
+        const sAlbum = escapeJsString(album);
+        const sTitle = escapeJsString(mt.title || '');
+        const sNum = escapeJsString(mt.track_number != null ? String(mt.track_number) : '');
+        const recMbid = escapeHtml(String(mt.recording_mbid || ''));
+
+        const queueBtn = '<button class="btn btn-outline-success queue-missing-btn" title="Add to download queue" ' +
+            'data-artist="' + sArtist + '" data-album-artist="' + sArtist + '" data-title="' + sTitle + '" ' +
+            'data-album="' + sAlbum + '" data-track-number="' + sNum + '" data-disc-number="' + disc + '" ' +
+            'data-recording-mbid="' + recMbid + '" onclick="queueMissingTrack(this)"><i class="bi bi-download"></i></button>';
+        const matchBtn = '<button class="btn btn-outline-primary" title="Match to an existing song in the library" ' +
+            'data-title="' + sTitle + '" data-track-number="' + sNum + '" data-artist="' + sArtist + '" ' +
+            'data-album="' + sAlbum + '" onclick="openAlbumMatchModal(this)"><i class="bi bi-link-45deg"></i></button>';
+        const ignoreBtn = '<button class="btn btn-outline-secondary" title="Ignore – hide this track from the missing list" ' +
+            'data-title="' + sTitle + '" data-disc-number="' + disc + '" onclick="ignoreMissingTrack(this)"><i class="bi bi-x-lg"></i></button>';
+
+        const row = document.createElement('tr');
+        row.className = 'text-muted missing-track-row mb-inline-missing';
+        row.style.opacity = '0.6';
+        row.dataset.discNumber = String(disc);
+        row.dataset.trackNumber = mt.track_number != null ? String(mt.track_number) : '';
+        row.innerHTML =
+            '<td class="d-md-none" colspan="7" style="padding: 0.5rem 0.75rem; border: none;">' +
+                '<div class="d-flex align-items-center gap-2">' +
+                    '<span class="text-muted fw-bold flex-shrink-0" style="min-width: 1.25rem; font-size: 0.85rem;">' + num + '</span>' +
+                    '<span class="fst-italic flex-grow-1 text-truncate" style="min-width: 0;">' + title + '</span>' +
+                    '<span class="badge bg-warning text-dark text-nowrap flex-shrink-0"><i class="bi bi-exclamation-triangle me-1"></i>Missing</span>' +
+                '</div>' +
+                '<div class="d-flex align-items-center gap-1 mt-1 ps-2">' + queueBtn + matchBtn + ignoreBtn + '</div>' +
+            '</td>' +
+            '<td class="d-none d-md-table-cell"></td>' +
+            '<td class="d-none d-md-table-cell fst-italic">' + num + '</td>' +
+            '<td class="d-none d-md-table-cell fst-italic">' + title + '</td>' +
+            '<td class="d-none d-md-table-cell text-center text-muted small">--:--</td>' +
+            '<td class="d-none d-md-table-cell text-center text-muted">—</td>' +
+            '<td class="d-none d-md-table-cell"><span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Missing</span></td>' +
+            '<td class="d-none d-md-table-cell text-end"><div class="btn-group btn-group-sm">' + queueBtn + matchBtn + ignoreBtn + '</div></td>';
+        return row;
+    }
+
+    async function mergeMissingTracks() {
+        const tbody = document.getElementById('albumTracksTbody');
+        const badge = document.getElementById('albumMissingHeaderBadge');
+        if (!tbody) return;
         const artist = (_pageData && _pageData.artistName) || '';
         const album = (_pageData && _pageData.albumName) || '';
-        if (!artist || !album) {
-            body.innerHTML = '<span class="text-danger">Missing artist/album context.</span>';
-            return;
-        }
-        body.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Checking MusicBrainz tracklist...';
+        if (!artist || !album) return;
+
+        let data;
         try {
             const resp = await fetch(`/api/album/missing-tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            const data = await resp.json();
-            const missing = data.missing_tracks || [];
-            if (countEl) countEl.textContent = missing.length + ' missing';
-            // Mirror the count into the Tracks card header badge.
-            const headerBadge = document.getElementById('albumMissingHeaderBadge');
-            if (headerBadge) {
-                if (missing.length > 0) {
-                    headerBadge.textContent = missing.length + ' Missing';
-                    headerBadge.classList.remove('d-none');
-                } else {
-                    headerBadge.classList.add('d-none');
-                }
-            }
-            if (missing.length === 0) {
-                body.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> All tracks from the MusicBrainz release are in your library.</span>';
-                return;
-            }
-            body.innerHTML = '<div class="table-responsive"><table class="table table-sm table-dark table-striped mb-0">' +
-                '<thead><tr><th style="width:50px">#</th><th>Track</th><th class="text-center" style="width:220px">Action</th></tr></thead><tbody>' +
-                missing.map(t => {
-                    return '<tr>' +
-                        '<td class="text-center text-muted">' + escapeHtml(String(t.track_number || '')) + '</td>' +
-                        '<td>' + escapeHtml(t.title || '—') + '</td>' +
-                        '<td class="text-center">' +
-                            '<button class="btn btn-sm btn-outline-warning" onclick="queueMissingAlbumTrack(' +
-                                `'${escapeJsString(t.title || '')}', '${escapeJsString(artist)}', '${escapeJsString(album)}'` +
-                            ')"><i class="bi bi-search"></i> Search / Download (Soulseek)</button>' +
-                        '</td></tr>';
-                }).join('') +
-                '</tbody></table></div>' +
-                `<small class="text-muted">${data.mb_total || 0} tracks on the MusicBrainz release · ${data.library_count || 0} in your library</small>`;
+            data = await resp.json();
         } catch (err) {
-            body.innerHTML = '<span class="text-danger">Error: ' + escapeHtml(err.message) + '</span>';
+            if (badge) badge.classList.add('d-none');
+            return;
+        }
+
+        const missing = data.missing_tracks || [];
+        if (badge) {
+            if (missing.length > 0) {
+                badge.textContent = missing.length + ' Missing';
+                badge.classList.remove('d-none');
+            } else {
+                badge.classList.add('d-none');
+            }
+        }
+
+        // Clear previously injected inline rows, then merge by Disc#/Track#.
+        tbody.querySelectorAll('.mb-inline-missing').forEach(r => r.remove());
+        if (missing.length === 0) return;
+
+        const localRows = Array.prototype.filter.call(
+            tbody.querySelectorAll('tr[data-track-id]'),
+            r => r.dataset.trackId
+        );
+        const occupied = new Map();
+        localRows.forEach(r => {
+            const d = r.dataset.discNumber || '1';
+            const t = r.dataset.trackNumber;
+            if (t) occupied.set(d + ':' + t, r);
+        });
+
+        function rowKey(r) {
+            const d = parseInt(r.dataset.discNumber || '1', 10) || 1;
+            const t = parseInt(r.dataset.trackNumber || '9999', 10) || 9999;
+            return d * 1000 + Math.min(t, 999);
+        }
+
+        for (const mt of missing) {
+            const disc = String(Number(mt.disc_number || 1));
+            const num = mt.track_number != null ? String(mt.track_number) : '';
+            const rowEl = _buildInlineMissingRow(mt, artist, album);
+
+            // Position already occupied by a local track → insert right after
+            // it (album order preserved; title discrepancies surface through
+            // the MusicBrainz comparison rows instead of a duplicate row).
+            const existing = num ? occupied.get(disc + ':' + num) : null;
+            if (existing) {
+                let after = existing;
+                let sib = after.nextElementSibling;
+                while (sib && (sib.classList.contains('mb-update-row') || sib.classList.contains('mb-missing-row'))) {
+                    after = sib;
+                    sib = sib.nextElementSibling;
+                }
+                after.insertAdjacentElement('afterend', rowEl);
+                continue;
+            }
+
+            // Otherwise insert sorted before the first row with a greater key.
+            const key = rowKey(rowEl);
+            let insertBefore = null;
+            for (const r of localRows) {
+                if (rowKey(r) > key) { insertBefore = r; break; }
+            }
+            if (insertBefore) tbody.insertBefore(rowEl, insertBefore);
+            else tbody.appendChild(rowEl);
         }
     }
 
-    async function queueMissingAlbumTrack(title, artist, album) {
-        if (!confirm(`Queue "${title}" via Soulseek?`)) return;
+    // Hero overflow: "Download Missing Tracks" → jump to the tracklist and
+    // (re)run the merge so the ⚠️ rows are always current.
+    function downloadMissingTracks() {
+        const section = document.getElementById('album-tracks-section');
+        if (section) section.scrollIntoView({ behavior: 'smooth' });
+        mergeMissingTracks();
+    }
+
+    async function rescanTrack(trackId) {
+        if (!trackId) return;
+        if (!confirm('Rescan this track from MusicBrainz / metadata sources?')) return;
         try {
-            const resp = await fetch('/api/queue/add', {
+            const resp = await fetch(`/api/track/${trackId}/rescan-single`, { method: 'POST' });
+            const data = await resp.json().catch(() => ({}));
+            if (data && data.success) {
+                alert('✅ Track rescanned.');
+            } else {
+                alert('❌ Error: ' + ((data && data.error) || 'Rescan failed'));
+            }
+        } catch (err) {
+            alert('❌ Network error: ' + err.message);
+        }
+    }
+
+    async function deleteTrack(trackId) {
+        if (!trackId) return;
+        if (!confirm('Delete this track from the library?')) return;
+        try {
+            const resp = await fetch('/api/album/bulk-delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ artist: artist, title: title, album: album, source: 'soulseek', priority: 5 })
+                body: JSON.stringify({
+                    track_ids: [trackId],
+                    artist: _pageData.artistName,
+                    album: _pageData.albumName,
+                    delete_files: false
+                })
             });
             const data = await resp.json().catch(() => ({}));
             if (data && data.success) {
-                alert('Queued: ' + title);
+                const trackIdStr = String(trackId);
+                document.querySelectorAll(`tr[data-track-id="${CSS.escape(trackIdStr)}"]`).forEach(r => r.remove());
+                document.querySelectorAll('.mb-update-row, .mb-extra-row').forEach(r => {
+                    if (r.dataset.trackId === trackIdStr) r.remove();
+                });
+                mergeMissingTracks();
             } else {
-                alert('Error: ' + ((data && data.error) || 'Failed to queue'));
+                alert('❌ Error: ' + ((data && data.error) || 'Failed to delete track'));
             }
         } catch (err) {
-            alert('Network error: ' + err.message);
+            alert('❌ Network error: ' + err.message);
         }
     }
 
@@ -3037,8 +3151,9 @@ var _pageData = window._pageData || {};
         } else if (artist && artist.length > 0) {
             loadSimilarArtistsForAlbum(artist);
         }
-        // Populate the missing-tracks section on page load (old-system parity).
-        loadAlbumMissingTracks();
+        // Populate the unified inline tracklist on page load (missing MB
+        // tracks merged at their Disc#/Track# positions).
+        mergeMissingTracks();
     });
 
     // Similar Artists Loading

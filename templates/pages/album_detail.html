@@ -94,42 +94,22 @@
                             </h1>
                             <p class="text-muted mb-0 album-hero-sub">
                                 by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}">{{ artist_name }}</a>
-                                {% if album_data and album_data.avg_stars %}
-                                    <span class="badge badge-success ms-2 align-middle">{{ album_data.avg_stars|round(2) }}★</span>
+                                {% if album_data and album_data.avg_stars is not none and album_data.avg_stars != '' %}
+                                    <span class="badge badge-success ms-2 align-middle">{{ (album_data.avg_stars if album_data.avg_stars is not none else 0.0)|round(2) }}★</span>
                                 {% endif %}
                                 {% if album_data and album_data.singles_count and album_data.singles_count > 0 %}
                                     <span class="badge badge-info ms-1 align-middle">⚡ {{ album_data.singles_count }} Detected Singles</span>
                                 {% endif %}
                             </p>
                         </div>
-                        <!-- Desktop actions -->
-                        <div class="d-none d-lg-flex gap-2 flex-wrap">
+                        <!-- Desktop actions: lean CTA bar → Play / ♡ / Rescan / ⋮ overflow -->
+                        <div class="d-none d-lg-flex gap-2 flex-wrap align-items-center">
                             <button class="btn btn-success btn-sm" onclick="playAlbum()" title="Play all downloaded tracks">
                                 <i class="bi bi-play-circle-fill"></i> <span class="d-none d-sm-inline">Play Album</span>
                             </button>
                             <button class="btn btn-outline-success btn-sm" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites" id="albumFavBtn">
                                 <i class="bi {{ 'bi-star-fill' if is_album_favourite else 'bi-star' }}" id="albumFavIcon"></i> <span class="d-none d-sm-inline" id="albumFavLabel">{{ 'Favourited' if is_album_favourite else 'Favourite' }}</span>
                             </button>
-                            <button class="btn btn-outline-info btn-sm" onclick="openAlbumLookupModal()">
-                                <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Lookup</span>
-                            </button>
-                            <div class="btn-group btn-group-sm" role="group">
-                                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this album">
-                                    <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
-                                </button>
-                                <ul class="dropdown-menu dropdown-menu-end">
-                                    {% if qbit_config is defined and qbit_config.enabled %}
-                                    <li><a class="dropdown-item" onclick="openQbitSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
-                                        <i class="bi bi-cloud-download"></i> Search qBittorrent
-                                    </a></li>
-                                    {% endif %}
-                                    {% if slskd_config is defined and slskd_config.enabled %}
-                                    <li><a class="dropdown-item" onclick="openSlskdSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
-                                        <i class="bi bi-music-note-beamed"></i> Search Soulseek
-                                    </a></li>
-                                    {% endif %}
-                                </ul>
-                            </div>
                             <form method="POST" action="{{ url_for('scans.scan_album_custom') }}" class="d-flex align-items-center gap-2 flex-wrap">
                                 <input type="hidden" name="artist" value="{{ artist_name }}">
                                 <input type="hidden" name="album" value="{{ album_name }}">
@@ -142,9 +122,27 @@
                                     <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan</span>
                                 </button>
                             </form>
-                            <button class="btn btn-secondary btn-sm" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" title="Rename all album files based on current metadata">
-                                <i class="bi bi-files"></i> <span class="d-none d-sm-inline">Rename Files</span>
-                            </button>
+                            <div class="dropdown">
+                                <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
+                                    <i class="bi bi-three-dots-vertical"></i> <span class="d-none d-sm-inline">Actions</span>
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumLookupModal()"><i class="bi bi-search me-2"></i>Lookup on MusicBrainz</a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="downloadMissingTracks()"><i class="bi bi-download me-2"></i>Download Missing Tracks</a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-files me-2"></i>Rename Files</a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="autoLinkAllMbids()"><i class="bi bi-link-45deg me-2"></i>Auto-Link MBIDs</a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumArtModal()"><i class="bi bi-image me-2"></i>Change Album Art</a></li>
+                                    {% if (qbit_config is defined and qbit_config.enabled) or (slskd_config is defined and slskd_config.enabled) %}
+                                    <li><hr class="dropdown-divider"></li>
+                                    {% endif %}
+                                    {% if qbit_config is defined and qbit_config.enabled %}
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openQbitSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-cloud-download me-2"></i>Search qBittorrent</a></li>
+                                    {% endif %}
+                                    {% if slskd_config is defined and slskd_config.enabled %}
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openSlskdSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-music-note-beamed me-2"></i>Search Soulseek</a></li>
+                                    {% endif %}
+                                </ul>
+                            </div>
                         </div>
                         <!-- Mobile ••• Actions overflow menu -->
                         <div class="btn-group d-lg-none">
@@ -154,9 +152,11 @@
                             <ul class="dropdown-menu dropdown-menu-end">
                                 <li><a class="dropdown-item" href="javascript:void(0)" onclick="playAlbum()"><i class="bi bi-play-circle-fill text-success"></i> Play Album</a></li>
                                 <li><a class="dropdown-item" href="javascript:void(0)" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)"><i class="bi bi-star"></i> {{ 'Favourited' if is_album_favourite else 'Favourite' }}</a></li>
-                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumLookupModal()"><i class="bi bi-search"></i> Lookup</a></li>
-                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumArtModal()"><i class="bi bi-image"></i> Change Album Art</a></li>
+                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumLookupModal()"><i class="bi bi-search"></i> Lookup on MusicBrainz</a></li>
+                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="downloadMissingTracks()"><i class="bi bi-download"></i> Download Missing Tracks</a></li>
                                 <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-files"></i> Rename Files</a></li>
+                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="autoLinkAllMbids()"><i class="bi bi-link-45deg"></i> Auto-Link MBIDs</a></li>
+                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumArtModal()"><i class="bi bi-image"></i> Change Album Art</a></li>
                                 {% if (qbit_config is defined and qbit_config.enabled) or (slskd_config is defined and slskd_config.enabled) %}
                                 <li><hr class="dropdown-divider"></li>
                                 {% endif %}
@@ -181,9 +181,11 @@
                         favourite_onclick="addBookmark('album', '" ~ album_name|escapejs ~ "', '" ~ artist_name|escapejs ~ "', '" ~ album_name|escapejs ~ "', null)",
                         favourite_checked=is_album_favourite
                     ) %}
-                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumLookupModal()"><i class="bi bi-search me-2"></i> Lookup</a></li>
-                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumArtModal()"><i class="bi bi-image me-2"></i> Change Album Art</a></li>
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumLookupModal()"><i class="bi bi-search me-2"></i> Lookup on MusicBrainz</a></li>
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="downloadMissingTracks()"><i class="bi bi-download me-2"></i> Download Missing Tracks</a></li>
                         <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-files me-2"></i> Rename Files</a></li>
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="autoLinkAllMbids()"><i class="bi bi-link-45deg me-2"></i> Auto-Link MBIDs</a></li>
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumArtModal()"><i class="bi bi-image me-2"></i> Change Album Art</a></li>
                         {% if (qbit_config is defined and qbit_config.enabled) or (slskd_config is defined and slskd_config.enabled) %}
                         <li><hr class="dropdown-divider"></li>
                         {% endif %}
@@ -696,97 +698,143 @@
             </div>
         </div>
         <div class="table-responsive">
-            {# Macro: render a single row for a track that exists in MusicBrainz but not in the library #}
-            {% macro missing_track_row(track) %}
-            <tr class="text-muted missing-track-row" style="opacity: 0.6;" data-missing-id="{{ track.missing_track_id or '' }}">
-                <td></td>
-                <td class="fst-italic">{{ track.track_number or '?' }}</td>
-                <td colspan="6" class="fst-italic">
-                    {{ track.title }}
-                    <span class="badge bg-warning text-dark ms-2" style="font-size: 0.65rem; vertical-align: middle;">Missing</span>
+            {# ── Track actions dropdown (shared by mobile + desktop cells) ── #}
+            {% macro track_actions_dropdown(track) %}
+            <div class="dropdown">
+                <button class="btn btn-sm btn-outline-light" data-bs-toggle="dropdown" aria-label="Track actions">
+                    <i class="bi bi-three-dots-vertical"></i>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+                    <li><a class="dropdown-item" href="{{ url_for('ui.track_detail', track_id=track.id) }}"><i class="bi bi-music-note me-2"></i>Open Track Page</a></li>
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="rescanTrack('{{ track.id }}')"><i class="bi bi-lightning me-2"></i>Rescan Track</a></li>
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openEditTrackFromAlbum('{{ track.id }}')"><i class="bi bi-pencil me-2"></i>Edit Metadata</a></li>
+                    {% if track.musicbrainz_trackid or track.beets_mbid or track.mbid %}
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumTrackMbReleaseModal('{{ track.id }}')"><i class="bi bi-arrow-repeat me-2"></i>Re-match MusicBrainz</a></li>
+                    {% endif %}
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item text-danger" href="javascript:void(0)" onclick="deleteTrack('{{ track.id }}')"><i class="bi bi-trash me-2"></i>Delete</a></li>
+                </ul>
+            </div>
+            {% endmacro %}
+
+            {# Macro: unified track row — checkbox · # · title · duration ·
+               rating · status · actions.  One implementation for both
+               single-disc and multi-disc albums (missing rows are injected
+               inline by JS at their Disc#/Track# position). #}
+            {% macro track_row(track, row_index) %}
+            {% set _queued = track.file_path and '__queued_for_download__' in track.file_path %}
+            <tr class="album-track-mobile-row d-flex flex-column d-md-table-row{% if _queued %} table-secondary opacity-75{% endif %}" data-track-id="{{ track.id }}" data-disc-number="{{ track.disc_number or 1 }}" data-track-number="{{ track.track_number or row_index }}">
+                {# ── Mobile two-line cell ── #}
+                <td class="d-md-none" colspan="7" style="padding: 0.5rem 0.75rem; border: none;">
+                    <div class="d-flex align-items-center gap-2">
+                        <input type="checkbox" class="form-check-input track-checkbox flex-shrink-0" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if _queued %} disabled{% endif %}>
+                        <span class="text-muted fw-bold flex-shrink-0" style="min-width: 1.25rem; font-size: 0.85rem;">{{ track.track_number or row_index }}</span>
+                        {% if _queued %}
+                        <span class="text-muted flex-grow-1 text-truncate" style="min-width: 0;">{{ track.title }}</span>
+                        <span class="badge bg-warning text-dark text-nowrap flex-shrink-0" title="This track is currently in the download queue">In Queue</span>
+                        {% else %}
+                        <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="text-reset fw-bold flex-grow-1 text-truncate track-title-link" style="min-width: 0;">{{ track.title }}{% if track.artist and track.artist != artist_name %} <small class="text-muted">— {{ track.artist }}</small>{% endif %}</a>
+                        {% if track._mb_is_extra %}<span class="badge bg-secondary text-nowrap flex-shrink-0 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>{% endif %}
+                        {% endif %}
+                        <span class="text-muted text-nowrap flex-shrink-0" style="font-size: 0.85rem;">
+                            {% if track.duration %}{% set mins = (track.duration / 60)|int %}{% set secs = (track.duration % 60)|int %}{{ mins }}:{{ "%02d"|format(secs) }}{% else %}—{% endif %}
+                        </span>
+                    </div>
+                    <div class="d-flex align-items-center gap-2 mt-1 ps-2">
+                        <span class="text-warning text-nowrap" style="font-size: 0.85rem;">{% if track.stars %}{% for i in range(track.stars) %}★{% endfor %}{% else %}<span class="text-muted">—</span>{% endif %}</span>
+                        <span class="ms-auto d-flex align-items-center gap-1">
+                            {% if _queued %}
+                            {% set _fp = track.file_path or '' %}
+                            {% set _qid = _fp.split('queue_id_')[-1] if 'queue_id_' in _fp else '' %}
+                            <button class="btn btn-sm btn-outline-danger delete-queued-track-btn" data-track-id="{{ track.id }}" data-queue-id="{{ _qid }}" onclick="deleteQueuedTrackOnAlbumPage(this)" title="Remove from download queue"><i class="bi bi-x-circle"></i></button>
+                            {% else %}
+                            {% if track.file_path %}
+                            <button class="btn btn-sm btn-outline-success player-play-btn" data-track-id="{{ track.id }}" data-title="{{ track.title|escapejs }}" data-artist="{{ (track.artist or artist_name)|escapejs }}" data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" onclick="playTrackFromAlbum(this)" title="Play this track"><i class="bi bi-play-fill"></i></button>
+                            {% endif %}
+                            {{ track_actions_dropdown(track) }}
+                            {% endif %}
+                        </span>
+                    </div>
                 </td>
-                <td class="text-end">
-                    <div class="btn-group btn-group-sm">
-                        <button class="btn btn-outline-success queue-missing-btn"
-                            title="Add to download queue"
-                            data-artist="{{ track.artist|escapejs }}"
-                            data-album-artist="{{ track.album_artist|escapejs }}"
-                            data-title="{{ track.title|escapejs }}"
-                            data-album="{{ track.album|escapejs }}"
-                            data-track-number="{{ track.track_number or '' }}"
-                            data-disc-number="{{ track.disc_number or '' }}"
-                            data-year="{{ track.year or '' }}"
-                            data-release-id="{{ track.release_id or '' }}"
-                            data-recording-mbid="{{ track.recording_mbid or '' }}"
-                            data-duration="{{ track.duration or '' }}"
-                            onclick="queueMissingTrack(this)">
-                            <i class="bi bi-download"></i>
+                {# ── Desktop cells ── #}
+                <td class="d-none d-md-table-cell">
+                    <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if _queued %} disabled{% endif %}>
+                </td>
+                <td class="d-none d-md-table-cell text-muted">{{ track.track_number or row_index }}</td>
+                <td class="d-none d-md-table-cell">
+                    {% if _queued %}
+                    <span class="text-muted">{{ track.title }}</span>
+                    {% else %}
+                    <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="fw-bold text-light text-decoration-none track-title-link">{{ track.title }}</a>
+                    {% if track._mb_is_extra %}
+                    <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                    {% endif %}
+                    {% endif %}
+                </td>
+                <td class="d-none d-md-table-cell text-center text-muted small">
+                    {% if track.duration %}
+                        {% set mins = (track.duration / 60)|int %}
+                        {% set secs = (track.duration % 60)|int %}
+                        {{ mins }}:{{ "%02d"|format(secs) }}
+                    {% else %}
+                        <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
+                <td class="d-none d-md-table-cell text-center">
+                    {% if track.stars %}
+                        <span class="badge badge-success">{% for i in range(track.stars) %}★{% endfor %}</span>
+                    {% else %}
+                        <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
+                <td class="d-none d-md-table-cell">
+                    {% if _queued %}
+                    <span class="badge bg-warning text-dark">In Queue</span>
+                    {% else %}
+                    <span class="badge bg-dark border border-success text-success">In Library</span>
+                    {% if track._mb_diff_items and track._mb_diff_items|selectattr('field', 'equalto', 'title')|list %}
+                    <span class="badge bg-warning text-dark ms-1" title="Title discrepancy flagged in /corrections">✏️ Fix</span>
+                    {% endif %}
+                    {% endif %}
+                </td>
+                <td class="d-none d-md-table-cell text-end">
+                    {% if _queued %}
+                    {% set _fp = track.file_path or '' %}
+                    {% set _qid = _fp.split('queue_id_')[-1] if 'queue_id_' in _fp else '' %}
+                    <button class="btn btn-sm btn-outline-danger delete-queued-track-btn" data-track-id="{{ track.id }}" data-queue-id="{{ _qid }}" onclick="deleteQueuedTrackOnAlbumPage(this)" title="Remove from download queue"><i class="bi bi-x-circle"></i></button>
+                    {% else %}
+                    {% if track.file_path %}
+                    <button class="btn btn-sm btn-outline-success player-play-btn" data-track-id="{{ track.id }}" data-title="{{ track.title|escapejs }}" data-artist="{{ (track.artist or artist_name)|escapejs }}" data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" onclick="playTrackFromAlbum(this)" title="Play this track"><i class="bi bi-play-fill"></i></button>
+                    {% endif %}
+                    {{ track_actions_dropdown(track) }}
+                    {% endif %}
+                </td>
+            </tr>
+            {% if track._mb_diff_items %}
+            {% for _item in track._mb_diff_items %}
+            <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}" data-mb-field="{{ _item.field }}">
+                <td colspan="7" style="padding: 0.3rem 0.75rem; border-top: none;">
+                    <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
+                         style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
+                        <small class="text-warning-emphasis">
+                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz:</strong>
+                        </small>
+                        <small class="text-muted">{{ _item.html | safe }}</small>
+                        <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
+                                style="font-size: 0.75rem; white-space: nowrap;"
+                                onclick="applyMBField(this)">
+                            <i class="bi bi-check-lg"></i> Apply
                         </button>
-                        <button class="btn btn-outline-primary"
-                            title="Match to an existing song in the library"
-                            data-title="{{ track.title|escapejs }}"
-                            data-track-number="{{ track.track_number or '' }}"
-                            data-release-id="{{ track.release_id or '' }}"
-                            data-artist="{{ track.artist|escapejs }}"
-                            data-album="{{ track.album|escapejs }}"
-                            onclick="openAlbumMatchModal(this)">
-                            <i class="bi bi-link-45deg"></i>
-                        </button>
-                        <button class="btn btn-outline-secondary"
-                            title="Ignore – hide this track from the missing list"
-                            data-missing-id="{{ track.missing_track_id or '' }}"
-                            data-title="{{ track.title|escapejs }}"
-                            data-disc-number="{{ track.disc_number or 1 }}"
-                            onclick="ignoreMissingTrack(this)">
-                            <i class="bi bi-x-lg"></i>
+                        <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                                style="font-size: 0.75rem; white-space: nowrap;"
+                                onclick="ignoreMBField(this)">
+                            <i class="bi bi-x-lg"></i> Ignore
                         </button>
                     </div>
                 </td>
             </tr>
-            {% endmacro %}
-
-            {# Macro: compact two-line mobile track row — checkbox · # · title ·
-               duration on line 1, rating + actions on line 2.  Replaces the old
-               stacked label:value blocks ("Track" label + title) that rendered
-               ~150-200px per track and concatenated the label into the title. #}
-            {% macro mobile_track_cells(track, row_index) %}
-            {% set _queued = track.file_path and '__queued_for_download__' in track.file_path %}
-            <td class="d-md-none" colspan="9" style="padding: 0.5rem 0.75rem; border: none;">
-                <div class="d-flex align-items-center gap-2">
-                    <input type="checkbox" class="form-check-input track-checkbox flex-shrink-0" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if _queued %} disabled{% endif %}>
-                    <span class="text-muted fw-bold flex-shrink-0" style="min-width: 1.25rem; font-size: 0.85rem;">{{ track.track_number or row_index }}</span>
-                    {% if _queued %}
-                    <span class="text-muted flex-grow-1 text-truncate" style="min-width: 0;">{{ track.title }}{% if track.artist and track.artist != artist_name %} <small class="text-muted">— {{ track.artist }}</small>{% endif %}</span>
-                    <span class="badge bg-warning text-dark text-nowrap flex-shrink-0" title="This track is currently in the download queue">In Queue</span>
-                    {% else %}
-                    <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="text-reset flex-grow-1 text-truncate" style="min-width: 0;">{{ track.title }}{% if track.artist and track.artist != artist_name %} <small class="text-muted">— {{ track.artist }}</small>{% endif %}</a>
-                    {% if track._mb_is_extra %}<span class="badge bg-secondary text-nowrap flex-shrink-0 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>{% endif %}
-                    {% endif %}
-                    <span class="text-muted text-nowrap flex-shrink-0" style="font-size: 0.85rem;">
-                        {% if track.duration %}{% set mins = (track.duration / 60)|int %}{% set secs = (track.duration % 60)|int %}{{ mins }}:{{ "%02d"|format(secs) }}{% else %}—{% endif %}
-                    </span>
-                </div>
-                <div class="d-flex align-items-center gap-2 mt-1 ps-2">
-                    <span class="text-warning text-nowrap" style="font-size: 0.85rem;">{% if track.stars %}{% for i in range(track.stars) %}★{% endfor %}{% else %}<span class="text-muted">—</span>{% endif %}</span>
-                    <span class="ms-auto d-flex align-items-center gap-1">
-                        {% if _queued %}
-                        {% set _fp = track.file_path or '' %}
-                        {% set _qid = _fp.split('queue_id_')[-1] if 'queue_id_' in _fp else '' %}
-                        <button class="btn btn-sm btn-outline-danger delete-queued-track-btn" data-track-id="{{ track.id }}" data-queue-id="{{ _qid }}" onclick="deleteQueuedTrackOnAlbumPage(this)" title="Remove from download queue"><i class="bi bi-x-circle"></i></button>
-                        {% else %}
-                        {% if track.file_path %}
-                        <button class="btn btn-sm btn-outline-success player-play-btn" data-track-id="{{ track.id }}" data-title="{{ track.title|escapejs }}" data-artist="{{ (track.artist or artist_name)|escapejs }}" data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" onclick="playTrackFromAlbum(this)" title="Play this track"><i class="bi bi-play-fill"></i></button>
-                        {% endif %}
-                        <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="Inspect metadata"><i class="bi bi-search"></i></button>
-                        <button class="btn btn-sm btn-outline-info" onclick="openEditTrackFromAlbum('{{ track.id }}')" title="Edit track on this page"><i class="bi bi-pencil"></i></button>
-                        {% if track.musicbrainz_trackid or track.beets_mbid %}
-                        <button class="btn btn-sm btn-outline-warning" onclick="openAlbumTrackMbReleaseModal('{{ track.id }}')" title="Match to a different MusicBrainz release"><i class="bi bi-arrow-repeat"></i></button>
-                        {% endif %}
-                        <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page"><i class="bi bi-arrow-right"></i></a>
-                        {% endif %}
-                    </span>
-                </div>
-            </td>
+            {% endfor %}
+            {% endif %}
             {% endmacro %}
             <table class="table table-hover mb-0">
                 <thead class="d-none d-md-table-header-group">
@@ -796,341 +844,31 @@
                         </th>
                         <th style="width: 3rem;" title="Track Number">#</th>
                         <th>Track Title</th>
-                        <th class="d-none d-lg-table-cell" style="width: 10rem;" title="Track Artist (if different from album artist)">Artist</th>
-                        <th class="text-center" style="width: 5rem;" title="Track Duration">Duration</th>
-                        <th class="text-center" style="width: 4rem;" title="Star Rating">Rating</th>
-                        <th class="text-center d-none d-lg-table-cell" title="Is this a single?">Single</th>
-                        <th class="d-none d-lg-table-cell" title="Top genres saved to this track (up to 3)">Top Genres</th>
-                        <th class="text-center" style="width: 3rem;">Actions</th>
+                        <th class="d-none d-md-table-cell text-center" style="width: 7rem;" title="Track Duration">Duration</th>
+                        <th class="text-center" style="width: 7rem;" title="Star Rating">Rating</th>
+                        <th style="width: 9rem;" title="Is this track in the library?">Status</th>
+                        <th class="text-end" style="width: 9rem;">Actions</th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody id="albumTracksTbody">
                     {% if album_data.total_discs and album_data.total_discs > 1 %}
                         <!-- Multi-disc album view -->
                         {% for disc_num in tracks_by_disc|dictsort %}
                             <tr class="table-secondary" data-disc="{{ disc_num[0] or 1 }}">
-                                <!-- Colspan = 9 columns: Checkbox, #, Title, Artist, Duration, Rating, Single, Genres, Actions -->
-                                <td colspan="9" style="padding: 0.75rem 0.5rem;">
+                                <td colspan="7" style="padding: 0.75rem 0.5rem;">
                                     <strong style="font-size: 1.1rem;">
                                         <i class="bi bi-disc"></i> Disc {{ disc_num[0] or 1 }}
                                     </strong>
                                 </td>
                             </tr>
                             {% for track in disc_num[1] %}
-                            {% if track.is_missing %}
-                            {{ missing_track_row(track) }}
-                            {% else %}
-                            {% set track_is_queued = track.file_path and '__queued_for_download__' in track.file_path %}
-                            <tr class="album-track-mobile-row d-flex flex-column d-md-table-row{% if track_is_queued %} table-secondary opacity-75{% endif %}" data-track-id="{{ track.id }}">
-                                {{ mobile_track_cells(track, loop.index) }}
-                                <td class="d-none d-md-table-cell">
-                                    <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if track_is_queued %} disabled{% endif %}>
-                                </td>
-                                <td class="d-none d-md-table-cell text-muted">
-                                    {{ track.track_number or loop.index }}
-                                </td>
-                                <td class="d-none d-md-table-cell align-items-center">
-                                    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
-                                    <div class="d-none d-md-block">
-                                        {% if track_is_queued %}
-                                        <span class="text-muted">{{ track.title }}</span>
-                                        <span class="badge bg-warning text-dark ms-1" title="This track is currently in the download queue">In Queue</span>
-                                        {% else %}
-                                        <a href="{{ url_for('ui.track_detail', track_id=track.id) }}">
-                                            {{ track.title }}
-                                        </a>
-                                        {% if track._mb_is_extra %}
-                                        <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
-                                        {% endif %}
-                                        {% if track.file_path %}
-                                        <div class="text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
-                                        {% endif %}
-                                        {% endif %}
-                                    </div>
-                                </td>
-                                <td class="d-none d-lg-table-cell">
-                                    {% set display_artist = track.artist if track.artist else artist_name %}
-                                    <span class="text-muted" style="font-size: 0.85rem;">{{ display_artist }}</span>
-                                </td>
-                                <td class="d-none d-md-table-cell text-center">
-                                    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Duration</span>
-                                    {% if track.duration %}
-                                        {% set mins = (track.duration / 60)|int %}
-                                        {% set secs = (track.duration % 60)|int %}
-                                        {{ mins }}:{{ "%02d"|format(secs) }}
-                                    {% else %}
-                                        <span class="text-muted">—</span>
-                                    {% endif %}
-                                </td>
-                                <td class="d-none d-md-table-cell text-center">
-                                    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">★</span>
-                                    {% if track.stars %}
-                                        <span class="badge badge-success">
-                                            {% for i in range(track.stars) %}★{% endfor %}
-                                        </span>
-                                    {% else %}
-                                        <span class="text-muted">—</span>
-                                    {% endif %}
-                                </td>
-                                <td class="d-none d-lg-table-cell text-center">
-                                    {% if track.is_single == 1 %}
-                                        <span class="badge bg-info">Single</span>
-                                    {% elif track.stars == 5 and track.is_single == 0 %}
-                                        <span class="badge bg-success">Popular</span>
-                                    {% else %}
-                                        <span class="text-muted">—</span>
-                                    {% endif %}
-                                </td>
-                                <td class="d-none d-lg-table-cell">
-                                    <div class="d-flex flex-column gap-2">
-                                        <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
-                                            {% if track.matching_genres %}
-                                                {% for genre in track.matching_genres %}
-                                                <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer;" data-track-id="{{ track.id }}" data-genre="{{ genre }}" title="Click to remove">
-                                                    {{ genre }}
-                                                    <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
-                                                </span>
-                                                {% endfor %}
-                                            {% endif %}
-                                            <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
-                                                <i class="bi bi-plus-circle"></i> Add  
-                                            </button>
-                                        </div>
-                                        {% if track.genre_fit_percent %}
-                                        <small class="text-muted">
-                                            Fit: <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-info{% else %}bg-secondary{% endif %}" style="font-size: 0.7rem;">{{ track.genre_fit_percent }}%</span>
-                                        </small>
-                                        {% endif %}
-                                    </div>
-                                </td>
-                                <td class="d-none d-md-table-cell">
-                                    {% if track_is_queued %}
-                                    {% set _fp = track.file_path or '' %}
-                                    {% set _qid = _fp.split('queue_id_')[-1] if 'queue_id_' in _fp else '' %}
-                                    <button class="btn btn-sm btn-outline-danger delete-queued-track-btn"
-                                            data-track-id="{{ track.id }}"
-                                            data-queue-id="{{ _qid }}"
-                                            onclick="deleteQueuedTrackOnAlbumPage(this)"
-                                            title="Remove from download queue">
-                                        <i class="bi bi-x-circle"></i>
-                                    </button>
-                                    {% else %}
-                                    {% if track.file_path %}
-                                    <button class="btn btn-sm btn-outline-success player-play-btn"
-                                            data-track-id="{{ track.id }}"
-                                            data-title="{{ track.title|escapejs }}"
-                                            data-artist="{{ (track.artist or artist_name)|escapejs }}"
-                                            data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art"
-                                            onclick="playTrackFromAlbum(this)"
-                                            title="Play this track">
-                                        <i class="bi bi-play-fill"></i>
-                                    </button>
-                                    {% endif %}
-                                    <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
-                                        <i class="bi bi-search"></i>
-                                    </button>
-                                    <button class="btn btn-sm btn-outline-info" onclick="openEditTrackFromAlbum('{{ track.id }}')" title="Edit track on this page">
-                                        <i class="bi bi-pencil"></i>
-                                    </button>
-                                    {% if track.musicbrainz_trackid or track.beets_mbid %}
-                                    <button class="btn btn-sm btn-outline-warning" onclick="openAlbumTrackMbReleaseModal('{{ track.id }}')" title="Match to a different MusicBrainz release">
-                                        <i class="bi bi-arrow-repeat"></i>
-                                    </button>
-                                    {% endif %}
-                                    <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page">
-                                        <i class="bi bi-arrow-right"></i>
-                                    </a>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% if track._mb_diff_items %}
-                            {% for _item in track._mb_diff_items %}
-                            <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}" data-mb-field="{{ _item.field }}">
-                                <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
-                                    <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
-                                         style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
-                                        <small class="text-warning-emphasis">
-                                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz:</strong>
-                                        </small>
-                                        <small class="text-muted">{{ _item.html | safe }}</small>
-                                        <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
-                                                style="font-size: 0.75rem; white-space: nowrap;"
-                                                onclick="applyMBField(this)">
-                                            <i class="bi bi-check-lg"></i> Apply
-                                        </button>
-                                        <button class="btn btn-outline-secondary btn-sm py-0 px-2"
-                                                style="font-size: 0.75rem; white-space: nowrap;"
-                                                onclick="ignoreMBField(this)">
-                                            <i class="bi bi-x-lg"></i> Ignore
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                            {% endif %}
-                            {% endif %}
+                            {{ track_row(track, loop.index) }}
                             {% endfor %}
                         {% endfor %}
                     {% else %}
                         <!-- Single-disc album view -->
                         {% for track in tracks %}
-                        {% if track.is_missing %}
-                        {{ missing_track_row(track) }}
-                        {% else %}
-                        {% set track_is_queued = track.file_path and '__queued_for_download__' in track.file_path %}
-                        <tr class="album-track-mobile-row d-flex flex-column d-md-table-row{% if track_is_queued %} table-secondary opacity-75{% endif %}" data-track-id="{{ track.id }}">
-                            {{ mobile_track_cells(track, loop.index) }}
-                            <td class="d-none d-md-table-cell">
-                                <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if track_is_queued %} disabled{% endif %}>
-                            </td>
-                            <td class="d-none d-md-table-cell text-muted">
-                                {{ track.track_number or loop.index }}
-                            </td>
-                            <td class="d-none d-md-table-cell align-items-center">
-                                <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
-                                {% if track_is_queued %}
-                                <div class="d-none d-md-block">
-                                    <span class="text-muted">{{ track.title }}</span>
-                                    <span class="badge bg-warning text-dark ms-1" title="This track is currently in the download queue">In Queue</span>
-                                </div>
-                                {% else %}
-                                <span onclick="editTrackTitle('{{ track.id }}', '{{ track.title|escapejs }}')" class="flex-grow-1" style="cursor: pointer;" title="Click to edit">
-                                    <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="d-none d-md-inline track-title-display-{{ track.id }}">
-                                        {{ track.title }}
-                                    </a>
-                                    {% if track._mb_is_extra %}
-                                    <span class="badge bg-secondary ms-1 mb-extra-badge d-none d-md-inline" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
-                                    {% endif %}
-                                    {% if track.file_path %}
-                                    <div class="d-none d-md-block text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
-                                    {% endif %}
-                                    <span class="d-md-none track-title-display-{{ track.id }}">{{ track.title }}</span>
-                                </span>
-                                {% endif %}
-                            </td>
-                            <td class="d-none d-lg-table-cell">
-                                <span onclick="editTrackArtist('{{ track.id }}', '{{ track.artist|escapejs }}')" style="cursor: pointer;" title="Click to edit">
-                                    {% set display_artist = track.artist if track.artist else artist_name %}
-                                    <span class="text-muted track-artist-display-{{ track.id }}" style="font-size: 0.85rem;">{{ display_artist }}</span>
-                                </span>
-                            </td>
-                            <td class="d-none d-md-table-cell text-center">
-                                <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Duration</span>
-                                {% if track.duration %}
-                                    {% set mins = (track.duration / 60)|int %}
-                                    {% set secs = (track.duration % 60)|int %}
-                                    {{ mins }}:{{ "%02d"|format(secs) }}
-                                {% else %}
-                                    <span class="text-muted">—</span>
-                                {% endif %}
-                            </td>
-                            <td class="d-none d-md-table-cell text-center">
-                                <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">★</span>
-                                {% if track.stars %}
-                                    <span class="badge badge-success">
-                                        {% for i in range(track.stars) %}★{% endfor %}
-                                    </span>
-                                {% else %}
-                                    <span class="text-muted">—</span>
-                                {% endif %}
-                            </td>
-                            <td class="d-none d-lg-table-cell text-center">
-                                {% if track.is_single == 1 %}
-                                    <span class="badge bg-info">Single</span>
-                                {% elif track.stars == 5 and track.is_single == 0 %}
-                                    <span class="badge bg-success">Popular</span>
-                                {% else %}
-                                    <span class="text-muted">—</span>
-                                {% endif %}
-                            </td>
-                            <td class="d-none d-lg-table-cell">
-                                <div class="d-flex flex-column gap-2">
-                                    <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
-                                        {% if track.matching_genres %}
-                                            {% for genre in track.matching_genres %}
-                                            <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer;" data-track-id="{{ track.id }}" data-genre="{{ genre }}" title="Click to remove">
-                                                {{ genre }}
-                                                <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
-                                            </span>
-                                            {% endfor %}
-                                        {% endif %}
-                                        <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
-                                            <i class="bi bi-plus-circle"></i> Add
-                                        </button>
-                                    </div>
-                                    {% if track.genre_fit_percent %}
-                                    <small class="text-muted">
-                                        Fit: <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-info{% else %}bg-secondary{% endif %}" style="font-size: 0.7rem;">{{ track.genre_fit_percent }}%</span>
-                                    </small>
-                                    {% endif %}
-                                </div>
-                            </td>
-                            <td class="d-none d-md-table-cell">
-                                {% if track_is_queued %}
-                                {% set _fp = track.file_path or '' %}
-                                {% set _qid = _fp.split('queue_id_')[-1] if 'queue_id_' in _fp else '' %}
-                                <button class="btn btn-sm btn-outline-danger delete-queued-track-btn"
-                                        data-track-id="{{ track.id }}"
-                                        data-queue-id="{{ _qid }}"
-                                        onclick="deleteQueuedTrackOnAlbumPage(this)"
-                                        title="Remove from download queue">
-                                    <i class="bi bi-x-circle"></i>
-                                </button>
-                                {% else %}
-                                {% if track.file_path %}
-                                <button class="btn btn-sm btn-outline-success player-play-btn"
-                                        data-track-id="{{ track.id }}"
-                                        data-title="{{ track.title|escapejs }}"
-                                        data-artist="{{ (track.artist or artist_name)|escapejs }}"
-                                        data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art"
-                                        onclick="playTrackFromAlbum(this)"
-                                        title="Play this track">
-                                    <i class="bi bi-play-fill"></i>
-                                </button>
-                                {% endif %}
-                                <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
-                                    <i class="bi bi-search"></i>
-                                </button>
-                                <button class="btn btn-sm btn-outline-info" onclick="openEditTrackFromAlbum('{{ track.id }}')" title="Edit track on this page">
-                                    <i class="bi bi-pencil"></i>
-                                </button>
-                                {% if track.musicbrainz_trackid or track.beets_mbid %}
-                                <button class="btn btn-sm btn-outline-warning" onclick="openAlbumTrackMbReleaseModal('{{ track.id }}')" title="Match to a different MusicBrainz release">
-                                    <i class="bi bi-arrow-repeat"></i>
-                                </button>
-                                {% endif %}
-                                <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="View full track page">
-                                    <i class="bi bi-arrow-right"></i>
-                                </a>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% if track._mb_diff_items %}
-                        {% for _item in track._mb_diff_items %}
-                        <tr class="mb-update-row" data-track-id="{{ track.id }}" data-mb-comp="{{ track._mb_comp_json | e }}" data-mb-field="{{ _item.field }}">
-                            <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
-                                <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
-                                     style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
-                                    <small class="text-warning-emphasis">
-                                        <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz:</strong>
-                                    </small>
-                                    <small class="text-muted">{{ _item.html | safe }}</small>
-                                    <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
-                                            style="font-size: 0.75rem; white-space: nowrap;"
-                                            onclick="applyMBField(this)">
-                                        <i class="bi bi-check-lg"></i> Apply
-                                    </button>
-                                    <button class="btn btn-outline-secondary btn-sm py-0 px-2"
-                                            style="font-size: 0.75rem; white-space: nowrap;"
-                                            onclick="ignoreMBField(this)">
-                                        <i class="bi bi-x-lg"></i> Ignore
-                                    </button>
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                        {% endif %}
-                        {% endif %}
+                        {{ track_row(track, loop.index) }}
                         {% endfor %}
                     {% endif %}
                 </tbody>
@@ -1184,25 +922,6 @@
 <script>var _pd = JSON.parse(document.getElementById('page-data').textContent); window._pageData = _pd;</script>
 <script src="{{ versioned_static('js/album_detail.js') }}"></script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
-
-<!-- Missing Tracks (MusicBrainz release vs library) — Tracks tab only, so it
-     no longer clutters the Details / Genres / Similar tabs on mobile -->
-<div class="card mb-4 album-mobile-group" id="album-missing-tracks-section" data-album-group="tracks">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <h5 class="card-title mb-0"><i class="bi bi-plus-slash-minus"></i> Missing Tracks</h5>
-    <div class="d-flex align-items-center gap-2">
-      <span id="albumMissingCount" class="badge bg-warning text-dark">–</span>
-      <button type="button" class="btn btn-sm btn-outline-primary" onclick="loadAlbumMissingTracks()">
-        <i class="bi bi-arrow-clockwise"></i> Check
-      </button>
-    </div>
-  </div>
-  <div class="card-body">
-    <div id="albumMissingTracksBody" class="text-muted small">
-      Checking the MusicBrainz release tracklist against the library...
-    </div>
-  </div>
-</div>
 
 <!-- Bulk Genre Tagger Modal (used by the Tracks toolbar "Add Tags" button) -->
 <div class="modal fade" id="bulkGenreTaggerModal" tabindex="-1" aria-hidden="true">

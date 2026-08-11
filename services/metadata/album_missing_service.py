@@ -94,14 +94,23 @@ def get_missing_tracks(artist: str, album: str) -> dict:
     mb_tracks = mb_release.get("tracks", [])
     mb_total = len(mb_tracks)
 
-    # Build library entries set
+    # Build library entries: a set of normalized titles (for title-based
+    # matching) AND a lookup by (disc, track_number) — position-first per the
+    # alignment rules: a local file occupying the same Disc # + Track # slot
+    # counts as present even when the title differs slightly (that discrepancy
+    # belongs in /corrections as WRONG_TRACK_NAME, not in "missing").
     lib_norm = set()
+    lib_by_position: dict[tuple[int, str], str] = {}
     for r in library_rows:
         title = r.get("title") if hasattr(r, "get") else r[1]
         if title:
             norm = unicodedata.normalize("NFKD", title).lower()
             norm = re.sub(r"[^a-z0-9]+", " ", norm).strip()
             lib_norm.add(norm)
+        disc = int(r.get("disc_number") or 1) if r.get("disc_number") not in (None, "", "0", 0) else 1
+        tn = str(r.get("track_number") or "").strip()
+        if tn:
+            lib_by_position[(disc, tn)] = title or ""
 
     missing = []
     for mt in mb_tracks:
@@ -110,13 +119,20 @@ def get_missing_tracks(artist: str, album: str) -> dict:
             continue
         norm = unicodedata.normalize("NFKD", mb_title).lower()
         norm = re.sub(r"[^a-z0-9]+", " ", norm).strip()
-        if norm not in lib_norm:
-            missing.append({
-                "title": mb_title,
-                "track_number": mt.get("track_number"),
-                "disc_number": mt.get("disc_number", 1),
-                "recording_mbid": mt.get("recording_mbid"),
-            })
+
+        # Position-first: is the Disc # / Track # slot occupied locally?
+        mb_disc = int(mt.get("disc_number") or 1)
+        mb_num = str(mt.get("track_number") or "").strip()
+        position_occupied = bool(mb_num and (mb_disc, mb_num) in lib_by_position)
+        if position_occupied or norm in lib_norm:
+            continue
+
+        missing.append({
+            "title": mb_title,
+            "track_number": mt.get("track_number"),
+            "disc_number": mt.get("disc_number", 1),
+            "recording_mbid": mt.get("recording_mbid"),
+        })
 
     return {"missing_tracks": missing, "missing_count": len(missing), "mb_total": mb_total, "library_count": library_count}
 
