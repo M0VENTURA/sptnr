@@ -194,9 +194,10 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
     if not releases:
         return 0, 0
     try:
+        from services.upcoming_releases.matching_service import sanitize_wiki_entry
         with db_session() as session:
             for rel in releases:
-                album = rel.get("title") or ""
+                _artist, album = sanitize_wiki_entry(artist, rel.get("title") or "")
                 if not album:
                     continue
                 rel_date = rel.get("first_release_date") or ""
@@ -250,7 +251,7 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                             updated_at = CURRENT_TIMESTAMP
                     """),
                     {
-                        "artist": artist,
+                        "artist": _artist,
                         "album": album,
                         "date": rel_date,
                         "year": release_year,

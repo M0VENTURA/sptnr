@@ -151,6 +151,8 @@ class WikipediaReleaseScraper:
         # the January block when the current month is August) from entering
         # the database at all.
         window = get_release_window()
+        # Self-heal names scraped before the sanitization pass existed.
+        _sanitize_stored_rows()
         results: dict[str, Any] = {
             "total_found": 0,
             "total_new": 0,
@@ -816,6 +818,47 @@ class WikipediaReleaseScraper:
             source_name, new_count, updated_count,
         )
         return new_count, updated_count
+
+
+def _sanitize_stored_rows() -> int:
+    """Self-heal pass: re-sanitize artist/album names stored before the
+    sanitization existed (e.g. "Ann Wilsonand Tripsitter" →
+    "Ann Wilson and Tripsitter").
+
+    Fixes the name in place when the cleaned key is free; deletes the
+    malformed row when a clean duplicate already exists (the unique
+    (artist_name, album_name) index prevents the UPDATE).
+    """
+    from services.upcoming_releases.matching_service import sanitize_wiki_entry
+
+    fixed = 0
+    try:
+        with db_session() as session:
+            rows = session.execute(
+                text("SELECT id, artist_name, album_name FROM upcoming_releases")
+            ).fetchall()
+            for row in rows:
+                row_id = row[0]
+                artist, album = sanitize_wiki_entry(row[1] or "", row[2] or "")
+                if artist == (row[1] or "") and album == (row[2] or ""):
+                    continue
+                try:
+                    session.execute(
+                        text("UPDATE upcoming_releases SET artist_name = :a, album_name = :b WHERE id = :id"),
+                        {"a": artist, "b": album, "id": row_id},
+                    )
+                except Exception:
+                    # Clean duplicate exists → drop the malformed row.
+                    session.execute(
+                        text("DELETE FROM upcoming_releases WHERE id = :id"),
+                        {"id": row_id},
+                    )
+                fixed += 1
+    except Exception as exc:
+        logger.warning("[SCRAPER] Stored-row sanitize pass failed: %s", exc)
+    if fixed:
+        logger.info("[SCRAPER] Sanitized %s stored release name(s)", fixed)
+    return fixed
 
 
 # ------------------------------------------------------------------

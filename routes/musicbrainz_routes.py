@@ -560,6 +560,29 @@ async def api_musicbrainz_search():
                 reverse=True,
             )
 
+        # ── 4. Best-effort cached track counts ──────────────────────────
+        # The release-group search API exposes no track count; surface the
+        # cached total when this release was already queued/downloaded
+        # (musicbrainz_releases.total_tracks) so users can spot 4-track
+        # promos vs full albums before queueing.  No extra MB API calls.
+        try:
+            from sqlalchemy import text as _mb_text
+            from db.engine import db_session as _mb_db_session
+            _ids = [str(r.get("id") or "") for r in releases if r.get("id")]
+            _counts: dict[str, int] = {}
+            if _ids:
+                with _mb_db_session() as session:
+                    for row in session.execute(
+                        _mb_text("SELECT release_id, total_tracks FROM musicbrainz_releases WHERE release_id IN :ids"),
+                        {"ids": tuple(_ids)},
+                    ).fetchall():
+                        if row[1]:
+                            _counts[str(row[0])] = int(row[1])
+            for r in releases:
+                r["track_count"] = _counts.get(str(r.get("id") or ""))
+        except Exception:
+            pass
+
         return jsonify({"success": True, "releases": releases})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

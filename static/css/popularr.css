@@ -402,13 +402,54 @@ option:checked { background-color: var(--spotify-green); color: #000; }
     border-bottom-color: var(--accent-color);
 }
 
-/* ── Mobile tab section visibility (generic class engine) ──────────────── */
+/* ── Mobile tab section visibility (generic engine — all three attribute
+   styles used by the pages: track data-mobile-tab / artist data-mobile-group
+   / album data-album-group).  The default tab's sections are also pre-marked
+   with the active class server-side, so content renders even before/without
+   the tab JS. ── */
 @media (max-width: 991.98px) {
-    [data-mobile-tab] { display: none !important; }
-    [data-mobile-tab].mobile-tab-active { display: block !important; }
+    [data-mobile-tab],
+    [data-mobile-group],
+    [data-album-group] {
+        display: none !important;
+    }
+    [data-mobile-tab].mobile-tab-active,
+    [data-mobile-group].mobile-tab-active,
+    [data-album-group].album-mobile-active {
+        display: block !important;
+    }
 }
 @media (min-width: 992px) {
-    [data-mobile-tab] { display: block !important; }
+    [data-mobile-tab],
+    [data-mobile-group],
+    [data-album-group] {
+        display: block !important;
+    }
+}
+
+/* ── Dropdown & flyout stacking fixes ───────────────────────────────────── */
+/* Hero/header cards become positioning parents for their dropdowns, but get
+   NO z-index: creating a stacking context here would cap the open menu BELOW
+   the sticky tab bar (z-index 1000).  The menu's own z-index then competes
+   at the root level. */
+#album-details-section,
+#artist-mobile-hero,
+.card-has-dropdown {
+    position: relative;
+}
+
+/* Bootstrap dropdowns must float above subsequent cards and the sticky tab
+   bars (z-index 1000) while staying under the fixed navbar (1030) and the
+   search flyout backdrop (1030). */
+.dropdown-menu {
+    z-index: 1020 !important;
+}
+
+/* Prevent clipping on card bodies that host dropdowns/flyouts. */
+.card:has(.dropdown),
+.card:has(.dropdown-menu),
+.card-body:has(.dropdown) {
+    overflow: visible !important;
 }
 
 /* ── Live scan progress toast (SSE, every page) ────────────────────────── */
@@ -581,6 +622,7 @@ body:has(#globalPlayerBar:not(.d-none)) .sticky-save-bar {
 .us-row .us-row-sub {
     color: var(--text-secondary);
     font-size: 0.78rem;
+    line-height: 1.3;
     text-overflow: ellipsis;
     overflow: hidden;
     white-space: nowrap;
@@ -590,6 +632,12 @@ body:has(#globalPlayerBar:not(.d-none)) .sticky-save-bar {
     color: var(--text-tertiary);
     font-size: 0.72rem;
     flex-shrink: 0;
+}
+
+/* Search flyout row thumbnails (local art / Cover Art Archive) */
+.us-row img {
+    background-color: var(--tertiary-bg, #282828);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 /* Tap-to-open search pills (navbar + dashboard) keep a visible search look */

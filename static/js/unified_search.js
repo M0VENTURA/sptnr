@@ -130,6 +130,25 @@
       .catch(function () { return []; });
   }
 
+  var _IMG_PLACEHOLDER = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2244%22 height=%2244%22%3E%3Crect fill=%22%232a2a2a%22 width=%2244%22 height=%2244%22/%3E%3C/svg%3E';
+
+  // 44px row thumbnail with a dark placeholder fallback on load errors.
+  function thumbHtml(src, cls, alt) {
+    if (!src) src = _IMG_PLACEHOLDER;
+    return '<img src="' + esc(src) + '" alt="' + esc(alt || '') + '" loading="lazy" ' +
+      'class="' + cls + ' flex-shrink-0" ' +
+      'style="width:44px;height:44px;object-fit:cover;" ' +
+      'onerror="this.onerror=null;this.src=\'' + _IMG_PLACEHOLDER + '\';">';
+  }
+
+  function fmtDuration(seconds) {
+    var s = Number(seconds);
+    if (!isFinite(s) || s <= 0) return '';
+    var m = Math.round(s / 60);
+    if (m >= 60) return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+    return m + 'm';
+  }
+
   // ===== Result rendering =====
 
   function section(title, rowsHtml) {
@@ -142,7 +161,7 @@
   function artistRows(artists) {
     return artists.map(function (a) {
       return '<a class="us-row" href="/artist/' + encodeURIComponent(a.name) + '">' +
-        '<span class="us-row-icon"><i class="bi bi-person-badge"></i></span>' +
+        thumbHtml('/api/artist/image?name=' + encodeURIComponent(a.name), 'rounded-circle border border-secondary', a.name) +
         '<span class="us-row-main">' +
           '<span class="us-row-title d-block">🟢 ' + esc(a.name) + '</span>' +
           '<span class="us-row-sub d-block">' + a.track_count + ' track' + (a.track_count === 1 ? '' : 's') + ' · ' + a.album_count + ' album' + (a.album_count === 1 ? '' : 's') + '</span>' +
@@ -215,24 +234,37 @@
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
       var yearSuffix = it.year ? ' (' + esc(it.year) + ')' : '';
+      // 3rd line: track count (+ total duration) — instant promo-vs-full check.
+      var trackLine = '';
+      if (it.track_count) {
+        trackLine = '<span class="us-row-sub d-block">' + it.track_count + ' track' + (it.track_count === 1 ? '' : 's') + (it.duration_total ? ' · ' + fmtDuration(it.duration_total) : '') + '</span>';
+      }
       if (it.local) {
         var href = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title);
+        // Local album art endpoint (same pattern as the album page hero).
+        var localArt = '/api/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + '/art';
         html += '<a class="us-row" href="' + href + '">' +
-          '<span class="us-row-icon"><i class="bi bi-disc"></i></span>' +
+          thumbHtml(localArt, 'rounded border border-secondary', it.title) +
           '<span class="us-row-main">' +
             '<span class="us-row-title d-block">🟢 ' + esc(it.title) + yearSuffix + '</span>' +
             '<span class="us-row-sub d-block">' + esc(it.typeLabel || 'Album') + ' • In Library</span>' +
+            trackLine +
           '</span>' +
         '</a>';
       } else {
         var id = it.id || '';
         var queued = !!_queuedIds[id];
         _mbIndex[id] = it.release || null;
+        // Cover Art Archive thumbnail — the MB search payload already carries
+        // cover_art_url; fall back to building it from the release-group id.
+        var rel = it.release || {};
+        var cover = rel.cover_art_url || (id ? 'https://coverartarchive.org/release-group/' + id + '/front-250' : '');
         html += '<div class="us-row">' +
-          '<span class="us-row-icon"><i class="bi bi-hexagon"></i></span>' +
+          thumbHtml(cover, 'rounded border border-secondary', it.title) +
           '<span class="us-row-main">' +
             '<span class="us-row-title d-block">🟡 ' + esc(it.title) + yearSuffix + '</span>' +
             '<span class="us-row-sub d-block">MusicBrainz ' + esc(it.typeLabel || 'Release') + ' • ' + esc(it.artist) + '</span>' +
+            trackLine +
           '</span>' +
           (withQueue ? (queued
             ? '<button class="btn btn-sm btn-success" disabled title="Already queued"><i class="bi bi-check2"></i> Queued</button>'
@@ -250,14 +282,16 @@
       var bucket = buckets[al.type] ? al.type : 'albums';
       buckets[bucket].push({
         title: al.album, artist: al.artist, year: al.year || null,
-        typeLabel: al.type_label || 'Album', local: true
+        typeLabel: al.type_label || 'Album', local: true,
+        track_count: al.track_count || null, duration_total: al.duration_total || null
       });
     });
     (mbReleases || []).forEach(function (r) {
       var bucket = classifyMbRelease(r);
       buckets[bucket].push({
         title: r.title, artist: mbReleaseArtist(r), year: mbReleaseYear(r),
-        typeLabel: bucketTypeLabel(bucket), local: false, id: r.id || '', release: r
+        typeLabel: bucketTypeLabel(bucket), local: false, id: r.id || '', release: r,
+        track_count: r.track_count || null
       });
     });
     // Sort each bucket: Release Year (newest → oldest, unknown last) →

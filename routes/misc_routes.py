@@ -88,6 +88,7 @@ async def api_search():
                         album,
                         COUNT(*) AS track_count,
                         AVG(stars) AS avg_stars,
+                        SUM(duration) AS album_duration,
                         -- year is stored as TEXT; extract the leading 4-digit
                         -- year (tolerates junk like "1990-05-01" or "TBA")
                         MAX(COALESCE(
@@ -155,6 +156,11 @@ async def api_search():
                     "album": _m["album"],
                     "year": _year,
                     "track_count": int(_m["track_count"] or 0),
+                    "duration_total": (
+                        float(_m["album_duration"])
+                        if _m["album_duration"] is not None
+                        else None
+                    ),
                     "avg_stars": (
                         float(_m["avg_stars"])
                         if _m["avg_stars"] is not None
