@@ -5,8 +5,8 @@
 {% block content %}
 <style>
     /* Track page: hero cover, sticky bars, touch rows, segmented tabs */
-    .hero-cover { width: 64px; height: 64px; }
-    @media (min-width: 992px) { .hero-cover { width: 160px; height: 160px; } }
+    /* Unified 80px hero cover (matches album/artist hero design) */
+    .hero-cover { width: 80px; height: 80px; }
 
     .single-source-row .btn {
         min-height: 44px;
@@ -18,7 +18,8 @@
         .single-source-row .btn { min-height: 0; }
     }
 
-    .track-sticky-bar { top: 4.2rem; z-index: 1000; }
+    /* Sticky tab bar sits below the two-row navbar */
+    .track-sticky-bar { top: var(--navbar-height, 4.2rem); z-index: 1000; }
 
     .track-quick-bar {
         position: fixed;
@@ -50,11 +51,12 @@
         </ol>
     </nav>
     
-    <!-- Header: Album Art + Track Summary + Actions -->
+    <!-- Unified hero: 80px art + title + metadata strip + action toolbar -->
     <div class="card mb-4" id="track-details-section">
-        <div class="card-body">
-            <div class="d-flex flex-column flex-lg-row gap-4">
-                <div class="flex-shrink-0 align-self-center align-self-lg-start">
+        <div class="card-body p-3">
+            <!-- 1. Header: artwork + title + artist + rating -->
+            <div class="d-flex align-items-start gap-3 mb-2">
+                <div class="flex-shrink-0">
                     <div class="album-art-container hero-cover position-relative">
                         <img id="trackAlbumArtImage" src="/api/album/{{ track.artist|path_segment }}/{{ track.album|path_segment }}/art?s=160"
                              alt="{{ track.album }}"
@@ -62,133 +64,96 @@
                              onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
                     </div>
                 </div>
-                <div class="flex-grow-1">
-                    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start gap-3">
-                        <div>
-                            <h1 class="h3 mb-1">
-                                <i class="bi bi-music-note-list"></i> {{ track.title|title_case }}
-                                {% if track.stars %}
-                                    <span class="badge badge-success ms-2 align-middle">{{ track.stars }}★</span>
-                                {% endif %}
-                                {% if track.is_single == 1 %}
-                                    <span class="badge bg-info ms-1 align-middle">Single</span>
-                                {% endif %}
-                                {% if is_track_favourite %}
-                                    <span class="badge bg-warning text-dark ms-2 align-middle">Favourite</span>
-                                {% endif %}
-                            </h1>
-                            <p class="text-muted mb-0">by
-                                {% for artist_name in artist_parts %}
-                                    <a href="javascript:void(0)" onclick="navigateToArtist('{{ artist_name|escapejs }}', event)" style="cursor: pointer;">{{ artist_name }}</a>{% if not loop.last %} / {% endif %}
-                                {% endfor %}
-                            </p>
-                        </div>
-                        <div class="d-flex gap-2 flex-wrap">
-                            <!-- Desktop actions -->
-                            <div class="d-none d-lg-flex gap-2 align-items-center flex-wrap">
-                                <div class="btn-group" role="group">
-                                    <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this track">
-                                        <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
-                                    </button>
-                                    <ul class="dropdown-menu dropdown-menu-end">
-                                        {% if qbit_config.enabled %}
-                                        <li><a class="dropdown-item" onclick="openQbitSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')" href="javascript:void(0)">
-                                            <i class="bi bi-cloud-download"></i> Search qBittorrent
-                                        </a></li>
-                                        {% endif %}
-                                        {% if slskd_config.enabled %}
-                                        <li><a class="dropdown-item" onclick="openSlskdSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')" href="javascript:void(0)">
-                                            <i class="bi bi-music-note-beamed"></i> Search Soulseek
-                                        </a></li>
-                                        {% endif %}
-                                    </ul>
-                                </div>
-                                <button type="button" class="btn btn-outline-secondary" onclick="Player.playTrack('{{ track_id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')" title="Preview in the built-in player">
-                                    <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Preview</span>
-                                </button>
-                                <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" id="rescanTrackForm">
-                                    <button class="btn btn-info" type="submit" title="Rescan this track (Navidrome + Popularity + Singles)">
-                                        <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Track</span>
-                                    </button>
-                                </form>
-                                <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" id="essentiaScanForm">
-                                    <input type="hidden" name="track_id" value="{{ track.id }}">
-                                    <button class="btn btn-outline-secondary" type="submit" title="Run Essentia ML mood/genre scan for this track">
-                                        <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
-                                    </button>
-                                </form>
-                                <button type="button" class="btn btn-outline-secondary" id="renameFileBtn"
-                                        onclick="renameTrackFile('{{ track.id }}')"
-                                        title="Rename/move the file using the format configured in Settings (downloads.file_name_format)">
-                                    <i class="bi bi-pencil-square"></i> <span class="d-none d-sm-inline">Rename File</span>
-                                </button>
-                            </div>
-                            <!-- Mobile CTA row (standardized hero component) -->
-                            {% from 'components/_hero.html' import hero_cta %}
-                            <div class="d-lg-none w-100">
-                            {% call hero_cta(
-                                play_onclick="Player.playTrack('{{ track_id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')",
-                                scan_form_action=url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id),
-                                scan_selector=false
-                            ) %}
-                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="document.getElementById('essentiaScanForm').submit()"><i class="bi bi-cpu me-2"></i> Essentia Scan</a></li>
-                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameTrackFile('{{ track.id }}')"><i class="bi bi-pencil-square me-2"></i> Rename File</a></li>
-                                {% if qbit_config.enabled or slskd_config.enabled %}
-                                <li><hr class="dropdown-divider"></li>
-                                {% endif %}
-                                {% if qbit_config.enabled %}
-                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="openQbitSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-cloud-download me-2"></i> Search qBittorrent</a></li>
-                                {% endif %}
-                                {% if slskd_config.enabled %}
-                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="openSlskdSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-music-note-beamed me-2"></i> Search Soulseek</a></li>
-                                {% endif %}
-                            {% endcall %}
-                            </div>
-                        </div>
+                <div class="overflow-hidden flex-grow-1 min-w-0">
+                    <div class="d-flex align-items-center justify-content-between gap-2">
+                        <h1 class="h5 fw-bold mb-0 text-truncate">
+                            <i class="bi bi-music-note-list"></i> {{ track.title|title_case }}
+                            {% if track.stars %}
+                                <span class="badge badge-success ms-1 align-middle">{{ track.stars }}★</span>
+                            {% endif %}
+                            {% if is_track_favourite %}
+                                <span class="badge bg-warning text-dark ms-1 align-middle">Favourite</span>
+                            {% endif %}
+                        </h1>
                     </div>
-                    <hr class="my-3">
-                    <div class="row g-2">
-                        <div class="col-6 col-md-3">
-                            <small class="text-muted d-block">Album</small>
-                            <strong><a href="/album/{{ (artist_parts[0] if artist_parts else track.artist)|path_segment }}/{{ track.album|path_segment }}">{{ track.album }}</a></strong>
-                        </div>
-                        {% if track.year %}
-                        <div class="col-6 col-md-3">
-                            <small class="text-muted d-block">Year</small>
-                            <strong>{{ track.year }}</strong>
-                        </div>
-                        {% endif %}
-                        {% if track.duration %}
-                        <div class="col-6 col-md-3">
-                            <small class="text-muted d-block">Duration</small>
-                            <strong>{{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}</strong>
-                        </div>
-                        {% endif %}
-                        {% if track.bpm is defined and track.bpm is not none and track.bpm != '' %}
-                        <div class="col-6 col-md-3">
-                            <small class="text-muted d-block">BPM</small>
-                            <strong>{{ (track.bpm if track.bpm is not none else 0)|round(0)|int }}</strong>
-                        </div>
-                        {% endif %}
-                        {% if track.musical_key %}
-                        <div class="col-6 col-md-3">
-                            <small class="text-muted d-block">Key</small>
-                            <strong>{{ track.musical_key }}</strong>
-                        </div>
-                        {% endif %}
-                        {% if track.track_number %}
-                        <div class="col-6 col-md-3">
-                            <small class="text-muted d-block">Track #</small>
-                            <strong>{{ track.track_number }}</strong>
-                        </div>
-                        {% endif %}
-                        {% if track.disc_number and track.disc_number|int > 1 %}
-                        <div class="col-6 col-md-3">
-                            <small class="text-muted d-block">Disc #</small>
-                            <strong>{{ track.disc_number }}</strong>
-                        </div>
-                        {% endif %}
+                    <div class="small text-muted my-1">
+                        by
+                        {% for artist_name in artist_parts %}
+                            <a href="javascript:void(0)" onclick="navigateToArtist('{{ artist_name|escapejs }}', event)" class="text-success text-decoration-none fw-semibold" style="cursor: pointer;">{{ artist_name }}</a>{% if not loop.last %} / {% endif %}
+                        {% endfor %}
                     </div>
+                    {% if track.is_single == 1 %}
+                    <span class="badge bg-primary-subtle text-primary border border-primary-subtle" style="font-size:0.7rem;">Single</span>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- 2. Metadata strip (2x2 mobile / 4-col desktop) -->
+            <div class="row g-2 text-center py-2 my-2 border-top border-bottom border-secondary rounded" style="background: var(--tertiary-bg, #282828);">
+                <div class="col-6 col-md-3 border-md-end border-secondary">
+                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Album</div>
+                    <div class="fw-bold small text-truncate px-1">
+                        <a href="/album/{{ (artist_parts[0] if artist_parts else track.artist)|path_segment }}/{{ track.album|path_segment }}" class="text-success text-decoration-none">{{ track.album }}</a>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3 border-md-end border-secondary">
+                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Year</div>
+                    <div class="fw-bold small">{{ track.year or '—' }}</div>
+                </div>
+                <div class="col-6 col-md-3 border-md-end border-secondary">
+                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Track #</div>
+                    <div class="fw-bold small">{{ track.track_number or '—' }}{% if track.disc_number and track.disc_number|int > 1 %} <span class="text-muted">(D{{ track.disc_number }})</span>{% endif %}</div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Duration</div>
+                    <div class="fw-bold small">{% if track.duration %}{{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}{% else %}—{% endif %}</div>
+                </div>
+                {% if track.bpm is defined and track.bpm is not none and track.bpm != '' %}
+                <div class="col-6 col-md-3">
+                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">BPM</div>
+                    <div class="fw-bold small">{{ (track.bpm if track.bpm is not none else 0)|round(0)|int }}</div>
+                </div>
+                {% endif %}
+                {% if track.musical_key %}
+                <div class="col-6 col-md-3">
+                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Key</div>
+                    <div class="fw-bold small">{{ track.musical_key }}</div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- 3. Bottom toolbar: play / scan / overflow (one set for all sizes) -->
+            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 pt-1">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <button type="button" class="btn btn-success btn-sm d-flex align-items-center gap-1 px-3" onclick="Player.playTrack('{{ track_id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')" title="Play in the built-in player">
+                        <i class="bi bi-play-fill"></i> <span class="d-none d-sm-inline">Play</span>
+                    </button>
+                    <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" id="rescanTrackForm" class="m-0">
+                        <button class="btn btn-warning btn-sm" type="submit" title="Rescan this track (Navidrome + Popularity + Singles)">
+                            <i class="bi bi-lightning-fill"></i> <span class="d-none d-sm-inline">Rescan</span>
+                        </button>
+                    </form>
+                    <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" id="essentiaScanForm" class="m-0">
+                        <input type="hidden" name="track_id" value="{{ track.id }}">
+                        <button class="btn btn-outline-secondary btn-sm" type="submit" title="Run Essentia ML mood/genre scan for this track">
+                            <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia</span>
+                        </button>
+                    </form>
+                </div>
+                <div class="dropdown ms-auto">
+                    <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
+                        <i class="bi bi-three-dots-vertical"></i> <span class="d-none d-sm-inline">Actions</span>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                        {% if qbit_config.enabled %}
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openQbitSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-cloud-download me-2"></i>Search qBittorrent</a></li>
+                        {% endif %}
+                        {% if slskd_config.enabled %}
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openSlskdSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-music-note-beamed me-2"></i>Search Soulseek</a></li>
+                        {% endif %}
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameTrackFile('{{ track.id }}')"><i class="bi bi-pencil-square me-2"></i>Rename File</a></li>
+                    </ul>
                 </div>
             </div>
         </div>
@@ -768,7 +733,7 @@
             <!-- Right Column: Scoring, Insight & Discovery -->
             <div class="col-12 col-lg-5">
                 <!-- Track Scoring -->
-                <div class="card mb-4 mobile-tab-active" id="track-scoring-section" data-mobile-tab="scoring">
+                <div class="card mb-4 mobile-tab-active d-block" id="track-scoring-section" data-mobile-tab="scoring">
                     <div class="card-header p-0" id="track-scoring-heading">
                         <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-scoring-collapse" aria-expanded="true" aria-controls="track-scoring-collapse" style="color: inherit;">
                             <h5 class="card-title mb-0">
@@ -870,7 +835,7 @@
                 </div>
 
                 <!-- Single Detection -->
-                <div class="card mb-4 mobile-tab-active" id="track-single-detection-card" data-mobile-tab="scoring">
+                <div class="card mb-4 mobile-tab-active d-block" id="track-single-detection-card" data-mobile-tab="scoring">
                     <div class="card-header p-0" id="track-single-detection-heading">
                         <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#track-single-detection-collapse" aria-expanded="true" aria-controls="track-single-detection-collapse" style="color: inherit;">
                             <h5 class="card-title mb-0">
@@ -1264,15 +1229,19 @@
 
     function renameTrackFile(trackId) {
         const btn = document.getElementById('renameFileBtn');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Renaming…';
+        const originalHtml = btn ? btn.innerHTML : '';
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Renaming…';
+        }
 
         fetch('/api/track/' + trackId + '/rename-file', { method: 'POST' })
             .then(r => r.json())
             .then(data => {
-                btn.disabled = false;
-                btn.innerHTML = originalHtml;
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalHtml;
+                }
                 if (data.success && data.renamed) {
                     const msg = 'File renamed successfully.\n\nNew path:\n' + data.new_path;
                     alert(msg);
@@ -1284,8 +1253,10 @@
                 }
             })
             .catch(err => {
-                btn.disabled = false;
-                btn.innerHTML = originalHtml;
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalHtml;
+                }
                 alert('Request failed: ' + err);
             });
     }

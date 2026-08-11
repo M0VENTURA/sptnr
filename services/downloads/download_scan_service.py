@@ -122,11 +122,103 @@ def check_completed_downloads() -> dict[str, object]:
     return _check()
 
 
+def _extract_discovered_metadata(file_path: str, filename: str) -> dict[str, str | None]:
+    """Best-effort metadata for a discovered file.
+
+    Reads embedded ID3/FLAC tags first (mutagen via metadata_reader), then
+    falls back to parsing the filename/folder ("Artist - Album - 01 - Title"
+    or "01 - Title", folder-as-artist).  Never returns empty names — the
+    old hardcoded "Unknown" bucket is replaced by "Unidentified …"
+    placeholders.
+    """
+    import os
+    import re
+
+    meta: dict = {}
+    try:
+        from helpers.metadata_reader import read_mp3_metadata
+        meta = read_mp3_metadata(file_path) or {}
+    except Exception:
+        pass
+
+    artist = str(meta.get("artist") or "").strip()
+    album = str(meta.get("album") or "").strip()
+    title = str(meta.get("title") or "").strip()
+    year_raw = str(meta.get("year") or meta.get("date") or "").strip()
+    track_raw = str(meta.get("track_number") or "").strip()
+
+    stem = os.path.splitext(filename or os.path.basename(file_path or ""))[0]
+    folder = os.path.basename(os.path.dirname(file_path or "") or "")
+
+    # Filename fallback: split "Artist - Album - 01 - Title" style names.
+    parts = [p.strip() for p in re.split(r"\s*[-–]\s*", stem) if p.strip()]
+    if (not title or not artist) and parts:
+        if not artist and len(parts) >= 2:
+            artist = parts[0]
+        if not title:
+            _rest = parts[1:] if len(parts) >= 2 else parts
+            # Skip a leading track-number part ("01").
+            if _rest and re.match(r"^\d{1,3}$", _rest[0]):
+                _rest = _rest[1:]
+            title = " - ".join(_rest) if _rest else parts[-1]
+        if not track_raw and parts and re.match(r"^\d{1,3}$", parts[0]):
+            track_raw = parts[0]
+
+    # Folder-as-artist fallback (skip generic root folders).
+    if not artist:
+        folder_lower = folder.lower()
+        if folder and folder_lower not in ("downloads", "music", "completed", "inbox"):
+            artist = folder
+
+    return {
+        "artist": artist or "Unidentified Artist",
+        "album": album or "Unidentified Release",
+        "title": title or stem or "Unidentified Track",
+        "track_number": track_raw or None,
+        "year": year_raw[:4] if year_raw else None,
+    }
+
+
+def _queue_has_active_match(meta: dict) -> bool:
+    """Stage A: an active queue item already covers this artist+title.
+
+    Exact case-insensitive match on (artist, title) — a Soulseek download of
+    the same track with different casing should not spawn a duplicate
+    'unmatched' row.
+    """
+    artist = str(meta.get("artist") or "").strip()
+    title = str(meta.get("title") or "").strip()
+    if not artist or not title or artist.lower().startswith("unidentified"):
+        return False
+    try:
+        from sqlalchemy import text
+        from db.engine import db_session
+
+        with db_session() as session:
+            row = session.execute(
+                text("""
+                    SELECT id FROM download_queue
+                    WHERE LOWER(artist) = LOWER(:artist)
+                      AND LOWER(title) = LOWER(:title)
+                      AND status IN ('queued', 'searching', 'downloading')
+                    LIMIT 1
+                """),
+                {"artist": artist, "title": title},
+            ).fetchone()
+            return row is not None
+    except Exception:
+        return False
+
+
 def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
     """Dedupe discovered files against the queue and insert the new ones.
 
     Shared by the manual ``Discover Files`` action and the periodic
     auto-discovery cycle so both paths enqueue identically.
+
+    New rows carry real metadata extracted from the file's tags (with a
+    filename/folder fallback) instead of the old "Unknown" bucket, and are
+    skipped when an active queue item already matches artist+title.
 
     Returns ``{"queued": int, "already_in_queue": int}``.
     """
@@ -145,14 +237,18 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
         if existing:
             already_in_queue += 1
             continue
+        meta = _extract_discovered_metadata(f.full_path, f.filename)
+        if _queue_has_active_match(meta):
+            already_in_queue += 1
+            continue
         insert_discovered_file(
-            artist="Unknown",
-            title=f.filename,
-            album="Unknown",
+            artist=str(meta["artist"] or "Unidentified Artist"),
+            title=str(meta["title"] or f.filename),
+            album=str(meta["album"] or "Unidentified Release"),
             album_artist=None,
-            track_number=None,
+            track_number=meta.get("track_number"),
             disc_number=None,
-            year=None,
+            year=meta.get("year"),
             duration=None,
             file_path=f.full_path,
             filename=f.filename,

@@ -19,6 +19,7 @@ import os
 import re
 import time
 
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict
 
@@ -161,19 +162,108 @@ def _parse_filename_parts(filename: str) -> dict[str, str | None]:
 # Regex for characters slskd's tokenizer handles poorly
 _SLSKD_PROBLEMATIC_PUNCT_RE = re.compile(r"[\u2018\u2019\u201A\u201B\u2039\u203A'\u201C\u201D\u201E\u201F\u2033\u2036]")
 
+# Filename artifacts that must never reach a Soulseek query: file extensions,
+# internal timestamp/hash suffixes and track-number middle parts.
+_SLSKD_FILENAME_EXT_RE = re.compile(r"\.(flac|mp3|m4a|wav|aac|ogg|opus)$", re.IGNORECASE)
+_SLSKD_HASH_SUFFIX_RE = re.compile(r"[\s_-]?\d{10,}\s*$")
+_SLSKD_TRACKNUM_RE = re.compile(r"\s+-\s+\d{1,3}\s+-\s+")
+
+# =============================================================================
+# RETRY SCHEDULING (search misses → backoff / New Music Friday)
+# =============================================================================
+
+# How long a search-miss backs off before the next automatic attempt.
+_SEARCH_BACKOFF_HOURS = 4
+
+
+def _next_friday_six_am(now_utc: datetime) -> datetime:
+    """Next Friday 06:00 UTC; if it is already Friday past 6am, next week."""
+    days = (4 - now_utc.weekday()) % 7
+    if days == 0 and now_utc.hour >= 6:
+        days = 7
+    return (now_utc + timedelta(days=days)).replace(hour=6, minute=0, second=0, microsecond=0)
+
+
+def _resolve_item_release_date(item: dict) -> str | None:
+    """Release date for a queue item: stored column, else the upcoming-releases
+    table (matched by artist + album) — no extra MusicBrainz calls."""
+    stored = str(item.get("release_date") or "").strip()
+    if stored:
+        return stored[:10]
+    try:
+        from sqlalchemy import text
+        from db.engine import db_session
+
+        artist = (item.get("artist") or "").strip()
+        album = (item.get("album") or item.get("title") or "").strip()
+        if not artist or not album:
+            return None
+        with db_session() as session:
+            row = session.execute(
+                text("""
+                    SELECT release_date FROM upcoming_releases
+                    WHERE LOWER(artist_name) = LOWER(:a)
+                      AND LOWER(album_name) = LOWER(:b)
+                      AND release_date IS NOT NULL
+                    ORDER BY release_date LIMIT 1
+                """),
+                {"a": artist, "b": album},
+            ).fetchone()
+            if row:
+                return str(row[0])[:10]
+    except Exception:
+        pass
+    return None
+
+
+def _schedule_search_retry(queue_id: int, item: dict, reason: str) -> None:
+    """Park a search-miss for later: pre-release items scan every Friday
+    06:00 UTC; released items back off ``_SEARCH_BACKOFF_HOURS`` hours."""
+    from db.repositories.queue import schedule_queue_retry
+
+    artist = (item.get("artist") or "").strip()
+    title = (item.get("title") or "").strip()
+    release_date = _resolve_item_release_date(item)
+    future = False
+    if release_date:
+        try:
+            future = datetime.strptime(release_date, "%Y-%m-%d").date() > datetime.now().date()
+        except ValueError:
+            future = False
+
+    now_utc = datetime.now(timezone.utc)
+    if future:
+        next_run = _next_friday_six_am(now_utc)
+        status = "pending_release"
+        note = f"{reason} — pre-release, scanning Friday {next_run.strftime('%Y-%m-%d %H:%M')} UTC"
+    else:
+        next_run = now_utc + timedelta(hours=_SEARCH_BACKOFF_HOURS)
+        status = "backed_off"
+        note = f"{reason} — backing off {_SEARCH_BACKOFF_HOURS}h until {next_run.strftime('%Y-%m-%d %H:%M')} UTC"
+
+    schedule_queue_retry(queue_id, status, next_run.isoformat(), note)
+    log_unified(f"[QUEUE] {artist} - {title} → {note}")
+    _log_queue_event(status, f"{artist} - {title} → {note}", queue_id)
+
+
 # =============================================================================
 # QUERY BUILDER
 # =============================================================================
 
 def _sanitize_slskd_query(query: str) -> str:
-    """Strip characters that Soulseek's search tokenizer mishandles.
+    """Normalize a query before it reaches the Soulseek API.
 
-    Removes apostrophes and curly/typographic quote characters while keeping
-    hyphens, slashes, parentheses, and other legitimate characters.
+    Strips typographic quotes, file extensions (``.flac``/``.mp3``/...),
+    internal timestamp/hash suffixes (``_639220150430615200``) and track-number
+    middle parts (`` - 12 - ``) — a retry must never search for a raw local
+    filename, which no peer shares.
     """
     if not query:
         return query
     cleaned = _SLSKD_PROBLEMATIC_PUNCT_RE.sub("", query)
+    cleaned = _SLSKD_FILENAME_EXT_RE.sub("", cleaned)
+    cleaned = _SLSKD_HASH_SUFFIX_RE.sub("", cleaned)
+    cleaned = _SLSKD_TRACKNUM_RE.sub(" - ", cleaned)
     return " ".join(cleaned.split())
 
 
@@ -435,6 +525,20 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             "error": "missing_queue_id"
         }
 
+    # Local files already exist on disk — Soulseek must never search for them
+    # (a retry/requeue must not re-download what is already in the library).
+    # They belong to the matching/alignment flow (status 'unmatched').
+    if item.get("file_path"):
+        try:
+            update_queue_item(queue_id, status="unmatched", failure_reason="local file — no download needed")
+        except Exception:
+            pass
+        logger.info(
+            "[PIPELINE] Queue %s has a local file_path (%s) — skipping Soulseek search",
+            queue_id, item.get("file_path"),
+        )
+        return {"success": False, "status": "local_file_skip", "skipped": True}
+
     expected_artist = (item.get("artist") or "").strip()
     expected_title = (item.get("title") or "").strip()
     expected_album = (item.get("album") or "").strip() or None
@@ -502,12 +606,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 notes="no_results",
             )
             log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: no_results ({elapsed:.0f}s)")
-            _log_queue_event(
-                "failed",
-                f"{expected_artist} - {expected_title} → failed: no_results ({elapsed:.0f}s)",
-                queue_id,
-            )
-            mark_failed(queue_id, "no_results")
+            _schedule_search_retry(queue_id, item, f"no_results ({elapsed:.0f}s)")
             return {"success": False, "status": "no_results"}
 
         if not best:
@@ -527,12 +626,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                 results=all_results,
             )
             log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: no_qualifying_result ({len(all_results)} candidates)")
-            _log_queue_event(
-                "failed",
-                f"{expected_artist} - {expected_title} → failed: no_qualifying_result ({len(all_results)} candidates)",
-                queue_id,
-            )
-            mark_failed(queue_id, "no_qualifying_result")
+            _schedule_search_retry(queue_id, item, f"no_qualifying_result ({len(all_results)} candidates)")
             return {"success": False, "status": "no_qualifying_result"}
 
         # ✅ Re-check the queue item still exists before requesting a download.
@@ -575,52 +669,85 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
         # ✅ update searching → downloading
         update_queue_item(queue_id, status="downloading")
 
-        # ✅ download
-        success = slskd.download_file(
-            best["username"],
-            best["filename"],
-            size=int(best.get("size_mb", 0) * 1024 * 1024)
-        )
+        # ✅ download — rotate through up to 3 peers from THIS search before
+        # giving up.  A peer can go offline, sit behind a strict NAT/firewall
+        # or have a full upload queue the moment after it matches; re-running
+        # the 50-result search for every peer is wasteful, so try the next
+        # candidates from the same result set first.
+        candidates: list[dict[str, Any]] = [best]
+        for r in results:
+            if len(candidates) >= 3:
+                break
+            if r.get("username") != best.get("username") or r.get("filename") != best.get("filename"):
+                candidates.append(r)
 
-        _log_search_event(
-            search_type="automatic",
-            query=query,
-            queue_id=queue_id,
-            item=item,
-            result_count=len(results),
-            duration_seconds=elapsed,
-            notes=("queued" if success else "download_failed"),
-            selected_result=best,
-            results=results,
-        )
+        success = False
+        chosen = None
+        fail_reason = "download_failed"
+        for candidate in candidates:
+            if not _queue_item_exists(queue_id):
+                logger.info(
+                    "[PIPELINE] Queue %s was removed while searching — skipping download request",
+                    queue_id,
+                )
+                return {"success": False, "status": "item_removed"}
+            if not candidate.get("has_free_upload_slot", True):
+                _block_peer(candidate.get("username"), candidate.get("filename"))
+                fail_reason = "peer_no_free_slots"
+                continue
+            success = slskd.download_file(
+                candidate["username"],
+                candidate["filename"],
+                size=int(candidate.get("size_mb", 0) * 1024 * 1024),
+            )
+            if success:
+                chosen = candidate
+                break
+            # Remember this peer so a later retry does not pick it again.
+            _block_peer(candidate.get("username"), candidate.get("filename"))
+            log_unified(
+                f"[QUEUE] {expected_artist} - {expected_title} → peer {candidate.get('username')} "
+                f"failed ({fail_reason}), trying next candidate…"
+            )
 
         if not success:
-            # Remember this peer so the retry does not immediately pick the
-            # same peer that just rejected the download.
-            _block_peer(best.get("username"), best.get("filename"))
-            log_unified(f"[QUEUE] {expected_artist} - {expected_title} → failed: download_failed ({best.get('username')})")
+            _log_search_event(
+                search_type="automatic",
+                query=query,
+                queue_id=queue_id,
+                item=item,
+                result_count=len(results),
+                duration_seconds=elapsed,
+                notes=("queued" if success else "download_failed"),
+                selected_result=chosen or best,
+                results=results,
+            )
+            log_unified(
+                f"[QUEUE] {expected_artist} - {expected_title} → failed: {fail_reason} "
+                f"({len(candidates)} peer(s) tried)"
+            )
             _log_queue_event(
                 "failed",
-                f"{expected_artist} - {expected_title} → failed: download_failed ({best.get('username')})",
+                f"{expected_artist} - {expected_title} → failed: {fail_reason} ({len(candidates)} peer(s) tried)",
                 queue_id,
             )
-            mark_failed(queue_id, "download_failed")
-            return {"success": False, "status": "download_failed"}
+            mark_failed(queue_id, fail_reason)
+            return {"success": False, "status": fail_reason}
 
         # ✅ success → downloading (final completion is confirmed by the
         # downloads watcher when the file actually lands on disk).
         update_queue_item(
             queue_id,
-            found_filename=best["filename"],
+            found_filename=chosen["filename"],
             status="downloading",
         )
         log_unified(
-            f"[QUEUE] {expected_artist} - {expected_title} → downloading from {best.get('username')} "
-            f"({best.get('filename') or ''})"
+            f"[QUEUE] {expected_artist} - {expected_title} → downloading from {chosen.get('username')} "
+            f"({chosen.get('filename') or ''})"
         )
         _log_queue_event(
             "downloading",
-            f"{expected_artist} - {expected_title} → downloading from {best.get('username')} ({best.get('filename') or ''})",
+            f"{expected_artist} - {expected_title} → downloading from {chosen.get('username')} ({chosen.get('filename') or ''})",
             queue_id,
         )
 

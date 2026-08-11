@@ -452,6 +452,52 @@ option:checked { background-color: var(--spotify-green); color: #000; }
     overflow: visible !important;
 }
 
+/* ── Download Queue Typography & Contrast Fixes ─────────────────────────── */
+
+/* 1. Titles & artist lines — normal family, medium weight, no exotic spacing */
+.queue-item h6,
+.queue-item h5 {
+    font-family: inherit !important;
+    font-weight: 600 !important;
+    letter-spacing: normal !important;
+    color: var(--text-primary, #ffffff) !important;
+}
+
+.queue-item p.text-muted,
+.queue-item .text-muted {
+    color: var(--text-secondary, #d0d0d0) !important;
+    font-weight: 400 !important;
+}
+
+/* 2. Status badges — readable medium weight, compact pill, no heavy effects */
+.queue-item .badge {
+    font-family: inherit !important;
+    font-weight: 600 !important;
+    font-size: 0.72rem !important;
+    letter-spacing: 0.4px !important;
+    text-transform: lowercase !important;
+    padding: 0.35em 0.65em !important;
+    border-radius: 0.35rem !important;
+    text-shadow: none !important;
+}
+
+/* 3. Metadata chips (MBID / duration / track # / source) — translucent
+   pill on dark, full opacity, secondary text — never near-black on dark */
+.queue-item .badge.bg-light,
+.queue-item .badge.bg-secondary {
+    background-color: rgba(255, 255, 255, 0.08) !important;
+    color: var(--text-secondary, #cccccc) !important;
+    border: 1px solid var(--border-color, #333333) !important;
+    font-weight: 400 !important;
+    opacity: 1 !important;
+}
+
+/* Icons inside metadata chips (priority bolt, etc.) */
+.queue-item .badge i {
+    color: var(--spotify-green, #1db954);
+    opacity: 0.85;
+}
+
 /* ── Live scan progress toast (SSE, every page) ────────────────────────── */
 .scan-progress-toast {
     position: fixed;

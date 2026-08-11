@@ -246,7 +246,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "priority": "INTEGER DEFAULT 5",
         "album_artist": "TEXT", "track_number": "TEXT", "disc_number": "TEXT", "year": "TEXT",
         "release_year": "INTEGER", "release_id": "TEXT", "release_source": "TEXT", "release_mbid": "TEXT",
-        "recording_mbid": "TEXT", "cover_art_url": "TEXT", "duration": "DOUBLE PRECISION",
+        "release_date": "TEXT", "recording_mbid": "TEXT", "cover_art_url": "TEXT", "duration": "DOUBLE PRECISION",
         "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
         "found_filename": "TEXT", "file_path": "TEXT", "matched_file_path": "TEXT", "music_file_path": "TEXT",
         "failure_reason": "TEXT", "retry_count": "INTEGER DEFAULT 0", "max_retries": "INTEGER DEFAULT 5",

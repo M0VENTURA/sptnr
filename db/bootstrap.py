@@ -193,7 +193,7 @@ def _ensure_subset(table: str, keys: Iterable[str], registry: dict[str, str]) ->
         return False
 
 def ensure_album_artist_column() -> bool: return _ensure_subset("tracks", ["album_artist"], TRACK_COLUMNS_TO_ENSURE) and ensure_album_artist_column_data()
-def ensure_queue_mbid_columns() -> bool: return _ensure_subset("download_queue", ("release_id", "release_source", "release_mbid", "recording_mbid", "release_year", "matched_file_path", "music_file_path", "match_confidence", "match_method", "metadata", "slskd_username", "slskd_transfer_id", "slskd_state", "slskd_queue_position", "slskd_last_sync_at"), DOWNLOAD_QUEUE_COLUMNS_TO_ENSURE)
+def ensure_queue_mbid_columns() -> bool: return _ensure_subset("download_queue", ("release_id", "release_source", "release_mbid", "recording_mbid", "release_year", "release_date", "matched_file_path", "music_file_path", "match_confidence", "match_method", "metadata", "slskd_username", "slskd_transfer_id", "slskd_state", "slskd_queue_position", "slskd_last_sync_at"), DOWNLOAD_QUEUE_COLUMNS_TO_ENSURE)
 
 def ensure_queue_source_column() -> bool:
     """Ensure ``download_queue.source`` exists and backfill from legacy ``source_id``.

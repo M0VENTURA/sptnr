@@ -106,6 +106,8 @@ ALL_QUEUE_STATUSES: frozenset[str] = frozenset({
     "pending_match",
     "duplicate",
     "discovered",
+    "backed_off",
+    "pending_release",
 })
 
 # =============================================================================
@@ -202,6 +204,16 @@ STATUS_DISPLAY_CONFIG: dict[str, dict[str, str]] = {
         "label": "Discovered",
         "css": "bg-info text-dark",
         "icon": "search",
+    },
+    "backed_off": {
+        "label": "Cooling Off",
+        "css": "bg-secondary",
+        "icon": "hourglass-split",
+    },
+    "pending_release": {
+        "label": "Pre-Release",
+        "css": "bg-warning text-dark",
+        "icon": "calendar-event",
     },
 }
 

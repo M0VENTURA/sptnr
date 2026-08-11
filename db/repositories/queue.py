@@ -44,6 +44,8 @@ UPDATE_ALLOWED_COLUMNS = frozenset({
     # Retry / backoff
     "retry_count", "max_retries", "retry_delay_minutes", "next_retry_at",
     "failure_reason",
+    # Scheduling
+    "release_date",
     # State
     "status",
     # Copy tracking (legacy)
@@ -155,6 +157,12 @@ def insert_queue_item(
     Returns:
         The inserted row as a dict, or the existing row with ``already_queued`` set.
     """
+    # Ghost-row guard: rows without artist AND title are invisible to users
+    # (they render as "Unknown - Unknown") and are never searchable — reject
+    # them at the shared insert path.
+    if not (artist or "").strip() and not (title or "").strip():
+        return {"success": False, "error": "Artist and title are required"}
+
     # ── Duplicate detection ────────────────────────────────────────────────
     with db_session() as session:
         existing = session.execute(
@@ -254,8 +262,9 @@ def claim_queue_item(
 ) -> Optional[Dict[str, Any]]:
     """Atomically claim a queued item for processing.
 
-    The guarded UPDATE only wins if the item is still ``queued`` and past any
-    retry backoff, so concurrent workers can never double-claim an item.
+    The guarded UPDATE only wins if the item is still ``queued`` (or a due
+    ``backed_off``/``pending_release`` scheduled item) and past any retry
+    backoff, so concurrent workers can never double-claim an item.
     Used by the orchestrator's ``_claim_item`` chain (``process_next_batch``).
     """
     try:
@@ -265,7 +274,8 @@ def claim_queue_item(
                     UPDATE download_queue
                     SET status = :status, updated_at = CURRENT_TIMESTAMP
                     WHERE id = :qid
-                      AND status = 'queued'
+                      AND file_path IS NULL
+                      AND status IN ('queued', 'backed_off', 'pending_release')
                       AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
                     RETURNING *
                 """),
@@ -426,7 +436,10 @@ def get_ready_for_processing(limit: int = 100) -> List[Dict]:
                 text("""
                     SELECT *
                     FROM download_queue
-                    WHERE status = 'queued'
+                    WHERE file_path IS NULL
+                      AND (status = 'queued'
+                           OR (status IN ('backed_off', 'pending_release')
+                               AND next_retry_at <= CURRENT_TIMESTAMP))
                       AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
                     ORDER BY priority DESC, created_at ASC
                     LIMIT :limit
@@ -456,6 +469,7 @@ def requeue_due_failed_items(limit: int = 50) -> List[Dict[str, Any]]:
                     SELECT *
                     FROM download_queue
                     WHERE status = 'failed'
+                      AND file_path IS NULL
                       AND retry_count < COALESCE(max_retries, 5)
                       AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
                     ORDER BY updated_at ASC
@@ -512,13 +526,20 @@ def requeue_queue_item(queue_id: int) -> Optional[Dict[str, Any]]:
     Clears ``next_retry_at`` and ``retry_count`` so the item is picked up
     immediately by the next worker cycle (unlike a plain status bump, which
     would leave the backoff window in place).
+
+    Items that already have a local ``file_path`` are NOT requeued for
+    Soulseek — they return to ``unmatched`` so they only go through the
+    matching/alignment flow, never a P2P re-download.
     """
     try:
         with db_session() as session:
             result = session.execute(
                 text("""
                     UPDATE download_queue
-                    SET status = 'queued',
+                    SET status = CASE
+                            WHEN file_path IS NOT NULL THEN 'unmatched'
+                            ELSE 'queued'
+                        END,
                         retry_count = 0,
                         failure_reason = NULL,
                         next_retry_at = NULL,
@@ -602,6 +623,37 @@ def get_completed_by_group(group_id: str) -> List[Dict[str, Any]]:
 # =============================================================================
 # STATUS HELPERS (STATE TRANSITIONS)
 # =============================================================================
+
+def schedule_queue_retry(
+    queue_id: int,
+    status: str,
+    next_retry_at: str,
+    reason: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Park an item until a future retry time (backed_off / pending_release).
+
+    Sets the scheduled status + ``next_retry_at`` and bumps ``retry_count``
+    so the worker only picks it up once the timestamp is due.
+    """
+    try:
+        with db_session() as session:
+            session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET status = :status,
+                        next_retry_at = :next_retry,
+                        failure_reason = :reason,
+                        retry_count = retry_count + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :qid
+                """),
+                {"qid": queue_id, "status": status, "next_retry": next_retry_at, "reason": reason},
+            )
+        return {"success": True, "id": queue_id, "status": status}
+    except Exception as exc:
+        logger.error("[schedule_queue_retry] %s", exc)
+        return None
+
 
 def mark_failed(queue_id: int, reason: str) -> Optional[Dict[str, Any]]:
     """Mark a queue item failed with a reason.

@@ -495,8 +495,11 @@ function buildMonitorQueueGroups(items) {
 }
 
 function renderMonitorQueueItemRow(item) {
+  // Skip ghost parent/search-tracking rows (no title AND no artist) — they
+  // have nothing actionable for the user and only clutter the queue view.
+  if (!(item.title || '').trim() && !(item.artist || '').trim() && !(item.album || '').trim()) return '';
   var st = item.status || 'queued';
-  var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : 'info');
+  var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : (st === 'pending_release' ? 'info' : 'secondary'));
   var actions = '';
   if (st === 'failed' && typeof window.retryQueueItem === 'function') {
     actions += '<button class="btn btn-sm btn-outline-warning py-0 px-1" title="Retry now" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
@@ -504,7 +507,7 @@ function renderMonitorQueueItemRow(item) {
   if (typeof window.deleteQueueItem === 'function') {
     actions += '<button class="btn btn-sm btn-outline-danger py-0 px-1" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
   }
-  return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center">' +
+  return '<div class="list-group-item queue-item"><div class="d-flex justify-content-between align-items-center">' +
     '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
     (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
     (st === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +

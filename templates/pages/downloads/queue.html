@@ -2619,7 +2619,11 @@ function renderActiveQueue(active, newly_completed) {
   
   // Then show active items
   for (const item of active) {
-    const statusColor = item.status === 'downloading' ? 'warning' : 'primary';
+    const statusColor = {
+      downloading: 'warning',
+      backed_off: 'secondary',
+      pending_release: 'info',
+    }[item.status] || 'primary';
     html += renderQueueItem(item, statusColor);
   }
   
@@ -2946,6 +2950,9 @@ function renderFailedQueue(failed) {
 }
 
 function renderQueueItem(item, statusColor) {
+  // Skip ghost parent/search-tracking rows (no title AND no artist) — they
+  // have nothing actionable for the user and only clutter the queue view.
+  if (!(item.title || '').trim() && !(item.artist || '').trim() && !(item.album || '').trim()) return '';
   const statusLabel = (queueStatusConfig[item.status] || {}).label || item.status;
 
   const statusBg = {
@@ -2999,7 +3006,7 @@ function renderQueueItem(item, statusColor) {
     : '';
 
   return `
-    <div class="list-group-item">
+    <div class="list-group-item queue-item">
       <div class="d-flex justify-content-between align-items-start">
         <div class="flex-grow-1 me-2">
           <h6 class="mb-1">${escapeHtml(item.title)}</h6>

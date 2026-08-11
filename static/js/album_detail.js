@@ -2153,13 +2153,15 @@ var _pageData = window._pageData || {};
         const checkboxes = document.querySelectorAll('.track-checkbox:checked');
         const toolbar = document.getElementById('bulkActionsToolbar');
         const countSpan = document.getElementById('selectedCount');
-        
-        if (checkboxes.length > 0) {
-            toolbar.style.display = 'flex';
-            countSpan.textContent = checkboxes.length;
-        } else {
-            toolbar.style.display = 'none';
+
+        const selected = checkboxes.length > 0;
+        if (toolbar) {
+            toolbar.classList.toggle('d-none', !selected);
+            toolbar.style.display = selected ? 'flex' : 'none';
         }
+        // Give the last track clearance above the floating bar when active.
+        document.body.classList.toggle('bulk-actions-visible', selected);
+        if (countSpan) countSpan.textContent = checkboxes.length;
     }
     
     function toggleSelectAll(checkbox) {
@@ -3851,7 +3853,8 @@ function initAlbumGenreClamp() {
 // Auto-Link All MBIDs: resolve unlinked tracks against the official release
 // tracklist and persist the Recording IDs.
 async function autoLinkAllMbids() {
-    const btn = document.querySelector('#album-correction-banner button');
+    const btn = document.getElementById('albumAutoLinkBtn');
+    const orig = btn ? btn.innerHTML : '';
     if (btn) {
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
@@ -3879,7 +3882,7 @@ async function autoLinkAllMbids() {
     } finally {
         if (btn) {
             btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-link-45deg"></i> ⚡ Auto-Link All MBIDs';
+            btn.innerHTML = orig || '<i class="bi bi-link-45deg"></i> Link';
         }
     }
 }
