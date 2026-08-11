@@ -239,6 +239,12 @@ def update_queue_item(queue_id: int, **kwargs) -> Optional[Dict[str, Any]]:
         set_clauses.append(f"{key} = :{key}")
         params[key] = json.dumps(value) if isinstance(value, (dict, list)) else value
 
+    # ``copied_individually`` is BOOLEAN in the schema but legacy completion
+    # flows pass 1/0 (int) — coerce centrally so the UPDATE never trips
+    # psycopg2 DatatypeMismatch.
+    if "copied_individually" in params:
+        params["copied_individually"] = bool(params["copied_individually"])
+
     params["id"] = queue_id
 
     query = text(f"""

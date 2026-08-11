@@ -53,7 +53,7 @@ _DATE_BONUS = 0.10
 # (e.g. "AkinmusireandMary" → "Akinmusire and Mary").  Requires a lowercase
 # char before so proper names containing "and" ("Brandy", "Understand") and
 # genres like "R&B" are never split.
-_CONCAT_RE = re.compile(r"([a-z])(?:[Aa]nd|[Ff]eat(?:uring)?|[Ww]ith|&)([A-Z])")
+_CONCAT_RE = re.compile(r"([a-z])([Aa]nd|[Ff]eat(?:uring)?|[Ww]ith|&)([A-Z])")
 
 # Editorial notes appended to album titles that carry no matching value.
 _PAREN_NOTES_RE = re.compile(

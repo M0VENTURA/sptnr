@@ -254,6 +254,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "retry_delay_minutes": "INTEGER DEFAULT 30", "next_retry_at": "TIMESTAMP", "last_failure_time": "TIMESTAMP",
         "imported_at": "TIMESTAMP", "copied_individually": "BOOLEAN DEFAULT FALSE",
         "copied_individually_at": "TIMESTAMP", "match_confidence": "DOUBLE PRECISION",
+        "verified_in_music_at": "TIMESTAMP", "moved_at": "TIMESTAMP",
         "match_method": "TEXT", "metadata": "JSONB DEFAULT '{}'::jsonb", "metadata_id": "BIGINT",
         "release_metadata_id": "BIGINT", "collection_track_id": "TEXT", "collection_matched_at": "TEXT",
         "in_collection": "INTEGER DEFAULT 0", "auto_delete_at": "TIMESTAMP", "queue_folder": "TEXT",
