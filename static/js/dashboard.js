@@ -451,7 +451,10 @@ function renderUpcomingReleasesTable(releases) {
   }
 
   const wrap = document.getElementById("upcomingTableWrap");
-  if (wrap) wrap.classList.remove("d-none");
+  // NOTE: never remove "d-none" from the wrap — the template pairs it with
+  // "d-lg-block" (table visible only at >=lg; the stacked cards are shown
+  // below lg via "d-lg-none"). Stripping it made BOTH render on small
+  // viewports (legacy table + modern cards = double render).
   const empty = document.getElementById("upcomingEmptyState");
   if (empty) empty.classList.add("d-none");
 

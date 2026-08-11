@@ -1519,6 +1519,14 @@ def run_scan(
                     )
                     if frozen_result is not None:
                         results.append(frozen_result)
+                        # Frozen tracks reuse the stored score — still log the
+                        # result so the unified log shows every track's rating.
+                        if isinstance(frozen_result, dict):
+                            _ft = prepared_track.get("title", "Unknown Track")
+                            _fs = frozen_result.get("popularity_score")
+                            log_unified(
+                                f"[TRACK_RESULT] '{_ft}' -> Final: {float(_fs or 0.0):.1f} (frozen, SP: {float(frozen_result.get('spotify_score') or 0.0):.1f} | LF: {float(frozen_result.get('lastfm_score') or 0.0):.1f} | LB: {float(frozen_result.get('listenbrainz_score') or 0.0):.1f})",
+                            )
                     tracks_processed += 1
                     continue
 

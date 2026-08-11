@@ -88,6 +88,10 @@
 
 
 
+<!-- Inline JS below was extracted to static/js/downloads_page.js (it previously
+     sat OUTSIDE a script tag and never executed — inert text kept pending a
+     byte-exact local cleanup; the page now loads the real implementation). -->
+<script src="{{ versioned_static('js/downloads_page.js') }}"></script>
 function updateSlskdSelectedButton() {
   const btn = document.getElementById('slskdDownloadSelected');
   if (!btn) return;

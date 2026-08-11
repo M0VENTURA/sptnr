@@ -866,32 +866,25 @@ function checkMissingReleases(artistName, silent = false, background = false) {
     return 'album';
   };
 
-  const rowExists = (tbody, albumTitle) => {
+  const rowExists = (container, albumTitle) => {
     const wanted = String(albumTitle || '').trim().toLowerCase();
-    return Array.from(tbody.querySelectorAll('tr.album-row')).some(row =>
+    return Array.from(container.querySelectorAll('.album-row')).some(row =>
       String(row.getAttribute('data-album') || '').trim().toLowerCase() === wanted
     );
   };
 
-  const sortTbodyByYear = (tbody) => {
-    const albumRows = Array.from(tbody.querySelectorAll('tr.album-row'));
-    const rowPairs = albumRows.map((row) => {
-      const next = row.nextElementSibling;
-      const tracklistRow = (next && next.classList.contains('tracklist-row')) ? next : null;
-      return { row, tracklistRow };
-    });
-
-    rowPairs.sort((a, b) => {
-      const yearA = parseInt(a.row.getAttribute('data-year') || '0', 10);
-      const yearB = parseInt(b.row.getAttribute('data-year') || '0', 10);
+  // Sort the accordion items by release year (descending).  Injected rows are
+  // self-contained accordion-items (collapse body inside the item), so a plain
+  // reorder of the container's .album-row children is enough — no paired
+  // tracklist rows to keep together (the old table layout had those).
+  const sortAccordionByYear = (container) => {
+    const rows = Array.from(container.querySelectorAll('.album-row'));
+    rows.sort((a, b) => {
+      const yearA = parseInt(a.getAttribute('data-year') || '0', 10);
+      const yearB = parseInt(b.getAttribute('data-year') || '0', 10);
       return yearB - yearA;
     });
-
-    tbody.innerHTML = '';
-    rowPairs.forEach(({ row, tracklistRow }) => {
-      tbody.appendChild(row);
-      if (tracklistRow) tbody.appendChild(tracklistRow);
-    });
+    rows.forEach(row => container.appendChild(row));
   };
 
   let missingReleasesUrl = '/api/artist/missing-releases?artist=' + encodeURIComponent(artistName);
@@ -907,92 +900,113 @@ function checkMissingReleases(artistName, silent = false, background = false) {
       }
       const missing = data.missing || [];
       // Remove previously injected live rows before re-inserting.
-      document.querySelectorAll('tr[data-source="live-missing"]').forEach(row => row.remove());
+      document.querySelectorAll('.album-row[data-source="live-missing"]').forEach(row => row.remove());
 
       let addedCount = 0;
+      const touchedSections = new Set();
       missing.forEach(item => {
         const category = getMissingCategory(item);
         const sectionKey = categoryToSection[category];
-        const tbody = document.querySelector(`#${sectionKey}-section .${sectionKey}-tbody`);
-        if (!tbody) return;
-        if (rowExists(tbody, item.title)) return;
+        const container = document.getElementById(`accordion-${sectionKey}`);
+        if (!container) return;
+        if (rowExists(container, item.title)) return;
 
         const year = (item.first_release_date || '').slice(0, 4) || '????';
         const fallbackArt = '/api/album-art-placeholder';
         const artUrl = item.cover_art_url || fallbackArt;
         const safeArtist = safeForDomId(artistName);
         const safeAlbum = safeForDomId(item.title);
-        const rowId = `tracklist-${safeArtist}-${safeAlbum}`;
         const contentId = `tracklist-content-${safeArtist}-${safeAlbum}`;
-        
+        const collapseId = `collapse-${safeArtist}-${safeAlbum}`;
+        const headingId = `heading-${safeArtist}-${safeAlbum}`;
+
         const artistEnc = encodeURIComponent(JSON.stringify(artistName || "")).replace(/'/g, '%27');
         const titleEnc = encodeURIComponent(JSON.stringify(item.title || "")).replace(/'/g, '%27');
         const releaseIdEnc = encodeURIComponent(JSON.stringify(item.id || "")).replace(/'/g, '%27');
 
-        const row = document.createElement('tr');
-        row.className = 'album-row';
+        const row = document.createElement('div');
+        row.className = 'accordion-item album-row';
         row.setAttribute('data-year', year === '????' ? '0' : year);
         row.setAttribute('data-status', 'missing');
         row.setAttribute('data-source', 'live-missing');
         row.setAttribute('data-album', item.title || '');
-        
+        row.style.borderStyle = 'dashed';
+        row.style.borderColor = 'rgba(245,158,11,0.4)';
+
         row.innerHTML = `
-          <td class="text-center" style="width: 100px; padding: 0.5rem;">
-            <img src="${artUrl}" 
-                 alt="${escapeHtml(item.title)}" 
-                 class="img-thumbnail"
-                 style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
-                 onerror="this.src='${fallbackArt}'">
-          </td>
-          <td>${escapeHtml(item.title)}</td>
-          <td class="text-center">
-            ${year}
-          </td>
-          <td class="text-center">
-            <span class="badge bg-warning text-dark">Missing</span>
-          </td>
-          <td class="text-center">—</td>
-          <td class="text-center"><span class="text-muted">—</span></td>
-          <td class="text-center">
-            <div class="btn-group btn-group-sm" role="group">
-              <button class="btn btn-outline-info" onclick="toggleTracklistFromEncoded('${artistEnc}', '${titleEnc}')" title="Show tracklist" id="toggle-btn-${safeArtist}-${safeAlbum}">
-                <i class="bi bi-list-ul"></i>
+          <h2 class="accordion-header" id="${headingId}">
+            <div class="accordion-header-row d-flex align-items-center gap-3 w-100 flex-wrap py-2 px-3">
+              <button type="button" class="accordion-chevron-btn flex-shrink-0 p-0 border-0 bg-transparent"
+                      data-bs-toggle="collapse" data-bs-target="#${collapseId}"
+                      aria-expanded="false" aria-controls="${collapseId}"
+                      title="Expand / collapse tracklist">
+                <i class="bi bi-chevron-right album-chevron-icon"></i>
               </button>
-              <button class="btn btn-outline-success" onclick="importReleaseFromEncoded('${artistEnc}', '${releaseIdEnc}', '${titleEnc}')" title="Import this release">
-                <i class="bi bi-download"></i>
-              </button>
-              <button class="btn btn-outline-secondary" onclick="searchMusicBrainzReleaseFromEncoded(null, '${artistEnc}', '${titleEnc}')" title="Search MusicBrainz">
-                <i class="bi bi-search"></i>
-              </button>
+              <div class="d-flex align-items-center gap-3 w-100 flex-wrap" style="min-width:0;">
+                <!-- Album Art -->
+                <div class="album-art-wrapper flex-shrink-0" style="width: 48px; height: 48px;">
+                  <img src="${artUrl}" alt="${escapeHtml(item.title)}"
+                       style="width: 48px; height: 48px; object-fit: cover; border-radius: 4px; background: var(--tertiary-bg);"
+                       onerror="this.src='${fallbackArt}'">
+                </div>
+                <!-- Album Name + Missing badge -->
+                <div class="flex-grow-1" style="min-width: 120px;">
+                  <span class="fw-semibold">${escapeHtml(item.title)}</span>
+                  <span class="badge ms-2" style="background-color: rgba(245,158,11,0.12); color: #f59e0b; border: 1px dashed rgba(245,158,11,0.4);" title="Release exists on MusicBrainz but is not in your library">
+                    🟡 Missing
+                  </span>
+                </div>
+                <!-- Year -->
+                <span class="text-muted small flex-shrink-0" style="white-space: nowrap; min-width: 4ch; text-align: center;">${year}</span>
+                <!-- Track count placeholder -->
+                <span class="badge bg-secondary flex-shrink-0">—</span>
+                <!-- Actions -->
+                <div class="d-flex gap-1 flex-shrink-0" onclick="event.stopPropagation();">
+                  <button type="button" class="btn btn-outline-info btn-sm" title="Show tracklist" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" aria-controls="${collapseId}">
+                    <i class="bi bi-list-ul"></i>
+                  </button>
+                  <button type="button" class="btn btn-outline-success btn-sm" onclick="importReleaseFromEncoded('${artistEnc}', '${releaseIdEnc}', '${titleEnc}')" title="Import this release">
+                    <i class="bi bi-download"></i> Import
+                  </button>
+                  <button type="button" class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(event, '${artistEnc}', '${titleEnc}')" title="Search MusicBrainz">
+                    <i class="bi bi-search"></i>
+                  </button>
+                </div>
+              </div>
             </div>
-          </td>
+          </h2>
+          <div id="${collapseId}" class="accordion-collapse collapse" aria-labelledby="${headingId}" data-bs-parent="#accordion-${sectionKey}">
+            <div class="accordion-body py-2 px-3 text-muted small">
+              <div class="tracklist-container">
+                <button class="btn btn-sm btn-outline-info me-2 btn-tracklist-load" onclick="loadTracklistFromEncoded('${artistEnc}', '${titleEnc}', this, '${releaseIdEnc}')">
+                  <span class="spinner-border spinner-border-sm me-2" style="display:none;"></span>
+                  <i class="bi bi-music-note-list"></i> Load Tracklist from MusicBrainz
+                </button>
+                <div id="${contentId}" class="mt-3"></div>
+              </div>
+            </div>
+          </div>
         `;
 
-        const tracklistRow = document.createElement('tr');
-        tracklistRow.className = 'tracklist-row';
-        tracklistRow.id = rowId;
-        tracklistRow.setAttribute('data-source', 'live-missing');
-        tracklistRow.style.display = 'none';
-        tracklistRow.innerHTML = `
-          <td colspan="7" style="padding: 1rem;">
-            <div class="tracklist-container">
-              <button class="btn btn-sm btn-outline-info me-2 btn-tracklist-load" onclick="loadTracklistFromEncoded('${artistEnc}', '${titleEnc}', this, '${releaseIdEnc}')">
-                <span class="spinner-border spinner-border-sm me-2" style="display:none;"></span>
-                <i class="bi bi-music-note-list"></i> Load Tracklist from MusicBrainz
-              </button>
-              <div id="${contentId}" class="mt-3"></div>
-            </div>
-          </td>
-        `;
-
-        tbody.appendChild(row);
-        tbody.appendChild(tracklistRow);
+        container.appendChild(row);
+        touchedSections.add(sectionKey);
         addedCount += 1;
       });
 
       ['albums', 'live-albums', 'remix-albums', 'eps', 'singles', 'compilations'].forEach(sectionKey => {
-        const tbody = document.querySelector(`#${sectionKey}-section .${sectionKey}-tbody`);
-        if (tbody) sortTbodyByYear(tbody);
+        const container = document.getElementById(`accordion-${sectionKey}`);
+        if (container) {
+          // A previously-empty category shows a server-rendered placeholder
+          // ("No albums in this category") — drop it now that real rows exist.
+          container.querySelectorAll('.category-empty-state').forEach(el => el.remove());
+          sortAccordionByYear(container);
+        }
+        // Un-hide the section card if this check populated a previously-empty
+        // category (empty sections are rendered but display:none server-side).
+        if (touchedSections.has(sectionKey)) {
+          const section = document.getElementById(`${sectionKey}-section`);
+          if (section) section.style.display = '';
+        }
       });
 
       initializeMissingToggle();
@@ -2354,12 +2368,12 @@ function toggleMissing(category) {
   const section = document.getElementById(category + '-section');
   if (!section) return;
   
-  const tbody = section.querySelector('.' + category + '-tbody');
+  const accordion = section.querySelector('#accordion-' + category);
   const button = section.querySelector('.toggle-missing-btn');
-  if (!tbody || !button) return;
+  if (!accordion || !button) return;
   
   const isShowing = button.getAttribute('data-show') === 'true';
-  const missingRows = tbody.querySelectorAll('tr[data-status="missing"]');
+  const missingRows = accordion.querySelectorAll('.album-row[data-status="missing"]');
   
   if (isShowing) {
     // Hide missing
@@ -2384,13 +2398,13 @@ function initializeMissingToggle() {
     const section = document.getElementById(category + '-section');
     if (!section) return;
     
-    const tbody = section.querySelector('.' + category + '-tbody');
+    const accordion = section.querySelector('#accordion-' + category);
     const button = section.querySelector('.toggle-missing-btn');
-    if (!tbody || !button) return;
+    if (!accordion || !button) return;
     
     // Load preference from localStorage (default is false = hidden)
     const showMissing = localStorage.getItem('showMissing-' + category) === 'true';
-    const missingRows = tbody.querySelectorAll('tr[data-status="missing"]');
+    const missingRows = accordion.querySelectorAll('.album-row[data-status="missing"]');
     
     if (!showMissing) {
       // Hide by default

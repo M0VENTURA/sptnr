@@ -1129,12 +1129,27 @@ def post_album_star_ratings(
                 continue
             track["stars"] = stars
             total_star_ratings += 1
+            _track_score = float(track.get("popularity_score") or 0)
+            _album_z = _compute_album_z(_track_score, album_scores)[0]
+            _artist_z = _compute_artist_z(_track_score, artist_scores)[0]
+            # Per-track rating line at INFO so operators can verify the
+            # scoring logic end-to-end (score → z-scores → star band).
+            log_unified(
+                f"[TRACK_RESULT] {artist} - {track.get('title')} → {stars}★ "
+                f"(score={_track_score:.1f}, album_z={_album_z:.2f}, artist_z={_artist_z:.2f}, "
+                f"single={track.get('is_single')}/{track.get('single_confidence')}"
+                + (
+                    f", era={album_model.get('era')}/R={float(album_model.get('reff') or 0):.2f}"
+                    if album_model.get("has_benchmark") else ""
+                )
+                + ")"
+            )
             logger.debug(
                 "[finalise_stage] %s - %s → %d★ (score=%.1f, album_z=%.2f, artist_z=%.2f, single=%s/%s%s)",
                 artist, track.get("title"), stars,
-                float(track.get("popularity_score") or 0),
-                _compute_album_z(float(track.get("popularity_score") or 0), album_scores)[0],
-                _compute_artist_z(float(track.get("popularity_score") or 0), artist_scores)[0],
+                _track_score,
+                _album_z,
+                _artist_z,
                 track.get("is_single"), track.get("single_confidence"),
                 f", era={album_model.get('era')}/R={float(album_model.get('reff') or 0):.2f}"
                 if album_model.get("has_benchmark") else "",
