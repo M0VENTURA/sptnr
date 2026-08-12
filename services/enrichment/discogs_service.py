@@ -185,6 +185,26 @@ def _discogs_title_similarity(local_title: str, candidate_title: str) -> float:
     return sim
 
 
+def _release_artist_matches(result_artist: str, query_artist: str) -> bool:
+    """Reject search-fallback releases credited to a DIFFERENT artist.
+
+    The free-text fallback (``search_database``) searches the ENTIRE Discogs
+    catalogue: an unrelated band's single with the same title ("Mindfields"
+    by Gotthard vs Soilwork's album track) is not evidence about the local
+    track, and the artist-ID penalty alone only halves such matches instead
+    of rejecting them.  Requires normalized equality after stripping feat
+    credits and parentheticals (case/whitespace-insensitive); containment
+    covers trailing noise ("Soilwork feat. X").
+    """
+    def _norm(value: str) -> str:
+        value = strip_featured_artist(value or "")
+        value = re.sub(r"[\(\[][^\)\]]*[\)\]]", " ", value)
+        return re.sub(r"\s+", " ", value).strip().lower()
+
+    q, r = _norm(query_artist), _norm(result_artist)
+    return bool(q and r and (q == r or q in r or r in q))
+
+
 # --- TYPES ---
 class DiscogsTrack(TypedDict):
     number: str
@@ -398,10 +418,17 @@ class DiscogsService:
         # single can sit outside a tiny top-N (e.g. "+44 - When Your Heart
         # Stops Beating").  Matches here are NOT artist-verified — the search
         # can surface another artist's release — so the caller halves their
-        # confidence via the artist-ID sanity penalty.
+        # confidence via the artist-ID sanity penalty.  Results credited to a
+        # DIFFERENT artist are rejected outright: a foreign exact-title single
+        # ("Mindfields" by Gotthard) is not evidence, and the penalty alone
+        # would still report it as a MEDIUM match.
         if status is None:
             results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 25})
-            status = self._scan_releases(title, title_key, results or [], artist_verified=False)
+            results = [
+                r for r in (results or [])
+                if _release_artist_matches(str(r.get("artist") or ""), artist)
+            ]
+            status = self._scan_releases(title, title_key, results, artist_verified=False)
 
         # ── Inverted-artist retry (feat. splits) ───────────────────────────
         # "Lord of the Lost feat. Feuerschwanz" has no Discogs artist page —

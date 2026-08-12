@@ -1551,7 +1551,9 @@ def run_scan(
                         results.append(frozen_result)
                         # Frozen tracks reuse the stored score — still log the
                         # result so the unified log shows every track's rating.
-                        if isinstance(frozen_result, dict):
+                        # Metadata passes compute no scores: their all-zero
+                        # lines read like failures, so they log at DEBUG only.
+                        if not options.get("metadata_only") and isinstance(frozen_result, dict):
                             _ft = prepared_track.get("title", "Unknown Track")
                             _fs = frozen_result.get("popularity_score")
                             log_unified(
@@ -1579,8 +1581,11 @@ def run_scan(
                     results.append(track_result)
 
                     # Per-track score logging so the dashboard unified log shows
-                    # exactly how each track was scored (SP / LF / LB / final).
-                    if isinstance(track_result, dict):
+                    # exactly how each track was scored (LF / LB / final).
+                    # Metadata passes compute no scores — their all-zero lines
+                    # read like failures, so they log at DEBUG only (the
+                    # track_stage [TRACK] line already does the same).
+                    if not options.get("metadata_only") and isinstance(track_result, dict):
                         title = prepared_track.get("title", "Unknown Track")
                         f_score = track_result.get("popularity_score")
                         lf = track_result.get("lastfm_score")
