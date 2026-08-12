@@ -176,10 +176,13 @@ def _log_scan_config() -> None:
             f"📋 SCAN CONFIG — sources: {_lv_fmt} | playlists ({_src(_pl_cfg)}): "
             f"essential={'on' if _pl_cfg.get('essential_playlists_enabled', True) else 'off'} "
             f"featured={'on' if _pl_cfg.get('essential_include_featured', True) else 'off'} "
-            f"genre={'on' if _pl_cfg.get('genre_playlists_enabled', True) else 'off'} "
+            f"genre={'create' if _pl_cfg.get('genre_playlists_enabled', True) else 'off'}"
+            f"/{'delete' if _pl_cfg.get('genre_playlists_delete_enabled', True) else 'off'} "
             f"(n={int(_pl_cfg.get('genre_playlists_top_n', 500))}, "
             f"min={int(_pl_cfg.get('genre_playlists_min_stars', 4))}★, "
-            f"per={int(_pl_cfg.get('genre_playlists_max_genres', 3))})"
+            f"per={int(_pl_cfg.get('genre_playlists_max_genres', 3))}, "
+            f"create>{int(_pl_cfg.get('genre_playlists_create_threshold', 100))}, "
+            f"delete<{int(_pl_cfg.get('genre_playlists_delete_threshold', 80))})"
         )
     except Exception as exc:
         logger.debug("[POPULARITY_PIPELINE] Scan config dump skipped: %s", exc)
