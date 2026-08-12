@@ -226,6 +226,16 @@ async def api_scan_from_artist():
             if is_process_alive(runtime_state.scan_process_popularity):
                 return jsonify({"success": False, "error": "Popularity scan is already running"}), 400
 
+            # Cross-process guard — a scan active in another worker (invisible
+            # to the per-process runtime registry) shows as running in the
+            # shared DB scan state.  Without it a letter/full scan can overlap
+            # a scan started elsewhere and the shared progress row flips to
+            # complete as soon as either finishes, hiding the still-running one.
+            from services.scanning.pipelines.popularity_pipeline import is_popularity_scan_active
+
+            if is_popularity_scan_active():
+                return jsonify({"success": False, "error": "Popularity scan is already running"}), 400
+
             write_progress_with_current_artist(
                 progress_file,
                 "popularity_scan",

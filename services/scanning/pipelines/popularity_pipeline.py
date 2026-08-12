@@ -27,6 +27,32 @@ from services.scanning.scan_state import (
 logger = logging.getLogger(__name__)
 
 
+def is_popularity_scan_active() -> bool:
+    """Return True when a popularity-family scan is already running.
+
+    Checks BOTH the in-process runtime registry and the shared DB scan state.
+    The runtime registry is per-worker, so in a multi-worker (hypercorn)
+    deployment a manual scan started in worker A is invisible to worker B —
+    the shared ``ScanState`` row is the cross-process source of truth.  This
+    prevents a scheduled popularity scan from overlapping a manual one (and
+    vice versa): both write to the SAME ``popularity_scan`` progress row, so
+    whichever finishes first marks the shared state complete while the other
+    is still running, which makes a full scan look like it halted mid-letter.
+    """
+    from services.scanning.runtime_state import is_runtime_running
+
+    if is_runtime_running("popularity"):
+        return True
+
+    try:
+        from services.scanning.scan_state import read_progress_file
+
+        state = read_progress_file(get_scan_progress_path("popularity_scan"))
+        return bool(state.get("is_running"))
+    except Exception:
+        return False
+
+
 # =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================

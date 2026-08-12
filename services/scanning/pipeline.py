@@ -235,6 +235,40 @@ def start_library_scan(
     return {"success": True, "message": "Full library scan started"}
 
 
+def _validated_resume_artist(
+    artists: list[tuple[str, Any]],
+    checkpoint_path: str | None,
+    force: bool,
+) -> str | None:
+    """Resolve the resume artist, clearing stale checkpoints that would truncate a scan.
+
+    ``run_full_library_scan`` resumes from the last scanned artist.  A stale
+    checkpoint — artist renamed in Navidrome, removed from the library, or
+    stored under different casing — would otherwise leave the resume loop
+    stuck in "skip" mode for every artist and silently do nothing (a full
+    scan that never advances past the first letter).  When the checkpoint
+    artist is not present in the current index the checkpoint is cleared so
+    the scan starts from the top and continues through the whole library.
+    """
+    checkpoint = load_scan_checkpoint(checkpoint_path) if not force else {}
+    resume_from = checkpoint.get("last_scanned_artist")
+    if not resume_from:
+        return None
+
+    index_names = {str(name) for name, _ in artists}
+    if resume_from not in index_names:
+        log_unified(
+            f"Full library scan - resume artist '{resume_from}' not found in "
+            "the current library; starting from the beginning"
+        )
+        try:
+            clear_scan_checkpoint(checkpoint_path)
+        except Exception as exc:
+            logger.debug("[SCAN_PIPELINE] Could not clear stale checkpoint: %s", exc)
+        return None
+    return str(resume_from)
+
+
 def run_full_library_scan(force: bool = False):
     progress = get_library_progress_path()
     checkpoint_path = get_library_checkpoint_path()
@@ -248,8 +282,7 @@ def run_full_library_scan(force: bool = False):
         # A forced scan always starts from the top of the library — a resume
         # checkpoint left behind by a single-artist scan must never truncate
         # it (legacy: force disables the timestamp/score skips).
-        checkpoint = load_scan_checkpoint(checkpoint_path) if not force else {}
-        resume_from = checkpoint.get("last_scanned_artist")
+        resume_from = _validated_resume_artist(artists, checkpoint_path, force)
 
         resume_mode = bool(resume_from)
 
