@@ -1,0 +1,269 @@
+"""Tests for the genre top-tracks playlist create/delete thresholds.
+
+``_create_genre_top_track_playlists`` writes a ``{Genre} - Top Tracks.m3u``
+for every genre whose qualifying (≥ Minimum Stars) track pool clears the
+create threshold, and removes the file once the pool drops below the delete
+threshold.  The gap between the two thresholds acts as hysteresis: a genre
+between them keeps whatever playlist already exists.
+
+Config keys (under ``playlists``):
+- ``genre_playlists_enabled``           (default True)  – creation toggle
+- ``genre_playlists_delete_enabled``    (default True)  – deletion toggle
+- ``genre_playlists_create_threshold``  (default 100)   – create above
+- ``genre_playlists_delete_threshold``  (default 80)    – delete below
+- ``genre_playlists_name_template``     (default "{genre} - Top Tracks")
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from services.popularity.stages import finalise_stage as fs
+
+
+class FakeCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    def fetchall(self):
+        return self.rows
+
+
+def make_row(title, stars=5, genre="Rock", artist="Artist", file_path=None):
+    """One track row with a single ``navidrome_genres`` value."""
+    return {
+        "id": f"id-{genre}-{title}",
+        "title": title,
+        "file_path": file_path or f"/music/{artist}/{title}.flac",
+        "duration": 180,
+        "stars": stars,
+        "popularity_score": 50.0,
+        "is_live": 0,
+        "is_compilation": 0,
+        "artist": artist,
+        "album_artist": artist,
+        "lastfm_tags": None,
+        "listenbrainz_genres": None,
+        "discogs_genres": None,
+        "musicbrainz_genres": None,
+        "spotify_genres": None,
+        "essentia_genres": None,
+        "manual_genres": None,
+        "navidrome_genres": genre,
+    }
+
+
+def make_cfg(**overrides) -> dict:
+    cfg = {
+        "genre_playlists_enabled": True,
+        "genre_playlists_delete_enabled": True,
+        "genre_playlists_create_threshold": 100,
+        "genre_playlists_delete_threshold": 80,
+        "genre_playlists_top_n": 500,
+        "genre_playlists_min_stars": 4,
+        "genre_playlists_max_genres": 3,
+        "genre_playlists_name_template": "{genre} - Top Tracks",
+    }
+    cfg.update(overrides)
+    return {"playlists": cfg}
+
+
+@pytest.fixture
+def run_genre_playlists(tmp_path, monkeypatch):
+    """Return a helper that runs the function against a temp Playlists dir."""
+    playlists_dir = tmp_path / "Playlists"
+    state_file = tmp_path / "genre_playlists.json"
+    monkeypatch.setattr(fs, "_essential_playlists_dir", lambda: str(playlists_dir))
+    monkeypatch.setattr(fs, "_genre_playlists_state_file", lambda: str(state_file))
+
+    def _run(rows, cfg=None):
+        from helpers import config_helpers
+        monkeypatch.setattr(config_helpers, "get_config", lambda: cfg or make_cfg())
+        cursor = FakeCursor(rows)
+        written = fs._create_genre_top_track_playlists(cursor)
+        return written, playlists_dir
+
+    return _run
+
+
+def _path(playlists_dir, name):
+    return playlists_dir / name
+
+
+class TestCreateThreshold:
+    def test_creates_when_over_100(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 102)]
+        written, d = run_genre_playlists(rows)
+        assert written == 1
+        assert _path(d, "Rock - Top Tracks.m3u").exists()
+
+    def test_does_not_create_at_exactly_100(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 101)]
+        cfg = make_cfg(genre_playlists_create_threshold=100)
+        written, d = run_genre_playlists(rows, cfg)
+        assert written == 0
+        assert not _path(d, "Rock - Top Tracks.m3u").exists()
+
+    def test_respects_custom_create_threshold(self, run_genre_playlists):
+        cfg = make_cfg(genre_playlists_create_threshold=40)
+        rows = [make_row(f"Song {i}") for i in range(1, 40)]
+        written, d = run_genre_playlists(rows, cfg)
+        assert written == 0
+        assert not _path(d, "Rock - Top Tracks.m3u").exists()
+
+        rows2 = [make_row(f"Song {i}") for i in range(1, 42)]
+        written2, d2 = run_genre_playlists(rows2, cfg)
+        assert written2 == 1
+        assert _path(d2, "Rock - Top Tracks.m3u").exists()
+
+
+class TestDeleteThreshold:
+    def test_deletes_when_below_80(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 121)]
+        written, d = run_genre_playlists(rows)
+        assert written == 1
+        target = _path(d, "Rock - Top Tracks.m3u")
+        assert target.exists()
+
+        fewer = [make_row(f"Song {i}") for i in range(1, 50)]
+        written2, d2 = run_genre_playlists(fewer)
+        assert written2 == 0
+        assert not target.exists()
+
+    def test_keeps_existing_playlist_between_thresholds(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 121)]
+        written, d = run_genre_playlists(rows)
+        assert written == 1
+        target = _path(d, "Rock - Top Tracks.m3u")
+        assert target.exists()
+
+        between = [make_row(f"Song {i}") for i in range(1, 91)]
+        written2, d2 = run_genre_playlists(between)
+        assert written2 == 0
+        assert target.exists()
+
+    def test_respects_custom_delete_threshold(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 61)]
+        written, d = run_genre_playlists(rows)
+        assert written == 0
+
+        target = _path(d, "Rock - Top Tracks.m3u")
+        target.write_text("#EXTM3U\n", encoding="utf-8")
+
+        cfg = make_cfg(genre_playlists_delete_threshold=50)
+        written2, d2 = run_genre_playlists(rows, cfg)
+        assert written2 == 0
+        assert target.exists()
+
+        cfg2 = make_cfg(genre_playlists_delete_threshold=70)
+        written3, d3 = run_genre_playlists(rows, cfg2)
+        assert written3 == 0
+        assert not target.exists()
+
+
+class TestToggles:
+    def test_create_disabled_does_not_create(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 121)]
+        cfg = make_cfg(genre_playlists_enabled=False)
+        written, d = run_genre_playlists(rows, cfg)
+        assert written == 0
+        assert not _path(d, "Rock - Top Tracks.m3u").exists()
+
+    def test_delete_disabled_keeps_stale_playlist(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 121)]
+        written, d = run_genre_playlists(rows)
+        assert written == 1
+        target = _path(d, "Rock - Top Tracks.m3u")
+        assert target.exists()
+
+        fewer = [make_row(f"Song {i}") for i in range(1, 10)]
+        cfg = make_cfg(genre_playlists_delete_enabled=False)
+        written2, d2 = run_genre_playlists(fewer, cfg)
+        assert written2 == 0
+        assert target.exists()
+
+    def test_delete_only_still_cleans_up(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 121)]
+        written, d = run_genre_playlists(rows)
+        assert written == 1
+        target = _path(d, "Rock - Top Tracks.m3u")
+        assert target.exists()
+
+        fewer = [make_row(f"Song {i}") for i in range(1, 10)]
+        cfg = make_cfg(genre_playlists_enabled=False, genre_playlists_delete_enabled=True)
+        written2, d2 = run_genre_playlists(fewer, cfg)
+        assert written2 == 0
+        assert not target.exists()
+
+
+class TestNameTemplate:
+    def test_uses_config_name_template(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 121)]
+        cfg = make_cfg(genre_playlists_name_template="{genre} Mix")
+        written, d = run_genre_playlists(rows, cfg)
+        assert written == 1
+        assert _path(d, "Rock Mix.m3u").exists()
+
+    def test_template_change_removes_old_file(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 121)]
+        written, d = run_genre_playlists(rows)
+        old = _path(d, "Rock - Top Tracks.m3u")
+        assert old.exists()
+
+        cfg = make_cfg(genre_playlists_name_template="{genre} Mix")
+        written2, d2 = run_genre_playlists(rows, cfg)
+        new = _path(d2, "Rock Mix.m3u")
+        assert new.exists()
+        assert not old.exists()
+
+
+class TestEdgeCases:
+    def test_other_playlists_untouched(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}") for i in range(1, 121)]
+        written, d = run_genre_playlists(rows)
+        assert written == 1
+
+        unrelated = _path(d, "My Unrelated Mix.m3u")
+        unrelated.write_text("#EXTM3U\n", encoding="utf-8")
+
+        fewer = [make_row(f"Song {i}") for i in range(1, 10)]
+        run_genre_playlists(fewer)
+
+        assert unrelated.exists()
+        assert not _path(d, "Rock - Top Tracks.m3u").exists()
+
+    def test_dedup_counts_once_for_threshold(self, run_genre_playlists):
+        # 150 rows but only 60 unique (artist, title) groups — below 100.
+        rows = []
+        for i in range(1, 61):
+            rows.append(make_row(f"Song {i}", artist="A"))
+            rows.append(make_row(f"Song {i} (Live)", artist="A"))
+            rows.append(make_row(f"Song {i} [Remaster]", artist="A"))
+        written, d = run_genre_playlists(rows)
+        assert written == 0
+        assert not _path(d, "Rock - Top Tracks.m3u").exists()
+
+    def test_db_fetch_failure_is_graceful(self, run_genre_playlists):
+        class BoomCursor:
+            def execute(self, sql, params=None):
+                raise RuntimeError("db down")
+
+            def fetchall(self):
+                raise AssertionError("should not be reached")
+
+        written = fs._create_genre_top_track_playlists(BoomCursor())
+        assert written == 0
+
+    def test_multi_genre_pools(self, run_genre_playlists):
+        rows = [make_row(f"Song {i}", genre="Rock") for i in range(1, 121)]
+        rows += [make_row(f"Song {i}", genre="Metal") for i in range(1, 121)]
+        written, d = run_genre_playlists(rows)
+        assert written == 2
+        assert _path(d, "Rock - Top Tracks.m3u").exists()
+        assert _path(d, "Metal - Top Tracks.m3u").exists()

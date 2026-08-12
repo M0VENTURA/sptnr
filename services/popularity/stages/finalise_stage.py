@@ -1019,9 +1019,6 @@ def _create_essential_m3u(artist: str, cursor) -> None:
 # Genre top-tracks playlists (library-wide, generated once per scan)
 # ---------------------------------------------------------------------------
 
-# A genre pool must clear this many unique tracks before a playlist is written.
-_GENRE_PLAYLIST_MIN_TRACKS = 5
-
 
 def _genre_playlists_enabled() -> bool:
     """Whether library-wide ``{Genre} - Top Tracks`` playlists are generated.
@@ -1034,6 +1031,59 @@ def _genre_playlists_enabled() -> bool:
         return bool(cfg.get("genre_playlists_enabled", True))
     except Exception:
         return True
+
+
+def _genre_playlists_delete_enabled() -> bool:
+    """Whether under-threshold genre playlists are removed from disk.
+
+    Config key ``playlists.genre_playlists_delete_enabled`` (default true).
+    """
+    try:
+        from helpers.config_helpers import get_config
+        cfg = (get_config() or {}).get("playlists") or {}
+        return bool(cfg.get("genre_playlists_delete_enabled", True))
+    except Exception:
+        return True
+
+
+def _genre_playlists_active() -> bool:
+    """Whether any genre-playlist task (create or delete) is enabled."""
+    return _genre_playlists_enabled() or _genre_playlists_delete_enabled()
+
+
+def _genre_playlists_state_file() -> str:
+    """Path to a small JSON state file tracking genre playlist filenames.
+
+    Lets the stale-file cleanup forget files that were removed while the
+    delete toggle was off (or under a previous name template) without ever
+    touching unrelated playlists in the watch directory.
+    """
+    try:
+        from helpers.config_helpers import get_state_directory
+        return os.path.join(get_state_directory(), "genre_playlists.json")
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), ".popularr_genre_playlists.json")
+
+
+def _load_genre_playlist_state() -> set[str]:
+    """Return the set of genre playlist filenames written on previous scans."""
+    try:
+        with open(_genre_playlists_state_file(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return set(str(n) for n in (data or []) if n)
+    except Exception:
+        return set()
+
+
+def _save_genre_playlist_state(names: set[str]) -> None:
+    """Persist the current set of genre playlist filenames for next scan."""
+    try:
+        path = _genre_playlists_state_file()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(sorted(names), handle)
+    except Exception:
+        pass
 
 
 def _genre_playlist_name(genre: str) -> str:
@@ -1074,9 +1124,16 @@ def _create_genre_top_track_playlists(cursor) -> int:
     popularity) — sorted by stars DESC then ``final_score`` DESC, and capped
     at ``playlists.genre_playlists_top_n`` (default 500) tracks.
 
-    Playlists are written to the watch Playlists directory only when the
-    genre pool clears ``_GENRE_PLAYLIST_MIN_TRACKS`` unique tracks.  Returns
-    the number of playlists written.
+    A playlist is created or refreshed only when the genre pool holds MORE
+    than ``playlists.genre_playlists_create_threshold`` (default 100) unique
+    4★/5★ tracks, and an existing playlist is deleted once the pool drops
+    BELOW ``playlists.genre_playlists_delete_threshold`` (default 80) unique
+    tracks.  The gap between the two thresholds acts as hysteresis: a genre
+    hovering between 80 and 100 tracks keeps whatever playlist already exists
+    without churning it every scan.  Creation is gated by
+    ``playlists.genre_playlists_enabled`` and deletion by
+    ``playlists.genre_playlists_delete_enabled``.  Returns the number of
+    playlists written.
     """
     from collections import defaultdict
 
@@ -1088,6 +1145,10 @@ def _create_genre_top_track_playlists(cursor) -> int:
     top_n = max(1, int(cfg.get("genre_playlists_top_n", 500) or 500))
     min_stars = max(1, int(cfg.get("genre_playlists_min_stars", 4) or 4))
     max_genres = max(1, int(cfg.get("genre_playlists_max_genres", 3) or 3))
+    create_threshold = max(1, int(cfg.get("genre_playlists_create_threshold", 100) or 100))
+    delete_threshold = max(1, int(cfg.get("genre_playlists_delete_threshold", 80) or 80))
+    create_enabled = _genre_playlists_enabled()
+    delete_enabled = _genre_playlists_delete_enabled()
 
     rows: list[Any] = []
     try:
@@ -1172,7 +1233,7 @@ def _create_genre_top_track_playlists(cursor) -> int:
     playlists_dir = _essential_playlists_dir()
     os.makedirs(playlists_dir, exist_ok=True)
     written = 0
-    written_names: set[str] = set()
+    keep_names: set[str] = set()
     for genre, tracks in pools.items():
         # Dedup: (artist, normalized title) — remaster/live/compilation
         # duplicates of the same song count once; winner by tiebreak.
@@ -1184,14 +1245,27 @@ def _create_genre_top_track_playlists(cursor) -> int:
             )
             grouped[key].append(t)
         winners = [min(group, key=_tiebreak) for group in grouped.values()]
-        if len(winners) < _GENRE_PLAYLIST_MIN_TRACKS:
-            continue
-        winners.sort(key=_tiebreak)
-        winners = winners[:top_n]
+        qualifying_count = len(winners)
 
         playlist_name = _genre_playlist_name(_display_genre(genre))
         display_genre = _display_genre(genre)
-        file_path = os.path.join(playlists_dir, f"{_sanitize_name(playlist_name)}.m3u")
+        file_name = f"{_sanitize_name(playlist_name)}.m3u"
+        file_path = os.path.join(playlists_dir, file_name)
+
+        # Hysteresis: a genre still at/above the delete threshold keeps
+        # whatever playlist already exists, even if it no longer clears the
+        # (higher) create threshold.  Genres below the delete threshold have
+        # their stale file removed further down.
+        if qualifying_count >= delete_threshold:
+            keep_names.add(file_name)
+
+        if not create_enabled:
+            continue
+        if qualifying_count <= create_threshold:
+            continue
+
+        winners.sort(key=_tiebreak)
+        winners = winners[:top_n]
         lines = ["#EXTM3U"]
         for t in winners:
             try:
@@ -1203,7 +1277,7 @@ def _create_genre_top_track_playlists(cursor) -> int:
         try:
             with open(file_path, "w", encoding="utf-8") as handle:
                 handle.write("\n".join(lines) + "\n")
-            written_names.add(f"{_sanitize_name(playlist_name)}.m3u")
+            keep_names.add(file_name)
             written += 1
             log_unified(
                 f"📄 Playlist: Generated '{playlist_name}.m3u' ({len(winners)} tracks)"
@@ -1211,25 +1285,39 @@ def _create_genre_top_track_playlists(cursor) -> int:
         except Exception as exc:
             logger.warning("[finalise_stage] Genre playlist write failed for %s: %s", genre, exc)
 
-    # Stale-file cleanup: drop genre playlists whose genre no longer clears
-    # the minimum (or whose name template changed).  Only files ending with
-    # the template's literal suffix are candidates, so other playlists in the
-    # watch directory are never touched.
+    # Stale-file cleanup: remove genre playlists that were written on an
+    # earlier scan (tracked in the state file) but whose genre has dropped
+    # below the delete threshold or whose name template changed.  Files that
+    # never came from this generator are never touched.  Gated by the delete
+    # toggle; the state file is refreshed either way so template changes are
+    # cleaned up on later scans even while deletion is disabled.
+    previous_names = _load_genre_playlist_state()
+    suffix = _sanitize_name(_genre_playlist_name("GENRE")) \
+        .replace("GENRE", "", 1).strip() or ""
+
+    candidates: set[str] = set(previous_names)
     try:
-        suffix = _sanitize_name(_genre_playlist_name("GENRE")) \
-            .replace("GENRE", "", 1).strip() or ""
-        if suffix:
-            for name in os.listdir(playlists_dir):
-                if not name.endswith(".m3u") or name in written_names:
-                    continue
-                if suffix and suffix in name:
-                    try:
-                        os.remove(os.path.join(playlists_dir, name))
-                        logger.info("[finalise_stage] Removed stale genre playlist: %s", name)
-                    except Exception:
-                        pass
+        for name in os.listdir(playlists_dir):
+            if name.endswith(".m3u") and (not suffix or suffix in name):
+                candidates.add(name)
     except Exception:
         pass
+
+    removed: set[str] = set()
+    if delete_enabled:
+        for name in candidates:
+            if name in keep_names:
+                continue
+            try:
+                os.remove(os.path.join(playlists_dir, name))
+                removed.add(name)
+                logger.info("[finalise_stage] Removed stale genre playlist: %s", name)
+            except FileNotFoundError:
+                removed.add(name)
+            except Exception:
+                pass
+
+    _save_genre_playlist_state((candidates | keep_names) - removed)
 
     return written
 
@@ -1947,9 +2035,12 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         # ── Genre top-tracks playlists (library-wide, once per scan) ──────
         # Every ≥4★ track's top weighted genres feed per-genre pools, sorted
         # by stars then final_score and capped at the top-N (default 500).
-        # Gated by config (playlists.genre_playlists_enabled).
+        # A playlist is created only when the genre clears the create
+        # threshold and removed when it drops below the delete threshold.
+        # Gated by config (playlists.genre_playlists_enabled /
+        # playlists.genre_playlists_delete_enabled).
         try:
-            if _genre_playlists_enabled():
+            if _genre_playlists_active():
                 _genre_playlists_written = _create_genre_top_track_playlists(cursor)
                 conn.commit()
                 if _genre_playlists_written:
