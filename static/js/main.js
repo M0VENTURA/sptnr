@@ -398,7 +398,10 @@ window.queueSpecificRelease = async function(releaseId, releaseTitle, artist) {
     var data = await resp.json().catch(function () { return {}; });
 
     if (resp.ok && (data.success || data.tracking_id)) {
-      if (typeof showToast === 'function') {
+      if (typeof showQueueToast === 'function') {
+        // Top-center floating pill with inline multi-item counting.
+        showQueueToast(releaseTitle);
+      } else if (typeof showToast === 'function') {
         showToast('Success', '📥 Queued ' + releaseTitle + ' (' + artist + ')', 'success');
       } else {
         alert('✅ Queued version "' + releaseTitle + '" to download queue!');
@@ -540,6 +543,45 @@ window.showToast = function(title, message, type) {
     el.style.opacity = '0';
     setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 250);
   }, 4000);
+};
+
+// ==========================================================================
+// Queue toast — top-center floating pill (~22% down the viewport, in the
+// user's focal path under the search flyout and clear of the bottom log
+// bar).  Rapid multi-queueing updates the pill IN PLACE instead of stacking
+// toasts: "✓ "Album" added" -> "✓ Queued 3 items".
+// ==========================================================================
+
+window._queueToastCount = 0;
+window._queueToastHideTimer = null;
+
+window.showQueueToast = function(title) {
+  var el = document.getElementById('queueToastPill');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'queueToastPill';
+    el.className = 'd-none';
+    el.style.cssText = 'position:fixed;top:22%;left:50%;transform:translateX(-50%);z-index:2400;' +
+      'background:#198754;color:#fff;border-radius:999px;padding:0.55rem 1.1rem;' +
+      'font-size:0.85rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,0.35);' +
+      'display:flex;align-items:center;gap:0.5rem;max-width:min(90vw,480px);' +
+      'white-space:nowrap;overflow:hidden;transition:opacity 0.2s ease;';
+    el.innerHTML = '<i class="bi bi-check-circle-fill flex-shrink-0"></i><span class="text-truncate"></span>';
+    document.body.appendChild(el);
+  }
+  window._queueToastCount += 1;
+  // textContent — titles come from external APIs and must never hit innerHTML.
+  el.querySelector('span').textContent = window._queueToastCount === 1
+    ? 'Queued "' + title + '"'
+    : 'Queued ' + window._queueToastCount + ' items';
+  el.classList.remove('d-none');
+  el.style.opacity = '1';
+  clearTimeout(window._queueToastHideTimer);
+  window._queueToastHideTimer = setTimeout(function () {
+    el.style.opacity = '0';
+    setTimeout(function () { el.classList.add('d-none'); }, 250);
+    window._queueToastCount = 0;
+  }, 2600);
 };
 
 window.addBookmark = function(type, name, artist, album, trackId) {

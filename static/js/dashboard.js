@@ -352,13 +352,13 @@ function renderRecentScans(scans) {
       : '';
 
     return `<div class="list-group-item bg-transparent p-2 d-flex flex-column gap-1">
-      <div class="d-flex align-items-center justify-content-between gap-2 overflow-hidden">
-        <div class="text-truncate small min-w-0">
+      <div class="d-flex align-items-center justify-content-between gap-2">
+        <div class="text-truncate small min-w-0 overflow-hidden">
           <a href='${artistUrl}' class="text-success text-decoration-none fw-semibold">${escapeHtml(group.artist)}</a>${albumHtml}
         </div>
-        <span class="text-muted small flex-shrink-0">${group._inProgress ? "now" : formatScanTimestamp(group.latest_timestamp)}</span>
+        <span class="text-muted small flex-shrink-0 text-end" style="min-width: 3.5rem; white-space: nowrap;">${group._inProgress ? "now" : formatScanTimestamp(group.latest_timestamp)}</span>
       </div>
-      <div class="d-flex align-items-center gap-1 flex-wrap">${badges}</div>
+      <div class="d-flex align-items-center gap-1 flex-wrap" style="min-width: 0;">${badges}</div>
     </div>`;
   }).join("");
 }
@@ -461,7 +461,14 @@ function renderUpcomingReleasesTable(releases) {
     const wrap = document.getElementById("upcomingTableWrap");
     if (wrap) wrap.classList.add("d-none");
     const empty = document.getElementById("upcomingEmptyState");
-    if (empty) empty.classList.remove("d-none");
+    if (empty) {
+      empty.classList.remove("d-none");
+      empty.innerHTML =
+        '<i class="bi bi-check-circle-fill text-success fs-4 d-block mb-2"></i>' +
+        "No unowned upcoming releases scheduled. All tracked albums exist in your library!" +
+        '<div class="mt-3"><button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadUpcomingReleasesTable()">' +
+        '<i class="bi bi-arrow-clockwise"></i> Refresh</button></div>';
+    }
     body.innerHTML = "";
     const cardsEl = document.getElementById("upcoming-releases-cards");
     if (cardsEl) cardsEl.innerHTML = "";
@@ -474,9 +481,45 @@ function renderUpcomingReleasesTable(releases) {
   // below lg via "d-lg-none"). Stripping it made BOTH render on small
   // viewports (legacy table + modern cards = double render).
   const empty = document.getElementById("upcomingEmptyState");
-  if (empty) empty.classList.add("d-none");
+  if (empty) {
+    empty.classList.add("d-none");
+    empty.innerHTML =
+      '<i class="bi bi-check-circle-fill text-success fs-4 d-block mb-2"></i>' +
+      "No unowned upcoming releases scheduled. All tracked albums exist in your library!" +
+      '<div class="mt-3"><button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadUpcomingReleasesTable()">' +
+      '<i class="bi bi-arrow-clockwise"></i> Refresh</button></div>';
+  }
 
-  const rows = releases.map(r => {
+  // Build each row defensively: a single malformed record (bad date, missing
+  // MBID payload, hostile string) must never abort the whole table render —
+  // that previously left the header visible with a dead empty body and no
+  // empty state.  Skipped records are logged for diagnosis.
+  const rows = [];
+  releases.forEach(r => {
+    try {
+      rows.push(_buildUpcomingReleaseRow(r));
+    } catch (err) {
+      console.error("Skipping malformed upcoming release:", r && (r.artist_name || r.id), err);
+    }
+  });
+
+  if (rows.length === 0) {
+    // Everything failed to build (or data vanished) — surface a real empty
+    // state with a refresh action instead of a silent void.
+    if (wrap) wrap.classList.add("d-none");
+    if (empty) empty.classList.remove("d-none");
+    body.innerHTML = "";
+    const cardsEl = document.getElementById("upcoming-releases-cards");
+    if (cardsEl) cardsEl.innerHTML = "";
+    return;
+  }
+
+  body.innerHTML = rows.map(x => x.html).join("");
+  const cardsEl = document.getElementById("upcoming-releases-cards");
+  if (cardsEl) cardsEl.innerHTML = rows.map(x => x.card).join("");
+}
+
+function _buildUpcomingReleaseRow(r) {
     const releaseDate = r.release_date || "TBA";
     // The Wikipedia scraper stores the configured source display names (e.g.
     // "2026 Albums", "Heavy Metal 2026") — they never contain the literal
@@ -521,33 +564,38 @@ function renderUpcomingReleasesTable(releases) {
       ? `<button class="btn btn-sm btn-outline-warning" title="Confirm MusicBrainz match (score ${escapeHtml(String(r.mbid_match_score || ""))})" onclick="confirmUpcomingCandidate(${r.id || 0}, '${encodeURIComponent(r.candidate_release_group_mbid)}', this)"><i class="bi bi-link-45deg"></i></button>`
       : "";
 
+    // One primary action per release — mutually exclusive to avoid clutter:
+    //  ➕ Queue     when the release is already linked to a MusicBrainz ID
+    //  🔗 Confirm   when the pipeline found a >=0.65 candidate awaiting one click
+    //  🔍 Search    when the release has no MusicBrainz identity yet
+    const actionBtn = r.release_group_mbid
+      ? queueBtn
+      : (isCandidate ? matchBtn : searchBtn);
+
     return {
       html: `<tr>
         <td>${escapeHtml(r.artist_name)}${colBadge}</td>
         <td>${escapeHtml(r.album_name)}${linkedBadge}</td>
         <td>${escapeHtml(releaseDate)} ${dateBadge}</td>
         <td>${sourceBadge}</td>
-        <td class="text-center"><div class="d-flex gap-1 justify-content-center">${searchBtn}${matchBtn}${queueBtn}</div></td>
+        <td class="text-center"><div class="d-flex gap-1 justify-content-center">${actionBtn}</div></td>
       </tr>`,
-      // Stacked mobile card (shown below lg — the table is hidden on small screens)
-      card: `<div class="upcoming-card p-2 mb-2 rounded border">
-        <div class="d-flex justify-content-between align-items-start gap-2">
+      // Stacked mobile card (shown below lg — the table is hidden on small
+      // screens). Compact: single-line meta row (date truncates, badges
+      // stay) and exactly one action button.
+      card: `<div class="upcoming-card rounded border">
+        <div class="d-flex justify-content-between align-items-center gap-2">
           <div class="min-w-0">
-            <div class="fw-semibold text-truncate">${escapeHtml(r.artist_name)}${colBadge}</div>
-            <div class="small text-muted text-truncate">${escapeHtml(r.album_name)}${linkedBadge}</div>
+            <div class="upcoming-card-title fw-semibold text-truncate">${escapeHtml(r.artist_name)}${colBadge}</div>
+            <div class="upcoming-card-album text-muted text-truncate">${escapeHtml(r.album_name)}${linkedBadge}</div>
           </div>
-          <div class="d-flex gap-1 flex-shrink-0">${searchBtn}${matchBtn}${queueBtn}</div>
+          <div class="d-flex flex-shrink-0">${actionBtn}</div>
         </div>
-        <div class="d-flex align-items-center gap-2 mt-1 flex-wrap small">
-          <span class="text-muted"><i class="bi bi-calendar"></i> ${escapeHtml(releaseDate)}</span>${dateBadge}${sourceBadge}
+        <div class="upcoming-card-meta d-flex align-items-center mt-1 text-muted">
+          <i class="bi bi-calendar"></i><span class="text-truncate">${escapeHtml(releaseDate)}</span>${dateBadge}${sourceBadge}
         </div>
       </div>`
     };
-  });
-
-  body.innerHTML = rows.map(x => x.html).join("");
-  const cardsEl = document.getElementById("upcoming-releases-cards");
-  if (cardsEl) cardsEl.innerHTML = rows.map(x => x.card).join("");
 }
 
 function _renderUpcomingTableFilterButtons() {
@@ -610,6 +658,22 @@ async function loadUpcomingReleasesTable() {
     }
   } catch (error) {
     console.error("Error loading upcoming releases table:", error);
+    // Surface the failure instead of leaving a blank fixed-height table box.
+    const body = document.getElementById("upcoming-releases-body");
+    const empty = document.getElementById("upcomingEmptyState");
+    const wrap = document.getElementById("upcomingTableWrap");
+    if (body) body.innerHTML = "";
+    if (wrap) wrap.classList.add("d-none");
+    if (empty) {
+      empty.classList.remove("d-none");
+      empty.innerHTML =
+        '<i class="bi bi-exclamation-triangle-fill text-warning fs-4 d-block mb-2"></i>' +
+        "Couldn't load upcoming releases. " +
+        '<button type="button" class="btn btn-sm btn-outline-secondary ms-1" onclick="loadUpcomingReleasesTable()">' +
+        '<i class="bi bi-arrow-clockwise"></i> Retry</button>';
+    }
+    const cardsEl = document.getElementById("upcoming-releases-cards");
+    if (cardsEl) cardsEl.innerHTML = "";
   }
 }
 

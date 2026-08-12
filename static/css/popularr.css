@@ -813,6 +813,63 @@ body:has(#globalPlayerBar:not(.d-none)) .sticky-save-bar {
     bottom: var(--player-bar-height);
 }
 
+/* ── Config page: sticky save bar + switch alignment ───────────────────── */
+.config-save-bar {
+    position: sticky;
+    bottom: 0;
+    z-index: 2010;
+    background: rgba(18, 18, 18, 0.96);
+    border-top: 1px solid rgba(34, 197, 94, 0.4);
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+    padding: 0.6rem 1rem;
+    margin-bottom: 0;
+    border-radius: 0.5rem 0.5rem 0 0;
+}
+body:has(#globalPlayerBar:not(.d-none)) .config-save-bar {
+    bottom: var(--player-bar-height);
+}
+
+/* Toggle switches: label left, switch right on the same row.  Bootstrap's
+   default stacks the switch above its label; the config form uses dozens of
+   switches so a consistent right-aligned row makes active/inactive states
+   scannable at a glance (desktop + mobile). */
+#configForm .form-switch {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding-left: 0;
+    margin-bottom: 0.5rem;
+}
+#configForm .form-switch .form-check-input {
+    float: none;
+    margin-left: 0;
+    flex-shrink: 0;
+    order: 2;
+}
+#configForm .form-switch .form-check-label {
+    order: 1;
+    min-width: 0;
+}
+#configForm .form-switch .d-block {
+    order: 3;
+    width: 100%;
+}
+/* Inline switches that live in a flex header (e.g. integration cards) keep
+   their compact layout — the header already spaces them. */
+#configForm .d-flex.justify-content-between .form-switch {
+    margin-bottom: 0;
+}
+/* Essentia / quality-filter grid switches keep the label+switch on one row. */
+@media (max-width: 575.98px) {
+    #configForm .form-switch {
+        align-items: flex-start;
+    }
+    #configForm .form-switch .d-block {
+        order: 3;
+    }
+}
+
 /* ── Log viewer line styling (/logs page) ───────────────────────────────── */
 .log-line {
     padding: 0 0.25rem;

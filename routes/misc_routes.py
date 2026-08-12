@@ -43,22 +43,43 @@ async def api_search():
             # ---------------------------------------------------------
             artist_result = session.execute(
                 text("""
+                    WITH variants AS (
+                        SELECT
+                            COALESCE(NULLIF(album_artist, ''), artist) AS variant,
+                            LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS name_key,
+                            COUNT(*) AS cnt,
+                            COUNT(DISTINCT album) AS album_count
+                        FROM tracks
+                        WHERE LOWER(COALESCE(artist, '')) LIKE :contains
+                           OR LOWER(COALESCE(album_artist, '')) LIKE :contains
+                        GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+                    ),
+                    ranked AS (
+                        SELECT
+                            variant, name_key, cnt, album_count,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY name_key
+                                ORDER BY cnt DESC,
+                                         (initcap(variant) = variant) DESC,
+                                         LENGTH(variant) DESC
+                            ) AS rn
+                        FROM variants
+                    )
                     SELECT
-                        COALESCE(NULLIF(album_artist, ''), artist) AS name,
-                        COUNT(DISTINCT album) AS album_count,
-                        COUNT(*) AS track_count,
+                        variant AS name,
+                        SUM(cnt) AS track_count,
+                        SUM(album_count) AS album_count,
                         CASE
-                            WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = :exact THEN 0
-                            WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) LIKE :starts THEN 1
+                            WHEN name_key = :exact THEN 0
+                            WHEN name_key LIKE :starts THEN 1
                             ELSE 2
                         END AS match_rank
-                    FROM tracks
-                    WHERE LOWER(COALESCE(artist, '')) LIKE :contains
-                       OR LOWER(COALESCE(album_artist, '')) LIKE :contains
-                    GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+                    FROM ranked
+                    WHERE rn = 1
+                    GROUP BY name_key, variant
                     ORDER BY
                         match_rank ASC,
-                        track_count DESC
+                        SUM(cnt) DESC
                     LIMIT 20
                 """),
                 {
@@ -83,31 +104,57 @@ async def api_search():
             # ---------------------------------------------------------
             album_result = session.execute(
                 text("""
+                    WITH variants AS (
+                        SELECT
+                            COALESCE(NULLIF(album_artist, ''), artist) AS variant,
+                            LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS name_key,
+                            album,
+                            COUNT(*) AS track_count,
+                            AVG(stars) AS avg_stars,
+                            SUM(duration) AS album_duration,
+                            -- year is stored as TEXT; extract the leading 4-digit
+                            -- year (tolerates junk like "1990-05-01" or "TBA")
+                            MAX(COALESCE(
+                                NULLIF(SUBSTRING(year FROM '^[0-9]{4}'), '')::INTEGER,
+                                release_year,
+                                0
+                            )) AS album_year,
+                            MAX(COALESCE(NULLIF(musicbrainz_albumtype, ''),
+                                         NULLIF(spotify_album_type, ''))) AS album_type,
+                            CASE
+                                WHEN LOWER(COALESCE(album, '')) = :exact THEN 0
+                                WHEN LOWER(COALESCE(album, '')) LIKE :starts THEN 1
+                                ELSE 2
+                            END AS match_rank
+                        FROM tracks
+                        WHERE LOWER(COALESCE(album, '')) LIKE :contains
+                        GROUP BY
+                            COALESCE(NULLIF(album_artist, ''), artist),
+                            album
+                    ),
+                    ranked AS (
+                        SELECT
+                            variant, name_key, album, track_count, avg_stars,
+                            album_duration, album_year, album_type, match_rank,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY name_key, album
+                                ORDER BY track_count DESC,
+                                         (initcap(variant) = variant) DESC,
+                                         LENGTH(variant) DESC
+                            ) AS rn
+                        FROM variants
+                    )
                     SELECT
-                        COALESCE(NULLIF(album_artist, ''), artist) AS artist,
+                        variant AS artist,
                         album,
-                        COUNT(*) AS track_count,
-                        AVG(stars) AS avg_stars,
-                        SUM(duration) AS album_duration,
-                        -- year is stored as TEXT; extract the leading 4-digit
-                        -- year (tolerates junk like "1990-05-01" or "TBA")
-                        MAX(COALESCE(
-                            NULLIF(SUBSTRING(year FROM '^[0-9]{4}'), '')::INTEGER,
-                            release_year,
-                            0
-                        )) AS album_year,
-                        MAX(COALESCE(NULLIF(musicbrainz_albumtype, ''),
-                                     NULLIF(spotify_album_type, ''))) AS album_type,
-                        CASE
-                            WHEN LOWER(COALESCE(album, '')) = :exact THEN 0
-                            WHEN LOWER(COALESCE(album, '')) LIKE :starts THEN 1
-                            ELSE 2
-                        END AS match_rank
-                    FROM tracks
-                    WHERE LOWER(COALESCE(album, '')) LIKE :contains
-                    GROUP BY
-                        COALESCE(NULLIF(album_artist, ''), artist),
-                        album
+                        track_count,
+                        avg_stars,
+                        album_duration,
+                        album_year,
+                        album_type,
+                        match_rank
+                    FROM ranked
+                    WHERE rn = 1
                     ORDER BY
                         match_rank ASC,
                         track_count DESC
@@ -277,9 +324,39 @@ def api_integrations_status():
 # ===========================================================================
 
 @misc_api_bp.route("/features/update", methods=["POST"])
-def api_features_update():
-    """Update individual feature flags."""
-    return jsonify({"success": True, "message": "Feature update not yet implemented"}), 200
+async def api_features_update():
+    """Update individual feature flags in config.yaml.
+
+    Whitelist-only (a malicious/accidental payload cannot write arbitrary
+    keys): only the known boolean feature flags are accepted.  Changes are
+    deep-merged into the existing YAML via ``save_partial_config`` so the
+    in-memory config cache is refreshed immediately.
+    """
+    try:
+        data = (await request.get_json(silent=True)) or {}
+    except Exception:
+        data = {}
+    if not data:
+        return jsonify({"success": False, "error": "No JSON data provided"}), 400
+
+    allowed_bool_keys = {
+        "perpetual", "force", "launch_on_startup", "startup_scan_restart",
+        "sync_ratings_to_all_users",
+    }
+    updates = {k: bool(v) for k, v in data.items() if k in allowed_bool_keys}
+    if not updates:
+        return jsonify({"success": False, "error": "No supported feature flags in payload"}), 400
+
+    try:
+        from helpers.config_helpers import save_partial_config
+        ok = save_partial_config({"features": updates})
+        if not ok:
+            return jsonify({"success": False, "error": "Failed to write config.yaml"}), 500
+        logger.info("[FEATURES] Updated feature flags: %s", updates)
+        return jsonify({"success": True, **updates})
+    except Exception as exc:
+        logger.error("[FEATURES] Error updating feature flags: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 # ===========================================================================
@@ -422,9 +499,99 @@ def api_get_duplicate_artists(artist):
 
 
 @misc_api_bp.route("/duplicate-artists/merge", methods=["POST"])
-def api_merge_duplicate_artists():
-    """Merge duplicate artists."""
-    return jsonify({"success": True, "message": "Merge not yet implemented"}), 200
+async def api_merge_duplicate_artists():
+    """Merge duplicate artist variants into a canonical name.
+
+    Rewrites ``artist`` / ``album_artist`` on every matching track to the
+    canonical spelling (case-insensitive variants included), then best-effort
+    syncs the corrected names into file tags.  Physical file renames are NOT
+    performed — the library folder structure is left untouched (run the File
+    Organization rename action afterwards to reorganize paths).
+
+    Request JSON:
+        - new_artist: Canonical artist name (required)
+        - source_artists: list of variant names to merge (optional)
+        - mbid: MusicBrainz artist ID (optional, accepted for parity)
+        - dry_run: preview without executing (optional)
+    """
+    try:
+        payload = (await request.get_json(silent=True)) or {}
+        new_artist = str(payload.get("new_artist") or "").strip()
+        source_artists = payload.get("source_artists") or []
+        dry_run = bool(payload.get("dry_run", False))
+
+        if not new_artist:
+            return jsonify({"success": False, "error": "new_artist is required"}), 400
+
+        if isinstance(source_artists, str):
+            source_artists = [source_artists]
+        sources = [str(s).strip() for s in (source_artists or []) if str(s).strip()]
+        sources = [s for s in sources if s.lower() != new_artist.lower()]
+        # Also sweep case/whitespace variants of the canonical name itself
+        # (e.g. "babymetal" / "BABYMETAL" → "Babymetal").
+        sources.append(new_artist.lower())
+        sources.append(new_artist.upper())
+        sources.append(new_artist.title())
+        sources = list(dict.fromkeys(s for s in sources if s != new_artist))
+
+        if dry_run:
+            from db.repositories.scan_repository import normalize_existing_artist_rows
+            estimated = normalize_existing_artist_rows(
+                canonical_artist_name=new_artist, aliases=sources,
+            )
+            return jsonify({
+                "success": True, "dry_run": True,
+                "updated_db": int(estimated or 0), "updated_files": 0,
+                "moved_files": 0, "errors": [],
+                "message": f"[DRY RUN] Would merge {len(sources)} variant(s) into '{new_artist}': {int(estimated or 0)} tracks",
+            })
+
+        errors: list[str] = []
+        updated_db = 0
+        try:
+            from db.repositories.scan_repository import normalize_existing_artist_rows
+            updated_db = int(normalize_existing_artist_rows(
+                canonical_artist_name=new_artist, aliases=sources,
+            ) or 0)
+        except Exception as exc:
+            errors.append(f"DB normalize failed: {exc}")
+
+        # Best-effort tag sync for tracks whose DB name changed.
+        updated_files = 0
+        if updated_db and not errors:
+            try:
+                from db.engine import db_session as _db_session
+                from services.metadata.tag_file_service import update_file_metadata
+                import os as _os
+                with _db_session() as session:
+                    rows = session.execute(
+                        text("SELECT id, file_path FROM tracks "
+                             "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                             "AND file_path IS NOT NULL AND TRIM(file_path) != ''"),
+                        {"artist": new_artist},
+                    ).fetchall() or []
+                for row in rows:
+                    fp = str(row[1] or "")
+                    if not fp or not _os.path.isfile(fp):
+                        continue
+                    try:
+                        if update_file_metadata(fp, {"artist": new_artist, "album_artist": new_artist}):
+                            updated_files += 1
+                    except Exception:
+                        pass
+            except Exception as exc:
+                errors.append(f"Tag sync failed: {exc}")
+
+        return jsonify({
+            "success": True, "dry_run": False,
+            "updated_db": updated_db, "updated_files": updated_files,
+            "moved_files": 0, "errors": errors,
+            "message": (f"Merged {len(sources)} variant(s) into '{new_artist}': "
+                        f"{updated_db} tracks updated, {updated_files} file tags synced"),
+        })
+    except Exception as exc:
+        logger.error("[MERGE] Duplicate artist merge failed: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 # ===========================================================================
@@ -557,9 +724,184 @@ def api_genres_artist(artist: str):
 
 
 @misc_api_bp.route("/genres/remove", methods=["POST"])
-def api_remove_genres():
-    """Remove specific genres from artist or album's tracks."""
-    return jsonify({"success": True, "message": "Genre removal not yet implemented"}), 200
+async def api_remove_genres():
+    """Remove specific genres from artist or album's tracks (DB only).
+
+    Mirrors the legacy endpoint: updates the ``genres`` and ``manual_genres``
+    columns (comma-joined in the current schema), logs a genre-update audit
+    row, and triggers a Navidrome rescan in the background so the library
+    reflects the change.
+    """
+    try:
+        import threading
+        payload = (await request.get_json(silent=True)) or {}
+        artist_name = str(payload.get("artist_name") or "").strip()
+        album_name = str(payload.get("album_name") or "").strip()
+        genres_to_remove = payload.get("genres") or []
+
+        if not artist_name and not album_name:
+            return jsonify({"error": "artist_name or album_name required"}), 400
+        if not genres_to_remove or not isinstance(genres_to_remove, list):
+            return jsonify({"error": "genres must be a non-empty list"}), 400
+
+        remove_lower = {str(g).strip().lower() for g in genres_to_remove if str(g).strip()}
+        if not remove_lower:
+            return jsonify({"error": "genres must be a non-empty list"}), 400
+
+        def _strip_genres(raw: str | None) -> str:
+            if not raw:
+                return ""
+            cleaned = [
+                g for g in (str(g).strip() for g in raw.replace("\\", ",").split(","))
+                if g and g.lower() not in remove_lower
+            ]
+            return ", ".join(dict.fromkeys(cleaned))  # dedupe, preserve order
+
+        affected = 0
+        with db_session() as session:
+            if album_name:
+                rows = session.execute(
+                    text("SELECT id, genres, manual_genres FROM tracks "
+                         "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"),
+                    {"artist": artist_name, "album": album_name},
+                ).fetchall() or []
+            else:
+                rows = session.execute(
+                    text("SELECT id, genres, manual_genres FROM tracks "
+                         "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"),
+                    {"artist": artist_name},
+                ).fetchall() or []
+
+            for row in rows:
+                track_id, genres_raw, manual_raw = row[0], row[1] or "", row[2] or ""
+                new_genres = _strip_genres(genres_raw)
+                new_manual = _strip_genres(manual_raw)
+                if new_genres == (genres_raw or "") and new_manual == (manual_raw or ""):
+                    continue
+                session.execute(
+                    text("UPDATE tracks SET genres = :genres, manual_genres = :manual WHERE id = :id"),
+                    {"genres": new_genres, "manual": new_manual, "id": track_id},
+                )
+                affected += 1
+
+        if affected:
+            try:
+                from db.repositories.genres import log_genre_update
+                log_genre_update(
+                    artist_name=artist_name, album_name=album_name, track_id=None,
+                    genres_before="", genres_after="",
+                    action_type="remove_from_album" if album_name else "remove_from_artist",
+                    affected_count=affected,
+                    change_summary=f"Removed genres from {affected} tracks: {', '.join(sorted(remove_lower))}",
+                )
+            except Exception as exc:
+                logger.debug("[GENRES] Audit log failed: %s", exc)
+
+        def _trigger_scan():
+            try:
+                from helpers.config_helpers import get_config
+                from api_clients.navidrome import NavidromeClient
+                cfg = get_config() or {}
+                users = cfg.get("navidrome_users") or []
+                if not users and cfg.get("navidrome"):
+                    users = [cfg["navidrome"]]
+                for u in users:
+                    if u.get("base_url") and u.get("user") and u.get("pass"):
+                        client = NavidromeClient(u["base_url"], u["user"], u["pass"])
+                        client.start_scan()
+                        break
+            except Exception as exc:
+                logger.debug("[GENRES] Navidrome scan trigger failed: %s", exc)
+
+        threading.Thread(target=_trigger_scan, daemon=True).start()
+        return jsonify({
+            "success": True,
+            "affected_tracks": affected,
+            "message": f"Removed genres from {affected} track(s)",
+            "scan_triggered": True,
+        }), 200
+    except Exception as exc:
+        logger.error("[GENRES] Genre removal failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@misc_api_bp.route("/genres/apply", methods=["POST"])
+async def api_apply_genres():
+    """Apply genres to an artist's tracks (merge into genres + manual_genres).
+
+    Called by the artist genre-management UI.  Merges the submitted genres
+    into every track by the artist without overwriting existing values.
+    """
+    try:
+        import threading
+        payload = (await request.get_json(silent=True)) or {}
+        artist_name = str(payload.get("artist_name") or "").strip()
+        genres = payload.get("genres") or []
+        if not artist_name:
+            return jsonify({"error": "artist_name required"}), 400
+        clean = [str(g).strip() for g in genres if str(g).strip()]
+        if not clean:
+            return jsonify({"error": "genres must be a non-empty list"}), 400
+
+        def _merge_genres(raw: str | None) -> str:
+            existing = [g.strip() for g in (raw or "").replace("\\", ",").split(",") if g.strip()]
+            merged = existing[:]
+            for g in clean:
+                if g.lower() not in {x.lower() for x in merged}:
+                    merged.append(g)
+            return ", ".join(merged)
+
+        affected = 0
+        with db_session() as session:
+            rows = session.execute(
+                text("SELECT id, genres, manual_genres FROM tracks "
+                     "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"),
+                {"artist": artist_name},
+            ).fetchall() or []
+            for row in rows:
+                track_id, genres_raw, manual_raw = row[0], row[1] or "", row[2] or ""
+                new_genres = _merge_genres(genres_raw)
+                new_manual = _merge_genres(manual_raw)
+                if new_genres == genres_raw and new_manual == manual_raw:
+                    continue
+                session.execute(
+                    text("UPDATE tracks SET genres = :genres, manual_genres = :manual WHERE id = :id"),
+                    {"genres": new_genres, "manual": new_manual, "id": track_id},
+                )
+                affected += 1
+
+        if affected:
+            try:
+                from db.repositories.genres import log_genre_update
+                log_genre_update(
+                    artist_name=artist_name, track_id=None,
+                    action_type="apply_to_artist", affected_count=affected,
+                    change_summary=f"Applied genres to {affected} tracks: {', '.join(clean)}",
+                )
+            except Exception as exc:
+                logger.debug("[GENRES] Audit log failed: %s", exc)
+
+        def _trigger_scan():
+            try:
+                from helpers.config_helpers import get_config
+                from api_clients.navidrome import NavidromeClient
+                cfg = get_config() or {}
+                users = cfg.get("navidrome_users") or []
+                if not users and cfg.get("navidrome"):
+                    users = [cfg["navidrome"]]
+                for u in users:
+                    if u.get("base_url") and u.get("user") and u.get("pass"):
+                        NavidromeClient(u["base_url"], u["user"], u["pass"]).start_scan()
+                        break
+            except Exception as exc:
+                logger.debug("[GENRES] Navidrome scan trigger failed: %s", exc)
+
+        threading.Thread(target=_trigger_scan, daemon=True).start()
+        return jsonify({"success": True, "affected_tracks": affected,
+                        "message": f"Applied genres to {affected} track(s)"}), 200
+    except Exception as exc:
+        logger.error("[GENRES] Genre apply failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/genres/recent-updates", methods=["GET"])
@@ -818,5 +1160,50 @@ def api_essentia_download_status():
 # ===========================================================================
 @misc_api_bp.route("/database/cleanup-duplicates", methods=["POST"])
 def api_cleanup_duplicates():
-    """Clean up duplicate albums in the database."""
-    return jsonify({"success": True, "message": "Cleanup triggered"}), 200
+    """Remove duplicate track rows that share the same file path.
+
+    Runs the same dedupe used by scan sanitisation: tracks pointing at the
+    same audio file are grouped, the row with an MBID / duration / freshest
+    scan is kept, and the rest are deleted.  Accepts ``{artist: name}`` to
+    scope to one artist (optional — defaults to the whole library).
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        artist = str(payload.get("artist") or "").strip()
+
+        from db.repositories.scan_repository import sanitize_artist_file_paths_and_duplicates
+
+        if artist:
+            summary = sanitize_artist_file_paths_and_duplicates(artist)
+            return jsonify({
+                "success": True,
+                "artist": artist,
+                "stats": summary,
+                "message": f"Removed {summary['duplicates_removed']} duplicate track(s) for '{artist}' "
+                           f"({summary['path_updates']} path(s) normalized)",
+            })
+
+        # Whole-library pass: one artist at a time.
+        total = {"path_updates": 0, "duplicates_removed": 0}
+        artists: list[str] = []
+        with db_session() as session:
+            rows = session.execute(
+                text("SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) FROM tracks "
+                     "WHERE file_path IS NOT NULL AND TRIM(file_path) != ''")
+            ).fetchall() or []
+            artists = [str(r[0]) for r in rows if r[0]]
+        for artist_name in artists:
+            try:
+                s = sanitize_artist_file_paths_and_duplicates(artist_name)
+                total["path_updates"] += int(s.get("path_updates") or 0)
+                total["duplicates_removed"] += int(s.get("duplicates_removed") or 0)
+            except Exception as exc:
+                logger.debug("[CLEANUP] Skip %s: %s", artist_name, exc)
+        return jsonify({
+            "success": True,
+            "stats": total,
+            "message": f"Removed {total['duplicates_removed']} duplicate track(s) across {len(artists)} artist(s)",
+        })
+    except Exception as exc:
+        logger.error("[CLEANUP] Duplicate cleanup failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500

@@ -4,7 +4,7 @@
    pill-tab engine — ids/data-bs attributes drive the per-mode panes). */
 .scanner-mode-tabs {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0 !important;
     border: 1px solid var(--border-color, #444);
     border-radius: 0.5rem;
@@ -12,16 +12,39 @@
 }
 
 .scanner-mode-tabs .nav-item {
-    flex: 1 1 auto;
+    flex: 1 1 0;
+    min-width: 0;
 }
 
 .scanner-mode-tabs .nav-link {
     border-radius: 0;
     border-right: 1px solid var(--border-color, #444);
+    width: 100%;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .scanner-mode-tabs .nav-link:last-child {
     border-right: none;
+}
+
+/* All three scan modes stay on ONE line even on the narrowest phones —
+   the labels shrink instead of the pills wrapping vertically. */
+@media (max-width: 575.98px) {
+    #scannerTabs .nav-link {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding-left: 0.25rem;
+        padding-right: 0.25rem;
+        font-size: 0.8rem;
+    }
+    #scannerTabs .nav-link .bi {
+        margin-right: 0.15rem;
+    }
 }
 
 .upcoming-source-chip {
@@ -57,15 +80,21 @@ body {
 .upcoming-card {
     background: var(--secondary-bg);
     border-color: var(--border-color) !important;
-    /* Compact: fit ~3-4 releases per screen */
-    padding: 0.45rem 0.6rem !important;
-    margin-bottom: 0.4rem !important;
+    /* Compact: fit ~5-6 releases per screen on phones */
+    padding: 0.35rem 0.6rem !important;
+    margin-bottom: 0.3rem !important;
     font-size: 0.85rem;
     border-radius: 0.5rem;
 }
 
-.upcoming-card .fw-semibold {
-    font-size: 0.88rem;
+.upcoming-card .upcoming-card-title {
+    font-size: 0.82rem;
+    line-height: 1.3;
+}
+
+.upcoming-card .upcoming-card-album {
+    font-size: 0.75rem;
+    line-height: 1.3;
 }
 
 .upcoming-card .min-w-0 {
@@ -74,6 +103,32 @@ body {
 
 .upcoming-card .upcoming-source-chip {
     font-size: 0.65rem;
+    flex-shrink: 0;
+}
+
+/* Single-line date + badges row: the date truncates, badges never wrap */
+.upcoming-card .upcoming-card-meta {
+    flex-wrap: nowrap;
+    min-width: 0;
+    font-size: 0.72rem;
+    gap: 0.35rem;
+}
+
+.upcoming-card .upcoming-card-meta > .text-truncate {
+    min-width: 0;
+    flex-shrink: 1;
+}
+
+.upcoming-card .upcoming-card-meta .badge {
+    flex-shrink: 0;
+    font-size: 0.72em;
+    padding: 0.3em 0.5em;
+}
+
+/* Square-ish 32px touch targets for the single card action */
+.upcoming-card .btn {
+    min-width: 32px;
+    min-height: 32px;
 }
 
 /* ─── Mobile layout fixes ─────────────────────────────────────────────── */
@@ -89,11 +144,5 @@ body {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-    }
-    /* Finger-sized scanner tab pills and run buttons */
-    #scannerTabs .nav-link {
-        min-height: 44px;
-        display: inline-flex;
-        align-items: center;
     }
 }

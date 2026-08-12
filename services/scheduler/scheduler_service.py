@@ -171,75 +171,148 @@ def get_scheduler() -> BackgroundScheduler:
 # Job definitions
 # ---------------------------------------------------------------------------
 
-def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) -> None:
-    """Register built-in periodic jobs unless they exist or are disabled."""
+def _same_trigger(existing, trigger) -> bool:
+    """Return True when *existing* job already uses the same trigger config.
 
+    Comparing triggers avoids re-creating jobs on every config save: APScheduler
+    re-creating a job resets its ``next_run_time`` to now+interval, which would
+    silently shift a daily 03:00 cron to the time of day the config was saved.
+    """
+    if existing is None or existing.trigger is None or trigger is None:
+        return False
+    try:
+        a = existing.trigger
+        b = trigger
+        if type(a) is not type(b):
+            return False
+        if isinstance(a, IntervalTrigger):
+            return getattr(a, "interval", None) == getattr(b, "interval", None)
+        if isinstance(a, CronTrigger):
+            return getattr(a, "fields", None) == getattr(b, "fields", None)
+        return str(a) == str(b)
+    except Exception:
+        return False
+
+
+def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) -> None:
+    """Register built-in periodic jobs unless they exist or are disabled.
+
+    Job gates and intervals consult the legacy ``watcher.*`` settings first
+    (``auto_import_enabled``, ``auto_popularity_scan``,
+    ``downloads_watcher_enabled``, ``scan_interval``) so the config page's
+    Automation Services card actually controls the running scheduler.  The
+    more specific ``jobs.<id>`` block overrides those defaults when present.
+    Jobs whose trigger is unchanged are left untouched (their next-run time
+    survives); changed/missing jobs are registered with ``replace_existing``
+    so a config save (via ``reschedule_jobs_from_config``) re-applies
+    interval/enabled changes dynamically — no app restart required.
+    """
     jobs = cfg.get("jobs", {})
+    watcher = cfg.get("watcher", {}) or {}
+
+    def _enabled(job_id: str, watcher_key: str, default: bool = True) -> bool:
+        try:
+            return bool(jobs.get(job_id, {}).get("enabled", watcher.get(watcher_key, default)))
+        except Exception:
+            return default
+
+    def _interval(job_id: str, field: str, default: float) -> float:
+        try:
+            return float(jobs.get(job_id, {}).get(field, default) or default)
+        except Exception:
+            return default
+
+    def _put(job_id: str, name: str, trigger, replace: bool = True, **kwargs) -> None:
+        """Add or replace a job only when missing or its trigger changed."""
+        try:
+            existing = scheduler.get_job(job_id)
+            if existing is not None and not _same_trigger(existing, trigger):
+                scheduler.remove_job(job_id)
+                existing = None
+            if existing is None:
+                scheduler.add_job(
+                    kwargs.pop("func"),
+                    trigger=trigger,
+                    id=job_id,
+                    name=name,
+                    replace_existing=replace,
+                    **kwargs,
+                )
+                logger.info("APScheduler: registered %s", job_id)
+        except Exception as exc:
+            logger.warning("APScheduler: failed to register %s: %s", job_id, exc)
+
+    def _remove_job(job_id: str) -> None:
+        """Remove a job when its gate was turned off."""
+        try:
+            if scheduler.get_job(job_id) is not None:
+                scheduler.remove_job(job_id)
+                logger.info("APScheduler: removed %s (disabled in config)", job_id)
+        except Exception as exc:
+            logger.warning("APScheduler: failed to remove %s: %s", job_id, exc)
 
     # ── Library sync ──────────────────────────────────────────────────────
-    if jobs.get("library_sync", {}).get("enabled", True):
-        interval_minutes = jobs.get("library_sync", {}).get("interval_minutes", 360)
+    # The "Auto Import" toggle maps to the library sync job: importing newly
+    # detected songs from Navidrome IS the library sync.
+    if _enabled("library_sync", "auto_import_enabled", True):
+        interval_minutes = _interval("library_sync", "interval_minutes", 360)
         try:
             from services.library.library_sync_service import request_library_sync
-            if scheduler.get_job("library_sync") is None:
-                scheduler.add_job(
-                    request_library_sync,
-                    trigger=IntervalTrigger(minutes=interval_minutes),
-                    id="library_sync",
-                    name="Library sync with Navidrome",
-                    replace_existing=True,
-                )
-                logger.info("APScheduler: registered library_sync (every %s min)", interval_minutes)
-            else:
-                logger.info("APScheduler: library_sync already registered")
+            _put(
+                "library_sync", "Library sync with Navidrome",
+                IntervalTrigger(minutes=interval_minutes),
+                func=request_library_sync,
+            )
         except Exception as exc:
             logger.warning("APScheduler: failed to register library_sync: %s", exc)
+    else:
+        _remove_job(scheduler, "library_sync")
 
     # ── Popularity scan ───────────────────────────────────────────────────
-    if jobs.get("popularity_scan", {}).get("enabled", True):
-        interval_minutes = jobs.get("popularity_scan", {}).get("interval_minutes", 1440)  # daily
+    # The "Auto Popularity Scan" toggle gates the daily recalculation job.
+    if _enabled("popularity_scan", "auto_popularity_scan", True):
+        interval_minutes = _interval("popularity_scan", "interval_minutes", 1440)  # daily
         try:
             from services.scanning.pipelines.popularity_pipeline import run_popularity_mode
-            if scheduler.get_job("popularity_scan") is None:
-                scheduler.add_job(
-                    run_popularity_mode,
-                    trigger=IntervalTrigger(minutes=interval_minutes),
-                    id="popularity_scan",
-                    name="Popularity recalculation",
-                    replace_existing=True,
-                    kwargs={"mode": "popularity"},
-                )
-                logger.info("APScheduler: registered popularity_scan (every %s min)", interval_minutes)
-            else:
-                logger.info("APScheduler: popularity_scan already registered")
+            _put(
+                "popularity_scan", "Popularity recalculation",
+                IntervalTrigger(minutes=interval_minutes),
+                func=run_popularity_mode,
+                kwargs={"mode": "popularity"},
+            )
         except Exception as exc:
             logger.warning("APScheduler: failed to register popularity_scan: %s", exc)
+    else:
+        _remove_job(scheduler, "popularity_scan")
 
     # ── Download queue processor ──────────────────────────────────────────
-    if jobs.get("download_queue_processor", {}).get("enabled", True):
+    # The "Downloads Watcher" toggle maps to the queue processor (the
+    # completion service runs inside its maintenance hooks); the "Scan
+    # Interval" setting becomes the processor tick.
+    if _enabled("download_queue_processor", "downloads_watcher_enabled", True):
         # A single Soulseek batch can outlast the tick interval — keep the
         # interval conservative and never stack overlapping runs (coalesce
         # missed ticks into one) so the orchestrator stops logging
         # "maximum number of running instances reached" / lock contention.
-        interval_seconds = jobs.get("download_queue_processor", {}).get("interval_seconds", 60)
+        interval_seconds = _interval(
+            "download_queue_processor",
+            "interval_seconds",
+            float(watcher.get("scan_interval", 60) or 60),
+        )
         try:
             from services.queue.queue_orchestrator import process_next_batch
-            if scheduler.get_job("download_queue_processor") is None:
-                scheduler.add_job(
-                    process_next_batch,
-                    trigger=IntervalTrigger(seconds=interval_seconds),
-                    id="download_queue_processor",
-                    name="Process download queue",
-                    replace_existing=True,
-                    max_instances=1,
-                    coalesce=True,
-                    misfire_grace_time=30,
-                )
-                logger.info("APScheduler: registered download_queue_processor (every %s s)", interval_seconds)
-            else:
-                logger.info("APScheduler: download_queue_processor already registered")
+            _put(
+                "download_queue_processor", "Process download queue",
+                IntervalTrigger(seconds=interval_seconds),
+                func=process_next_batch,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=30,
+            )
         except Exception as exc:
             logger.warning("APScheduler: failed to register download_queue_processor: %s", exc)
+    else:
+        _remove_job(scheduler, "download_queue_processor")
 
     # ── Missing releases scan ─────────────────────────────────────────────
     # Legacy daily behaviour: refresh the missing_releases cache so the
@@ -249,19 +322,15 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         _feats = (_get_config() or {}).get("features", {}) or {}
         enabled = bool(_feats.get("daily_musicbrainz_release_scan_enabled", True))
         if enabled:
-            interval_minutes = jobs.get("missing_releases_scan", {}).get("interval_minutes", 1440)
+            interval_minutes = _interval("missing_releases_scan", "interval_minutes", 1440)
             from services.metadata.artist_scan_service import start_missing_release_scan
-            if scheduler.get_job("missing_releases_scan") is None:
-                scheduler.add_job(
-                    start_missing_release_scan,
-                    trigger=IntervalTrigger(minutes=interval_minutes),
-                    id="missing_releases_scan",
-                    name="MusicBrainz missing releases refresh",
-                    replace_existing=True,
-                )
-                logger.info("APScheduler: registered missing_releases_scan (every %s min)", interval_minutes)
-            else:
-                logger.info("APScheduler: missing_releases_scan already registered")
+            _put(
+                "missing_releases_scan", "MusicBrainz missing releases refresh",
+                IntervalTrigger(minutes=interval_minutes),
+                func=start_missing_release_scan,
+            )
+        else:
+            _remove_job(scheduler, "missing_releases_scan")
     except Exception as exc:
         logger.warning("APScheduler: failed to register missing_releases_scan: %s", exc)
 
@@ -281,36 +350,53 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
     if scan_enabled:
         # Daily 03:00 — scrape the Wikipedia sources + purge stale rows.
         try:
-            if scheduler.get_job("upcoming_wikipedia_scrape") is None:
-                scheduler.add_job(
-                    _run_wikipedia_scrape_task,
-                    trigger=CronTrigger(hour=3, minute=0),
-                    id="upcoming_wikipedia_scrape",
-                    name="Upcoming releases: Wikipedia scrape + stale purge",
-                    replace_existing=True,
-                )
-                logger.info("APScheduler: registered upcoming_wikipedia_scrape (03:00 daily)")
-            else:
-                logger.info("APScheduler: upcoming_wikipedia_scrape already registered")
+            _put(
+                "upcoming_wikipedia_scrape", "Upcoming releases: Wikipedia scrape + stale purge",
+                CronTrigger(hour=3, minute=0),
+                func=_run_wikipedia_scrape_task,
+            )
         except Exception as exc:
             logger.warning("APScheduler: failed to register upcoming_wikipedia_scrape: %s", exc)
 
         # Weekly Sunday 04:00 — MusicBrainz release-groups for the collection.
         try:
             from services.upcoming_releases.musicbrainz_fetcher_service import fetch_musicbrainz_upcoming_releases
-            if scheduler.get_job("upcoming_musicbrainz_scan") is None:
-                scheduler.add_job(
-                    fetch_musicbrainz_upcoming_releases,
-                    trigger=CronTrigger(day_of_week="sun", hour=4, minute=0),
-                    id="upcoming_musicbrainz_scan",
-                    name="Upcoming releases: MusicBrainz collection refresh",
-                    replace_existing=True,
-                )
-                logger.info("APScheduler: registered upcoming_musicbrainz_scan (Sunday 04:00)")
-            else:
-                logger.info("APScheduler: upcoming_musicbrainz_scan already registered")
+            _put(
+                "upcoming_musicbrainz_scan", "Upcoming releases: MusicBrainz collection refresh",
+                CronTrigger(day_of_week="sun", hour=4, minute=0),
+                func=fetch_musicbrainz_upcoming_releases,
+            )
         except Exception as exc:
             logger.warning("APScheduler: failed to register upcoming_musicbrainz_scan: %s", exc)
+    else:
+        _remove_job(scheduler, "upcoming_wikipedia_scrape")
+        _remove_job(scheduler, "upcoming_musicbrainz_scan")
+
+
+def reschedule_jobs_from_config() -> dict[str, Any]:
+    """Re-read config and re-apply job gates/intervals to the running scheduler.
+
+    Called after a config save so the Automation Services (watcher) settings
+    and scheduler jobs take effect immediately instead of on the next
+    restart.  Idempotent — jobs keep their current triggers when nothing
+    changed (``replace_existing`` only rewrites what differs in APScheduler's
+    view).  Returns a small stats dict for logging.
+    """
+    stats: dict[str, Any] = {"jobs": 0, "error": None}
+    try:
+        from helpers.config_helpers import get_config
+        cfg = get_config() or {}
+        scheduler = get_scheduler()
+        if not scheduler.running:
+            scheduler.start()
+            logger.info("APScheduler started (reschedule_jobs_from_config)")
+        _register_default_jobs(scheduler, cfg)
+        stats["jobs"] = len(list(scheduler.get_jobs() or []))
+        logger.info("APScheduler: config re-applied — %s job(s) registered", stats["jobs"])
+        return stats
+    except Exception as exc:
+        logger.error("APScheduler: reschedule_jobs_from_config failed: %s", exc, exc_info=True)
+        return {**stats, "error": str(exc)}
 
 
 def _run_wikipedia_scrape_task() -> None:

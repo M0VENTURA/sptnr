@@ -2508,7 +2508,7 @@ async def search():
 
 @ui_bp.route("/config", methods=["GET", "POST"])
 async def config_editor():
-    from helpers.config_helpers import get_config
+    from helpers.config_helpers import get_config, clear_config_cache
     import yaml
     config, raw = {}, ""
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
@@ -2520,6 +2520,32 @@ async def config_editor():
     except Exception:
         pass
     if request.method == "POST":
+        form = await request.form
+        config_content = str(form.get("config_content", "") or "")
+        if config_content.strip():
+            try:
+                # Validate the YAML parses before touching the file so a typo
+                # cannot silently corrupt the running configuration.
+                parsed = yaml.safe_load(config_content)
+                if parsed is not None and not isinstance(parsed, dict):
+                    await flash("Config must be a YAML mapping (top-level object)", "error")
+                    return await render_template(
+                        "pages/config.html", config=config, config_raw=config_content,
+                    )
+                with open(config_path, "w", encoding="utf-8") as f:
+                    f.write(config_content)
+                clear_config_cache()
+                try:
+                    from services.scheduler.scheduler_service import reschedule_jobs_from_config
+                    reschedule_jobs_from_config()
+                except Exception:
+                    pass
+                await flash("Configuration saved from raw YAML", "success")
+            except yaml.YAMLError as exc:
+                await flash(f"Invalid YAML — not saved: {exc}", "error")
+                return await render_template(
+                    "pages/config.html", config=config, config_raw=config_content,
+                )
         return redirect(url_for("ui.config_editor"))
     return await render_template(
         "pages/config.html",
@@ -2558,6 +2584,15 @@ async def config_save_json():
                 logger.info("[CONFIG] Log level set to %s", applied)
         except Exception as exc:
             logger.warning("[CONFIG] Could not apply log level at runtime: %s", exc)
+        # Re-apply watcher/scheduler job gates + intervals so the Automation
+        # Services card (auto-import, auto-popularity, downloads watcher,
+        # scan interval) changes the running scheduler without a restart.
+        try:
+            from services.scheduler.scheduler_service import reschedule_jobs_from_config
+            _sched_stats = reschedule_jobs_from_config()
+            logger.info("[CONFIG] Scheduler re-applied after save: %s", _sched_stats)
+        except Exception as exc:
+            logger.warning("[CONFIG] Scheduler re-apply failed: %s", exc)
         return jsonify({"success": True})
     return jsonify({"error": "Failed to save config"}), 500
 

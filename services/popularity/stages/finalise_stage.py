@@ -48,8 +48,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_ERA_RULES: dict[str, dict[str, float | int]] = {
     "peak": {"catalog_top_pct": 0.20, "album_top_n": 3, "max_5star_slots": 4},
-    "solid": {"catalog_top_pct": 0.15, "album_top_n": 2, "max_5star_slots": 2},
-    "minor": {"catalog_top_pct": 0.10, "album_top_n": 1, "max_5star_slots": 1},
+    "solid": {"catalog_top_pct": 0.15, "album_top_n": 3, "max_5star_slots": 3},
+    "minor": {"catalog_top_pct": 0.10, "album_top_n": 3, "max_5star_slots": 2},
 }
 
 

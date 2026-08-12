@@ -47,11 +47,17 @@ position:fixed flyout anchored below the navbar.
       />
     </div>
 
-    <!-- Advanced filters — always visible (no collapse) so structured
-         Artist / Album / Track / Year queries are one tap away. -->
-    <div class="border rounded p-2 mb-2" id="unifiedAdvancedFilters" style="background: var(--primary-bg);">
+    <!-- Advanced filters — collapsed by default so the initial overlay stays
+         clean; the structured Artist / Album / Track / Year fields target
+         MusicBrainz discovery results. -->
+    <button class="btn btn-sm btn-outline-secondary w-100 text-start mb-2" type="button"
+            data-bs-toggle="collapse" data-bs-target="#unifiedAdvancedFilters"
+            aria-expanded="false" aria-controls="unifiedAdvancedFilters">
+      <i class="bi bi-sliders"></i> Advanced Filters
+      <i class="bi bi-chevron-down float-end"></i>
+    </button>
+    <div class="collapse border rounded p-2 mb-2" id="unifiedAdvancedFilters" style="background: var(--primary-bg);">
       <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
-        <small class="text-muted fw-semibold"><i class="bi bi-sliders"></i> Advanced Filters</small>
         <small class="text-muted" style="font-size: 0.75rem;"><i class="bi bi-info-circle"></i> Target MusicBrainz discovery results — cleared fields fall back to the single search bar.</small>
       </div>
       <div class="row g-2 align-items-end">
@@ -77,17 +83,17 @@ position:fixed flyout anchored below the navbar.
     <ul class="nav nav-pills gap-1 mb-2" id="unifiedScopeTabs" role="tablist">
       <li class="nav-item" role="presentation">
         <button type="button" class="nav-link active" data-scope="all" role="tab" aria-selected="true">
-          <i class="bi bi-collection"></i> All
+          <i class="bi bi-collection"></i> All <span class="us-scope-count badge bg-secondary ms-1 d-none">0</span>
         </button>
       </li>
       <li class="nav-item" role="presentation">
         <button type="button" class="nav-link" data-scope="library" role="tab" aria-selected="false">
-          <i class="bi bi-music-note-beamed"></i> In Library
+          <i class="bi bi-music-note-beamed"></i> In Library <span class="us-scope-count badge bg-secondary ms-1 d-none">0</span>
         </button>
       </li>
       <li class="nav-item" role="presentation">
         <button type="button" class="nav-link" data-scope="mb" role="tab" aria-selected="false">
-          <i class="bi bi-hexagon-fill"></i> MusicBrainz
+          <i class="bi bi-hexagon-fill"></i> MusicBrainz <span class="us-scope-count badge bg-secondary ms-1 d-none">0</span>
         </button>
       </li>
     </ul>

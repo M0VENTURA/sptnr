@@ -36,6 +36,9 @@
   var _runSeq = 0;          // guards against out-of-order responses
   var _queuedIds = {};      // release-group id -> true once queued
   var _mbIndex = {};        // release id -> release (for queue buttons)
+  var _counts = { all: 0, library: 0, mb: 0 };  // live scope-pill counts
+  var _lastQuery = null;    // query + scope of the last completed render
+  var _lastScope = null;    // (used to restore state instantly on reopen)
 
   function getModalEl() { return document.getElementById('unifiedSearchModal'); }
   function getInputEl() { return document.getElementById('unifiedSearchInput'); }
@@ -48,6 +51,36 @@
     return String(text)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // ===== Scope counts / state memory =====
+
+  function countLibrary(local) {
+    var albumBuckets = (local.albums || []).length + (local.compilations || []).length +
+      (local.live_albums || []).length + (local.eps || []).length + (local.singles || []).length;
+    return (local.artists || []).length + albumBuckets + (local.tracks || []).length;
+  }
+
+  // Live counts inside the scope selector pills (All / In Library / MusicBrainz).
+  function updateScopeCounts() {
+    var labels = { all: _counts.all, library: _counts.library, mb: _counts.mb };
+    var tabs = document.querySelectorAll('#unifiedScopeTabs .nav-link');
+    for (var i = 0; i < tabs.length; i++) {
+      var span = tabs[i].querySelector('.us-scope-count');
+      if (!span) continue;
+      var n = labels[tabs[i].getAttribute('data-scope')] || 0;
+      if (n > 0) {
+        span.textContent = n;
+        span.classList.remove('d-none');
+      } else {
+        span.classList.add('d-none');
+      }
+    }
+  }
+
+  function markRendered(query) {
+    _lastQuery = query;
+    _lastScope = _scope;
   }
 
   // ===== Scope tabs =====
@@ -160,6 +193,10 @@
 
   function artistRows(artists) {
     return artists.map(function (a) {
+      // "Various Artists" is the library-wide compilation placeholder — flag
+      // it so it isn't mistaken for a solo musician (the backend now merges
+      // all casing variants into this single row).
+      var isVarious = String(a.name || '').trim().toLowerCase() === 'various artists';
       return '<a class="us-row" href="/artist/' + encodeURIComponent(a.name) + '">' +
         thumbHtml('/api/artist/image?name=' + encodeURIComponent(a.name), 'rounded-circle border border-secondary', a.name) +
         '<span class="us-row-main">' +
@@ -167,6 +204,7 @@
           '<span class="us-row-sub d-block">' + a.track_count + ' track' + (a.track_count === 1 ? '' : 's') + ' · ' + a.album_count + ' album' + (a.album_count === 1 ? '' : 's') + '</span>' +
         '</span>' +
         '<span class="us-row-meta badge bg-secondary-subtle text-secondary-emphasis">Artist</span>' +
+        (isVarious ? '<span class="us-row-meta badge bg-secondary ms-1" title="Compilation placeholder entity">Compilation</span>' : '') +
       '</a>';
     }).join('');
   }
@@ -370,6 +408,7 @@
         '<i class="bi bi-search" style="font-size: 2rem;"></i>' +
         '<p class="mt-2 mb-0 small">Type at least ' + MIN_QUERY_LENGTH + ' characters</p></div>';
       if (getMetaEl()) getMetaEl().textContent = '';
+      markRendered(query);
       return;
     }
 
@@ -383,25 +422,49 @@
       year: adv.year
     };
 
-    if (_scope === SCOPE_MB) {
-      fetchMb(query, MB_LIMIT_MB_TAB, mbOpts)
-        .then(function (releases) {
-          if (seq !== _runSeq) return;
-          if (getMetaEl()) getMetaEl().textContent = releases.length + ' musicbrainz result' + (releases.length === 1 ? '' : 's');
-          resultsEl.innerHTML = renderMbTab(releases, query);
-        });
-      return;
-    }
-
+    // Local results feed the In Library tab AND the badge counts for every
+    // scope; MB results feed the MusicBrainz tab / All-tab section.
     var localPromise = query.length >= MIN_QUERY_LENGTH
       ? fetchLibrary(query).catch(function (e) { return { error: e.message }; })
       : Promise.resolve({ artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] });
-    var mbPromise = _scope === SCOPE_ALL ? fetchMb(query, MB_LIMIT_ALL_TAB, mbOpts) : Promise.resolve([]);
+
+    var mbPromise;
+    if (_scope === SCOPE_ALL) {
+      mbPromise = fetchMb(query, MB_LIMIT_ALL_TAB, mbOpts);
+    } else if (_scope === SCOPE_LIBRARY) {
+      // Badge-only MB count so the scope pills stay live without blocking
+      // the local render or the fast keystroke debounce.
+      mbPromise = fetchMb(query, MB_LIMIT_MB_TAB, mbOpts)
+        .then(function (r) {
+          if (seq !== _runSeq) return [];
+          _counts.mb = r.length;
+          _counts.all = _counts.library + _counts.mb;
+          updateScopeCounts();
+          return [];
+        })
+        .catch(function () { return []; });
+    } else {
+      mbPromise = Promise.resolve([]);
+    }
+
     Promise.all([localPromise, mbPromise])
       .then(function (results) {
         if (seq !== _runSeq) return;
         var local = results[0];
         var mbReleases = results[1];
+
+        _counts.library = countLibrary(local);
+        if (_scope !== SCOPE_LIBRARY) _counts.mb = mbReleases.length;
+        _counts.all = _counts.library + _counts.mb;
+        updateScopeCounts();
+
+        if (_scope === SCOPE_MB) {
+          if (getMetaEl()) getMetaEl().textContent = mbReleases.length + ' musicbrainz result' + (mbReleases.length === 1 ? '' : 's');
+          resultsEl.innerHTML = renderMbTab(mbReleases, query);
+          markRendered(query);
+          return;
+        }
+
         var releaseCount = ['albums', 'compilations', 'live_albums', 'eps', 'singles'].reduce(function (n, k) {
           return n + ((local[k] || []).length);
         }, 0);
@@ -419,6 +482,7 @@
           withQueue: true,
           allMbButton: _scope === SCOPE_ALL
         });
+        markRendered(query);
       });
   }
 
@@ -479,6 +543,7 @@
         btn.classList.replace('btn-outline-primary', 'btn-success');
         btn.innerHTML = '<i class="bi bi-check2"></i> Queued';
         btn.title = total ? ('Queued ' + total + ' track' + (total === 1 ? '' : 's') + ': ' + (rel.title || '')) : ('Queued: ' + (rel.title || ''));
+        if (typeof window.showQueueToast === 'function') window.showQueueToast(rel.title || 'Release');
         // The backend falls back to a single search-item when the MusicBrainz
         // data can't be fetched — surface that so it's not mistaken for a
         // full tracklist queue.
@@ -506,7 +571,9 @@
       prefill = (navEl && navEl.value) || (dashEl && dashEl.value) || '';
     }
 
-    selectScope(scope || SCOPE_ALL);
+    // Preserve the active scope across close/reopen (only full page loads
+    // reset search state — exactly as the "navigate away" rule intends).
+    selectScope(scope || _scope);
     input.value = prefill;
     if (getErrorEl()) getErrorEl().classList.add('d-none');
 
@@ -523,6 +590,9 @@
     var navInput = document.getElementById('navSearchInput');
     if (navInput && navInput !== document.activeElement) navInput.focus();
 
+    // Instant return: the previous query + scope are still rendered in the
+    // DOM — skip the refetch (and its spinner) entirely.
+    if (prefill === _lastQuery && _scope === _lastScope) return;
     clearTimeout(_debounceTimer);
     runSearch();
   };
@@ -583,10 +653,15 @@
       }
     });
 
+    // Auto-select existing text on focus so a fresh query is one Backspace
+    // away (Esc / backdrop / X close WITHOUT clearing — state is preserved).
+    input.addEventListener('focus', function () { this.select(); });
+
     // Advanced filter fields + type dropdown re-run the search (filters are
     // always visible in the flyout — no collapse toggle).
     var filterInputs = document.querySelectorAll('#unifiedAdvancedFilters input, #unifiedSearchType');
     for (var i = 0; i < filterInputs.length; i++) {
+      filterInputs[i].addEventListener('focus', function () { this.select(); });
       filterInputs[i].addEventListener('input', function () {
         clearTimeout(_debounceTimer);
         _debounceTimer = setTimeout(runSearch, _scope === SCOPE_MB ? MB_DEBOUNCE_MS : LOCAL_DEBOUNCE_MS);

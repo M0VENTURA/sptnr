@@ -122,6 +122,27 @@ document.addEventListener('keydown', function(e) {
 
 // ===== BUILD CONFIG OBJECT =====
 
+function collectFeatureFieldOverrides() {
+  // Reads the Features & Weights card's ``.feature-field`` inputs (rendered
+  // by config.html from config.features).  Merged into the saved config so a
+  // change there survives EITHER save button — before this, the main Save
+  // Configuration button silently discarded feature-card edits.
+  const overrides = {};
+  document.querySelectorAll('.feature-field').forEach(input => {
+    const key = input.name.replace('feature_', '');
+    let val = input.value;
+    if (input.tagName === 'SELECT') {
+      if (val === 'true' || val === 'false') val = (val === 'true');
+    } else if (window.pageConfig && window.pageConfig.features && Array.isArray(window.pageConfig.features[key])) {
+      val = val.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (!isNaN(val) && val !== '') {
+      val = Number(val);
+    }
+    overrides[key] = val;
+  });
+  return overrides;
+}
+
 function buildConfigObject() {
   function getValue(id, defaultValue) {
     const el = document.getElementById(id);
@@ -304,7 +325,8 @@ function buildConfigObject() {
         daily_musicbrainz_release_per_artist_limit: parseInt(getValue('daily_musicbrainz_release_per_artist_limit', '100')) || 100,
         upcoming_releases_scan_enabled: getChecked('upcoming_releases_scan_enabled', true),
         upcoming_releases_purge_days: parseInt(getValue('upcoming_releases_purge_days', '30')) || 30
-      }
+      },
+      collectFeatureFieldOverrides()
     ),
     single_detection: Object.assign(
       {},
@@ -339,11 +361,11 @@ function buildConfigObject() {
           peak_album_top_n: parseInt(getValue('era_peak_album_top_n', '3')) || 3,
           peak_max_5star_slots: parseInt(getValue('era_peak_max_5star_slots', '4')) || 4,
           solid_catalog_top_pct: parseFloat(getValue('era_solid_catalog_top_pct', '0.15')) || 0.15,
-          solid_album_top_n: parseInt(getValue('era_solid_album_top_n', '2')) || 2,
-          solid_max_5star_slots: parseInt(getValue('era_solid_max_5star_slots', '2')) || 2,
+          solid_album_top_n: parseInt(getValue('era_solid_album_top_n', '3')) || 3,
+          solid_max_5star_slots: parseInt(getValue('era_solid_max_5star_slots', '3')) || 3,
           minor_catalog_top_pct: parseFloat(getValue('era_minor_catalog_top_pct', '0.10')) || 0.10,
-          minor_album_top_n: parseInt(getValue('era_minor_album_top_n', '1')) || 1,
-          minor_max_5star_slots: parseInt(getValue('era_minor_max_5star_slots', '1')) || 1,
+          minor_album_top_n: parseInt(getValue('era_minor_album_top_n', '3')) || 3,
+          minor_max_5star_slots: parseInt(getValue('era_minor_max_5star_slots', '2')) || 2,
           peak_era_min_ratio: parseFloat(getValue('peak_era_min_ratio', '0.75')) || 0.75,
           solid_era_min_ratio: parseFloat(getValue('solid_era_min_ratio', '0.40')) || 0.40
         }
@@ -401,11 +423,19 @@ function buildConfigObject() {
       }
     ),
     api_integrations: {
+      spotify: {
+        enabled: getChecked('api_spotify_enabled'),
+        client_id: getValue('api_spotify_client_id'),
+        client_secret: getValue('api_spotify_client_secret')
+      },
       lastfm: {
         enabled: getChecked('api_lastfm_enabled'),
         api_key: getValue('api_lastfm_api_key')
       },
-      listenbrainz: { enabled: getChecked('api_listenbrainz_enabled') },
+      listenbrainz: {
+        enabled: getChecked('api_listenbrainz_enabled'),
+        token: getValue('api_listenbrainz_token')
+      },
       discogs: {
         enabled: getChecked('api_discogs_enabled'),
         token: getValue('api_discogs_token')
@@ -446,7 +476,124 @@ function buildConfigObject() {
   };
 }
 
+// ===== FILE NAME FORMAT PREVIEW =====
+
+const FORMAT_PREVIEW_TRACK = {
+  album_artist: 'Imagine Dragons',
+  year: '2015',
+  album: 'Smoke + Mirrors',
+  track_number: '4',
+  disc_number: '1',
+  artist: 'Imagine Dragons',
+  title: 'Radioactive',
+};
+
+function _formatTrackNumberPreview(trackNumber, discNumber) {
+  const disc = discNumber ? parseInt(String(discNumber).split('/')[0], 10) : 1;
+  const track = trackNumber ? parseInt(String(trackNumber).split('/')[0], 10) : 0;
+  if (Number.isNaN(track)) return '00';
+  if (disc > 1) return `${disc}${String(track).padStart(2, '0')}`;
+  return String(track).padStart(2, '0');
+}
+
+function _extractYearPreview(value) {
+  const m = String(value || '').match(/(19|20)\d{2}/);
+  return m ? m[0] : 'Unknown';
+}
+
+function _sanitizeSegmentPreview(value) {
+  return String(value || '').replace(/[<>:"|?*\\]/g, '_').trim().replace(/^\.+|\.+$/g, '');
+}
+
+function updateFileNameFormatPreview() {
+  const input = document.getElementById('downloads_file_name_format');
+  const panel = document.getElementById('fileNameFormatPreview');
+  const pathEl = document.getElementById('fileNameFormatPreviewPath');
+  if (!input || !panel || !pathEl) return;
+
+  const fmt = input.value.trim() || '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}';
+  const t = FORMAT_PREVIEW_TRACK;
+  const vars = {
+    album_artist: _sanitizeSegmentPreview(t.album_artist),
+    year: _extractYearPreview(t.year),
+    album: _sanitizeSegmentPreview(t.album),
+    track_number: _formatTrackNumberPreview(t.track_number, t.disc_number),
+    artist: _sanitizeSegmentPreview(t.artist),
+    title: _sanitizeSegmentPreview(t.title),
+  };
+
+  let rendered;
+  try {
+    rendered = fmt.replace(/\{(\w+)\}/g, (_, key) => (key in vars ? vars[key] : `{${key}}`));
+  } catch (err) {
+    rendered = fmt;
+  }
+
+  // Sanitize each path segment, mirroring the backend's _build_target_path.
+  const parts = rendered
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .split('/')
+    .map(seg => _sanitizeSegmentPreview(seg))
+    .filter(seg => seg && seg !== '.' && seg !== '..');
+
+  const relativePath = parts.join('/') || 'Unknown Artist';
+  pathEl.textContent = '/music/' + relativePath + '.flac';
+  panel.classList.remove('d-none');
+}
+
 // ===== SAVE CONFIG =====
+
+const SECTION_LABELS = {
+  navidrome_users: 'Music Users',
+  matching: 'Track Matching',
+  logging: 'Logging',
+  qbittorrent: 'qBittorrent',
+  slskd: 'slskd / Soulseek',
+  wikidata: 'Artist Biography',
+  queue: 'Queue Matching',
+  lastfm: 'Last.fm Advanced',
+  filesystem: 'File System',
+  playlists: 'Essential Playlists',
+  downloads: 'Downloads',
+  watcher: 'Automation Services',
+  features: 'Features & Schedulers',
+  single_detection: 'Single Detection & Star Ratings',
+  popularity: 'Popularity Weights',
+  tagging: 'File Metadata (Tag Writing)',
+  genres: 'Genre Aggregation',
+  api_integrations: 'API Integrations',
+  strip_parentheses_filters: 'Search Filters',
+  upcoming_releases: 'Upcoming Releases Sources',
+  essentia: 'Essentia Mood & Genre Scan',
+};
+
+function summarizeChangedSections(nextConfig, prevConfig) {
+  const changed = [];
+  const prev = prevConfig || {};
+  Object.keys(nextConfig || {}).forEach(key => {
+    if (JSON.stringify(nextConfig[key] ?? null) !== JSON.stringify(prev[key] ?? null)) {
+      changed.push(SECTION_LABELS[key] || key);
+    }
+  });
+  return changed;
+}
+
+function validateNumericBounds() {
+  const problems = [];
+  document.querySelectorAll('#configForm input[type="number"]').forEach(input => {
+    if (!input.value && !input.required) return;
+    const val = parseFloat(input.value);
+    if (Number.isNaN(val)) return;
+    const min = input.min !== '' && input.min != null ? parseFloat(input.min) : null;
+    const max = input.max !== '' && input.max != null ? parseFloat(input.max) : null;
+    const labelEl = input.closest('.col-12, .col-md-3, .col-md-4, .col-md-6, .col-sm-6, .col-lg-3, .col-lg-4, .col-6')?.querySelector('label');
+    const label = (labelEl ? labelEl.textContent.trim() : input.id || 'field').replace(/\s+/g, ' ');
+    if (min != null && val < min) problems.push(`${label}: ${val} is below the minimum ${min}`);
+    if (max != null && val > max) problems.push(`${label}: ${val} exceeds the maximum ${max}`);
+  });
+  return problems;
+}
 
 function saveConfig() {
   const saveBtn = document.getElementById('saveBtn');
@@ -489,6 +636,18 @@ function saveConfig() {
     return;
   }
 
+  // Client-side bounds check before the payload hits the server — an
+  // out-of-range value (e.g. a retry interval over the max) would otherwise
+  // be silently clamped by the backend or reject the whole save.
+  const numericProblems = validateNumericBounds();
+  if (numericProblems.length > 0) {
+    clearTimeout(safetyReset);
+    saveBtn.disabled = originalDisabled;
+    saveBtn.innerHTML = originalHTML;
+    showToast('Error', 'Please fix these values: ' + numericProblems.join(' • '), 'error');
+    return;
+  }
+
   const urlElement = document.querySelector('form#configForm')?.dataset?.saveUrl || '/config/save-json';
 
   console.log('[saveConfig] Sending request to:', urlElement);
@@ -528,7 +687,11 @@ function saveConfig() {
     if (result.status !== 200) {
       showToast('Error', result.data.error || 'Failed to save configuration', 'error');
     } else if (result.data.success) {
-      showToast('Success', 'Configuration saved successfully', 'success');
+      const changed = summarizeChangedSections(config, window.pageConfig);
+      const summary = changed.length
+        ? 'Configuration saved — updated: ' + changed.join(', ')
+        : 'Configuration saved (no sections changed)';
+      showToast('Success', summary, 'success');
       window.pageConfig = config;
     } else {
       showToast('Error', result.data.error || 'Failed to save configuration', 'error');
@@ -732,21 +895,16 @@ function updateUserTitle(displayNameInput) {
 
 function saveFeaturesWeights() {
   const config = buildConfigObject();
+  // buildConfigObject already merges the card's .feature-field inputs (via
+  // collectFeatureFieldOverrides) — this is a no-op safety net for future
+  // fields rendered outside the form.
+  Object.assign(config.features, collectFeatureFieldOverrides());
 
-  document.querySelectorAll('.feature-field').forEach(input => {
-    let key = input.name.replace('feature_', '');
-    let val = input.value;
-    if (input.tagName === 'SELECT') {
-      if (val === 'true' || val === 'false') val = (val === 'true');
-    } else if (window.pageConfig && window.pageConfig.features && Array.isArray(window.pageConfig.features[key])) {
-      val = val.split(',').map(s => s.trim()).filter(Boolean);
-    } else if (!isNaN(val) && val !== '') {
-      val = Number(val);
-    }
-    config.features[key] = val;
-  });
-
-  const saveBtn = event.target;
+  const saveBtn = document.getElementById('saveFeaturesBtn');
+  if (!saveBtn) {
+    showToast('Error', 'Save Features button not found', 'error');
+    return;
+  }
   saveBtn.disabled = true;
   const originalText = saveBtn.textContent;
   saveBtn.textContent = 'Saving...';
@@ -759,7 +917,12 @@ function saveFeaturesWeights() {
   .then(r => r.json())
   .then(resp => {
     if (resp.success) {
-      showToast('Success', 'Features saved successfully', 'success');
+      const changed = summarizeChangedSections(config, window.pageConfig);
+      const summary = changed.length
+        ? 'Features saved — updated: ' + changed.join(', ')
+        : 'Features saved (no sections changed)';
+      showToast('Success', summary, 'success');
+      window.pageConfig = config;
       setTimeout(() => location.reload(), 1000);
     } else {
       showToast('Error', resp.error || 'Unknown error', 'error');
@@ -879,6 +1042,43 @@ function _essentiaSetStatusText(msg) {
 
 let upcomingSources = [];
 
+// Valid Wikipedia column types (order matters: position in the table).
+const UPCOMING_COLUMN_TYPES = ['day', 'artist', 'album', 'genre'];
+
+function buildColumnSelects(prefix, values) {
+  const current = Array.isArray(values) && values.length ? values : ['day', 'artist', 'album'];
+  let html = '<div class="row g-2">';
+  for (let i = 0; i < 4; i++) {
+    html += `<div class="col-6 col-md-3">
+      <label class="form-label small fw-normal text-muted">Column ${i + 1}</label>
+      <select class="form-select form-select-sm" id="${prefix}col${i}">
+        <option value="">— none —</option>`;
+    UPCOMING_COLUMN_TYPES.forEach(t => {
+      const sel = current[i] === t ? ' selected' : '';
+      html += `<option value="${t}"${sel}>${t}</option>`;
+    });
+    html += '</select></div>';
+  }
+  return html + '</div>';
+}
+
+function readColumnSelects(prefix) {
+  const cols = [];
+  for (let i = 0; i < 4; i++) {
+    const el = document.getElementById(prefix + 'col' + i);
+    if (el && el.value) cols.push(el.value);
+  }
+  return cols;
+}
+
+function validateSourceKey(key, existingKeys) {
+  if (!key) return 'Source key is required';
+  if (!/^[a-zA-Z0-9_-]+$/.test(key)) return 'Source key may only contain letters, numbers, underscores and dashes';
+  if (!/(19|20)\d{2}/.test(key)) return 'Source key must include a 4-digit year (e.g. 2026_jazz) for date parsing';
+  if (existingKeys && existingKeys.includes(key)) return `Source key "${key}" already exists`;
+  return null;
+}
+
 function initUpcomingSourcesUI() {
   const config = window.pageConfig || {};
   const savedSources = ((config.upcoming_releases || {}).sources || []);
@@ -960,7 +1160,7 @@ function editUpcomingSource(idx) {
   if (!src) return;
   const row = document.getElementById('srcRow_' + idx);
   if (!row) return;
-  const cols = Array.isArray(src.columns) ? src.columns.join(', ') : 'day, artist, album';
+  const cols = Array.isArray(src.columns) ? src.columns : ['day', 'artist', 'album'];
   row.innerHTML = `<div class="row g-2 mb-2">
     <div class="col-12 col-md-4">
       <label class="form-label small fw-bold">Source Key</label>
@@ -973,8 +1173,7 @@ function editUpcomingSource(idx) {
     </div>
     <div class="col-12 col-md-4">
       <label class="form-label small fw-bold">Column Order</label>
-      <input type="text" class="form-control form-control-sm" id="editSrcCols_${idx}" value="${escapeHtml(cols)}">
-      <div class="form-text">e.g. <code>day, artist, album</code></div>
+      ${buildColumnSelects('editSrcCols_' + idx + '_', cols)}
     </div>
     <div class="col-12">
       <label class="form-label small fw-bold">Wikipedia URL</label>
@@ -993,10 +1192,10 @@ function saveUpcomingSourceEdit(idx) {
   const key  = (document.getElementById('editSrcKey_' + idx)?.value  || '').trim();
   const name = (document.getElementById('editSrcName_' + idx)?.value || '').trim();
   const url  = (document.getElementById('editSrcUrl_' + idx)?.value  || '').trim();
-  const colsRaw = (document.getElementById('editSrcCols_' + idx)?.value || '').trim();
   if (!key || !name || !url) { showToast('Error', 'Key, name, and URL are required', 'warning'); return; }
-  if (!/20[2-9]\d/.test(key)) { showToast('Warning', 'Source key should include a year (e.g. 2026_...) for date parsing', 'warning'); }
-  const cols = parseUpcomingCols(colsRaw);
+  const keyErr = validateSourceKey(key, upcomingSources.map(s => s.key).filter((_, i) => i !== idx));
+  if (keyErr) { showToast('Error', keyErr, 'warning'); return; }
+  const cols = readColumnSelects('editSrcCols_' + idx + '_');
   if (!cols.includes('artist') || !cols.includes('album')) {
     showToast('Error', 'Column order must include both "artist" and "album"', 'warning'); return;
   }
@@ -1014,20 +1213,23 @@ function removeUpcomingSource(idx) {
 
 function toggleAddUpcomingSourceForm() {
   const form = document.getElementById('addUpcomingSourceForm');
-  if (form) form.classList.toggle('d-none');
+  if (!form) return;
+  const willShow = form.classList.contains('d-none');
+  form.classList.toggle('d-none');
+  if (willShow) {
+    const container = document.getElementById('newSrcColumns');
+    if (container) container.innerHTML = buildColumnSelects('newSrcCol', ['day', 'artist', 'album']);
+  }
 }
 
 function addUpcomingSource() {
   const key     = (document.getElementById('newSrcKey')?.value     || '').trim();
   const name    = (document.getElementById('newSrcName')?.value    || '').trim();
   const url     = (document.getElementById('newSrcUrl')?.value     || '').trim();
-  const colsRaw = (document.getElementById('newSrcColumns')?.value || '').trim();
   if (!key || !name || !url) { showToast('Error', 'Key, name, and URL are required', 'warning'); return; }
-  if (upcomingSources.some(s => s.key === key)) {
-    showToast('Error', 'Source key "' + key + '" already exists', 'warning'); return;
-  }
-  if (!/20[2-9]\d/.test(key)) { showToast('Warning', 'Source key should include a year (e.g. 2026_...) for date parsing', 'warning'); }
-  const cols = parseUpcomingCols(colsRaw || 'day, artist, album');
+  const keyErr = validateSourceKey(key, upcomingSources.map(s => s.key));
+  if (keyErr) { showToast('Error', keyErr, 'warning'); return; }
+  const cols = readColumnSelects('newSrcCol');
   if (!cols.includes('artist') || !cols.includes('album')) {
     showToast('Error', 'Column order must include both "artist" and "album"', 'warning'); return;
   }
@@ -1035,7 +1237,8 @@ function addUpcomingSource() {
   document.getElementById('newSrcKey').value = '';
   document.getElementById('newSrcName').value = '';
   document.getElementById('newSrcUrl').value = '';
-  document.getElementById('newSrcColumns').value = 'day, artist, album';
+  const container = document.getElementById('newSrcColumns');
+  if (container) container.innerHTML = buildColumnSelects('newSrcCol', ['day', 'artist', 'album']);
   toggleAddUpcomingSourceForm();
   renderUpcomingSourcesList();
 }
@@ -1169,6 +1372,9 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   if (document.getElementById('upcomingSourcesList')) {
     initUpcomingSourcesUI();
+  }
+  if (document.getElementById('downloads_file_name_format')) {
+    updateFileNameFormatPreview();
   }
   getRetrySchedulerStatus();
 });

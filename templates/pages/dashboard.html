@@ -48,9 +48,9 @@
                     </li>
                 </ul>
             </div>
-            <!-- Row 2: per-mode controls + Stop All -->
-            <div class="d-flex align-items-center gap-2">
-                <div class="tab-content flex-grow-1">
+            <!-- Row 2: per-mode controls + Stop All (tightly grouped) -->
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+                <div class="tab-content">
                     <div class="tab-pane fade show active" id="scannerPanePopularity" role="tabpanel" aria-labelledby="scannerTabPopularity">
                         <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
                             <select id="popScanSelector" class="form-select form-select-sm" style="min-width: 130px; width: auto;" title="Select popularity scan type">
@@ -64,6 +64,10 @@
                                 <label class="form-check-label small" for="popScanForce">Forced</label>
                             </div>
                             <button id="popScanRunBtn" onclick="runDashboardPopularityScan()" class="btn btn-primary btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Run</button>
+                            <span class="vr mx-1 d-none d-sm-inline-block"></span>
+                            <button class="btn btn-outline-danger btn-sm py-1 flex-shrink-0" onclick="stopAllScans()" title="Stop all scans">
+                                <i class="bi bi-stop-fill"></i> Stop All
+                            </button>
                         </div>
                         <div><span id="pop-status" class="text-muted small">Idle</span></div>
                     </div>
@@ -76,19 +80,24 @@
                             </div>
                             <button onclick="startNavidromeImport()" class="btn btn-secondary btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Import</button>
                             <button onclick="startNavidromeServerScan()" class="btn btn-outline-secondary btn-sm py-1 px-3" style="min-height:44px;" title="Trigger a Navidrome server rescan so new/changed files (e.g. completed downloads) appear in Navidrome"><i class="bi bi-arrow-repeat"></i> Sync Changes</button>
+                            <span class="vr mx-1 d-none d-sm-inline-block"></span>
+                            <button class="btn btn-outline-danger btn-sm py-1 flex-shrink-0" onclick="stopAllScans()" title="Stop all scans">
+                                <i class="bi bi-stop-fill"></i> Stop All
+                            </button>
                         </div>
                         <div><span id="nav-status" class="text-muted small">Idle</span></div>
                     </div>
                     <div class="tab-pane fade" id="scannerPaneEssentia" role="tabpanel" aria-labelledby="scannerTabEssentia">
                         <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
                             <button onclick="startEssentiaScan()" class="btn btn-info btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Run</button>
+                            <span class="vr mx-1 d-none d-sm-inline-block"></span>
+                            <button class="btn btn-outline-danger btn-sm py-1 flex-shrink-0" onclick="stopAllScans()" title="Stop all scans">
+                                <i class="bi bi-stop-fill"></i> Stop All
+                            </button>
                         </div>
                         <div><span id="ess-status" class="text-muted small">Idle</span></div>
                     </div>
                 </div>
-                <button class="btn btn-outline-danger btn-sm py-1 flex-shrink-0" onclick="stopAllScans()" title="Stop all scans">
-                    <i class="bi bi-stop-fill"></i> Stop All
-                </button>
             </div>
             <!-- Active progress (hidden while idle) -->
             <div id="activeScansPanel" class="border-top pt-2 mt-2" style="display:none;">
@@ -129,8 +138,13 @@
                 <div id="upcomingEmptyState" class="d-none p-4 text-center text-muted extra-small">
                     <i class="bi bi-check-circle-fill text-success fs-4 d-block mb-2"></i>
                     No unowned upcoming releases scheduled. All tracked albums exist in your library!
+                    <div class="mt-3">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadUpcomingReleasesTable()">
+                            <i class="bi bi-arrow-clockwise"></i> Refresh
+                        </button>
+                    </div>
                 </div>
-                <div class="card-footer bg-transparent py-2 text-center">
+                <div class="card-footer bg-transparent pt-2 pb-3 text-center">
                     <a href="/downloads/discover/upcoming" id="upcomingViewAllLink" class="text-info text-decoration-none small fw-semibold">
                         View All Releases &amp; Management Tools <i class="bi bi-arrow-right ms-1"></i>
                     </a>
