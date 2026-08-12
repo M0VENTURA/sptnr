@@ -749,6 +749,42 @@ body.player-visible #scanStatusBar {
     bottom: 68px;
 }
 
+/* ── Global player bar: queue expansion + log-flyout now-playing strip ── */
+#playerQueuePanel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    max-width: 480px;
+    margin: 0 auto;
+    background: rgba(18, 18, 18, 0.97);
+    border-top: 1px solid var(--border-color);
+    border-radius: 0.5rem 0.5rem 0 0;
+    padding: 0.5rem 1rem;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(10px);
+}
+#playerQueueList .player-queue-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.5rem;
+    border-radius: 0.35rem;
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+#playerQueueList .player-queue-row:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+#playerQueueList .player-queue-row.active {
+    background: rgba(34, 197, 94, 0.12);
+    color: var(--spotify-green);
+}
+/* Keep the log stream clear of the fixed player bar underneath it. */
+body.player-visible #unifiedLogModal .modal-body {
+    padding-bottom: calc(var(--player-bar-height) + 0.75rem);
+}
+
 /* ── Live scan progress toast (SSE, every page) ────────────────────────── */
 .scan-progress-toast {
     position: fixed;

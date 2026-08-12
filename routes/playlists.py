@@ -203,6 +203,230 @@ async def api_playlist_import():
 
 
 # --------------------------------------------------
+# CSV IMPORT (Exportify → parse → queue-ready)
+# --------------------------------------------------
+
+@playlists_bp.route("/api/playlist/import/csv", methods=["POST"])
+async def api_playlist_import_csv():
+    """Import a playlist from an Exportify-exported CSV file (multipart).
+
+    Form fields:
+        file                 – CSV file (required)
+        playlist_name        – import name (required)
+        playlist_description – optional description
+        target_user          – optional Navidrome user
+        skip_matching        – "true" returns the parsed tracks only; the
+                               Downloads page and /playlist/import/csv page
+                               use this, then batch-queue the tracks as one
+                               album group (import_group = playlist name,
+                               album_artist = caller-chosen, default
+                               "Various Artists")
+
+    Exportify columns parsed: Track Name, Artist Name(s), Album Name,
+    Album Artist, ISRC, Spotify URI, Duration (ms), Release Date, Genres,
+    Record Label, Popularity, Explicit.  Semicolon-joined multi-artist
+    fields are reduced to the primary artist so queue matching stays clean.
+    """
+    try:
+        import csv
+        import io
+        import re
+
+        form = await request.form
+        files = await request.files
+
+        uploaded_file = files.get("file")
+        if uploaded_file is None or not uploaded_file.filename:
+            return jsonify({"error": "No file uploaded"}), 400
+        if not uploaded_file.filename.lower().endswith(".csv"):
+            return jsonify({"error": "Only .csv files are supported"}), 400
+
+        playlist_name = str(form.get("playlist_name") or "").strip()
+        playlist_description = str(form.get("playlist_description") or "").strip()
+        target_user = str(form.get("target_user") or "").strip()
+        if not playlist_name:
+            return jsonify({"error": "playlist_name is required"}), 400
+
+        # Strip the UTF-8 BOM if present, then normalise header names.
+        content = uploaded_file.read().decode("utf-8-sig")
+        reader = csv.DictReader(io.StringIO(content))
+        normalised = {(h or "").lower().strip(): h for h in (reader.fieldnames or [])}
+
+        def col(aliases):
+            """Return the actual header name for the first matching alias."""
+            for alias in aliases:
+                if alias in normalised:
+                    return normalised[alias]
+            return None
+
+        title_col = col(["track name", "name", "title"])
+        artist_col = col(["artist name(s)", "artist names", "artist name", "artist", "artists"])
+        album_col = col(["album name", "album"])
+        album_artist_col = col(["album artist", "album_artist", "albumartist"])
+        isrc_col = col(["isrc"])
+        uri_col = col(["spotify uri", "track uri", "uri"])
+        duration_col = col(["duration (ms)", "duration_ms", "duration"])
+        date_col = col(["release date", "release_date", "date"])
+        genres_col = col(["genres", "genre"])
+        label_col = col(["record label", "label"])
+        popularity_col = col(["popularity"])
+        explicit_col = col(["explicit"])
+
+        if not title_col or not artist_col:
+            return jsonify({
+                "error": "CSV must contain at least 'Track Name' and 'Artist Name(s)' columns. "
+                         "Please export using Exportify (exportify.net)."
+            }), 400
+
+        def _extract_year(date_str):
+            """First 4-digit year found in a date string (or None)."""
+            if not date_str:
+                return None
+            m = re.search(r"\b(\d{4})\b", str(date_str))
+            return m.group(1) if m else None
+
+        tracks_from_csv = []
+        for row in reader:
+            title = (row.get(title_col) or "").strip()
+            artist = (row.get(artist_col) or "").strip()
+            if not title and not artist:
+                continue  # skip blank rows
+
+            # Exportify joins multi-artist tracks with semicolons — keep the
+            # primary artist so matching and Soulseek searches stay clean.
+            if ";" in artist:
+                artist = artist.split(";")[0].strip()
+            raw_album_artist = (row.get(album_artist_col) or "").strip() if album_artist_col else ""
+            album_artist = raw_album_artist or artist
+
+            duration_s = None
+            if duration_col:
+                raw_dur = (row.get(duration_col) or "").strip()
+                try:
+                    duration_s = int(round(float(raw_dur) / 1000)) if raw_dur else None
+                except (TypeError, ValueError):
+                    duration_s = None
+
+            tracks_from_csv.append({
+                "title": title,
+                "artist": artist,
+                "album_artist": album_artist,
+                "album": (row.get(album_col) or "").strip() if album_col else "",
+                "isrc": (row.get(isrc_col) or "").strip() if isrc_col else "",
+                "spotify_id": (row.get(uri_col) or "").strip().split(":")[-1] if uri_col else "",
+                "duration_s": duration_s,
+                "year": _extract_year(row.get(date_col)) if date_col else None,
+                "genres": (row.get(genres_col) or "").strip() if genres_col else "",
+                "record_label": (row.get(label_col) or "").strip() if label_col else "",
+                "popularity": (row.get(popularity_col) or "").strip() if popularity_col else "",
+                "explicit": (row.get(explicit_col) or "").strip().upper() if explicit_col else "",
+            })
+
+        if not tracks_from_csv:
+            return jsonify({"error": "No tracks found in CSV"}), 400
+
+        skip_matching = str(form.get("skip_matching") or "").lower() in ("true", "1", "yes")
+        if skip_matching:
+            logging.info(
+                "CSV parse-only (skip_matching) for '%s': %d tracks parsed",
+                playlist_name, len(tracks_from_csv),
+            )
+            return jsonify({
+                "success": True,
+                "all_tracks": tracks_from_csv,
+                "total": len(tracks_from_csv),
+            })
+
+        # Library matching: ISRC first, then normalised artist+title.
+        from db.repositories.tracks import find_library_track
+        from sqlalchemy import text as _text
+        from db.engine import db_session
+
+        matched_tracks = []
+        missing_tracks = []
+        match_stats = {"isrc": 0, "fuzzy": 0, "strict": 0, "unmatched": 0}
+
+        for track in tracks_from_csv:
+            library_track = None
+            strategy = "fuzzy"
+            if track.get("isrc"):
+                with db_session() as session:
+                    row = session.execute(
+                        _text(
+                            "SELECT * FROM tracks "
+                            "WHERE isrc = :isrc AND file_path IS NOT NULL AND file_path <> '' LIMIT 1"
+                        ),
+                        {"isrc": track["isrc"]},
+                    ).fetchone()
+                    if row:
+                        library_track = dict(row._mapping)
+                        strategy = "isrc"
+            if library_track is None:
+                library_track = find_library_track(
+                    artist=track["artist"],
+                    title=track["title"],
+                    album=track.get("album") or None,
+                    strict_album=False,
+                )
+                if library_track:
+                    strategy = "strict"
+
+            if library_track:
+                matched_tracks.append({
+                    "id": library_track.get("id"),
+                    "title": library_track.get("title"),
+                    "artist": library_track.get("artist"),
+                    "album": library_track.get("album"),
+                    "stars": library_track.get("stars"),
+                    "confidence": 1.0,
+                    "strategy": strategy,
+                })
+                match_stats[strategy] += 1
+            else:
+                missing_tracks.append({
+                    "title": track["title"],
+                    "artist": track["artist"],
+                    "album_artist": track.get("album_artist", ""),
+                    "album": track["album"],
+                    "spotify_id": track["spotify_id"],
+                    "isrc": track["isrc"],
+                    "best_score": 0.0,
+                    "duration_s": track.get("duration_s"),
+                    "year": track.get("year"),
+                    "genres": track.get("genres"),
+                    "record_label": track.get("record_label"),
+                    "popularity": track.get("popularity"),
+                    "explicit": track.get("explicit"),
+                })
+                match_stats["unmatched"] += 1
+
+        from helpers.config_helpers import get_config
+        slskd_enabled = bool(get_config().get("slskd", {}).get("enabled", False))
+
+        logging.info(
+            "CSV playlist import '%s': matched %d/%d tracks (ISRC=%d, strict=%d)",
+            playlist_name, len(matched_tracks), len(tracks_from_csv),
+            match_stats["isrc"], match_stats["strict"],
+        )
+        return jsonify({
+            "success": True,
+            "playlist_name": playlist_name,
+            "playlist_description": playlist_description,
+            "target_user": target_user,
+            "matched_tracks": matched_tracks,
+            "missing_tracks": missing_tracks,
+            "slskd_enabled": slskd_enabled,
+            "message": f"Matched {len(matched_tracks)}/{len(tracks_from_csv)} tracks",
+            "match_stats": match_stats,
+        })
+    except UnicodeDecodeError:
+        return jsonify({"error": "Could not decode CSV file. Please save it as UTF-8."}), 400
+    except Exception as exc:
+        logging.error("CSV playlist import error: %s", exc, exc_info=True)
+        return jsonify({"error": f"An error occurred while processing the CSV file: {exc}"}), 500
+
+
+# --------------------------------------------------
 # CREATE (NSP FILE)
 # --------------------------------------------------
 

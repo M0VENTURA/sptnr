@@ -19,6 +19,9 @@
   let playPauseBtn, prevBtn, nextBtn;
   let progressEl, progressBar, currentTimeEl, totalTimeEl;
   let volumeEl;
+  let queuePanel, queueList, queueCountEl, stopBtn;
+  let logStrip, logTitleEl, logArtistEl, logTimeEl;
+  let logPlayPauseBtn, logPrevBtn, logNextBtn;
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function fmtTime(sec) {
@@ -28,12 +31,71 @@
     return `${m}:${s.toString().padStart(2, '0')}`;
   }
 
-  function setPlayPauseIcon(playing) {
-    if (!playPauseBtn) return;
-    playPauseBtn.innerHTML = playing
-      ? '<i class="bi bi-pause-fill"></i>'
-      : '<i class="bi bi-play-fill"></i>';
-    playPauseBtn.title = playing ? 'Pause' : 'Play';
+  function esc(text) {
+    const div = document.createElement('div');
+    div.textContent = text == null ? '' : String(text);
+    return div.innerHTML;
+  }
+
+  // Keep the footer-bar button and the log-flyout strip button in sync.
+  function setPlayPauseIcons(playing) {
+    [playPauseBtn, logPlayPauseBtn].forEach(function (btn) {
+      if (!btn) return;
+      btn.innerHTML = playing
+        ? '<i class="bi bi-pause-fill"></i>'
+        : '<i class="bi bi-play-fill"></i>';
+      btn.title = playing ? 'Pause' : 'Play';
+    });
+  }
+
+  // ── Queue panel ────────────────────────────────────────────────────────────
+  function renderQueue() {
+    if (!queuePanel) return;
+    queueCountEl.textContent = queue.length;
+    if (!queue.length) {
+      queueList.innerHTML = '<div class="text-muted small px-1 py-1">Queue is empty — play an album or artist from any page.</div>';
+      return;
+    }
+    queueList.innerHTML = queue.map(function (t, i) {
+      const active = i === currentIndex;
+      return '<div class="player-queue-row' + (active ? ' active' : '') + '" data-index="' + i + '" title="' + esc(t.title) + '">' +
+        '<span class="text-muted" style="min-width:1.2rem;">' + (i + 1) + '</span>' +
+        '<div style="min-width:0;flex:1 1 auto;">' +
+          '<div class="text-truncate">' + esc(t.title || 'Unknown') + '</div>' +
+          '<div class="text-muted text-truncate" style="font-size:0.72rem;">' + esc(t.artist || '') + '</div>' +
+        '</div>' +
+        (active ? '<i class="bi bi-volume-up-fill"></i>' : '') +
+      '</div>';
+    }).join('');
+    queueList.querySelectorAll('.player-queue-row').forEach(function (row) {
+      row.addEventListener('click', function () {
+        loadAndPlay(parseInt(row.dataset.index, 10));
+      });
+    });
+  }
+
+  function toggleQueue() {
+    if (!queuePanel) return;
+    queuePanel.classList.toggle('d-none');
+    if (!queuePanel.classList.contains('d-none')) renderQueue();
+  }
+
+  function clearQueue() {
+    queue = [];
+    currentIndex = -1;
+    renderQueue();
+  }
+
+  // ── Now-playing strip (top of the log flyout) ─────────────────────────────
+  function renderNowPlaying(track) {
+    if (logStrip) logStrip.classList.toggle('d-none', !track);
+    if (logTitleEl) logTitleEl.textContent = track ? (track.title || 'Unknown') : '';
+    if (logArtistEl) logArtistEl.textContent = track ? (track.artist || '') : '';
+  }
+
+  function updateLogTime() {
+    if (!logTimeEl) return;
+    logTimeEl.textContent = fmtTime(audioEl.currentTime) + ' / ' + fmtTime(audioEl.duration);
   }
 
   // ── Core playback ──────────────────────────────────────────────────────────
@@ -53,15 +115,47 @@
     artEl.src = track.albumArtUrl || '';
     artEl.style.display = track.albumArtUrl ? 'block' : 'none';
 
+    renderNowPlaying(track);
+    renderQueue();
     if (!isVisible) show();
     highlightActiveTrack(track.id);
   }
 
   function show() {
     playerBar.classList.remove('d-none');
-    // Give the body breathing room so the fixed bar doesn't overlap content
+    // Give the body breathing room so the fixed bar doesn't overlap content.
     document.body.style.paddingBottom = '72px';
+    // Lift the sticky scan-status bar (and log-flyout stream) above the player.
+    document.body.classList.add('player-visible');
     isVisible = true;
+  }
+
+  function hide() {
+    playerBar.classList.add('d-none');
+    document.body.style.paddingBottom = '';
+    document.body.classList.remove('player-visible');
+    isVisible = false;
+  }
+
+  function stopPlayback() {
+    audioEl.pause();
+    audioEl.removeAttribute('src');
+    audioEl.load();
+    queue = [];
+    currentIndex = -1;
+    highlightActiveTrack(null);
+    renderNowPlaying(null);
+    renderQueue();
+    hide();
+  }
+
+  function togglePlayPause() {
+    if (!audioEl) return;
+    if (audioEl.paused) {
+      if (audioEl.src) audioEl.play();
+    } else {
+      audioEl.pause();
+    }
   }
 
   function highlightActiveTrack(trackId) {
@@ -77,13 +171,13 @@
 
   // ── Audio element event listeners ──────────────────────────────────────────
   function bindAudioEvents() {
-    audioEl.addEventListener('play', function () { setPlayPauseIcon(true); });
-    audioEl.addEventListener('pause', function () { setPlayPauseIcon(false); });
+    audioEl.addEventListener('play', function () { setPlayPauseIcons(true); });
+    audioEl.addEventListener('pause', function () { setPlayPauseIcons(false); });
     audioEl.addEventListener('ended', function () {
       if (currentIndex < queue.length - 1) {
         loadAndPlay(currentIndex + 1);
       } else {
-        setPlayPauseIcon(false);
+        setPlayPauseIcons(false);
         highlightActiveTrack(null);
       }
     });
@@ -92,13 +186,15 @@
       const pct = (audioEl.currentTime / audioEl.duration) * 100;
       progressBar.style.width = pct + '%';
       currentTimeEl.textContent = fmtTime(audioEl.currentTime);
+      updateLogTime();
     });
     audioEl.addEventListener('loadedmetadata', function () {
       totalTimeEl.textContent = fmtTime(audioEl.duration);
+      updateLogTime();
     });
     audioEl.addEventListener('error', function () {
       titleEl.textContent = 'Playback error';
-      setPlayPauseIcon(false);
+      setPlayPauseIcons(false);
     });
   }
 
@@ -119,19 +215,22 @@
     });
   }
 
-  // ── Control buttons ────────────────────────────────────────────────────────
+  // ── Control buttons (footer bar + log-flyout strip) ────────────────────────
   function bindControlButtons() {
-    playPauseBtn.addEventListener('click', function () {
-      if (audioEl.paused) {
-        if (audioEl.src) audioEl.play();
-      } else {
-        audioEl.pause();
-      }
-    });
+    playPauseBtn.addEventListener('click', togglePlayPause);
     prevBtn.addEventListener('click', function () {
       if (currentIndex > 0) loadAndPlay(currentIndex - 1);
     });
     nextBtn.addEventListener('click', function () {
+      if (currentIndex < queue.length - 1) loadAndPlay(currentIndex + 1);
+    });
+    stopBtn.addEventListener('click', stopPlayback);
+
+    if (logPlayPauseBtn) logPlayPauseBtn.addEventListener('click', togglePlayPause);
+    if (logPrevBtn) logPrevBtn.addEventListener('click', function () {
+      if (currentIndex > 0) loadAndPlay(currentIndex - 1);
+    });
+    if (logNextBtn) logNextBtn.addEventListener('click', function () {
       if (currentIndex < queue.length - 1) loadAndPlay(currentIndex + 1);
     });
   }
@@ -151,13 +250,34 @@
     currentTimeEl = document.getElementById('playerCurrentTime');
     totalTimeEl   = document.getElementById('playerTotalTime');
     volumeEl      = document.getElementById('playerVolume');
+    queuePanel    = document.getElementById('playerQueuePanel');
+    queueList     = document.getElementById('playerQueueList');
+    queueCountEl  = document.getElementById('playerQueueCount');
+    stopBtn       = document.getElementById('playerStop');
+    logStrip      = document.getElementById('logPlayerStrip');
+    logTitleEl    = document.getElementById('logPlayerTitle');
+    logArtistEl   = document.getElementById('logPlayerArtist');
+    logTimeEl     = document.getElementById('logPlayerTime');
+    logPlayPauseBtn = document.getElementById('logPlayerPlayPause');
+    logPrevBtn    = document.getElementById('logPlayerPrev');
+    logNextBtn    = document.getElementById('logPlayerNext');
 
     if (!playerBar || !audioEl) return;
+
+    const queueClearBtn = document.getElementById('playerQueueClear');
+    if (queueClearBtn) queueClearBtn.addEventListener('click', clearQueue);
+    const queueToggleBtn = document.getElementById('playerQueueToggle');
+    if (queueToggleBtn) queueToggleBtn.addEventListener('click', toggleQueue);
 
     bindAudioEvents();
     bindProgressClick();
     bindVolumeControl();
     bindControlButtons();
+
+    // Keep the sticky scan-status bar clear of the player on every page
+    // (previously only the dashboard polled this class).
+    isVisible = !playerBar.classList.contains('d-none');
+    document.body.classList.toggle('player-visible', isVisible);
   }
 
   document.addEventListener('DOMContentLoaded', init);
@@ -173,10 +293,8 @@
       queue = tracks;
       loadAndPlay(0);
     },
-    toggle: function () {
-      if (!audioEl) return;
-      if (audioEl.paused) { if (audioEl.src) audioEl.play(); }
-      else { audioEl.pause(); }
-    },
+    toggle: togglePlayPause,
+    toggleQueue: toggleQueue,
+    stop: stopPlayback,
   };
 }());

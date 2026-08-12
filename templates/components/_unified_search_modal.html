@@ -47,18 +47,13 @@ position:fixed flyout anchored below the navbar.
       />
     </div>
 
-    <!-- Advanced filters — collapsed by default so the initial overlay stays
-         clean; the structured Artist / Album / Track / Year fields target
-         MusicBrainz discovery results. -->
-    <button class="btn btn-sm btn-outline-secondary w-100 text-start mb-2" type="button"
-            data-bs-toggle="collapse" data-bs-target="#unifiedAdvancedFilters"
-            aria-expanded="false" aria-controls="unifiedAdvancedFilters">
-      <i class="bi bi-sliders"></i> Advanced Filters
-      <i class="bi bi-chevron-down float-end"></i>
-    </button>
-    <div class="collapse border rounded p-2 mb-2" id="unifiedAdvancedFilters" style="background: var(--primary-bg);">
+    <!-- Advanced filters — always visible (the collapsible toggle was removed
+         so the structured Artist / Album / Track / Year fields show without
+         a click). Fields drive MusicBrainz discovery AND feed the library
+         search when the main bar is empty (e.g. artist-only matching). -->
+    <div class="border rounded p-2 mb-2" id="unifiedAdvancedFilters" style="background: var(--primary-bg);">
       <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
-        <small class="text-muted" style="font-size: 0.75rem;"><i class="bi bi-info-circle"></i> Target MusicBrainz discovery results — cleared fields fall back to the single search bar.</small>
+        <small class="text-muted" style="font-size: 0.75rem;"><i class="bi bi-info-circle"></i> Apply to your library and MusicBrainz discovery — an artist field alone still matches library artists.</small>
       </div>
       <div class="row g-2 align-items-end">
         <div class="col-6 col-md-3">

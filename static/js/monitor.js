@@ -206,6 +206,7 @@ async function loadFolderGroups(options) {
     // MusicBrainz release share an ``import_group`` (mbid_<release_id>);
     // other batch-added tracks fall back to artist+album grouping.
     var queueGroups = buildMonitorQueueGroups(qItems);
+    window.__monitorQueueGroups = queueGroups;
     html += '<div class="list-group list-group-flush">' + queueGroups.map(function(group, index) {
       if (group.items.length === 1) {
         return renderMonitorQueueItemRow(group.items[0]);
@@ -266,8 +267,6 @@ async function renderUnmatchedFolders(options) {
     return f.status === 'matched' || (f.audio_count || 0) > 0;
   });
   window.__emptyUnmatchedFolders = emptyFolders;
-  var deleteEmptyBtn = document.getElementById('deleteAllEmptyFoldersBtn');
-  if (deleteEmptyBtn) deleteEmptyBtn.style.display = emptyFolders.length ? '' : 'none';
 
   var html = '';
   if (contentFolders.length > 0) {
@@ -279,22 +278,23 @@ async function renderUnmatchedFolders(options) {
         fileHtml = '<ul class="list-unstyled mb-0 mt-1" style="max-height:160px;overflow-y:auto;">' +
           files.slice(0, 30).map(function(file) {
             var base = file && file.name ? file.name : String(file || '').split(/[\\/]/).pop();
-            return '<li style="font-size:0.75rem;" class="text-muted"><i class="bi bi-file-earmark-music me-1"></i>' + escapeHtml(cleanQueueFileName(base)) + '</li>';
+            return '<li class="text-muted" style="font-size:0.75rem;"><i class="bi bi-file-earmark-music me-1"></i>' +
+              '<span class="text-truncate d-inline-block" style="max-width:calc(100% - 1.4rem);vertical-align:bottom;" title="' + escapeHtml(base) + '">' + escapeHtml(cleanQueueFileName(base)) + '</span></li>';
           }).join('') +
           (files.length > 30 ? '<li class="fst-italic small text-muted">+' + (files.length - 30) + ' more</li>' : '') +
           '</ul>';
       }
+      // Slim pill sits inline with the folder title; actions stay side-by-side
+      // in a fixed right column (Match green / Delete red outline).
       var statusBadge = matched
-        ? '<span class="badge bg-success" title="All files were imported to the library">Matched ✓</span>'
-        : '<span class="badge bg-secondary">' + (f.audio_count || 0) + ' audio</span>';
-      // Actions sit on the far right of the title row (compact, single row).
+        ? '<span class="badge status-pill status-complete ms-2" title="All files were imported to the library">Matched ✓</span>'
+        : '<span class="badge status-pill status-queued ms-2">' + (f.audio_count || 0) + ' audio</span>';
       return '<div class="list-group-item">' +
         '<div class="d-flex justify-content-between align-items-start gap-2">' +
         '<div class="flex-grow-1" style="min-width:0;">' +
-        '<strong>' + escapeHtml(f.display_name || f.name || 'Unknown') + '</strong>' + fileHtml +
+        '<div class="text-truncate"><i class="bi bi-folder2 me-1 text-muted"></i><strong>' + escapeHtml(f.display_name || f.name || 'Unknown') + '</strong>' + statusBadge + '</div>' + fileHtml +
         '</div>' +
-        '<div class="d-flex flex-column flex-shrink-0 gap-1">' +
-        statusBadge +
+        '<div class="d-flex flex-shrink-0 gap-1">' +
         '<button class="btn btn-sm btn-outline-primary py-0 unmatched-match-btn" data-path="' + escapeHtml(f.name) + '" title="Copy into the library as a MusicBrainz release (uses the naming convention from Settings)"><i class="bi bi-link-45deg"></i> Match</button>' +
         '<button class="btn btn-sm btn-outline-danger py-0 unmatched-delete-btn" data-path="' + escapeHtml(f.name) + '" title="Delete this folder from the downloads folder"><i class="bi bi-trash3"></i> Delete</button>' +
         '</div></div></div>';
@@ -303,9 +303,12 @@ async function renderUnmatchedFolders(options) {
 
   if (emptyFolders.length > 0) {
     html += '<div class="list-group list-group-flush"><div class="list-group-item">' +
-      '<div class="d-flex justify-content-between align-items-center">' +
-      '<button class="btn btn-sm btn-link text-muted p-0 text-decoration-none collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#emptyUnmatchedFoldersList" aria-expanded="false"><i class="bi bi-folder-x me-1"></i>Empty Folders (' + emptyFolders.length + ')</button>' +
-      '<small class="text-muted">0 audio files</small>' +
+      '<div class="d-flex justify-content-between align-items-center gap-2">' +
+      '<button class="btn btn-sm btn-link text-muted p-0 text-decoration-none collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#emptyUnmatchedFoldersList" aria-expanded="false"><i class="bi bi-chevron-right me-1"></i><i class="bi bi-folder-x me-1"></i>Empty Folders (' + emptyFolders.length + ')</button>' +
+      '<div class="d-flex align-items-center gap-2">' +
+      '<small class="text-muted">' + emptyFolders.length + ' empty</small>' +
+      '<button class="btn btn-sm btn-outline-danger py-0" onclick="deleteAllEmptyFolders(this)" title="Delete all folders with 0 audio files"><i class="bi bi-trash3"></i> Prune All</button>' +
+      '</div>' +
       '</div>' +
       '<div id="emptyUnmatchedFoldersList" class="collapse"><ul class="list-unstyled mb-0 mt-1" style="max-height:200px;overflow-y:auto;">' +
       emptyFolders.map(function(f) {
@@ -501,21 +504,67 @@ function renderMonitorQueueItemRow(item) {
   // have nothing actionable for the user and only clutter the queue view.
   if (!(item.title || '').trim() && !(item.artist || '').trim() && !(item.album || '').trim()) return '';
   var st = item.status || 'queued';
-  var badgeCls = st === 'failed' ? 'danger' : (st === 'downloading' ? 'warning' : (st === 'pending_release' ? 'info' : 'secondary'));
+
+  // Action buttons grouped flush-right; role depends on the status.
   var actions = '';
   if (st === 'failed' && typeof window.retryQueueItem === 'function') {
-    actions += '<button class="btn btn-sm btn-outline-warning py-0 px-1" title="Retry now" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+    actions += '<button class="btn btn-outline-warning" title="Retry now" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+  } else if (st === 'downloading' && typeof window.cancelQueueItem === 'function') {
+    actions += '<button class="btn btn-outline-secondary" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-stop-circle"></i></button>';
   }
   if (typeof window.deleteQueueItem === 'function') {
-    actions += '<button class="btn btn-sm btn-outline-danger py-0 px-1" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
+    actions += '<button class="btn btn-outline-danger" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
   }
-  return '<div class="list-group-item queue-item"><div class="d-flex justify-content-between align-items-center">' +
-    '<div><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
-    (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
-    (st === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +
-    '</div><div class="d-flex align-items-center gap-2 flex-shrink-0">' +
-    '<span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span>' + actions +
-    '</div></div></div>';
+  var actionsHtml = actions
+    ? '<div class="btn-group btn-group-sm flex-shrink-0">' + actions + '</div>'
+    : '';
+
+  return '<div class="list-group-item queue-item"><div class="d-flex justify-content-between align-items-center gap-2">' +
+    '<div style="min-width:0;">' +
+      '<div class="text-truncate"><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
+      (item.artist ? ' <small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+      '</div>' +
+      (st === 'failed' && item.failure_reason ? '<div class="small text-danger text-truncate"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</div>' : '') +
+    '</div>' +
+    '<div class="d-flex align-items-center gap-2 flex-shrink-0">' + queueStatusPill(st, item) + actionsHtml + '</div>' +
+    '</div></div>';
+}
+
+// Slim outlined pill badges (failed / downloading% / queued / …).
+function queueStatusPill(st, item) {
+  var map = {
+    failed: ['failed', '🔴 Failed'],
+    downloading: ['downloading', '🔵 Downloading'],
+    queued: ['queued', '🟡 Queued'],
+    complete: ['complete', '🟢 Complete'],
+    moving: ['complete', '🟢 Moving'],
+    pending_release: ['pending', '🔘 Pending']
+  };
+  var cfg = map[st] || ['queued', '🟡 ' + escapeHtml(st)];
+  var label = cfg[1];
+  if (st === 'downloading' && item.progress !== undefined && item.progress !== null && item.progress !== '') {
+    var pct = Math.max(0, Math.min(100, Math.round(Number(item.progress) || 0)));
+    label = '🔵 ' + pct + '%';
+  }
+  return '<span class="badge status-pill status-' + cfg[0] + '">' + label + '</span>';
+}
+
+// Remove every track in a folder group at once (per-item API calls).
+async function deleteQueueGroup(index) {
+  var groups = window.__monitorQueueGroups || [];
+  var group = groups[index];
+  if (!group || !group.items.length) return;
+  if (!confirm('Remove ' + group.items.length + ' track(s) from the queue for "' + group.label + '"? This cannot be undone.')) return;
+  for (var i = 0; i < group.items.length; i++) {
+    try {
+      if (typeof window.deleteQueueItem === 'function') await window.deleteQueueItem(group.items[i].id, false);
+    } catch (err) {
+      console.warn('Group delete failed for item', group.items[i].id, err);
+    }
+  }
+  if (typeof window.loadFolderGroups === 'function') {
+    window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+  }
 }
 
 function renderMonitorQueueGroupRow(group, index) {
@@ -528,9 +577,6 @@ function renderMonitorQueueGroupRow(group, index) {
     var st = item.status || 'queued';
     counts[st] = (counts[st] || 0) + 1;
   });
-  var summary = Object.keys(counts).map(function(st) {
-    return counts[st] + ' ' + st;
-  }).join(' · ');
 
   var subline = group.sublabel
     ? ' <small class="text-muted">' + escapeHtml(group.sublabel) + '</small>'
@@ -540,18 +586,43 @@ function renderMonitorQueueGroupRow(group, index) {
     return renderMonitorQueueItemRow(item);
   }).join('');
 
+  var groupDelete = '';
+  if (typeof window.deleteQueueItem === 'function') {
+    groupDelete = '<button class="btn btn-sm btn-outline-danger py-0 px-1 flex-shrink-0" title="Remove all tracks in this folder" onclick="deleteQueueGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
+  }
+
   return '<div class="list-group-item">' +
     '<div class="d-flex justify-content-between align-items-center gap-2">' +
-    '<button type="button" class="btn btn-sm btn-outline-secondary queue-group-toggle" data-target="' + bodyId + '" title="Expand album">' +
+    '<button type="button" class="btn btn-sm btn-link p-0 text-decoration-none queue-group-toggle flex-shrink-0" data-target="' + bodyId + '" title="Expand album" style="color:var(--text-secondary);">' +
       '<i class="bi bi-chevron-down queue-group-chevron"></i>' +
     '</button>' +
-    '<div class="text-truncate flex-grow-1">' +
-      '<strong><i class="bi bi-folder2-open me-1"></i>' + escapeHtml(group.label) + '</strong>' + subline +
-      '<br><small class="text-muted">' + total + ' track' + (total !== 1 ? 's' : '') + ' · ' + escapeHtml(summary) + '</small>' +
+    '<div class="text-truncate flex-grow-1" style="min-width:0;">' +
+      '<i class="bi bi-folder2-open me-1 text-muted"></i><strong>' + escapeHtml(group.label) + '</strong>' + subline +
     '</div>' +
+    queueGroupSummaryPill(counts, total) +
+    groupDelete +
     '</div>' +
     '<div id="' + bodyId + '" class="queue-group-body ps-3 border-start ms-2 mt-2" style="display:none;">' + children + '</div>' +
     '</div>';
+}
+
+// One compact pill on the folder header: the most urgent status wins
+// (failed → downloading → moving → complete → queued).
+function queueGroupSummaryPill(counts, total) {
+  var labels = {
+    failed: ['failed', '🔴 ' + (counts.failed || 0) + ' Failed'],
+    downloading: ['downloading', '🔵 ' + (counts.downloading || 0) + ' Downloading'],
+    moving: ['complete', '🟢 ' + (counts.moving || 0) + ' Moving'],
+    complete: ['complete', '🟢 ' + (counts.complete || 0) + ' Complete']
+  };
+  var order = ['failed', 'downloading', 'moving', 'complete'];
+  for (var i = 0; i < order.length; i++) {
+    var key = order[i];
+    if (counts[key]) {
+      return '<span class="badge status-pill status-' + labels[key][0] + '">' + labels[key][1] + '</span>';
+    }
+  }
+  return '<span class="badge status-pill status-queued">🟡 ' + total + ' Queued</span>';
 }
 
 // ===== Upcoming Releases (delegates to UpcomingReleasesService) =====

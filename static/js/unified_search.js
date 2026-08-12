@@ -422,10 +422,17 @@
       year: adv.year
     };
 
-    // Local results feed the In Library tab AND the badge counts for every
-    // scope; MB results feed the MusicBrainz tab / All-tab section.
-    var localPromise = query.length >= MIN_QUERY_LENGTH
-      ? fetchLibrary(query).catch(function (e) { return { error: e.message }; })
+    // Advanced filters drive MusicBrainz discovery, but they must also feed
+    // the library search: when the main bar is empty, the first populated
+    // field (artist → album → track → year) becomes the local query so an
+    // artist-only filter still returns library artists (previously the
+    // library search never ran and showed 'No library matches for ""').
+    var localQuery = query;
+    if (localQuery.length < MIN_QUERY_LENGTH && hasAdvanced) {
+      localQuery = adv.artist || adv.album || adv.track || adv.year || '';
+    }
+    var localPromise = localQuery.length >= MIN_QUERY_LENGTH
+      ? fetchLibrary(localQuery).catch(function (e) { return { error: e.message }; })
       : Promise.resolve({ artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] });
 
     var mbPromise;
@@ -458,9 +465,13 @@
         _counts.all = _counts.library + _counts.mb;
         updateScopeCounts();
 
+        // Empty-state messages should quote the query that actually ran
+        // (the filter-derived one when the main bar was empty).
+        var displayQuery = localQuery || query;
+
         if (_scope === SCOPE_MB) {
           if (getMetaEl()) getMetaEl().textContent = mbReleases.length + ' musicbrainz result' + (mbReleases.length === 1 ? '' : 's');
-          resultsEl.innerHTML = renderMbTab(mbReleases, query);
+          resultsEl.innerHTML = renderMbTab(mbReleases, displayQuery);
           markRendered(query);
           return;
         }
@@ -478,7 +489,7 @@
         var warnHtml = local.error
           ? '<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle-fill"></i> Library search failed (' + esc(local.error) + ') — showing MusicBrainz only.</div>'
           : '';
-        resultsEl.innerHTML = warnHtml + renderBucketedResults(local, mbReleases, query, {
+        resultsEl.innerHTML = warnHtml + renderBucketedResults(local, mbReleases, displayQuery, {
           withQueue: true,
           allMbButton: _scope === SCOPE_ALL
         });

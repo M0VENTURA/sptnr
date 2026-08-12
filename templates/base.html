@@ -149,9 +149,17 @@
 
   <div id="globalPlayerBar" class="d-none" style="position:fixed;bottom:0;left:0;right:0;z-index:2000;background:rgba(18,18,18,0.97);border-top:1px solid var(--border-color);backdrop-filter:blur(10px);padding:0.5rem 1rem;box-shadow:0 -4px 16px rgba(0,0,0,0.5);">
     <audio id="globalAudioEl" preload="none"></audio>
+    <!-- Queue expansion (toggled from the art/title or the list button) -->
+    <div id="playerQueuePanel" class="d-none">
+      <div class="d-flex justify-content-between align-items-center px-1 mb-1">
+        <small class="text-muted fw-semibold"><i class="bi bi-list-ul me-1"></i>Up Next <span id="playerQueueCount" class="badge bg-secondary-subtle text-secondary-emphasis ms-1">0</span></small>
+        <button type="button" class="btn btn-sm btn-outline-secondary py-0" id="playerQueueClear" title="Clear queue"><i class="bi bi-x-lg"></i> Clear</button>
+      </div>
+      <div id="playerQueueList" class="d-flex flex-column gap-1" style="max-height: 180px; overflow-y: auto;"></div>
+    </div>
     <div class="d-flex align-items-center gap-3" style="max-width:1400px;margin:0 auto;">
-      <img id="playerArt" src="" alt="Album art" style="width:44px;height:44px;object-fit:cover;border-radius:4px;flex-shrink:0;display:none;">
-      <div class="d-none d-sm-block" style="min-width:0;flex:0 0 auto;max-width:200px;">
+      <img id="playerArt" src="" alt="Album art" style="width:44px;height:44px;object-fit:cover;border-radius:4px;flex-shrink:0;display:none;cursor:pointer;" title="Show queue" onclick="Player.toggleQueue()">
+      <div class="d-none d-sm-block" style="min-width:0;flex:0 0 auto;max-width:200px;cursor:pointer;" title="Show queue" onclick="Player.toggleQueue()">
         <div id="playerTitle" class="text-truncate fw-semibold" style="font-size:0.9rem;line-height:1.2;"></div>
         <div id="playerArtist" class="text-truncate text-muted" style="font-size:0.8rem;"></div>
       </div>
@@ -170,6 +178,8 @@
       <div class="d-none d-md-flex align-items-center gap-2 flex-shrink-0">
         <i class="bi bi-volume-up text-muted" style="font-size:0.85rem;"></i>
         <input id="playerVolume" type="range" min="0" max="1" step="0.05" value="1" style="width:80px;height:6px;accent-color:var(--spotify-green);" title="Volume">
+        <button id="playerQueueToggle" class="btn btn-sm btn-dark" title="Show queue" style="min-height:0;padding:0.3rem 0.5rem;"><i class="bi bi-list-ul"></i></button>
+        <button id="playerStop" class="btn btn-sm btn-dark" title="Stop &amp; close player" style="min-height:0;padding:0.3rem 0.5rem;"><i class="bi bi-stop-fill"></i></button>
       </div>
     </div>
   </div>
@@ -214,6 +224,22 @@
           </div>
         </div>
         <div class="modal-body p-2 d-flex flex-column gap-2" style="min-height: 0;">
+          <!-- Now-playing strip: keep playback controls visible while viewing logs -->
+          <div id="logPlayerStrip" class="border rounded p-2 d-none">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <i class="bi bi-music-note-beamed text-success"></i>
+              <div style="min-width:0;flex:1 1 auto;">
+                <div id="logPlayerTitle" class="text-truncate fw-semibold" style="font-size:0.85rem;">—</div>
+                <div id="logPlayerArtist" class="text-truncate text-muted" style="font-size:0.75rem;"></div>
+              </div>
+              <small class="text-muted" id="logPlayerTime" style="font-size:0.75rem;">0:00 / 0:00</small>
+              <div class="d-flex align-items-center gap-1 flex-shrink-0">
+                <button type="button" class="btn btn-sm btn-dark py-0" id="logPlayerPrev" title="Previous"><i class="bi bi-skip-start-fill"></i></button>
+                <button type="button" class="btn btn-sm btn-success py-0" id="logPlayerPlayPause" title="Play"><i class="bi bi-play-fill"></i></button>
+                <button type="button" class="btn btn-sm btn-dark py-0" id="logPlayerNext" title="Next"><i class="bi bi-skip-end-fill"></i></button>
+              </div>
+            </div>
+          </div>
           <!-- Live activity summary (context-aware per source) -->
           <div id="logActivityCard" class="border rounded p-2 d-none">
             <div class="d-flex justify-content-between align-items-center gap-2 mb-1 flex-wrap">
