@@ -1542,7 +1542,6 @@ def process_track(
         "popularity_score": _result_final_score,
         "final_score": _result_final_score,
         "_raw_combined": float(update_payload.get("_raw_combined") or 0),
-        "spotify_score": float(score_data.get("spotify_score", 0)),
         "lastfm_score": float(score_data.get("lastfm_score", 0)),
         "listenbrainz_score": float(score_data.get("listenbrainz_score", 0)),
         "is_single": bool(update_payload.get("is_single", track.get("is_single", False))),

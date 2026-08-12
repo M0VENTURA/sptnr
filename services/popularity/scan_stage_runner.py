@@ -1525,7 +1525,7 @@ def run_scan(
                             _ft = prepared_track.get("title", "Unknown Track")
                             _fs = frozen_result.get("popularity_score")
                             log_unified(
-                                f"[TRACK_RESULT] '{_ft}' -> Final: {float(_fs or 0.0):.1f} (frozen, SP: {float(frozen_result.get('spotify_score') or 0.0):.1f} | LF: {float(frozen_result.get('lastfm_score') or 0.0):.1f} | LB: {float(frozen_result.get('listenbrainz_score') or 0.0):.1f})",
+                                f"[TRACK_RESULT] '{_ft}' -> Final: {float(_fs or 0.0):.1f} (frozen | LF: {float(frozen_result.get('lastfm_score') or 0.0):.1f} | LB: {float(frozen_result.get('listenbrainz_score') or 0.0):.1f})",
                             )
                     tracks_processed += 1
                     continue
@@ -1553,11 +1553,10 @@ def run_scan(
                     if isinstance(track_result, dict):
                         title = prepared_track.get("title", "Unknown Track")
                         f_score = track_result.get("popularity_score")
-                        sp = track_result.get("spotify_score")
                         lf = track_result.get("lastfm_score")
                         lb = track_result.get("listenbrainz_score")
                         log_unified(
-                            f"[TRACK_RESULT] '{title}' -> Final: {float(f_score or 0.0):.1f} (SP: {float(sp or 0.0):.1f} | LF: {float(lf or 0.0):.1f} | LB: {float(lb or 0.0):.1f})",
+                            f"[TRACK_RESULT] '{title}' -> Final: {float(f_score or 0.0):.1f} (LF: {float(lf or 0.0):.1f} | LB: {float(lb or 0.0):.1f})",
                         )
 
                 tracks_processed += 1

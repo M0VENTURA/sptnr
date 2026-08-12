@@ -990,6 +990,32 @@ def compute_artist_scores(
     return list(artist_scores) + db_scores
 
 
+def _log_scan_weights(artist: str, album: str, album_model: dict[str, Any]) -> None:
+    """Log the blend weights + era rules applied to one album's rating pass.
+
+    Makes the config actually driving the scan visible: the normalised
+    popularity blend (LF / LB / Age) and the era classification with the
+    caps in effect (catalog top %, album top-N, max 5★ slots).
+    """
+    try:
+        from services.popularity.popularity_config import resolve_weights
+        lf, lb, age = resolve_weights()
+        rules, peak_min, solid_min = _live_album_scaling()
+        era = str(album_model.get("era") or "?")
+        reff = float(album_model.get("reff") or 0)
+        era_rules = rules.get(era) or {}
+        log_unified(
+            f"⚖️ WEIGHTS: {str(artist or '').strip()} — {str(album or '').strip()} "
+            f"| blend: LF={lf:.2f} LB={lb:.2f} Age={age:.2f} "
+            f"| era={era} (R_eff={reff:.2f}, peak≥{peak_min:.2f}, solid≥{solid_min:.2f}) "
+            f"| caps: catalog_top={float(era_rules.get('catalog_top_pct') or 0) * 100:.0f}%, "
+            f"album_top_n={era_rules.get('album_top_n') or '—'}, "
+            f"max_5★={era_rules.get('max_5star_slots') or '—'}"
+        )
+    except Exception as exc:
+        logger.debug("[finalise_stage] Weights log failed: %s", exc)
+
+
 def post_album_star_ratings(
     *,
     album_results: list[dict[str, Any]],
@@ -1130,6 +1156,9 @@ def post_album_star_ratings(
                 )
         except Exception as exc:
             logger.debug("[finalise_stage] Album model build failed for %s - %s: %s", artist, album, exc)
+
+        # Surface the exact weights + era rules this album was rated with.
+        _log_scan_weights(artist, album, album_model)
 
         for track in album_results:
             # Assign star rating — one track's edge case (e.g. a degenerate
