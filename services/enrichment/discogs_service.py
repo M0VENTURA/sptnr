@@ -32,7 +32,28 @@ MIN_DISCOGS_SIMILARITY = 0.75
 # Max confidence for a verified Discogs single/EP match (exact title).
 DISCOGS_BASE_WEIGHT = 0.85
 # A confidence this low is treated as "full" (near-exact verified match).
+# A Discogs match is only confirmed as single evidence at or above this —
+# anything lower is a fuzzy/unverified match and must NOT flag the track.
 DISCOGS_FULL_CONFIDENCE = 0.85
+
+# ── Format classification ──────────────────────────────────────────────────
+# Discogs stores metadata at the RELEASE level, not the track level. A release
+# is a genuine single only when its format marks it as a short (non-album)
+# release; a full-length/compilation release (format mentions Album/LP) is
+# structural proof that the release is NOT a single, regardless of any track
+# title that fuzzily matches it. The scan output that flagged every album
+# track as a Discogs single came from accepting any release whose format
+# merely contained the substring "single"/"ep" without rejecting album rows.
+# Format descriptors that never describe a single release.
+ALBUM_FORMAT_TOKENS = frozenset({"album", "lp", "compilation", "mixtape"})
+# Format descriptors that mark a short (non-album) release — a genuine single.
+SINGLE_FORMAT_TOKENS = frozenset({"single", "ep", "maxi", "maxi-single"})
+# Track-count ceiling for a short (non-album) release: singles/EPs carry
+# 1-6 tracks (a maxi-single routinely has 4-5 remixes), while an "album" with
+# 14 tracks is structural proof it is an LP, not a single. Applied best-effort
+# where the release's tracklist was already fetched (None = unknown, no
+# rejection).
+MAX_SINGLE_TRACKS = 6
 
 
 def calculate_discogs_confidence(title: str, similarity_ratio: float,
@@ -51,8 +72,11 @@ def calculate_discogs_confidence(title: str, similarity_ratio: float,
       releases; they need near-exact precision (ratio >= 0.95), otherwise
       the score is cut to 60%.
 
-    Returns ``{matched, confidence, metadata}`` — ``matched`` when the final
-    confidence is >= 0.40, ``metadata.similarity_ratio`` for logs/UI.
+    Returns ``{matched, confidence, metadata}`` — ``matched`` only when the
+    final confidence is HIGH (>= ``DISCOGS_FULL_CONFIDENCE``, a near-exact
+    artist-verified title match). A fuzzy or unverified Discogs match is never
+    single evidence on its own; it previously confirmed every album track as a
+    Discogs single. ``metadata.similarity_ratio`` for logs/UI.
     """
     sim = float(similarity_ratio or 0.0)
     if sim < MIN_DISCOGS_SIMILARITY:
@@ -69,7 +93,7 @@ def calculate_discogs_confidence(title: str, similarity_ratio: float,
 
     final = round(max(0.0, min(1.0, confidence)), 2)
     return {
-        "matched": final >= 0.40,
+        "matched": final >= DISCOGS_FULL_CONFIDENCE,
         "confidence": final,
         "metadata": {"similarity_ratio": round(sim, 2)},
     }
@@ -112,6 +136,26 @@ def _clean_title_for_comparison(title: str) -> str:
 INVERTED_RETRY_MIN_SIMILARITY = 0.50
 
 
+def _release_format_key(formats) -> str:
+    """Normalize a Discogs ``format`` field into a lowercase token string.
+
+    The artist-releases endpoint returns ``format`` as a comma-joined STRING
+    (``"CD, Single, Enh"``) while database-search results carry it as a LIST
+    (``["CD", "Single", "Enh"]``). Iterating the string character-by-character
+    produced ``"c d ,   s i n g l e ,   e n h"`` — which hides every real
+    single — so both shapes must be handled before substring checks.
+    """
+    if not formats:
+        return ""
+    if isinstance(formats, str):
+        parts = re.split(r"[,/]", formats)
+    elif isinstance(formats, (list, tuple)):
+        parts = [p for f in formats for p in re.split(r"[,/]", str(f))]
+    else:
+        parts = [str(formats)]
+    return " ".join(p.strip().lower() for p in parts if p and p.strip())
+
+
 def _discogs_title_similarity(local_title: str, candidate_title: str) -> float:
     """Token-aware similarity between a local track title and a Discogs candidate.
 
@@ -138,17 +182,25 @@ def _discogs_title_similarity(local_title: str, candidate_title: str) -> float:
         return 0.95
 
     # Split singles: "They're All Around Us / New Way Boy" — the primary side
-    # (before the first " / ") of either title may be the whole other title.
-    for raw in (local_title, candidate_title):
-        primary = re.split(r"\s*/\s*", raw.strip(), maxsplit=1)[0] if raw else ""
-        primary_key = _clean_title_for_comparison(primary)
-        if not primary_key:
-            continue
-        if primary_key == local_key or primary_key == candidate_key:
-            return 0.95
-        for other_key in (local_key, candidate_key):
-            if primary_key in other_key and len(primary_key) / len(other_key) >= 0.70:
+    # (before the first " / ") of a SPLIT title may be the whole other title.
+    # Only the slash-carrying side is ever checked: the "primary side" of a
+    # slash-less title IS the whole title, so checking it against every
+    # candidate returned 0.95 for ANY release (e.g. "Is It in Your Darkness"
+    # matched the "Departure Plan / Rejection Role" single) and confirmed
+    # every album track as a Discogs single.
+    if "/" in (local_title or "") or "/" in (candidate_title or ""):
+        for raw in (local_title, candidate_title):
+            if "/" not in (raw or ""):
+                continue
+            primary = re.split(r"\s*/\s*", raw.strip(), maxsplit=1)[0] if raw else ""
+            primary_key = _clean_title_for_comparison(primary)
+            if not primary_key:
+                continue
+            if primary_key == local_key or primary_key == candidate_key:
                 return 0.95
+            for other_key in (local_key, candidate_key):
+                if primary_key in other_key and len(primary_key) / len(other_key) >= 0.70:
+                    return 0.95
 
     # RapidFuzz (C-speed) when installed: token_set_ratio handles subsets and
     # word order ("they re all around us" vs "they re all around us new way
@@ -291,6 +343,11 @@ class DiscogsService:
                                 )
                                 for f in (main.get("formats") or [])
                             ]
+                            # Track count is structural proof of release type: an
+                            # album with 14 tracks is never a single even when a
+                            # fuzzy title similarity happens to match (see the
+                            # track-count guard in ``_scan_releases``).
+                            rel["track_count"] = len(main.get("tracklist") or []) or None
                         except Exception as exc:
                             logger.debug(
                                 "[DISCOGS] Master format lookup failed for %s: %s",
@@ -302,8 +359,7 @@ class DiscogsService:
     @staticmethod
     def _release_is_promo(rel: dict[str, Any]) -> bool:
         """True when a Discogs release's format marks it as a promo."""
-        formats = " ".join(str(f).lower() for f in (rel.get("format") or []) if f)
-        return "promo" in formats
+        return "promo" in _release_format_key(rel.get("format")).split()
 
     def _scan_releases(self, title: str, title_key: str, releases: list[dict[str, Any]],
                        artist_verified: bool = True) -> dict[str, Any] | None:
@@ -347,8 +403,24 @@ class DiscogsService:
         for rel in releases:
             if str(rel.get("role") or "Main").strip().lower() != "main":
                 continue
-            formats = " ".join(str(f).lower() for f in (rel.get("format") or []) if f)
-            if "single" not in formats and "ep" not in formats:
+            formats = _release_format_key(rel.get("format"))
+            if not formats:
+                continue
+            # A full-length/compilation release (format mentions Album/LP) is
+            # NEVER a single — Discogs stores metadata at the release level, so
+            # an album row must never confirm an album track as a single. This
+            # rejection is what stops the parent-album false positives.
+            if ALBUM_FORMAT_TOKENS.intersection(formats.split()):
+                continue
+            if not SINGLE_FORMAT_TOKENS.intersection(formats.split()):
+                continue
+            # Track-count guard (best-effort — only available for releases whose
+            # tracklist was already fetched): singles/EPs are short releases
+            # (1-6 tracks — a maxi-single routinely carries 4-5 remixes), while
+            # an "album" with 14 tracks is structural proof the release is not a
+            # single even if a fuzzy title happens to match.
+            track_count = rel.get("track_count")
+            if track_count and int(track_count) > MAX_SINGLE_TRACKS:
                 continue
             # An edition-annotated track ("Valhalla (Epic Edition)") must only
             # match a single/EP release carrying the SAME edition annotation —

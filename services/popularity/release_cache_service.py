@@ -133,6 +133,11 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
     try:
         from api_clients.discogs_http import DiscogsHttpClient
         from helpers.config_helpers import get_config
+        from services.enrichment.discogs_service import (
+            _release_format_key,
+            ALBUM_FORMAT_TOKENS,
+            SINGLE_FORMAT_TOKENS,
+        )
         token = ""
         try:
             token = (get_config().get("api_integrations", {}).get("discogs", {}) or {}).get("token", "") or ""
@@ -153,11 +158,17 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
             title = str(rel.get("title") or "").strip()
             if not title:
                 continue
-            low = [str(f).lower() for f in (rel.get("format") or []) if f]
-            if "single" in low:
+            # The artist-releases endpoint returns format as a comma-joined
+            # STRING ("CD, Single, Enh"), not a list — iterate the normalized
+            # tokens, otherwise the single/EP classification never fires and the
+            # cache feeds singles detection an empty title set. Same rules as
+            # ``DiscogsService._scan_releases``: an Album/LP/compilation row is
+            # never a single, even when a title fuzzily matches it.
+            fmt_tokens = _release_format_key(rel.get("format")).split()
+            if ALBUM_FORMAT_TOKENS.intersection(fmt_tokens):
+                rtype = "album"
+            elif SINGLE_FORMAT_TOKENS.intersection(fmt_tokens):
                 rtype = "single"
-            elif "ep" in low:
-                rtype = "ep"
             else:
                 rtype = "album"
             year = None
@@ -170,7 +181,7 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
                 "source": "discogs",
                 "release_id": str(rel.get("id") or "").strip() or None,
                 "year": year,
-                "is_promo": "promo" in " ".join(low),
+                "is_promo": "promo" in fmt_tokens,
             })
         return out
     except Exception as exc:

@@ -103,13 +103,17 @@ class TestDetectDiscogsPromoSource:
                     "release_year": 2006,
                     "release_id": "1",
                     "format": "cd single promo",
+                    "similarity": 1.0,
+                    "artist_verified": True,
                 }
 
         monkeypatch.setattr(ds_module, "_get_service", lambda token: FakeService())
 
         result = _detect_discogs("Lycanthrope", "+44", "Album", "test-token")
         assert result["matched"] is True
-        assert result["confidence"] == 0.5
+        # An exact verified promo match is still HIGH confidence (0.85) — the
+        # promo downgrade to medium happens downstream via the is_promo flag.
+        assert result["confidence"] == 0.85
         assert result["metadata"].get("is_promo") is True
 
     def test_full_path_commercial_keeps_high_confidence(self, monkeypatch):
@@ -127,13 +131,15 @@ class TestDetectDiscogsPromoSource:
                     "release_year": 2006,
                     "release_id": "2",
                     "format": "vinyl 7 single",
+                    "similarity": 1.0,
+                    "artist_verified": True,
                 }
 
         monkeypatch.setattr(ds_module, "_get_service", lambda token: FakeService())
 
         result = _detect_discogs("155", "+44", "Album", "test-token")
         assert result["matched"] is True
-        assert result["confidence"] == 0.8
+        assert result["confidence"] == 0.85
         assert result["metadata"].get("is_promo") is False
 
     def test_fast_path_cached_promo_flags_promo(self):
@@ -145,7 +151,9 @@ class TestDetectDiscogsPromoSource:
             cached_promo_titles={"lycanthrope"},
         )
         assert result["matched"] is True
-        assert result["confidence"] == 0.5
+        # Exact cached membership is high confidence; the promo downgrade is
+        # applied downstream from the is_promo flag.
+        assert result["confidence"] == 0.85
         assert result["metadata"].get("is_promo") is True
         assert result.get("cached") is True
 
@@ -158,7 +166,7 @@ class TestDetectDiscogsPromoSource:
             cached_promo_titles=set(),
         )
         assert result["matched"] is True
-        assert result["confidence"] == 0.8
+        assert result["confidence"] == 0.85
         assert result["metadata"].get("is_promo") is False
 
 

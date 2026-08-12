@@ -519,7 +519,9 @@ def _detect_discogs(title: str, artist: str, album: str | None,
         return {"source": "discogs", "matched": False, "confidence": 0.0, "metadata": {}}
     # Fast path: the title is already known to be a Discogs single from the
     # artist's cached release list (avoids one Discogs API call per track).
-    # Exact list membership = perfect title similarity, verified artist.
+    # Exact list membership = perfect title similarity, verified artist — so
+    # this is always HIGH confidence (a cached promo is downgraded to a
+    # medium source downstream via its ``is_promo`` flag, never by score).
     if cached_single_titles:
         normalized = (title or "").lower().strip()
         if normalized in {str(t).lower().strip() for t in cached_single_titles}:
@@ -527,7 +529,7 @@ def _detect_discogs(title: str, artist: str, album: str | None,
                 str(t).lower().strip() for t in cached_promo_titles
             }
             return {"source": "discogs", "matched": True,
-                    "confidence": 0.5 if is_promo else 0.85,
+                    "confidence": 0.85,
                     "metadata": {"is_promo": is_promo, "similarity_ratio": 1.0},
                     "cached": True}
     try:
