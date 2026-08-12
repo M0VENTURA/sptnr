@@ -2511,10 +2511,45 @@ def _sanitize_config_sections(config: dict) -> dict:
     has no attribute 'get'``.  Coerce scalar sections to empty mappings so
     the page renders with defaults; dicts and lists (``navidrome_users`` is
     iterated as a list) pass through untouched.
+
+    Nested containers the template drills into with
+    ``.get('x', {}).get('y', {}).get(...)`` get the same treatment
+    (``slskd.timeouts``, ``queue.matching``, ``genres.synonyms`` ...).
     """
     cleaned: dict = {}
     for key, value in (config or {}).items():
-        cleaned[key] = value if isinstance(value, (dict, list)) else {}
+        if isinstance(value, dict):
+            cleaned[key] = dict(value)
+        elif isinstance(value, list):
+            cleaned[key] = value
+        else:
+            cleaned[key] = {}
+
+    # Parent → child container paths used by the template's deep chains.
+    # ``api_integrations`` is special: every service sub-key is a container.
+    nested_children = {
+        "slskd": ("timeouts",),
+        "features": ("downloads_duplicate_cleanup", "retry_scheduler",
+                     "download_queue_cleanup_scheduler"),
+        "downloads": ("quality_filter", "conversion"),
+        "queue": ("matching",),
+        "popularity": ("weights",),
+        "genres": ("weights", "synonyms"),
+    }
+    for parent, children in nested_children.items():
+        parent_val = cleaned.get(parent)
+        if not isinstance(parent_val, dict):
+            continue
+        for child in children:
+            if child in parent_val and not isinstance(parent_val[child], dict):
+                parent_val[child] = {}
+
+    api_services = cleaned.get("api_integrations")
+    if isinstance(api_services, dict):
+        for service, service_val in list(api_services.items()):
+            if not isinstance(service_val, (dict, list)):
+                api_services[service] = {}
+
     return cleaned
 
 
