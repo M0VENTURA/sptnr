@@ -68,6 +68,20 @@ def _resolve_scanner_callable(scanner_module) -> Callable[..., Any]:
 # Core entrypoint
 # =============================================================================
 
+def _reload_config_before_scan() -> None:
+    """Drop the process-level config cache so this scan re-reads config.yaml.
+
+    Hand-edited ``config.yaml`` (or UI changes saved outside this process)
+    now take effect on the NEXT scan instead of requiring a container
+    restart.  Cheap and idempotent — the next ``get_config()`` re-reads.
+    """
+    try:
+        from helpers.config_helpers import clear_config_cache
+        clear_config_cache()
+    except Exception as exc:
+        logger.debug("[POPULARITY_PIPELINE] Config reload skipped: %s", exc)
+
+
 def run_popularity_scan(
     *,
     verbose: bool = False,
@@ -85,7 +99,8 @@ def run_popularity_scan(
 ):
     """Run the popularity scan pipeline. Entry point for CLI, WebUI, and scheduler."""
     from helpers.logging_config import log_unified
-    log_unified(f"[POPULARITY_PIPELINE] Starting scan (artist={artist_filter or 'ALL'}, verbose={verbose}, force={force})")
+    _reload_config_before_scan()
+    log_unified(f"[POPULARITY_PIPELINE] Starting scan (artist={artist_filter or 'ALL'}, verbose={verbose}, force={force}) — config.yaml reloaded")
 
     # ✅ CLEAR STALE STOP FLAGS: Ensure the scan starts with a clean slate
     if progress_file:
@@ -225,6 +240,7 @@ def run_popularity_from_artist(
     progress_file: str | None = None,
     verbose: bool = False,
 ):
+    _reload_config_before_scan()
     logger.info("Starting popularity scan from artist '%s'", artist)
     from helpers.logging_config import log_unified
     log_unified(f"Starting popularity scan from artist '{artist}'")

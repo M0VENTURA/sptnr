@@ -990,6 +990,15 @@ def compute_artist_scores(
     return list(artist_scores) + db_scores
 
 
+def _album_scaling_configured() -> bool:
+    """True when ``single_detection.album_scaling`` exists in the loaded config."""
+    try:
+        cfg = get_standout_config() or {}
+        return isinstance(cfg.get("album_scaling"), dict) and bool(cfg.get("album_scaling"))
+    except Exception:
+        return False
+
+
 def _log_scan_weights(artist: str, album: str, album_model: dict[str, Any]) -> None:
     """Log the blend weights + era rules applied to one album's rating pass.
 
@@ -1010,7 +1019,8 @@ def _log_scan_weights(artist: str, album: str, album_model: dict[str, Any]) -> N
             f"| era={era} (R_eff={reff:.2f}, peak≥{peak_min:.2f}, solid≥{solid_min:.2f}) "
             f"| caps: catalog_top={float(era_rules.get('catalog_top_pct') or 0) * 100:.0f}%, "
             f"album_top_n={era_rules.get('album_top_n') or '—'}, "
-            f"max_5★={era_rules.get('max_5star_slots') or '—'}"
+            f"max_5★={era_rules.get('max_5star_slots') or '—'} "
+            f"| source: {'config' if _album_scaling_configured() else 'defaults'}"
         )
     except Exception as exc:
         logger.debug("[finalise_stage] Weights log failed: %s", exc)
