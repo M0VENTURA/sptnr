@@ -251,7 +251,7 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
             # HTTP access noise, so the unified log stays clean even with all
             # messages routed to it.
             "": {
-                "handlers": ["unified_file", "info_file", "debug_file"],
+                "handlers": ["unified_file", "info_file", "debug_file", "error_file"],
                 # Root level is config-driven and defaults to INFO so verbose
                 # DEBUG output is off by default (debug.log stays quiet until
                 # the operator enables it via config.html / LOG_LEVEL env).

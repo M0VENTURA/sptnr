@@ -155,19 +155,34 @@ def _discogs_title_similarity(local_title: str, candidate_title: str) -> float:
     # boy"); partial_ratio handles suffix differences ("A" vs "A B").  The
     # stdlib fallback is the equivalent max of plain and word-order-sorted
     # SequenceMatcher ratios.
-    if _rapidfuzz_fuzz is not None:
-        return max(
-            _rapidfuzz_fuzz.token_set_ratio(local_key, candidate_key),
-            _rapidfuzz_fuzz.partial_ratio(local_key, candidate_key),
-        ) / 100.0
-
     def _sorted(value: str) -> str:
         return " ".join(sorted(value.split()))
 
-    return max(
+    sim = max(
+        _rapidfuzz_fuzz.token_set_ratio(local_key, candidate_key),
+        _rapidfuzz_fuzz.partial_ratio(local_key, candidate_key),
+    ) / 100.0 if _rapidfuzz_fuzz is not None else max(
         SequenceMatcher(None, local_key, candidate_key).ratio(),
         SequenceMatcher(None, _sorted(local_key), _sorted(candidate_key)).ratio(),
     )
+
+    # ── Subset-inflation guard ─────────────────────────────────────────────
+    # token_set_ratio scores a SHORT release title as a perfect subset of a
+    # much LONGER local title ("Kvicksilver" ⊂ "Kvicksilver (Mercury Shadow
+    # with Swedish vocal)"), so unrelated releases with generic short titles
+    # confirm every album track as a Discogs single.  Direction matters:
+    # subset credit is only legitimate when the RELEASE title is the longer
+    # side (split-single primary side — handled above before this point).
+    # When the local title has >2× the candidate's word count, cap the score
+    # below the acceptance threshold.
+    local_words = re.findall(r"[a-z0-9]+", local_key)
+    cand_words = re.findall(r"[a-z0-9]+", candidate_key)
+    if cand_words and len(local_words) > 2 * len(cand_words):
+        local_set = set(local_words)
+        if all(w in local_set for w in cand_words):
+            return 0.60  # below MIN_DISCOGS_SIMILARITY (0.75)
+
+    return sim
 
 
 # --- TYPES ---

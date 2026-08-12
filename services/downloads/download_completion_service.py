@@ -1150,6 +1150,55 @@ def check_completed_downloads() -> dict[str, Any]:
                 logger.error("[COMPLETE] Unhandled error processing queue %s: %s", item.get("id"), exc, exc_info=True)
                 stats["errors"] += 1
 
+        # ── Orphan sweep ─────────────────────────────────────────────────
+        # Completed slskd transfers that NO queue item claimed this cycle
+        # (and that no queue row references) are wrong/orphaned grabs —
+        # delete them so the downloads folder never accumulates incorrect
+        # files.  Files that arrived by other means (manual drops, discovered
+        # folders) are NOT touched — they stay available for the manual-match
+        # workflow.
+        try:
+            seen_orphans: set[str] = set()
+            for _local in slskd_completed.values():
+                try:
+                    if not _local or not os.path.isfile(_local):
+                        continue
+                    if os.path.basename(str(_local)).lower() in claimed_files:
+                        continue
+                    real = os.path.realpath(_local)
+                    if real in seen_orphans:
+                        continue
+                    seen_orphans.add(real)
+                    try:
+                        from db.utils import get_db_connection
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        cur.execute(
+                            "SELECT 1 FROM download_queue "
+                            "WHERE file_path = %s OR found_filename = %s LIMIT 1",
+                            (str(_local), os.path.basename(str(_local))),
+                        )
+                        referenced = cur.fetchone() is not None
+                        conn.close()
+                    except Exception:
+                        referenced = True  # be safe: never delete when unsure
+                    if referenced:
+                        continue
+                    os.remove(_local)
+                    stats["orphans_deleted"] = stats.get("orphans_deleted", 0) + 1
+                    logger.warning(
+                        "[COMPLETE] Deleted orphaned slskd download (no queue item claimed it): %s", _local,
+                    )
+                    _log_queue_event(
+                        "failed",
+                        f"Deleted orphaned slskd download (no queue item claimed it): {os.path.basename(str(_local))}",
+                        None,
+                    )
+                except Exception as exc:
+                    logger.warning("[COMPLETE] Orphan sweep error for %s: %s", _local, exc)
+        except Exception as exc:
+            logger.warning("[COMPLETE] Orphan sweep failed: %s", exc)
+
         return stats
 
     except Exception as exc:
