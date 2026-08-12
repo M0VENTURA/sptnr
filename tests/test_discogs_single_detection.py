@@ -145,7 +145,9 @@ class TestDetectDiscogsSource:
             "test-token",
         )
         assert result["matched"] is True
-        assert result["confidence"] == 0.8
+        # Exact verified match = base weight (0.85) × ratio 1.0 → full (high)
+        # confidence. Discogs only confirms a single on high-confidence matches.
+        assert result["confidence"] == 0.85
         assert result["metadata"].get("release_year") == 2006
 
     def test_detect_discogs_fast_path_cached_single(self):
