@@ -272,7 +272,9 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
     return create_nsp_file(playlist_name, data)
 
 
-def refresh_all_playlists_from_db():    with db_session() as session:
+def refresh_all_playlists_from_db():
+    """Rebuild the legacy per-artist NSP files from current DB ratings."""
+    with db_session() as session:
         result = session.execute(text("SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist FROM tracks WHERE rating >= 4"))
         artists = [str(row[0]) for row in result.fetchall() or [] if row[0]]
         count = 0

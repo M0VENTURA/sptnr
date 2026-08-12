@@ -137,6 +137,44 @@ def _monitored_downloads_dir() -> str:
         return "?"
 
 
+# Grace window before a successful slskd transfer is declared "local file not
+# found": slskd can report completion while the file is still landing on disk
+# (volume sync, delayed move).  Polls × seconds ≈ 30s worst case.
+_FILE_ARRIVAL_POLLS = 3
+_FILE_ARRIVAL_POLL_SECONDS = 10
+
+
+def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Optional[str]:
+    """Poll up to ~30s for a just-completed transfer to appear on disk.
+
+    Checks the monitored downloads directory (basename match) plus the
+    slskd-reported ``localFilePath``.  Returns the path that appeared, or
+    None when the file never landed.
+    """
+    import time as _time
+
+    monitored = _monitored_downloads_dir()
+    candidates = []
+    base = os.path.basename(found_filename or "")
+    if monitored and monitored != "?" and base:
+        candidates.append(os.path.join(monitored, base))
+    if local_file_path:
+        candidates.append(local_file_path)
+
+    if not candidates:
+        return None
+
+    for _ in range(_FILE_ARRIVAL_POLLS):
+        for path in candidates:
+            try:
+                if path and os.path.isfile(path):
+                    return path
+            except Exception:
+                pass
+        _time.sleep(_FILE_ARRIVAL_POLL_SECONDS)
+    return None
+
+
 def _is_stale_queue_item(
     item: dict,
     stale_minutes: int = 10,
@@ -700,13 +738,25 @@ def _reconcile_transfer_state(
         return True
 
     if slskd.is_success_state(state):
+        # slskd reports success but the file may still be landing on disk
+        # (container volume sync, delayed move, filesystem flush).  Wait up
+        # to ~30s before declaring the transfer missing so transient path
+        # delays never fail an otherwise-good import.
+        local = str(transfer.get("localFilePath") or "")
+        landed = _wait_for_transfer_file(found_fn, local)
+        if landed:
+            logger.info(
+                "[COMPLETE] Queue %s: transfer file appeared within the grace window — %s",
+                queue_id, landed,
+            )
+            return False  # not terminal — normal file matching takes over
+
         # slskd reports success but no file was found — the file was likely
         # deleted before the queue processor could match it, or (more common)
         # it was saved somewhere outside the monitored downloads folder (the
         # slskd container's download path vs Popularr's DOWNLOADS_DIR).
         # Log the exact paths so a path mismatch is self-diagnosing instead
         # of an endless silent fail→retry loop.
-        local = str(transfer.get("localFilePath") or "")
         logger.warning(
             "[COMPLETE] Queue %s: slskd succeeded but no file found — removing stale transfer and retrying. "
             "slskd localFilePath=%r; queue found_filename=%r; monitored downloads dir=%r. "

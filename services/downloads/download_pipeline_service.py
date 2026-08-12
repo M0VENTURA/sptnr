@@ -172,8 +172,24 @@ _SLSKD_TRACKNUM_RE = re.compile(r"\s+-\s+\d{1,3}\s+-\s+")
 # RETRY SCHEDULING (search misses → backoff / New Music Friday)
 # =============================================================================
 
-# How long a search-miss backs off before the next automatic attempt.
-_SEARCH_BACKOFF_HOURS = 4
+# Escalating backoff tiers for repeated search misses: 1st → 4h, 2nd → 12h,
+# 3rd → 24h; the 4th consecutive miss abandons automatic retries entirely
+# (the item parks as failed and only a manual Retry re-queues it).
+_BACKOFF_TIER_HOURS = (4, 12, 24)
+
+
+def _backoff_hours_for(retry_count: int) -> int:
+    """Backoff window for the current (0-based) miss count."""
+    idx = max(0, min(int(retry_count or 0), len(_BACKOFF_TIER_HOURS) - 1))
+    return _BACKOFF_TIER_HOURS[idx]
+
+
+def _fmt_local(dt: datetime) -> str:
+    """Format a datetime in the container's local timezone (TZ env)."""
+    try:
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return dt.strftime("%Y-%m-%d %H:%M")
 
 
 def _next_friday_six_am(now_utc: datetime) -> datetime:
@@ -232,14 +248,24 @@ def _schedule_search_retry(queue_id: int, item: dict, reason: str) -> None:
             future = False
 
     now_utc = datetime.now(timezone.utc)
+    retry_count = int(item.get("retry_count") or 0)
     if future:
         next_run = _next_friday_six_am(now_utc)
         status = "pending_release"
-        note = f"{reason} — pre-release, scanning Friday {next_run.strftime('%Y-%m-%d %H:%M')} UTC"
+        note = f"{reason} — pre-release, scanning Friday {_fmt_local(next_run)} local"
+    elif retry_count >= len(_BACKOFF_TIER_HOURS):
+        # 4th+ consecutive miss: stop hammering Soulseek — park as failed;
+        # only a manual Retry re-queues the item.
+        from db.repositories.queue import mark_failed
+        mark_failed(queue_id, f"{reason} — abandoned after {retry_count + 1} attempts (manual retry)")
+        log_unified(f"[QUEUE] {artist} - {title} → {reason} — abandoned after {retry_count + 1} attempts (manual retry)")
+        _log_queue_event("failed", f"{artist} - {title} → abandoned after {retry_count + 1} attempts (manual retry)", queue_id)
+        return
     else:
-        next_run = now_utc + timedelta(hours=_SEARCH_BACKOFF_HOURS)
+        hours = _backoff_hours_for(retry_count)
+        next_run = now_utc + timedelta(hours=hours)
         status = "backed_off"
-        note = f"{reason} — backing off {_SEARCH_BACKOFF_HOURS}h until {next_run.strftime('%Y-%m-%d %H:%M')} UTC"
+        note = f"{reason} — backing off {hours}h until {_fmt_local(next_run)} local (attempt {retry_count + 1})"
 
     schedule_queue_retry(queue_id, status, next_run.isoformat(), note)
     log_unified(f"[QUEUE] {artist} - {title} → {note}")
@@ -448,9 +474,19 @@ def _score_result(
         artist_evidenced = (
             art_score >= 0.6
             or (significant_words and any(w in filename_tokens for w in significant_words))
+            or _normalise(gate_artist) in _normalise(filename)
         )
     if not artist_evidenced:
-        score = min(score, 20.0)  # below min_score (30) — never qualifies
+        # Explicit artist-path rejection: the target artist must be evidenced
+        # in the full remote path (file name OR any parent folder) before the
+        # candidate may be downloaded.  A same-titled track by another band
+        # ("Put The Gun Down" by Andy Black/ZZ Ward vs Voice of Baceprot)
+        # must never be grabbed while waiting for the right artist's peer.
+        logger.debug(
+            "[SLSKD_SCORE] Rejected candidate %r — no artist evidence for %r",
+            filename[:180], expected_artist,
+        )
+        return 0.0
 
     # Title match
     title_score = _similarity(str(parts.get("title") or ""), expected_title)
