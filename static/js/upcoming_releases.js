@@ -269,17 +269,24 @@
     });
     var sortedMonths = Object.keys(grouped).sort();
 
+    // The current month (or the first group when today's month has no
+    // releases) opens by default; future months stay collapsed so the page
+    // remains compact while every month stays one click away.
+    var todayMonth = new Date().toISOString().slice(0, 7);
+    var defaultOpenMonth = sortedMonths.indexOf(todayMonth) >= 0 ? todayMonth : sortedMonths[0];
+
     var html = '<div class="accordion" id="upcomingReleaseAccordion">';
     sortedMonths.forEach(function (month, idx) {
       var monthReleases = grouped[month];
       var monthLabel = new Date(month + '-01').toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+      var open = month === defaultOpenMonth;
       html += '<div id="upcomingMonthCard' + idx + '" class="accordion-item">' +
         '<h2 class="accordion-header">' +
-        '<button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#ucm' + idx + '">' +
+        '<button class="accordion-button' + (open ? '' : ' collapsed') + '" type="button" data-bs-toggle="collapse" data-bs-target="#ucm' + idx + '">' +
         '<strong>' + escapeHtml(monthLabel) + '</strong>' +
-        '<span class="badge bg-primary ms-2">' + monthReleases.length + '</span>' +
+        '<span class="badge bg-primary ms-2">' + monthReleases.length + ' release' + (monthReleases.length === 1 ? '' : 's') + '</span>' +
         '</button></h2>' +
-        '<div id="ucm' + idx + '" class="accordion-collapse collapse">' +
+        '<div id="ucm' + idx + '" class="accordion-collapse collapse' + (open ? ' show' : '') + '">' +
         '<div class="accordion-body p-0"><div class="table-responsive">' +
         '<table class="table table-hover table-striped table-dark table-sm mb-0">' +
         '<thead><tr><th>Artist</th><th>Album</th><th>Date</th><th>Source</th><th>MBID</th><th>Action</th></tr></thead>' +

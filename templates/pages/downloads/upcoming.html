@@ -69,8 +69,6 @@
           <p class="text-muted">Click <strong>Check for Updates</strong> to search MusicBrainz for new and upcoming releases.</p>
         </div>
       </div>
-
-      <div id="upcomingPagination" class="d-flex justify-content-center align-items-center gap-2 mt-3 flex-wrap"></div>
     </div>
   </div>
 </div>
@@ -150,7 +148,7 @@
   var S = window.UpcomingReleasesService;
   if (!S) return;
 
-  var PAGE_SIZE = 50;
+  var FETCH_LIMIT = 1000; // the full rolling calendar fits in one fetch
   var currentFilter = 'all';
   var currentSource = 'all';
 
@@ -212,51 +210,21 @@
     if (el) el.style.display = 'none';
   }
 
-  // ── Pagination ───────────────────────────────────────────────────────
-  function renderPagination() {
-    var container = document.getElementById('upcomingPagination');
-    if (!container) return;
-    var page = S.state.filters.page || 1;
-    var totalPages = Math.max(1, Math.ceil((S.state.total || 0) / PAGE_SIZE));
-
-    var html = '<button type="button" class="btn btn-sm btn-outline-secondary" id="upcomingPrevPage" ' +
-      (page <= 1 ? 'disabled' : '') + '><i class="bi bi-chevron-left"></i> Prev</button>' +
-      '<span class="small text-muted">Page ' + page + ' of ' + totalPages + ' · ' + S.state.total + ' release(s)</span>' +
-      '<button type="button" class="btn btn-sm btn-outline-secondary" id="upcomingNextPage" ' +
-      (!S.state.hasMore ? 'disabled' : '') + '>Next <i class="bi bi-chevron-right"></i></button>';
-    container.innerHTML = html;
-
-    var prev = document.getElementById('upcomingPrevPage');
-    var next = document.getElementById('upcomingNextPage');
-    if (prev) prev.addEventListener('click', function () {
-      if (S.state.filters.page > 1) {
-        S.state.filters.page -= 1;
-        refreshPage();
-      }
-    });
-    if (next) next.addEventListener('click', function () {
-      if (S.state.hasMore) {
-        S.state.filters.page += 1;
-        refreshPage();
-      }
-    });
-  }
-
-  // ── Table refresh ────────────────────────────────────────────────────
+  // ── Table refresh (month-grouped accordions, no pagination) ─────────
   async function refreshPage() {
     var container = document.getElementById('upcomingReleases');
     if (!container) return;
     container.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary spinner-border-sm" role="status"></div><p class="mt-2 small mb-0">Loading upcoming releases...</p></div>';
 
-    S.state.filters.page = S.state.filters.page || 1;
-    S.state.filters.limit = PAGE_SIZE;
+    S.state.filters.page = 1;
+    S.state.filters.limit = FETCH_LIMIT;
     try {
       var data = await S.fetchReleases({
         filter: currentFilter === 'all' ? undefined : currentFilter,
         source: currentSource === 'all' ? undefined : currentSource,
         include_queue: true,
-        page: S.state.filters.page,
-        limit: PAGE_SIZE,
+        page: 1,
+        limit: FETCH_LIMIT,
       });
       var totalBadge = document.getElementById('upcomingTotalBadge');
       if (totalBadge) {
@@ -268,7 +236,6 @@
           ? 'No Wikipedia-discovered releases yet. Click <strong>Update from Wikipedia</strong> to scrape.'
           : 'No upcoming releases found. Click <strong>Check for Updates</strong> to search MusicBrainz.',
       });
-      renderPagination();
       hideStatus();
     } catch (error) {
       if (error && error.name === 'AbortError') return;

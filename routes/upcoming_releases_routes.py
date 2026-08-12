@@ -135,7 +135,10 @@ def api_upcoming_releases():
         source_filter = (request.args.get("source", "") or "").strip()
         include_queue = request.args.get("include_queue", "").strip().lower() == "true"
         page = max(1, request.args.get("page", 1, type=int))
-        limit = max(1, min(request.args.get("limit", 50, type=int), 200))
+        # Cap raised to 1000 so the full rolling calendar (all months) fits
+        # in a single fetch — the upcoming page renders month accordions from
+        # one payload instead of paginating 50 rows at a time.
+        limit = max(1, min(request.args.get("limit", 50, type=int), 1000))
         # Hide albums that already exist in the local library (normalized
         # artist+album match).  Default ON — the feed shows only new drops.
         hide_in_library = request.args.get("hide_in_library", "1").strip().lower() != "0"

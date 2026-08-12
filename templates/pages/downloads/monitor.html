@@ -28,15 +28,18 @@
     <button class="btn btn-sm btn-success" onclick="discoverFiles(event)" title="Scan the downloads folder for audio files">
       <i class="bi bi-search"></i> Auto-Discover Files
     </button>
-    <button class="btn btn-sm btn-outline-danger" onclick="clearQueue()" title="Clear all queue items">
-      <i class="bi bi-trash"></i> Clear Queue
-    </button>
-    <button class="btn btn-sm btn-danger" onclick="purgeAllQueueAndDownloads()" title="Delete queue items AND their downloaded files">
-      <i class="bi bi-trash-fill"></i> Purge All
-    </button>
-    <a href="/downloads/banned-words" class="btn btn-sm btn-outline-danger ms-auto">
+    <a href="/downloads/banned-words" class="btn btn-sm btn-outline-danger">
       <i class="bi bi-slash-circle"></i> Banned Words
     </a>
+    <div class="dropdown ms-auto">
+      <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+        <i class="bi bi-trash"></i> Cleanup Queue
+      </button>
+      <ul class="dropdown-menu dropdown-menu-dark">
+        <li><button class="dropdown-item" type="button" onclick="clearQueue()"><i class="bi bi-eraser me-2"></i>Clear Queue</button></li>
+        <li><button class="dropdown-item text-danger" type="button" onclick="purgeAllQueueAndDownloads()"><i class="bi bi-trash-fill me-2"></i>Purge All &amp; Downloads</button></li>
+      </ul>
+    </div>
   </div>
 
   {% include 'components/search/_monitor_queue_section.html' ignore missing %}
@@ -44,14 +47,14 @@
   <!-- Downloads File Manager: Matched Folders + Upcoming Releases tabs -->
   <div class="card mb-4">
     <div class="card-header p-0">
-      <ul class="nav nav-tabs card-header-tabs px-2 pt-2" id="downloadsManagerTabs" role="tablist">
+      <ul class="nav nav-tabs card-header-tabs px-2 pt-2" id="downloadManagerTabs" role="tablist">
         <li class="nav-item" role="presentation">
-          <button class="nav-link active" id="fm-folders-tab" data-bs-toggle="tab" data-bs-target="#fm-folders" type="button" role="tab" aria-selected="true">
+          <button class="nav-link active" id="matched-tab" data-bs-toggle="tab" data-bs-target="#matched-pane" type="button" role="tab" aria-controls="matched-pane" aria-selected="true">
             <i class="bi bi-folder"></i> Matched Folders <span class="badge bg-info ms-1" id="unmatchedFoldersBadge">0</span>
           </button>
         </li>
         <li class="nav-item" role="presentation">
-          <button class="nav-link" id="fm-upcoming-tab" data-bs-toggle="tab" data-bs-target="#fm-upcoming" type="button" role="tab" aria-selected="false">
+          <button class="nav-link" id="upcoming-tab" data-bs-toggle="tab" data-bs-target="#upcoming-pane" type="button" role="tab" aria-controls="upcoming-pane" aria-selected="false">
             <i class="bi bi-calendar-event"></i> Upcoming Releases
           </button>
         </li>
@@ -59,7 +62,7 @@
     </div>
     <div class="card-body p-0">
       <div class="tab-content">
-        <div class="tab-pane fade show active p-2" id="fm-folders" role="tabpanel" aria-labelledby="fm-folders-tab">
+        <div class="tab-pane fade show active p-2" id="matched-pane" role="tabpanel" aria-labelledby="matched-tab">
           <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
             <button class="btn btn-sm btn-success" onclick="discoverFiles(event)"><i class="bi bi-search"></i> Scan Downloads</button>
             <button class="btn btn-sm btn-primary" onclick="processAlbums(event)"><i class="bi bi-collection"></i> Process Albums</button>
@@ -70,7 +73,7 @@
             <div id="unmatchedFoldersList"></div>
           </div>
         </div>
-        <div class="tab-pane fade p-2" id="fm-upcoming" role="tabpanel" aria-labelledby="fm-upcoming-tab">
+        <div class="tab-pane fade p-2" id="upcoming-pane" role="tabpanel" aria-labelledby="upcoming-tab">
           {% include 'components/search/_monitor_upcoming.html' ignore missing %}
         </div>
       </div>

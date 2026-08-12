@@ -181,6 +181,36 @@
 let queueLogPaused = false;
 let searchLogPaused = false;
 
+// ===== Downloads File Manager tabs =====
+// Bootstrap's data-api normally handles nav-tabs; this idempotent fallback
+// guarantees the Matched Folders / Upcoming panes toggle even when the
+// data-api never wired up (partial bundle load / cached bootstrap).  It
+// sets the same classes Bootstrap would, so double-binding is harmless.
+function initDownloadsManagerTabs() {
+  const buttons = document.querySelectorAll('#downloadManagerTabs .nav-link');
+  if (!buttons.length) return;
+  buttons.forEach((btn) => {
+    if (btn.getAttribute('data-tab-bound')) return;
+    btn.setAttribute('data-tab-bound', '1');
+    btn.addEventListener('click', () => {
+      buttons.forEach((b) => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-selected', active ? 'true' : 'false');
+        const targetId = b.getAttribute('data-bs-target');
+        if (!targetId) return;
+        const pane = document.querySelector(targetId);
+        if (pane) {
+          pane.classList.toggle('active', active);
+          pane.classList.toggle('show', active);
+        }
+      });
+    });
+  });
+}
+
+document.addEventListener('DOMContentLoaded', initDownloadsManagerTabs);
+
 // ===== Queue Groups (legacy MusicBrainz folder groups were removed — the
 // queue groups match the folders and support expand/stop/delete) =====
 async function loadFolderGroups(options) {

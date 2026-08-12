@@ -49,6 +49,23 @@
 .status-pill.status-complete { color: #4ade80; border-color: rgba(74, 222, 128, 0.5); }
 .status-pill.status-pending { color: #94a3b8; border-color: rgba(148, 163, 184, 0.5); }
 
+/* Readable meta chips + subtext inside queue rows (dark theme) — the chips
+   were rendering near-invisible dark-on-dark; scope to .queue-item-meta so
+   the coloured .status-pill badges keep their own styling. */
+.queue-item .queue-item-meta .badge,
+.queue-item .meta-pill {
+    background-color: rgba(255, 255, 255, 0.08) !important;
+    color: #d0d0d0 !important;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    opacity: 1;
+}
+.queue-item .queue-item-meta .badge i {
+    color: var(--spotify-green, #1db954);
+}
+.queue-item .text-muted {
+    color: #a0a0a0 !important;
+}
+
 /* Header stat pills (compact queue summary bar) */
 .stat-pill {
     display: inline-flex;
