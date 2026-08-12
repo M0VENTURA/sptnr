@@ -91,60 +91,8 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ==========================================================================
-// Live scan progress toast (SSE)
+// Global log viewer + sticky scan bar (every page)
 // --------------------------------------------------------------------------
-// Subscribes to /api/scan-progress/stream on every page and shows a compact
-// bottom toast while a scan runs (current artist / album + progress bar).
-// EventSource reconnects automatically; the toast reappears per scan and is
-// dismissible.  Falls back silently to the dashboard's polling UI when SSE
-// is unavailable.
-// ==========================================================================
-
-function showScanProgressToast(data) {
-  let toast = document.getElementById('scanProgressToast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'scanProgressToast';
-    toast.className = 'scan-progress-toast d-none';
-    toast.innerHTML =
-      '<div class="scan-progress-toast-body">' +
-        '<div class="scan-progress-toast-title">' +
-          '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>' +
-          '<strong id="scanProgressTitle">Scanning…</strong>' +
-        '</div>' +
-        '<div id="scanProgressText" class="small text-muted"></div>' +
-        '<div class="progress mt-2" style="height:4px;"><div id="scanProgressBar" class="progress-bar bg-success" style="width:0%;"></div></div>' +
-      '</div>' +
-      '<button type="button" class="scan-progress-toast-close" aria-label="Dismiss" title="Dismiss">' +
-        '<i class="bi bi-x-lg"></i>' +
-      '</button>';
-    toast.querySelector('.scan-progress-toast-close').addEventListener('click', function () {
-      toast.classList.add('d-none');
-    });
-    document.body.appendChild(toast);
-  }
-
-  const active = (data.active_scans || []).filter((s) => s && s.is_running);
-  if (!active.length) {
-    toast.classList.add('d-none');
-    return;
-  }
-  const scan = active[0];
-  const pct = Math.min(Number(scan.percent_complete) || 0, 100);
-  const typeLabel = String(scan.scan_type || 'scan')
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-  toast.querySelector('#scanProgressTitle').textContent = typeLabel + ' — ' + pct + '%';
-  let detail = '';
-  if (scan.current_artist) detail += scan.current_artist;
-  if (scan.current_album) detail += (detail ? ' · ' : '') + scan.current_album;
-  if (scan.current_stage && String(scan.current_stage) !== 'complete') {
-    detail += (detail ? ' — ' : '') + String(scan.current_stage);
-  }
-  toast.querySelector('#scanProgressText').textContent = detail || scan.message || 'Working…';
-  toast.querySelector('#scanProgressBar').style.width = pct + '%';
-  toast.classList.remove('d-none');
-}
 
 document.addEventListener("DOMContentLoaded", () => {
   if (typeof EventSource === 'undefined') return;
@@ -153,9 +101,7 @@ document.addEventListener("DOMContentLoaded", () => {
     source.addEventListener('message', (e) => {
       if (!e.data) return;
       try {
-        const data = JSON.parse(e.data);
-        showScanProgressToast(data);
-        updateGlobalScanBar(data);
+        updateGlobalScanBar(JSON.parse(e.data));
       } catch (_) {
         /* malformed frame — ignore */
       }
@@ -164,10 +110,6 @@ document.addEventListener("DOMContentLoaded", () => {
     /* SSE unavailable — dashboard polling still covers progress */
   }
 });
-
-// ==========================================================================
-// Global log viewer + sticky scan bar (every page)
-// --------------------------------------------------------------------------
 // The sticky bottom bar and the fullscreen log modal live in base.html.
 // The dashboard's own polling (dashboard.js) drives the bar there; on every
 // other page the SSE stream updates it.  The modal reads per-source log
@@ -259,7 +201,6 @@ function switchLogSource(source) {
     btn.classList.toggle('active', btn.dataset.source === activeLogSource);
   });
   updateUnifiedLog();
-  updateActivityWidget();
 }
 
 function downloadActiveLogLastHour() {
@@ -299,93 +240,26 @@ function setLogTabDot(source, active) {
   dot.classList.toggle('log-tab-dot-active', active);
 }
 
-function _fmtElapsed(sec) {
-  if (!isFinite(sec) || sec < 0) return '';
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  return (h ? h + 'h ' : '') + (m ? m + 'm ' : '') + s + 's';
-}
-
-function _lastLogLineHtml() {
-  for (let i = _logRawLines.length - 1; i >= 0; i--) {
-    const line = String(_logRawLines[i] || '').trim();
-    if (!line) continue;
-    return '<div class="small text-muted text-truncate mt-1"><i class="bi bi-arrow-return-right me-1"></i>' + _formatLogLine(line) + '</div>';
-  }
-  return '';
-}
-
-function updateActivityWidget() {
-  const card = document.getElementById('logActivityCard');
-  const titleEl = document.getElementById('logActivityTitle');
-  const subEl = document.getElementById('logActivitySub');
-  const body = document.getElementById('logActivityBody');
-  if (!card || !titleEl || !subEl || !body) return;
-
-  // Scanner tab: live progress widget (bar, current item, step, elapsed).
-  if (activeLogSource === 'scanner') {
-    fetch('/api/scan-progress?_ts=' + Date.now(), { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data) => {
-        const scans = data.active_scans || [];
-        const scan = scans[0] || null;
-        setLogTabDot('scanner', !!(scan && scan.is_running));
-        if (!scan || !scan.is_running) { card.classList.add('d-none'); return; }
-        card.classList.remove('d-none');
-        const pct = Math.min(Number(scan.progress ?? scan.percent_complete) || 0, 100);
-        const name = String(scan.scan_type || 'scan').replace(/_/g, ' ');
-        const item = String(scan.current_item || [scan.current_artist, scan.current_album].filter(Boolean).join(' — ') || '').trim();
-        const stage = String(scan.current_stage || scan.message || '').replace(/_/g, ' ');
-        titleEl.textContent = name + ' — ' + pct + '%';
-        subEl.textContent = stage ? 'Step: ' + stage : '';
-        let elapsed = '';
-        if (Number(scan.elapsed_seconds) > 0) elapsed = _fmtElapsed(Number(scan.elapsed_seconds));
-        else if (scan.started_at) elapsed = _fmtElapsed((Date.now() - Date.parse(scan.started_at)) / 1000);
-        body.innerHTML =
-          '<div class="progress mb-1" style="height: 8px;"><div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: ' + pct + '%"></div></div>' +
-          (item ? '<div class="small text-truncate"><i class="bi bi-disc me-1"></i>' + window.escapeHtml(item) + '</div>' : '') +
-          (elapsed ? '<div class="small text-muted mt-1"><i class="bi bi-stopwatch me-1"></i>' + window.escapeHtml(elapsed) + ' elapsed</div>' : '');
-      })
-      .catch(() => {});
-    return;
-  }
-
-  // Queue / Soulseek tab: transfer counts + last log line.
-  if (activeLogSource === 'queue' || activeLogSource === 'soulseek') {
-    fetch('/api/queue/status?limit=1', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data) => {
-        const counts = data.counts || {};
-        const downloading = Number(counts.downloading) || 0;
-        const queued = Number(counts.queued) || 0;
-        const activeTotal = Number(data.total_active) || 0;
-        const completed = Number(counts.completed || counts.imported) || 0;
-        const failed = Number(counts.failed || counts.error) || 0;
-        setLogTabDot('queue', activeTotal > 0);
-        setLogTabDot('soulseek', downloading > 0);
-        card.classList.remove('d-none');
-        titleEl.textContent = activeLogSource === 'soulseek' ? 'Soulseek — Download Queue' : 'Download Queue';
-        subEl.textContent = downloading > 0
-          ? downloading + ' active transfer' + (downloading === 1 ? '' : 's')
-          : 'No transfers in progress';
-        body.innerHTML =
-          '<div class="d-flex flex-wrap gap-2 small">' +
-            '<span class="badge bg-primary">' + downloading + ' downloading</span>' +
-            '<span class="badge bg-secondary">' + queued + ' queued</span>' +
-            '<span class="badge bg-success">' + completed + ' completed</span>' +
-            '<span class="badge bg-danger">' + failed + ' failed</span>' +
-          '</div>' +
-          _lastLogLineHtml();
-      })
-      .catch(() => {});
-    return;
-  }
-
-  // Navidrome / System: stream-only views.
-  setLogTabDot('navidrome', false);
-  setLogTabDot('system', false);
-  card.classList.add('d-none');
+function updateQueueStatusBar() {
+  const el = document.getElementById('scanQueueSummary');
+  if (!el) return;
+  fetch('/api/queue/status?limit=1', { cache: 'no-store' })
+    .then((r) => r.json())
+    .then((data) => {
+      const counts = data.counts || {};
+      const downloading = Number(counts.downloading) || 0;
+      const queued = Number(counts.queued) || 0;
+      const activeTotal = Number(data.total_active) || 0;
+      setLogTabDot('queue', activeTotal > 0);
+      setLogTabDot('soulseek', downloading > 0);
+      if ((downloading + queued) > 0) {
+        el.innerHTML = '<i class="bi bi-cloud-arrow-down me-1"></i>' + downloading + ' Downloading · ' + queued + ' Queued';
+        el.classList.remove('d-none');
+      } else {
+        el.classList.add('d-none');
+      }
+    })
+    .catch(() => {});
 }
 
 // Context-aware default tab when the modal opens: a running scan wins, then
@@ -415,8 +289,14 @@ function updateGlobalScanBar(data) {
   const icon = document.getElementById('scanStatusIcon');
   if (!bar || !line || !icon) return;
   const active = (data && (data.active_scans || [])) || [];
-  const scan = active[0];
-  if (!scan || !scan.is_running) return;
+  const scan = active.find((s) => s && s.is_running);
+  setLogTabDot('scanner', !!scan);
+  if (!scan) {
+    line.textContent = 'Idle';
+    icon.className = 'scan-status-idle';
+    icon.innerHTML = '<i class="bi bi-circle"></i>';
+    return;
+  }
   const pct = Math.min(scan.progress || 0, 100);
   const name = String(scan.scan_type || 'scan').replace(/_/g, ' ');
   line.textContent = `${name} — ${pct}%` + (scan.current_item ? ` · ${scan.current_item}` : '');
@@ -431,15 +311,14 @@ document.addEventListener("DOMContentLoaded", () => {
       logModalVisible = true;
       smartSelectLogSource();
       updateUnifiedLog();
-      updateActivityWidget();
     });
     logModalEl.addEventListener('hidden.bs.modal', () => { logModalVisible = false; });
   }
   setInterval(() => {
-    if (!logModalVisible) return;
-    updateUnifiedLog();
-    updateActivityWidget();
+    if (logModalVisible) updateUnifiedLog();
+    updateQueueStatusBar();
   }, 5000);
+  updateQueueStatusBar();
 });
 
 // ==========================================================================

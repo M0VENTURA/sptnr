@@ -744,9 +744,35 @@ html {
     50% { opacity: 0.45; }
 }
 
-/* When the global player bar is visible, sit above it instead of overlapping. */
+/* When the global player bar is visible, the two fixed bars stack into ONE
+   unified footer: scan/queue status + Log on the bottom row, player controls
+   directly above it (no gap, no separate floating elements). */
 body.player-visible #scanStatusBar {
-    bottom: 68px;
+    bottom: 0;
+}
+
+body.player-visible #globalPlayerBar {
+    bottom: 2.4rem;
+}
+
+/* Footer height when the player is stacked above the status bar. */
+body.player-visible {
+    --player-bar-height: calc(64px + 2.4rem);
+}
+
+/* Queue summary segment inside the scan-status bar (right of the icon). */
+.scan-queue-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    white-space: nowrap;
+    padding-right: 0.75rem;
+    border-right: 1px solid var(--border-color);
+}
+.scan-queue-summary + #scanStatusLine {
+    padding-left: 0.75rem;
 }
 
 /* ── Global player bar: queue expansion + log-flyout now-playing strip ── */
@@ -783,43 +809,6 @@ body.player-visible #scanStatusBar {
 /* Keep the log stream clear of the fixed player bar underneath it. */
 body.player-visible #unifiedLogModal .modal-body {
     padding-bottom: calc(var(--player-bar-height) + 0.75rem);
-}
-
-/* ── Live scan progress toast (SSE, every page) ────────────────────────── */
-.scan-progress-toast {
-    position: fixed;
-    bottom: 1rem;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 2050;
-    width: min(92vw, 420px);
-    background: rgba(20, 30, 24, 0.97);
-    border: 1px solid rgba(34, 197, 94, 0.5);
-    color: var(--text-primary);
-    border-radius: 0.6rem;
-    padding: 0.65rem 0.9rem;
-    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem;
-    font-size: 0.9rem;
-}
-.scan-progress-toast.d-none { display: none; }
-.scan-progress-toast-body { flex: 1; min-width: 0; }
-.scan-progress-toast-title { display: flex; align-items: center; }
-.scan-progress-toast-close {
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    padding: 0.1rem 0.2rem;
-    cursor: pointer;
-    flex-shrink: 0;
-}
-.scan-progress-toast-close:hover { color: var(--text-primary); }
-/* Sit above the fixed bottom audio player when it is visible */
-body:has(#globalPlayerBar:not(.d-none)) .scan-progress-toast {
-    bottom: calc(var(--player-bar-height) + 0.75rem);
 }
 
 /* ── Sticky save bar (dirty-form tracking) ─────────────────────────────── */
@@ -954,12 +943,6 @@ body:has(#globalPlayerBar:not(.d-none)) .config-save-bar {
 .log-tag-queue { color: #4dd0e1; }
 .log-tag-soulseek { color: #ffa94d; }
 .log-stars { color: #ffd43b; }
-
-/* Live activity summary card above the stream */
-#logActivityCard {
-    background: var(--primary-bg, #121212);
-    border-color: var(--border-color, #333) !important;
-}
 
 /* ── Log viewer line styling (/logs page) ───────────────────────────────── */
 .log-line {

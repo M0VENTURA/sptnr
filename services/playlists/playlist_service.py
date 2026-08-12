@@ -287,6 +287,71 @@ def refresh_all_playlists_from_db():    with db_session() as session:
 logger = logging.getLogger(__name__)
 
 
+def _fetch_artist_image_bytes(artist_name: str) -> bytes | None:
+    """Reuse the /artist-page image pipeline: resolved URL -> image bytes."""
+    try:
+        from services.metadata.artist_metadata_service import get_artist_image
+        data, _code = get_artist_image(artist_name)
+        image_url = data.get("image_url") if isinstance(data, dict) else None
+        if not image_url:
+            return None
+        from api_clients import session
+        resp = session.get(image_url, timeout=15)
+        if resp.status_code == 200 and resp.content:
+            return resp.content
+    except Exception as exc:
+        logger.debug("[PLAYLISTS] Artist image fetch failed for %s: %s", artist_name, exc)
+    return None
+
+
+def attach_playlist_cover(playlist_name: str, artist_name: str) -> dict:
+    """Best-effort: push the artist's image as the playlist's cover art.
+
+    Gated by ``navidrome.playlist_cover_art`` (default false). Resolves the
+    Navidrome playlist id by name, fetches the artist image bytes via the
+    same pipeline the /artist page uses, and uploads through
+    ``updatePlaylist`` (OpenSubsonic coverArt field).  Never raises.
+
+    Returns ``{"uploaded": bool, "reason": str}``.
+    """
+    try:
+        from helpers.config_helpers import get_config
+        cfg = get_config() or {}
+        nav_cfg = cfg.get("navidrome") or {}
+        if not isinstance(nav_cfg, dict) or not nav_cfg.get("playlist_cover_art", False):
+            return {"uploaded": False, "reason": "disabled"}
+
+        nav_users = cfg.get("navidrome_users") or []
+        if not nav_users and nav_cfg.get("base_url"):
+            nav_users = [nav_cfg]
+
+        image_bytes = _fetch_artist_image_bytes(artist_name)
+        if not image_bytes:
+            return {"uploaded": False, "reason": "no image"}
+
+        from api_clients.navidrome import NavidromeClient
+        for user in nav_users:
+            base_url = user.get("base_url")
+            username = user.get("user")
+            password = user.get("pass")
+            if not (base_url and username and password):
+                continue
+            try:
+                client = NavidromeClient(base_url, username, password)
+                playlist = client.find_playlist_by_name(playlist_name)
+                if not playlist or not playlist.get("id"):
+                    continue
+                if client.upload_playlist_cover(str(playlist["id"]), image_bytes):
+                    logger.info("[PLAYLISTS] Cover set for %s (%s)", playlist_name, artist_name)
+                    return {"uploaded": True, "reason": "ok"}
+            except Exception as exc:
+                logger.warning("[PLAYLISTS] Cover upload failed for %s: %s", playlist_name, exc)
+        return {"uploaded": False, "reason": "no navidrome match"}
+    except Exception as exc:
+        logger.warning("[PLAYLISTS] Cover attach aborted: %s", exc)
+        return {"uploaded": False, "reason": str(exc)}
+
+
 def sync_playlists_public() -> dict:
     """Make every Navidrome playlist public when the config flag is enabled.
 

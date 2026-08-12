@@ -273,7 +273,8 @@ function buildConfigObject() {
       essential_name_template: getValue('playlists_essential_name_template', '{artist} - Essential Collection')
     },
     navidrome: {
-      auto_public_playlists: getChecked('api_navidrome_auto_public_playlists', false)
+      auto_public_playlists: getChecked('api_navidrome_auto_public_playlists', false),
+      playlist_cover_art: getChecked('api_navidrome_playlist_cover_art', false)
     },
     downloads: {
       folder: getValue('downloads_folder'),

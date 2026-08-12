@@ -20,8 +20,6 @@
   let progressEl, progressBar, currentTimeEl, totalTimeEl;
   let volumeEl;
   let queuePanel, queueList, queueCountEl, stopBtn;
-  let logStrip, logTitleEl, logArtistEl, logTimeEl;
-  let logPlayPauseBtn, logPrevBtn, logNextBtn;
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function fmtTime(sec) {
@@ -37,15 +35,13 @@
     return div.innerHTML;
   }
 
-  // Keep the footer-bar button and the log-flyout strip button in sync.
+  // Keep the footer-bar play/pause button in sync with playback state.
   function setPlayPauseIcons(playing) {
-    [playPauseBtn, logPlayPauseBtn].forEach(function (btn) {
-      if (!btn) return;
-      btn.innerHTML = playing
-        ? '<i class="bi bi-pause-fill"></i>'
-        : '<i class="bi bi-play-fill"></i>';
-      btn.title = playing ? 'Pause' : 'Play';
-    });
+    if (!playPauseBtn) return;
+    playPauseBtn.innerHTML = playing
+      ? '<i class="bi bi-pause-fill"></i>'
+      : '<i class="bi bi-play-fill"></i>';
+    playPauseBtn.title = playing ? 'Pause' : 'Play';
   }
 
   // ── Queue panel ────────────────────────────────────────────────────────────
@@ -86,17 +82,6 @@
     renderQueue();
   }
 
-  // ── Now-playing strip (top of the log flyout) ─────────────────────────────
-  function renderNowPlaying(track) {
-    if (logStrip) logStrip.classList.toggle('d-none', !track);
-    if (logTitleEl) logTitleEl.textContent = track ? (track.title || 'Unknown') : '';
-    if (logArtistEl) logArtistEl.textContent = track ? (track.artist || '') : '';
-  }
-
-  function updateLogTime() {
-    if (!logTimeEl) return;
-    logTimeEl.textContent = fmtTime(audioEl.currentTime) + ' / ' + fmtTime(audioEl.duration);
-  }
 
   // ── Core playback ──────────────────────────────────────────────────────────
   function loadAndPlay(index) {
@@ -115,7 +100,6 @@
     artEl.src = track.albumArtUrl || '';
     artEl.style.display = track.albumArtUrl ? 'block' : 'none';
 
-    renderNowPlaying(track);
     renderQueue();
     if (!isVisible) show();
     highlightActiveTrack(track.id);
@@ -144,7 +128,6 @@
     queue = [];
     currentIndex = -1;
     highlightActiveTrack(null);
-    renderNowPlaying(null);
     renderQueue();
     hide();
   }
@@ -186,11 +169,9 @@
       const pct = (audioEl.currentTime / audioEl.duration) * 100;
       progressBar.style.width = pct + '%';
       currentTimeEl.textContent = fmtTime(audioEl.currentTime);
-      updateLogTime();
     });
     audioEl.addEventListener('loadedmetadata', function () {
       totalTimeEl.textContent = fmtTime(audioEl.duration);
-      updateLogTime();
     });
     audioEl.addEventListener('error', function () {
       titleEl.textContent = 'Playback error';
@@ -215,7 +196,7 @@
     });
   }
 
-  // ── Control buttons (footer bar + log-flyout strip) ────────────────────────
+  // ── Control buttons (footer bar) ───────────────────────────────────────────
   function bindControlButtons() {
     playPauseBtn.addEventListener('click', togglePlayPause);
     prevBtn.addEventListener('click', function () {
@@ -225,14 +206,6 @@
       if (currentIndex < queue.length - 1) loadAndPlay(currentIndex + 1);
     });
     stopBtn.addEventListener('click', stopPlayback);
-
-    if (logPlayPauseBtn) logPlayPauseBtn.addEventListener('click', togglePlayPause);
-    if (logPrevBtn) logPrevBtn.addEventListener('click', function () {
-      if (currentIndex > 0) loadAndPlay(currentIndex - 1);
-    });
-    if (logNextBtn) logNextBtn.addEventListener('click', function () {
-      if (currentIndex < queue.length - 1) loadAndPlay(currentIndex + 1);
-    });
   }
 
   // ── Init ───────────────────────────────────────────────────────────────────
@@ -254,13 +227,6 @@
     queueList     = document.getElementById('playerQueueList');
     queueCountEl  = document.getElementById('playerQueueCount');
     stopBtn       = document.getElementById('playerStop');
-    logStrip      = document.getElementById('logPlayerStrip');
-    logTitleEl    = document.getElementById('logPlayerTitle');
-    logArtistEl   = document.getElementById('logPlayerArtist');
-    logTimeEl     = document.getElementById('logPlayerTime');
-    logPlayPauseBtn = document.getElementById('logPlayerPlayPause');
-    logPrevBtn    = document.getElementById('logPlayerPrev');
-    logNextBtn    = document.getElementById('logPlayerNext');
 
     if (!playerBar || !audioEl) return;
 

@@ -908,6 +908,14 @@ def _create_essential_m3u(artist: str, cursor) -> None:
                 file_path, len(winners),
             )
             log_unified(f"📄 Playlist: Generated '{playlist_name}.m3u' ({len(winners)} tracks)")
+            # Best-effort: push the artist's image as the Navidrome playlist
+            # cover (config: navidrome.playlist_cover_art).  Runs after the
+            # .m3u is on disk so Navidrome's import has something to attach to.
+            try:
+                from services.playlists.playlist_service import attach_playlist_cover
+                attach_playlist_cover(playlist_name, artist)
+            except Exception:
+                pass
         except Exception as exc:
             logger.warning("[finalise_stage] Essential collection write failed for %s: %s", artist, exc)
         return

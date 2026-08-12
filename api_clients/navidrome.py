@@ -410,6 +410,35 @@ class NavidromeClient:
             logger.error("Failed to update playlist %s public=%s: %s", playlist_id, public, exc)
             return False
 
+    def upload_playlist_cover(self, playlist_id: str, image_bytes: bytes, mime_type: str = "image/jpeg") -> bool:
+        """Upload custom cover art for a playlist (Navidrome OpenSubsonic).
+
+        POSTs the image bytes as a multipart ``coverArt`` field to
+        ``updatePlaylist`` — Navidrome accepts playlist artwork uploads
+        through this endpoint.  Best-effort: returns False (never raises)
+        when the upload is rejected or the server lacks support.
+        """
+        if not playlist_id or not image_bytes:
+            return False
+        url = f"{self.base_url}/rest/updatePlaylist"
+        try:
+            response = self.session.post(
+                url,
+                params=self._build_params(playlistId=playlist_id),
+                files={"coverArt": ("cover.jpg", image_bytes, mime_type)},
+                timeout=30,
+            )
+            data = response.json()
+            ok = bool(data.get("subsonic-response", {}).get("status") == "ok")
+            if not ok:
+                logger.warning(
+                    "[NAVIDROME] Playlist cover upload rejected for %s: %s", playlist_id, data,
+                )
+            return ok
+        except Exception as exc:
+            logger.warning("[NAVIDROME] Playlist cover upload failed for %s: %s", playlist_id, exc)
+            return False
+
     def rename_playlist(self, playlist_id: str, name: str) -> bool:
         """Rename a playlist via the Subsonic ``updatePlaylist`` endpoint."""
         try:

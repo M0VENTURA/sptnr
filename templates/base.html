@@ -179,6 +179,7 @@
   <!-- Global sticky scan status bar — tap to open the log viewer (every page) -->
   <div id="scanStatusBar" role="button" tabindex="0" onclick="openUnifiedLogModal()" title="Open scanning log">
     <span id="scanStatusIcon" class="scan-status-idle"><i class="bi bi-circle"></i></span>
+    <span id="scanQueueSummary" class="scan-queue-summary d-none"></span>
     <span id="scanStatusLine" class="text-truncate">Idle</span>
     <span class="scan-status-open"><i class="bi bi-terminal"></i> Log</span>
   </div>
@@ -210,30 +211,6 @@
           </div>
         </div>
         <div class="modal-body p-2 d-flex flex-column gap-2" style="min-height: 0;">
-          <!-- Now-playing strip: keep playback controls visible while viewing logs -->
-          <div id="logPlayerStrip" class="border rounded p-2 d-none">
-            <div class="d-flex align-items-center gap-2 flex-wrap">
-              <i class="bi bi-music-note-beamed text-success"></i>
-              <div style="min-width:0;flex:1 1 auto;">
-                <div id="logPlayerTitle" class="text-truncate fw-semibold" style="font-size:0.85rem;">—</div>
-                <div id="logPlayerArtist" class="text-truncate text-muted" style="font-size:0.75rem;"></div>
-              </div>
-              <small class="text-muted" id="logPlayerTime" style="font-size:0.75rem;">0:00 / 0:00</small>
-              <div class="d-flex align-items-center gap-1 flex-shrink-0">
-                <button type="button" class="btn btn-sm btn-dark py-0" id="logPlayerPrev" title="Previous"><i class="bi bi-skip-start-fill"></i></button>
-                <button type="button" class="btn btn-sm btn-success py-0" id="logPlayerPlayPause" title="Play"><i class="bi bi-play-fill"></i></button>
-                <button type="button" class="btn btn-sm btn-dark py-0" id="logPlayerNext" title="Next"><i class="bi bi-skip-end-fill"></i></button>
-              </div>
-            </div>
-          </div>
-          <!-- Live activity summary (context-aware per source) -->
-          <div id="logActivityCard" class="border rounded p-2 d-none">
-            <div class="d-flex justify-content-between align-items-center gap-2 mb-1 flex-wrap">
-              <small class="text-muted fw-semibold"><i class="bi bi-activity me-1"></i><span id="logActivityTitle">Activity</span></small>
-              <small class="text-muted" id="logActivitySub"></small>
-            </div>
-            <div id="logActivityBody"></div>
-          </div>
           <!-- Compact auto-scrolling stream window (timestamps off by default) -->
           <div class="d-flex flex-column" style="flex: 1 1 auto; min-height: 0;">
             <div class="d-flex align-items-center gap-2 mb-1">
