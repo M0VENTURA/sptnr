@@ -340,6 +340,8 @@ function buildConfigObject() {
         zscore_medium_threshold: parseFloat(getValue('zscore_medium_threshold', '0.6')) || 0.6,
         star_epsilon_score_points: parseFloat(getValue('star_epsilon_score_points', '0.5')) || 0.5,
         artist_top_percentile: parseFloat(getValue('sd_artist_pct', '0.10')) || 0.10,
+        artist_top_percentile_large: parseFloat(getValue('sd_artist_pct_large', '0.25')) || 0.25,
+        artist_catalog_large_threshold: parseInt(getValue('sd_artist_pct_large_threshold', '30'), 10) || 30,
         artist_medium_bump_percentile: parseFloat(getValue('sd_artist_medium_pct', '0.20')) || 0.20,
         listener_5star_z_threshold: parseFloat(getValue('listener_5star_z_threshold', '1.0')) || 1.0,
         single_boost: parseFloat(getValue('single_boost', '1.15')) || 1.15,

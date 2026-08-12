@@ -555,6 +555,8 @@ def get_standout_config() -> dict[str, Any]:
         "album_zscore_threshold": 0.8,
         "artist_zscore_threshold": 2.2,
         "artist_top_percentile": 0.10,
+        "artist_top_percentile_large": 0.25,
+        "artist_catalog_large_threshold": 30,
         "artist_medium_bump_percentile": 0.20,
         "artist_min_tracks": 10,
         "popularity_5star_z_threshold": 2.0,
@@ -572,7 +574,9 @@ def get_standout_config() -> dict[str, Any]:
     # Merge user config with defaults
     result = defaults.copy()
     for key in ("album_zscore_threshold", "artist_zscore_threshold",
-                "artist_top_percentile", "artist_medium_bump_percentile",
+                "artist_top_percentile", "artist_top_percentile_large",
+                "artist_catalog_large_threshold",
+                "artist_medium_bump_percentile",
                 "artist_min_tracks",
                 "popularity_5star_z_threshold", "lb_unreliable_5star_threshold",
                 "listener_5star_z_threshold",

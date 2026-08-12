@@ -1401,6 +1401,16 @@
           <small class="form-text text-muted">Fraction of the artist's catalogue considered "top" for popularity marking. Tracks here earn 5★ without a single-detection source. Default: <strong>0.10</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Large-Catalogue Top %</label>
+          <input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="sd_artist_pct_large" placeholder="0.25" value="{{ config.get('single_detection', {}).get('artist_top_percentile_large', 0.25) }}">
+          <small class="form-text text-muted">Top band for artists with MORE than the Large-Catalogue Threshold of scored tracks. Default: <strong>0.25</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Large-Catalogue Threshold</label>
+          <input type="number" step="1" min="2" max="1000" class="form-control form-control-sm" id="sd_artist_pct_large_threshold" placeholder="30" value="{{ config.get('single_detection', {}).get('artist_catalog_large_threshold', 30) }}">
+          <small class="form-text text-muted">Artists with MORE than this many scored tracks use the Large-Catalogue Top %; artists at or below it use the Artist Top %. Default: <strong>30</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">Medium-Bump Top %</label>
           <input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="sd_artist_medium_pct" placeholder="0.20" value="{{ config.get('single_detection', {}).get('artist_medium_bump_percentile', 0.20) }}">
           <small class="form-text text-muted">Widened marking band (default <strong>0.20</strong>): a track here with a MEDIUM-confidence single source is bumped to HIGH → 5★. Popularity alone below the top band never marks.</small>

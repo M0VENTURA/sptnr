@@ -40,6 +40,9 @@ class LastFmClient:
     def get_album_track_count(self, artist: str, album: str) -> int:
         return self.service.get_album_track_count(artist, album)
 
+    def has_title_track(self, artist: str, album: str) -> bool:
+        return self.service.has_title_track(artist, album)
+
     def check_track_as_single(self, artist: str, track_title: str) -> bool:
         return self.service.check_track_as_single(artist, track_title)
 

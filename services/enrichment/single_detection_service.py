@@ -645,13 +645,18 @@ def _detect_lastfm(artist: str, album: str, title: str, lastfm_client=None) -> b
         try:
             if hasattr(lastfm_client, "search_album"):
                 target = normalize_title_for_lookup(strip_featured_guest_suffix(title) or title)
+                # Only "- Single"/"- EP" suffixed rows are single evidence —
+                # a bare album named after the track is a scrobble-derived
+                # entry (users tagging files with the track name as album),
+                # not a release marker.
+                single_marker = re.compile(
+                    r"\s*[-–—]?\s*(?:single|ep)\s*$", flags=re.IGNORECASE
+                )
                 for alb in lastfm_client.search_album(title, artist=artist, limit=30) or []:
                     alb_name = str(alb.get("name") or "").strip()
-                    if not alb_name:
+                    if not alb_name or not single_marker.search(alb_name):
                         continue
-                    base = re.sub(
-                        r"\s*[-–—]?\s*(?:single|ep)\s*$", "", alb_name, flags=re.IGNORECASE
-                    ).strip()
+                    base = single_marker.sub("", alb_name).strip()
                     if normalize_title_for_lookup(base) == target:
                         return True
         except Exception:

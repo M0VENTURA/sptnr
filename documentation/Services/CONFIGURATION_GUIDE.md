@@ -43,7 +43,9 @@ Controls z-score thresholds for standout track detection and star rating assignm
 single_detection:
   album_zscore_threshold: 0.8      # Min z-score for standout detection (default: 0.8)
   artist_zscore_threshold: 2.2     # Min z-score for artist outliers (default: 2.2)
-  artist_top_percentile: 0.10      # Top 10% of artist catalog (default: 0.10)
+  artist_top_percentile: 0.10      # Top % of artist catalog for small artists (default: 0.10)
+  artist_top_percentile_large: 0.25  # Top % for artists with > large threshold tracks (default: 0.25)
+  artist_catalog_large_threshold: 30 # Catalogue size where the large top % kicks in (default: 30)
   artist_min_tracks: 10            # Min tracks for artist stats (default: 10)
   
   # Star rating criteria

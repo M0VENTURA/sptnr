@@ -2502,6 +2502,22 @@ async def search():
     return await render_template("pages/search.html", initial_query=query)
 
 
+def _sanitize_config_sections(config: dict) -> dict:
+    """Guard config.html against scalar YAML sections.
+
+    Every template field reads ``config.get('section', {}).get(...)`` — when
+    a section is accidentally a SCALAR in config.yaml (a mangled YAML merge,
+    e.g. ``single_detection: 0.10``), the render dies with ``'str object'
+    has no attribute 'get'``.  Coerce scalar sections to empty mappings so
+    the page renders with defaults; dicts and lists (``navidrome_users`` is
+    iterated as a list) pass through untouched.
+    """
+    cleaned: dict = {}
+    for key, value in (config or {}).items():
+        cleaned[key] = value if isinstance(value, (dict, list)) else {}
+    return cleaned
+
+
 @ui_bp.route("/config", methods=["GET", "POST"])
 async def config_editor():
     from helpers.config_helpers import get_config, clear_config_cache
@@ -2513,6 +2529,7 @@ async def config_editor():
             with open(config_path) as f:
                 raw = f.read()
             config = yaml.safe_load(raw) or {}
+            config = _sanitize_config_sections(config)
     except Exception:
         pass
     if request.method == "POST":

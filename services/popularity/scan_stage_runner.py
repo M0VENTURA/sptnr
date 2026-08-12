@@ -297,6 +297,8 @@ def _artist_top_marked_cutoffs(
     db_scores: list[float],
     top_percentile: float = 0.10,
     medium_percentile: float = 0.20,
+    large_catalog_percentile: float | None = None,
+    large_catalog_threshold: int = 30,
 ) -> tuple[float | None, float | None, int, int]:
     """Return ``(top_cutoff, medium_cutoff, top_n, medium_n)`` for marking.
 
@@ -310,6 +312,11 @@ def _artist_top_marked_cutoffs(
       single source is also marked, which bumps it to HIGH confidence → 5★
       (spec rule 3).  The widening only applies when a medium detection source
       exists — popularity alone below the top band never marks.
+    - ``large_catalog_percentile`` (optional): when the artist's scored
+      catalogue exceeds ``large_catalog_threshold`` tracks (default 30), this
+      WIDER top band replaces ``top_percentile`` — a large catalogue needs a
+      higher fraction to capture its genuinely popular tracks.  Artists at or
+      below the threshold keep ``top_percentile``.
 
     Returns ``(None, None, 0, 0)`` when there is no score data to rank.
     """
@@ -317,6 +324,11 @@ def _artist_top_marked_cutoffs(
     all_scores.extend(float(s) for s in db_scores if float(s or 0) > 0)
     if not all_scores:
         return None, None, 0, 0
+    if (
+        large_catalog_percentile is not None
+        and len(all_scores) > max(1, int(large_catalog_threshold))
+    ):
+        top_percentile = large_catalog_percentile
     all_scores.sort(reverse=True)
     top_n = max(1, math.ceil(len(all_scores) * top_percentile))
     medium_n = max(1, math.ceil(len(all_scores) * medium_percentile))
@@ -382,6 +394,12 @@ def _mark_track_artist_top_band(album_results: list[dict[str, Any]]) -> None:
     catalogue so freshly-scanned tracks are ranked too; the track's own score
     is excluded (it is not yet stored, so including it would double-count).
     """
+    try:
+        _sd = get_config().get("single_detection") or {}
+        _large_catalog_pct = float(_sd.get("artist_top_percentile_large", 0.25) or 0.25)
+        _large_catalog_threshold = int(_sd.get("artist_catalog_large_threshold", 30) or 30)
+    except Exception:
+        _large_catalog_pct, _large_catalog_threshold = 0.25, 30
     # Same-scan scores grouped by PRIMARY track artist (collab strings like
     # "Feuerschwanz feat. Doro" resolve to the same group as "Feuerschwanz").
     by_primary: dict[str, list[float]] = {}
@@ -409,7 +427,11 @@ def _mark_track_artist_top_band(album_results: list[dict[str, Any]]) -> None:
         _own_idx = next((i for i, s in enumerate(mates) if s == _score), None)
         if _own_idx is not None:
             mates.pop(_own_idx)
-        _top_cutoff, _medium_cutoff, _, _ = _artist_top_marked_cutoffs(mates, catalogue)
+        _top_cutoff, _medium_cutoff, _, _ = _artist_top_marked_cutoffs(
+            mates, catalogue,
+            large_catalog_percentile=_large_catalog_pct,
+            large_catalog_threshold=_large_catalog_threshold,
+        )
         if _top_cutoff is None:
             # No catalogue for this artist (and no same-scan mates) — never
             # fabricate a top-% verdict from the compilation's own mix.
@@ -935,8 +957,14 @@ def run_scan(
             _medium_pct = float(
                 (get_config().get("single_detection") or {}).get("artist_medium_bump_percentile", 0.20) or 0.20
             )
+            _large_pct = float(
+                (get_config().get("single_detection") or {}).get("artist_top_percentile_large", 0.25) or 0.25
+            )
+            _large_threshold = int(
+                (get_config().get("single_detection") or {}).get("artist_catalog_large_threshold", 30) or 30
+            )
         except Exception:
-            _top_pct, _medium_pct = 0.10, 0.20
+            _top_pct, _medium_pct, _large_pct, _large_threshold = 0.10, 0.20, 0.25, 30
         if is_va_compilation:
             # TRUE VA compilations rank each track against ITS OWN track
             # artist's catalogue — the album artist ("Various Artists") has no
@@ -948,6 +976,8 @@ def run_scan(
                 scan_scores, _db_scores,
                 top_percentile=_top_pct,
                 medium_percentile=_medium_pct,
+                large_catalog_percentile=_large_pct,
+                large_catalog_threshold=_large_threshold,
             )
         if not options.get("popularity_only") and (is_va_compilation or _top_cutoff is not None):
             if is_va_compilation:

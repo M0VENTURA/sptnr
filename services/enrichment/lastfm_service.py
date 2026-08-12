@@ -495,12 +495,73 @@ class LastFmService:
             return len(tracks)
         return 0
 
+    def has_title_track(self, artist: str, album: str) -> bool:
+        """Check whether the album's tracklist contains its own title track.
+
+        Ported from the legacy client — the single-detection EP rule treats a
+        4-6 track album WITH a title track as an EP, so this method must
+        exist on the facade (a missing method previously fell into the
+        caller's ``except`` and defaulted every 4-6 track album to "EP")."""
+        album_data = self._album_get_info(artist, album)
+        if not album_data:
+            return False
+        album_name = (album_data.get("name") or album).lower().strip()
+        tracks = album_data.get("tracks", {})
+        track_list: list = []
+        if isinstance(tracks, dict):
+            track_data = tracks.get("track", [])
+            if isinstance(track_data, dict):
+                track_list = [track_data]
+            elif isinstance(track_data, list):
+                track_list = track_data
+        elif isinstance(tracks, list):
+            track_list = tracks
+        for track in track_list:
+            if isinstance(track, dict):
+                track_name = (track.get("name") or "").lower().strip()
+                if track_name == album_name:
+                    return True
+        return False
+
+    @staticmethod
+    def _is_genuine_release(album_data: dict[str, Any]) -> bool:
+        """Scrobble-derived albums (users tagging files/YouTube with the track
+        name as the album) carry no release metadata; genuine releases on
+        Last.fm expose a MusicBrainz ID, a real release date, or a wiki
+        publication date.  Last.fm's "unknown date" placeholder
+        (``14 Jun 2005, 00:00``) is not evidence."""
+        if album_data.get("mbid"):
+            return True
+        released = str(album_data.get("releasedate") or "").strip()
+        if released and released.lower() not in ("14 jun 2005, 00:00", "14 jun 2005"):
+            return True
+        wiki = album_data.get("wiki")
+        if isinstance(wiki, dict) and str(wiki.get("published") or "").strip():
+            return True
+        return False
+
     def check_track_as_single(self, artist: str, track_title: str) -> bool:
-        """Return True when Last.fm has album payload with same name and < 6 tracks."""
+        """Return True when Last.fm has a genuine release named after the
+        track with < 6 tracks.
+
+        Two junk filters guard the legacy name+count check:
+        - the returned album must actually belong to ``artist`` — Last.fm's
+          autocorrect can resolve a missing "artist/track-title" album to a
+          DIFFERENT artist's album with the same name;
+        - the album must carry release metadata (MBID / real release date /
+          wiki date) — scrobble-derived albums named after popular tracks
+          (Last.fm albums are user-scrobble entities, not an authoritative
+          release database) are not single evidence.
+        """
         album_data = self._album_get_info(artist, track_title)
         if not album_data:
             return False
         if (album_data.get("name") or "").lower().strip() != track_title.lower().strip():
+            return False
+        returned_artist = self.extract_artist_name(album_data.get("artist"))
+        if not returned_artist or self.artist_match_score(artist, returned_artist) < 90:
+            return False
+        if not self._is_genuine_release(album_data):
             return False
         return 0 < self.get_album_track_count(artist, track_title) < 6
 
