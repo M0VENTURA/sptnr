@@ -26,7 +26,10 @@ from dataclasses import dataclass
 from typing import List, Dict
 
 from helpers.config_helpers import get_supported_audio_formats
-from services.infrastructure.filesystem_service import resolve_downloads_dir
+from services.infrastructure.filesystem_service import (
+    resolve_downloads_dir,
+    resolve_original_archive_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +75,17 @@ def discover_audio_files() -> list[DiscoveredFile]:
         logger.warning("Downloads directory not found: %s", downloads_dir)
         return []
 
+    # The FLAC conversion archive (downloads/<original_subfolder>) must never
+    # be re-discovered: its files were already imported (converted), and
+    # re-queueing them would download the album AGAIN as duplicates.
+    archive_dir = resolve_original_archive_dir()
+
     discovered: list[DiscoveredFile] = []
-    for root, _, files in os.walk(downloads_dir):
+    for root, dirs, files in os.walk(downloads_dir):
+        dirs[:] = [
+            d for d in dirs
+            if os.path.normpath(os.path.join(root, d)) != archive_dir
+        ]
         for filename in sorted(files):
             _, ext = os.path.splitext(filename)
             ext = ext.lower()

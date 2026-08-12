@@ -435,6 +435,25 @@ def is_valid_source_music_path(path_value, music_root):
     return is_under_music_root(norm, music_root)
 
 
+def resolve_original_archive_dir() -> str:
+    """Absolute path of the FLAC conversion archive folder.
+
+    ``downloads/conversion.original_subfolder`` (default ``"Original"``)
+    holds the source files archived by FLAC→MP3 conversion imports.  The
+    archive must never be re-discovered by the queue scanners (the archived
+    FLACs would otherwise be re-queued as fresh downloads), so every walker
+    that scans the downloads root consults this resolver.
+    """
+    try:
+        config = get_config() or {}
+        conversion_cfg = (config.get("downloads") or {}).get("conversion") or {}
+        subfolder = str(conversion_cfg.get("original_subfolder", "Original") or "Original").strip()
+    except Exception:
+        subfolder = "Original"
+    root = resolve_downloads_dir(prefer_music_subfolder=False)
+    return os.path.normpath(os.path.join(root, subfolder or "Original"))
+
+
 def resolve_downloads_dir(prefer_music_subfolder: bool = True) -> str:
     """
     Single source of truth for download folder resolution.

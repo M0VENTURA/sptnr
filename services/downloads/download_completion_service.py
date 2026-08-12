@@ -368,9 +368,23 @@ def _apply_stored_metadata(item: dict, file_path: str) -> None:
         "album_artist": item.get("album_artist") or item.get("artist"),
         "year": item.get("year"),
         "track_number": item.get("track_number"),
-        "disc_number": item.get("disc_number"),
     }
+    # Disc handling: single-disc albums (disc 1 / 0 / unset) get the disc
+    # field CLEARED on the transferred file — writing "discnumber=1" makes
+    # Navidrome show "Disc 1" on every single-disc album.  Only real
+    # multi-disc albums (disc >= 2) carry the number.  An empty value makes
+    # update_file_metadata DELETE the frame.
+    _disc_raw = item.get("disc_number")
+    try:
+        _disc_num = int(str(_disc_raw).split("/")[0])
+    except (TypeError, ValueError):
+        _disc_num = 0
+    meta["disc_number"] = str(_disc_raw) if _disc_num >= 2 else ""
     meta = {k: v for k, v in meta.items() if v not in (None, "")}
+    # The empty disc_number is a deliberate CLEAR signal — keep it after the
+    # empty-value filter so single-disc files lose their spurious disc tag.
+    if _disc_num < 2:
+        meta["disc_number"] = ""
     recording_mbid = item.get("recording_mbid")
     if recording_mbid:
         meta["recording_mbid"] = recording_mbid
@@ -909,7 +923,16 @@ def check_completed_downloads() -> dict[str, Any]:
         fs_files: list[Any] = []
         if os.path.isdir(downloads_dir):
             try:
-                for root, _, files in os.walk(downloads_dir):
+                # Never match archived conversion originals (downloads/
+                # <original_subfolder>) against queue items — those files were
+                # already imported and would re-trigger the whole pipeline.
+                from services.infrastructure.filesystem_service import resolve_original_archive_dir
+                _archive_dir = resolve_original_archive_dir()
+                for root, dirs, files in os.walk(downloads_dir):
+                    dirs[:] = [
+                        d for d in dirs
+                        if os.path.normpath(os.path.join(root, d)) != _archive_dir
+                    ]
                     for filename in sorted(files):
                         ext = os.path.splitext(filename)[1].lower()
                         if ext not in (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus"):

@@ -24,6 +24,7 @@ from services.infrastructure.filesystem_service import (
     get_folder_group_details,
     is_path_under_directory,
     resolve_downloads_dir,
+    resolve_original_archive_dir,
 )
 from services.metadata.release_service import get_active_releases_with_progress
 
@@ -148,6 +149,8 @@ def get_unmatched_folders() -> dict:
         if not os.path.isdir(downloads_dir):
             return {"success": True, "count": 0, "folders": []}
 
+        archive_dir = resolve_original_archive_dir()
+
         tracked = _tracked_monitoring_folders()
         imported = _imported_source_paths()
 
@@ -156,8 +159,11 @@ def get_unmatched_folders() -> dict:
             full = os.path.join(downloads_dir, entry)
             if not os.path.isdir(full):
                 continue
-            # Never surface the torrent root or hidden/system dirs.
+            # Never surface the torrent root, the FLAC conversion archive or
+            # hidden/system dirs.
             if entry == "torrents" or entry.startswith(".") or entry.startswith("__"):
+                continue
+            if os.path.normpath(full) == archive_dir:
                 continue
             if os.path.normpath(full) in tracked:
                 continue
@@ -218,6 +224,7 @@ def auto_delete_imported_folders() -> int:
         downloads_dir = resolve_downloads_dir()
         if not os.path.isdir(downloads_dir):
             return 0
+        archive_dir = resolve_original_archive_dir()
         tracked = _tracked_monitoring_folders()
         imported = _imported_source_paths()
         for entry in sorted(os.listdir(downloads_dir)):
@@ -225,6 +232,8 @@ def auto_delete_imported_folders() -> int:
             if not os.path.isdir(full):
                 continue
             if entry == "torrents" or entry.startswith(".") or entry.startswith("__"):
+                continue
+            if os.path.normpath(full) == archive_dir:
                 continue
             if os.path.normpath(full) in tracked:
                 continue

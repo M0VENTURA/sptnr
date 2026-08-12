@@ -234,6 +234,7 @@ def add_release_tracks_to_queue(
     album: str,
     album_artist: str | None = None,
     queue_source: str = "soulseek",
+    year: int | None = None,
 ) -> list[int]:
     """
     Add normalized tracks to the download  Skips tracks already present in the local collection.
@@ -258,6 +259,49 @@ def add_release_tracks_to_queue(
         with db_session() as session:
 
             import_group = f"mbid_{release_id}"
+
+            # ── Stale-attempt cleanup + active duplicate guard ────────────
+            # Re-queueing an album whose previous attempt was cancelled /
+            # deleted can leave leftover rows behind that block or duplicate
+            # the second import.  Terminal rows (cancelled / failed /
+            # removed / possible_duplicate / ...) are swept so the re-queue
+            # starts clean; an ACTIVE row means the album is STILL being
+            # worked — the re-queue is skipped rather than duplicated.
+            _active_statuses = {
+                "queued", "searching", "downloading", "processing", "moving",
+                "unmatched", "completed", "imported", "in_collection",
+            }
+            try:
+                _existing_rows = session.execute(
+                    text("""
+                        SELECT id, status FROM download_queue
+                        WHERE import_group = :grp OR release_id = :rid
+                    """),
+                    {"grp": import_group, "rid": release_id},
+                ).fetchall() or []
+                _active_rows = [
+                    r for r in _existing_rows
+                    if str(r[1] or "").lower() in _active_statuses
+                ]
+                if _active_rows:
+                    logger.info(
+                        "[QUEUE_ADD] Release %s already has %d active queue item(s) — skipping re-queue",
+                        release_id, len(_active_rows),
+                    )
+                    return []
+                _stale_ids = [r[0] for r in _existing_rows]
+                if _stale_ids:
+                    _in_placeholders = ", ".join(f":sid_{i}" for i in range(len(_stale_ids)))
+                    session.execute(
+                        text(f"DELETE FROM download_queue WHERE id IN ({_in_placeholders})"),
+                        {f"sid_{i}": sid for i, sid in enumerate(_stale_ids)},
+                    )
+                    logger.info(
+                        "[QUEUE_ADD] Removed %d stale queue row(s) for release %s before re-queue",
+                        len(_stale_ids), release_id,
+                    )
+            except Exception as _cleanup_exc:
+                logger.debug("[QUEUE_ADD] Stale-row cleanup skipped for %s: %s", release_id, _cleanup_exc)
 
             # Dedupe by recording MBID (fallback: normalized title).  The same
             # recording frequently appears on multiple discs / bonus editions
@@ -356,6 +400,8 @@ def add_release_tracks_to_queue(
                             album_artist,
                             recording_mbid,
                             duration,
+                            year,
+                            release_year,
                             created_at,
                             updated_at
                         )
@@ -374,6 +420,8 @@ def add_release_tracks_to_queue(
                             :album_artist,
                             :recording_mbid,
                             :duration,
+                            :year,
+                            :release_year,
                             CURRENT_TIMESTAMP,
                             CURRENT_TIMESTAMP
                         )
@@ -392,6 +440,8 @@ def add_release_tracks_to_queue(
                         "album_artist": album_artist or artist,
                         "recording_mbid": recording_mbid,
                         "duration": duration,
+                        "year": str(year) if year else None,
+                        "release_year": year,
                     },
                 )
                 

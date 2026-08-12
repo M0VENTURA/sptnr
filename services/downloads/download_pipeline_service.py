@@ -1158,6 +1158,7 @@ def start_release_download(release_id, release_title, artist, method='slskd', cr
             release_title,
             album_artist=release_album_artist,
             queue_source=queue_source,
+            year=release_year,
         )
 
         return {

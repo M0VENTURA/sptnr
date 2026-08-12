@@ -82,6 +82,109 @@ def _reload_config_before_scan() -> None:
         logger.debug("[POPULARITY_PIPELINE] Config reload skipped: %s", exc)
 
 
+def _log_scan_config() -> None:
+    """Emit every applied scan setting to the unified log at scan start.
+
+    Reads the LIVE config through the SAME helpers the scan uses, so the
+    dump is evidence of what WILL be applied — a mis-saved config value
+    shows up here (``source: config`` vs ``defaults``) instead of silently
+    producing unexpected star ratings.
+    """
+    try:
+        from helpers.logging_config import log_unified
+        from helpers.config_helpers import get_config, get_genre_weights
+
+        cfg = get_config() or {}
+        sd = cfg.get("single_detection") or {}
+        if not isinstance(sd, dict):
+            sd = {}
+
+        def _src(section, key=None) -> str:
+            if not isinstance(section, dict):
+                return "defaults"
+            if key is None:
+                return "config" if section else "defaults"
+            return "config" if key in section else "defaults"
+
+        # ── single_detection (z bands, marking, floors) ────────────────
+        from services.popularity.popularity_config import (
+            resolve_weights,
+            get_zscore_thresholds,
+            get_single_boost,
+            get_metadata_score_floor,
+            get_live_weight_penalty,
+            get_single_organic_floor,
+        )
+        z = get_zscore_thresholds(cfg)
+        org_score, org_listeners = get_single_organic_floor(cfg)
+        lf, lb, age = resolve_weights(cfg)
+        log_unified(
+            f"📋 SCAN CONFIG — single_detection ({_src(sd)}): "
+            f"z_hi={z['high']:g} z_med={z['medium']:g} gap={z['standout_gap_z']:g} | "
+            f"artist_top={float(sd.get('artist_top_percentile') or 0.10):g} "
+            f"large={float(sd.get('artist_top_percentile_large') or 0.25):g}(>{int(sd.get('artist_catalog_large_threshold') or 30)}) "
+            f"med_bump={float(sd.get('artist_medium_bump_percentile') or 0.20):g} | "
+            f"organic={org_score:g}/{org_listeners:g} | "
+            f"listener_z={float(sd.get('listener_5star_z_threshold') or 1.0):g} | "
+            f"eps={float(sd.get('star_epsilon_score_points') or 0.5):g} "
+            f"boost={get_single_boost(cfg):g} floor={get_metadata_score_floor(cfg):g} "
+            f"live_pen={get_live_weight_penalty(cfg):g}"
+        )
+
+        # ── star tiers + album-scaling era rules ────────────────────────
+        from services.popularity.stages.finalise_stage import (
+            _live_star_thresholds,
+            _live_album_scaling,
+        )
+        th = _live_star_thresholds()
+        era_rules, _, _ = _live_album_scaling()
+        _era_fmt = " ".join(
+            f"{era}(top={int(float(r['catalog_top_pct']) * 100)}%, n={r['album_top_n']}, "
+            f"max{r['max_5star_slots']})"
+            for era, r in era_rules.items()
+        )
+        log_unified(
+            f"📋 SCAN CONFIG — star tiers: 5★(album_z={th['star5_album_z']:g}, "
+            f"artist_z={th['star5_artist_z']:g}) 4★(album_z={th['star4_album_z']:g}) "
+            f"3★(album_z={th['star3_album_z']:g}) 2★(album_z={th['star2_album_z']:g}) | "
+            f"era: {_era_fmt}"
+        )
+
+        # ── popularity + genre weights ──────────────────────────────────
+        _pop_w = cfg.get("popularity") or {}
+        _pop_weights = _pop_w.get("weights") if isinstance(_pop_w, dict) else None
+        _pop_src = "config" if isinstance(_pop_weights, dict) and _pop_weights else "defaults"
+        _g_w = get_genre_weights() or {}
+        _genres_cfg = (cfg.get("genres") or {}).get("weights") if isinstance(cfg.get("genres"), dict) else None
+        _g_src = "config" if isinstance(_genres_cfg, dict) and _genres_cfg else "defaults"
+        _g_fmt = " ".join(f"{k}={float(v):g}" for k, v in _g_w.items())
+        log_unified(
+            f"📋 SCAN CONFIG — weights ({_pop_src}): LF={lf:g} LB={lb:g} Age={age:g} | "
+            f"genres ({_g_src}): {_g_fmt}"
+        )
+
+        # ── single-detection source confidence + playlists ──────────────
+        try:
+            from services.enrichment.single_detection_service import _get_source_confidence_levels
+            _levels = _get_source_confidence_levels()
+            _lv_fmt = " ".join(f"{k}={v}" for k, v in _levels.items())
+        except Exception:
+            _lv_fmt = "unavailable"
+        _pl = cfg.get("playlists") or {}
+        _pl_cfg = _pl if isinstance(_pl, dict) else {}
+        log_unified(
+            f"📋 SCAN CONFIG — sources: {_lv_fmt} | playlists ({_src(_pl_cfg)}): "
+            f"essential={'on' if _pl_cfg.get('essential_playlists_enabled', True) else 'off'} "
+            f"featured={'on' if _pl_cfg.get('essential_include_featured', True) else 'off'} "
+            f"genre={'on' if _pl_cfg.get('genre_playlists_enabled', True) else 'off'} "
+            f"(n={int(_pl_cfg.get('genre_playlists_top_n', 500))}, "
+            f"min={int(_pl_cfg.get('genre_playlists_min_stars', 4))}★, "
+            f"per={int(_pl_cfg.get('genre_playlists_max_genres', 3))})"
+        )
+    except Exception as exc:
+        logger.debug("[POPULARITY_PIPELINE] Scan config dump skipped: %s", exc)
+
+
 def run_popularity_scan(
     *,
     verbose: bool = False,
@@ -101,6 +204,7 @@ def run_popularity_scan(
     from helpers.logging_config import log_unified
     _reload_config_before_scan()
     log_unified(f"[POPULARITY_PIPELINE] Starting scan (artist={artist_filter or 'ALL'}, verbose={verbose}, force={force}) — config.yaml reloaded")
+    _log_scan_config()
 
     # ✅ CLEAR STALE STOP FLAGS: Ensure the scan starts with a clean slate
     if progress_file:
@@ -244,6 +348,7 @@ def run_popularity_from_artist(
     logger.info("Starting popularity scan from artist '%s'", artist)
     from helpers.logging_config import log_unified
     log_unified(f"Starting popularity scan from artist '{artist}'")
+    _log_scan_config()
 
     if progress_file:
         payload: dict[str, Any] = {

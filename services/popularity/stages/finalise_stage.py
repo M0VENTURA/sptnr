@@ -1771,22 +1771,30 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
     """
     track_count = len(results) if results else 0
     log_unified(f"[FINALISE_STAGE] Finalising scan — {track_count} tracks processed")
-    # Diagnostic: surface the organic floor the scan WILL apply for
-    # single-driven elevation (source: config when the key exists in
-    # config.yaml, otherwise the hardcoded default).  Mirrors the ⚖️ WEIGHTS
-    # marker so a mis-saved config value is visible in the scan log instead
-    # of silently producing unexpected star ratings.
+    # Diagnostic: surface the LIVE star config the scan will apply (organic
+    # floor for single-driven elevation + the listener-standout 5★ z
+    # threshold).  ``source: config`` when the keys exist in config.yaml,
+    # ``defaults`` otherwise — mirrors the ⚖️ WEIGHTS marker so a mis-saved
+    # config value is visible in the scan log instead of silently producing
+    # unexpected star ratings.
     try:
         from services.popularity.popularity_config import get_single_organic_floor
         from helpers.config_helpers import get_config
         _floor_score, _floor_listeners = get_single_organic_floor()
-        _floor_cfg = (get_config() or {}).get("single_detection") or {}
+        _sd_cfg = (get_config() or {}).get("single_detection") or {}
+        _cfg_ok = isinstance(_sd_cfg, dict)
         _floor_source = (
-            "config" if isinstance(_floor_cfg, dict) and "single_organic_floor_score" in _floor_cfg
+            "config" if _cfg_ok and "single_organic_floor_score" in _sd_cfg
+            else "defaults"
+        )
+        _lz = _live_star_thresholds().get("listener_5star_z", 1.0)
+        _lz_source = (
+            "config" if _cfg_ok and "listener_5star_z_threshold" in _sd_cfg
             else "defaults"
         )
         log_unified(
-            f"🧪 ORGANIC FLOOR: score={_floor_score:g} listeners={_floor_listeners:g} | source: {_floor_source}"
+            f"🧪 STAR CONFIG: organic_floor={_floor_score:g} (listeners {_floor_listeners:g}, {_floor_source}) | "
+            f"listener_5star_z={_lz:g} ({_lz_source})"
         )
     except Exception:
         pass

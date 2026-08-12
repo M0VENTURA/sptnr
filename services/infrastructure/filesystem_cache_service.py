@@ -48,9 +48,22 @@ def get_download_files() -> List[str]:
     root = resolve_downloads_dir()
     files: List[str] = []
 
+    # Skip the FLAC conversion archive — archived originals are not fresh
+    # downloads and must never surface in the downloads listing.
+    try:
+        from services.infrastructure.filesystem_service import resolve_original_archive_dir
+        archive_dir = resolve_original_archive_dir()
+    except Exception:
+        archive_dir = ""
+
     # ✅ Rebuild cache
     if os.path.isdir(root):
-        for r, _, filenames in os.walk(root):
+        for r, dirnames, filenames in os.walk(root):
+            if archive_dir:
+                dirnames[:] = [
+                    d for d in dirnames
+                    if os.path.normpath(os.path.join(r, d)) != archive_dir
+                ]
             for f in filenames:
                 if _is_audio_file(f):
                     files.append(os.path.join(r, f))

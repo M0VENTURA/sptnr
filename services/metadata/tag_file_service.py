@@ -332,6 +332,18 @@ def write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
 # FLAC
 # =============================================================================
 
+# VorbisComment field-name mapping — FLAC uses its own standard names, NOT
+# the internal field names (Navidrome/mutagen read ``date``/``tracknumber``/
+# ``discnumber``/``albumartist``; writing ``year``/``track_number`` etc.
+# produced non-standard comments that players ignore).
+_VORBIS_FIELD_MAP: Dict[str, str] = {
+    "track_number": "tracknumber",
+    "disc_number": "discnumber",
+    "album_artist": "albumartist",
+    "year": "date",
+}
+
+
 def write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
     if not MUTAGEN_AVAILABLE:
         logger.error("Mutagen not available for FLAC writing")
@@ -341,7 +353,16 @@ def write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
         audio = cast(FLACType, FLAC(file_path))
 
         for field, value in tags.items():
-            if not value:
+            field = _VORBIS_FIELD_MAP.get(field, field)
+            if value is None or str(value).strip() == "":
+                # Empty value = explicit "clear this field" request (mirrors
+                # the MP3 writer, where empty deletes the frame) — e.g. the
+                # transfer pipeline clears disc_number on single-disc albums.
+                try:
+                    if field in audio:
+                        del audio[field]
+                except Exception:
+                    pass
                 continue
 
             audio[field] = [str(value)]
