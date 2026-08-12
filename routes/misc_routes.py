@@ -825,6 +825,91 @@ async def api_remove_genres():
         return jsonify({"error": str(exc)}), 500
 
 
+@misc_api_bp.route("/tags/track/<track_id>", methods=["GET", "POST"])
+async def api_track_tags(track_id):
+    """Get or update a single track's metadata tags.
+
+    GET returns the track's editable tag fields.  POST accepts either the
+    generic shape ``{tags: {field: value}, sync_to_file: bool}`` or the
+    album-page quick-add shape ``{genre: "Metal", action: "add",
+    sync_to_file: true}`` which merges the genre into the track's
+    ``genres`` + ``manual_genres`` columns without overwriting.
+    """
+    if request.method == "GET":
+        try:
+            from db.repositories.tag_repository import get_track_tags
+            tags = get_track_tags(track_id)
+            if not tags:
+                return jsonify({"error": "Track not found"}), 404
+            return jsonify({"success": True, "track_id": track_id, "tags": tags})
+        except Exception as exc:
+            logger.error("[TAGS] Error getting track tags: %s", exc, exc_info=True)
+            return jsonify({"error": str(exc)}), 500
+
+    try:
+        from db.repositories.tag_repository import update_track_tags
+        from db.engine import db_session
+        from sqlalchemy import text as _text
+
+        data = (await request.get_json(silent=True)) or {}
+        sync_to_file = bool(data.get("sync_to_file", False))
+        tag_updates = data.get("tags") if isinstance(data.get("tags"), dict) else {}
+
+        # Quick-add shape: merge a single genre (case-insensitive, no overwrite).
+        genre = str(data.get("genre") or "").strip()
+        if genre:
+            with db_session() as session:
+                row = session.execute(
+                    _text("SELECT genres, manual_genres FROM tracks WHERE id = :id"),
+                    {"id": track_id},
+                ).fetchone()
+                if not row:
+                    return jsonify({"error": "Track not found"}), 404
+
+                def _merge(raw):
+                    existing = [g.strip() for g in (raw or "").replace("\\", ",").split(",") if g.strip()]
+                    if genre.lower() not in {x.lower() for x in existing}:
+                        existing.append(genre)
+                    return ", ".join(existing)
+
+                merged_genres = _merge(row[0])
+                merged_manual = _merge(row[1])
+                session.execute(
+                    _text("UPDATE tracks SET genres = :genres, manual_genres = :manual WHERE id = :id"),
+                    {"genres": merged_genres, "manual": merged_manual, "id": track_id},
+                )
+            tag_updates = {"genres": merged_genres, "manual_genres": merged_manual}
+
+        if not tag_updates:
+            return jsonify({"error": "No tags to update"}), 400
+
+        try:
+            ok = update_track_tags(track_id, tag_updates)
+            if not ok:
+                return jsonify({"error": "Failed to update tags in database"}), 500
+        except Exception as exc:
+            logger.error("[TAGS] Database update failed for %s: %s", track_id, exc)
+            return jsonify({"error": f"Database error: {exc}"}), 500
+
+        file_synced = False
+        if sync_to_file:
+            try:
+                from services.metadata.tag_file_service import sync_track_tags_to_file
+                file_synced = bool(sync_track_tags_to_file(track_id))
+            except Exception as exc:
+                logger.debug("[TAGS] File sync failed for %s: %s", track_id, exc)
+
+        return jsonify({
+            "success": True,
+            "track_id": track_id,
+            "file_synced": file_synced,
+            "message": f"Updated {len(tag_updates)} field(s) for track {track_id}",
+        })
+    except Exception as exc:
+        logger.error("[TAGS] Unexpected error updating track tags: %s", exc, exc_info=True)
+        return jsonify({"error": f"Unexpected error: {exc}"}), 500
+
+
 @misc_api_bp.route("/genres/apply", methods=["POST"])
 async def api_apply_genres():
     """Apply genres to an artist's tracks (merge into genres + manual_genres).

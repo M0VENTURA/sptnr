@@ -41,6 +41,7 @@ from helpers.normalization_service import (
     normalize_title_for_mbid_match,
     strip_featured_artist,
     strip_single_release_suffix,
+    strip_search_keywords,
     edition_annotations_compatible,
 )
 
@@ -246,7 +247,9 @@ class MusicBrainzService:
         # tied with its studio version and resolved to whichever recording
         # MusicBrainz returned first (usually the studio one) — leaking the
         # studio MBID's ListenBrainz counts onto the alternate take.
-        query_title = normalize_title_for_lucene_query(title)
+        # Configurable Search Filters (search.strip_keywords) still strip
+        # same-song cuts like "(Radio Edit)" / "(Remastered)" here.
+        query_title = normalize_title_for_lucene_query(strip_search_keywords(title))
         query = f'recording:"{escape_lucene_special_chars(query_title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
 
         try:
@@ -472,7 +475,7 @@ class MusicBrainzService:
         similarity.  A generous limit keeps large discographies (50+ release
         groups) from hiding the matching single beyond the first page.
         """
-        query_title = normalize_title_for_lucene_query(title)
+        query_title = normalize_title_for_lucene_query(strip_search_keywords(title))
         rg_query = (
             f'releasegroup:"{escape_lucene_special_chars(query_title)}" '
             f'AND artist:"{escape_lucene_special_chars(artist)}"'
@@ -517,7 +520,7 @@ class MusicBrainzService:
         merely appears on a single as a b-side ("Out on Patrol" on the "I'll
         Be Waiting" single) is NOT itself a single.
         """
-        query_title = normalize_title_for_lucene_query(title)
+        query_title = normalize_title_for_lucene_query(strip_search_keywords(title))
         query = (
             f'recording:"{escape_lucene_special_chars(query_title)}" '
             f'AND artist:"{escape_lucene_special_chars(artist)}"'
@@ -612,7 +615,7 @@ class MusicBrainzService:
         if not self.enabled:
             return []
 
-        query = f'recording:"{escape_lucene_special_chars(title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
+        query = f'recording:"{escape_lucene_special_chars(strip_search_keywords(title))}" AND artist:"{escape_lucene_special_chars(artist)}"'
 
         try:
             recordings = self.http.search_recordings(query, limit=1, inc="tags+releases")
@@ -634,7 +637,7 @@ class MusicBrainzService:
         if not artist_name or not album_name:
             return []
 
-        query = f'artist:"{escape_lucene_special_chars(artist_name)}" AND releasegroup:"{escape_lucene_special_chars(album_name)}"'
+        query = f'artist:"{escape_lucene_special_chars(artist_name)}" AND releasegroup:"{escape_lucene_special_chars(strip_search_keywords(album_name))}"'
 
         try:
             groups = self.http.search_release_groups(query, limit=limit)

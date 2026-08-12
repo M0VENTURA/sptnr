@@ -296,7 +296,6 @@ function buildConfigObject() {
     },
     watcher: {
       scan_interval: parseInt(getValue('watcher_scan_interval', '30')) || 30,
-      navidrome_sync_wait: parseInt(getValue('watcher_navidrome_sync_wait', '600')) || 600,
       auto_import_enabled: getChecked('watcher_auto_import', true),
       auto_popularity_scan: getChecked('watcher_auto_popularity', true),
       downloads_watcher_enabled: getChecked('watcher_downloads_enabled', true)

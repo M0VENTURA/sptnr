@@ -346,7 +346,7 @@ async function deleteAllEmptyFolders(btn) {
       failed++;
     }
   }
-  alert('✅ Deleted ' + deleted + ' empty folder(s).' + (failed ? ' ⚠️ ' + failed + ' failed.' : ''));
+  showToastMsg('Deleted ' + deleted + ' empty folder(s).' + (failed ? ' ⚠️ ' + failed + ' failed.' : ''), !!failed);
   btn.disabled = false;
   if (typeof window.loadFolderGroups === 'function') {
     window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
@@ -370,12 +370,12 @@ function attachUnmatchedFolderActions(listEl) {
           body: JSON.stringify({ folder_path: folderPath, mb_id: mbId.trim() }),
         });
         if (data.success) {
-          alert('✅ Matched ' + data.moved + ' file(s) to "' + (data.album_artist || '') + ' - ' + (data.album || '') + '" (' + (data.year || '') + ')\nFolder deleted from downloads.');
+          showToastMsg('Matched ' + data.moved + ' file(s) to "' + (data.album_artist || '') + ' - ' + (data.album || '') + '" (' + (data.year || '') + '). Folder deleted from downloads.', false);
         } else {
-          alert('❌ ' + (data.error || 'Match failed'));
+          showToastMsg(data.error || 'Match failed', true);
         }
       } catch (error) {
-        alert('❌ Network error: ' + error.message);
+        showToastMsg('Network error: ' + error.message, true);
       } finally {
         btn.disabled = false;
         if (typeof window.loadFolderGroups === 'function') {
@@ -397,9 +397,9 @@ function attachUnmatchedFolderActions(listEl) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ folder_path: folderPath }),
         });
-        alert(data.success ? '✅ Folder deleted.' : '❌ ' + (data.error || 'Delete failed'));
+        showToastMsg(data.success ? 'Folder deleted.' : (data.error || 'Delete failed'), !data.success);
       } catch (error) {
-        alert('❌ Network error: ' + error.message);
+        showToastMsg('Network error: ' + error.message, true);
       } finally {
         btn.disabled = false;
         if (typeof window.loadFolderGroups === 'function') {
@@ -640,8 +640,10 @@ async function refreshUpcomingReleasesMonitor() {
     var data = await UpcomingReleasesService.fetchReleases({
       filter: filterCollection ? 'collection' : undefined,
       include_queue: true,
+      limit: 200,
     });
     var releases = data.releases || [];
+    buildUpcomingMonthFilterMonitor(releases);
     if (releases.length === 0) {
       container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0">No upcoming releases found.</p></div>';
       return;
@@ -653,11 +655,38 @@ async function refreshUpcomingReleasesMonitor() {
         return;
       }
     }
+    var monthEl = document.getElementById('upcomingMonthFilterMonitor');
+    var month = monthEl ? monthEl.value : '';
+    if (month) {
+      releases = releases.filter(function (r) { return (r.release_date || '').substring(0, 7) === month; });
+      if (releases.length === 0) {
+        container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0">No releases in ' + escapeHtml(month) + '.</p></div>';
+        return;
+      }
+    }
     UpcomingReleasesService.renderTable('upcomingReleasesMonitor', releases);
   } catch (error) {
     console.error('Error loading upcoming releases:', error);
     container.innerHTML = '<div class="text-center py-4"><p class="text-danger mb-2"><i class="bi bi-exclamation-triangle"></i> Error loading upcoming releases.</p><p class="text-muted small mb-0">' + escapeHtml(error.message || 'Unknown error') + '</p><button class="btn btn-sm btn-outline-primary mt-2" onclick="refreshUpcomingReleasesMonitor()"><i class="bi bi-arrow-clockwise"></i> Retry</button></div>';
   }
+}
+
+// Build the "All Months (N)" filter dropdown from the fetched releases.
+function buildUpcomingMonthFilterMonitor(releases) {
+  var select = document.getElementById('upcomingMonthFilterMonitor');
+  if (!select) return;
+  var counts = {};
+  (releases || []).forEach(function (r) {
+    var m = (r.release_date || '').substring(0, 7);
+    if (m) counts[m] = (counts[m] || 0) + 1;
+  });
+  var keys = Object.keys(counts).sort().reverse();
+  var html = '<option value="">All Months (' + (releases || []).length + ')</option>';
+  keys.forEach(function (m) {
+    var label = new Date(m + '-01').toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+    html += '<option value="' + m + '">' + label + ' (' + counts[m] + ')</option>';
+  });
+  select.innerHTML = html;
 }
 
 async function scrapeUpcomingReleasesMonitor() {
@@ -753,59 +782,53 @@ function searchUpcomingReleaseFromEncoded(artistEnc, albumEnc, releaseId) {
 }
 
 // ===== Discovery =====
+function showToastMsg(message, isError) {
+  if (typeof window.showToast === 'function') {
+    window.showToast('', message, isError ? 'error' : 'success');
+    return;
+  }
+  if (isError) alert(message);
+}
+
 async function discoverFiles(clickEvent) {
+  var button = clickEvent?.currentTarget;
+  if (!button) {
+    showToastMsg('Could not determine button context.', true);
+    return;
+  }
+  button.disabled = true;
+  button.innerHTML = '<i class="bi bi-hourglass-split"></i> Scanning...';
   try {
-    var button = clickEvent?.currentTarget;
-    if (!button) { alert('Could not determine button context.'); return; }
-    button.disabled = true;
-    button.innerHTML = '<i class="bi bi-hourglass-split"></i> Scanning...';
-    document.getElementById('scanLogSection').style.display = 'block';
-    document.getElementById('scanLogContent').style.display = 'block';
-    var logEl = document.getElementById('scanLogText');
-    logEl.textContent = '[SCAN STARTED] Initializing file discovery...\n';
-    var progressInterval = setInterval(async function() {
-      try {
-        var pData = await fetch('/api/downloads/scan-progress').then(function(r) { return r.json(); });
-        if (pData.scanning) {
-          document.getElementById('scanLogStats').textContent = (pData.files_found || 0) + ' files found';
-        }
-      } catch (e) {}
-    }, 500);
     var data = await fetchJsonOrThrow('/api/downloads/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-    clearInterval(progressInterval);
-    button.disabled = false;
-    button.innerHTML = '<i class="bi bi-search"></i> Discover Files';
     if (data.success) {
-      var stats = data.stats;
-      logEl.textContent += '\n[SCAN COMPLETE]\nTotal files scanned: ' + stats.scanned + '\nFiles added to queue: ' + stats.queued + '\nAlready in queue: ' + stats.already_in_queue + '\nAlready in library: ' + stats.already_in_library + '\n';
-      document.getElementById('discoveryMessage').textContent = 'Scanned ' + stats.scanned + ' files. Added ' + stats.queued + ' to queue.';
-      document.getElementById('discoveryResults').style.display = 'block';
-      document.getElementById('scanLogStats').textContent = stats.scanned + ' files scanned';
-      var qs = window.loadQueueStatus || function(){};
+      var stats = data.stats || {};
+      var msg = 'Scanned ' + (stats.scanned || 0) + ' files · ' + (stats.queued || 0) + ' added to queue · ' +
+        (stats.already_in_queue || 0) + ' already queued' +
+        (stats.quality_skipped ? ' · ' + stats.quality_skipped + ' skipped (quality filter)' : '');
+      var dm = document.getElementById('discoveryMessage');
+      if (dm) dm.textContent = msg;
+      var dr = document.getElementById('discoveryResults');
+      if (dr) {
+        dr.style.display = 'block';
+        dr.textContent = '✅ ' + msg;
+        setTimeout(function () { dr.style.display = 'none'; }, 10000);
+      }
+      showToastMsg(msg, false);
+      var qs = window.loadQueueStatus || function () {};
       await qs();
-      var fg = window.loadFolderGroups || function(){};
+      var fg = window.loadFolderGroups || function () {};
       await fg();
-      setTimeout(function() { document.getElementById('discoveryResults').style.display = 'none'; }, 10000);
+      var um = window.renderUnmatchedFolders || function () {};
+      await um();
     } else {
-      logEl.textContent += '\n[ERROR]\n' + (data.error || 'Failed');
+      showToastMsg(data.error || 'Discovery failed', true);
     }
   } catch (error) {
     console.error('Error discovering files:', error);
-    var btn2 = clickEvent?.currentTarget;
-    if (btn2) { btn2.disabled = false; btn2.innerHTML = '<i class="bi bi-search"></i> Discover Files'; }
-  }
-}
-
-function toggleScanLog() {
-  var content = document.getElementById('scanLogContent');
-  var icon = document.getElementById('scanLogIcon');
-  if (!content || !icon) return;
-  if (content.style.display === 'none') {
-    content.style.display = 'block';
-    icon.classList.remove('bi-plus'); icon.classList.add('bi-dash');
-  } else {
-    content.style.display = 'none';
-    icon.classList.remove('bi-dash'); icon.classList.add('bi-plus');
+    showToastMsg('Discovery failed: ' + error.message, true);
+  } finally {
+    button.disabled = false;
+    button.innerHTML = '<i class="bi bi-search"></i> Scan Downloads';
   }
 }
 

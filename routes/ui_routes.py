@@ -2748,7 +2748,7 @@ async def downloads_search():
 # Legacy redirects — keep old URLs working.
 @ui_bp.route("/downloads/search/soulseek")
 async def downloads_search_soulseek():
-    return redirect(url_for("ui.downloads_search") + "#search-soulseek")
+    return redirect(url_for("ui.downloads_search") + "#soulseek")
 
 
 @ui_bp.route("/downloads/search/musicbrainz")
@@ -2760,12 +2760,12 @@ async def downloads_search_musicbrainz():
 
 @ui_bp.route("/downloads/search/qbittorrent")
 async def downloads_search_qbittorrent():
-    return redirect(url_for("ui.downloads_search") + "#search-qbittorrent")
+    return redirect(url_for("ui.downloads_search") + "#qbittorrent")
 
 
 @ui_bp.route("/downloads/search/playlists")
 async def downloads_search_playlists():
-    return redirect(url_for("ui.downloads_search") + "#search-playlists")
+    return redirect(url_for("ui.downloads_search") + "#playlists")
 
 
 @ui_bp.route("/downloads/manager")

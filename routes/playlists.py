@@ -144,16 +144,6 @@ async def playlists_browse():
     return redirect(url_for("playlists.playlists_index"))
 
 
-@playlists_bp.route("/playlists/create/<playlist_type>")
-async def playlists_create(playlist_type):
-    cfg = get_config()
-    return await render_template(
-        "playlists/create.html",
-        playlist_type=playlist_type,
-        navidrome_users=cfg.get("navidrome_users", [])
-    )
-
-
 # =============================================================================
 # API ROUTES
 # =============================================================================

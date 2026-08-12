@@ -268,6 +268,10 @@ def match_to_musicbrainz(
         }
     """
     clean_artist, clean_album = sanitize_wiki_entry(artist, album)
+    # Configurable Search Filters: strip same-song edition markers like
+    # "(Remastered)" / "(Radio Edit)" before building Lucene queries.
+    from helpers.normalization_service import strip_search_keywords
+    clean_album = strip_search_keywords(clean_album)
     candidates: list[dict[str, Any]] = []
 
     # ---- Pass 1: local artist MBID → arid: query (high precision) ----

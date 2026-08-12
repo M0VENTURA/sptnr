@@ -239,11 +239,6 @@
           <input type="number" class="form-control" id="watcher_scan_interval" placeholder="30" value="{{ config.get('watcher', {}).get('scan_interval', 30) }}" min="10" max="3600">
           <div class="form-text">How often to check for new files (10-3600 seconds)</div>
         </div>
-        <div class="col-12 col-md-6">
-          <label class="form-label">Navidrome Sync Wait (seconds)</label>
-          <input type="number" class="form-control" id="watcher_navidrome_sync_wait" placeholder="600" value="{{ config.get('watcher', {}).get('navidrome_sync_wait', 600) }}" min="60" max="3600">
-          <div class="form-text">Time to wait for Navidrome scan to complete</div>
-        </div>
         <div class="col-12">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="watcher_auto_import" {% if config.get('watcher', {}).get('auto_import_enabled', True) %}checked{% endif %}>
@@ -1051,6 +1046,11 @@
         <div class="col-12">
           <label class="form-label form-label-sm">Supported Audio Formats</label>
           <input type="text" class="form-control form-control-sm" id="filesystem_audio_formats" placeholder=".mp3, .flac, .m4a, .ogg, .wav, .aac, .wma" value="{{ config.get('filesystem', {}).get('audio_formats', ['.mp3', '.flac', '.m4a', '.ogg', '.wav', '.aac', '.wma'])|join(', ') }}">
+        </div><!-- /col-12 -->
+      </div><!-- /row g-3 -->
+    </div><!-- /card-body -->
+  </div><!-- /filesystem card -->
+
   <!-- Essentia Mood Scan Section -->
   <div class="card shadow-sm mb-3" id="essentia-mood-scan">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">

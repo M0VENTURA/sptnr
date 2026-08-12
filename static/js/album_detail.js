@@ -937,14 +937,8 @@ var _pageData = window._pageData || {};
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
         container.innerHTML = '<span class="text-muted small">Loading recommendations...</span>';
         
-        // Fetch from Spotify, MusicBrainz and Discogs
+        // Fetch from MusicBrainz and Discogs (Spotify was removed).
         Promise.all([
-            fetch('/api/album/spotify-genres', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ album: albumName, artist: artistName })
-            }).then(r => r.json()).catch(() => ({genres: []})),
-            
             fetch('/api/album/musicbrainz', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -957,13 +951,8 @@ var _pageData = window._pageData || {};
                 body: JSON.stringify({ album: albumName, artist: artistName })
             }).then(r => r.json()).catch(() => ({results: []}))
         ])
-        .then(([spotifyData, mbData, discogsData]) => {
+        .then(([mbData, discogsData]) => {
             const genres = new Set();
-            
-            // Extract genres from Spotify
-            if (spotifyData.genres && spotifyData.genres.length > 0) {
-                spotifyData.genres.forEach(g => genres.add(g));
-            }
             
             // Extract genres from Discogs results
             if (discogsData.results && discogsData.results.length > 0) {

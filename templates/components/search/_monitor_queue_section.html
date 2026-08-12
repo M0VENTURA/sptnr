@@ -41,21 +41,6 @@
   </div>
 </div>
 
-<!-- Unmatched Folders in Downloads Section -->
-<div class="card mb-4" id="unmatchedFoldersSection" style="display: none;">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <h5 class="card-title mb-0">
-      <i class="bi bi-folder"></i> Matched Folders in Downloads
-    </h5>
-    <span class="badge bg-info" id="unmatchedFoldersBadge">0 items</span>
-  </div>
-  <div class="card-body p-0">
-    <div id="unmatchedFoldersList" style="max-height: 600px; overflow-y: auto;">
-      <!-- Unmatched folder items rendered here -->
-    </div>
-  </div>
-</div>
-
 <!-- Merge Folders Modal -->
 <div class="modal fade" id="mergeFoldersModal" tabindex="-1">
   <div class="modal-dialog">
@@ -112,113 +97,6 @@
           <i class="bi bi-play-circle"></i> Execute Merge
         </button>
       </div>
-    </div>
-  </div>
-</div>
-
-<!-- Queue Status Cards -->
-<div class="row g-2 mb-2">
-  <div class="col-6 col-md-2">
-    <div class="card text-center h-100">
-      <div class="card-body py-2">
-        <div class="text-muted small mb-1">Total Active</div>
-        <h4 class="mb-0" id="queueTotalCount">0</h4>
-      </div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="card text-center h-100">
-      <div class="card-body py-2">
-        <div class="text-muted small mb-1">Queued</div>
-        <h4 class="mb-0" id="queueQueuedCount">0</h4>
-      </div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="card text-center h-100">
-      <div class="card-body py-2">
-        <div class="text-muted small mb-1">Downloading</div>
-        <h4 class="mb-0" id="queueActiveCount">0</h4>
-      </div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="card text-center h-100">
-      <div class="card-body py-2">
-        <div class="text-muted small mb-1">Complete</div>
-        <h4 class="mb-0" id="queueCompletedCount">0</h4>
-      </div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="card text-center h-100">
-      <div class="card-body py-2">
-        <div class="text-muted small mb-1">Moves In Progress</div>
-        <h4 class="mb-0" id="queueMovingCount">0</h4>
-      </div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="card text-center h-100">
-      <div class="card-body py-2">
-        <div class="text-muted small mb-1">Failed</div>
-        <h4 class="mb-0" id="queueFailedCount">0</h4>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Queue Action Buttons -->
-<div class="row g-2 mb-4">
-  <div class="col-md-4">
-    <button class="btn btn-outline-primary w-100 h-100" onclick="loadQueueStatus()">
-      <i class="bi bi-arrow-clockwise"></i> Refresh
-    </button>
-  </div>
-  <div class="col-md-4">
-    <button class="btn btn-outline-danger w-100 h-100" onclick="clearQueue()">
-      <i class="bi bi-trash"></i> Clear Queue
-    </button>
-  </div>
-  <div class="col-md-4">
-    <button class="btn btn-danger w-100 h-100" onclick="purgeAllQueueAndDownloads()">
-      <i class="bi bi-trash-fill"></i> Purge All
-    </button>
-  </div>
-</div>
-
-<!-- Queue Activity Log -->
-<div class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <span><i class="bi bi-terminal"></i> Queue Activity Log</span>
-    <button id="queueLogPauseBtn" type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleQueueLogPause()">
-      <i class="bi bi-pause-fill"></i> Pause
-    </button>
-  </div>
-  <div class="card-body p-2">
-    <pre id="queueActivityLog" style="height:250px; overflow-y:auto; font-family:monospace; font-size:12px; background:#111; color:#ccc; padding:8px; margin:0; border-radius:4px;"></pre>
-    <div class="mt-2">
-      <a href="/api/download-log/queue" class="btn btn-sm btn-outline-info" download>
-        <i class="bi bi-download"></i> Download Last Hour
-      </a>
-    </div>
-  </div>
-</div>
-
-<!-- Soulseek Search Log -->
-<div class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <span><i class="bi bi-search"></i> Soulseek Search Log</span>
-    <button id="searchLogPauseBtn" type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleSearchLogPause()">
-      <i class="bi bi-pause-fill"></i> Pause
-    </button>
-  </div>
-  <div class="card-body p-2">
-    <pre id="soulseekSearchLog" style="height:250px; overflow-y:auto; font-family:monospace; font-size:12px; background:#111; color:#ccc; padding:8px; margin:0; border-radius:4px;"></pre>
-    <div class="mt-2">
-      <a href="/api/download-log/search" class="btn btn-sm btn-outline-info" download>
-        <i class="bi bi-download"></i> Download Last Hour
-      </a>
     </div>
   </div>
 </div>

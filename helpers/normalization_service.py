@@ -241,6 +241,34 @@ def strip_remaster_suffix(value: str) -> str:
     return REMASTER_SUFFIX_RE.sub("", value or "").strip()
 
 
+def strip_search_keywords(value: str) -> str:
+    """Remove parenthetical edition markers for *same-song different-cut* variants.
+
+    Mirrors the config page's Search Filters: parenthetical content matching a
+    configured keyword (``search.strip_keywords``, legacy
+    ``strip_parentheses_filters``) is removed so "Song (Radio Edit)" searches
+    as "Song".  Different-recording markers (live / remix / acoustic / ...)
+    are NOT in the default keyword list and are preserved — they must keep
+    their parentheses so the correct recording is matched.
+    """
+    try:
+        from helpers.config_helpers import get_config
+        cfg = get_config() or {}
+        keywords = (cfg.get("search") or {}).get("strip_keywords") or []
+        if not keywords and cfg.get("strip_parentheses_filters"):
+            keywords = cfg["strip_parentheses_filters"]
+        keyword_set = {str(k).strip().lower() for k in keywords if str(k).strip()}
+    except Exception:
+        keyword_set = set()
+    if not keyword_set or not value:
+        return value or ""
+
+    def _repl(match):
+        return "" if match.group(1).strip().lower() in keyword_set else match.group(0)
+
+    return re.sub(r"\(([^)]*)\)", _repl, value)
+
+
 # =============================================================================
 # ✅ VERSION / VARIANT EXTRACTION
 # =============================================================================

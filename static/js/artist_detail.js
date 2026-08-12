@@ -555,7 +555,7 @@ function pollSlskdResults(searchId, query, pollCount = 0) {
 function downloadSlskdFile(username, filename, size) {
   if (!confirm('Download this file from Soulseek?')) return;
   
-  fetch('/api/slskd/download-single', {
+  fetch('/api/slskd/download', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'

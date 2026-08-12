@@ -190,6 +190,77 @@ def _extract_discovered_metadata(file_path: str, filename: str) -> dict[str, str
     }
 
 
+def _duplicate_cleanup_config(key: str, default: bool = True) -> bool:
+    """Gate for the Downloads card's duplicate-cleanup toggles.
+
+    Reads ``features.downloads_duplicate_cleanup.{delete_duplicate_files,
+    prune_empty_folders}`` — the settings page previously saved these with
+    no consumer, so both toggles now control real behaviour.
+    """
+    try:
+        from helpers.config_helpers import get_config
+        cfg = (get_config() or {}).get("features", {}).get("downloads_duplicate_cleanup") or {}
+        return bool(cfg.get(key, default))
+    except Exception:
+        return default
+
+
+def _quality_filter_config() -> dict:
+    """Read ``downloads.quality_filter`` (enabled/priorities/tolerance/reject)."""
+    try:
+        from helpers.config_helpers import get_config
+        qf = (get_config() or {}).get("downloads", {}).get("quality_filter") or {}
+    except Exception:
+        qf = {}
+    priorities = []
+    for p in qf.get("priorities") or []:
+        if isinstance(p, dict) and str(p.get("format") or "").strip():
+            priorities.append(p)
+    return {
+        "enabled": bool(qf.get("enabled")),
+        "reject_others": bool(qf.get("reject_others", True)),
+        "bitrate_tolerance": int(qf.get("bitrate_tolerance") or 5),
+        "priorities": priorities,
+    }
+
+
+def _matches_quality_filter(file_path: str) -> tuple[bool, str | None]:
+    """True when the file matches a configured format/bitrate priority.
+
+    A priority with no bitrate accepts any bitrate of that format (lossless
+    formats like FLAC); a numeric bitrate accepts values within the
+    configured tolerance (e.g. 315-325 for MP3 320).
+    """
+    cfg = _quality_filter_config()
+    if not cfg["enabled"] or not cfg["priorities"]:
+        return True, None
+
+    ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+    bitrate: int | None = None
+    try:
+        from helpers.metadata_reader import read_mp3_metadata
+        meta = read_mp3_metadata(file_path) or {}
+        if meta.get("bitrate"):
+            bitrate = int(round(float(meta["bitrate"]) / 1000))
+    except Exception:
+        bitrate = None
+
+    tolerance = cfg["bitrate_tolerance"]
+    for priority in cfg["priorities"]:
+        if ext != str(priority.get("format") or "").lower():
+            continue
+        want = priority.get("bitrate_kbps")
+        if want in (None, ""):
+            return True, None  # lossless / no bitrate requirement
+        try:
+            want = int(want)
+        except (TypeError, ValueError):
+            return True, None
+        if bitrate is None or abs(bitrate - want) <= tolerance:
+            return True, None
+    return False, f"{ext or 'unknown'} @ {bitrate or '?'}kbps doesn't match quality priorities"
+
+
 def _queue_has_active_match(meta: dict) -> bool:
     """Stage A: an active queue item already covers this artist+title.
 
@@ -239,6 +310,8 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
     )
     queued = 0
     already_in_queue = 0
+    quality_skipped = 0
+    quality_filter = _quality_filter_config()
     for f in files:
         existing = find_existing_discovered_file(
             file_path=f.full_path,
@@ -248,16 +321,30 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
         if existing:
             already_in_queue += 1
             continue
+        matches_qf, qf_reason = _matches_quality_filter(f.full_path)
+        if not matches_qf:
+            if quality_filter["reject_others"]:
+                quality_skipped += 1
+                logger.info(
+                    "[DISCOVER] Skipped %s: %s", f.full_path, qf_reason or "quality filter"
+                )
+                continue
+            logger.debug(
+                "[DISCOVER] Non-priority file kept (reject_others off): %s — %s",
+                f.full_path, qf_reason,
+            )
         meta = _extract_discovered_metadata(f.full_path, f.filename)
         if _queue_has_active_match(meta):
             already_in_queue += 1
             # Auto-prune: when the same artist+title already has a file in
             # the queue, compare audio quality and remove the inferior copy.
-            try:
-                from services.downloads.quality_dedup_service import prune_inferior_duplicate
-                prune_inferior_duplicate(meta, f.full_path)
-            except Exception as _exc:
-                logger.debug("[DISCOVER] duplicate prune skipped: %s", _exc)
+            # Gated by the config toggle (was previously always-on).
+            if _duplicate_cleanup_config("delete_duplicate_files", True):
+                try:
+                    from services.downloads.quality_dedup_service import prune_inferior_duplicate
+                    prune_inferior_duplicate(meta, f.full_path)
+                except Exception as _exc:
+                    logger.debug("[DISCOVER] duplicate prune skipped: %s", _exc)
             continue
         insert_discovered_file(
             artist=str(meta["artist"] or "Unidentified Artist"),
@@ -300,6 +387,21 @@ def discover_files() -> dict[str, object]:
     enqueued = enqueue_discovered_files(files)
     queued = enqueued["queued"]
     already_in_queue = enqueued["already_in_queue"]
+    quality_skipped = enqueued.get("quality_skipped", 0)
+
+    # Prune empty downloads folders after a discovery pass when enabled
+    # (config toggle previously saved with no consumer).
+    if _duplicate_cleanup_config("prune_empty_folders", True):
+        try:
+            import os as _os
+            from services.infrastructure.filesystem_service import resolve_downloads_dir
+            from services.infrastructure.fs_manager import FileSystemManager
+            downloads_root = resolve_downloads_dir(prefer_music_subfolder=False)
+            music_root = _os.environ.get("MUSIC_FOLDER", "/music")
+            if downloads_root:
+                FileSystemManager(downloads_root, music_root).cleanup_empty_dirs(downloads_root)
+        except Exception as _exc:
+            logger.debug("[DISCOVER] Empty-folder prune skipped: %s", _exc)
 
     # Count how many already exist in the music library (tracks table).
     already_in_library = 0
@@ -329,6 +431,7 @@ def discover_files() -> dict[str, object]:
             "queued": queued,
             "already_in_queue": already_in_queue,
             "already_in_library": already_in_library,
+            "quality_skipped": quality_skipped,
             "errors": [],
         },
         "files": file_paths,
