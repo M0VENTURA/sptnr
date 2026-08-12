@@ -2,7 +2,6 @@
    Popularr — Global Application Styles
    Loaded from base.html on every page.
    ========================================================================== */
-
 /* ── Theme tokens (single source of truth — was inline in base.html) ───── */
 :root {
     /* Surface colors */
@@ -868,6 +867,62 @@ body:has(#globalPlayerBar:not(.d-none)) .config-save-bar {
     #configForm .form-switch .d-block {
         order: 3;
     }
+}
+
+/* ── Global log viewer: activity widget + stream polish ────────────────── */
+/* Live status dots on the source tabs (green pulse while the source is busy) */
+.log-tab-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-left: 6px;
+    vertical-align: middle;
+    background: #3a3a3a;
+}
+.log-tab-dot.log-tab-dot-active {
+    background: #2ecc71;
+    box-shadow: 0 0 6px rgba(46, 204, 113, 0.8);
+    animation: log-dot-pulse 1.6s ease-in-out infinite;
+}
+@keyframes log-dot-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+/* Pause button pulses amber while the stream is frozen */
+#pauseLogBtn.log-pause-active {
+    border-color: #ffc107;
+    color: #ffc107;
+    box-shadow: 0 0 0 0.2rem rgba(255, 193, 7, 0.25);
+    animation: log-pause-pulse 1.2s ease-in-out infinite;
+}
+@keyframes log-pause-pulse {
+    0%, 100% { box-shadow: 0 0 0 0.2rem rgba(255, 193, 7, 0.25); }
+    50% { box-shadow: 0 0 0 0.35rem rgba(255, 193, 7, 0.45); }
+}
+
+/* Compact stream window: wrap long lines instead of hard horizontal scroll */
+#unifiedLog {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Color-coded [TAG] badges + ★ star glyphs inside the stream */
+.log-tag { font-weight: 600; }
+.log-tag-info { color: #8ab4f8; }
+.log-tag-track-result { color: #2ecc71; }
+.log-tag-finalise { color: #c39bff; }
+.log-tag-warning { color: #ffc107; }
+.log-tag-error { color: #ff6b6b; }
+.log-tag-queue { color: #4dd0e1; }
+.log-tag-soulseek { color: #ffa94d; }
+.log-stars { color: #ffd43b; }
+
+/* Live activity summary card above the stream */
+#logActivityCard {
+    background: var(--primary-bg, #121212);
+    border-color: var(--border-color, #333) !important;
 }
 
 /* ── Log viewer line styling (/logs page) ───────────────────────────────── */

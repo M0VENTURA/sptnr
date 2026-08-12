@@ -47,7 +47,7 @@ def _library_top_artists(limit: int = 20) -> list[dict[str, Any]]:
         rows = session.execute(
             text("""
                 SELECT COALESCE(NULLIF(album_artist, ''), artist) AS artist,
-                       MAX(musicbrainz_artist_id) AS artist_mbid,
+                       MAX(musicbrainz_artistid) AS artist_mbid,
                        COUNT(*) AS track_count
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) <> ''

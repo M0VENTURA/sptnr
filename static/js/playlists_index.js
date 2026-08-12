@@ -9,6 +9,8 @@
 // ===============================
 let playlists = [];
 let currentPlaylist = null;
+let currentTracks = [];
+const compactView = window.matchMedia('(max-width: 767.98px)');
 
 // ===============================
 // UTILITIES
@@ -175,9 +177,30 @@ async function selectPlaylist(playlist) {
   document.getElementById('detailName').textContent = playlist.name;
   document.getElementById('detailComment').textContent = playlist.comment || '';
   document.getElementById('detailMeta').textContent = `${playlist.type === 'smart' ? 'Smart' : 'Regular'} playlist · ${playlist.rule_based ? 'rule-based' : (playlist.track_count || 0) + ' tracks'}`;
+
+  // File path subtitle with copy button (file-backed playlists only).
+  const pathRow = document.getElementById('detailPathRow');
+  const pathEl = document.getElementById('detailPath');
+  if (playlist.file_path) {
+    pathEl.textContent = playlist.file_path;
+    pathEl.title = playlist.file_path;
+    pathRow.classList.remove('d-none');
+    pathRow.classList.add('d-flex');
+  } else {
+    pathRow.classList.add('d-none');
+    pathRow.classList.remove('d-flex');
+  }
+
+  renderTracks([]);
   document.getElementById('detailTracks').innerHTML =
     '<tr><td colspan="6" class="text-center text-muted py-4">Loading tracks…</td></tr>';
+  document.getElementById('detailStacked').innerHTML =
+    '<div class="text-center text-muted py-4 small">Loading tracks…</div>';
 
+  // Abort after 30s so a stalled smart-playlist lookup (e.g. slow Navidrome)
+  // never leaves the panel hanging on "Loading tracks…" forever.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
   try {
     const response = await fetch('/api/playlists/tracks', {
       method: 'POST',
@@ -187,18 +210,41 @@ async function selectPlaylist(playlist) {
         source: playlist.source,
         file_path: playlist.file_path || null,
       }),
+      signal: controller.signal,
     });
     const data = await parseJsonOrThrow(response);
     if (!response.ok) throw new Error(data.error || 'Failed to load tracks');
     renderTracks(data.tracks || []);
   } catch (err) {
     console.error('selectPlaylist:', err);
+    const message = err.name === 'AbortError'
+      ? 'Timed out loading tracks after 30s — check the Activity Center logs and the Navidrome connection.'
+      : (err.message || 'Failed to load tracks');
     document.getElementById('detailTracks').innerHTML =
-      `<tr><td colspan="6" class="text-center text-danger py-4">${escapeHtml(err.message)}</td></tr>`;
+      `<tr><td colspan="6" class="text-center text-danger py-4">${escapeHtml(message)}</td></tr>`;
+    document.getElementById('detailStacked').innerHTML =
+      `<div class="text-center text-danger py-4 small">${escapeHtml(message)}</div>`;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
 function renderTracks(tracks) {
+  currentTracks = tracks;
+  const tableWrap = document.getElementById('detailTableWrap');
+  const stackedWrap = document.getElementById('detailStackedWrap');
+  if (compactView.matches) {
+    renderStackedTracks(tracks);
+    tableWrap.classList.add('d-none');
+    stackedWrap.classList.remove('d-none');
+  } else {
+    renderTableTracks(tracks);
+    stackedWrap.classList.add('d-none');
+    tableWrap.classList.remove('d-none');
+  }
+}
+
+function renderTableTracks(tracks) {
   const tbody = document.getElementById('detailTracks');
   if (!tracks.length) {
     tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">No tracks in this playlist</td></tr>';
@@ -215,11 +261,73 @@ function renderTracks(tracks) {
     </tr>`).join('');
 }
 
+// Mobile compact rows: Title (bold) / Artist • Album (muted small) on the
+// left, Duration + star rating on the right — no horizontal scrolling.
+function renderStackedTracks(tracks) {
+  const container = document.getElementById('detailStacked');
+  if (!tracks.length) {
+    container.innerHTML = '<div class="text-center text-muted py-4 small">No tracks in this playlist</div>';
+    return;
+  }
+  container.innerHTML = tracks.map((track, index) => {
+    const artist = escapeHtml(track.artist || '');
+    const album = escapeHtml(track.album || '');
+    return `
+    <div class="border rounded p-2 d-flex justify-content-between align-items-center gap-2">
+      <div style="min-width:0">
+        <div class="fw-semibold text-truncate" title="${escapeHtml(track.title)}">${index + 1}. ${escapeHtml(track.title)}</div>
+        <div class="small text-muted text-truncate">${artist}${album ? ' • ' + album : ''}</div>
+      </div>
+      <div class="text-end text-nowrap">
+        <div class="small">${formatDuration(track.duration)}</div>
+        ${starRating(track.rating)}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function starRating(rating) {
+  const count = Math.max(0, Math.min(5, Math.round(Number(rating) || 0)));
+  if (!count) return '';
+  return `<span class="text-warning small">${'⭐'.repeat(count)}</span>`;
+}
+
 function resetDetail() {
   document.getElementById('detailHeader').classList.add('d-none');
   document.getElementById('detailEmpty').classList.remove('d-none');
   document.getElementById('detailTracksWrap').classList.add('d-none');
   document.getElementById('detailTracks').innerHTML = '';
+  document.getElementById('detailStacked').innerHTML = '';
+  document.getElementById('detailPathRow').classList.add('d-none');
+  document.getElementById('detailPathRow').classList.remove('d-flex');
+  currentTracks = [];
+}
+
+// ===============================
+// COPY PATH
+// ===============================
+
+async function copyPath() {
+  const path = document.getElementById('detailPath').textContent || '';
+  if (!path) return;
+  try {
+    await navigator.clipboard.writeText(path);
+  } catch (err) {
+    // Clipboard API unavailable (insecure context) — fall back to a temp input.
+    const input = document.createElement('input');
+    input.value = path;
+    document.body.appendChild(input);
+    input.select();
+    try {
+      document.execCommand('copy');
+    } catch (err2) {
+      showAlert('Could not copy path', true);
+      input.remove();
+      return;
+    }
+    input.remove();
+  }
+  showAlert('Path copied to clipboard', false);
 }
 
 // ===============================
@@ -292,6 +400,48 @@ async function submitRename() {
 }
 
 // ===============================
+// DELETE
+// ===============================
+
+function openDeleteModal() {
+  if (!currentPlaylist) return;
+  document.getElementById('deleteName').textContent = currentPlaylist.name;
+  document.getElementById('deleteHint').textContent =
+    currentPlaylist.source === 'file'
+      ? `Removes ${currentPlaylist.file_name || 'the playlist file'} from the Playlists folder. This cannot be undone.`
+      : 'Deletes the playlist from Navidrome. This cannot be undone.';
+  new bootstrap.Modal(document.getElementById('deleteModal')).show();
+}
+
+async function submitDelete() {
+  if (!currentPlaylist) return;
+  const button = document.querySelector('#deleteModal .modal-footer .btn-danger');
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/playlists/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: currentPlaylist.id,
+        source: currentPlaylist.source,
+        file_path: currentPlaylist.file_path || null,
+      }),
+    });
+    const data = await parseJsonOrThrow(response);
+    if (!response.ok) throw new Error(data.error || 'Delete failed');
+
+    bootstrap.Modal.getInstance(document.getElementById('deleteModal')).hide();
+    showAlert(`Deleted playlist "${currentPlaylist.name}"`, false);
+    await loadPlaylists();
+  } catch (err) {
+    console.error('submitDelete:', err);
+    showAlert(err.message || 'Delete failed', true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// ===============================
 // GENERATOR (Last.fm / ListenBrainz recommendations)
 // ===============================
 
@@ -350,5 +500,10 @@ async function submitGenerator() {
 // ===============================
 // INIT
 // ===============================
+
+// Re-render tracks in the right layout when crossing the mobile breakpoint.
+compactView.addEventListener('change', () => {
+  if (currentPlaylist) renderTracks(currentTracks);
+});
 
 document.addEventListener('DOMContentLoaded', loadPlaylists);

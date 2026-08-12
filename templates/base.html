@@ -198,20 +198,41 @@
               <button type="button" class="btn btn-sm btn-outline-success py-0" onclick="downloadActiveLogLastHour()" title="Export the last 60 minutes for the active source">
                 <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Last 1hr</span>
               </button>
+              <button id="clearLogBtn" type="button" class="btn btn-outline-secondary btn-sm py-0" onclick="clearUnifiedLog()" title="Clear the active log buffer">
+                <i class="bi bi-eraser"></i> <span class="d-none d-sm-inline">Clear</span>
+              </button>
               <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm py-0" onclick="toggleLogPause()"><i class="bi bi-pause"></i> <span class="d-none d-sm-inline">Pause</span></button>
               <button type="button" class="btn-close ms-2" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
           </div>
           <div class="d-flex align-items-center gap-1 overflow-x-auto pb-1 flex-nowrap">
-            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab active" data-source="scanner" onclick="switchLogSource('scanner')"><i class="bi bi-lightning-charge me-1"></i>Scanner</button>
-            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="queue" onclick="switchLogSource('queue')"><i class="bi bi-list-task me-1"></i>Queue</button>
-            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="soulseek" onclick="switchLogSource('soulseek')"><i class="bi bi-search me-1"></i>Soulseek</button>
-            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="navidrome" onclick="switchLogSource('navidrome')"><i class="bi bi-cloud-arrow-down me-1"></i>Navidrome</button>
-            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="system" onclick="switchLogSource('system')"><i class="bi bi-gear me-1"></i>System</button>
+            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab active" data-source="scanner" onclick="switchLogSource('scanner')"><i class="bi bi-lightning-charge me-1"></i>Scanner<span class="log-tab-dot d-none"></span></button>
+            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="queue" onclick="switchLogSource('queue')"><i class="bi bi-list-task me-1"></i>Queue<span class="log-tab-dot d-none"></span></button>
+            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="soulseek" onclick="switchLogSource('soulseek')"><i class="bi bi-search me-1"></i>Soulseek<span class="log-tab-dot d-none"></span></button>
+            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="navidrome" onclick="switchLogSource('navidrome')"><i class="bi bi-cloud-arrow-down me-1"></i>Navidrome<span class="log-tab-dot d-none"></span></button>
+            <button type="button" class="btn btn-sm btn-dark border-secondary log-source-tab" data-source="system" onclick="switchLogSource('system')"><i class="bi bi-gear me-1"></i>System<span class="log-tab-dot d-none"></span></button>
           </div>
         </div>
-        <div class="modal-body p-2">
-          <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0" style="height: 100%; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+        <div class="modal-body p-2 d-flex flex-column gap-2" style="min-height: 0;">
+          <!-- Live activity summary (context-aware per source) -->
+          <div id="logActivityCard" class="border rounded p-2 d-none">
+            <div class="d-flex justify-content-between align-items-center gap-2 mb-1 flex-wrap">
+              <small class="text-muted fw-semibold"><i class="bi bi-activity me-1"></i><span id="logActivityTitle">Activity</span></small>
+              <small class="text-muted" id="logActivitySub"></small>
+            </div>
+            <div id="logActivityBody"></div>
+          </div>
+          <!-- Compact auto-scrolling stream window (timestamps off by default) -->
+          <div class="d-flex flex-column" style="flex: 1 1 auto; min-height: 0;">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <small class="text-muted"><i class="bi bi-terminal me-1"></i>Live stream</small>
+              <div class="ms-auto form-check form-switch mb-0" style="padding-left: 2.4em;">
+                <input class="form-check-input" type="checkbox" id="logTimestampToggle" onchange="toggleLogTimestamps(this.checked)" style="margin-left: 0;">
+                <label class="form-check-label small text-muted" for="logTimestampToggle">Timestamps</label>
+              </div>
+            </div>
+            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0 flex-grow-1" style="min-height: 9em; max-height: 32vh; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+          </div>
         </div>
       </div>
     </div>

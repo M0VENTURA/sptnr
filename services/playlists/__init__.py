@@ -6,7 +6,6 @@ search, download, and recommendation generation.
 Submodules:
     - playlist_create_service: NSP playlist file creation.
     - playlist_download_service: Batch download session management.
-    - playlist_external_import_service: Spotify playlist import.
     - playlist_matching_service: Track-to-library matching for playlists.
     - playlist_navidrome_service: Navidrome Subsonic API operations.
     - playlist_search_service: Free-text library search.

@@ -13,7 +13,6 @@ let currentSmartPlaylistId = null;
 let currentSmartPlaylistData = null;
 let currentImportData = null;
 let missingTracksForSearch = [];
-let spotifyPlaylistsData = [];
 let lfmRecommendationsData = null;
 let lbRecommendationsData = null;
 let replacingTrackInfo = null;
@@ -60,9 +59,6 @@ document.addEventListener('DOMContentLoaded', function() {
       }),
       loadSmartPlaylists().catch(e => {
         console.error('Error loading smart playlists:', e);
-      }),
-      (pageType === 'import' ? loadSpotifyPlaylists() : Promise.resolve()).catch(e => {
-        console.error('Error loading Spotify playlists:', e);
       })
     ]).then(() => {
       console.log('[Playlist Manager] Initialization complete');
@@ -73,7 +69,6 @@ document.addEventListener('DOMContentLoaded', function() {
     // Setup event listeners for browse tab
     setupBrowsePageListeners();
     setupCreatePageListeners();
-    setupImportPageListeners();
 
   } catch (error) {
     console.error('[Playlist Manager] DOMContentLoaded error:', error);
@@ -207,27 +202,6 @@ function setupCreatePageListeners() {
 
   if (document.getElementById('smartPlaylistBuilderForm')) {
     initSmartPlaylistBuilder();
-  }
-}
-
-// ===============================
-// IMPORT PAGE SETUP
-// ===============================
-
-function setupImportPageListeners() {
-  const playlistForm = document.getElementById('playlistForm');
-  if (playlistForm) {
-    playlistForm.addEventListener('submit', importPlaylist);
-  }
-
-  // Spotify user ID input handlers
-  const spotifyUserIdInput = document.getElementById('spotifyUserId');
-  if (spotifyUserIdInput) {
-    spotifyUserIdInput.addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') {
-        loadSpotifyPlaylistsByUser();
-      }
-    });
   }
 }
 
@@ -1625,196 +1599,8 @@ function initSmartPlaylistBuilder() {
 window.spbCreateGenreMoodPlaylist = spbCreateGenreMoodPlaylist;
 
 // ===============================
-// SPOTIFY PLAYLIST IMPORT
+// IMPORT RESULTS DISPLAY
 // ===============================
-
-async function loadSpotifyPlaylists(userId = null) {
-  const container = document.getElementById('playlistsContainer');
-  const loading = document.getElementById('playlistsLoading');
-  const error = document.getElementById('playlistsError');
-  const empty = document.getElementById('playlistsEmpty');
-  const grid = document.getElementById('playlistsGrid');
-  const refreshBtn = document.getElementById('refreshPlaylistsBtn');
-
-  if (!container || !loading) return;
-
-  loading.style.display = 'block';
-  container.style.display = 'none';
-  if (error) error.style.display = 'none';
-  if (empty) empty.style.display = 'none';
-  if (refreshBtn) refreshBtn.disabled = true;
-
-  try {
-    let url = '/api/spotify/playlists';
-    if (userId) {
-      url += `?user_id=${encodeURIComponent(userId)}`;
-    }
-    
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to load playlists');
-    }
-
-    const playlists = data.playlists || [];
-    spotifyPlaylistsData = playlists;
-    
-    if (playlists.length === 0) {
-      loading.style.display = 'none';
-      if (empty) {
-        empty.style.display = 'block';
-        const emptyText = document.getElementById('playlistsEmptyText');
-        if (emptyText) {
-          emptyText.innerHTML = data.user_id 
-            ? `No public playlists found for user <strong>${escapeHtml(data.user_id)}</strong>`
-            : 'No playlists found';
-        }
-      }
-      return;
-    }
-
-    if (grid) {
-      grid.innerHTML = '';
-      playlists.forEach(playlist => {
-        const card = document.createElement('div');
-        card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
-        card.innerHTML = `
-          <div class="card h-100 playlist-card">
-            ${playlist.image_url ? `<img src="${escapeHtml(playlist.image_url)}" class="card-img-top" alt="${escapeHtml(playlist.name)}" style="height: 150px; object-fit: cover;">` : `<div class="card-img-top bg-secondary" style="height: 150px; display: flex; align-items: center; justify-content: center;"><i class="bi bi-music-note" style="font-size: 2rem; color: white;"></i></div>`}
-            <div class="card-body d-flex flex-column">
-              <h6 class="card-title text-truncate" title="${escapeHtml(playlist.name)}">${escapeHtml(playlist.name)}</h6>
-              ${playlist.owner ? `<small class="text-muted">by ${escapeHtml(playlist.owner)}</small>` : ''}
-              <small class="text-muted mt-2">
-                <i class="bi bi-music-note-list"></i> ${playlist.track_count} track${playlist.track_count !== 1 ? 's' : ''}
-              </small>
-              <button class="btn btn-sm btn-primary mt-auto" onclick="importPlaylistFromSpotify('${escapeHtml(playlist.id)}', '${escapeHtml(playlist.name)}')">
-                <i class="bi bi-download"></i> Import
-              </button>
-            </div>
-          </div>
-        `;
-        grid.appendChild(card);
-      });
-
-      loading.style.display = 'none';
-      container.style.display = 'block';
-    }
-  } catch (err) {
-    loading.style.display = 'none';
-    if (error) {
-      error.style.display = 'block';
-      const errorText = document.getElementById('playlistsErrorText');
-      if (errorText) {
-        errorText.textContent = err.message || 'Unable to load playlists';
-      }
-    }
-  } finally {
-    if (refreshBtn) refreshBtn.disabled = false;
-  }
-}
-
-function loadSpotifyPlaylistsByUser() {
-  const userId = document.getElementById('spotifyUserId').value.trim();
-  if (!userId) {
-    alert('Please enter a Spotify User ID');
-    return;
-  }
-  loadSpotifyPlaylists(userId);
-}
-
-function clearSpotifyUserId() {
-  document.getElementById('spotifyUserId').value = '';
-  loadSpotifyPlaylists();
-}
-
-function importPlaylistFromSpotify(playlistId, playlistName) {
-  const urlField = document.getElementById('spotifyUrl');
-  const nameField = document.getElementById('playlistName');
-  
-  if (urlField) urlField.value = `https://open.spotify.com/playlist/${playlistId}`;
-  if (nameField) nameField.value = playlistName;
-  
-  if (urlField) {
-    urlField.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    urlField.focus();
-    urlField.select();
-  }
-}
-
-// ===============================
-// SPOTIFY IMPORT
-// ===============================
-
-async function importPlaylist(event) {
-  event.preventDefault();
-  
-  const spotifyUrl = document.getElementById('spotifyUrl')?.value.trim() || '';
-  const playlistName = document.getElementById('playlistName')?.value.trim() || '';
-  const playlistDescription = document.getElementById('playlistDescription')?.value.trim() || '';
-  const targetUser = document.getElementById('playlistTargetUser')?.value?.trim() || '';
-  const statusEl = document.getElementById('importStatus');
-  
-  if (!spotifyUrl || !playlistName) {
-    alert('Please fill in all required fields');
-    return;
-  }
-  
-  if (statusEl) {
-    statusEl.textContent = 'Importing...';
-    statusEl.classList.remove('text-danger');
-    statusEl.classList.add('text-secondary');
-  }
-  
-  try {
-    const response = await fetch('/api/playlist/import', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        spotify_url: spotifyUrl,
-        playlist_name: playlistName,
-        playlist_description: playlistDescription,
-        target_user: targetUser
-      })
-    });
-    
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(data.error || 'Import failed');
-    }
-    
-    currentImportData = data;
-    displayImportResults(data);
-    if (statusEl) {
-      statusEl.textContent = '✓ Import complete!';
-      statusEl.classList.remove('text-secondary', 'text-danger');
-      statusEl.classList.add('text-success');
-    }
-    
-    if (data.missing_tracks && data.missing_tracks.length > 0) {
-      missingTracksForSearch = data.missing_tracks;
-    }
-  } catch (error) {
-    console.error('Error:', error);
-    if (statusEl) {
-      statusEl.textContent = `✗ ${error.message}`;
-      statusEl.classList.remove('text-secondary', 'text-success');
-      statusEl.classList.add('text-danger');
-    }
-    
-    const errorSection = document.getElementById('errorSection');
-    const errorMessage = document.getElementById('errorMessage');
-    if (errorSection && errorMessage) {
-      errorSection.style.display = 'block';
-      errorMessage.textContent = error.message;
-    }
-    const resultsSection = document.getElementById('resultsSection');
-    if (resultsSection) resultsSection.style.display = 'none';
-  }
-}
 
 function displayImportResults(data) {
   const matchedCount = data.matched_tracks ? data.matched_tracks.length : 0;

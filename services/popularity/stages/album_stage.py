@@ -232,36 +232,56 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
             FROM artists WHERE name = %s
         """, (artist,))
         cached = cursor.fetchone()
+        cached_lf_fresh = False
+        cached_lb_fresh = False
         if cached:
             lf_raw = row_get(cached, "similar_artists_lastfm")
             lb_raw = row_get(cached, "similar_artists_listenbrainz")
             ts_raw = row_get(cached, "similar_artists_last_updated")
             if lf_raw:
-                result["lastfm"] = json.loads(lf_raw)
+                try:
+                    result["lastfm"] = json.loads(lf_raw)
+                except Exception:
+                    result["lastfm"] = []
             if lb_raw:
-                result["listenbrainz"] = json.loads(lb_raw)
-            if (result["lastfm"] or result["listenbrainz"]) and ts_raw:
+                try:
+                    result["listenbrainz"] = json.loads(lb_raw)
+                except Exception:
+                    result["listenbrainz"] = []
+            if ts_raw:
                 try:
                     ts = ts_raw if isinstance(ts_raw, datetime) else datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
                     if ts.tzinfo is None:
                         ts = ts.replace(tzinfo=timezone.utc)
                     age = (datetime.now(timezone.utc) - ts).days
-                    if age < 90:
-                        return result
+                    # Per-source freshness: a source is served from cache only
+                    # when it has data AND is under the 90-day TTL.  An empty
+                    # ListenBrainz result must NEVER block a retry — the old
+                    # whole-row gate returned on ANY fresh cached source, so a
+                    # first scan that cached only Last.fm left ListenBrainz
+                    # empty for 90 days.
+                    cached_lf_fresh = bool(result["lastfm"]) and age < 90
+                    cached_lb_fresh = bool(result["listenbrainz"]) and age < 90
                 except Exception:
                     pass
 
+        if cached_lf_fresh and cached_lb_fresh:
+            return result
+
         from helpers.config_helpers import get_config
         cfg = get_config()
-        lf_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
-        if lf_cfg.get("enabled") and lf_cfg.get("api_key"):
-            from api_clients.lastfm import LastFmClient
-            lf = LastFmClient(lf_cfg["api_key"])
-            similar = lf.get_similar_artists(artist, limit=10) or []
-            result["lastfm"] = [s.get("name", "") for s in similar if isinstance(s, dict)]
+        if not cached_lf_fresh:
+            lf_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
+            if lf_cfg.get("enabled") and lf_cfg.get("api_key"):
+                from api_clients.lastfm import LastFmClient
+                lf = LastFmClient(lf_cfg["api_key"])
+                similar = lf.get_similar_artists(artist, limit=10) or []
+                result["lastfm"] = [s.get("name", "") for s in similar if isinstance(s, dict)]
 
         # ListenBrainz similar artists (labs API) — requires the artist MBID.
-        if not result["listenbrainz"]:
+        # Retried on every scan until it yields data (or the cache holds a
+        # fresh non-empty result).
+        if not cached_lb_fresh:
             try:
                 artist_mbid = None
                 cursor.execute(

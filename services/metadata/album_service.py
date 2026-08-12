@@ -786,42 +786,13 @@ def add_album_to_missing_releases(artist: str, album: str, year: str | None = No
         conn.close()
 
 
-def get_spotify_genres(artist: str, album: str) -> dict:
-    """Read stored Spotify genres from tracks table for an album."""
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT spotify_genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND spotify_genres IS NOT NULL LIMIT 1",
-            (artist, album),
-        )
-        row = cursor.fetchone()
-        genres = []
-        if row:
-            raw = row[0] if not hasattr(row, "get") else row.get("spotify_genres")
-            if raw:
-                if isinstance(raw, str):
-                    import json
-                    try:
-                        genres = json.loads(raw) if raw.startswith("[") else [raw]
-                    except json.JSONDecodeError:
-                        genres = [g.strip() for g in raw.replace("\\", ",").split(",") if g.strip()]
-                elif isinstance(raw, list):
-                    genres = raw
-        return {"success": True, "genres": genres}
-    except Exception as exc:
-        return {"success": False, "error": str(exc)}
-    finally:
-        conn.close()
-
-
 def get_track_recommendations(artist: str, album: str) -> dict:
     """Get genre recommendations by aggregating all genre sources in DB."""
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres "
+            "SELECT lastfm_tags, musicbrainz_genres, discogs_genres "
             "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
             (artist, album),
         )
@@ -832,8 +803,8 @@ def get_track_recommendations(artist: str, album: str) -> dict:
     from collections import defaultdict
     source_map: dict[str, list[str]] = defaultdict(list)
     for row in rows:
-        cols = ["spotify_genres", "lastfm_tags", "musicbrainz_genres", "discogs_genres"]
-        for src_key, col in zip(["spotify", "lastfm", "musicbrainz", "discogs"], cols):
+        cols = ["lastfm_tags", "musicbrainz_genres", "discogs_genres"]
+        for src_key, col in zip(["lastfm", "musicbrainz", "discogs"], cols):
             val = None
             if hasattr(row, "get"):
                 val = row.get(col)

@@ -121,11 +121,6 @@ logger = logging.getLogger(__name__)
 _as_str = safe_str
 _as_int = safe_int
 
-# Per-artist Spotify genre cache (artist name → list of genres).  Artist-level
-# Spotify genres rarely change, so a full scan only pays the artist lookup once
-# per artist instead of once per track.
-_spotify_artist_genres_cache: dict[str, list[str]] = {}
-
 
 def _build_effective_track(
     track: dict[str, Any],
@@ -1328,29 +1323,6 @@ def process_track(
                             logger.debug("[track_stage][LB_GENRE] %s: %d ListenBrainz genre(s)", track_id, len(names))
                 except Exception as e:
                     logger.debug("[track_stage][LB_GENRE] %s: %s", track_id, e)
-
-            # Fetch Spotify genres for the track (legacy parity) — artist-level
-            # genres are cached per artist so a full scan only pays the lookup
-            # once per artist instead of once per track.
-            if title and artist and not track.get("spotify_genres") and not update_payload.get("spotify_genres"):
-                try:
-                    from services.enrichment.spotify_metadata_service import get_spotify_client
-                    sp = get_spotify_client()
-                    if sp is not None:
-                        _sp_artist_key = (artist or "").strip().lower()
-                        if _sp_artist_key not in _spotify_artist_genres_cache:
-                            _sp_artist_id = sp.get_artist_id(artist)
-                            _sp_genres: list[str] = []
-                            if _sp_artist_id:
-                                _sp_meta = sp.get_artist_metadata(_sp_artist_id) or {}
-                                _sp_genres = [g for g in (_sp_meta.get("genres") or []) if g]
-                            _spotify_artist_genres_cache[_sp_artist_key] = _sp_genres
-                        _sp_genres = _spotify_artist_genres_cache.get(_sp_artist_key) or []
-                        if _sp_genres:
-                            update_payload["spotify_genres"] = json.dumps(_sp_genres, ensure_ascii=False)
-                            logger.debug("[track_stage][SPOTIFY_GENRE] %s: %d genre(s)", track_id, len(_sp_genres))
-                except Exception as e:
-                    logger.debug("[track_stage][SPOTIFY_GENRE] %s: %s", track_id, e)
 
         except Exception as e:
             logger.debug("[track_stage][MB] %s: %s", track_id, e)

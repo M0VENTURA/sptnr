@@ -16,6 +16,4 @@ Submodules:
     - musicbrainz_persistence_service: MBID lookup + DB persistence.
     - single_detection_service: Single/album track classification.
     - single_detection_context_service: Artist-level context for detection.
-    - spotify_service: Spotify album/track/artist data.
-    - spotify_metadata_service: Unified metadata enrichment facade.
 """

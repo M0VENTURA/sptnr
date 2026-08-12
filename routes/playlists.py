@@ -2,7 +2,6 @@
 
 Handles:
 - Playlist file creation (.nsp).
-- Spotify playlist import.
 - Navidrome playlist listing.
 - Track search for playlist editing.
 - Download session initiation for batch imports.
@@ -32,10 +31,6 @@ from services.playlists import (
 from services.playlists.playlist_matching_service import (
     match_playlist_tracks
 )    
-
-from services.playlists.playlist_external_import_service import (
-    import_playlist_from_url
-)
 
 # -----------------------------------------------------------------------------
 # Blueprint
@@ -133,15 +128,6 @@ async def playlist_manager():
     )
 
 
-@playlists_bp.route("/playlist/import")
-async def playlist_importer():
-    cfg = get_config()
-    return await render_template(
-        "playlists/importer.html",
-        navidrome_users=cfg.get("navidrome_users", [])
-    )
-
-
 @playlists_bp.route("/playlist/import/csv")
 async def playlist_importer_csv():
     return await render_template("playlists/importer_csv.html")
@@ -168,50 +154,12 @@ async def playlists_create(playlist_type):
     )
 
 
-@playlists_bp.route("/playlists/import")
-async def playlists_import():
-    cfg = get_config()
-    return await render_template(
-        "playlists/import.html",
-        navidrome_users=cfg.get("navidrome_users", [])
-    )
-
-
 # =============================================================================
 # API ROUTES
 # =============================================================================
 
 # --------------------------------------------------
-# IMPORT FROM URL (Spotify / Apple Music)
-# --------------------------------------------------
-
-@playlists_bp.route("/api/import_playlist_url", methods=["POST"])
-async def api_import_playlist_url():
-    try:
-        data = (await request.get_json(silent=True)) or {}
-        url = (data.get("url") or "").strip()
-
-        if not url:
-            return jsonify({"success": False, "error": "url is required"}), 400
-
-        result = import_playlist_from_url(url)
-
-        return jsonify({
-            "success": True,
-            **result
-        })
-
-    except Exception as e:
-        logging.error(f"[import_playlist_url] Error: {e}", exc_info=True)
-
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 400
-
-
-# --------------------------------------------------
-# IMPORT (Spotify JSON → DB MATCHING)
+# IMPORT (JSON → DB MATCHING)
 # --------------------------------------------------
 
 @playlists_bp.route("/api/playlist/import", methods=["POST"])
@@ -738,3 +686,45 @@ async def api_playlists_rename():
     except Exception as exc:
         logging.error("Failed to rename playlist: %s", exc, exc_info=True)
         return jsonify({"error": f"Rename failed: {exc}"}), 500
+
+
+@playlists_bp.route("/api/playlists/delete", methods=["POST"])
+async def api_playlists_delete():
+    """Delete a playlist.
+
+    ``source == "file"`` removes the .nsp/.m3u file from the Playlists
+    directory (path-validated so arbitrary files can never be deleted);
+    ``source == "navidrome"`` deletes the playlist via the Subsonic API.
+    """
+    try:
+        data = (await request.get_json(silent=True)) or {}
+        source = str(data.get("source") or "")
+
+        if source == "file":
+            from services.playlists.playlist_service import _playlists_dir
+            file_path = str(data.get("file_path") or "")
+            if not file_path:
+                return jsonify({"error": "Missing playlist file path"}), 400
+            abs_path = _os.path.abspath(file_path)
+            root = _os.path.abspath(_playlists_dir())
+            if not abs_path.startswith(root + _os.sep) or not _os.path.isfile(abs_path):
+                return jsonify({"error": "Invalid playlist file path"}), 400
+            _os.remove(abs_path)
+            return jsonify({"success": True, "file_path": abs_path})
+
+        if source == "navidrome":
+            from routes.navidrome import get_navidrome_client
+            client = get_navidrome_client()
+            if not client:
+                return jsonify({"error": "Navidrome not configured"}), 400
+            playlist_id = str(data.get("id") or "")
+            if not playlist_id:
+                return jsonify({"error": "Missing playlist id"}), 400
+            if client.delete_playlist(playlist_id):
+                return jsonify({"success": True})
+            return jsonify({"error": "Navidrome rejected the delete"}), 500
+
+        return jsonify({"error": "Unknown playlist source"}), 400
+    except Exception as exc:
+        logging.error("Failed to delete playlist: %s", exc, exc_info=True)
+        return jsonify({"error": f"Delete failed: {exc}"}), 500

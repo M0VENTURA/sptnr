@@ -31,7 +31,7 @@ def parse_json_tags(json_str: str | None) -> list[dict[str, Any]]:
     """Parse a JSON tag array from a database column.
 
     Handles columns like ``lastfm_tags``, ``discogs_genres``,
-    ``musicbrainz_genres``, ``listenbrainz_genres``, ``spotify_genres``
+    ``musicbrainz_genres``, ``listenbrainz_genres``
     which store JSON arrays of ``{"name": …, "count": …}`` dicts.
 
     Also tolerates plain-string arrays (``["rock", "metal"]``) — the scan

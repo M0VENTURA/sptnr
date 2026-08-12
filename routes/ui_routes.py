@@ -171,10 +171,6 @@ async def setup():
         "nav_url": nav_first.get("base_url", ""),
         "nav_user": nav_first.get("user", ""),
         "nav_pass": nav_first.get("pass", ""),
-        # Spotify
-        "sp_enabled": api.get("spotify", {}).get("enabled", False),
-        "sp_client_id": api.get("spotify", {}).get("client_id", ""),
-        "sp_client_secret": api.get("spotify", {}).get("client_secret", ""),
         # Last.fm
         "lfm_enabled": api.get("lastfm", {}).get("enabled", False),
         "lfm_api_key": api.get("lastfm", {}).get("api_key", ""),

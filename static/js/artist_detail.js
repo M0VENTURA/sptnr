@@ -2856,7 +2856,6 @@ function loadRecommendedGenresForArtistTrack(artist, trackId) {
       };
       addAll(data.genres.lastfm_tags);
       addAll(data.genres.discogs_genres);
-      addAll(data.genres.spotify_genres);
 
       if (recommendedGenres.size > 0) {
         section.style.display = 'block';

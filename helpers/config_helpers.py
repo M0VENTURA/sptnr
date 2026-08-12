@@ -66,7 +66,6 @@ def _read_yaml(path):
 #   POPULARLR_NAV_URL            → navidrome_users[0].base_url
 #   POPULARLR_NAV_USER           → navidrome_users[0].user
 #   POPULARLR_NAV_PASS           → navidrome_users[0].pass
-#   POPULARLR_SPOTIFY_CLIENT_ID  → api_integrations.spotify.client_id
 #   POPULARLR_LASTFM_API_KEY     → api_integrations.lastfm.api_key
 #   POPULARLR_DISCOGS_TOKEN      → api_integrations.discogs.token
 #   POPULARLR_DOWNLOADS_FOLDER   → downloads.folder
@@ -104,8 +103,6 @@ def _apply_env_overrides(cfg: dict) -> None:
             first["display_name"] = first.get("user", "Admin")
 
     # ── API integrations ─────────────────────────────────────────────
-    _set_if("SPOTIFY_CLIENT_ID", cfg, "api_integrations", "spotify", "client_id")
-    _set_if("SPOTIFY_CLIENT_SECRET", cfg, "api_integrations", "spotify", "client_secret")
     _set_if("LASTFM_API_KEY", cfg, "api_integrations", "lastfm", "api_key")
     _set_if("DISCOGS_TOKEN", cfg, "api_integrations", "discogs", "token")
     _set_if("AUDIODB_API_KEY", cfg, "api_integrations", "audiodb", "api_key")
@@ -208,8 +205,6 @@ def get_config() -> dict:
         "nav_url": s.nav_url,
         "nav_user": s.nav_user,
         "nav_pass": s.nav_pass,
-        "spotify_client_id": s.spotify_client_id,
-        "spotify_client_secret": s.spotify_client_secret,
         "lastfm_api_key": s.lastfm_api_key,
         "lastfm_api_secret": s.lastfm_api_secret,
         "discogs_token": s.discogs_token,
@@ -296,22 +291,6 @@ def is_service_enabled(service_name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-
-
-def get_weights() -> dict[str, float]:
-    """Get popularity scoring weights from config.
-
-    Returns:
-        Dict with keys ``spotify``, ``lastfm``, ``listenbrainz``, ``age``.
-    """
-    cfg = get_config()
-    weights = cfg.get("weights", {})
-    return {
-        "spotify": float(weights.get("spotify", 0.4)),
-        "lastfm": float(weights.get("lastfm", 0.3)),
-        "listenbrainz": float(weights.get("listenbrainz", 0.2)),
-        "age": float(weights.get("age", 0.1)),
-    }
 
 
 def get_watcher_settings() -> dict[str, Any]:

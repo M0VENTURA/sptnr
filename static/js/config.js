@@ -423,11 +423,6 @@ function buildConfigObject() {
       }
     ),
     api_integrations: {
-      spotify: {
-        enabled: getChecked('api_spotify_enabled'),
-        client_id: getValue('api_spotify_client_id'),
-        client_secret: getValue('api_spotify_client_secret')
-      },
       lastfm: {
         enabled: getChecked('api_lastfm_enabled'),
         api_key: getValue('api_lastfm_api_key')
@@ -449,10 +444,6 @@ function buildConfigObject() {
         enabled: getChecked('api_google_enabled'),
         api_key: getValue('api_google_api_key'),
         cse_id: getValue('api_google_cse_id')
-      },
-      youtube: {
-        enabled: getChecked('api_youtube_enabled'),
-        api_key: getValue('api_youtube_api_key')
       }
     },
     strip_parentheses_filters: Array.from(document.querySelectorAll('#stripKeywordsList .badge'))

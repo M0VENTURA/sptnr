@@ -1,7 +1,7 @@
 """Genre Aggregation and Normalization Service
 
 This module handles genre collection, normalization, and aggregation from multiple
-music metadata sources (MusicBrainz, Discogs, AudioDB, Last.fm, Spotify).
+music metadata sources (MusicBrainz, Discogs, AudioDB, Last.fm).
 
 Key Responsibilities:
     - Genre name normalization and synonym resolution
@@ -16,7 +16,6 @@ Genre Source Weights:
     - Discogs: 0.25 (comprehensive, user-submitted)
     - AudioDB: 0.20 (curated database)
     - Last.fm: 0.10 (user tags, can be noisy)
-    - Spotify: 0.05 (algorithmic, least detailed)
     
     Note: These weights are configurable via config.yaml using
           helpers.config_helpers.get_genre_weights()
@@ -164,7 +163,7 @@ def get_track_recommendations(artist: str, album: str) -> dict:
     """Get genre recommendations for all tracks in an album by aggregating DB sources."""
     with db_session() as session:
         result = session.execute(
-            text("""SELECT spotify_genres, lastfm_tags, musicbrainz_genres, discogs_genres
+            text("""SELECT lastfm_tags, musicbrainz_genres, discogs_genres
                FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"""),
             {"artist": artist, "album": album},
         )
@@ -173,7 +172,7 @@ def get_track_recommendations(artist: str, album: str) -> dict:
     source_map: dict[str, list[str]] = {}
     for row in rows:
         for idx, (src_key, col) in enumerate([
-            ("spotify", "spotify_genres"), ("lastfm", "lastfm_tags"),
+            ("lastfm", "lastfm_tags"),
             ("musicbrainz", "musicbrainz_genres"), ("discogs", "discogs_genres"),
         ]):
             val = row[idx]

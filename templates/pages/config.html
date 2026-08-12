@@ -544,43 +544,6 @@
             <small class="form-text text-muted">Google Custom Search JSON API key plus a custom search engine ID. Used for web searches that resolve release/video links during single detection (e.g. confirming official video presence).</small>
           </div>
         </div>
-
-        <div class="col-12 col-xl-6">
-          <div class="border rounded p-3 h-100">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-              <h6 class="mb-0"><i class="bi bi-youtube"></i> YouTube</h6>
-              <div class="form-check form-switch mb-0">
-                <input class="form-check-input" type="checkbox" id="api_youtube_enabled" {% if config.get('api_integrations', {}).get('youtube', {}).get('enabled') %}checked{% endif %}>
-                <label class="form-check-label" for="api_youtube_enabled">Enabled</label>
-              </div>
-            </div>
-            <label class="form-label form-label-sm">API Key</label>
-            <input type="text" class="form-control form-control-sm" id="api_youtube_api_key" value="{{ config.get('api_integrations', {}).get('youtube', {}).get('api_key', '') }}">
-            <small class="form-text text-muted">YouTube Data API key. Used to look up official music videos, which act as a medium-confidence single-detection source.</small>
-          </div>
-        </div>
-        <div class="col-12 col-xl-6">
-          <div class="border rounded p-3 h-100">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-              <h6 class="mb-0"><i class="bi bi-spotify"></i> Spotify</h6>
-              <div class="form-check form-switch mb-0">
-                <input class="form-check-input" type="checkbox" id="api_spotify_enabled" {% if config.get('api_integrations', {}).get('spotify', {}).get('enabled') %}checked{% endif %}>
-                <label class="form-check-label" for="api_spotify_enabled">Enabled</label>
-              </div>
-            </div>
-            <div class="row g-2">
-              <div class="col-12 col-md-6">
-                <label class="form-label form-label-sm">Client ID</label>
-                <input type="text" class="form-control form-control-sm" id="api_spotify_client_id" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_id', '') }}">
-              </div>
-              <div class="col-12 col-md-6">
-                <label class="form-label form-label-sm">Client Secret</label>
-                <input type="password" class="form-control form-control-sm" id="api_spotify_client_secret" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_secret', '') }}">
-              </div>
-            </div>
-            <small class="form-text text-muted">Spotify app credentials from the <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify Developer Dashboard</a>. Used for enriched track metadata lookups during scans.</small>
-          </div>
-        </div>
       </div>
     </div>
   </div>

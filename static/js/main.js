@@ -185,6 +185,8 @@ const LOG_SOURCE_FILES = {
 let activeLogSource = 'scanner';
 let logPaused = false;
 let logModalVisible = false;
+let logShowTimestamps = false;
+let _logRawLines = [];
 
 function openUnifiedLogModal() {
   const modalEl = document.getElementById('unifiedLogModal');
@@ -192,10 +194,63 @@ function openUnifiedLogModal() {
   bootstrap.Modal.getOrCreateInstance(modalEl).show();
 }
 
+// ===== Log line rendering: optional timestamps + color-coded badges =====
+
+const _LOG_TAG_CLASSES = {
+  INFO: 'log-tag-info', DEBUG: 'log-tag-info',
+  'TRACK_RESULT': 'log-tag-track-result', 'ALBUM_RESULT': 'log-tag-track-result',
+  'FINALISE_STAGE': 'log-tag-finalise', 'POPULARITY_STAGE': 'log-tag-finalise',
+  'SINGLE_DETECTION': 'log-tag-finalise', 'LOAD_STAGE': 'log-tag-finalise',
+  'ALBUM_STAGE': 'log-tag-finalise', 'TRACK_STAGE': 'log-tag-finalise',
+  'WARNING': 'log-tag-warning', 'WARN': 'log-tag-warning',
+  'ERROR': 'log-tag-error', 'CRITICAL': 'log-tag-error',
+  'QUEUE': 'log-tag-queue', 'QUEUE_PROCESSOR': 'log-tag-queue',
+  'SOULSEEK': 'log-tag-soulseek', 'SLSKD': 'log-tag-soulseek',
+};
+
+function _logTagClass(tag) {
+  return _LOG_TAG_CLASSES[tag] || _LOG_TAG_CLASSES[String(tag).toUpperCase()] || '';
+}
+
+// Escape first, then wrap [TAG] tokens and ★ glyphs in styled spans (XSS-safe).
+function _formatLogLine(line) {
+  let s = window.escapeHtml(line);
+  if (!logShowTimestamps) {
+    s = s.replace(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s*/, '');
+  }
+  s = s.replace(/\[([A-Za-z0-9_]+)\]/g, (m, tag) => {
+    const cls = _logTagClass(tag);
+    return cls ? `<span class="log-tag ${cls}">${m}</span>` : m;
+  });
+  return s.replace(/(★+)/g, '<span class="log-stars">$1</span>');
+}
+
+function renderLogLines() {
+  const logEl = document.getElementById('unifiedLog');
+  if (!logEl) return;
+  let html = '';
+  for (const line of _logRawLines) html += _formatLogLine(line) + '\n';
+  logEl.innerHTML = html || '<span class="text-muted">— no output —</span>';
+  if (logModalVisible && !logPaused) logEl.scrollTop = logEl.scrollHeight;
+}
+
 function toggleLogPause() {
   logPaused = !logPaused;
   const pauseBtn = document.getElementById('pauseLogBtn');
-  if (pauseBtn) pauseBtn.innerHTML = logPaused ? '<i class="bi bi-play"></i> <span class="d-none d-sm-inline">Resume</span>' : '<i class="bi bi-pause"></i> <span class="d-none d-sm-inline">Pause</span>';
+  if (pauseBtn) {
+    pauseBtn.innerHTML = logPaused ? '<i class="bi bi-play"></i> <span class="d-none d-sm-inline">Resume</span>' : '<i class="bi bi-pause"></i> <span class="d-none d-sm-inline">Pause</span>';
+    pauseBtn.classList.toggle('log-pause-active', logPaused);
+  }
+}
+
+function toggleLogTimestamps(show) {
+  logShowTimestamps = !!show;
+  renderLogLines();
+}
+
+function clearUnifiedLog() {
+  _logRawLines = [];
+  renderLogLines();
 }
 
 function switchLogSource(source) {
@@ -204,6 +259,7 @@ function switchLogSource(source) {
     btn.classList.toggle('active', btn.dataset.source === activeLogSource);
   });
   updateUnifiedLog();
+  updateActivityWidget();
 }
 
 function downloadActiveLogLastHour() {
@@ -226,12 +282,129 @@ function updateUnifiedLog() {
     .then((r) => r.json())
     .then((data) => {
       if (Array.isArray(data && data.lines)) {
-        logEl.textContent = data.lines.join('\n');
-        if (logModalVisible) logEl.scrollTop = logEl.scrollHeight;
+        _logRawLines = data.lines;
+        renderLogLines();
       }
     })
     .catch(() => {})
     .finally(() => clearTimeout(timer));
+}
+
+// ===== Live activity widget (per-source summary above the stream) =====
+
+function setLogTabDot(source, active) {
+  const dot = document.querySelector('.log-source-tab[data-source="' + source + '"] .log-tab-dot');
+  if (!dot) return;
+  dot.classList.toggle('d-none', !active);
+  dot.classList.toggle('log-tab-dot-active', active);
+}
+
+function _fmtElapsed(sec) {
+  if (!isFinite(sec) || sec < 0) return '';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  return (h ? h + 'h ' : '') + (m ? m + 'm ' : '') + s + 's';
+}
+
+function _lastLogLineHtml() {
+  for (let i = _logRawLines.length - 1; i >= 0; i--) {
+    const line = String(_logRawLines[i] || '').trim();
+    if (!line) continue;
+    return '<div class="small text-muted text-truncate mt-1"><i class="bi bi-arrow-return-right me-1"></i>' + _formatLogLine(line) + '</div>';
+  }
+  return '';
+}
+
+function updateActivityWidget() {
+  const card = document.getElementById('logActivityCard');
+  const titleEl = document.getElementById('logActivityTitle');
+  const subEl = document.getElementById('logActivitySub');
+  const body = document.getElementById('logActivityBody');
+  if (!card || !titleEl || !subEl || !body) return;
+
+  // Scanner tab: live progress widget (bar, current item, step, elapsed).
+  if (activeLogSource === 'scanner') {
+    fetch('/api/scan-progress?_ts=' + Date.now(), { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((data) => {
+        const scans = data.active_scans || [];
+        const scan = scans[0] || null;
+        setLogTabDot('scanner', !!(scan && scan.is_running));
+        if (!scan || !scan.is_running) { card.classList.add('d-none'); return; }
+        card.classList.remove('d-none');
+        const pct = Math.min(Number(scan.progress ?? scan.percent_complete) || 0, 100);
+        const name = String(scan.scan_type || 'scan').replace(/_/g, ' ');
+        const item = String(scan.current_item || [scan.current_artist, scan.current_album].filter(Boolean).join(' — ') || '').trim();
+        const stage = String(scan.current_stage || scan.message || '').replace(/_/g, ' ');
+        titleEl.textContent = name + ' — ' + pct + '%';
+        subEl.textContent = stage ? 'Step: ' + stage : '';
+        let elapsed = '';
+        if (Number(scan.elapsed_seconds) > 0) elapsed = _fmtElapsed(Number(scan.elapsed_seconds));
+        else if (scan.started_at) elapsed = _fmtElapsed((Date.now() - Date.parse(scan.started_at)) / 1000);
+        body.innerHTML =
+          '<div class="progress mb-1" style="height: 8px;"><div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: ' + pct + '%"></div></div>' +
+          (item ? '<div class="small text-truncate"><i class="bi bi-disc me-1"></i>' + window.escapeHtml(item) + '</div>' : '') +
+          (elapsed ? '<div class="small text-muted mt-1"><i class="bi bi-stopwatch me-1"></i>' + window.escapeHtml(elapsed) + ' elapsed</div>' : '');
+      })
+      .catch(() => {});
+    return;
+  }
+
+  // Queue / Soulseek tab: transfer counts + last log line.
+  if (activeLogSource === 'queue' || activeLogSource === 'soulseek') {
+    fetch('/api/queue/status?limit=1', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((data) => {
+        const counts = data.counts || {};
+        const downloading = Number(counts.downloading) || 0;
+        const queued = Number(counts.queued) || 0;
+        const activeTotal = Number(data.total_active) || 0;
+        const completed = Number(counts.completed || counts.imported) || 0;
+        const failed = Number(counts.failed || counts.error) || 0;
+        setLogTabDot('queue', activeTotal > 0);
+        setLogTabDot('soulseek', downloading > 0);
+        card.classList.remove('d-none');
+        titleEl.textContent = activeLogSource === 'soulseek' ? 'Soulseek — Download Queue' : 'Download Queue';
+        subEl.textContent = downloading > 0
+          ? downloading + ' active transfer' + (downloading === 1 ? '' : 's')
+          : 'No transfers in progress';
+        body.innerHTML =
+          '<div class="d-flex flex-wrap gap-2 small">' +
+            '<span class="badge bg-primary">' + downloading + ' downloading</span>' +
+            '<span class="badge bg-secondary">' + queued + ' queued</span>' +
+            '<span class="badge bg-success">' + completed + ' completed</span>' +
+            '<span class="badge bg-danger">' + failed + ' failed</span>' +
+          '</div>' +
+          _lastLogLineHtml();
+      })
+      .catch(() => {});
+    return;
+  }
+
+  // Navidrome / System: stream-only views.
+  setLogTabDot('navidrome', false);
+  setLogTabDot('system', false);
+  card.classList.add('d-none');
+}
+
+// Context-aware default tab when the modal opens: a running scan wins, then
+// active Soulseek downloads, otherwise keep the last-viewed source.
+function smartSelectLogSource() {
+  fetch('/api/scan-progress?_ts=' + Date.now(), { cache: 'no-store' })
+    .then((r) => r.json())
+    .then((data) => {
+      const running = (data.active_scans || []).some((s) => s.is_running);
+      if (running) { switchLogSource('scanner'); return; }
+      fetch('/api/queue/status?limit=1', { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((q) => {
+          const counts = q.counts || {};
+          if ((Number(counts.downloading) || 0) > 0) switchLogSource('soulseek');
+        })
+        .catch(() => {});
+    })
+    .catch(() => {});
 }
 
 // The dashboard's own polling (dashboard.js) owns the bar there.
@@ -254,10 +427,19 @@ function updateGlobalScanBar(data) {
 document.addEventListener("DOMContentLoaded", () => {
   const logModalEl = document.getElementById('unifiedLogModal');
   if (logModalEl) {
-    logModalEl.addEventListener('shown.bs.modal', () => { logModalVisible = true; updateUnifiedLog(); });
+    logModalEl.addEventListener('shown.bs.modal', () => {
+      logModalVisible = true;
+      smartSelectLogSource();
+      updateUnifiedLog();
+      updateActivityWidget();
+    });
     logModalEl.addEventListener('hidden.bs.modal', () => { logModalVisible = false; });
   }
-  setInterval(() => { if (logModalVisible) updateUnifiedLog(); }, 5000);
+  setInterval(() => {
+    if (!logModalVisible) return;
+    updateUnifiedLog();
+    updateActivityWidget();
+  }, 5000);
 });
 
 // ==========================================================================

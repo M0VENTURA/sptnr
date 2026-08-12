@@ -208,8 +208,7 @@ def _artist_mbid_from_library(artist: str) -> str | None:
         with db_session() as session:
             row = session.execute(
                 text("""
-                    SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''),
-                                        NULLIF(musicbrainz_artistid, ''))) AS mbid
+                    SELECT MAX(NULLIF(musicbrainz_artistid, '')) AS mbid
                     FROM tracks
                     WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
                 """),

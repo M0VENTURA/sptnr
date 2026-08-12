@@ -375,6 +375,7 @@ def fetch_musicbrainz_upcoming_releases(
 
     client = _get_mb_client()
     stats: dict[str, Any] = {"artists_scanned": 0, "inserted": 0, "updated": 0}
+    failed_artists: list[str] = []
     total_artists = len(artists)
     _set_status(status="running", progress=0, total=total_artists, current_artist=None)
     consecutive_failures = 0
@@ -389,7 +390,15 @@ def fetch_musicbrainz_upcoming_releases(
                 consecutive_failures = 0
             except Exception as exc:
                 consecutive_failures += 1
-                logger.debug("[UPCOMING_MB] Artist %s failed: %s", artist, exc)
+                failed_artists.append(artist)
+                # The FIRST failure of a run surfaces at warning level so a
+                # silent zero-insert run is diagnosable without debug logging;
+                # repeats stay at debug (rate-limit errors usually repeat for
+                # every artist).
+                if len(failed_artists) == 1:
+                    logger.warning("[UPCOMING_MB] Artist %s failed: %s", artist, exc)
+                else:
+                    logger.debug("[UPCOMING_MB] Artist %s failed: %s", artist, exc)
                 if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                     logger.warning(
                         "[UPCOMING_MB] Aborting refresh after %s consecutive failures (last artist: %s)",
@@ -407,7 +416,14 @@ def fetch_musicbrainz_upcoming_releases(
     finally:
         _set_status(status="idle", current_artist=None, last_stats=stats)
 
-    logger.info("[UPCOMING_MB] Refresh complete: %s", stats)
+    if failed_artists:
+        stats["artists_failed"] = len(failed_artists)
+        logger.warning(
+            "[UPCOMING_MB] Refresh complete with %d/%d artists failed (inserted=%d, updated=%d)",
+            len(failed_artists), total_artists, stats["inserted"], stats["updated"],
+        )
+    else:
+        logger.info("[UPCOMING_MB] Refresh complete: %s", stats)
     return stats
 
 

@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     """Application settings, loaded from environment variables with YAML fallback.
 
     Env var naming: ``POPULARLR_<SECTION>_<KEY>``, e.g. ``POPULARLR_PG_HOST``.
-    Nested values use double underscore, e.g. ``POPULARLR_API_INTEGRATIONS__SPOTIFY__CLIENT_ID``.
+    Nested values use double underscore, e.g. ``POPULARLR_API_INTEGRATIONS__LASTFM__API_KEY``.
     """
 
     model_config = SettingsConfigDict(
@@ -61,8 +61,6 @@ class Settings(BaseSettings):
     nav_pass: str = Field(default="", description="Navidrome password")
 
     # ── API Integrations ──────────────────────────────────────────────────
-    spotify_client_id: str = Field(default="", description="Spotify client ID")
-    spotify_client_secret: str = Field(default="", description="Spotify client secret")
     lastfm_api_key: str = Field(default="", description="Last.fm API key")
     lastfm_api_secret: str = Field(default="", description="Last.fm API secret")
     discogs_token: str = Field(default="", description="Discogs personal access token")

@@ -4,7 +4,7 @@ Application business logic services for Popularr. Organised by domain:
 
     - catalog:     Library classification and analytics.
     - downloads:   Download pipeline, queue, and file management.
-    - enrichment:  External API enrichment (MusicBrainz, Spotify, Last.fm, etc).
+    - enrichment:  External API enrichment (MusicBrainz, Last.fm, etc).
     - infrastructure: Low-level technical services (filesystem, rate limiting).
     - library:     Library synchronisation with Navidrome.
     - matching:    Track matching and similarity algorithms.

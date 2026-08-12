@@ -2779,14 +2779,6 @@ var _pageData = window._pageData || {};
               });
             }
             
-            // Collect from Spotify
-            if (data.genres.spotify_genres) {
-              data.genres.spotify_genres.forEach(genre => {
-                const name = typeof genre === 'object' ? genre.name : genre;
-                recommendedGenres.set(name, (recommendedGenres.get(name) || 0) + 1);
-              });
-            }
-            
             if (recommendedGenres.size > 0) {
               section.style.display = 'block';
               

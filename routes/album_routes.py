@@ -26,7 +26,6 @@ from services.metadata.album_service import (
     match_album_tracklist,
     get_majority_artist,
     add_album_to_missing_releases,
-    get_spotify_genres,
     get_track_recommendations,
 )
 
@@ -243,7 +242,7 @@ async def api_album_ignore_missing_track():
 
 @album_bp.route("/search-art", methods=["GET"])
 def api_album_search_art():
-    """Search for album art on MusicBrainz, Discogs, Spotify, or Apple Music."""
+    """Search for album art on MusicBrainz, Discogs, or Apple Music."""
     artist = request.args.get("artist", "").strip()
     album = request.args.get("album", "").strip()
     source = request.args.get("source", "musicbrainz").strip()
@@ -372,20 +371,6 @@ async def api_album_discogs_lookup():
         return jsonify({"error": "Missing album or artist"}), 400
         
     result, status_code = _pop_status(lookup_discogs_album(artist, album))
-    return jsonify(result), status_code
-
-
-@album_bp.route("/spotify-genres", methods=["POST"])
-async def api_album_spotify_genres():
-    """Get Spotify genres for an album from database."""
-    data = (await request.get_json(force=True, silent=True)) or {}
-    album = data.get("album", "")
-    artist = data.get("artist", "")
-    
-    if not album or not artist:
-        return jsonify({"error": "Missing album or artist"}), 400
-        
-    result, status_code = _pop_status(get_spotify_genres(artist, album))
     return jsonify(result), status_code
 
 
