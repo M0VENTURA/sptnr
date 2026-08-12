@@ -49,6 +49,12 @@ logger = logging.getLogger(__name__)
 # Matches a trailing "(X Cover)" annotation in a track title.
 _COVER_SUFFIX_RE = re.compile(r'\s*\([^)]+\s+cover\)\s*$', re.IGNORECASE)
 
+# Per-album release tracklists (release MBID -> get_release payload) shared
+# across the whole process.  ``_resolve_recording_mbid`` fetched the SAME
+# release once per track — a 12-track album paid 12 throttled release
+# lookups for one payload.  GIL-safe for concurrent scan threads.
+_RELEASE_TRACKLIST_CACHE: Dict[str, dict] = {}
+
 # Compilation artist names used to decide when per-track-artist lookups are needed.
 _COMPILATION_ARTIST_NAMES = frozenset({
     'various artists', 'various', 'v/a', 'va', 'compilation', 'soundtrack',
@@ -524,13 +530,21 @@ class CoverDetector:
                     return result
 
             search_title = seed.get("title") or _COVER_SUFFIX_RE.sub("", title).strip() or title
-            recordings = self.mb.search_recordings(search_title, limit=50) or []
+            # Bounded slow path: the full variant scan searched up to 50
+            # recordings (50 throttled lookups).  The earliest original almost
+            # always sits in the first handful of results, so the search is
+            # capped at 15 and at most 12 recordings are inspected.
+            recordings = self.mb.search_recordings(search_title, limit=15) or []
 
             earliest = None
             earliest_year = 9999
             earliest_unknown = None
 
+            _inspected = 0
             for rec in recordings:
+                if _inspected >= 12:
+                    break
+                _inspected += 1
                 rid = rec.get("id")
                 if not rid or rid == recording_mbid:
                     continue
@@ -624,7 +638,9 @@ class CoverDetector:
         """Find earliest likely original recording for a title/writer pair."""
         try:
             search_title = canonical_track_title(title) or title
-            recordings = self.mb.search_recordings(search_title, limit=25) or []
+            # Bounded: at most 10 search hits, 8 inspected (each inspection is
+            # a throttled get_recording).
+            recordings = self.mb.search_recordings(search_title, limit=10) or []
             if not recordings:
                 return None
 
@@ -632,7 +648,11 @@ class CoverDetector:
             earliest_year = 9999
             earliest_unknown = None
 
+            _inspected = 0
             for rec in recordings:
+                if _inspected >= 8:
+                    break
+                _inspected += 1
                 rid = rec.get("id")
                 if not rid:
                     continue
@@ -712,7 +732,8 @@ class CoverDetector:
                 return None
 
             canonical = canonical_track_title(title) or title
-            recordings = self.mb.search_recordings(canonical, limit=50) or []
+            # Bounded: at most 15 search hits, 12 inspected.
+            recordings = self.mb.search_recordings(canonical, limit=15) or []
             if not recordings:
                 return None
 
@@ -720,7 +741,11 @@ class CoverDetector:
             earliest_year = 9999
             earliest_unknown = None
 
+            _inspected = 0
             for rec in recordings:
+                if _inspected >= 12:
+                    break
+                _inspected += 1
                 rid = rec.get("id")
                 if not rid or rid == recording_mbid:
                     continue
@@ -900,7 +925,12 @@ class CoverDetector:
 
         if release_mbid:
             try:
-                release = self.mb.get_release(release_mbid, inc="recordings+artist-credits")
+                # Per-album release tracklists are cached process-wide — the
+                # same release was fetched once per track here.
+                release = _RELEASE_TRACKLIST_CACHE.get(release_mbid)
+                if release is None:
+                    release = self.mb.get_release(release_mbid, inc="recordings+artist-credits") or {}
+                    _RELEASE_TRACKLIST_CACHE[release_mbid] = release
                 if release:
                     for medium in release.get("media", []) or []:
                         for mb_track in medium.get("tracks", []) or []:

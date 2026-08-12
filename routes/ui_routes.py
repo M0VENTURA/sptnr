@@ -417,7 +417,7 @@ async def dashboard():
         )
     except Exception as exc:
         logger.error("Dashboard error: %s", exc, exc_info=True)
-        return await render_template("pages/dashboard.html", recent_scans=[], nav_users=[], error=str(exc))
+        return await render_template("pages/dashboard.html", recent_scans=[], nav_users=[], stats={}, error=str(exc))
 
 
 @ui_bp.route("/artists")

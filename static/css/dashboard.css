@@ -76,6 +76,75 @@ body {
     padding-bottom: 3.2rem;
 }
 
+/* ─── Library stats tiles (right rail) ────────────────────────────────── */
+.stat-tile-value {
+    font-size: 1.15rem;
+    font-weight: 700;
+    line-height: 1.1;
+    color: var(--text-primary, #e8e8e8);
+}
+
+.stat-tile-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-muted, #9aa0a6);
+    margin-top: 0.15rem;
+}
+
+/* ─── Desktop (xl) viewport-fill layout ─────────────────────────────────
+   On big screens the dashboard used to end after ~half the viewport,
+   leaving a huge dead band above the bottom status bar.  The row now
+   stretches to fill the space between the navbar and the status bar; the
+   Upcoming Releases table and the Recent Scans list scroll INSIDE their
+   cards (sticky headers keep the column titles visible).  Mobile/tablet
+   keep the natural document flow. */
+@media (min-width: 1200px) {
+    #dashboardRow {
+        min-height: calc(100vh - var(--navbar-height, 112px) - 5.2rem);
+        align-items: stretch !important;
+    }
+
+    #dashboardRow > [class*="col-"] {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    #scannerControlsCard {
+        flex-shrink: 0;
+    }
+
+    /* Upcoming card stretches to fill the left column; the table body
+       scrolls inside it (overrides the inline 320px height). */
+    #dashboardRow > .col-12.col-lg-7.col-xl-8 > .card:last-child {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    #upcomingTableWrap {
+        flex: 1 1 auto;
+        min-height: 120px;
+        height: auto !important;
+    }
+
+    /* Recent Scans grows to fill the right rail; its list scrolls
+       (overrides the inline 480px max-height). */
+    #recentScansCard {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    #recentScansCard .card-body {
+        flex: 1 1 auto;
+        max-height: none !important;
+    }
+}
+
 /* ─── Upcoming releases stacked mobile cards ──────────────────────────── */
 .upcoming-card {
     background: var(--secondary-bg);

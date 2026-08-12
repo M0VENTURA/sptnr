@@ -57,6 +57,18 @@ def escape_lucene_special_chars(text: str) -> str:
     return escaped
 
 
+# Process-wide lookup caches.  The same recording / ISRC is resolved by
+# several independent code paths during one scan (popularity fallbacks,
+# single detection, cover detection, genres) — each used to pay a full
+# throttled MusicBrainz request.  These dicts are GIL-safe for concurrent
+# reads/writes and bounded: payloads are small, and the cache is cleared
+# when it grows past its cap so a long scan cannot balloon memory.
+_RECORDING_DETAIL_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+_RECORDING_DETAIL_CACHE_MAX = 4000
+_ISRC_LOOKUP_CACHE: dict[tuple[str, str], list[dict[str, Any]]] = {}
+_ISRC_LOOKUP_CACHE_MAX = 2000
+
+
 class MusicBrainzHttpClient:
     """Raw MusicBrainz API wrapper."""
 
@@ -159,10 +171,22 @@ class MusicBrainzHttpClient:
     def get_recording(self, recording_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not recording_mbid:
             return {}
+        # Cached process-wide by (mbid, inc) — the same recording is fetched
+        # repeatedly per scan (metadata, genres, single detection, cover
+        # detection) with overlapping inc sets, each a throttled request.
+        key = (recording_mbid, inc)
+        cached = _RECORDING_DETAIL_CACHE.get(key)
+        if cached is not None:
+            return cached
         params = {"fmt": "json"}
         if inc:
             params["inc"] = inc
-        return self.get(f"recording/{recording_mbid}", params=params, timeout=timeout)
+        data = self.get(f"recording/{recording_mbid}", params=params, timeout=timeout)
+        if data:
+            if len(_RECORDING_DETAIL_CACHE) >= _RECORDING_DETAIL_CACHE_MAX:
+                _RECORDING_DETAIL_CACHE.clear()
+            _RECORDING_DETAIL_CACHE[key] = data
+        return data
 
     def get_artist(self, artist_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not artist_mbid:
@@ -254,14 +278,28 @@ class MusicBrainzHttpClient:
     # ------------------------------------------------------------------
 
     def lookup_by_isrc(self, isrc: str, inc: str = "") -> list[dict[str, Any]]:
-        """Lookup recordings by ISRC code."""
+        """Lookup recordings by ISRC code.
+
+        Cached process-wide by (isrc, inc) — the same code is resolved up to
+        5× per track per scan (Last.fm fallback, LB MBID resolution, LB
+        aggregation, ISRC single check, cover detection), each previously a
+        full throttled request.
+        """
         if not isrc:
             return []
+        cache_key = (isrc.strip().upper(), inc)
+        cached = _ISRC_LOOKUP_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
         params = {"fmt": "json"}
         if inc:
             params["inc"] = inc
         payload = self.get(f"isrc/{isrc}", params=params)
-        return payload.get("recordings", []) if isinstance(payload.get("recordings"), list) else []
+        recordings = payload.get("recordings", []) if isinstance(payload.get("recordings"), list) else []
+        if len(_ISRC_LOOKUP_CACHE) >= _ISRC_LOOKUP_CACHE_MAX:
+            _ISRC_LOOKUP_CACHE.clear()
+        _ISRC_LOOKUP_CACHE[cache_key] = recordings
+        return recordings
 
     # ------------------------------------------------------------------
     # Genre-aware lookups (inc=genres)

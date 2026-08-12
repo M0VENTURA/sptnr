@@ -282,6 +282,49 @@ def _parse_discogs_duration(duration_str: str) -> int | None:
     return None
 
 # --- SERVICE CLASS ---
+def resolve_master_formats(releases: list[dict[str, Any]], http: "DiscogsHttpClient") -> None:
+    """Resolve format/track-count for format-less MASTER entries IN PLACE.
+
+    Discogs returns the artist's singles/EPs as MASTER entries, which carry
+    NO ``format`` field — the format check in ``_scan_releases`` would skip
+    every one of them (the "When Your Heart Stops Beating" single missed for
+    this reason).  Resolve each main release's format so singles are
+    detectable straight from the artist page, independent of database-search
+    ranking.  Shared by the in-memory artist-releases path and the
+    ``artist_release_cache`` writer so both classify identically.
+    """
+    for rel in releases:
+        if not isinstance(rel, dict):
+            continue
+        if (
+            rel.get("type") == "master"
+            and not rel.get("format")
+            and str(rel.get("role") or "Main").lower() == "main"
+            and rel.get("main_release")
+        ):
+            try:
+                main = http.get_release(rel["main_release"], timeout=8.0)
+                rel["format"] = [
+                    " ".join(
+                        part for part in (
+                            str(f.get("name") or ""),
+                            " ".join(str(d) for d in (f.get("descriptions") or [])),
+                        ) if part
+                    )
+                    for f in (main.get("formats") or [])
+                ]
+                # Track count is structural proof of release type: an
+                # album with 14 tracks is never a single even when a
+                # fuzzy title similarity happens to match (see the
+                # track-count guard in ``_scan_releases``).
+                rel["track_count"] = len(main.get("tracklist") or []) or None
+            except Exception as exc:
+                logger.debug(
+                    "[DISCOGS] Master format lookup failed for %s: %s",
+                    rel.get("title"), exc,
+                )
+
+
 class DiscogsService:
     def __init__(self, token: str, http_client: DiscogsHttpClient | None = None, enabled: bool = True):
         self.token = token or ""
@@ -308,51 +351,58 @@ class DiscogsService:
         the 7"/promo single, so the single routinely misses a small top-N
         window even when it is genuinely on Discogs (e.g. "+44 - When Your
         Heart Stops Beating").
+
+        Consults the 7-day ``artist_release_cache`` FIRST — the scan runner
+        prefetches the SAME Discogs artist page into it, so re-fetching all
+        pages here per process duplicated the all-pages fetch per artist per
+        scan.  When the cache is stale/absent, the API path runs (with master
+        format resolution) and writes its richer result back so later scans
+        hit the DB.
         """
         key = artist.lower()
         if key not in self._artist_releases_cache:
             releases: list[dict[str, Any]] = []
-            artist_id = self.get_artist_id(artist)
-            if artist_id:
-                # Fetch ALL pages — a single page of 100 can miss older
-                # singles of catalogue-heavy artists (Discogs caps pages at
-                # 100 releases each).
-                releases = self.http.get_artist_releases_all(artist_id, max_pages=10) or []
-                # Discogs returns the artist's singles/EPs as MASTER entries,
-                # which carry NO ``format`` field — the format check in
-                # ``_scan_releases`` would skip every one of them (the
-                # "When Your Heart Stops Beating" single missed for this
-                # reason). Resolve each main release's format so singles are
-                # detectable straight from the artist page, independent of
-                # database-search ranking.
-                for rel in releases:
-                    if (
-                        rel.get("type") == "master"
-                        and not rel.get("format")
-                        and str(rel.get("role") or "Main").lower() == "main"
-                        and rel.get("main_release")
-                    ):
-                        try:
-                            main = self.http.get_release(rel["main_release"], timeout=8.0)
-                            rel["format"] = [
-                                " ".join(
-                                    part for part in (
-                                        str(f.get("name") or ""),
-                                        " ".join(str(d) for d in (f.get("descriptions") or [])),
-                                    ) if part
-                                )
-                                for f in (main.get("formats") or [])
-                            ]
-                            # Track count is structural proof of release type: an
-                            # album with 14 tracks is never a single even when a
-                            # fuzzy title similarity happens to match (see the
-                            # track-count guard in ``_scan_releases``).
-                            rel["track_count"] = len(main.get("tracklist") or []) or None
-                        except Exception as exc:
-                            logger.debug(
-                                "[DISCOGS] Master format lookup failed for %s: %s",
-                                rel.get("title"), exc,
-                            )
+            # DB consult-first: rows are converted back into the release-dict
+            # shape ``_scan_releases`` consumes.  Fresh rows were classified
+            # by the same rules (incl. master-format resolution), so the
+            # synthesized format tokens drive identical single/album/promo
+            # gates; ``track_count`` is best-effort and only present on the
+            # API path.
+            rows = None
+            try:
+                from services.popularity.release_cache_service import get_cached_artist_release_rows
+                rows = get_cached_artist_release_rows(artist, source="discogs")
+            except Exception as exc:
+                logger.debug("[DISCOGS] Release-cache read failed for %s: %s", artist, exc)
+            if rows is not None:
+                releases = [
+                    {
+                        "title": str(r.get("title") or ""),
+                        "role": "Main",
+                        "id": str(r.get("release_id") or ""),
+                        "year": r.get("year"),
+                        "format": [str(r.get("release_type") or "album").lower()]
+                        + (["promo"] if r.get("is_promo") else []),
+                        "track_count": None,
+                    }
+                    for r in rows
+                ]
+            else:
+                artist_id = self.get_artist_id(artist)
+                if artist_id:
+                    # Fetch ALL pages — a single page of 100 can miss older
+                    # singles of catalogue-heavy artists (Discogs caps pages at
+                    # 100 releases each).
+                    releases = self.http.get_artist_releases_all(artist_id, max_pages=10) or []
+                    resolve_master_formats(releases, self.http)
+                    # Write the richer result back to artist_release_cache so
+                    # the runner's prefetch AND this function on later scans
+                    # hit the DB instead of re-fetching all pages.
+                    try:
+                        from services.popularity.release_cache_service import upsert_artist_release_rows
+                        upsert_artist_release_rows(artist, releases)
+                    except Exception as exc:
+                        logger.debug("[DISCOGS] Release-cache write-back failed for %s: %s", artist, exc)
             self._artist_releases_cache[key] = releases
         return self._artist_releases_cache[key]
 

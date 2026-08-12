@@ -59,10 +59,16 @@ class ListenBrainzClient:
         return headers
 
     def _throttle(self) -> None:
-        """Best-effort throttle using shared limiter when available."""
+        """Best-effort pacing on ListenBrainz's OWN rate budget.
+
+        ListenBrainz and MusicBrainz are separate services with independent
+        rate buckets, so LB requests must NOT consume the MusicBrainz 1 req/s
+        budget — this lets concurrent scans push MB metadata lookups and LB
+        popularity lookups at the same time.
+        """
         if _rate_limiter:
             try:
-                _rate_limiter.throttle_musicbrainz()
+                _rate_limiter.throttle_listenbrainz()
                 return
             except Exception:
                 pass
@@ -444,6 +450,15 @@ def get_recording_popularity_batch(recording_mbids: list[str], user_agent: str =
     return ListenBrainzClient(enabled=True, user_agent=user_agent or DEFAULT_USER_AGENT).get_recording_popularity_batch(recording_mbids)
 
 
+def get_release_metadata_batch(release_mbids: list[str], inc: str = "artist release") -> dict[str, dict[str, Any]]:
+    """Fetch release metadata (incl. tracklists) keyed by release MBID.
+
+    Module-level wrapper for ``ListenBrainzClient.get_release_metadata_batch``
+    — the release-first path of the popularity scan (album-tracklist lookup).
+    """
+    return ListenBrainzClient(enabled=True, user_agent=DEFAULT_USER_AGENT).get_release_metadata_batch(release_mbids, inc=inc)
+
+
 def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "", enabled: bool = True) -> int:
     return _get_listenbrainz_client(enabled=enabled).get_listen_count(mbid=mbid, artist=artist, title=title)
 
@@ -454,3 +469,33 @@ def get_listenbrainz_popularity(mbid: str, enabled: bool = True) -> dict[str, in
 
 def get_recording_tags(mbid: str, enabled: bool = True) -> list[dict[str, Any]]:
     return _get_listenbrainz_client(enabled=enabled).get_recording_tags(mbid)
+
+
+def get_recording_tags_batch(recording_mbids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Fetch tags for many recordings in ONE metadata call.
+
+    Returns ``{recording_mbid: [{"tag", "count"}, ...]}`` sorted by count —
+    the same per-recording shape ``get_recording_tags`` returns.  The scan
+    runner uses this to serve an album's genre collection from a single
+    request instead of one throttled call per track.
+    """
+    mbids = [m for m in recording_mbids if m]
+    if not mbids:
+        return {}
+    try:
+        data = _get_listenbrainz_client().get_recording_metadata_batch(mbids, inc="tag") or {}
+        out: dict[str, list[dict[str, Any]]] = {}
+        for mbid, entry in data.items():
+            if not isinstance(entry, dict):
+                continue
+            tags = entry.get("tag", {}).get("recording", []) if isinstance(entry.get("tag"), dict) else []
+            if isinstance(tags, list):
+                out[mbid] = sorted(
+                    tags,
+                    key=lambda item: item.get("count", 0) if isinstance(item, dict) else 0,
+                    reverse=True,
+                )
+        return out
+    except Exception as exc:
+        logger.debug("Failed to fetch recording tags batch: %s", exc)
+        return {}

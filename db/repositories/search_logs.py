@@ -95,7 +95,7 @@ def log_slskd_search(
                     VALUES
                         (:search_type, :query, :queue_id, :artist, :title, :album,
                          :result_count, :duration_seconds, :notes,
-                         :selected_result::jsonb, :results::jsonb)
+                         CAST(:selected_result AS jsonb), CAST(:results AS jsonb))
                 """),
                 {
                     "search_type": search_type,

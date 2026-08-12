@@ -19,6 +19,7 @@ Those belong in ``services.enrichment.discogs_service``.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 
@@ -36,6 +37,10 @@ _DISCOGS_RATE_LIMIT_UNTIL = 0.0
 _DISCOGS_CIRCUIT_BREAKER_OPEN = False
 _DISCOGS_CIRCUIT_BREAKER_RESET_TIME = 0.0
 _DISCOGS_CONSECUTIVE_ERRORS = 0
+# The pacing state above is module-global but the check-then-sleep window is
+# not atomic — concurrent scan threads could double-fire.  The lock makes the
+# pacing decision atomic (the cooldown window itself stays shared).
+_DISCOGS_THROTTLE_LOCK = threading.Lock()
 
 
 def build_discogs_session():
@@ -68,14 +73,15 @@ def throttle_discogs() -> None:
     """Respect Discogs request pacing and any active 429 cooldown."""
     global _DISCOGS_LAST_REQUEST_TIME
 
-    if _DISCOGS_RATE_LIMIT_UNTIL > time.time():
-        time.sleep(_DISCOGS_RATE_LIMIT_UNTIL - time.time())
+    with _DISCOGS_THROTTLE_LOCK:
+        if _DISCOGS_RATE_LIMIT_UNTIL > time.time():
+            time.sleep(_DISCOGS_RATE_LIMIT_UNTIL - time.time())
 
-    elapsed = time.time() - _DISCOGS_LAST_REQUEST_TIME
-    if elapsed < _DISCOGS_MIN_INTERVAL:
-        time.sleep(_DISCOGS_MIN_INTERVAL - elapsed)
+        elapsed = time.time() - _DISCOGS_LAST_REQUEST_TIME
+        if elapsed < _DISCOGS_MIN_INTERVAL:
+            time.sleep(_DISCOGS_MIN_INTERVAL - elapsed)
 
-    _DISCOGS_LAST_REQUEST_TIME = time.time()
+        _DISCOGS_LAST_REQUEST_TIME = time.time()
 
 
 def check_circuit_breaker() -> bool:

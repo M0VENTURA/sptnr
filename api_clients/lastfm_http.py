@@ -41,7 +41,12 @@ def retry_with_backoff(
     """Retry a callable returning an httpx.Response with exponential backoff."""
     for attempt in range(max_retries):
         try:
-            time.sleep(rate_limit_delay)
+            # The per-provider limiter (1 req/s, lock-based) already paces the
+            # FIRST attempt — the fixed pre-sleep must not run before it (it
+            # cost 0.5 s on EVERY Last.fm request, dwarfing API latency).  It
+            # still delays RETRIES as an extra safety gap between attempts.
+            if attempt > 0:
+                time.sleep(rate_limit_delay)
             result = func()
 
             if hasattr(result, "status_code") and result.status_code == 429:

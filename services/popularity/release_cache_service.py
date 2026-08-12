@@ -69,6 +69,82 @@ def _artist_cache_fresh(artist: str) -> bool:
         return False
 
 
+def get_cached_artist_release_rows(artist: str, source: str = "discogs") -> list[dict[str, Any]] | None:
+    """Fresh ``artist_release_cache`` rows for the artist, or None.
+
+    None means the cache is absent or stale (the caller should fetch the
+    API).  An empty list means fresh rows exist but none carry ``source``.
+    Used by ``DiscogsService._get_artist_releases`` so single detection
+    reuses the runner's prefetched artist page instead of re-fetching all
+    Discogs pages per process.
+    """
+    if not _artist_cache_fresh(artist):
+        return None
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT artist, title, release_type, source, release_id, year, is_promo
+                    FROM artist_release_cache
+                    WHERE LOWER(artist) = LOWER(:artist) AND source = :source
+                """),
+                {"artist": artist, "source": source},
+            )
+            return [dict(r._mapping) for r in result.fetchall() or []]
+    except Exception as exc:
+        logger.debug("[RELEASE_CACHE] Row read failed for %s: %s", artist, exc)
+        return None
+
+
+def upsert_artist_release_rows(artist: str, releases: list[dict[str, Any]]) -> None:
+    """Persist Discogs release dicts (artist-releases shape) to the cache.
+
+    Converts the in-memory release shape (``format`` list, ``id``) to the
+    cache row shape (``release_type``, ``release_id``, ``is_promo``) using
+    the same format-token rules as ``_fetch_discogs_releases`` — so rows
+    written here and rows written by the prefetch classify identically, and
+    ``DiscogsService`` can safely consume either on the next scan.
+    """
+    try:
+        from services.enrichment.discogs_service import (
+            ALBUM_FORMAT_TOKENS,
+            SINGLE_FORMAT_TOKENS,
+            _release_format_key,
+        )
+    except Exception:
+        return
+    rows: list[dict[str, Any]] = []
+    for rel in releases or []:
+        if not isinstance(rel, dict):
+            continue
+        if str(rel.get("role") or "Main").strip().lower() != "main":
+            continue
+        title = str(rel.get("title") or "").strip()
+        if not title:
+            continue
+        fmt_tokens = _release_format_key(rel.get("format")).split()
+        if ALBUM_FORMAT_TOKENS.intersection(fmt_tokens):
+            rtype = "album"
+        elif SINGLE_FORMAT_TOKENS.intersection(fmt_tokens):
+            rtype = "single"
+        else:
+            rtype = "album"
+        year = rel.get("year")
+        if not isinstance(year, int) or year <= 0:
+            year = None
+        rows.append({
+            "artist": artist,
+            "title": title,
+            "rtype": rtype,
+            "source": "discogs",
+            "release_id": str(rel.get("id") or "").strip() or None,
+            "year": year,
+            "is_promo": "promo" in fmt_tokens,
+        })
+    if rows:
+        _upsert_releases(artist, rows)
+
+
 def _upsert_releases(artist: str, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
@@ -149,6 +225,10 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
         # All pages — a single page of 100 can miss older singles of
         # catalogue-heavy artists (Discogs caps pages at 100 releases).
         releases = client.get_artist_releases_all(discogs_artist_id, max_pages=10) or []
+        # Same master-format resolution the in-memory single-detection path
+        # uses — format-less master rows would otherwise classify as albums.
+        from services.enrichment.discogs_service import resolve_master_formats
+        resolve_master_formats(releases, client)
         out: list[dict[str, Any]] = []
         for rel in releases:
             if not isinstance(rel, dict):

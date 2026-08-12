@@ -23,7 +23,7 @@ def get_cached_track_popularity(artist: str, title: str) -> Optional[Dict[str, A
             result = session.execute(
                 text("""
                     SELECT artist, title, lastfm_listeners, lastfm_playcount,
-                           listenbrainz_listens, listenbrainz_users, lastfm_tags, updated_at
+                           listenbrainz_listens, listenbrainz_users, lastfm_tags, source, updated_at
                     FROM track_popularity_cache
                     WHERE LOWER(artist) = LOWER(:artist) AND LOWER(title) = LOWER(:title)
                 """),
@@ -55,7 +55,7 @@ def get_cached_popularity_for_titles(
             result = session.execute(
                 text("""
                     SELECT artist, title, lastfm_listeners, lastfm_playcount,
-                           listenbrainz_listens, listenbrainz_users, lastfm_tags, updated_at
+                           listenbrainz_listens, listenbrainz_users, lastfm_tags, source, updated_at
                     FROM track_popularity_cache
                     WHERE LOWER(artist) = LOWER(:artist)
                     ORDER BY lastfm_listeners DESC

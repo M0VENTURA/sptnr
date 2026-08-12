@@ -779,6 +779,19 @@ def run_scan(
         options.get("singles_only") or options.get("singles_with_missing_popularity")
     )
 
+    # Per-track parallelism: the per-track pipeline runs on a bounded thread
+    # pool so the per-provider rate limiter streams (MusicBrainz, ListenBrainz
+    # — separate rate budget —, Last.fm, Discogs) advance CONCURRENTLY instead
+    # of serialising the whole album.  Configurable via ``popularity.scan_threads``
+    # (default 4, clamped 1-8; the DB pool allows 15 concurrent connections).
+    _scan_threads = 4
+    try:
+        from helpers.config_helpers import get_config as _get_cfg_threads
+        _scan_threads = int(((_get_cfg_threads().get("popularity") or {}).get("scan_threads") or 4))
+    except Exception:
+        pass
+    _scan_threads = max(1, min(_scan_threads, 8))
+
     # Surface the scan mode up-front so the unified log says what is running
     # (metadata / popularity / singles / combined) and how much is queued.
     log_unified(f"[POPULARITY] Scan mode: {scan_type.capitalize()} — {total_albums} album(s) queued")
@@ -1152,9 +1165,17 @@ def run_scan(
                     }
                     _singles_options = dict(options)
                     _singles_options["singles_detection_only"] = True
-                    for _tc in _track_contexts:
-                        _prepared = apply_context_fields_to_track(_tc)
-                        _tr = process_track(
+                    # Skipped-album singles pass: same bounded pool as the main
+                    # per-track loop (singles detection makes real API calls).
+                    import concurrent.futures as _futures2
+                    _skip_jobs = [
+                        (apply_context_fields_to_track(_tc), _tc)
+                        for _tc in _track_contexts
+                    ]
+
+                    def _run_skip_job(job: tuple) -> dict[str, Any] | None:
+                        _prepared, _tc = job
+                        return process_track(
                             track=_prepared,
                             track_context=_tc,
                             album_context=_album_context,
@@ -1168,6 +1189,14 @@ def run_scan(
                             discogs_cached_promos=discogs_cached_promos,
                             prefetched_popularity={},
                         )
+
+                    if _scan_threads > 1 and len(_skip_jobs) > 1:
+                        with _futures2.ThreadPoolExecutor(max_workers=_scan_threads) as _pool:
+                            _skip_futures = [_pool.submit(_run_skip_job, job) for job in _skip_jobs]
+                            _skip_results = [f.result() for f in _skip_futures]
+                    else:
+                        _skip_results = [_run_skip_job(job) for job in _skip_jobs]
+                    for _tr in _skip_results:
                         if _tr is not None:
                             results.append(_tr)
                             tracks_processed += 1
@@ -1374,33 +1403,39 @@ def run_scan(
                     except Exception as exc:
                         logger.debug("[scan_runner] Missing-releases refresh failed for %s: %s", artist, exc)
 
-            # ── Album-tracklist ListenBrainz fallback ───────────────────────────
-            # Tracks without a resolved recording MBID get no LB data from the
-            # per-MBID batch.  ListenBrainz lists albums with their tracks, so
-            # pull the album's tracklist + per-track popularity (resolving the
-            # release via MB search when the local tracks lack a release MBID)
-            # and match the local tracks by normalized title.  The pulled rows
-            # are persisted to track_popularity_cache so later scans reuse them
-            # without any API calls.  Not singles work — a singles pass skips it.
+            # ── Album-tracklist ListenBrainz lookup (release-first) ──────────
+            # The per-MBID prefetch keys on each LOCAL track's recording MBID,
+            # which may point at another release's recording (re-released
+            # songs carry different listen counts per release).  The album
+            # lookup below is keyed by the album's RELEASE ID: it pulls the
+            # release's own tracklist and per-track popularity and matches the
+            # local tracks by normalized title (position + length fallback),
+            # so each track gets the listen count of THIS release.  The pulled
+            # rows are persisted to track_popularity_cache (source=
+            # "album_tracklist") so later scans reuse them without API calls.
+            # Not singles work — a singles pass skips it.
             if not _singles_pass:
                 try:
-                    from services.popularity.popularity_sources import get_listenbrainz_album_tracklist
-                    # Junk-level LB counts (below the 25-listen credibility floor)
-                    # are suspect the same way zero counts are: a wrong/split
-                    # recording MBID — or a translated title like the Korean
-                    # "삐처리" vs the library's English "BLEEP" — leaves a track
-                    # at ~0 listens even though the album page shows real counts.
-                    # Include those tracks so the album-tracklist fallback (which
-                    # matches by position + length too) can correct them.
-                    _missing_lb_tracks = [
-                        t for t in track_dicts
-                        if t.get("title")
-                        and int(
-                            (prefetched_popularity.get(normalize_for_aggregation(t["title"])) or {}).get("listenbrainz_listens") or 0
-                        ) < 25
-                    ]
-                    if _missing_lb_tracks or bool(options.get("force")):
-                        _album_lb_by_title = get_listenbrainz_album_tracklist(artist, album, track_dicts) or {}
+                    from services.popularity.popularity_sources import get_listenbrainz_album_tracklist_with_release
+                    # Release-first gate: run until the album's tracks are
+                    # backed by release-sourced cache rows.  Forced scans
+                    # always re-run the lookup.
+                    _needs_album_lb = bool(options.get("force"))
+                    if not _needs_album_lb:
+                        for _t in track_dicts:
+                            if not _t.get("title"):
+                                continue
+                            _entry = (prefetched_popularity or {}).get(
+                                normalize_for_aggregation(_t["title"])
+                            ) or {}
+                            if _entry.get("source") != "album_tracklist":
+                                _needs_album_lb = True
+                                break
+                    if _needs_album_lb:
+                        _album_lb_by_title, _album_release_mbid = (
+                            get_listenbrainz_album_tracklist_with_release(artist, album, track_dicts)
+                            or ({}, "")
+                        )
                         _cache_rows: list[dict[str, Any]] = []
                         # Apply the album values to ALL of the album's tracks — the
                         # album tracklist is authoritative for per-track counts (it
@@ -1411,26 +1446,35 @@ def run_scan(
                                 continue
                             _key = normalize_for_aggregation(_t["title"])
                             _entry = _album_lb_by_title.get(_key)
+                            _cur = prefetched_popularity.setdefault(_key, {})
                             if _entry and _entry.get("listenbrainz_listens"):
-                                _cur = prefetched_popularity.setdefault(_key, {})
                                 _cur["listenbrainz_listens"] = int(_entry["listenbrainz_listens"] or 0)
                                 _cur["listenbrainz_users"] = int(_entry.get("listenbrainz_users") or 0)
                                 _cur["recording_mbid"] = _entry.get("recording_mbid")
                                 # Freshly fetched during THIS scan — authoritative even
                                 # on forced scans (which normally bypass the cache).
                                 _cur["_album_tracklist"] = True
+                                _cur["source"] = "album_tracklist"
+                                log_unified(
+                                    f"[scan_runner] Album-tracklist LB match for '{_t.get('title')}' ({artist} - {album}): {_cur['listenbrainz_listens']} listens",
+                                )
+                            # When the release resolved, mark EVERY album track as
+                            # release-checked: the release's own recording was
+                            # queried, so a zero is that release's authoritative
+                            # answer (no per-track fallback to another release's
+                            # recording) and later scans skip the API calls.
+                            if _album_release_mbid:
+                                _cur["_album_tracklist"] = True
+                                _cur["source"] = "album_tracklist"
                                 _cache_rows.append({
                                     "artist": artist,
                                     "title": str(_t["title"]),
                                     "lastfm_listeners": int(_cur.get("lastfm_listeners") or 0),
                                     "lastfm_playcount": int(_cur.get("lastfm_playcount") or 0),
-                                    "listenbrainz_listens": _cur["listenbrainz_listens"],
-                                    "listenbrainz_users": _cur["listenbrainz_users"],
+                                    "listenbrainz_listens": int(_cur.get("listenbrainz_listens") or 0),
+                                    "listenbrainz_users": int(_cur.get("listenbrainz_users") or 0),
                                     "source": "album_tracklist",
                                 })
-                                log_unified(
-                                    f"[scan_runner] Album-tracklist LB match for '{_t.get('title')}' ({artist} - {album}): {_cur['listenbrainz_listens']} listens",
-                                )
                         if _cache_rows:
                             try:
                                 from db.repositories.popularity_cache import upsert_track_popularity_bulk
@@ -1438,7 +1482,7 @@ def run_scan(
                             except Exception as exc:
                                 logger.debug("[scan_runner] Album-tracklist cache persist failed: %s", exc)
                 except Exception as exc:
-                    logger.debug("[scan_runner] Album-tracklist LB fallback failed for %s - %s: %s", artist, album, exc)
+                    logger.debug("[scan_runner] Album-tracklist LB lookup failed for %s - %s: %s", artist, album, exc)
 
             # Album-level LB listen counts (percentile anchor) — only the
             # CURRENT album's tracks anchor the album percentile, even though
@@ -1509,6 +1553,55 @@ def run_scan(
                         artist, album, exc,
                     )
 
+            # ── ListenBrainz recording tags — ONE batch per album ──────────
+            # Genre collection fetches LB tags per track (one throttled call
+            # each on the LB budget).  Resolve every recording MBID known at
+            # this point (file-tagged + album-batch-resolved) in a single
+            # metadata call; track_stage prefers these rows over per-track
+            # lookups.  Only fires when genre columns are missing (mirrors
+            # the track_stage genre gate) — a fully-tagged album costs
+            # nothing here.
+            if not _singles_pass and not options.get("popularity_only"):
+                try:
+                    _lb_tag_mbids: list[str] = []
+                    for _tc in track_contexts:
+                        _t = _tc.get("track") or {}
+                        if _t.get("listenbrainz_genres"):
+                            continue
+                        _m = str(
+                            _t.get("recording_mbid")
+                            or _t.get("mbid")
+                            or _t.get("musicbrainz_trackid")
+                            or ""
+                        ).strip()
+                        if _m and _m not in _lb_tag_mbids:
+                            _lb_tag_mbids.append(_m)
+                    for _mb_entry in (options.get("mb_batch_metadata") or {}).values():
+                        _m = str((_mb_entry or {}).get("recording_mbid") or "").strip()
+                        if _m and _m not in _lb_tag_mbids:
+                            _lb_tag_mbids.append(_m)
+                    if _lb_tag_mbids:
+                        from api_clients.listenbrainz import get_recording_tags_batch
+                        options["lb_recording_tags_batch"] = get_recording_tags_batch(_lb_tag_mbids)
+                except Exception as exc:
+                    logger.debug("[scan_runner] LB tag batch failed for %s - %s: %s", artist, album, exc)
+
+            # ── Per-track processing (bounded parallel pool) ────────────────
+            # Each track's work is independent (own update payload, own API
+            # calls), so the per-track calls run on a small thread pool.  The
+            # per-provider rate limiters are lock-based, so MusicBrainz (1
+            # req/s), ListenBrainz (OWN rate budget — separate service), 
+            # Last.fm and Discogs each pace independently and CONCURRENTLY:
+            # metadata lookups for one track overlap popularity lookups for
+            # another instead of serialising the whole album.  Results are
+            # collected in track order so downstream consumers (star ratings,
+            # finalise) see the same deterministic order as before.
+            import concurrent.futures as _futures
+            # (``_scan_threads`` resolved once near the top of the scan run.)
+
+            # Prepare every track up-front on the main thread — freeze
+            # detection + freeze-flag persistence stay exactly as before.
+            _track_jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], bool]] = []
             for track_context in track_contexts:
                 prepared_track = apply_context_fields_to_track(track_context)
 
@@ -1519,7 +1612,9 @@ def run_scan(
                 # rating still run (legacy parity): the freeze only reuses the
                 # cached popularity score, it does NOT skip the track entirely.
                 # Forced scans never freeze (legacy ``if not (FORCE_RESCAN or force)``).
+                _frozen = False
                 if not options.get("force") and should_freeze_track(prepared_track):
+                    _frozen = True
                     logger.debug(
                         "[scan_runner] Freezing mature track '%s' (has existing score %.1f) — running singles/cover/genre only",
                         prepared_track.get("title", "?"),
@@ -1546,45 +1641,22 @@ def run_scan(
                                 prepared_track.get("id"),
                                 exc,
                             )
+                _track_options = options
+                if _frozen:
                     # Reuse the cached popularity score but still run the rest of
                     # the per-track pipeline (metadata/cover/singles/genre).
-                    frozen_options = dict(options)
-                    frozen_options["frozen_track"] = True
-                    frozen_result = process_track(
-                        track=prepared_track,
-                        track_context=track_context,
-                        album_context=album_context,
-                        album_result=album_result,
-                        options=frozen_options,
-                        album_lb_listens=album_lb_listens if album_lb_listens else None,
-                        artist_max_lf_listeners=artist_max_lf,
-                        artist_lf_context=artist_lf_context,
-                        mb_cached_singles=mb_cached_singles,
-                        discogs_cached_singles=discogs_cached_singles,
-                        discogs_cached_promos=discogs_cached_promos,
-                        prefetched_popularity=prefetched_popularity,
-                    )
-                    if frozen_result is not None:
-                        results.append(frozen_result)
-                        # Frozen tracks reuse the stored score — still log the
-                        # result so the unified log shows every track's rating.
-                        # Metadata passes compute no scores: their all-zero
-                        # lines read like failures, so they log at DEBUG only.
-                        if not options.get("metadata_only") and isinstance(frozen_result, dict):
-                            _ft = prepared_track.get("title", "Unknown Track")
-                            _fs = frozen_result.get("popularity_score")
-                            log_unified(
-                                f"[TRACK_RESULT] '{_ft}' -> Final: {float(_fs or 0.0):.1f} (frozen | LF: {float(frozen_result.get('lastfm_score') or 0.0):.1f} | LB: {float(frozen_result.get('listenbrainz_score') or 0.0):.1f})",
-                            )
-                    tracks_processed += 1
-                    continue
+                    _track_options = dict(options)
+                    _track_options["frozen_track"] = True
+                _track_jobs.append((prepared_track, track_context, _track_options, _frozen))
 
-                track_result = process_track(
-                    track=prepared_track,
-                    track_context=track_context,
+            def _run_track_job(job: tuple) -> dict[str, Any] | None:
+                _prepared, _tc, _opts, _frozen = job
+                return process_track(
+                    track=_prepared,
+                    track_context=_tc,
                     album_context=album_context,
                     album_result=album_result,
-                    options=options,
+                    options=_opts,
                     album_lb_listens=album_lb_listens if album_lb_listens else None,
                     artist_max_lf_listeners=artist_max_lf,
                     artist_lf_context=artist_lf_context,
@@ -1594,6 +1666,17 @@ def run_scan(
                     prefetched_popularity=prefetched_popularity,
                 )
 
+            _track_results_ordered: list[dict[str, Any] | None] = []
+            if _scan_threads > 1 and len(_track_jobs) > 1:
+                with _futures.ThreadPoolExecutor(max_workers=_scan_threads) as _pool:
+                    _track_futures = [_pool.submit(_run_track_job, job) for job in _track_jobs]
+                    # ``result()`` re-raises worker exceptions — the album-level
+                    # handler below catches them exactly like a synchronous call.
+                    _track_results_ordered = [f.result() for f in _track_futures]
+            else:
+                _track_results_ordered = [_run_track_job(job) for job in _track_jobs]
+
+            for (_prepared, _tc, _opts, _frozen), track_result in zip(_track_jobs, _track_results_ordered):
                 if track_result is not None:
                     results.append(track_result)
 
@@ -1603,14 +1686,16 @@ def run_scan(
                     # read like failures, so they log at DEBUG only (the
                     # track_stage [TRACK] line already does the same).
                     if not options.get("metadata_only") and isinstance(track_result, dict):
-                        title = prepared_track.get("title", "Unknown Track")
-                        f_score = track_result.get("popularity_score")
-                        lf = track_result.get("lastfm_score")
-                        lb = track_result.get("listenbrainz_score")
-                        log_unified(
-                            f"[TRACK_RESULT] '{title}' -> Final: {float(f_score or 0.0):.1f} (LF: {float(lf or 0.0):.1f} | LB: {float(lb or 0.0):.1f})",
-                        )
-
+                        _tt = _prepared.get("title", "Unknown Track")
+                        _fs = track_result.get("popularity_score")
+                        if _frozen:
+                            log_unified(
+                                f"[TRACK_RESULT] '{_tt}' -> Final: {float(_fs or 0.0):.1f} (frozen | LF: {float(track_result.get('lastfm_score') or 0.0):.1f} | LB: {float(track_result.get('listenbrainz_score') or 0.0):.1f})",
+                            )
+                        else:
+                            log_unified(
+                                f"[TRACK_RESULT] '{_tt}' -> Final: {float(_fs or 0.0):.1f} (LF: {float(track_result.get('lastfm_score') or 0.0):.1f} | LB: {float(track_result.get('listenbrainz_score') or 0.0):.1f})",
+                            )
                 tracks_processed += 1
 
             # ── Full cover detection stage (after per-track singles/cover

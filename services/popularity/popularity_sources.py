@@ -22,6 +22,7 @@ from api_clients.listenbrainz import (
     get_recording_popularity_batch as lb_get_recording_popularity_batch,
     get_listenbrainz_popularity as lb_get_listenbrainz_popularity,
     get_listenbrainz_score as lb_get_listenbrainz_score,
+    get_release_metadata_batch as lb_get_release_metadata_batch,
 )
 from helpers.normalization_service import strip_cover_attribution
 from services.popularity.popularity_matching import (
@@ -240,20 +241,76 @@ def _resolve_release_mbid(artist: str, album: str, tracks: List[dict]) -> str:
     return ""
 
 
-def get_listenbrainz_album_tracklist(
+def _index_release_tracklist(
+    media: list,
+    titles_to_mbids: Dict[str, Dict[str, Any]],
+    position_index: Dict[tuple, Dict[str, Any]],
+    recording_mbids: List[str],
+) -> None:
+    """Index a release's media tracklists into the title/position indexes.
+
+    Handles BOTH API shapes — MusicBrainz nests the recording under
+    ``track["recording"]["id"]``; ListenBrainz release metadata uses
+    ``track["recording_mbid"]`` directly.  ``titles_to_mbids`` is keyed by
+    NORMALISED title; ``position_index`` by ``(disc, position)``;
+    ``recording_mbids`` collects every recording for the popularity batch.
+    """
+    for medium in media:
+        if not isinstance(medium, dict):
+            continue
+        disc = medium.get("position")
+        for trk in medium.get("tracks") or []:
+            if not isinstance(trk, dict):
+                continue
+            title = str(trk.get("title") or "").strip()
+            if not title:
+                continue
+            rec = trk.get("recording") or {}
+            rec_mbid = str(rec.get("id") or trk.get("recording_mbid") or "").strip()
+            key = normalize_for_aggregation(title)
+            entry = titles_to_mbids.setdefault(key, {
+                "title": title,
+                "mbids": [],
+                "position": trk.get("position") or trk.get("number"),
+                "disc": disc,
+                "length_ms": trk.get("length"),
+            })
+            if rec_mbid:
+                entry["mbids"].append(rec_mbid)
+                recording_mbids.append(rec_mbid)
+            try:
+                pos = int(trk.get("position") or trk.get("number") or 0)
+            except (TypeError, ValueError):
+                pos = 0
+            try:
+                disc_i = int(disc) if disc not in (None, "") else 1
+            except (TypeError, ValueError):
+                disc_i = 1
+            if pos > 0:
+                pos_key = (disc_i, pos)
+                pos_entry = position_index.setdefault(pos_key, {
+                    "key": key,
+                    "length_ms": trk.get("length"),
+                    "mbids": [],
+                })
+                if rec_mbid:
+                    pos_entry["mbids"].append(rec_mbid)
+
+
+def get_listenbrainz_album_tracklist_with_release(
     artist: str,
     album: str,
     tracks: List[dict],
-) -> Dict[str, Dict[str, Optional[int]]]:
-    """Fetch an album's per-track ListenBrainz popularity matched by title.
+) -> tuple[Dict[str, Dict[str, Optional[int]]], str]:
+    """Release-first ListenBrainz lookup for one album's tracks.
 
-    ListenBrainz lists albums with their tracks, so albums whose local tracks
-    lack recording MBIDs (or carry split recordings with zero listens) can
-    still get LB listen counts: resolve the album's release MBID (local
-    tracks first, then a MusicBrainz release search), fetch the release
-    tracklist from MusicBrainz, batch the LB popularity for those recordings,
-    and key the result by normalized title.  Multiple recordings of the same
-    title are aggregated.
+    Keys the lookup on the album's RELEASE MBID (local track columns first,
+    then a MusicBrainz release search), pulls the release's OWN tracklist —
+    ListenBrainz's cached release metadata first, MusicBrainz as fallback for
+    releases LB has not cached — and returns per-track listen counts for the
+    recordings ON this release.  Re-released songs therefore keep the listen
+    count of the library's release instead of adopting another release's
+    recording.  Multiple recordings of the same title are aggregated.
 
     Args:
         artist: artist name.
@@ -261,87 +318,65 @@ def get_listenbrainz_album_tracklist(
         tracks: local track dicts — optionally carry the release MBID
             (``musicbrainz_albumid`` / ``musicbrainz_album_mbid``).
 
-    Returns ``{normalized_title: {"listenbrainz_listens", "listenbrainz_users"}}``
-    with only non-zero entries.
+    Returns:
+        ``({normalized_title: {"listenbrainz_listens", "listenbrainz_users",
+        "recording_mbid"}}, release_mbid)`` — the map holds only non-zero
+        entries; ``release_mbid`` is "" when the album's release could not be
+        resolved.
     """
     if not tracks:
-        return {}
+        return {}, ""
     release_mbid = _resolve_release_mbid(artist, album, tracks)
     if not release_mbid:
-        return {}
+        return {}, ""
 
-    # Tracklist from MUSICBRAINZ (release → recordings) — the ListenBrainz
-    # metadata store (/metadata/release/) returns 404 for releases it has not
-    # cached (e.g. Phantoma), which silently killed the whole album path and
-    # left tracks at 0 even though the LB album page shows counts.  The
-    # per-recording counts then come from the LB popularity API — the same
-    # numbers the ListenBrainz album page aggregates.
+    # Tracklist: LISTENBRAINZ's own cached view of the release first — the
+    # exact tracklist (and hence the per-recording listen counts) the
+    # ListenBrainz album page aggregates.  Fall back to MUSICBRAINZ (release
+    # → recordings) for releases the LB metadata store has not cached (its
+    # /metadata/release/ endpoint 404s for those, e.g. Phantoma); the
+    # per-recording counts come from the LB popularity API in both cases.
     #
     # Tracks are also indexed by disc+position so a local track whose title
-    # does NOT appear on the ListenBrainz tracklist (e.g. the release lists the
-    # Korean name "삐처리" while the library stores the English "BLEEP") can
-    # still be matched by track number + length — the two rows are the same
-    # song, so the album's authoritative listen count must reach the local row.
+    # does NOT appear on the tracklist (e.g. the release lists the Korean
+    # name "삐처리" while the library stores the English "BLEEP") can still
+    # be matched by track number + length — the two rows are the same song,
+    # so the album's authoritative listen count must reach the local row.
     titles_to_mbids: Dict[str, Dict[str, Any]] = {}
     recording_mbids: List[str] = []
     # (disc, position) → {"key": normalized title, "length_ms", "mbids": []}
     position_index: Dict[tuple, Dict[str, Any]] = {}
+    _tracklist_source = ""
     try:
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient
-        mb = MusicBrainzHttpClient(enabled=True)
-        release = mb.get_release(release_mbid, inc="recordings")
-        for medium in release.get("media") or []:
-            if not isinstance(medium, dict):
-                continue
-            disc = medium.get("position")
-            for trk in medium.get("tracks") or []:
-                if not isinstance(trk, dict):
-                    continue
-                title = str(trk.get("title") or "").strip()
-                if not title:
-                    continue
-                rec = trk.get("recording") or {}
-                rec_mbid = str(rec.get("id") or "").strip()
-                key = normalize_for_aggregation(title)
-                entry = titles_to_mbids.setdefault(key, {
-                    "title": title,
-                    "mbids": [],
-                    "position": trk.get("position") or trk.get("number"),
-                    "disc": disc,
-                    "length_ms": trk.get("length"),
-                })
-                if rec_mbid:
-                    entry["mbids"].append(rec_mbid)
-                    recording_mbids.append(rec_mbid)
-                try:
-                    pos = int(trk.get("position") or trk.get("number") or 0)
-                except (TypeError, ValueError):
-                    pos = 0
-                try:
-                    disc_i = int(disc) if disc not in (None, "") else 1
-                except (TypeError, ValueError):
-                    disc_i = 1
-                if pos > 0:
-                    pos_key = (disc_i, pos)
-                    pos_entry = position_index.setdefault(pos_key, {
-                        "key": key,
-                        "length_ms": trk.get("length"),
-                        "mbids": [],
-                    })
-                    if rec_mbid:
-                        pos_entry["mbids"].append(rec_mbid)
+        _lb_rel = lb_get_release_metadata_batch([release_mbid]) or {}
+        if isinstance(_lb_rel, dict):
+            _rel_container = _lb_rel.get("releases") if isinstance(_lb_rel.get("releases"), dict) else _lb_rel
+            _rel_entry = (_rel_container or {}).get(release_mbid) or {}
+            _media = _rel_entry.get("media") or []
+            if _media:
+                _index_release_tracklist(_media, titles_to_mbids, position_index, recording_mbids)
+                _tracklist_source = "listenbrainz"
     except Exception as exc:
-        logger.debug("[LB_ALBUM] MB release tracklist failed for %s: %s", release_mbid, exc)
-        return {}
+        logger.debug("[LB_ALBUM] LB release metadata failed for %s: %s", release_mbid, exc)
+    if not recording_mbids:
+        try:
+            from api_clients.musicbrainz_http import MusicBrainzHttpClient
+            mb = MusicBrainzHttpClient(enabled=True)
+            release = mb.get_release(release_mbid, inc="recordings")
+            _index_release_tracklist(release.get("media") or [], titles_to_mbids, position_index, recording_mbids)
+            _tracklist_source = "musicbrainz"
+        except Exception as exc:
+            logger.debug("[LB_ALBUM] MB release tracklist failed for %s: %s", release_mbid, exc)
+            return {}, release_mbid
 
     if not recording_mbids:
-        return {}
+        return {}, release_mbid
 
     try:
         counts = lb_get_recording_popularity_batch(recording_mbids) or {}
     except Exception as exc:
         logger.debug("[LB_ALBUM] Recording popularity failed for %s: %s", release_mbid, exc)
-        return {}
+        return {}, release_mbid
 
     def _sum_counts(mbids: List[str]) -> tuple[int, int]:
         total = 0
@@ -422,12 +457,21 @@ def get_listenbrainz_album_tracklist(
         )
     if out:
         logger.info(
-            "[LB_ALBUM] Preloaded %d track(s) for '%s - %s' (release %s)",
-            len(out), artist, album, release_mbid,
+            "[LB_ALBUM] Preloaded %d track(s) for '%s - %s' (release %s, tracklist: %s)",
+            len(out), artist, album, release_mbid, _tracklist_source,
         )
     else:
         logger.debug("[LB_ALBUM] No ListenBrainz data for '%s - %s'", artist, album)
-    return out
+    return out, release_mbid
+
+
+def get_listenbrainz_album_tracklist(
+    artist: str,
+    album: str,
+    tracks: List[dict],
+) -> Dict[str, Dict[str, Optional[int]]]:
+    """Backward-compatible wrapper — returns only the tracklist map."""
+    return get_listenbrainz_album_tracklist_with_release(artist, album, tracks)[0]
 
 
 def get_listenbrainz_popularity_for_track(track: dict) -> Dict[str, Optional[int]]:
@@ -501,6 +545,22 @@ def get_lastfm_artist_max_listeners(
     from api_clients.lastfm_http import LastFmHttpClient
     client = LastFmHttpClient(api_key=api_key)
 
+    # Prefer the SHARED artist.getTopTracks map (populated by the bulk
+    # prefetch / aggregated lookups) — derives the artist peak without a
+    # second artist.getTopTracks call for the same artist.  The map is
+    # primary-artist keyed; a feat. credit that misses it falls through to
+    # the raw-artist call below (unchanged behaviour).
+    try:
+        from api_clients.lastfm import LastFmClient as _FacadeLastFmClient
+        from services.popularity.popularity_cache_service import get_artist_top_tracks_map
+        _map = get_artist_top_tracks_map(_FacadeLastFmClient(api_key=api_key), artist) or {}
+        _peak = max((int(e.get("lastfm_listeners") or 0) for e in _map.values()), default=0)
+        if _peak > 0:
+            _lastfm_artist_max_cache[artist_key] = _peak
+            return _peak
+    except Exception:
+        pass
+
     try:
         data = client.get_json(
             "artist.getTopTracks",
@@ -573,12 +633,33 @@ def get_aggregated_lastfm_popularity(
     # issuing a wasted artist.getTopTracks call for a name Last.fm does not know.
     primary_artist = get_primary_artist_preserve_case(artist)
     artist_key = primary_artist.casefold().strip()
+    catalog = []
     try:
-        if artist_key not in _lastfm_artist_catalog_cache and hasattr(lastfm_client, "get_artist_top_tracks"):
-            _lastfm_artist_catalog_cache[artist_key] = lastfm_client.get_artist_top_tracks(primary_artist)
-        catalog = _lastfm_artist_catalog_cache.get(artist_key, [])
+        # Prefer the SHARED artist.getTopTracks map (primary-artist keyed,
+        # limit 200, populated by the bulk prefetch) — the dedicated fetch
+        # below used to issue a SECOND artist.getTopTracks call for the same
+        # artist.  Map values are variant-SUMMED per normalized title, which
+        # matches what the prefetch fast-path already scores with.  Fall back
+        # to the raw list when the map is empty.
+        from services.popularity.popularity_cache_service import get_artist_top_tracks_map
+        _map = get_artist_top_tracks_map(lastfm_client, primary_artist) or {}
+        catalog = [
+            {
+                "name": key,
+                "listeners": int(e.get("lastfm_listeners") or 0),
+                "playcount": int(e.get("lastfm_playcount") or 0),
+            }
+            for key, e in _map.items()
+            if e.get("lastfm_listeners")
+        ]
     except Exception:
         catalog = []
+    if not catalog and artist_key not in _lastfm_artist_catalog_cache and hasattr(lastfm_client, "get_artist_top_tracks"):
+        try:
+            _lastfm_artist_catalog_cache[artist_key] = lastfm_client.get_artist_top_tracks(primary_artist)
+            catalog = _lastfm_artist_catalog_cache.get(artist_key, [])
+        except Exception:
+            catalog = []
 
     target = normalize_for_aggregation(track_title)
     matched = []

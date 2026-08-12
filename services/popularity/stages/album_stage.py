@@ -324,6 +324,14 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
     return result
 
 
+# Per-process Discogs artist-ID cache: artist.casefold() → id ("" when the
+# artist was looked up and not found).  ``_fetch_discogs_artist_id`` runs once
+# per ALBUM — the API call was previously unconditional (only the DB UPDATE
+# was guarded), so a 10-album artist paid 10 search_database calls for one
+# id.  The cache turns that into one call per artist per process.
+_discogs_artist_id_cache: dict[str, str] = {}
+
+
 def _fetch_discogs_artist_id(artist: str, conn, options: dict) -> None:
     """Fetch and cache the Discogs artist ID (legacy parity).
 
@@ -343,9 +351,14 @@ def _fetch_discogs_artist_id(artist: str, conn, options: dict) -> None:
             return
         if token.lower() in ("your_discogs_token", "your_token", "placeholder", ""):
             return
-        from api_clients.discogs import DiscogsClient
-        client = DiscogsClient(token=token)
-        discogs_artist_id = client.get_artist_id(artist, timeout=12)
+        _cache_key = artist.casefold().strip()
+        if _cache_key not in _discogs_artist_id_cache:
+            from api_clients.discogs import DiscogsClient
+            client = DiscogsClient(token=token)
+            # One API call per artist per process (was once per album).
+            discogs_artist_id = str(client.get_artist_id(artist, timeout=12) or "")
+            _discogs_artist_id_cache[_cache_key] = discogs_artist_id
+        discogs_artist_id = _discogs_artist_id_cache[_cache_key]
         if not discogs_artist_id:
             return
         cursor = conn.cursor()
@@ -353,7 +366,7 @@ def _fetch_discogs_artist_id(artist: str, conn, options: dict) -> None:
             "UPDATE tracks SET discogs_artist_id = %s "
             "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
             "AND (discogs_artist_id IS NULL OR TRIM(CAST(discogs_artist_id AS TEXT)) = '')",
-            (str(discogs_artist_id), artist),
+            (discogs_artist_id, artist),
         )
         conn.commit()
         logger.info("[album_stage] Discogs artist ID for '%s': %s", artist, discogs_artist_id)

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from typing import Any, List, Dict, Tuple
 
 try:  # C-speed fuzzy matching — see _similarity
@@ -75,6 +76,11 @@ def _mbid_similarity(a: str, b: str) -> float:
     return _difflib.SequenceMatcher(None, a, b).ratio()
 
 CACHE_FILE = "/tmp/mbid_cache.json" if os.path.exists("/tmp") else "mbid_cache.json"
+
+# Serialises reads/writes of the shared on-disk mbid cache — several
+# MusicBrainzService instances may exist at once (album batch, per-track
+# fallbacks) and concurrent scan threads must not interleave file IO.
+_CACHE_IO_LOCK = threading.Lock()
 
 # Entries per batched MusicBrainz search (``lookup_album_metadata``).  Each
 # entry contributes a Lucene OR-group to the query — beyond ~20 the URL grows
@@ -194,31 +200,37 @@ class MusicBrainzService:
     # -----------------------------------------------------------------------------
 
     def _load_cache(self) -> dict:
-        try:
-            if os.path.exists(CACHE_FILE):
-                with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                # Purge poisoned entries: earlier versions cached failed
-                # lookups as ["", 0.0], which permanently disabled single
-                # detection for that track. Only keep entries with a real MBID.
-                if isinstance(raw, dict):
-                    return {
-                        key: value
-                        for key, value in raw.items()
-                        if isinstance(value, (list, tuple))
-                        and len(value) == 2
-                        and str(value[0] or "").strip()
-                    }
-        except Exception:
-            pass
-        return {}
+        # Multiple MusicBrainzService instances (per-scan batch, per-track
+        # fallbacks) share the SAME disk file — concurrent scan threads could
+        # interleave read/write and corrupt it.  The lock serialises file IO
+        # only; in-memory dicts stay per-instance.
+        with _CACHE_IO_LOCK:
+            try:
+                if os.path.exists(CACHE_FILE):
+                    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                        raw = json.load(f)
+                    # Purge poisoned entries: earlier versions cached failed
+                    # lookups as ["", 0.0], which permanently disabled single
+                    # detection for that track. Only keep entries with a real MBID.
+                    if isinstance(raw, dict):
+                        return {
+                            key: value
+                            for key, value in raw.items()
+                            if isinstance(value, (list, tuple))
+                            and len(value) == 2
+                            and str(value[0] or "").strip()
+                        }
+            except Exception:
+                pass
+            return {}
 
     def _save_cache(self):
-        try:
-            with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(self._mbid_cache, f)
-        except Exception:
-            pass
+        with _CACHE_IO_LOCK:
+            try:
+                with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                    json.dump(self._mbid_cache, f)
+            except Exception:
+                pass
 
     def _cache_key(self, title, artist):
         return f"{artist.lower()}::{title.lower()}"
@@ -815,12 +827,28 @@ class MusicBrainzService:
 
 _service = None
 
+_shared_mb_service: "MusicBrainzService | None" = None
+
 
 def _get_service():
     global _service
     if _service is None:
         _service = MusicBrainzService()
     return _service
+
+
+def get_shared_mb_service() -> "MusicBrainzService":
+    """Process-wide MusicBrainzService sharing the shared HTTP client.
+
+    Per-track code used to construct a fresh ``MusicBrainzService`` per track,
+    re-reading the on-disk mbid cache on EVERY construction — one shared
+    instance keeps the in-memory suggestion cache warm across the whole scan
+    (and across scan threads; the disk cache IO is lock-protected).
+    """
+    global _shared_mb_service
+    if _shared_mb_service is None:
+        _shared_mb_service = MusicBrainzService(http_client=get_shared_mb_client())
+    return _shared_mb_service
 
 
 def lookup_recording_metadata(title: str, artist: str):

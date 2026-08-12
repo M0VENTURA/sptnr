@@ -176,7 +176,17 @@
         tailBanner.classList.add('d-none');
         logOutput.innerHTML = '<div class="text-muted small p-2">Loading...</div>';
         fetch('/api/log-file?name=' + encodeURIComponent(name) + '&lines=' + linesFor(name, opts))
-            .then(function (r) { return r.json(); })
+            .then(function (r) {
+                // A Quart HTML error page (stale build / missing route) used to
+                // surface as "Unexpected token '<' ... is not valid JSON" —
+                // fail loudly with the real cause instead.
+                if (!r.ok) throw new Error('Server returned HTTP ' + r.status);
+                var ct = (r.headers.get('content-type') || '').toLowerCase();
+                if (ct.indexOf('application/json') === -1) {
+                    throw new Error('Server returned ' + (ct || 'non-JSON') + ' — API route may be unavailable in this build');
+                }
+                return r.json();
+            })
             .then(function (data) {
                 if (data && data.error) { logOutput.textContent = 'Error: ' + data.error; return; }
                 rawLines = (data && data.lines) || [];

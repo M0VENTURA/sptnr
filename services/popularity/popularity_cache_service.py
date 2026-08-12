@@ -50,15 +50,27 @@ def _is_fresh(row: Dict[str, Any]) -> bool:
 
 
 def _row_to_entry(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert a cache row into an entry dict, or {} when all-zero."""
+    """Convert a cache row into an entry dict, or {} when all-zero.
+
+    Release-sourced rows (``source == "album_tracklist"``) survive even at
+    zero counts: the album's release was already checked, so zero is that
+    release's authoritative answer and must not be re-fetched through the
+    per-MBID bulk path.
+    """
     entry = {
         "lastfm_listeners": int(row.get("lastfm_listeners") or 0),
         "lastfm_playcount": int(row.get("lastfm_playcount") or 0),
         "listenbrainz_listens": int(row.get("listenbrainz_listens") or 0),
         "listenbrainz_users": int(row.get("listenbrainz_users") or 0),
     }
-    if not any(entry.values()):
+    _source = str(row.get("source") or "")
+    if not any(entry.values()) and _source != "album_tracklist":
         return {}
+    if _source == "album_tracklist":
+        # Release-first entries are authoritative — the track stage treats
+        # them (even zero-count ones) as final for this release.
+        entry["_album_tracklist"] = True
+        entry["source"] = "album_tracklist"
     # Tags ride along when the cache row carries them (schema ensures the
     # column exists; older rows may be NULL — the track stage re-fetches them
     # on a forced scan).
@@ -186,6 +198,16 @@ def _norm(title: str) -> str:
     return normalize_for_aggregation(title or "")
 
 
+def get_artist_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, int]]:
+    """Shared artist.getTopTracks map (primary-artist keyed, limit 200).
+
+    All ``artist.getTopTracks`` consumers (bulk prefetch, aggregated Last.fm
+    popularity, artist peak-listeners) share ONE map per artist so the
+    endpoint is called at most once per artist per process.
+    """
+    return _lf_top_tracks_map(lastfm_client, artist)
+
+
 def prefetch_artist_popularity(
     artist: str,
     tracks: List[Dict[str, Any]],
@@ -302,10 +324,16 @@ def prefetch_artist_popularity(
                 artist, len(lf_map),
             )
 
-    # 3. ListenBrainz: batch fill, only for titles lacking LB data.
+    # 3. ListenBrainz: batch fill, only for titles lacking LB data.  Titles
+    #    backed by a release-sourced row (source="album_tracklist") are NEVER
+    #    refilled — the album's release was checked and its answer (even a
+    #    zero) is authoritative for that track; the per-MBID bulk batch would
+    #    substitute another release's recording.
     lb_needed = [
         track for track in tracks
-        if track.get("title") and not (entries.get(_norm(track["title"])) or {}).get("listenbrainz_listens")
+        if track.get("title")
+        and not (entries.get(_norm(track["title"])) or {}).get("listenbrainz_listens")
+        and (entries.get(_norm(track["title"])) or {}).get("source") != "album_tracklist"
     ]
     if lb_needed:
         batch = lb_data if lb_data is not None else get_listenbrainz_batch_for_tracks(lb_needed)
@@ -351,7 +379,9 @@ def prefetch_artist_popularity(
             "listenbrainz_listens": entry_lb_listens,
             "listenbrainz_users": entry_lb_users,
             "lastfm_tags": entry_tags or None,
-            "source": "bulk",
+            # Release-sourced entries keep their provenance — the bulk fill
+            # must never relabel a release-first row.
+            "source": entry.get("source") or "bulk",
         })
     if rows_to_upsert:
         try:

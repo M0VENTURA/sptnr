@@ -47,6 +47,10 @@ def _run_tracklist(monkeypatch, media, local_tracks, release_mbid="rel-karma"):
         "_resolve_release_mbid",
         lambda artist, album, tracks: release_mbid,
     )
+    # The release-first lookup asks ListenBrainz for its cached release
+    # metadata first and falls back to MusicBrainz — force the fallback so
+    # the fake MusicBrainz tracklist below is the source of truth.
+    monkeypatch.setattr(ps, "lb_get_release_metadata_batch", lambda *a, **k: {})
     monkeypatch.setattr(
         "api_clients.musicbrainz_http.MusicBrainzHttpClient",
         lambda **kwargs: _FakeMBClient(media),

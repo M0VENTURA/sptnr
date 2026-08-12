@@ -472,16 +472,16 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
             except Exception as exc:
                 logger.debug("Artist-scoped MB single lookup failed for %s / %s: %s", artist, title, exc)
 
-        # Fallback: per-recording fuzzy match via the service.
+        # Fallback: per-recording fuzzy match via the service — only when the
+        # artist-scoped release-group search above found nothing.  Use the
+        # shared process-wide service (NOT a fresh instance) so the
+        # suggested-MBID disk cache stays warm — a fresh instance reloads it
+        # from disk on every construction and misses every in-memory entry
+        # written earlier in the scan.
         if not matched:
-            # Use the client's is_single method if available, otherwise use the service.
-            if hasattr(mb_client, "is_single"):
-                matched = bool(mb_client.is_single(clean_title, artist, artist_mbid=artist_mbid,
-                                                    album_track_count=album_track_count))
-            else:
-                from services.enrichment.musicbrainz_service import MusicBrainzService
-                svc = MusicBrainzService(enabled=True)
-                matched = bool(svc.is_single(clean_title, artist, album_track_count=album_track_count))
+            from services.enrichment.musicbrainz_service import get_shared_mb_service
+            svc = get_shared_mb_service()
+            matched = bool(svc.is_single(clean_title, artist, album_track_count=album_track_count))
         release_date = None
         if matched:
             try:
@@ -606,6 +606,15 @@ def _detect_discogs_video(title: str, artist: str,
         return {"source": "discogs_video", "matched": False, "confidence": 0.0, "metadata": {}}
 
 
+# Per-process album-level Last.fm evidence cache: (artist, album) → track
+# count / title-track verdict.  ``album.getInfo`` results are identical for
+# every track of the same album, but ``_detect_lastfm`` fetched them PER
+# TRACK (2-4 calls × tracks) — caching per album cuts the per-album cost to
+# a couple of calls.  Failures are NOT cached (transient errors retry).
+_album_track_count_cache: dict[tuple[str, str], int] = {}
+_album_title_track_cache: dict[tuple[str, str], bool] = {}
+
+
 def _detect_lastfm(artist: str, album: str, title: str, lastfm_client=None) -> bool:
     """Medium-confidence check: Last.fm release evidence for a single.
 
@@ -627,17 +636,28 @@ def _detect_lastfm(artist: str, album: str, title: str, lastfm_client=None) -> b
     except Exception:
         pass
     # Album-track-count evidence: 1-3 tracks = single, 4-6 = EP (title-track).
-    try:
-        count = lastfm_client.get_album_track_count(artist, album)
-        if 1 <= count <= 3:
-            return True
-        if 4 <= count <= 6:
+    # Cached per (artist, album) — the value is identical for every track of
+    # the album, so per-track re-fetches were pure waste (2-4 album.getInfo
+    # calls × tracks per album).
+    album_key = (artist.casefold(), album.casefold())
+    count = _album_track_count_cache.get(album_key)
+    if count is None:
+        try:
+            count = lastfm_client.get_album_track_count(artist, album)
+            _album_track_count_cache[album_key] = count
+        except Exception:
+            count = 0
+    if 1 <= count <= 3:
+        return True
+    if 4 <= count <= 6:
+        title_track = _album_title_track_cache.get(album_key)
+        if title_track is None:
             try:
-                return bool(lastfm_client.has_title_track(artist, album))
+                title_track = bool(lastfm_client.has_title_track(artist, album))
             except Exception:
                 return True  # borderline EP — treat as single
-    except Exception:
-        count = 0
+            _album_title_track_cache[album_key] = title_track
+        return title_track
     # Search-based fallback — only when the cheap album-count evidence did
     # not settle it: Last.fm often stores the single under a suffixed release
     # name ("Knightclub - Single") while ``album.getInfo`` with the track

@@ -20,6 +20,12 @@ SPOTIFY_DAILY_LIMIT = 500000
 LASTFM_RATE_LIMIT_PER_SECOND = 1
 LASTFM_DAILY_LIMIT = 50000
 MUSICBRAINZ_MIN_INTERVAL = 1.0
+# ListenBrainz is a SEPARATE service from MusicBrainz with its own rate
+# bucket — requests to api.listenbrainz.org never count against
+# musicbrainz.org's strict 1 req/s limit, so LB gets its own limiter and can
+# run concurrently with MusicBrainz traffic.
+LISTENBRAINZ_MIN_INTERVAL = 1.0
+LISTENBRAINZ_DAILY_LIMIT = 50000
 
 
 class APIRateLimiter:
@@ -34,6 +40,7 @@ class APIRateLimiter:
         self._last_save_time = 0.0
         self._mb_lock = threading.Lock()
         self._lastfm_lock = threading.Lock()
+        self._listenbrainz_lock = threading.Lock()
 
     def _load_state(self) -> dict:
         if os.path.exists(self.state_file):
@@ -45,6 +52,7 @@ class APIRateLimiter:
                     state["spotify_daily_count"] = 0
                     state["lastfm_daily_count"] = 0
                     state["musicbrainz_daily_count"] = 0
+                    state["listenbrainz_daily_count"] = 0
                     state["last_reset"] = datetime.now().isoformat()
                     self.state = state
                     self._save_state(force=True)
@@ -55,9 +63,11 @@ class APIRateLimiter:
             "spotify_daily_count": 0,
             "lastfm_daily_count": 0,
             "musicbrainz_daily_count": 0,
+            "listenbrainz_daily_count": 0,
             "spotify_recent_requests": [],
             "lastfm_last_request": 0,
             "musicbrainz_last_request": 0,
+            "listenbrainz_last_request": 0,
             "last_reset": datetime.now().isoformat(),
         }
 
@@ -100,6 +110,24 @@ class APIRateLimiter:
             self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
             self._save_state()
 
+    def throttle_listenbrainz(self) -> None:
+        """Enforce ListenBrainz pacing on its OWN rate budget.
+
+        ListenBrainz and MusicBrainz are separate services with separate rate
+        buckets, so LB requests use a dedicated limiter — they never consume
+        the MusicBrainz 1 req/s budget and can overlap MB traffic when a scan
+        runs per-provider threads.
+        """
+        with self._listenbrainz_lock:
+            now = time.time()
+            last_request = self.state.get("listenbrainz_last_request", 0)
+            wait_time = LISTENBRAINZ_MIN_INTERVAL - (now - last_request)
+            if wait_time > 0:
+                time.sleep(wait_time)
+            self.state["listenbrainz_last_request"] = time.time()
+            self.state["listenbrainz_daily_count"] = self.state.get("listenbrainz_daily_count", 0) + 1
+            self._save_state()
+
     def wait_if_needed_lastfm(self, max_wait_seconds: float = 2.0) -> bool:
         now = time.time()
         wait_time = LASTFM_RATE_LIMIT_PER_SECOND - (now - self.state.get("lastfm_last_request", 0))
@@ -127,6 +155,8 @@ class APIRateLimiter:
             "lastfm_daily_count": self.state.get("lastfm_daily_count", 0),
             "lastfm_daily_limit": LASTFM_DAILY_LIMIT,
             "musicbrainz_daily_count": self.state.get("musicbrainz_daily_count", 0),
+            "listenbrainz_daily_count": self.state.get("listenbrainz_daily_count", 0),
+            "listenbrainz_daily_limit": LISTENBRAINZ_DAILY_LIMIT,
             "last_reset": self.state.get("last_reset", ""),
         }
 

@@ -151,9 +151,37 @@
                 </div>
             </div>
         </div>
-        <!-- RIGHT COLUMN: live activity feed (scans) -->
+        <!-- RIGHT COLUMN: library stats + live activity feed -->
         <div class="col-12 col-lg-5 col-xl-4">
-            <!-- Recent Scans — content-sized column (no stretch into empty space) -->
+            <!-- Library Stats — compact overview (fills the right rail on desktop) -->
+            {% set st = stats | default({}) %}
+            <div class="card mb-3" id="libraryStatsCard">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0"><i class="bi bi-collection-fill"></i> Library Stats</h6>
+                    <a href="/artists" class="small text-info text-decoration-none">Manage <i class="bi bi-arrow-right"></i></a>
+                </div>
+                <div class="card-body py-2">
+                    <div class="row g-2 text-center">
+                        <div class="col-3">
+                            <div class="stat-tile-value">{{ st.get('artists_c', 0) }}</div>
+                            <div class="stat-tile-label">Artists</div>
+                        </div>
+                        <div class="col-3">
+                            <div class="stat-tile-value">{{ st.get('ac', 0) }}</div>
+                            <div class="stat-tile-label">Albums</div>
+                        </div>
+                        <div class="col-3">
+                            <div class="stat-tile-value">{{ st.get('tc', 0) }}</div>
+                            <div class="stat-tile-label">Tracks</div>
+                        </div>
+                        <div class="col-3">
+                            <div class="stat-tile-value">{{ st.get('avg_stars') if st.get('avg_stars') is not none else '—' }}</div>
+                            <div class="stat-tile-label">Avg ★</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Recent Scans — grows to fill the right rail; the list scrolls -->
             <div class="card" id="recentScansCard">
                 <div class="card-header py-2">
                     <h6 class="mb-0"><i class="bi bi-clock-history"></i> Recent Scans</h6>

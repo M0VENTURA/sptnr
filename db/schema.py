@@ -269,6 +269,18 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
     "musicbrainz_release_tracks": {"composer": "TEXT", "album_artist": "TEXT", "year": "TEXT"},
     "artist_release_cache": {"is_promo": "BOOLEAN DEFAULT FALSE"},
     "track_popularity_cache": {"lastfm_tags": "TEXT"},
+    "scan_history": {
+        "scan_type": "TEXT", "artist": "TEXT", "album": "TEXT",
+        "status": "TEXT", "message": "TEXT",
+        "started_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        "completed_at": "TIMESTAMP", "duration_seconds": "DOUBLE PRECISION",
+    },
+    "slskd_search_logs": {
+        "search_type": "TEXT", "query": "TEXT", "queue_id": "INTEGER",
+        "artist": "TEXT", "title": "TEXT", "album": "TEXT",
+        "result_count": "INTEGER DEFAULT 0", "duration_seconds": "REAL",
+        "notes": "TEXT", "selected_result": "JSONB", "results": "JSONB",
+    },
     "upcoming_releases": {
         "release_year": "INTEGER",
         "source_key": "TEXT",
