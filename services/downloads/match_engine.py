@@ -40,9 +40,10 @@ Architecture:
 
 from difflib import SequenceMatcher
 from typing import List, Dict, Any, Tuple, Optional
+import os
 import re
 from api_clients import logger
-from helpers.normalization_service import normalize_match_text
+from helpers.normalization_service import normalize_match_text, edition_annotations_compatible
 from services.downloads.download_matching_service import get_release_tracks
 
 
@@ -286,6 +287,14 @@ def filename_matches_queue_item(
     artist = queue_item.get("artist") or ""
     album_artist = queue_item.get("album_artist") or ""
     title = queue_item.get("title") or ""
+
+    # An edition-annotated track ("Valhalla (Epic Edition)") must never match
+    # the plain "Valhalla" queue item — normalize_match_text strips brackets on
+    # both sides, so the edition suffix would otherwise be invisible.  Strip the
+    # file extension so the trailing "(Epic Edition)" annotation is still
+    # extractable from the path.
+    if not edition_annotations_compatible(title, os.path.splitext(file_path)[0]):
+        return False
 
     artist_norm = normalize_match_text(artist)
     album_artist_norm = normalize_match_text(album_artist)

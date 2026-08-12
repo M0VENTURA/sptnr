@@ -165,3 +165,65 @@ class TestMusicBrainzServiceFallback:
         ) is True
         assert svc._rg_title_matches("Gangnam Style (PSY Cover)", "Gangnam Style") is True
         assert svc._rg_title_matches("Valhalla", "Valhalla") is True
+
+
+class _FakeLastFmSingleSearch:
+    """Last.fm album-search facade: returns a fixed album row list and never
+    confirms via the exact-name or album-track-count arms (so the tests
+    exercise the ``album.search`` fallback gate)."""
+
+    def __init__(self, albums):
+        self._albums = albums
+
+    def search_album(self, album, artist="", limit=30):
+        return self._albums
+
+    def check_track_as_single(self, artist, track_title):
+        return False
+
+    def get_album_track_count(self, artist, album):
+        return 0
+
+
+class TestLastFmSingleDetectionEditionGate:
+    """The Last.fm ``album.search`` single path must honour edition
+    annotations: a "- Single"/"- EP" row is only single evidence when it
+    carries the SAME edition annotation as the track."""
+
+    def _detect(self, title, albums):
+        from services.enrichment.single_detection_service import _detect_lastfm
+
+        return _detect_lastfm(
+            "Feuerschwanz",
+            "Knightclub",
+            title,
+            _FakeLastFmSingleSearch(albums),
+        )
+
+    def test_edition_track_never_matches_plain_single(self):
+        # Last.fm has only the plain "Valhalla - Single" row; the Epic
+        # Edition track must not be confirmed from it.
+        assert self._detect("Valhalla (Epic Edition)", [{"name": "Valhalla - Single"}]) is False
+
+    def test_edition_track_matches_edition_single(self):
+        assert self._detect(
+            "Valhalla (Epic Edition)",
+            [{"name": "Valhalla (Epic Edition) - Single"}],
+        ) is True
+
+    def test_plain_track_still_matches_plain_single(self):
+        assert self._detect("Valhalla", [{"name": "Valhalla - Single"}]) is True
+
+    def test_cover_annotation_still_matches_plain_single(self):
+        # "(PSY Cover)" is a cover annotation, not an edition — Last.fm rows
+        # omit it, so it still confirms from the plain single.
+        assert self._detect(
+            "Gangnam Style (PSY Cover)",
+            [{"name": "Gangnam Style - Single"}],
+        ) is True
+
+    def test_radio_edit_variant_still_matches_plain_single(self):
+        assert self._detect(
+            "Valhalla (Radio Edit)",
+            [{"name": "Valhalla - Single"}],
+        ) is True

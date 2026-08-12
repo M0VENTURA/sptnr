@@ -21,6 +21,7 @@ from helpers.normalization_service import (
     normalize_artist,
     normalize_core_title,
     strip_brackets,
+    edition_annotations_compatible,
 )
 
 from helpers.types_queue import QueueItem
@@ -51,6 +52,16 @@ def filename_matches_queue_item(filename: str, queue_item: QueueItem) -> bool:
     """
 
     if not filename:
+        return False
+
+    # An edition-annotated track ("Valhalla (Epic Edition)") must never match
+    # the plain "Valhalla" queue item — strip_brackets below would otherwise
+    # make the two indistinguishable.  Compare against the extension-stripped
+    # basename so the trailing "(Epic Edition)" annotation is extractable.
+    queue_title = queue_item.get("title") or ""
+    if not edition_annotations_compatible(
+        queue_title, os.path.splitext(os.path.basename(filename))[0]
+    ):
         return False
 
     basename = os.path.basename(filename)

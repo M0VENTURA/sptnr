@@ -21,6 +21,7 @@ from helpers.normalization_service import (
     normalize_core_title,
     extract_version_info,
     queue_duration_seconds,
+    edition_annotations_compatible,
 )
 from helpers.config_helpers import _GENERIC_COMPILATION_ARTISTS
 
@@ -118,6 +119,16 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
 
     file_title_norm = normalize_core_title(file_title)
     queue_title_norm = normalize_core_title(queue_title)
+
+    # ------------------------------------------------------------------
+    # Edition annotations ("Valhalla (Epic Edition)") must never collapse
+    # onto the plain "Valhalla" — normalize_core_title strips brackets on
+    # both sides, so without this gate an epic-edition download is falsely
+    # imported against the non-edition queue item.
+    # ------------------------------------------------------------------
+
+    if not edition_annotations_compatible(file_title, queue_title):
+        return False
 
     # ------------------------------------------------------------------
     # Variant logic

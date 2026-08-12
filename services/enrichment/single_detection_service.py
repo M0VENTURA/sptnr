@@ -659,6 +659,12 @@ def _detect_lastfm(artist: str, album: str, title: str, lastfm_client=None) -> b
                     if not alb_name or not single_marker.search(alb_name):
                         continue
                     base = single_marker.sub("", alb_name).strip()
+                    # An edition-annotated track ("Valhalla (Epic Edition)")
+                    # must only match a "- Single"/"- EP" release carrying the
+                    # SAME edition annotation — never the plain "Valhalla"
+                    # release (both sides normalize away the brackets).
+                    if not edition_annotations_compatible(title, base):
+                        continue
                     if normalize_title_for_lookup(base) == target:
                         return True
         except Exception:
