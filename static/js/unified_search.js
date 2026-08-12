@@ -184,11 +184,53 @@
 
   // ===== Result rendering =====
 
-  function section(title, rowsHtml) {
+  // Max rows shown per section before the inline "Show All N ▼" toggle.
+  var SECTION_INLINE_LIMIT = 5;
+
+  // Build a section with an inline Show All / Show Less toggle when the row
+  // count exceeds the inline limit.  ``rower`` maps an item array to row HTML.
+  function buildSection(title, items, rower) {
+    var count = items.length;
+    var visible = items.slice(0, SECTION_INLINE_LIMIT);
+    var hidden = items.slice(SECTION_INLINE_LIMIT);
+    var toggle = hidden.length
+      ? '<button type="button" class="btn btn-sm btn-link us-section-toggle py-0 ms-auto text-decoration-none" data-count="' + count + '" onclick="toggleUsSection(this)">' +
+        'Show All ' + count + ' <i class="bi bi-chevron-down"></i></button>'
+      : '';
     return '<div class="us-section mb-1">' +
-      '<div class="us-section-title d-flex align-items-center gap-2">' + title + '</div>' +
-      rowsHtml +
+      '<div class="us-section-title d-flex align-items-center gap-2">' + title + toggle + '</div>' +
+      rower(visible) +
+      (hidden.length ? '<div class="us-section-more d-none">' + rower(hidden) + '</div>' : '') +
       '</div>';
+  }
+
+  function toggleUsSection(btn) {
+    var hiddenEl = btn.closest('.us-section').querySelector('.us-section-more');
+    if (!hiddenEl) return;
+    var expanded = !hiddenEl.classList.contains('d-none');
+    hiddenEl.classList.toggle('d-none', expanded);
+    btn.innerHTML = expanded
+      ? 'Show All ' + (btn.dataset.count || '') + ' <i class="bi bi-chevron-down"></i>'
+      : 'Show Less <i class="bi bi-chevron-up"></i>';
+  }
+
+  // Keep only the bucket(s) matching the active Type filter; artists and
+  // tracks are suppressed whenever a specific type is selected.
+  function filterLocalByType(local, type) {
+    if (!type) return local;
+    var bucketMap = {
+      album: ['albums'],
+      single: ['singles'],
+      ep: ['eps'],
+      compilation: ['compilations'],
+      live: ['live_albums'],
+      soundtrack: ['albums', 'compilations'],
+      remix: ['albums']
+    };
+    var keep = bucketMap[type] || [];
+    var out = { artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] };
+    keep.forEach(function (k) { out[k] = local[k] || []; });
+    return out;
   }
 
   function artistRows(artists) {
@@ -353,9 +395,10 @@
       var def = SECTION_DEFS[i];
       var items = buckets[def.key] || [];
       if (!items.length) continue;
-      html += section(
+      html += buildSection(
         def.label + ' <span class="badge bg-secondary ms-1">' + items.length + '</span>',
-        releaseRows(items, withQueue)
+        items,
+        function (list) { return releaseRows(list, withQueue); }
       );
     }
     return html;
@@ -365,7 +408,7 @@
     opts = opts || {};
     var html = '';
     var artists = local.artists || [];
-    if (artists.length) html += section('Artists', artistRows(artists));
+    if (artists.length) html += buildSection('Artists', artists, artistRows);
 
     html += renderReleaseSections(buildBuckets(local, mbReleases), opts.withQueue);
 
@@ -376,7 +419,7 @@
     }
 
     var tracks = local.tracks || [];
-    if (tracks.length) html += section('Tracks', trackRows(tracks));
+    if (tracks.length) html += buildSection('Tracks', tracks, trackRows);
     if (!artists.length && !html) {
       html += '<div class="text-center text-muted py-4 small">No library matches for "' + esc(query) + '"</div>';
     }
@@ -459,6 +502,11 @@
         if (seq !== _runSeq) return;
         var local = results[0];
         var mbReleases = results[1];
+
+        // The Type filter applies to local results too: artists/tracks are
+        // suppressed and only matching album buckets are kept, so the scope
+        // pill counts reflect the filtered subset.
+        local = filterLocalByType(local, getTypeFilter());
 
         _counts.library = countLibrary(local);
         if (_scope !== SCOPE_LIBRARY) _counts.mb = mbReleases.length;

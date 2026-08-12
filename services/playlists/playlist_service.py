@@ -17,6 +17,7 @@ Architecture:
 """
 from __future__ import annotations
 import json
+import logging
 import os
 import re
 from sqlalchemy import text
@@ -271,8 +272,7 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
     return create_nsp_file(playlist_name, data)
 
 
-def refresh_all_playlists_from_db():
-    with db_session() as session:
+def refresh_all_playlists_from_db():    with db_session() as session:
         result = session.execute(text("SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist FROM tracks WHERE rating >= 4"))
         artists = [str(row[0]) for row in result.fetchall() or [] if row[0]]
         count = 0
@@ -282,3 +282,59 @@ def refresh_all_playlists_from_db():
             if create_or_update_playlist_for_artist(artist, tracks):
                 count += 1
         return count
+
+
+logger = logging.getLogger(__name__)
+
+
+def sync_playlists_public() -> dict:
+    """Make every Navidrome playlist public when the config flag is enabled.
+
+    Navidrome imports the ``.m3u`` / ``.nsp`` files from the Playlists folder
+    as PRIVATE playlists; this flips their visibility to public after each
+    library sync.  Gated by ``navidrome.auto_public_playlists`` (default
+    false — opt-in via config.yaml or the Integrations tab).
+
+    Returns ``{"enabled": bool, "checked": int, "made_public": int,
+    "failed": int}``.
+    """
+    try:
+        from helpers.config_helpers import get_config
+        cfg = get_config() or {}
+        nav_cfg = cfg.get("navidrome") or {}
+        if not isinstance(nav_cfg, dict):
+            nav_cfg = {}
+        if not bool(nav_cfg.get("auto_public_playlists", False)):
+            return {"enabled": False, "checked": 0, "made_public": 0, "failed": 0}
+
+        nav_users = cfg.get("navidrome_users") or []
+        if not nav_users and nav_cfg.get("base_url"):
+            nav_users = [nav_cfg]
+
+        from api_clients.navidrome import NavidromeClient
+        checked = made_public = failed = 0
+        for user in nav_users:
+            base_url = user.get("base_url")
+            username = user.get("user")
+            password = user.get("pass")
+            if not (base_url and username and password):
+                continue
+            try:
+                client = NavidromeClient(base_url, username, password)
+                for playlist in client.fetch_all_playlists() or []:
+                    checked += 1
+                    if str(playlist.get("public") or "").lower() == "true":
+                        continue
+                    playlist_id = str(playlist.get("id") or "")
+                    if playlist_id and client.update_playlist_public(playlist_id, True):
+                        made_public += 1
+                        logger.info("[PLAYLISTS] Set public: %s", playlist.get("name"))
+                    else:
+                        failed += 1
+            except Exception as exc:
+                logger.warning("[PLAYLISTS] Public-sync failed for %s: %s", base_url, exc)
+                failed += 1
+        return {"enabled": True, "checked": checked, "made_public": made_public, "failed": failed}
+    except Exception as exc:
+        logger.warning("[PLAYLISTS] Public-sync aborted: %s", exc)
+        return {"enabled": True, "checked": 0, "made_public": 0, "failed": 0}

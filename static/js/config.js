@@ -269,7 +269,11 @@ function buildConfigObject() {
       }
     ),
     playlists: {
+      essential_playlists_enabled: getChecked('playlists_essential_enabled', true),
       essential_name_template: getValue('playlists_essential_name_template', '{artist} - Essential Collection')
+    },
+    navidrome: {
+      auto_public_playlists: getChecked('api_navidrome_auto_public_playlists', false)
     },
     downloads: {
       folder: getValue('downloads_folder'),

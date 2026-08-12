@@ -787,6 +787,24 @@ def _cleanup_stale_essential_files(playlists_dir: str, artist: str, playlist_nam
             pass
 
 
+def _essential_playlists_enabled(options: dict) -> bool:
+    """Whether Essential Collection .m3u generation is on.
+
+    Pipeline callers may override via ``options["create_playlists"]``;
+    otherwise the config key ``playlists.essential_playlists_enabled``
+    (default true) governs.
+    """
+    flag = options.get("create_playlists")
+    if flag is not None:
+        return bool(flag)
+    try:
+        from helpers.config_helpers import get_config
+        cfg = (get_config() or {}).get("playlists") or {}
+        return bool(cfg.get("essential_playlists_enabled", True))
+    except Exception:
+        return True
+
+
 def _create_essential_m3u(artist: str, cursor) -> None:
     """Create/refresh or delete the artist's Essential Collection .m3u.
 
@@ -1531,7 +1549,9 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
             # Create/refresh the artist's Essential Collection .m3u — scanned
             # against the FULL DB track history, deduplicated by normalized
             # title, and only written when > 12 unique 4★/5★ tracks exist.
-            if options.get("create_playlists", True):
+            # Gated by config (playlists.essential_playlists_enabled) or an
+            # explicit pipeline override (options.create_playlists).
+            if _essential_playlists_enabled(options):
                 _create_essential_m3u(artist, cursor)
 
         # ── ISRC popularity sync (recording-level inheritance) ─────────────

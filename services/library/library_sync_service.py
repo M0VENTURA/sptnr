@@ -81,6 +81,18 @@ def request_library_sync() -> dict[str, Any]:
 def _run_library_sync_worker() -> None:
     try:
         result = perform_library_sync()
+        # After Navidrome imports the Playlists folder, optionally flip every
+        # playlist to public (config: ``navidrome.auto_public_playlists``).
+        try:
+            from services.playlists.playlist_service import sync_playlists_public
+            pl = sync_playlists_public()
+            if pl.get("enabled"):
+                logger.info(
+                    "[LIBRARY_SYNC] Playlist visibility sync: %d checked, %d made public, %d failed",
+                    pl.get("checked", 0), pl.get("made_public", 0), pl.get("failed", 0),
+                )
+        except Exception as exc:
+            logger.debug("[LIBRARY_SYNC] Playlist public sync skipped: %s", exc)
         with _library_status_lock:
             _library_status.update({
                 "message": result.get("reason") or "Completed", 
