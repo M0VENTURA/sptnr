@@ -287,9 +287,16 @@
         '<span class="badge bg-primary ms-2">' + monthReleases.length + ' release' + (monthReleases.length === 1 ? '' : 's') + '</span>' +
         '</button></h2>' +
         '<div id="ucm' + idx + '" class="accordion-collapse collapse' + (open ? ' show' : '') + '">' +
-        '<div class="accordion-body p-0"><div class="table-responsive">' +
+        '<div class="accordion-body p-0"><div class="table-responsive upcoming-table">' +
         '<table class="table table-hover table-striped table-dark table-sm mb-0">' +
-        '<thead><tr><th>Artist</th><th>Album</th><th>Date</th><th>Source</th><th>MBID</th><th>Action</th></tr></thead>' +
+        '<thead><tr>' +
+        '<th class="col-artist">Artist</th>' +
+        '<th class="col-album">Album</th>' +
+        '<th class="col-date">Date</th>' +
+        '<th class="col-source">Source</th>' +
+        '<th class="col-mbid">MBID</th>' +
+        '<th class="col-action">Action</th>' +
+        '</tr></thead>' +
         '<tbody>';
       monthReleases.forEach(function (release) {
         html += renderReleaseRow(release);
@@ -337,7 +344,11 @@
         buttonEl.disabled = false;
         buttonEl.innerHTML = '<i class="bi bi-magic"></i>';
       }
-      alert('Error matching: ' + error.message);
+      if (typeof window.showTopToast === 'function') {
+        window.showTopToast('Error matching: ' + error.message, 'danger');
+      } else {
+        alert('Error matching: ' + error.message);
+      }
       return;
     }
     if (onRefresh) onRefresh();
@@ -357,13 +368,17 @@
         buttonEl.disabled = false;
         buttonEl.innerHTML = '<i class="bi bi-link-45deg"></i> Match';
       }
-      alert('Error confirming match: ' + error.message);
+      if (typeof window.showTopToast === 'function') {
+        window.showTopToast('Error confirming match: ' + error.message, 'danger');
+      } else {
+        alert('Error confirming match: ' + error.message);
+      }
       return;
     }
     if (onRefresh) onRefresh();
   }
 
-  async function queueById(releaseId, buttonEl) {
+  async function queueById(releaseId, buttonEl, title) {
     if (!releaseId) return;
     if (buttonEl) {
       buttonEl.disabled = true;
@@ -372,14 +387,22 @@
     try {
       var result = await queueDownload(releaseId);
       if (buttonEl && result.already_queued) {
-        alert('Already in queue.');
+        if (typeof window.showTopToast === 'function') {
+          window.showTopToast('Already in queue' + (title ? ' — "' + title + '"' : ''), 'warning');
+        }
+      } else if (typeof window.showQueueToast === 'function') {
+        window.showQueueToast(title || 'Release');
       }
     } catch (error) {
       if (buttonEl) {
         buttonEl.disabled = false;
         buttonEl.innerHTML = '<i class="bi bi-download"></i> Queue';
       }
-      alert('Error queueing: ' + error.message);
+      if (typeof window.showTopToast === 'function') {
+        window.showTopToast('Error queueing: ' + error.message, 'danger');
+      } else {
+        alert('Error queueing: ' + error.message);
+      }
       return;
     }
     if (onRefresh) onRefresh();
@@ -405,7 +428,7 @@
       );
       return;
     }
-    queueById(releaseId, buttonEl);
+    queueById(releaseId, buttonEl, decodeInlineArg(albumEnc, ''));
   }
 
   window.UpcomingReleasesService = {

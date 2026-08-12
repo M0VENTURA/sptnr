@@ -125,6 +125,25 @@ async def api_download_log(log_type: str):
 # EXPORT LOGS (last N hours, per source)
 # =============================================================================
 
+@logs_bp.route("/api/logs/client", methods=["POST"])
+async def api_client_log():
+    """Append a client-side UI message to ``client.log``.
+
+    Called by the global alert→toast shim (main.js) so every converted
+    alert is also recorded in the log files for troubleshooting.
+    """
+    data = (await request.get_json(silent=True)) or {}
+    message = str(data.get("message") or "").strip()
+    if not message:
+        return jsonify({"ok": False}), 400
+    try:
+        from services.log_service import append_client_log
+        append_client_log(message)
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @logs_bp.route("/api/logs/export", methods=["GET"])
 def api_export_logs():
     """Export the last N hours of a log source as a downloadable .log file.

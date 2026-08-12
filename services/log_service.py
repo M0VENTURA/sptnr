@@ -60,6 +60,23 @@ def _count_lines(path: str) -> int:
     return count
 
 
+def append_client_log(message: str) -> None:
+    """Append a client-side UI message to ``client.log`` (alert→toast feed).
+
+    Every ``alert()`` in the app is shimmed into a toast; the same message
+    lands here so UI feedback is greppable in the log files.  Never raises.
+    """
+    try:
+        from datetime import datetime
+        log_dir = resolve_log_dir()
+        path = os.path.join(log_dir, "client.log")
+        line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [CLIENT] {message}\n"
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception:
+        pass
+
+
 def stream_append_log(name: str, start_offset: int, pending: str):
     """Return ``(new_lines, new_offset, new_pending)`` for SSE log streaming.
 

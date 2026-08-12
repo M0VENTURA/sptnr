@@ -202,6 +202,9 @@ async def api_album_apply_mbid():
         return jsonify({"error": "Missing artist or album"}), 400
         
     result, status = _pop_status(apply_mbid_to_album(artist, album, mbid, rg_mbid, cover_url), 200)
+    if status == 200 and result.get("success"):
+        from helpers.logging_config import log_unified
+        log_unified(f"[ALBUM] Applied MusicBrainz ID to '{artist} - {album}' ({mbid or rg_mbid or 'n/a'})")
     return jsonify(result), status
 
 
@@ -218,6 +221,9 @@ async def api_album_apply_discogs_id():
         return jsonify({"error": "Missing required fields"}), 400
         
     result, status = _pop_status(apply_discogs_id_to_album(artist, album, discogs_id, is_single))
+    if status == 200 and result.get("success"):
+        from helpers.logging_config import log_unified
+        log_unified(f"[ALBUM] Applied Discogs ID to '{artist} - {album}' ({discogs_id})")
     return jsonify(result), status
 
 
@@ -490,6 +496,9 @@ async def api_album_bulk_tag():
     payload = (await request.get_json(silent=True)) or {}
     from services.metadata.album_service import bulk_tag_tracks
     result, code = bulk_tag_tracks(payload)
+    if code == 200 and result.get("success"):
+        from helpers.logging_config import log_unified
+        log_unified(f"[ALBUM] Bulk-tagged {result.get('updated_count') or 0} track(s) ({payload.get('artist') or '?'} - {payload.get('album') or '?'})")
     return jsonify(result), code
 
 
@@ -508,4 +517,7 @@ async def api_album_update_ids():
     payload = (await request.get_json(silent=True)) or {}
     from services.metadata.album_service import update_album_ids
     result, code = update_album_ids(payload)
+    if code == 200 and result.get("success"):
+        from helpers.logging_config import log_unified
+        log_unified(f"[ALBUM] Updated album IDs ({payload.get('artist') or '?'} - {payload.get('album') or '?'})")
     return jsonify(result), code

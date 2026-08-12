@@ -32,7 +32,13 @@ def register_app_hooks(app):
         """
         if isinstance(exc, HTTPException):
             return exc
-        logger.error("Unhandled exception: %s: %s", type(exc).__name__, exc)
+        try:
+            request_ctx = f"{request.method} {request.path}"
+            if request.query_string:
+                request_ctx += f"?{request.query_string.decode('utf-8', 'replace')[:200]}"
+        except Exception:
+            request_ctx = "(no request context)"
+        logger.error("Unhandled exception [%s]: %s: %s", request_ctx, type(exc).__name__, exc)
         logger.error(traceback.format_exc())
         return jsonify({"success": False, "error": "An internal server error occurred. Please try again."}), 500
 

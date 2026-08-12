@@ -251,10 +251,10 @@ def get_navidrome_config():
     """Return Navidrome section (first user from navidrome_users, or legacy navidrome key)."""
     cfg = get_config()
     nav = cfg.get("navidrome", {})
-    if nav:
+    if isinstance(nav, dict) and nav:
         return nav
     users = cfg.get("navidrome_users", [])
-    if users:
+    if users and isinstance(users[0], dict):
         return users[0]
     return {}
 

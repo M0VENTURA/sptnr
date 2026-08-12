@@ -217,6 +217,15 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
                 "formatter": "verbose",
                 "level": "DEBUG",
             },
+            "error_file": {
+                "class": "logging.handlers.TimedRotatingFileHandler",
+                "filename": os.path.join(log_dir, "error.log"),
+                "when": "midnight",
+                "backupCount": 7,
+                "encoding": "utf-8",
+                "formatter": "verbose",
+                "level": "ERROR",
+            },
             "queue_file": {
                 "class": "logging.handlers.TimedRotatingFileHandler",
                 "filename": os.path.join(log_dir, "queue.log"),

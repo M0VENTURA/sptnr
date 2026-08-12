@@ -66,6 +66,57 @@
     color: #a0a0a0 !important;
 }
 
+/* ── Downloads page: mobile layout fixes ─────────────────────────────── */
+/* File-manager tabs stay on ONE horizontal row (scrolls if tight) instead
+   of wrapping/stacking into full-width blocks. */
+#downloadManagerTabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 0.35rem;
+    scrollbar-width: thin;
+}
+#downloadManagerTabs .nav-link {
+    white-space: nowrap;
+    flex: 1 0 auto;
+    text-align: center;
+}
+
+/* Upcoming release tables scroll horizontally instead of squishing. */
+.upcoming-table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 576px) {
+    /* Drop the Source + MBID columns on phones; keep dates/actions. */
+    .upcoming-table .col-source,
+    .upcoming-table .col-mbid {
+        display: none;
+    }
+
+    /* Queue rows: title/status on top, action buttons full-width right-aligned. */
+    .queue-item .d-flex.justify-content-between {
+        flex-direction: column;
+        align-items: flex-start !important;
+        gap: 0.5rem;
+    }
+    .queue-item .d-flex.justify-content-between > .d-flex:last-child {
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    /* Upcoming action bars: tighter padding + gaps so tools don't wrap to 3 rows. */
+    #fm-upcoming .d-flex.flex-wrap {
+        gap: 0.35rem !important;
+    }
+    #fm-upcoming .btn {
+        padding: 0.2rem 0.45rem;
+        font-size: 0.78rem;
+    }
+}
+
 /* Header stat pills (compact queue summary bar) */
 .stat-pill {
     display: inline-flex;

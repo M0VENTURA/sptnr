@@ -802,7 +802,11 @@ async function matchUpcomingReleaseMonitor(releaseId) {
     await UpcomingReleasesService.matchRelease(releaseId, null);
     await refreshUpcomingReleasesMonitor();
   } catch (error) {
-    alert('Error matching: ' + error.message);
+    if (typeof window.showTopToast === 'function') {
+      window.showTopToast('Error matching: ' + error.message, 'danger');
+    } else {
+      alert('Error matching: ' + error.message);
+    }
   }
 }
 

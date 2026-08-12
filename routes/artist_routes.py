@@ -230,6 +230,9 @@ async def api_artist_set_image():
 async def api_artist_update_ids():
     payload = (await request.get_json(silent=True)) or {}
     data, code = metadata.update_ids(payload)
+    if code == 200 and data.get("success"):
+        from helpers.logging_config import log_unified
+        log_unified(f"[ARTIST] Updated external IDs for '{payload.get('name') or '?'}'")
     return jsonify(data), code
 
 
@@ -237,6 +240,9 @@ async def api_artist_update_ids():
 async def api_artist_lookup_ids():
     payload = (await request.get_json(silent=True)) or {}
     data, code = metadata.lookup_ids(payload)
+    if code == 200 and data.get("success"):
+        from helpers.logging_config import log_unified
+        log_unified(f"[ARTIST] Looked up + saved external IDs for '{payload.get('name') or '?'}'")
     return jsonify(data), code
 
 

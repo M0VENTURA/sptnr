@@ -542,13 +542,14 @@
 
         <div class="col-12 col-xl-6">
           <div class="border rounded p-3 h-100">
+            {% set nav_cfg = config.get('navidrome') if config.get('navidrome') is mapping else {} %}
             <h6 class="mb-2 text-success"><i class="bi bi-music-note-beamed"></i> Navidrome</h6>
             <div class="form-check form-switch mb-2">
-              <input class="form-check-input" type="checkbox" id="api_navidrome_auto_public_playlists" {% if config.get('navidrome', {}).get('auto_public_playlists', False) %}checked{% endif %}>
+              <input class="form-check-input" type="checkbox" id="api_navidrome_auto_public_playlists" {% if nav_cfg.get('auto_public_playlists', False) %}checked{% endif %}>
               <label class="form-check-label" for="api_navidrome_auto_public_playlists"><strong>Auto-make playlists public</strong></label>
             </div>
             <div class="form-check form-switch mb-2">
-              <input class="form-check-input" type="checkbox" id="api_navidrome_playlist_cover_art" {% if config.get('navidrome', {}).get('playlist_cover_art', False) %}checked{% endif %}>
+              <input class="form-check-input" type="checkbox" id="api_navidrome_playlist_cover_art" {% if nav_cfg.get('playlist_cover_art', False) %}checked{% endif %}>
               <label class="form-check-label" for="api_navidrome_playlist_cover_art"><strong>Playlist cover art</strong></label>
             </div>
             <small class="form-text text-muted">When enabled, every playlist detected during the Navidrome library import (including the auto-generated Essential playlists) is switched to <strong>public</strong> visibility. Set automatically on each library sync. <strong>Playlist cover art</strong> pushes each artist's existing artwork to freshly created playlists via the Navidrome API.</small>

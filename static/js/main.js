@@ -557,7 +557,7 @@ window.showQueueToast = function(title) {
     el = document.createElement('div');
     el.id = 'queueToastPill';
     el.className = 'd-none';
-    el.style.cssText = 'position:fixed;top:22%;left:50%;transform:translateX(-50%);z-index:2400;' +
+    el.style.cssText = 'position:fixed;top:25%;left:50%;transform:translateX(-50%);z-index:2400;' +
       'background:#198754;color:#fff;border-radius:999px;padding:0.55rem 1.1rem;' +
       'font-size:0.85rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,0.35);' +
       'display:flex;align-items:center;gap:0.5rem;max-width:min(90vw,480px);' +
@@ -578,6 +578,68 @@ window.showQueueToast = function(title) {
     setTimeout(function () { el.classList.add('d-none'); }, 250);
     window._queueToastCount = 0;
   }, 2600);
+};
+
+// Generic top toast (25% from the top, centered pill) for queue/match
+// feedback — success (green), warning (amber) or error (red).  Never uses
+// innerHTML for the message; auto-hides after 2.6s.
+window.showTopToast = function(message, type) {
+  var kind = type === 'warning' ? '#b45309'
+    : type === 'danger' || type === 'error' ? '#b91c1c'
+    : '#198754';
+  var icon = type === 'warning' ? 'bi-exclamation-triangle-fill'
+    : type === 'danger' || type === 'error' ? 'bi-x-circle-fill'
+    : 'bi-check-circle-fill';
+  var el = document.createElement('div');
+  el.style.cssText = 'position:fixed;top:25%;left:50%;transform:translateX(-50%);z-index:2400;' +
+    'background:' + kind + ';color:#fff;border-radius:999px;padding:0.55rem 1.1rem;' +
+    'font-size:0.85rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,0.35);' +
+    'display:flex;align-items:center;gap:0.5rem;max-width:min(90vw,480px);' +
+    'white-space:nowrap;overflow:hidden;transition:opacity 0.2s ease;';
+  el.innerHTML = '<i class="bi ' + icon + ' flex-shrink-0"></i><span class="text-truncate"></span>';
+  el.querySelector('span').textContent = message;
+  document.body.appendChild(el);
+  requestAnimationFrame(function () { el.style.opacity = '1'; });
+  setTimeout(function () {
+    el.style.opacity = '0';
+    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 250);
+  }, 2600);
+};
+
+// ==========================================================================
+// Alert → toast conversion (global)
+// --------------------------------------------------------------------------
+// Every ``alert()`` in the app now renders a top toast instead of a blocking
+// browser dialog, and the message is shipped to ``client.log`` so UI
+// feedback is greppable in the log files.  ``confirm()`` stays native —
+// destructive flows keep their explicit confirmation.
+// ==========================================================================
+function _toastTypeFromMessage(message) {
+  var m = String(message || '');
+  var looksGood = /✅|✓|success|completed|updated|added|queued|deleted|saved|matched|started|lookup complete/i.test(m);
+  var looksBad = /❌|✗|error|failed|invalid|missing|network|could not|unable|please enter|please select/i.test(m);
+  if (looksGood && !looksBad) return 'success';
+  if (looksBad) return 'danger';
+  return 'warning';
+}
+
+function _logClientMessage(message) {
+  try {
+    fetch('/api/logs/client', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: String(message || '').slice(0, 500) }),
+    }).catch(function () {});
+  } catch (_e) { /* never block the UI on logging */ }
+}
+
+window.alert = function (message) {
+  _logClientMessage(message);
+  if (typeof window.showTopToast === 'function') {
+    window.showTopToast(message, _toastTypeFromMessage(message));
+  } else {
+    window.console.warn('[alert→toast]', message);
+  }
 };
 
 window.addBookmark = function(type, name, artist, album, trackId) {

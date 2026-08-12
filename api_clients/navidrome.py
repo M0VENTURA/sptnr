@@ -27,6 +27,7 @@ import hashlib
 import logging
 import os
 import random
+import re
 import time
 from typing import Any
 
@@ -99,6 +100,11 @@ class NavidromeClient:
                 raw password over the wire.
         """
         self.base_url = str(base_url or "").rstrip("/")
+        # Tolerate scheme-less config values ("localhost:4533") — httpx
+        # rejects URLs without an explicit protocol, which surfaced as
+        # "Request URL is missing an 'http://' or 'https://' protocol".
+        if self.base_url and not re.match(r"^https?://", self.base_url, re.IGNORECASE):
+            self.base_url = "http://" + self.base_url
         self.username = username or ""
         self.password = password or ""
         self.session = http_session or session
