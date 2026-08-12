@@ -719,6 +719,13 @@ _ESSENTIAL_MIN_TRACKS = 12
 # "(2018 Remaster)", "[Deluxe Edition]", "(Live)".
 _ESSENTIAL_TITLE_NOISE_RE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
 
+# Featured-artist markers in track artist fields ("Powerwolf feat. Alissa").
+_ESSENTIAL_FEAT_RE = re.compile(r"\s+(?:feat\.?|featuring|ft\.?)\s+", re.IGNORECASE)
+# Collab separators inside a feat. guest list ("A & B", "A, B", "A x B").
+_ESSENTIAL_FEAT_SPLIT_RE = re.compile(
+    r"\s*(?:&|,|/|\+|\bx\b|\bvs\.?\b)\s*", re.IGNORECASE
+)
+
 
 def _sanitize_name(name: str) -> str:
     return "".join(c for c in name if c.isalnum() or c in ("-", "_", " ")).strip()
@@ -805,6 +812,43 @@ def _essential_playlists_enabled(options: dict) -> bool:
         return True
 
 
+def _essential_include_featured_enabled() -> bool:
+    """Whether featured-appearance tracks join other artists' essentials.
+
+    Config key ``playlists.essential_include_featured`` (default true): a
+    4★/5★ "Powerwolf feat. Unleash The Archers" track also lands on Unleash
+    The Archers' Essential Collection.
+    """
+    try:
+        from helpers.config_helpers import get_config
+        cfg = (get_config() or {}).get("playlists") or {}
+        return bool(cfg.get("essential_include_featured", True))
+    except Exception:
+        return True
+
+
+def _track_has_featured_artist(artist_field: str, target_artist: str) -> bool:
+    """Whether a feat.-credited track's guest list includes ``target_artist``.
+
+    ``artist_field`` is the track artist ("Powerwolf feat. Unleash The
+    Archers"); the guest side after the marker is split on collab separators
+    and compared case-/whitespace-insensitively against the playlist owner.
+    Returns False when the field carries no feat marker or no guest matches.
+    """
+    if not target_artist:
+        return False
+    match = _ESSENTIAL_FEAT_RE.search(artist_field or "")
+    if not match:
+        return False
+    target_key = re.sub(r"\s+", " ", target_artist).strip().casefold()
+    guests = _ESSENTIAL_FEAT_SPLIT_RE.split(artist_field[match.end():])
+    return any(
+        re.sub(r"\s+", " ", g).strip().casefold() == target_key
+        for g in guests
+        if g and g.strip()
+    )
+
+
 def _create_essential_m3u(artist: str, cursor) -> None:
     """Create/refresh or delete the artist's Essential Collection .m3u.
 
@@ -825,6 +869,11 @@ def _create_essential_m3u(artist: str, cursor) -> None:
     Playlists directory only when the artist has MORE than
     ``_ESSENTIAL_MIN_TRACKS`` unique 4★/5★ tracks; below that any existing
     .m3u (and stale NSP files) is deleted.
+
+    When ``playlists.essential_include_featured`` is enabled, 4★/5★ tracks
+    where the artist is a FEATURED guest ("Powerwolf feat. Unleash The
+    Archers") join the featured artist's collection too — the track then
+    appears on both bands' essential playlists.
     """
     if _is_excluded_essential_artist(artist):
         return
@@ -842,7 +891,7 @@ def _create_essential_m3u(artist: str, cursor) -> None:
                    COALESCE(is_live, 0) AS is_live,
                    COALESCE(is_compilation, 0) AS is_compilation,
                    COALESCE(popularity, final_score, 0) AS popularity_score,
-                   year, release_year
+                   year, release_year, artist
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
               AND COALESCE(stars, star_rating) >= 4
@@ -852,6 +901,40 @@ def _create_essential_m3u(artist: str, cursor) -> None:
         rows = cursor.fetchall() or []
     except Exception as exc:
         logger.debug("[finalise_stage] Essential collection fetch failed for %s: %s", artist, exc)
+
+    # Featured appearances: a "Powerwolf feat. Unleash The Archers" 4★/5★
+    # track is stored under Powerwolf's album_artist, but the FEATURED band's
+    # essential collection should carry it too.  Adopt the feat.-credited
+    # rows whose guest list matches THIS artist (dedup by normalized title
+    # below handles any overlap with the artist's own query).
+    if _essential_include_featured_enabled():
+        try:
+            cursor.execute(
+                """
+                SELECT id, title, file_path, duration,
+                       COALESCE(stars, star_rating) AS stars,
+                       COALESCE(is_live, 0) AS is_live,
+                       COALESCE(is_compilation, 0) AS is_compilation,
+                       COALESCE(popularity, final_score, 0) AS popularity_score,
+                       year, release_year, artist
+                FROM tracks
+                WHERE COALESCE(stars, star_rating) >= 4
+                  AND COALESCE(NULLIF(album_artist, ''), artist) <> %s
+                  AND (
+                      artist ILIKE '% feat %' OR artist ILIKE '% feat.%'
+                      OR artist ILIKE '%feat.%' OR artist ILIKE '%featuring%'
+                      OR artist ILIKE '% ft %' OR artist ILIKE '% ft.%'
+                  )
+                """,
+                (artist,),
+            )
+            for row in (cursor.fetchall() or []):
+                if _track_has_featured_artist(row.get("artist") or "", artist):
+                    rows.append(row)
+        except Exception as exc:
+            logger.debug(
+                "[finalise_stage] Featured-track fetch failed for %s: %s", artist, exc
+            )
 
     def _track_year(row: Any) -> int:
         raw = row.get("release_year") or row.get("year") or 0
@@ -930,6 +1013,225 @@ def _create_essential_m3u(artist: str, cursor) -> None:
             )
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Genre top-tracks playlists (library-wide, generated once per scan)
+# ---------------------------------------------------------------------------
+
+# A genre pool must clear this many unique tracks before a playlist is written.
+_GENRE_PLAYLIST_MIN_TRACKS = 5
+
+
+def _genre_playlists_enabled() -> bool:
+    """Whether library-wide ``{Genre} - Top Tracks`` playlists are generated.
+
+    Config key ``playlists.genre_playlists_enabled`` (default true).
+    """
+    try:
+        from helpers.config_helpers import get_config
+        cfg = (get_config() or {}).get("playlists") or {}
+        return bool(cfg.get("genre_playlists_enabled", True))
+    except Exception:
+        return True
+
+
+def _genre_playlist_name(genre: str) -> str:
+    """Resolve the genre playlist name from the config template.
+
+    ``playlists.genre_playlists_name_template`` supports the ``{genre}``
+    placeholder; default ``"{genre} - Top Tracks"``.
+    """
+    try:
+        from helpers.config_helpers import get_config
+        template = str(
+            (get_config().get("playlists") or {}).get("genre_playlists_name_template")
+            or "{genre} - Top Tracks"
+        )
+    except Exception:
+        template = "{genre} - Top Tracks"
+    return str(template).replace("{genre}", genre).strip() or f"{genre} - Top Tracks"
+
+
+def _display_genre(genre: str) -> str:
+    """'progressive metal' -> 'Progressive Metal' (avoiding '3Rd'-style caps)."""
+    return " ".join(
+        w.capitalize() if not (w and w[0].isdigit()) else w
+        for w in str(genre or "").split()
+    )
+
+
+def _create_genre_top_track_playlists(cursor) -> int:
+    """Build ``{Genre} - Top Tracks.m3u`` playlists for the whole library.
+
+    Library-wide (unlike the per-artist essential collections): every track
+    at or above ``playlists.genre_playlists_min_stars`` (default 4★) is
+    assigned its TOP weighted genres (``aggregate_genres`` with the same
+    config weights/synonyms the genre UI uses, capped at
+    ``playlists.genre_playlists_max_genres``, default 3).  Each genre pool is
+    deduplicated by (artist, normalized title) — the best version wins
+    (studio over live, main release over compilation, then stars, then
+    popularity) — sorted by stars DESC then ``final_score`` DESC, and capped
+    at ``playlists.genre_playlists_top_n`` (default 500) tracks.
+
+    Playlists are written to the watch Playlists directory only when the
+    genre pool clears ``_GENRE_PLAYLIST_MIN_TRACKS`` unique tracks.  Returns
+    the number of playlists written.
+    """
+    from collections import defaultdict
+
+    try:
+        from helpers.config_helpers import get_config
+        cfg = (get_config() or {}).get("playlists") or {}
+    except Exception:
+        cfg = {}
+    top_n = max(1, int(cfg.get("genre_playlists_top_n", 500) or 500))
+    min_stars = max(1, int(cfg.get("genre_playlists_min_stars", 4) or 4))
+    max_genres = max(1, int(cfg.get("genre_playlists_max_genres", 3) or 3))
+
+    rows: list[Any] = []
+    try:
+        cursor.execute(
+            """
+            SELECT id, title, file_path, duration, artist, album_artist,
+                   COALESCE(stars, star_rating) AS stars,
+                   COALESCE(popularity, final_score, 0) AS popularity_score,
+                   COALESCE(is_live, 0) AS is_live,
+                   COALESCE(is_compilation, 0) AS is_compilation,
+                   lastfm_tags, listenbrainz_genres, discogs_genres,
+                   musicbrainz_genres, spotify_genres,
+                   essentia_genres, manual_genres, navidrome_genres
+            FROM tracks
+            WHERE COALESCE(stars, star_rating) >= %s
+            """,
+            (min_stars,),
+        )
+        rows = cursor.fetchall() or []
+    except Exception as exc:
+        logger.debug("[finalise_stage] Genre playlist fetch failed: %s", exc)
+        return 0
+
+    from services.enrichment.genre_aggregation_service import aggregate_genres
+    from services.enrichment.genre_tag_aggregator import parse_json_tags, parse_delimited_tags
+
+    # Column -> weighted-source key (must match config GENRE_WEIGHTS keys).
+    _json_sources = {
+        "lastfm_tags": "lastfm",
+        "listenbrainz_genres": "listenbrainz",
+        "discogs_genres": "discogs",
+        "musicbrainz_genres": "musicbrainz",
+        "spotify_genres": "spotify",
+    }
+    _delimited_sources = {
+        "essentia_genres": "essentia",
+        "manual_genres": "manual",
+        "navidrome_genres": "navidrome",
+    }
+
+    def _track_genres(row: Any) -> list[str]:
+        source_map: dict[str, list[str]] = {}
+        for column, source in _json_sources.items():
+            raw = row.get(column)
+            if raw:
+                names = [t.get("name") for t in (parse_json_tags(raw) or []) if t.get("name")]
+                if names:
+                    source_map[source] = names
+        for column, source in _delimited_sources.items():
+            raw = row.get(column)
+            if raw:
+                names = [t.get("name") for t in (parse_delimited_tags(raw) or []) if t.get("name")]
+                if names:
+                    source_map[source] = names
+        if not source_map:
+            return []
+        return aggregate_genres(source_map, max_genres=max_genres)
+
+    pools: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        for genre in _track_genres(row):
+            pools[genre].append({
+                "title": str(row.get("title") or "Unknown"),
+                "file_path": str(row.get("file_path") or ""),
+                "duration": row.get("duration"),
+                "stars": int(row.get("stars") or 0),
+                "score": float(row.get("popularity_score") or 0),
+                "artist": str(row.get("album_artist") or row.get("artist") or ""),
+                "is_live": int(row.get("is_live") or 0),
+                "is_compilation": int(row.get("is_compilation") or 0),
+            })
+
+    def _tiebreak(item: dict[str, Any]) -> tuple:
+        return (
+            item["is_live"],
+            item["is_compilation"],
+            -item["stars"],
+            -item["score"],
+            item["title"].casefold(),
+        )
+
+    playlists_dir = _essential_playlists_dir()
+    os.makedirs(playlists_dir, exist_ok=True)
+    written = 0
+    written_names: set[str] = set()
+    for genre, tracks in pools.items():
+        # Dedup: (artist, normalized title) — remaster/live/compilation
+        # duplicates of the same song count once; winner by tiebreak.
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for t in tracks:
+            key = (
+                re.sub(r"\s+", " ", t["artist"]).strip().casefold(),
+                _normalise_essential_title(t["title"]),
+            )
+            grouped[key].append(t)
+        winners = [min(group, key=_tiebreak) for group in grouped.values()]
+        if len(winners) < _GENRE_PLAYLIST_MIN_TRACKS:
+            continue
+        winners.sort(key=_tiebreak)
+        winners = winners[:top_n]
+
+        playlist_name = _genre_playlist_name(_display_genre(genre))
+        display_genre = _display_genre(genre)
+        file_path = os.path.join(playlists_dir, f"{_sanitize_name(playlist_name)}.m3u")
+        lines = ["#EXTM3U"]
+        for t in winners:
+            try:
+                duration = int(float(t.get("duration") or 0) or 0)
+            except (TypeError, ValueError):
+                duration = 0
+            lines.append(f"#EXTINF:{duration},{display_genre} - {t['title']}")
+            lines.append(t["file_path"] or t["title"])
+        try:
+            with open(file_path, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n")
+            written_names.add(f"{_sanitize_name(playlist_name)}.m3u")
+            written += 1
+            log_unified(
+                f"📄 Playlist: Generated '{playlist_name}.m3u' ({len(winners)} tracks)"
+            )
+        except Exception as exc:
+            logger.warning("[finalise_stage] Genre playlist write failed for %s: %s", genre, exc)
+
+    # Stale-file cleanup: drop genre playlists whose genre no longer clears
+    # the minimum (or whose name template changed).  Only files ending with
+    # the template's literal suffix are candidates, so other playlists in the
+    # watch directory are never touched.
+    try:
+        suffix = _sanitize_name(_genre_playlist_name("GENRE")) \
+            .replace("GENRE", "", 1).strip() or ""
+        if suffix:
+            for name in os.listdir(playlists_dir):
+                if not name.endswith(".m3u") or name in written_names:
+                    continue
+                if suffix and suffix in name:
+                    try:
+                        os.remove(os.path.join(playlists_dir, name))
+                        logger.info("[finalise_stage] Removed stale genre playlist: %s", name)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    return written
 
 
 # ---------------------------------------------------------------------------
@@ -1469,6 +1771,25 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
     """
     track_count = len(results) if results else 0
     log_unified(f"[FINALISE_STAGE] Finalising scan — {track_count} tracks processed")
+    # Diagnostic: surface the organic floor the scan WILL apply for
+    # single-driven elevation (source: config when the key exists in
+    # config.yaml, otherwise the hardcoded default).  Mirrors the ⚖️ WEIGHTS
+    # marker so a mis-saved config value is visible in the scan log instead
+    # of silently producing unexpected star ratings.
+    try:
+        from services.popularity.popularity_config import get_single_organic_floor
+        from helpers.config_helpers import get_config
+        _floor_score, _floor_listeners = get_single_organic_floor()
+        _floor_cfg = (get_config() or {}).get("single_detection") or {}
+        _floor_source = (
+            "config" if isinstance(_floor_cfg, dict) and "single_organic_floor_score" in _floor_cfg
+            else "defaults"
+        )
+        log_unified(
+            f"🧪 ORGANIC FLOOR: score={_floor_score:g} listeners={_floor_listeners:g} | source: {_floor_source}"
+        )
+    except Exception:
+        pass
     if not results:
         return
 
@@ -1614,6 +1935,21 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                 )
         except Exception as exc:
             logger.debug("[finalise_stage] ISRC sync commit failed: %s", exc)
+
+        # ── Genre top-tracks playlists (library-wide, once per scan) ──────
+        # Every ≥4★ track's top weighted genres feed per-genre pools, sorted
+        # by stars then final_score and capped at the top-N (default 500).
+        # Gated by config (playlists.genre_playlists_enabled).
+        try:
+            if _genre_playlists_enabled():
+                _genre_playlists_written = _create_genre_top_track_playlists(cursor)
+                conn.commit()
+                if _genre_playlists_written:
+                    log_unified(
+                        f"[FINALISE_STAGE] Genre playlists: {_genre_playlists_written} file(s) written"
+                    )
+        except Exception as exc:
+            logger.debug("[finalise_stage] Genre playlist generation failed: %s", exc)
 
     except Exception as exc:
         logger.error("[finalise_stage] Finalisation failed: %s", exc)

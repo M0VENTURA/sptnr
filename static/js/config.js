@@ -270,7 +270,13 @@ function buildConfigObject() {
     ),
     playlists: {
       essential_playlists_enabled: getChecked('playlists_essential_enabled', true),
-      essential_name_template: getValue('playlists_essential_name_template', '{artist} - Essential Collection')
+      essential_include_featured: getChecked('playlists_essential_include_featured', true),
+      essential_name_template: getValue('playlists_essential_name_template', '{artist} - Essential Collection'),
+      genre_playlists_enabled: getChecked('playlists_genre_playlists_enabled', true),
+      genre_playlists_top_n: parseInt(getValue('playlists_genre_top_n', '500'), 10) || 500,
+      genre_playlists_min_stars: parseInt(getValue('playlists_genre_min_stars', '4'), 10) || 4,
+      genre_playlists_max_genres: parseInt(getValue('playlists_genre_max_genres', '3'), 10) || 3,
+      genre_playlists_name_template: getValue('playlists_genre_name_template', '{genre} - Top Tracks')
     },
     navidrome: {
       auto_public_playlists: getChecked('api_navidrome_auto_public_playlists', false),

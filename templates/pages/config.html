@@ -1575,13 +1575,47 @@
         <input class="form-check-input" type="checkbox" id="playlists_essential_enabled" {% if config.get('playlists', {}).get('essential_playlists_enabled', True) %}checked{% endif %}>
         <label class="form-check-label" for="playlists_essential_enabled"><strong>Create Essential Playlists During Scans</strong></label>
       </div>
+      <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" id="playlists_essential_include_featured" {% if config.get('playlists', {}).get('essential_include_featured', True) %}checked{% endif %}>
+        <label class="form-check-label" for="playlists_essential_include_featured"><strong>Include Featured Appearances</strong></label>
+        <small class="form-text text-muted">A 4★/5★ track like "Powerwolf feat. Unleash The Archers" also lands on Unleash The Archers' Essential Collection (in addition to Powerwolf's).</small>
+      </div>
+      <hr class="my-3">
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" id="playlists_genre_playlists_enabled" {% if config.get('playlists', {}).get('genre_playlists_enabled', True) %}checked{% endif %}>
+        <label class="form-check-label" for="playlists_genre_playlists_enabled"><strong>Create Genre Top-Tracks Playlists</strong></label>
+        <small class="form-text text-muted">Library-wide <code>{Genre} - Top Tracks.m3u</code> playlists generated once per scan: every track at or above the Minimum Stars is assigned its top weighted genres, and each genre pool is sorted by stars then final score and capped at the Top N.</small>
+      </div>
+      <div class="row g-3 mb-3">
+        <div class="col-6 col-sm-4 col-lg-2">
+          <label class="form-label form-label-sm">Top N Tracks</label>
+          <input type="number" step="50" min="10" max="5000" class="form-control form-control-sm" id="playlists_genre_top_n" placeholder="500" value="{{ config.get('playlists', {}).get('genre_playlists_top_n', 500) }}">
+          <small class="form-text text-muted">Max tracks per genre playlist. Default: <strong>500</strong></small>
+        </div>
+        <div class="col-6 col-sm-4 col-lg-2">
+          <label class="form-label form-label-sm">Minimum Stars</label>
+          <input type="number" step="1" min="1" max="5" class="form-control form-control-sm" id="playlists_genre_min_stars" placeholder="4" value="{{ config.get('playlists', {}).get('genre_playlists_min_stars', 4) }}">
+          <small class="form-text text-muted">Only tracks rated at least this many stars qualify. Default: <strong>4</strong></small>
+        </div>
+        <div class="col-6 col-sm-4 col-lg-2">
+          <label class="form-label form-label-sm">Genres Per Track</label>
+          <input type="number" step="1" min="1" max="10" class="form-control form-control-sm" id="playlists_genre_max_genres" placeholder="3" value="{{ config.get('playlists', {}).get('genre_playlists_max_genres', 3) }}">
+          <small class="form-text text-muted">How many top weighted genres each track may appear in. Default: <strong>3</strong></small>
+        </div>
+        <div class="col-12 col-sm-8 col-lg-6">
+          <label class="form-label form-label-sm">Genre Playlist Name Template</label>
+          <input type="text" class="form-control form-control-sm" id="playlists_genre_name_template" placeholder="{genre} - Top Tracks" value="{{ config.get('playlists', {}).get('genre_playlists_name_template', '{genre} - Top Tracks') }}">
+          <small class="form-text text-muted">Supports the <code>{genre}</code> placeholder. Default: <strong>{genre} - Top Tracks</strong></small>
+        </div>
+      </div>
       <div class="alert alert-secondary mb-3 py-2">
         <small class="text-muted">
           <strong>How it works:</strong> after each popularity scan, every artist with more than
           <strong>12 unique 4★/5★ tracks</strong> gets an <code>{name}.m3u</code> written to
           <code>{MUSIC_FOLDER}/Playlists</code> — Navidrome picks it up on its next scan. Tracks are
           deduplicated by normalized title (the studio version wins over live / compilation duplicates),
-          and compilation, "Various Artists" and soundtrack buckets are skipped. Changing the name
+          and compilation, "Various Artists" and soundtrack buckets are skipped. Featured appearances
+          are included in the featured artist's collection. Changing the name
           template automatically cleans up stale files from older scans.
         </small>
       </div>

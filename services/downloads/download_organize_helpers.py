@@ -52,6 +52,11 @@ def _format_track_number_for_rename(track_number, disc_number=None) -> str:
     try:
         disc_num = int(str(disc_number).split("/")[0]) if disc_number else 1
         track_num = int(str(track_number).split("/")[0]) if track_number else 0
+        # Disc "0" is a tagging artifact (many rips tag disc 0 for a single
+        # disc) — normalize it to 1 so disc-0 copies land in the SAME folder
+        # as disc-1 copies instead of splitting the album in two.
+        if disc_num <= 0:
+            disc_num = 1
         if disc_num > 1:
             return f"{disc_num}{track_num:02d}"
         return f"{track_num:02d}"
@@ -301,12 +306,35 @@ def is_match(path: str, item: dict) -> bool:
     return artist in filename and title in filename
 
 
+def _read_file_title(file_path: str) -> str:
+    """Embedded title of an existing library file (mutagen via metadata_reader)."""
+    try:
+        from helpers.metadata_reader import read_mp3_metadata
+        meta = read_mp3_metadata(file_path) or {}
+        return str(meta.get("title") or "").strip()
+    except Exception:
+        return ""
+
+
+def _titles_match(a: str, b: str) -> bool:
+    """Case-/whitespace-insensitive title comparison for duplicate detection."""
+    norm = lambda v: re.sub(r"\s+", " ", str(v or "").strip().casefold())
+    return bool(norm(a) and norm(a) == norm(b))
+
+
 def move_track_to_library(track, release_metadata, music_root):
     """Move a track into the configured library structure.
 
     Honors ``downloads.file_name_format`` for the destination name and
     ``downloads.conversion.*`` for FLAC → MP3 conversion (the original FLAC is
     deleted or archived to ``downloads/<original_subfolder>`` per config).
+
+    A pre-existing file at the exact target whose embedded title matches the
+    incoming track is a DUPLICATE (a re-download, or a disc-0/disc-1 copy
+    whose disc numbers normalize to the same path): the existing file is kept
+    and ``duplicate=True`` is returned so the caller imports against it and
+    the redundant download is cleaned up.  Genuine collisions (a different
+    track with the same generated name) keep the legacy PID-suffix behaviour.
     """
     file_path = track.get("file_path")
 
@@ -337,6 +365,15 @@ def move_track_to_library(track, release_metadata, music_root):
         target_path = f"{os.path.splitext(target_path)[0]}.mp3"
 
     if os.path.exists(target_path):
+        # Same-track duplicate: the target already holds THIS track (verified
+        # by embedded title) — keep it, skip writing, and let the caller
+        # import against the existing file.  No conversion work is wasted.
+        if _titles_match(_read_file_title(target_path), track.get("title")):
+            logger.info(
+                "[ORGANIZE] Target '%s' already exists and matches '%s - %s' — skipping duplicate import",
+                target_path, track.get("artist"), track.get("title"),
+            )
+            return {"success": True, "target_path": target_path, "duplicate": True}
         stem = Path(target_path).stem
         suffix = Path(target_path).suffix
         target_path = f"{target_path[:-len(suffix)]}_{os.getpid()}{suffix}" if target_path.endswith(suffix) else f"{target_path}_{os.getpid()}"

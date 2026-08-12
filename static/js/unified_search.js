@@ -331,6 +331,19 @@
             trackLine +
           '</span>' +
         '</a>';
+      } else if (it.owned) {
+        // MusicBrainz release that is ALREADY in the collection: no queue
+        // button — selecting it goes to the album page in the library.
+        var ownedHref = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title);
+        var ownedArt = '/api/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + '/art';
+        html += '<a class="us-row" href="' + ownedHref + '">' +
+          thumbHtml(ownedArt, 'rounded border border-secondary', it.title) +
+          '<span class="us-row-main">' +
+            '<span class="us-row-title d-block">🟢 ' + esc(it.title) + yearSuffix + '</span>' +
+            '<span class="us-row-sub d-block">' + esc(it.typeLabel || 'Album') + ' • In Library</span>' +
+            trackLine +
+          '</span>' +
+        '</a>';
       } else {
         var id = it.id || '';
         var queued = !!_queuedIds[id];
@@ -339,7 +352,10 @@
         // cover_art_url; fall back to building it from the release-group id.
         var rel = it.release || {};
         var cover = rel.cover_art_url || (id ? 'https://coverartarchive.org/release-group/' + id + '/front-250' : '');
-        html += '<div class="us-row">' +
+        // The row links to the MusicBrainz release page; the Queue button
+        // stops the navigation via the delegated handler's preventDefault.
+        var mbUrl = id ? 'https://musicbrainz.org/release-group/' + encodeURIComponent(id) : '#';
+        html += '<a class="us-row" href="' + mbUrl + '" target="_blank" rel="noopener">' +
           thumbHtml(cover, 'rounded border border-secondary', it.title) +
           '<span class="us-row-main">' +
             '<span class="us-row-title d-block">🟡 ' + esc(it.title) + yearSuffix + '</span>' +
@@ -350,14 +366,25 @@
             ? '<button class="btn btn-sm btn-success" disabled title="Already queued"><i class="bi bi-check2"></i> Queued</button>'
             : '<button class="btn btn-sm btn-outline-primary us-queue-btn" data-mbid="' + esc(id) + '" title="Queue download via Soulseek"><i class="bi bi-download"></i> Queue</button>')
             : '') +
-        '</div>';
+        '</a>';
       }
     }
     return html;
   }
 
+  // Owned-key: normalized artist::album used to detect MB releases that are
+  // already in the collection (parenthetical noise stripped, case/space
+  // insensitive) — those get no queue button and link to the local album.
+  function _ownedKey(artist, title) {
+    function norm(s) {
+      return String(s || '').toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    return norm(artist) + '::' + norm(title);
+  }
+
   function buildBuckets(local, mbReleases) {
     var buckets = { albums: [], compilations: [], live_albums: [], eps: [], singles: [] };
+    var owned = {};
     (local.albums || []).forEach(function (al) {
       var bucket = buckets[al.type] ? al.type : 'albums';
       buckets[bucket].push({
@@ -365,13 +392,16 @@
         typeLabel: al.type_label || 'Album', local: true,
         track_count: al.track_count || null, duration_total: al.duration_total || null
       });
+      owned[_ownedKey(al.artist, al.album)] = true;
     });
     (mbReleases || []).forEach(function (r) {
+      var artist = mbReleaseArtist(r);
       var bucket = classifyMbRelease(r);
       buckets[bucket].push({
-        title: r.title, artist: mbReleaseArtist(r), year: mbReleaseYear(r),
+        title: r.title, artist: artist, year: mbReleaseYear(r),
         typeLabel: bucketTypeLabel(bucket), local: false, id: r.id || '', release: r,
-        track_count: r.track_count || null
+        track_count: r.track_count || null,
+        owned: !!owned[_ownedKey(artist, r.title)]
       });
     });
     // Sort each bucket: Release Year (newest → oldest, unknown last) →
@@ -426,12 +456,12 @@
     return html;
   }
 
-  function renderMbTab(releases, query) {
+  function renderMbTab(local, releases, query) {
     if (!releases.length) {
       return '<div class="text-center text-muted py-4"><i class="bi bi-hexagon" style="font-size:2rem;"></i>' +
         '<p class="mt-2 mb-0 small">No MusicBrainz releases found for "' + esc(query) + '"</p></div>';
     }
-    return renderReleaseSections(buildBuckets({}, releases), true);
+    return renderReleaseSections(buildBuckets(local || {}, releases), true);
   }
 
   // ===== Search execution =====
@@ -519,7 +549,7 @@
 
         if (_scope === SCOPE_MB) {
           if (getMetaEl()) getMetaEl().textContent = mbReleases.length + ' musicbrainz result' + (mbReleases.length === 1 ? '' : 's');
-          resultsEl.innerHTML = renderMbTab(mbReleases, displayQuery);
+          resultsEl.innerHTML = renderMbTab(local, mbReleases, displayQuery);
           markRendered(query);
           return;
         }

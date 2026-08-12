@@ -152,6 +152,12 @@ _ALBUM_MBID_COLUMNS = frozenset({
 # AFTER the track contexts were prepared, so the loaded title here is stale.
 _STALE_PROTECTED_COLUMNS = frozenset({"title"}) | _ALBUM_TYPE_COLUMNS | _ALBUM_MBID_COLUMNS
 
+# Per-scan cache: release-group MBID -> (genres, tags).  Release-group level
+# is where MusicBrainz genre tagging actually lives (recording-level genres
+# are sparse), so the genre fetch prefers ONE lookup per release-group over
+# per-track fuzzy searches.
+_MB_RG_GENRE_CACHE: dict[str, tuple[list, list]] = {}
+
 
 def _strip_album_type_columns(
     track: dict[str, Any],
@@ -454,6 +460,30 @@ def process_track(
                                             f"Max listeners: {lastfm_listeners:,} "
                                             f"({' | '.join(f'{k}: {v:,}' for k, v in _variant_detail.items())})"
                                         )
+                                    # The aggregated path (artist top-tracks /
+                                    # track.search) wins for MOST tracks, but it
+                                    # leaves ``lf_result`` empty, so Last.fm
+                                    # tags were silently dropped — only the
+                                    # get_track_info fallback ever stored them.
+                                    # Harvest per-track tags from the matched
+                                    # dicts (both APIs embed a ``tags`` block).
+                                    if not update_payload.get("lastfm_tags"):
+                                        _agg_tags: list[str] = []
+                                        for _mt in (agg.get("matched_tracks") or []):
+                                            _tags_field = _mt.get("tags") or _mt.get("toptags") or {}
+                                            _tag_list = _tags_field.get("tag", []) if isinstance(_tags_field, dict) else []
+                                            if isinstance(_tag_list, dict):
+                                                _tag_list = [_tag_list]
+                                            for _tg in _tag_list or []:
+                                                if isinstance(_tg, dict) and _tg.get("name"):
+                                                    _name = str(_tg["name"]).strip()
+                                                    if _name and _name not in _agg_tags:
+                                                        _agg_tags.append(_name)
+                                            if len(_agg_tags) >= 15:
+                                                break
+                                        if _agg_tags:
+                                            import json as _json_tags
+                                            update_payload["lastfm_tags"] = _json_tags.dumps(_agg_tags, ensure_ascii=False)
                                 else:
                                     lf_result = lf.get_track_info(artist, title)
                                     lastfm_listeners = _as_int(lf_result.get("listeners") if isinstance(lf_result, dict) else 0)
@@ -1252,27 +1282,60 @@ def process_track(
             if title and artist and (not _has_genres or _force_meta):
                 try:
                     mb_raw = get_shared_mb_client()
-                    recs = mb_raw.search_recordings_with_genres(
-                        f'artist:"{artist.replace(chr(34), "")}" AND recording:"{title.replace(chr(34), "")}"',
-                        limit=3,
-                    )
-                    if recs:
-                        rec = recs[0]
-                        mb_genres = rec.get("genres") or []
-                        mb_tags = rec.get("tags") or []
-                        if mb_genres:
-                            # Store as a JSON string — the column is TEXT and
-                            # psycopg2 cannot adapt a Python list to a text
-                            # parameter (this silently failed every track save).
-                            update_payload["musicbrainz_genres"] = json.dumps(
-                                [g.get("name", "") for g in mb_genres if g.get("name")],
-                                ensure_ascii=False,
-                            )
-                        if mb_tags:
-                            update_payload["musicbrainz_tags"] = json.dumps(
-                                [t.get("name", "") for t in mb_tags if t.get("name")],
-                                ensure_ascii=False,
-                            )
+                    mb_genres: list = []
+                    mb_tags: list = []
+                    # Release-group genres are the RICHEST MusicBrainz source
+                    # (community-tagged at the album level; recording-level
+                    # genres are sparse).  One lookup per release-group (cached
+                    # per scan), then the recording lookup by MBID (exact,
+                    # inc=genres honored), then the fuzzy recording search.
+                    _rg_mbid = str(track.get("musicbrainz_releasegroupid") or "").strip()
+                    if _rg_mbid and _rg_mbid not in _MB_RG_GENRE_CACHE:
+                        try:
+                            _rg = mb_raw.get_release_group(_rg_mbid, inc="genres+tags")
+                            if isinstance(_rg, dict) and _rg.get("id"):
+                                _MB_RG_GENRE_CACHE[_rg_mbid] = (_rg.get("genres") or [], _rg.get("tags") or [])
+                            else:
+                                _MB_RG_GENRE_CACHE[_rg_mbid] = ([], [])
+                        except Exception:
+                            _MB_RG_GENRE_CACHE[_rg_mbid] = ([], [])
+                    if _rg_mbid in _MB_RG_GENRE_CACHE:
+                        mb_genres, mb_tags = _MB_RG_GENRE_CACHE[_rg_mbid]
+                    if not mb_genres and not mb_tags:
+                        _rec_mbid = str(
+                            (mb_data or {}).get("recording_mbid")
+                            or track.get("recording_mbid")
+                            or track.get("mbid")
+                            or track.get("musicbrainz_trackid")
+                            or ""
+                        ).strip()
+                        if _rec_mbid:
+                            _rec = mb_raw.get_recording(_rec_mbid, inc="genres+tags")
+                            if isinstance(_rec, dict) and _rec.get("id"):
+                                mb_genres = _rec.get("genres") or []
+                                mb_tags = _rec.get("tags") or []
+                    if not mb_genres and not mb_tags:
+                        recs = mb_raw.search_recordings_with_genres(
+                            f'artist:"{artist.replace(chr(34), "")}" AND recording:"{title.replace(chr(34), "")}"',
+                            limit=3,
+                        )
+                        if recs:
+                            rec = recs[0]
+                            mb_genres = rec.get("genres") or []
+                            mb_tags = rec.get("tags") or []
+                    if mb_genres:
+                        # Store as a JSON string — the column is TEXT and
+                        # psycopg2 cannot adapt a Python list to a text
+                        # parameter (this silently failed every track save).
+                        update_payload["musicbrainz_genres"] = json.dumps(
+                            [g.get("name", "") for g in mb_genres if isinstance(g, dict) and g.get("name")],
+                            ensure_ascii=False,
+                        )
+                    if mb_tags:
+                        update_payload["musicbrainz_tags"] = json.dumps(
+                            [t.get("name", "") for t in mb_tags if isinstance(t, dict) and t.get("name")],
+                            ensure_ascii=False,
+                        )
                 except Exception as e:
                     logger.debug("[track_stage][MB_GENRE] %s: %s", track_id, e)
 
