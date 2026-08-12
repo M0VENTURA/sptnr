@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 
@@ -273,12 +274,10 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
     if _enabled("popularity_scan", "auto_popularity_scan", True):
         interval_minutes = _interval("popularity_scan", "interval_minutes", 1440)  # daily
         try:
-            from services.scanning.pipelines.popularity_pipeline import run_popularity_mode
             _put(
                 "popularity_scan", "Popularity recalculation",
                 IntervalTrigger(minutes=interval_minutes),
-                func=run_popularity_mode,
-                kwargs={"mode": "popularity"},
+                func=_run_scheduled_popularity_scan,
             )
         except Exception as exc:
             logger.warning("APScheduler: failed to register popularity_scan: %s", exc)
@@ -415,6 +414,48 @@ def _run_wikipedia_scrape_task() -> None:
         scrape_wikipedia()
     finally:
         purge_stale_upcoming_releases()
+
+
+def _run_scheduled_popularity_scan() -> None:
+    """Run the scheduled popularity recalculation, guarded against overlap.
+
+    Module-level (not a closure) so the persistent job store can serialize
+    the callable.  A scheduled run must never overlap a manually started
+    popularity/full scan — both write to the same ``popularity_scan``
+    progress state, so whichever finishes first flips the shared row to
+    "complete" while the other is still running, making the dashboard show
+    the manual full scan as stopped mid-letter.  The guard consults both the
+    shared DB scan state (multi-worker safe) and the in-process runtime
+    registry, then records the runtime so the manual routes see it busy too.
+    """
+    from services.scanning.pipelines.popularity_pipeline import (
+        is_popularity_scan_active,
+        run_popularity_mode,
+    )
+
+    # Check the shared DB state BEFORE claiming the in-process runtime, so
+    # the guard's own claim does not look like an already-running scan.
+    if is_popularity_scan_active():
+        logger.info("Skipping scheduled popularity scan — a popularity scan is already active")
+        return
+
+    from services.scanning.runtime_state import (
+        clear_runtime,
+        is_runtime_running,
+        scan_lock,
+        set_runtime,
+    )
+
+    with scan_lock:
+        if is_runtime_running("popularity"):
+            logger.info("Skipping scheduled popularity scan — a popularity scan is already running")
+            return
+        set_runtime("popularity", {"thread": threading.current_thread(), "type": "scheduled-popularity"})
+
+    try:
+        run_popularity_mode(mode="popularity")
+    finally:
+        clear_runtime("popularity")
 
 
 # ---------------------------------------------------------------------------

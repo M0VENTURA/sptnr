@@ -308,6 +308,20 @@ async def api_popularity_run_compat():
                 "error": "A popularity scan is already running",
             }), 409
 
+        # Cross-process guard: a scan running in ANOTHER hypercorn worker is
+        # invisible to ``is_runtime_running`` (per-process registry), but it
+        # has marked the shared DB scan state as running.  Without this check
+        # two scans can overlap, and the first to finish marks the shared
+        # state complete while the other is still going — which makes a full
+        # scan look like it halted mid-letter on the dashboard.
+        from services.scanning.pipelines.popularity_pipeline import is_popularity_scan_active
+
+        if is_popularity_scan_active():
+            return jsonify({
+                "success": False,
+                "error": "A popularity scan is already running",
+            }), 409
+
         def _worker():
             try:
                 run_popularity_mode(mode=mode, force_rescan=force)

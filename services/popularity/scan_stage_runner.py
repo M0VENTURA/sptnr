@@ -785,6 +785,23 @@ def run_scan(
     if force:
         log_unified("[POPULARITY] Forced mode — album-skip and score-freeze checks are DISABLED")
 
+    # Full-library scans log the distinct letter groups (#-9, A, B, ...) that
+    # WILL be covered, so operators can see the run is wired to advance
+    # through the whole alphabet instead of appearing to stop at the first
+    # letter section (the per-letter headers below confirm each transition).
+    if not artist_filter and not album_filter:
+        try:
+            _letters = []
+            for _cand in albums or []:
+                _c = str((_cand.get("artist") or " ")[0].upper())
+                _c = "#" if not _c.isalpha() else _c
+                if not _letters or _letters[-1] != _c:
+                    _letters.append(_c)
+            if _letters:
+                log_unified(f"[POPULARITY] Letter groups queued: {' → '.join(_letters)}")
+        except Exception:
+            pass
+
     # Per-artist Last.fm listener-context cache (used for dynamic weighting).
     artist_lf_context_cache: dict[str, dict[str, Any]] = {}
 
