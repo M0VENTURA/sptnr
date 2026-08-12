@@ -323,7 +323,7 @@ def match_folder_to_release(folder_path: str, mb_id: str) -> dict:
                     "number": trk.get("number"),
                 })
 
-        from helpers.normalization_service import normalize_title_for_lookup
+        from helpers.normalization_service import normalize_title_for_lookup, edition_annotations_compatible
 
         moved = 0
         errors: list[str] = []
@@ -349,9 +349,19 @@ def match_folder_to_release(folder_path: str, mb_id: str) -> dict:
             # Match the file to the MB tracklist when possible so numbering
             # follows the release.
             if not title or number is None:
-                norm_title = normalize_title_for_lookup(title or Path(src).stem)
+                match_title = title or Path(src).stem
+                norm_title = normalize_title_for_lookup(match_title)
                 for mb_trk in mb_tracks:
-                    if mb_trk["title"] and normalize_title_for_lookup(mb_trk["title"]) == norm_title:
+                    if not mb_trk["title"]:
+                        continue
+                    # An edition-annotated file ("Valhalla (Epic Edition)")
+                    # must not be renumbered/retitled against the plain
+                    # "Valhalla" MB track — normalize_title_for_lookup strips
+                    # brackets on both sides, so the edition suffix is
+                    # otherwise invisible.
+                    if not edition_annotations_compatible(match_title, mb_trk["title"]):
+                        continue
+                    if normalize_title_for_lookup(mb_trk["title"]) == norm_title:
                         title = mb_trk["title"]
                         number = mb_trk.get("number")
                         break

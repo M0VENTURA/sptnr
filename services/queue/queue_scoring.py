@@ -26,6 +26,7 @@ from helpers.normalization_service import (
     normalize_album,
     normalize_core_title,
     normalize_core_filename,
+    edition_annotations_compatible,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,17 @@ def _normalize_inputs(filename: str, queue_item: dict):
 def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
 
     norm = _normalize_inputs(filename, queue_item)
+
+    # An edition-annotated track ("Valhalla (Epic Edition)") must never score
+    # against the plain "Valhalla" queue item — normalize_core_title strips
+    # brackets, so without this gate the wrong variant would be downloaded.
+    # Strip the extension so the trailing "(Epic Edition)" annotation is still
+    # extractable from the candidate path.
+    queue_title = queue_item.get("title") or ""
+    if queue_title and not edition_annotations_compatible(
+        queue_title, os.path.splitext(filename)[0]
+    ):
+        return 0.0
 
     basename = norm["basename"]
     basename_norm = norm["basename_norm"]

@@ -42,6 +42,7 @@ from db.repositories.tracks import (
 from helpers.normalization_service import (
     normalize_match_text,
     extract_track_disc,
+    edition_annotations_compatible,
 )
 
 from services.enrichment.musicbrainz_service import (
@@ -623,17 +624,27 @@ def _find_matching_queue_item(
         2. Title fallback
     """
 
+    track_title = track.get("title") or ""
     track_num, _ = extract_track_disc(
         str(track.get("track_number") or "")
     )
 
     title_norm = normalize_match_text(
-        track.get("title") or ""
+        track_title
     )
 
     if track_num is not None:
         for candidate in queue_items:
             if candidate.get("id") in used_queue_ids:
+                continue
+
+            # An edition-annotated queue item ("Valhalla (Epic Edition)")
+            # must never be matched against the plain "Valhalla" release track
+            # — normalize_match_text strips brackets, so the annotation is
+            # otherwise invisible.
+            if not edition_annotations_compatible(
+                track_title, candidate.get("title") or ""
+            ):
                 continue
 
             candidate_num, _ = extract_track_disc(
@@ -645,6 +656,11 @@ def _find_matching_queue_item(
 
     for candidate in queue_items:
         if candidate.get("id") in used_queue_ids:
+            continue
+
+        if not edition_annotations_compatible(
+            track_title, candidate.get("title") or ""
+        ):
             continue
 
         candidate_title_norm = normalize_match_text(
