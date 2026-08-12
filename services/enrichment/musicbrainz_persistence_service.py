@@ -40,9 +40,13 @@ def _has_valid_artist_mbid(value) -> bool:
     return bool(raw) and bool(MUSICBRAINZ_UUID_RE.match(raw))
 
 
-def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
-    """Lookup an artist MBID and update matching track rows missing artist MBIDs."""
-    if not artist or db_connection is None:
+def lookup_and_save_artist_mbid(artist: str, db_connection=None) -> str:
+    """Lookup an artist MBID and update matching track rows missing artist MBIDs.
+
+    ``db_connection`` is kept for backward compatibility — the writes run on
+    their own SQLAlchemy session.
+    """
+    if not artist:
         return ""
 
     lookup_artist = strip_featured_artist(artist)
@@ -86,41 +90,45 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         if not mbid:
             return ""
 
-        cursor = db_connection.cursor()
-        placeholder = "%s"
-        # Fill the artist-MBID column (musicbrainz_artistid) — consumers
-        # (artist page, similar artists, missing releases, single detection)
-        # all read this one; the legacy ``musicbrainz_artist_id`` column does
-        # not exist in the current schema.
-        cursor.execute(f"SELECT id, musicbrainz_artistid FROM tracks WHERE artist = {placeholder}", (artist,))
-        # Rows are RealDictRow (dict-like); never index by position.
-        to_fix = [
-            row.get("id") for row in cursor.fetchall()
-            if not _has_valid_artist_mbid(row.get("musicbrainz_artistid"))
-        ]
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            # Fill the artist-MBID column (musicbrainz_artistid) — consumers
+            # (artist page, similar artists, missing releases, single detection)
+            # all read this one; the legacy ``musicbrainz_artist_id`` column does
+            # not exist in the current schema.
+            to_fix = [
+                row.get("id")
+                for row in session.execute(
+                    text("SELECT id, musicbrainz_artistid FROM tracks WHERE artist = :artist"),
+                    {"artist": artist},
+                ).mappings().all()
+                if not _has_valid_artist_mbid(row.get("musicbrainz_artistid"))
+            ]
 
-        cursor.execute(f"SELECT id, artist, musicbrainz_artistid FROM tracks WHERE artist LIKE {placeholder}", (f"{artist} %",))
-        feat_re = re.compile(r"\s+(?:feat\.?|featuring|ft\.?)\s+", re.IGNORECASE)
-        for row in cursor.fetchall():
-            if feat_re.search(str(row.get("artist") or "")):
-                if not _has_valid_artist_mbid(row.get("musicbrainz_artistid")):
-                    to_fix.append(row.get("id"))
+            feat_re = re.compile(r"\s+(?:feat\.?|featuring|ft\.?)\s+", re.IGNORECASE)
+            for row in session.execute(
+                text("SELECT id, artist, musicbrainz_artistid FROM tracks WHERE artist LIKE :pattern"),
+                {"pattern": f"{artist} %"},
+            ).mappings().all():
+                if feat_re.search(str(row.get("artist") or "")):
+                    if not _has_valid_artist_mbid(row.get("musicbrainz_artistid")):
+                        to_fix.append(row.get("id"))
 
-        to_fix = list(dict.fromkeys(to_fix))
-        if to_fix:
-            for index in range(0, len(to_fix), 500):
-                chunk = to_fix[index:index + 500]
-                placeholders = ','.join([placeholder] * len(chunk))
-                # Only fill the column when empty — a user-edited ID wins.
-                cursor.execute(
-                    f"""UPDATE tracks SET
-                        musicbrainz_artistid = CASE
-                            WHEN musicbrainz_artistid IS NULL OR musicbrainz_artistid = '' THEN {placeholder}
-                            ELSE musicbrainz_artistid END
-                        WHERE id IN ({placeholders})""",
-                    (mbid, *chunk),
-                )
-        db_connection.commit()
+            to_fix = list(dict.fromkeys(to_fix))
+            if to_fix:
+                for index in range(0, len(to_fix), 500):
+                    chunk = to_fix[index:index + 500]
+                    placeholders = ", ".join(f":tid{i}" for i in range(len(chunk)))
+                    # Only fill the column when empty — a user-edited ID wins.
+                    session.execute(
+                        text(f"""UPDATE tracks SET
+                            musicbrainz_artistid = CASE
+                                WHEN musicbrainz_artistid IS NULL OR musicbrainz_artistid = '' THEN :mbid
+                                ELSE musicbrainz_artistid END
+                            WHERE id IN ({placeholders})"""),
+                        {"mbid": mbid, **{f"tid{i}": tid for i, tid in enumerate(chunk)}},
+                    )
         return mbid
     except Exception:
         return ""

@@ -37,39 +37,25 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, 
     tracks remain (a genuine live album flags everything), the full tracklist
     is used — a live album is scored against itself.
 
-    When ``conn`` is ``None`` a fresh ``db_session`` is opened so callers
-    (e.g. the single-detection service) never crash on ``None.cursor()``.
+    ``conn`` is kept for backward compatibility — the query runs on its own
+    SQLAlchemy session.
     """
-    if conn is None:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        try:
-            with _db_session() as session:
-                result = session.execute(
-                    _text("""
-                        SELECT title, final_score FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
-                          AND album = :album
-                          AND final_score > 0
-                    """),
-                    {"artist": artist, "album": album},
-                )
-                rows = result.fetchall() or []
-        except Exception as exc:
-            logger.debug("[POPULARITY_STATS] Album stats session error for %s - %s: %s", artist, album, exc)
-            return 0.0, 0.0, []
-    else:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT title, final_score FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND album = %s
-              AND final_score > 0
-            """,
-            (artist, album),
-        )
-        rows = cursor.fetchall() or []
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+    try:
+        with _db_session() as session:
+            rows = session.execute(
+                _text("""
+                    SELECT title, final_score FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND album = :album
+                      AND final_score > 0
+                """),
+                {"artist": artist, "album": album},
+            ).fetchall() or []
+    except Exception as exc:
+        logger.debug("[POPULARITY_STATS] Album stats session error for %s - %s: %s", artist, album, exc)
+        return 0.0, 0.0, []
 
     values = [float(row[1] or 0) for row in rows if float(row[1] or 0) > 0]
     core_values = [float(row[1] or 0) for row in _filter_bonus_rows(rows) if float(row[1] or 0) > 0]

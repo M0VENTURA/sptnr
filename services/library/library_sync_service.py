@@ -9,7 +9,7 @@ from api_clients.navidrome import NavidromeClient
 from db.repositories.navidrome import bulk_upsert_navidrome_tracks
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection, row_get
+from db.utils import row_get
 from helpers.config_helpers import get_scan_pipeline_config
 from services.scanning.navidrome_import import scan_artist_to_db
 from services.scanning.navidrome_service import build_delta_artist_index
@@ -309,26 +309,25 @@ def get_candidate_artists(client: NavidromeClient, since_ts: Any = None) -> dict
         except Exception as exc:
             logger.debug("Library sync delta resolution failed (%s) — using full candidates", exc)
 
-    conn = None
     db_artists: dict[str, str | None] = {}
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS aa
-            FROM tracks
-            WHERE (album_artist IS NOT NULL AND TRIM(album_artist) <> '')
-               OR (artist IS NOT NULL AND TRIM(artist) <> '')
-        """)
-        for row in cursor.fetchall() or []:
-            name = row_get(row, "aa", 0)
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            rows = session.execute(
+                _text("""
+                    SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS aa
+                    FROM tracks
+                    WHERE (album_artist IS NOT NULL AND TRIM(album_artist) <> '')
+                       OR (artist IS NOT NULL AND TRIM(artist) <> '')
+                """)
+            ).fetchall() or []
+        for row in rows:
+            name = row[0]
             if name:
                 db_artists[str(name)] = None
     except Exception as exc:
         logger.debug("Could not query DB artists: %s", exc)
-    finally:
-        if conn:
-            conn.close()
     if db_artists:
         try:
             index = client.build_artist_index() or {}

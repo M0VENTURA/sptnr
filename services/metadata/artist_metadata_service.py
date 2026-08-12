@@ -14,7 +14,6 @@ import logging
 import time
 from typing import Any
 
-from db.utils import get_db_connection
 from services.enrichment.artist_bio_service import get_artist_biography
 
 try:
@@ -29,45 +28,39 @@ def cleanup_false_positive_missing(artist: str) -> tuple[dict, int]:
     """Remove false-positive missing releases for an artist."""
     if not artist:
         return {"success": False, "error": "artist required"}, 400
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM missing_releases WHERE LOWER(artist) = LOWER(%s) AND title IN "
-            "(SELECT DISTINCT album FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s))",
-            (artist, artist),
-        )
-        conn.commit()
-        removed = cursor.rowcount or 0
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            result = session.execute(
+                text(
+                    "DELETE FROM missing_releases WHERE LOWER(artist) = LOWER(:artist) AND title IN "
+                    "(SELECT DISTINCT album FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist))"
+                ),
+                {"artist": artist},
+            )
+            removed = result.rowcount or 0
         return {"success": True, "removed_count": removed, "artist": artist}, 200
     except Exception as exc:
         return {"success": False, "error": str(exc)}, 500
-    finally:
-        conn.close()
 
 
 def get_artist_bio(artist: str) -> tuple[dict, int]:
     """Get artist biography from DB cache or Wikidata fallback."""
     if not artist:
         return {"success": False, "error": "name required"}, 400
-    try:
-        conn = get_db_connection()
-    except Exception as exc:
-        return {"success": False, "error": f"DB connection failed: {exc}"}, 500
     bio = ""
     try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT bio FROM artists WHERE name = %s", (artist,))
-        row = cursor.fetchone()
-        # Rows are RealDictRow (dict-like); never index by position.
-        bio = str(row.get("bio") or "").strip() if row else ""
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT bio FROM artists WHERE name = :artist"),
+                {"artist": artist},
+            ).mappings().first()
+        bio = str((row or {}).get("bio") or "").strip()
     except Exception:
         bio = ""
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
     if bio:
         return {"success": True, "bio": bio, "source": "database"}, 200
     try:
@@ -82,54 +75,50 @@ def get_singles_count(artist: str) -> tuple[dict, int]:
     if not artist:
         return {"success": False, "error": "name required"}, 400
     try:
-        conn = get_db_connection()
-    except Exception as exc:
-        return {"success": False, "error": f"DB connection failed: {exc}"}, 500
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
-            "AND COALESCE(is_single, FALSE) = TRUE "
-            "AND LOWER(COALESCE(single_confidence, '')) = 'high'",
-            (artist,),
-        )
-        row = cursor.fetchone()
-        # Rows are RealDictRow (dict-like); never index by position.
-        count = int(row.get("count") or 0) if row else 0
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            row = session.execute(
+                text(
+                    "SELECT COUNT(*) FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                    "AND COALESCE(is_single, FALSE) = TRUE "
+                    "AND LOWER(COALESCE(single_confidence, '')) = 'high'"
+                ),
+                {"artist": artist},
+            ).fetchone()
+        count = int(row[0]) if row else 0
         return {"success": True, "count": count}, 200
     except Exception as exc:
         return {"success": False, "error": str(exc)}, 500
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 
 def get_covered_by(artist: str) -> tuple[dict, int]:
     """Get covers of this artist's songs in the library."""
     if not artist:
         return {"success": False, "error": "artist required"}, 400
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, title, artist, album FROM tracks "
-            "WHERE original_cover_artist ILIKE %s AND LOWER(COALESCE(album_artist, artist)) != LOWER(%s)",
-            (artist, artist),
-        )
-        rows = cursor.fetchall()
-        covers = []
-        for r in rows:
-            covers.append({
-                "id": r[0] if not hasattr(r, "get") else r.get("id"),
-                "title": r[1] if not hasattr(r, "get") else r.get("title"),
-                "artist": r[2] if not hasattr(r, "get") else r.get("artist"),
-                "album": r[3] if not hasattr(r, "get") else r.get("album"),
-            })
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            rows = session.execute(
+                text(
+                    "SELECT id, title, artist, album FROM tracks "
+                    "WHERE original_cover_artist ILIKE :artist AND LOWER(COALESCE(album_artist, artist)) != LOWER(:artist)"
+                ),
+                {"artist": artist},
+            ).mappings().all()
+        covers = [
+            {
+                "id": r.get("id"),
+                "title": r.get("title"),
+                "artist": r.get("artist"),
+                "album": r.get("album"),
+            }
+            for r in rows
+        ]
         return {"success": True, "covers": covers, "total": len(covers)}, 200
-    finally:
-        conn.close()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}, 500
 
 
 def artist_favourite(request) -> tuple[dict, int]:
@@ -138,31 +127,28 @@ def artist_favourite(request) -> tuple[dict, int]:
     artist = (request.args.get("artist") or (request.json or {}).get("artist") or "").strip()
     if not artist:
         return {"success": False, "error": "artist required"}, 400
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
+    from sqlalchemy import text
+    from db.engine import db_session
+    with db_session() as session:
         if request.method == "GET":
-            cursor.execute(
-                "SELECT 1 FROM bookmarks WHERE type = 'artist_favourite' AND LOWER(name) = LOWER(%s) LIMIT 1",
-                (artist,),
-            )
-            return {"success": True, "is_favourite": cursor.fetchone() is not None}, 200
+            row = session.execute(
+                text("SELECT 1 FROM bookmarks WHERE type = 'artist_favourite' AND LOWER(name) = LOWER(:artist) LIMIT 1"),
+                {"artist": artist},
+            ).fetchone()
+            return {"success": True, "is_favourite": row is not None}, 200
         elif request.method == "POST":
-            cursor.execute(
-                "INSERT INTO bookmarks (type, name) VALUES ('artist_favourite', %s) ON CONFLICT DO NOTHING",
-                (artist,),
+            session.execute(
+                text("INSERT INTO bookmarks (type, name) VALUES ('artist_favourite', :artist) ON CONFLICT DO NOTHING"),
+                {"artist": artist},
             )
-            conn.commit()
             return {"success": True, "is_favourite": True}, 200
         elif request.method == "DELETE":
-            cursor.execute(
-                "DELETE FROM bookmarks WHERE type = 'artist_favourite' AND LOWER(name) = LOWER(%s)", (artist,),
+            session.execute(
+                text("DELETE FROM bookmarks WHERE type = 'artist_favourite' AND LOWER(name) = LOWER(:artist)"),
+                {"artist": artist},
             )
-            conn.commit()
             return {"success": True, "is_favourite": False}, 200
         return {"success": False, "error": "Unsupported method"}, 405
-    finally:
-        conn.close()
 
 
 # In-process cache so concurrent <img> requests for the same artist don't all
@@ -201,63 +187,64 @@ def get_artist_image(artist: str):
 
     url = ""
     try:
-        conn = get_db_connection()
-    except Exception:
-        return {"success": False, "error": "DB connection failed", "image_url": ""}, 200
-    try:
-        cursor = conn.cursor()
-        # 1) artists table (populated by popularity scans). Exact match first,
-        #    then fall back to case-insensitive so casing differences still hit.
-        try:
-            cursor.execute(
-                "SELECT image_url FROM artists WHERE LOWER(name) = LOWER(%s) "
-                "AND image_url IS NOT NULL AND image_url != '' "
-                "ORDER BY CASE WHEN name = %s THEN 0 ELSE 1 END LIMIT 1",
-                (artist, artist),
-            )
-            row = cursor.fetchone()
-            if row:
-                url = str(row.get("image_url") or "").strip()
-        except Exception:
-            url = ""
-
-        # 2) artist_images cache (populated by on-demand AudioDB lookups for
-        #    artists not in the collection, e.g. similar artists).
-        if not _is_valid_url(url):
-            url = ""
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            # 1) artists table (populated by popularity scans). Exact match first,
+            #    then fall back to case-insensitive so casing differences still hit.
             try:
-                cursor.execute(
-                    "SELECT image_url FROM artist_images WHERE LOWER(artist_name) = LOWER(%s) "
-                    "AND image_url IS NOT NULL AND image_url != '' LIMIT 1",
-                    (artist,),
-                )
-                img_row = cursor.fetchone()
-                if img_row:
-                    url = str(img_row.get("image_url") or "").strip()
+                row = session.execute(
+                    _text(
+                        "SELECT image_url FROM artists WHERE LOWER(name) = LOWER(:artist) "
+                        "AND image_url IS NOT NULL AND image_url != '' "
+                        "ORDER BY CASE WHEN name = :artist THEN 0 ELSE 1 END LIMIT 1"
+                    ),
+                    {"artist": artist},
+                ).mappings().first()
+                if row:
+                    url = str(row.get("image_url") or "").strip()
             except Exception:
                 url = ""
 
-        # 3) AudioDB on-demand fallback + cache (legacy parity).
-        if not _is_valid_url(url) and get_artist_fanart is not None:
-            try:
-                img = get_artist_fanart(artist, enabled=True)
-                if _is_valid_url(str(img or "")):
-                    url = str(img).strip()
-                    try:
-                        cursor.execute(
-                            "INSERT INTO artist_images (artist_name, image_url, updated_at) "
-                            "VALUES (%s, %s, CURRENT_TIMESTAMP) "
-                            "ON CONFLICT (artist_name) DO UPDATE SET "
-                            "image_url = EXCLUDED.image_url, updated_at = CURRENT_TIMESTAMP",
-                            (artist, url),
-                        )
-                        conn.commit()
-                    except Exception:
-                        pass
-                else:
+            # 2) artist_images cache (populated by on-demand AudioDB lookups for
+            #    artists not in the collection, e.g. similar artists).
+            if not _is_valid_url(url):
+                url = ""
+                try:
+                    img_row = session.execute(
+                        _text(
+                            "SELECT image_url FROM artist_images WHERE LOWER(artist_name) = LOWER(:artist) "
+                            "AND image_url IS NOT NULL AND image_url != '' LIMIT 1"
+                        ),
+                        {"artist": artist},
+                    ).mappings().first()
+                    if img_row:
+                        url = str(img_row.get("image_url") or "").strip()
+                except Exception:
                     url = ""
-            except Exception as exc:
-                logger.debug("AudioDB artist image fallback failed for %s: %s", artist, exc)
+
+            # 3) AudioDB on-demand fallback + cache (legacy parity).
+            if not _is_valid_url(url) and get_artist_fanart is not None:
+                try:
+                    img = get_artist_fanart(artist, enabled=True)
+                    if _is_valid_url(str(img or "")):
+                        url = str(img).strip()
+                        try:
+                            session.execute(
+                                _text(
+                                    "INSERT INTO artist_images (artist_name, image_url, updated_at) "
+                                    "VALUES (:artist, :url, CURRENT_TIMESTAMP) "
+                                    "ON CONFLICT (artist_name) DO UPDATE SET "
+                                    "image_url = EXCLUDED.image_url, updated_at = CURRENT_TIMESTAMP"
+                                ),
+                                {"artist": artist, "url": url},
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        url = ""
+                except Exception as exc:
+                    logger.debug("AudioDB artist image fallback failed for %s: %s", artist, exc)
 
         if _is_valid_url(url):
             _artist_image_cache[key] = (url, time.monotonic())
@@ -268,11 +255,6 @@ def get_artist_image(artist: str):
         return {"success": False, "error": "No image", "image_url": ""}, 200
     except Exception as exc:
         return {"success": False, "error": str(exc), "image_url": ""}, 200
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 
 def search_images(artist: str, source: str) -> tuple[dict, int]:
@@ -286,18 +268,20 @@ def set_image(payload: dict) -> tuple[dict, int]:
     url = (payload.get("image_url") or "").strip()
     if not artist or not url:
         return {"success": False, "error": "artist and image_url required"}, 400
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO artists (name, image_url) VALUES (%s, %s) "
-            "ON CONFLICT (name) DO UPDATE SET image_url = EXCLUDED.image_url",
-            (artist, url),
-        )
-        conn.commit()
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            session.execute(
+                text(
+                    "INSERT INTO artists (name, image_url) VALUES (:artist, :url) "
+                    "ON CONFLICT (name) DO UPDATE SET image_url = EXCLUDED.image_url"
+                ),
+                {"artist": artist, "url": url},
+            )
         return {"success": True}, 200
-    finally:
-        conn.close()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}, 500
 
 
 def update_ids(payload: dict) -> tuple[dict, int]:
@@ -307,35 +291,36 @@ def update_ids(payload: dict) -> tuple[dict, int]:
         return {"success": False, "error": "Missing artist name"}, 400
 
     updates: list[str] = []
-    params: list[str] = []
-    for column, key in (
-        ("musicbrainz_artistid", "musicbrainz_artist_id"),
-        ("lastfm_artist_mbid", "lastfm_artist_mbid"),
-        ("discogs_artist_id", "discogs_artist_id"),
-        ("spotify_artist_id", "spotify_artist_id"),
+    bind_values: dict[str, Any] = {}
+    for idx, (column, key) in enumerate(
+        (
+            ("musicbrainz_artistid", "musicbrainz_artist_id"),
+            ("lastfm_artist_mbid", "lastfm_artist_mbid"),
+            ("discogs_artist_id", "discogs_artist_id"),
+            ("spotify_artist_id", "spotify_artist_id"),
+        )
     ):
         value = str(payload.get(key) or "").strip()
         if value:
-            updates.append(f"{column} = %s")
-            params.append(value)
+            updates.append(f"{column} = :v{idx}")
+            bind_values[f"v{idx}"] = value
 
     if not updates:
         return {"success": False, "error": "No IDs provided"}, 400
 
-    params.append(artist)
+    bind_values["artist"] = artist
     try:
-        conn = get_db_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"UPDATE tracks SET {', '.join(updates)} "
-                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s",
-                tuple(params),
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            result = session.execute(
+                text(
+                    f"UPDATE tracks SET {', '.join(updates)} "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"
+                ),
+                bind_values,
             )
-            rows_updated = cursor.rowcount or 0
-            conn.commit()
-        finally:
-            conn.close()
+            rows_updated = result.rowcount or 0
         return {
             "success": True,
             "message": f"Artist IDs updated for {artist}",
@@ -402,28 +387,29 @@ def lookup_ids(payload: dict) -> tuple[dict, int]:
         return {"success": False, "error": "No IDs found from external lookup"}, 404
 
     updates: list[str] = []
-    params: list[str] = []
+    bind_values: dict[str, Any] = {}
+    _bind_idx = 0
     if musicbrainz_id:
-        updates.extend(["musicbrainz_artistid = %s", "lastfm_artist_mbid = %s"])
-        params.extend([musicbrainz_id, musicbrainz_id])
+        updates.extend([f"musicbrainz_artistid = :v{_bind_idx}", f"lastfm_artist_mbid = :v{_bind_idx}"])
+        bind_values[f"v{_bind_idx}"] = musicbrainz_id
+        _bind_idx += 1
     if discogs_id:
-        updates.append("discogs_artist_id = %s")
-        params.append(discogs_id)
-    params.append(artist)
+        updates.append(f"discogs_artist_id = :v{_bind_idx}")
+        bind_values[f"v{_bind_idx}"] = discogs_id
+    bind_values["artist"] = artist
 
     try:
-        conn = get_db_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"UPDATE tracks SET {', '.join(updates)} "
-                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s",
-                tuple(params),
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            result = session.execute(
+                text(
+                    f"UPDATE tracks SET {', '.join(updates)} "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"
+                ),
+                bind_values,
             )
-            rows_updated = cursor.rowcount or 0
-            conn.commit()
-        finally:
-            conn.close()
+            rows_updated = result.rowcount or 0
         return {
             "success": True,
             "artist": artist,
@@ -441,22 +427,27 @@ def _catalogue_artist_names(conn, names: list[str]) -> set[str]:
 
     An artist counts as "in the collection" if any track carries them as the
     (album) artist. Only the provided names are queried so the lookup stays
-    cheap regardless of catalogue size.
+    cheap regardless of catalogue size.  ``conn`` is kept for backward
+    compatibility — the query runs on its own SQLAlchemy session.
     """
     unique = sorted({n.strip() for n in names if n and n.strip()})
     if not unique:
         return set()
     try:
-        cursor = conn.cursor()
-        placeholders = ", ".join(["%s"] * len(unique))
-        cursor.execute(
-            "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) "
-            f"FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) IN ({placeholders})",
-            tuple(unique),
-        )
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            placeholders = ", ".join(f":n{i}" for i in range(len(unique)))
+            rows = session.execute(
+                text(
+                    "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) "
+                    f"FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) IN ({placeholders})"
+                ),
+                {f"n{i}": n for i, n in enumerate(unique)},
+            ).fetchall() or []
         found = set()
-        for r in cursor.fetchall():
-            value = r[0] if not hasattr(r, "get") else (list(r.values()) or [None])[0]
+        for r in rows:
+            value = r[0]
             if value:
                 found.add(str(value).lower())
         return found
@@ -495,18 +486,19 @@ def get_similar_artists(artist: str, args) -> tuple[dict, int]:
     if not artist:
         return {"success": False, "error": "artist required"}, 400
     sources = {"lastfm": [], "listenbrainz": []}
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated "
-            "FROM artists WHERE name = %s",
-            (artist,),
-        )
-        row = cursor.fetchone()
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            row = session.execute(
+                text(
+                    "SELECT similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated "
+                    "FROM artists WHERE name = :artist"
+                ),
+                {"artist": artist},
+            ).mappings().first()
         if row:
             import json
-            # Rows are RealDictRow (dict-like); never index by position.
             lf_raw = str(row.get("similar_artists_lastfm") or "") if row else ""
             lb_raw = str(row.get("similar_artists_listenbrainz") or "") if row else ""
             if lf_raw:
@@ -526,62 +518,66 @@ def get_similar_artists(artist: str, args) -> tuple[dict, int]:
                     names.append(entry)
                 elif isinstance(entry, dict):
                     names.append(str(entry.get("name") or ""))
-        in_collection = _catalogue_artist_names(conn, names)
+        in_collection = _catalogue_artist_names(None, names)
         for source in sources:
             sources[source] = _annotate_similar_artist(sources[source], in_collection)
         return {"success": True, "similar_artists": sources}, 200
     except Exception as exc:
         return {"success": False, "error": str(exc)}, 500
-    finally:
-        conn.close()
 
 
 def get_compilations(artist: str) -> tuple[dict, int]:
     """Get compilation appearances for an artist."""
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT album, album_artist, COUNT(*) as count FROM tracks "
-            "WHERE LOWER(artist) = LOWER(%s) AND LOWER(COALESCE(NULLIF(album_artist, ''), artist)) != LOWER(%s) "
-            "GROUP BY album, album_artist ORDER BY album",
-            (artist, artist),
-        )
-        rows = cursor.fetchall()
-        compilations = []
-        for r in rows:
-            compilations.append({
-                "album": r[0] if not hasattr(r, "get") else r.get("album"),
-                "album_artist": r[1] if not hasattr(r, "get") else r.get("album_artist"),
-                "track_count": int(r[2] if not hasattr(r, "get") else r.get("count", 0)),
-            })
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            rows = session.execute(
+                text(
+                    "SELECT album, album_artist, COUNT(*) as count FROM tracks "
+                    "WHERE LOWER(artist) = LOWER(:artist) AND LOWER(COALESCE(NULLIF(album_artist, ''), artist)) != LOWER(:artist) "
+                    "GROUP BY album, album_artist ORDER BY album"
+                ),
+                {"artist": artist},
+            ).mappings().all()
+        compilations = [
+            {
+                "album": r.get("album"),
+                "album_artist": r.get("album_artist"),
+                "track_count": int(r.get("count", 0) or 0),
+            }
+            for r in rows
+        ]
         return {"success": True, "compilations": compilations}, 200
-    finally:
-        conn.close()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}, 500
 
 
 def get_main_tracks(artist: str) -> tuple[dict, int]:
     """Get main tracks for an artist."""
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, title, album, stars FROM tracks "
-            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s ORDER BY stars DESC NULLS LAST LIMIT 50",
-            (artist,),
-        )
-        rows = cursor.fetchall()
-        tracks = []
-        for r in rows:
-            tracks.append({
-                "id": r[0] if not hasattr(r, "get") else r.get("id"),
-                "title": r[1] if not hasattr(r, "get") else r.get("title"),
-                "album": r[2] if not hasattr(r, "get") else r.get("album"),
-                "stars": float(r[3] or 0) if not hasattr(r, "get") else float(r.get("stars", 0) or 0),
-            })
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            rows = session.execute(
+                text(
+                    "SELECT id, title, album, stars FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist ORDER BY stars DESC NULLS LAST LIMIT 50"
+                ),
+                {"artist": artist},
+            ).mappings().all()
+        tracks = [
+            {
+                "id": r.get("id"),
+                "title": r.get("title"),
+                "album": r.get("album"),
+                "stars": float(r.get("stars") or 0),
+            }
+            for r in rows
+        ]
         return {"success": True, "tracks": tracks}, 200
-    finally:
-        conn.close()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}, 500
 
 
 def get_artist_members_cached(artist: str) -> list[dict]:
@@ -590,18 +586,17 @@ def get_artist_members_cached(artist: str) -> list[dict]:
     from datetime import datetime, timezone, timedelta
     from api_clients.musicbrainz_http import MusicBrainzHttpClient
 
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT members, members_last_updated FROM artists WHERE name = %s",
-            (artist,),
-        )
-        row = cursor.fetchone()
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            row = session.execute(
+                _text("SELECT members, members_last_updated FROM artists WHERE name = :artist"),
+                {"artist": artist},
+            ).mappings().first()
         now = datetime.now(timezone.utc)
 
         if row:
-            # Rows are RealDictRow (dict-like); never index by position.
             members_raw = str(row.get("members") or "") if row else ""
             updated_raw = str(row.get("members_last_updated") or "") if row else ""
             if members_raw and updated_raw:
@@ -635,43 +630,45 @@ def get_artist_members_cached(artist: str) -> list[dict]:
         members_json = json.dumps(members)
 
         # Cache in artists table
-        cursor.execute(
-            "INSERT INTO artists (id, name, members, members_last_updated) "
-            "VALUES (%s, %s, %s, %s) "
-            "ON CONFLICT (name) DO UPDATE SET members = EXCLUDED.members, members_last_updated = EXCLUDED.members_last_updated",
-            (artist, artist, members_json, now.isoformat()),
-        )
-        conn.commit()
+        with _db_session() as session:
+            session.execute(
+                _text(
+                    "INSERT INTO artists (id, name, members, members_last_updated) "
+                    "VALUES (:artist, :artist, :members_json, :now) "
+                    "ON CONFLICT (name) DO UPDATE SET members = EXCLUDED.members, members_last_updated = EXCLUDED.members_last_updated"
+                ),
+                {"artist": artist, "members_json": members_json, "now": now.isoformat()},
+            )
         return members
     except Exception:
         return []
-    finally:
-        conn.close()
 
 
 def get_stats(artist: str) -> tuple[dict, int]:
     """Get statistics for an artist."""
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) as tracks, COUNT(DISTINCT album) as albums, "
-            "AVG(stars) as avg_stars, SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star "
-            "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s",
-            (artist,),
-        )
-        row = cursor.fetchone()
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            row = session.execute(
+                text(
+                    "SELECT COUNT(*) as tracks, COUNT(DISTINCT album) as albums, "
+                    "AVG(stars) as avg_stars, SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star "
+                    "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"
+                ),
+                {"artist": artist},
+            ).mappings().first()
         if not row:
             return {"success": False, "error": "Artist not found"}, 404
         stats = {
-            "track_count": int(row[0] if not hasattr(row, "get") else row.get("tracks", 0)),
-            "album_count": int(row[1] if not hasattr(row, "get") else row.get("albums", 0)),
-            "avg_stars": float(row[2] or 0) if not hasattr(row, "get") else float(row.get("avg_stars", 0) or 0),
-            "five_star_count": int(row[3] or 0) if not hasattr(row, "get") else int(row.get("five_star", 0) or 0),
+            "track_count": int(row.get("tracks") or 0),
+            "album_count": int(row.get("albums") or 0),
+            "avg_stars": float(row.get("avg_stars") or 0),
+            "five_star_count": int(row.get("five_star") or 0),
         }
         return {"success": True, **stats}, 200
-    finally:
-        conn.close()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}, 500
 
 
 def apply_genres(payload: dict) -> tuple[dict, int]:
@@ -681,30 +678,32 @@ def apply_genres(payload: dict) -> tuple[dict, int]:
     genres = payload.get("genres", [])
     if not artist or not genres:
         return {"success": False, "error": "artist and genres required"}, 400
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s",
-            (artist,),
-        )
-        rows = cursor.fetchall()
-        genre_str = " \\ ".join(genres) if isinstance(genres, list) else str(genres)
-        updated = 0
-        for r in rows:
-            track_id = r[0] if not hasattr(r, "get") else r.get("id")
-            fp = r[1] if not hasattr(r, "get") else r.get("file_path")
-            cursor.execute("UPDATE tracks SET genres = %s WHERE id = %s", (genre_str, track_id))
-            updated += 1
-            if fp and fp.strip():
-                try:
-                    write_tags_to_file(str(fp), {"genre": genres})
-                except Exception:
-                    pass
-        conn.commit()
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            rows = session.execute(
+                _text("SELECT id, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"),
+                {"artist": artist},
+            ).mappings().all()
+            genre_str = " \\ ".join(genres) if isinstance(genres, list) else str(genres)
+            updated = 0
+            for r in rows:
+                track_id = r.get("id")
+                fp = r.get("file_path")
+                session.execute(
+                    _text("UPDATE tracks SET genres = :genre_str WHERE id = :track_id"),
+                    {"genre_str": genre_str, "track_id": track_id},
+                )
+                updated += 1
+                if fp and fp.strip():
+                    try:
+                        write_tags_to_file(str(fp), {"genre": genres})
+                    except Exception:
+                        pass
         return {"success": True, "updated": updated}, 200
-    finally:
-        conn.close()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}, 500
 
 
 def genre_recommendations(artist: str) -> tuple[dict, int]:

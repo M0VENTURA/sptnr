@@ -40,34 +40,32 @@ _NAVIDROME_MISS_TTL_SECONDS = 6 * 3600
 def save_album_art_to_db(artist_name: str, album_name: str, image_data: bytes, source: str = "unknown", mime_type: str = "image/jpeg") -> bool:
     if not image_data:
         return False
-    conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO album_art
-            (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
-            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (artist_name, album_name)
-            DO UPDATE SET
-                image_data = EXCLUDED.image_data,
-                image_mime_type = EXCLUDED.image_mime_type,
-                source = EXCLUDED.source,
-                downloaded_at = EXCLUDED.downloaded_at
-            """,
-            (artist_name, album_name, image_data, mime_type, source),
-        )
-        conn.commit()
+        with db_session() as session:
+            session.execute(
+                text("""
+                    INSERT INTO album_art
+                    (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
+                    VALUES (:artist_name, :album_name, :image_data, :mime_type, :source, CURRENT_TIMESTAMP)
+                    ON CONFLICT (artist_name, album_name)
+                    DO UPDATE SET
+                        image_data = EXCLUDED.image_data,
+                        image_mime_type = EXCLUDED.image_mime_type,
+                        source = EXCLUDED.source,
+                        downloaded_at = EXCLUDED.downloaded_at
+                """),
+                {
+                    "artist_name": artist_name,
+                    "album_name": album_name,
+                    "image_data": image_data,
+                    "mime_type": mime_type,
+                    "source": source,
+                },
+            )
         return True
     except Exception as exc:
         logger.debug("Failed to save album art to database: %s", exc)
-        if conn:
-            conn.rollback()
         return False
-    finally:
-        if conn:
-            conn.close()
 
 def fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> bytes | None:
     """Fetch cover art cleanly via MusicBrainz release-group and Cover Art Archive client."""
@@ -406,30 +404,26 @@ def fetch_album_art_from_audiodb(artist_name: str, album_name: str) -> bytes | N
 def apply_album_art_to_tracks(artist_name: str, album_name: str, image_data: bytes, mime_type: str = "image/jpeg") -> int:
     if not image_data:
         return 0
-    conn = None
-    updated = 0
+    rows = []
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT id, file_path FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
-            """,
-            (artist_name, album_name),
-        )
-        rows = cursor.fetchall() or []
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT id, file_path FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist_name AND album = :album_name
+                """),
+                {"artist_name": artist_name, "album_name": album_name},
+            )
+            rows = result.fetchall() or []
     except Exception as exc:
         logger.debug("Failed to query tracks for album-art apply: %s", exc)
         rows = []
-    finally:
-        if conn:
-            conn.close()
 
     # Lazy import to break circular dependency:
     # album_art_service → tag_file_service → metadata.__init__ → album_service → album_art_service
     from services.metadata.tag_file_service import write_tags_to_file
 
+    updated = 0
     for row in rows:
         file_path = str(row_get(row, "file_path", 1) or "").strip()
         if not file_path or not os.path.exists(file_path):
@@ -460,14 +454,10 @@ def get_or_fetch_album_art(artist: str, album: str, discogs_token: str = "") -> 
     sees in their library) → MusicBrainz → Discogs → AudioDB. External
     lookups only run when Navidrome has no art.
     """
-    # 1. DB
-    conn = get_db_connection()
-    try:
-        data, mime = fetch_album_art_blob(conn, artist, album)
-        if data:
-            return data, mime
-    finally:
-        conn.close()
+    # 1. DB (the repository opens its own session)
+    data, mime = fetch_album_art_blob(artist=artist, album=album)
+    if data:
+        return data, mime
 
     # 2. Navidrome (default — no external calls needed)
     data = fetch_album_art_from_navidrome(artist, album)

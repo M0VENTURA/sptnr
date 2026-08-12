@@ -1010,13 +1010,14 @@ function pollEssentiaDownloadStatus() {
       bar.classList.remove('bg-success', 'bg-danger');
       bar.classList.add('progress-bar-striped', 'progress-bar-animated');
 
-      if (data.status === 'complete') {
+      if (data.status === 'complete' || data.status === 'installed') {
         bar.style.width = '100%';
         bar.classList.remove('progress-bar-animated');
         bar.classList.add('bg-success');
-        _essentiaSetStatusText('✅ Download complete — models saved to ' + (data.models_dir || '/opt/essentia_models'));
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-cloud-download"></i> Download Models &amp; Script';
+        const where = data.models_dir ? ' — models saved to ' + data.models_dir : '';
+        _essentiaSetStatusText('✅ ' + (data.status === 'installed' ? 'Models already installed' : 'Download complete') + (where || ''));
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-check-circle"></i> Models Installed';
       } else if (data.status === 'error') {
         bar.classList.remove('progress-bar-animated');
         bar.classList.add('bg-danger');
@@ -1381,6 +1382,11 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   if (document.getElementById('downloads_file_name_format')) {
     updateFileNameFormatPreview();
+  }
+  if (document.getElementById('btn-essentia-download')) {
+    // Reflect the Essentia install state on page load (hide/enable the
+    // download button when models are already present).
+    pollEssentiaDownloadStatus();
   }
   getRetrySchedulerStatus();
 });

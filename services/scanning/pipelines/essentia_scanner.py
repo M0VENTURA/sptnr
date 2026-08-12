@@ -531,7 +531,8 @@ def run_essentia_mood_scan(
     if not script_path:
         msg = (
             "Essentia script path is not configured. "
-            "Set 'essentia.script_path' in config.yaml to the path of tag_music.py."
+            "Set 'essentia.script_path' in config.yaml to the path of tag_music.py, "
+            "or use Settings → Essentia → 'Download Models & Script' (or the setup wizard)."
         )
         logger.error(msg)
         log_unified(f"Essentia Scan - Error: {msg}")
@@ -544,7 +545,10 @@ def run_essentia_mood_scan(
                 "scanned_tracks": 0, "updated_tracks": 0, "synced_files": 0}
 
     if not os.path.isfile(script_path):
-        msg = f"Essentia script not found at: {script_path}"
+        msg = (
+            f"Essentia script not found at: {script_path}. "
+            "Use Settings → Essentia → 'Download Models & Script' (or the setup wizard) to install it."
+        )
         logger.error(msg)
         log_unified(f"Essentia Scan - Error: {msg}")
         _write_progress(progress_file, {

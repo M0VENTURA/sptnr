@@ -13,7 +13,6 @@ import threading
 from typing import Any, Dict, List
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection
 from services.downloads.download_matching_service import _expand_release_tracks, _prefetch_mbid_metadata_batch, _row_get
 from db.repositories.queue import get_album_queue_tracks
 from services.enrichment.musicbrainz_service import fetch_release_metadata
@@ -71,78 +70,64 @@ def apply_mbid_match_batch(
             "error": "new_mbid is required",
         }
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    placeholder = "%s"
-
     try:
-        first_queue_id = queue_ids[0]
+        with db_session() as session:
+            first_row = session.execute(
+                text("SELECT artist, album FROM download_queue WHERE id = :qid"),
+                {"qid": first_queue_id},
+            ).fetchone()
 
-        cursor.execute(
-            f"""
-            SELECT artist, album
-            FROM download_queue
-            WHERE id = {placeholder}
-            """,
-            (first_queue_id,),
-        )
+            if not first_row:
+                return {
+                    "success": False,
+                    "status_code": 404,
+                    "error": "Queue item not found",
+                }
 
-        first_row = cursor.fetchone()
+            fallback_artist = _row_get(first_row, "artist", 0)
+            fallback_album = _row_get(first_row, "album", 1)
 
-        if not first_row:
-            return {
-                "success": False,
-                "status_code": 404,
-                "error": "Queue item not found",
-            }
+            target_artist = new_artist or fallback_artist
+            target_album = new_album or fallback_album
 
-        fallback_artist = _row_get(first_row, "artist", 0)
-        fallback_album = _row_get(first_row, "album", 1)
+            release_year = None
+            mbid_import_group = f"mbid_{new_mbid}"
 
-        target_artist = new_artist or fallback_artist
-        target_album = new_album or fallback_album
+            ids_placeholders = ", ".join(f":qid{i}" for i in range(len(queue_ids)))
 
-        release_year = None
-        mbid_import_group = f"mbid_{new_mbid}"
+            result = session.execute(
+                text(f"""
+                    UPDATE download_queue
+                    SET release_mbid = :new_mbid,
+                        release_id = :new_mbid,
+                        release_source = 'musicbrainz',
+                        album_artist = :target_artist,
+                        album = :target_album,
+                        release_year = COALESCE(release_year, :release_year),
+                        import_group = :import_group,
+                        status = CASE
+                            WHEN TRIM(COALESCE(status, '')) = '' OR status = 'matched' THEN 'queued'
+                            WHEN status = 'unmatched' AND TRIM(COALESCE(file_path, '')) != '' THEN 'matched'
+                            WHEN status = 'unmatched' THEN 'queued'
+                            ELSE status
+                        END,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({ids_placeholders})
+                """),
+                {
+                    "new_mbid": new_mbid,
+                    "target_artist": target_artist,
+                    "target_album": target_album,
+                    "release_year": release_year,
+                    "import_group": mbid_import_group,
+                    **{f"qid{i}": qid for i, qid in enumerate(queue_ids)},
+                },
+            )
 
-        ids_placeholders = ", ".join([placeholder] * len(queue_ids))
-
-        cursor.execute(
-            f"""
-            UPDATE download_queue
-            SET release_mbid = {placeholder},
-                release_id = {placeholder},
-                release_source = 'musicbrainz',
-                album_artist = {placeholder},
-                album = {placeholder},
-                release_year = COALESCE(release_year, {placeholder}),
-                import_group = {placeholder},
-                status = CASE
-                    WHEN TRIM(COALESCE(status, '')) = '' OR status = 'matched' THEN 'queued'
-                    WHEN status = 'unmatched' AND TRIM(COALESCE(file_path, '')) != '' THEN 'matched'
-                    WHEN status = 'unmatched' THEN 'queued'
-                    ELSE status
-                END,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id IN ({ids_placeholders})
-            """,
-            (
-                new_mbid,
-                new_mbid,
-                target_artist,
-                target_album,
-                release_year,
-                mbid_import_group,
-                *queue_ids,
-            ),
-        )
-
-        updated_count = cursor.rowcount or 0
-
-        conn.commit()
+            updated_count = result.rowcount or 0
+            # db_session commits on exit.
 
     except Exception as exc:
-        conn.rollback()
         logger.exception("[QUEUE_MATCH_BATCH] Failed applying MBID batch")
 
         return {
@@ -150,9 +135,6 @@ def apply_mbid_match_batch(
             "status_code": 500,
             "error": str(exc),
         }
-
-    finally:
-        conn.close()
 
     # Preserve old behavior:
     # queue rows are updated immediately, then metadata enrichment happens separately.

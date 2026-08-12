@@ -14,7 +14,6 @@ from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection
 from db.repositories.metadata import (
     fetch_artist_albums,
     fetch_artist_mbid,
@@ -221,22 +220,27 @@ def _resolve_artist_mbid(artist: str, conn) -> str | None:
     from collections import Counter
 
     try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT COALESCE(
-                NULLIF(TRIM(musicbrainz_albumartistid), ''),
-                NULLIF(TRIM(musicbrainz_artistid), '')
-            ) AS mbid
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND COALESCE(
-                NULLIF(TRIM(musicbrainz_albumartistid), ''),
-                NULLIF(TRIM(musicbrainz_artistid), '')
-              ) IS NOT NULL
-        """, (artist,))
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            rows = session.execute(
+                _text("""
+                    SELECT COALESCE(
+                        NULLIF(TRIM(musicbrainz_albumartistid), ''),
+                        NULLIF(TRIM(musicbrainz_artistid), '')
+                    ) AS mbid
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND COALESCE(
+                        NULLIF(TRIM(musicbrainz_albumartistid), ''),
+                        NULLIF(TRIM(musicbrainz_artistid), '')
+                      ) IS NOT NULL
+                """),
+                {"artist": artist},
+            ).fetchall()
         mbids = []
-        for row in cursor.fetchall():
-            raw = row[0] if not isinstance(row, dict) else row.get("mbid")
+        for row in rows:
+            raw = row[0]
             if raw:
                 normalized = normalize_single_mbid(str(raw))
                 if normalized:
@@ -247,7 +251,7 @@ def _resolve_artist_mbid(artist: str, conn) -> str | None:
         logger.debug("[MISSING_RELEASES] MBID query failed for '%s': %s", artist, exc)
 
     try:
-        mbid = fetch_artist_mbid(conn, artist)
+        mbid = fetch_artist_mbid(None, artist)
         if mbid:
             return normalize_single_mbid(mbid) or mbid
     except Exception as exc:
@@ -255,7 +259,7 @@ def _resolve_artist_mbid(artist: str, conn) -> str | None:
 
     try:
         from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
-        mbid = lookup_and_save_artist_mbid(artist, conn)
+        mbid = lookup_and_save_artist_mbid(artist)
         return normalize_single_mbid(mbid) or mbid
     except Exception as exc:
         logger.debug("[MISSING_RELEASES] Artist MBID lookup failed for '%s': %s", artist, exc)
@@ -319,12 +323,8 @@ def get_missing_releases(artist: str, background: bool = False):
         }, 200
 
     try:
-        conn = get_db_connection()
-        try:
-            existing_albums = fetch_artist_albums(conn, artist)
-            artist_mbid = _resolve_artist_mbid(artist, conn)
-        finally:
-            conn.close()
+        existing_albums = fetch_artist_albums(None, artist)
+        artist_mbid = _resolve_artist_mbid(artist, None)
     except Exception as exc:
         logger.error("[MISSING_RELEASES] get_missing_releases failed for %s: %s", artist, exc)
         return {"artist": artist, "missing": [], "existing_albums": [], "info": str(exc)}, 500
@@ -370,24 +370,26 @@ def _run_missing_releases_scan() -> None:
         )
         clear_stop_request(_PROGRESS_PATH)
 
-        conn = get_db_connection()
         try:
-            artists = fetch_all_distinct_artists(conn)
+            artists = fetch_all_distinct_artists(None)
             # Prefer canonical album_artist identities (avoids scanning featured artists).
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS canonical_artist
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-                  AND COALESCE(NULLIF(album_artist, ''), artist) != ''
-                ORDER BY canonical_artist
-            """)
-            rows = cursor.fetchall()
+            from sqlalchemy import text as _text
+            from db.engine import db_session as _db_session
+            with _db_session() as session:
+                rows = session.execute(
+                    _text("""
+                        SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS canonical_artist
+                        FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+                          AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                        ORDER BY canonical_artist
+                    """)
+                ).fetchall()
             if rows:
-                artists = [str(r[0]) if not isinstance(r, dict) else str(r.get("canonical_artist", "")) for r in rows]
+                artists = [str(r[0]) for r in rows]
                 artists = [a for a in artists if a]
-        finally:
-            conn.close()
+        except Exception as exc:
+            logger.debug("[MISSING_RELEASES] Artist list fetch failed: %s", exc)
 
         total_artists = len(artists)
         logger.info("[MISSING_RELEASES] Starting scan for %s artists", total_artists)
@@ -422,12 +424,8 @@ def _run_missing_releases_scan() -> None:
             )
 
             try:
-                scan_conn = get_db_connection()
-                try:
-                    artist_mbid = _resolve_artist_mbid(artist, scan_conn)
-                    existing_albums = fetch_artist_albums(scan_conn, artist)
-                finally:
-                    scan_conn.close()
+                artist_mbid = _resolve_artist_mbid(artist, None)
+                existing_albums = fetch_artist_albums(None, artist)
 
                 existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
                 if not artist_mbid:
@@ -530,16 +528,14 @@ def add_artist(artist: str) -> tuple[dict, int]:
     """Add an artist to the database by creating a placeholder record."""
     if not artist:
         return {"success": False, "error": "artist required"}, 400
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO artists (name) VALUES (%s) ON CONFLICT (name) DO NOTHING",
-            (artist,),
-        )
-        conn.commit()
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            session.execute(
+                text("INSERT INTO artists (name) VALUES (:artist) ON CONFLICT (name) DO NOTHING"),
+                {"artist": artist},
+            )
         return {"success": True, "message": f"Artist '{artist}' added"}, 200
     except Exception as exc:
         return {"success": False, "error": str(exc)}, 500
-    finally:
-        conn.close()

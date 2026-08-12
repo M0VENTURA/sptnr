@@ -36,7 +36,8 @@ wait_for_db() {
     local retries=15
     local delay=2
 
-    # Skip if no PG_HOST is set (SQLite fallback)
+    # Skip the wait when no remote PG host is configured (DATABASE_URL-driven
+    # setups) — the app engine requires PostgreSQL either way.
     if [ -z "$host" ] || [ "$host" = "localhost" ]; then
         return 0
     fi

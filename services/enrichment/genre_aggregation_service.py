@@ -275,23 +275,21 @@ def enrich_genres_aggressively(artist_name: str, conn=None, verbose: bool = Fals
 
     # Persist to database
     if genres_collected:
-        should_close = conn is None
-        db_conn = conn or get_db_connection()
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
         try:
-            cursor = db_conn.cursor()
-            genres_str = ", ".join(sorted(genres_collected))
-            cursor.execute(
-                "UPDATE tracks SET genres = %s WHERE artist = %s AND (genres IS NULL OR genres = '')",
-                (genres_str, artist_name),
-            )
-            db_conn.commit()
+            with _db_session() as session:
+                result = session.execute(
+                    _text(
+                        "UPDATE tracks SET genres = :genres_str "
+                        "WHERE artist = :artist_name AND (genres IS NULL OR genres = '')"
+                    ),
+                    {"genres_str": ", ".join(sorted(genres_collected)), "artist_name": artist_name},
+                )
             if verbose:
-                logger.info("Updated %s tracks for %s with %s genres", cursor.rowcount, artist_name, len(genres_collected))
+                logger.info("Updated %s tracks for %s with %s genres", result.rowcount, artist_name, len(genres_collected))
         except Exception as e:
             logger.debug("Failed to update genres for %s: %s", artist_name, e)
-        finally:
-            if should_close and db_conn:
-                db_conn.close()
 
     return genres_collected
 

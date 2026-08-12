@@ -16,10 +16,6 @@ from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.context import db_cursor  # TODO: migrate to db_session
-from sqlalchemy import text
-from db.engine import db_session
-from db.utils import get_db_connection
 from db.repositories.metadata import (
     album_is_favourite,
     set_album_favourite_db,
@@ -288,12 +284,10 @@ def is_album_favourite(
     artist: str,
     album: str,
 ) -> bool:
-    with db_cursor() as (conn, _cursor):
-        return album_is_favourite(
-            conn,
-            artist,
-            album,
-        )
+    return album_is_favourite(
+        artist=artist,
+        album=album,
+    )
 
 
 def set_album_favourite(
@@ -302,13 +296,11 @@ def set_album_favourite(
     is_favourite: bool,
 ) -> bool:
     try:
-        with db_cursor(commit=True) as (conn, _cursor):
-            set_album_favourite_db(
-                conn,
-                artist,
-                album,
-                is_favourite,
-            )
+        set_album_favourite_db(
+            artist=artist,
+            album=album,
+            is_favourite=is_favourite,
+        )
         return True
 
     except Exception as exc:
@@ -334,11 +326,10 @@ def get_local_album_art(
     consulted before any external service. Art pulled from Navidrome is
     cached to the DB for future requests.
     """
-    with db_cursor() as (conn, _cursor):
+    with db_session() as session:
         data, mime = fetch_album_art_blob(
-            conn,
-            artist,
-            album,
+            artist=artist,
+            album=album,
         )
 
         if data:
@@ -375,8 +366,7 @@ def get_or_fetch_album_art(artist: str, album: str) -> tuple[bytes | None, str |
 # =============================================================================
 
 def get_album_tracklist(artist: str, album: str) -> list[dict[str, Any]]:
-    with db_cursor() as (conn, _cursor):
-        rows = fetch_album_tracklist(conn, artist, album)
+    rows = fetch_album_tracklist(artist=artist, album=album)
 
     return [
         {
@@ -398,9 +388,9 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
     """Matches album tracks against the local library, falling back to MusicBrainz."""
     logger.debug("Matching tracklist for %s - %s", artist, album)
 
-    with db_cursor() as (conn, _cursor):
+    with db_session() as session:
         # 1. Fetch tracks for this album from repository
-        album_rows = fetch_album_queue_track_stubs(conn, artist, album)
+        album_rows = fetch_album_queue_track_stubs(artist=artist, album=album)
         
         matched_tracks = []
         queued_tracks = []
@@ -430,7 +420,7 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
 
         # 2. If no tracks found, check all artist tracks in the database
         logger.debug("No album tracks found in database, checking all tracks for artist %s", artist)
-        all_artist_rows = fetch_album_tracklist(conn, artist, album="")
+        all_artist_rows = fetch_album_tracklist(artist=artist, album="")
         library_tracks = {
             str(r.get("title") if hasattr(r, "get") else r[1]).lower().strip(): True 
             for r in all_artist_rows
@@ -507,30 +497,29 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
 def get_album_queue_status_db(artist: str, album: str):
     result = {}
 
-    with db_cursor() as (conn, _cursor):
-        rows = fetch_album_queue_track_stubs(conn, artist, album)
+    rows = fetch_album_queue_track_stubs(artist=artist, album=album)
 
-        for row in rows:
-            track_id = row.get("id") if hasattr(row, "get") else row[0]
-            file_path = (row.get("file_path") if hasattr(row, "get") else row[1]) or ""
+    for row in rows:
+        track_id = row.get("id") if hasattr(row, "get") else row[0]
+        file_path = (row.get("file_path") if hasattr(row, "get") else row[1]) or ""
 
-            queue_id = None
-            if "queue_id_" in file_path:
-                try:
-                    queue_id = int(file_path.split("queue_id_")[-1])
-                except ValueError:
-                    pass
+        queue_id = None
+        if "queue_id_" in file_path:
+            try:
+                queue_id = int(file_path.split("queue_id_")[-1])
+            except ValueError:
+                pass
 
-            status = fetch_queue_status(conn, queue_id) if queue_id else "queued"
-            cfg = STATUS_DISPLAY_CONFIG.get(status, {})
+        status = fetch_queue_status(queue_id=queue_id) if queue_id else "queued"
+        cfg = STATUS_DISPLAY_CONFIG.get(status, {})
 
-            result[track_id] = {
-                "queue_id": queue_id,
-                "status": status,
-                "label": cfg.get("label", status),
-                "css": cfg.get("css", ""),
-                "icon": cfg.get("icon", ""),
-            }
+        result[track_id] = {
+            "queue_id": queue_id,
+            "status": status,
+            "label": cfg.get("label", status),
+            "css": cfg.get("css", ""),
+            "icon": cfg.get("icon", ""),
+        }
 
     return result
 
@@ -548,22 +537,21 @@ def apply_genres_to_album(artist: str, album: str, genres: list[str]):
     updated = 0
     failed = []
 
-    with db_cursor(commit=True) as (conn, _cursor):
-        tracks = fetch_album_tracks_for_tag_update(conn, artist, album)
+    tracks = fetch_album_tracks_for_tag_update(artist=artist, album=album)
 
-        for t in tracks:
-            track_id = t.get("id") if hasattr(t, "get") else t[0]
-            title = t.get("title") if hasattr(t, "get") else t[1]
-            path = t.get("file_path") if hasattr(t, "get") else t[2]
+    for t in tracks:
+        track_id = t.get("id") if hasattr(t, "get") else t[0]
+        title = t.get("title") if hasattr(t, "get") else t[1]
+        path = t.get("file_path") if hasattr(t, "get") else t[2]
 
-            if path and os.path.exists(path):
-                if update_file_tags(path, {"genres": genres_clean}):
-                    update_track_genres(conn, track_id, genres_str)
-                    updated += 1
-                else:
-                    failed.append(title)
+        if path and os.path.exists(path):
+            if update_file_tags(path, {"genres": genres_clean}):
+                update_track_genres(track_id=track_id, genres_str=genres_str)
+                updated += 1
             else:
                 failed.append(title)
+        else:
+            failed.append(title)
 
     return {
         "success": True,
@@ -578,15 +566,17 @@ def apply_genres_to_album(artist: str, album: str, genres: list[str]):
 # =============================================================================
 
 def apply_mbid_to_album(artist, album, mbid, rg_mbid, cover_url):
-    with db_cursor(commit=True) as (conn, _cursor):
-        rows = update_album_mbid_fields(conn, artist, album, mbid, rg_mbid, cover_url)
+    rows = update_album_mbid_fields(
+        artist=artist, album=album, mbid=mbid, rg_mbid=rg_mbid, cover_url=cover_url,
+    )
 
     return {"success": rows > 0, "rows_updated": rows}
 
 
 def apply_discogs_id_to_album(artist, album, discogs_id, is_single):
-    with db_cursor(commit=True) as (conn, _cursor):
-        rows = update_album_discogs_fields(conn, artist, album, discogs_id, is_single)
+    rows = update_album_discogs_fields(
+        artist=artist, album=album, discogs_id=discogs_id, is_single=is_single,
+    )
 
     return {"success": True, "rows_updated": rows}
 
@@ -609,20 +599,19 @@ def bulk_tag_tracks(payload: dict) -> tuple[dict, int]:
     updated_count = 0
     failed_files: list[str] = []
 
-    with db_cursor(commit=True) as (conn, cursor):
+    with db_session() as session:
         for track_id in track_ids:
             try:
-                cursor.execute(
-                    "SELECT title, genres, manual_genres, file_path FROM tracks WHERE id = %s",
-                    (track_id,),
-                )
-                row = cursor.fetchone()
+                row = session.execute(
+                    text("SELECT title, genres, manual_genres, file_path FROM tracks WHERE id = :id"),
+                    {"id": track_id},
+                ).mappings().first()
                 if not row:
                     continue
-                title = row.get("title") if hasattr(row, "get") else row[0]
-                current = str(row.get("genres") if hasattr(row, "get") else (row[1] or ""))
-                manual = str(row.get("manual_genres") if hasattr(row, "get") else (row[2] or ""))
-                file_path = str(row.get("file_path") if hasattr(row, "get") else (row[3] or ""))
+                title = row.get("title")
+                current = str(row.get("genres") or "")
+                manual = str(row.get("manual_genres") or "")
+                file_path = str(row.get("file_path") or "")
 
                 def _split_genres(raw: str) -> set:
                     sep = "\\" if "\\" in raw else ","
@@ -640,9 +629,9 @@ def bulk_tag_tracks(payload: dict) -> tuple[dict, int]:
                     if not update_file_tags(file_path, {"genres": sorted(existing)}):
                         failed_files.append(title or f"Track ID: {track_id}")
 
-                cursor.execute(
-                    "UPDATE tracks SET genres = %s, manual_genres = %s WHERE id = %s",
-                    (new_genres, new_manual, track_id),
+                session.execute(
+                    text("UPDATE tracks SET genres = :genres, manual_genres = :manual WHERE id = :id"),
+                    {"genres": new_genres, "manual": new_manual, "id": track_id},
                 )
                 updated_count += 1
             except Exception as exc:
@@ -665,20 +654,22 @@ def bulk_delete_tracks(payload: dict) -> tuple[dict, int]:
 
     deleted_count = 0
 
-    with db_cursor(commit=True) as (conn, cursor):
+    with db_session() as session:
         for track_id in track_ids:
             try:
-                cursor.execute("SELECT file_path FROM tracks WHERE id = %s", (track_id,))
-                row = cursor.fetchone()
+                row = session.execute(
+                    text("SELECT file_path FROM tracks WHERE id = :id"),
+                    {"id": track_id},
+                ).mappings().first()
                 if not row:
                     continue
-                file_path = str(row.get("file_path") if hasattr(row, "get") else (row[0] or ""))
+                file_path = str(row.get("file_path") or "")
                 if delete_files and file_path and os.path.exists(file_path):
                     try:
                         os.remove(file_path)
                     except Exception as exc:
                         logger.warning("[bulk_delete] Could not delete file %s: %s", file_path, exc)
-                cursor.execute("DELETE FROM tracks WHERE id = %s", (track_id,))
+                session.execute(text("DELETE FROM tracks WHERE id = :id"), {"id": track_id})
                 deleted_count += 1
             except Exception as exc:
                 logger.error("[bulk_delete] Track %s failed: %s", track_id, exc)
@@ -702,25 +693,31 @@ def update_album_ids(payload: dict) -> tuple[dict, int]:
         return {"success": False, "error": "No IDs provided"}, 400
 
     updates: list[str] = []
-    params: list[Any] = []
+    bind_values: dict[str, Any] = {}
+    _idx = 0
     if musicbrainz_id:
-        updates.append("musicbrainz_album_mbid = %s")
-        params.append(musicbrainz_id)
+        updates.append(f"musicbrainz_album_mbid = :v{_idx}")
+        bind_values[f"v{_idx}"] = musicbrainz_id
+        _idx += 1
     if release_group_id:
-        updates.append("musicbrainz_releasegroupid = %s")
-        params.append(release_group_id)
+        updates.append(f"musicbrainz_releasegroupid = :v{_idx}")
+        bind_values[f"v{_idx}"] = release_group_id
+        _idx += 1
     if discogs_id:
-        updates.append("discogs_album_id = %s")
-        params.append(discogs_id)
-    params.extend([artist, album])
+        updates.append(f"discogs_album_id = :v{_idx}")
+        bind_values[f"v{_idx}"] = discogs_id
+    bind_values["artist"] = artist
+    bind_values["album"] = album
 
-    with db_cursor(commit=True) as (conn, cursor):
-        cursor.execute(
-            f"UPDATE tracks SET {', '.join(updates)} "
-            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
-            tuple(params),
+    with db_session() as session:
+        result = session.execute(
+            text(
+                f"UPDATE tracks SET {', '.join(updates)} "
+                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"
+            ),
+            bind_values,
         )
-        rows = cursor.rowcount or 0
+        rows = result.rowcount or 0
 
     return {"success": True, "rows_updated": rows}, 200
 
@@ -731,8 +728,13 @@ def update_album_ids(payload: dict) -> tuple[dict, int]:
 
 def ignore_missing_track(missing_id, artist, album, title, disc_number):
     try:
-        with db_cursor(commit=True) as (conn, _cursor):
-            ignore_missing_track_db(conn, missing_id, artist, album, title, disc_number)
+        ignore_missing_track_db(
+            missing_id=missing_id,
+            artist=artist,
+            album=album,
+            title=title,
+            disc_number=disc_number,
+        )
         return True
     except Exception as exc:
         logger.error("ignore_missing_track failed: %s", exc)
@@ -742,15 +744,15 @@ def ignore_missing_track(missing_id, artist, album, title, disc_number):
 def get_majority_artist(artist: str, album: str) -> dict:
     """Return the most common artist across all tracks in an album."""
     from collections import Counter
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT artist FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
-            (artist, album),
-        )
-        # Rows are RealDictRow (dict-like); never index by position.
-        counts = Counter(row.get("artist") for row in cursor.fetchall() if row.get("artist"))
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            rows = session.execute(
+                _text("SELECT artist FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"),
+                {"artist": artist, "album": album},
+            ).fetchall()
+        counts = Counter(str(r[0]) for r in rows if r[0])
         if not counts:
             return {"success": False, "error": "No tracks found"}
         top = counts.most_common(1)[0]
@@ -760,57 +762,53 @@ def get_majority_artist(artist: str, album: str) -> dict:
             "count": top[1],
             "total": sum(counts.values()),
         }
-    finally:
-        conn.close()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 def add_album_to_missing_releases(artist: str, album: str, year: str | None = None) -> dict:
     """Add an album to the missing_releases tracking table."""
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO missing_releases (artist, title, primary_type, first_release_date, category, created_at)
-            VALUES (%s, %s, 'album', %s, 'album', CURRENT_TIMESTAMP)
-            ON CONFLICT (artist, title) DO NOTHING
-            """,
-            (artist, album, year or None),
-        )
-        conn.commit()
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            session.execute(
+                _text(
+                    "INSERT INTO missing_releases (artist, title, primary_type, first_release_date, category, created_at) "
+                    "VALUES (:artist, :album, 'album', :year, 'album', CURRENT_TIMESTAMP) "
+                    "ON CONFLICT (artist, title) DO NOTHING"
+                ),
+                {"artist": artist, "album": album, "year": year or None},
+            )
         return {"success": True, "message": f"Added '{album}' to missing releases"}
     except Exception as exc:
         logger.error("Error adding to missing releases: %s", exc)
         return {"success": False, "error": str(exc)}
-    finally:
-        conn.close()
 
 
 def get_track_recommendations(artist: str, album: str) -> dict:
     """Get genre recommendations by aggregating all genre sources in DB."""
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT lastfm_tags, musicbrainz_genres, discogs_genres "
-            "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
-            (artist, album),
-        )
-        rows = cursor.fetchall()
-    finally:
-        conn.close()
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            rows = session.execute(
+                _text(
+                    "SELECT lastfm_tags, musicbrainz_genres, discogs_genres "
+                    "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"
+                ),
+                {"artist": artist, "album": album},
+            ).mappings().all()
+    except Exception as exc:
+        logger.error("Error fetching track genres for %s - %s: %s", artist, album, exc)
+        rows = []
 
     from collections import defaultdict
     source_map: dict[str, list[str]] = defaultdict(list)
     for row in rows:
         cols = ["lastfm_tags", "musicbrainz_genres", "discogs_genres"]
         for src_key, col in zip(["lastfm", "musicbrainz", "discogs"], cols):
-            val = None
-            if hasattr(row, "get"):
-                val = row.get(col)
-            else:
-                idx = cols.index(col)
-                val = row[idx] if len(row) > idx else None
+            val = row.get(col)
             if val:
                 vals = val if isinstance(val, list) else [str(val)]
                 source_map[src_key].extend(v.strip() for v in vals if v and v.strip())

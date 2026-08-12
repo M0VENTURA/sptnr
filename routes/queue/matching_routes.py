@@ -19,7 +19,7 @@ from services.downloads.download_matching_service import (
 )
 from services.queue.queue_processing_service import organize_group_sync
 from services.tasks.queue_tasks import start_organize_group
-from db.utils import get_db_connection, row_get
+from db.utils import row_get
 
 queue_matching_bp = Blueprint("queue_matching", __name__)
 
@@ -197,10 +197,10 @@ def api_queue_matched_releases():
     """Return all unique releases currently in the download queue."""
     import logging as _logging
 
-    conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        from sqlalchemy import text
+        from db.engine import db_session
+
         artist_filter = (request.args.get("artist") or "").strip()
         album_filter = (request.args.get("album") or "").strip()
         try:
@@ -216,29 +216,38 @@ def api_queue_matched_releases():
             "discovered", "pending_match",
             "possible_duplicate", "duplicate",
         )
-        status_placeholders = ", ".join("%s" for _ in active_statuses)
+        status_placeholders = ", ".join(f":st{i}" for i in range(len(active_statuses)))
 
-        cursor.execute(f"""
-            SELECT
-                COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) AS mbid,
-                MAX(COALESCE(NULLIF(album_artist, ''), artist)) AS release_artist,
-                MAX(COALESCE(NULLIF(album, ''), '')) AS release_album,
-                MAX(COALESCE(NULLIF(CAST(release_year AS TEXT), ''), NULLIF(CAST(year AS TEXT), ''))) AS resolved_year,
-                COUNT(*) AS track_count,
-                MAX(CASE WHEN %s <> '' AND LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s) THEN 1 ELSE 0 END) AS artist_match,
-                MAX(CASE WHEN %s <> '' AND LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER(%s) THEN 1 ELSE 0 END) AS album_match
-            FROM download_queue
-            WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) IS NOT NULL
-              AND status IN ({status_placeholders})
-            GROUP BY COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, ''))
-            ORDER BY artist_match DESC, album_match DESC, track_count DESC,
-                     LOWER(MAX(COALESCE(NULLIF(album_artist, ''), artist))),
-                     LOWER(MAX(COALESCE(NULLIF(album, ''), '')))
-            LIMIT %s
-        """, (artist_filter, artist_filter, album_filter, album_filter, *active_statuses, limit))
+        with db_session() as session:
+            rows = session.execute(
+                text(f"""
+                    SELECT
+                        COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) AS mbid,
+                        MAX(COALESCE(NULLIF(album_artist, ''), artist)) AS release_artist,
+                        MAX(COALESCE(NULLIF(album, ''), '')) AS release_album,
+                        MAX(COALESCE(NULLIF(CAST(release_year AS TEXT), ''), NULLIF(CAST(year AS TEXT), ''))) AS resolved_year,
+                        COUNT(*) AS track_count,
+                        MAX(CASE WHEN :artist_filter <> '' AND LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist_filter) THEN 1 ELSE 0 END) AS artist_match,
+                        MAX(CASE WHEN :album_filter <> '' AND LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER(:album_filter) THEN 1 ELSE 0 END) AS album_match
+                    FROM download_queue
+                    WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) IS NOT NULL
+                      AND status IN ({status_placeholders})
+                    GROUP BY COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, ''))
+                    ORDER BY artist_match DESC, album_match DESC, track_count DESC,
+                             LOWER(MAX(COALESCE(NULLIF(album_artist, ''), artist))),
+                             LOWER(MAX(COALESCE(NULLIF(album, ''), '')))
+                    LIMIT :limit
+                """),
+                {
+                    "artist_filter": artist_filter,
+                    "album_filter": album_filter,
+                    **{f"st{i}": s for i, s in enumerate(active_statuses)},
+                    "limit": limit,
+                },
+            ).fetchall() or []
 
         releases = []
-        for row in cursor.fetchall() or []:
+        for row in rows:
             releases.append({
                 "mbid": row_get(row, "mbid", 0) or "",
                 "artist": row_get(row, "release_artist", 1) or "",
@@ -247,17 +256,10 @@ def api_queue_matched_releases():
                 "track_count": int(row_get(row, "track_count", 4) or 0),
             })
 
-        conn.close()
-        conn = None
         return _json_response({"success": True, "releases": releases})
 
     except Exception as exc:
         _logging.getLogger(__name__).error("Error fetching matched releases: %s", exc)
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
         return _json_response({"success": False, "error": str(exc)}), 500
 
 
@@ -268,46 +270,35 @@ def api_queue_matched_releases():
 @queue_matching_bp.route("/api/queue/<int:queue_id>/reset-match", methods=["POST"])
 def api_queue_reset_match(queue_id: int):
     """Reset a queue item's match so it can be rematched manually."""
-    conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE download_queue
-            SET release_mbid = NULL, release_id = NULL, release_source = NULL,
-                mb_release_group_id = NULL, mb_match_status = NULL, mb_match_score = NULL,
-                mb_match_candidates = NULL, mb_matched_title = NULL, mb_matched_artist = NULL,
-                mb_matched_year = NULL, mb_last_match_at = NULL,
-                status = 'unmatched',
-                file_path = NULL, matched_file_path = NULL, music_file_path = NULL,
-                found_filename = NULL, source_music_path = NULL,
-                in_collection = 0, collection_track_id = NULL, collection_matched_at = NULL,
-                failure_reason = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        """, (queue_id,))
-        updated = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
-        conn = None
+        from sqlalchemy import text
+        from db.engine import db_session
+
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET release_mbid = NULL, release_id = NULL, release_source = NULL,
+                        mb_release_group_id = NULL, mb_match_status = NULL, mb_match_score = NULL,
+                        mb_match_candidates = NULL, mb_matched_title = NULL, mb_matched_artist = NULL,
+                        mb_matched_year = NULL, mb_last_match_at = NULL,
+                        status = 'unmatched',
+                        file_path = NULL, matched_file_path = NULL, music_file_path = NULL,
+                        found_filename = NULL, source_music_path = NULL,
+                        in_collection = 0, collection_track_id = NULL, collection_matched_at = NULL,
+                        failure_reason = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :queue_id
+                """),
+                {"queue_id": queue_id},
+            )
+            updated = result.rowcount > 0
 
         if not updated:
             return _json_response({"error": "Queue item not found"}), 404
         return _json_response({"success": True, "message": "Queue item match reset", "queue_id": queue_id})
 
     except Exception as exc:
-        if conn is not None:
-            try:
-                conn.rollback()
-                conn.close()
-            except Exception:
-                pass
         return _json_response({"success": False, "error": str(exc)}), 500
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 # -----------------------------------------------------------------------------
@@ -328,21 +319,30 @@ async def api_queue_apply_mbid_match(queue_id: int):
         if not new_mbid:
             return _json_response({"success": False, "error": "new_mbid is required"}), 400
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        from sqlalchemy import text
+        from db.engine import db_session
         import_group = f"mbid_{new_mbid}"
 
-        cursor.execute("""
-            UPDATE download_queue
-            SET release_mbid = %s, release_id = %s, release_source = 'musicbrainz',
-                album = COALESCE(%s, album), album_artist = COALESCE(%s, album_artist),
-                import_group = %s, status = 'matched', updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        """, (new_mbid, new_mbid, new_album, new_artist, import_group, queue_id))
-
-        updated = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE download_queue
+                    SET release_mbid = :new_mbid, release_id = :new_mbid, release_source = 'musicbrainz',
+                        album = COALESCE(:new_album, album), album_artist = COALESCE(:new_artist, album_artist),
+                        import_group = :import_group, status = 'matched', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :queue_id
+                """),
+                {
+                    "new_mbid": new_mbid,
+                    # COALESCE on the raw stripped values (empty string wins —
+                    # matches the legacy %s bind exactly).
+                    "new_album": new_album,
+                    "new_artist": new_artist,
+                    "import_group": import_group,
+                    "queue_id": queue_id,
+                },
+            )
+            updated = result.rowcount > 0
 
         if not updated:
             return _json_response({"error": "Queue item not found"}), 404

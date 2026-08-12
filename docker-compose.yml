@@ -72,7 +72,7 @@ services:
       SPTNR_QUEUE_PROCESSOR_INTERVAL: ${QUEUE_INTERVAL:-30}
 
     volumes:
-      # Persistent config and database (SQLite fallback)
+      # Persistent config and data (the app DB is PostgreSQL via the db service)
       - config_data:/config
       - db_data:/database
 

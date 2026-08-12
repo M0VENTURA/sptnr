@@ -28,9 +28,6 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
 
-from db.utils import get_db_connection
-
-
 from db.repositories.queue import (
     get_queue_match_targets,
     get_album_queue_tracks,
@@ -295,101 +292,100 @@ def _prefetch_mbid_metadata_batch(
         if release_year is not None:
             release_updates["release_year"] = release_year
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        placeholder = "%s"
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
 
         try:
-            # -----------------------------------------------------------------
-            # Bulk update release-level fields
-            # -----------------------------------------------------------------
-            if release_updates:
-                ids_placeholders = ", ".join([placeholder] * len(queue_ids))
-
-                set_clause = ", ".join(
-                    f"{column} = {placeholder}"
-                    for column in release_updates.keys()
-                )
-
-                params = list(release_updates.values()) + list(queue_ids)
-
-                cursor.execute(
-                    f"""
-                    UPDATE download_queue
-                    SET {set_clause},
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id IN ({ids_placeholders})
-                    """,
-                    params,
-                )
-
-            # -----------------------------------------------------------------
-            # Per-item track-level updates where recording_mbid is known
-            # -----------------------------------------------------------------
-            if tracks_by_rec_mbid:
-                ids_placeholders = ", ".join([placeholder] * len(queue_ids))
-
-                cursor.execute(
-                    f"""
-                    SELECT id, recording_mbid
-                    FROM download_queue
-                    WHERE id IN ({ids_placeholders})
-                    """,
-                    list(queue_ids),
-                )
-
-                rows = cursor.fetchall()
-
-                for row in rows:
-                    item_id = _row_get(row, "id", 0)
-                    recording_mbid = (
-                        _row_get(row, "recording_mbid", 1, "") or ""
-                    ).strip()
-
-                    if not item_id or not recording_mbid:
-                        continue
-
-                    track = tracks_by_rec_mbid.get(recording_mbid)
-
-                    if not track:
-                        continue
-
-                    track_updates: Dict[str, Any] = {}
-
-                    track_artist = (track.get("artist") or "").strip()
-                    track_title = (
-                        track.get("title")
-                        or track.get("recording_title")
-                        or ""
-                    ).strip()
-
-                    if track_artist:
-                        track_updates["artist"] = track_artist
-
-                    if track_title:
-                        track_updates["title"] = track_title
-
-                    if not track_updates:
-                        continue
-
+            with _db_session() as session:
+                # -----------------------------------------------------------------
+                # Bulk update release-level fields
+                # -----------------------------------------------------------------
+                if release_updates:
+                    ids_placeholders = ", ".join(f":qid{i}" for i in range(len(queue_ids)))
                     set_clause = ", ".join(
-                        f"{column} = {placeholder}"
-                        for column in track_updates.keys()
+                        f"{column} = :{column}"
+                        for column in release_updates.keys()
                     )
 
-                    params = list(track_updates.values()) + [item_id]
-
-                    cursor.execute(
-                        f"""
-                        UPDATE download_queue
-                        SET {set_clause},
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {placeholder}
-                        """,
-                        params,
+                    session.execute(
+                        _text(f"""
+                            UPDATE download_queue
+                            SET {set_clause},
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id IN ({ids_placeholders})
+                        """),
+                        {
+                            **{col: release_updates[col] for col in release_updates},
+                            **{f"qid{i}": qid for i, qid in enumerate(queue_ids)},
+                        },
                     )
 
-            conn.commit()
+                # -----------------------------------------------------------------
+                # Per-item track-level updates where recording_mbid is known
+                # -----------------------------------------------------------------
+                if tracks_by_rec_mbid:
+                    ids_placeholders = ", ".join(f":qid{i}" for i in range(len(queue_ids)))
+
+                    rows = session.execute(
+                        _text(f"""
+                            SELECT id, recording_mbid
+                            FROM download_queue
+                            WHERE id IN ({ids_placeholders})
+                        """),
+                        {f"qid{i}": qid for i, qid in enumerate(queue_ids)},
+                    ).fetchall()
+
+                    for row in rows:
+                        item_id = _row_get(row, "id", 0)
+                        recording_mbid = (
+                            _row_get(row, "recording_mbid", 1, "") or ""
+                        ).strip()
+
+                        if not item_id or not recording_mbid:
+                            continue
+
+                        track = tracks_by_rec_mbid.get(recording_mbid)
+
+                        if not track:
+                            continue
+
+                        track_updates: Dict[str, Any] = {}
+
+                        track_artist = (track.get("artist") or "").strip()
+                        track_title = (
+                            track.get("title")
+                            or track.get("recording_title")
+                            or ""
+                        ).strip()
+
+                        if track_artist:
+                            track_updates["artist"] = track_artist
+
+                        if track_title:
+                            track_updates["title"] = track_title
+
+                        if not track_updates:
+                            continue
+
+                        set_clause = ", ".join(
+                            f"{column} = :{column}"
+                            for column in track_updates.keys()
+                        )
+
+                        session.execute(
+                            _text(f"""
+                                UPDATE download_queue
+                                SET {set_clause},
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = :item_id
+                            """),
+                            {
+                                **{col: track_updates[col] for col in track_updates},
+                                "item_id": item_id,
+                            },
+                        )
+
+                # db_session commits on exit.
 
             logger.info(
                 "[QUEUE_MATCH_BATCH] Prefetched MB metadata for MBID %s: %s item(s), release fields=%s",
@@ -399,11 +395,7 @@ def _prefetch_mbid_metadata_batch(
             )
 
         except Exception:
-            conn.rollback()
             raise
-
-        finally:
-            conn.close()
 
     except Exception as exc:
         logger.warning(

@@ -18,46 +18,45 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from db.utils import get_db_connection
+from sqlalchemy import text
+from db.engine import db_session
 
 logger = logging.getLogger(__name__)
 
 
 def get_ready_releases() -> List[Dict[str, Any]]:
     """Find all active releases where all tracks have been discovered."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
     try:
-        cursor.execute("""
-            SELECT id, release_id, release_title, artist, release_year,
-                   monitoring_folder_path, total_tracks, discovered_count,
-                   created_at
-            FROM musicbrainz_releases
-            WHERE status = 'active'
-              AND discovered_count >= total_tracks
-              AND monitoring_folder_path IS NOT NULL
-            ORDER BY created_at ASC
-        """)
-        rows = cursor.fetchall() or []
+        with db_session() as session:
+            rows = session.execute(
+                text("""
+                    SELECT id, release_id, release_title, artist, release_year,
+                           monitoring_folder_path, total_tracks, discovered_count,
+                           created_at
+                    FROM musicbrainz_releases
+                    WHERE status = 'active'
+                      AND discovered_count >= total_tracks
+                      AND monitoring_folder_path IS NOT NULL
+                    ORDER BY created_at ASC
+                """)
+            ).fetchall() or []
         releases: List[Dict[str, Any]] = []
         for row in rows:
             releases.append({
-                "id": row[0] if not hasattr(row, "get") else row.get("id"),
-                "release_id": row[1] if not hasattr(row, "get") else row.get("release_id"),
-                "release_title": row[2] if not hasattr(row, "get") else row.get("release_title"),
-                "artist": row[3] if not hasattr(row, "get") else row.get("artist"),
-                "release_year": row[4] if not hasattr(row, "get") else row.get("release_year"),
-                "monitoring_folder_path": row[5] if not hasattr(row, "get") else row.get("monitoring_folder_path"),
-                "total_tracks": row[6] if not hasattr(row, "get") else row.get("total_tracks"),
-                "discovered_count": row[7] if not hasattr(row, "get") else row.get("discovered_count"),
-                "created_at": row[8] if not hasattr(row, "get") else row.get("created_at"),
+                "id": row[0],
+                "release_id": row[1],
+                "release_title": row[2],
+                "artist": row[3],
+                "release_year": row[4],
+                "monitoring_folder_path": row[5],
+                "total_tracks": row[6],
+                "discovered_count": row[7],
+                "created_at": row[8],
             })
         return releases
     except Exception as exc:
         logger.error("Failed to find ready releases: %s", exc)
         return []
-    finally:
-        conn.close()
 
 
 def finalize_release(release: Dict[str, Any]) -> bool:

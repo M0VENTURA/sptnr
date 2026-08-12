@@ -22,7 +22,7 @@ from services.downloads.download_processing_service import (
     queue_cancel,
     queue_force_start,
 )
-from db.utils import get_db_connection, row_get
+from db.utils import row_get
 
 queue_processing_bp = Blueprint("queue_processing", __name__)
 
@@ -161,21 +161,23 @@ def api_queue_copy_from_local(queue_id: int):
     import threading as _threading
     import shutil as _shutil
 
-    conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
-        row = cursor.fetchone()
-        conn.close()
-        conn = None
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        import os
+        import threading as _threading
+        import shutil as _shutil
+
+        with _db_session() as session:
+            row = session.execute(
+                _text("SELECT * FROM download_queue WHERE id = :qid"),
+                {"qid": queue_id},
+            ).mappings().first()
 
         if not row:
             return _json_response({"error": "Queue item not found"}), 404
 
-        item = row_get(row, None) if hasattr(row, "keys") else {
-            col.name: row[idx] for idx, col in enumerate(cursor.description or [])
-        } if cursor.description else {}
+        item = dict(row)
 
         source_path = (item.get("source_music_path") or "").strip() if isinstance(item, dict) else ""
         if not source_path:
@@ -219,11 +221,6 @@ def api_queue_copy_from_local(queue_id: int):
 
     except Exception as exc:
         _logging.getLogger(__name__).error("[COPY_FROM_LOCAL] Error for queue %s: %s", queue_id, exc)
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
         return _json_response({"success": False, "error": str(exc)}), 500
 
 
@@ -275,7 +272,6 @@ async def api_queue_migrate_existing():
 async def api_queue_update_album_mbid():
     """Update all queue items for an album with a new MusicBrainz release ID."""
     import logging as _logging
-    conn = None
     try:
         data = (await request.get_json(silent=True)) or {}
         old_artist = (data.get("old_artist") or "").strip()
@@ -287,34 +283,43 @@ async def api_queue_update_album_mbid():
         if not all([old_artist, old_album, new_mbid]):
             return _json_response({"error": "Missing required fields (old_artist, old_album, new_mbid)"}), 400
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
         mbid_import_group = f"mbid_{new_mbid}"
 
-        cursor.execute("""
-            UPDATE download_queue
-            SET release_mbid = %s, release_id = %s, release_source = 'musicbrainz',
-                album = %s, album_artist = %s, import_group = %s,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-              AND LOWER(album) = LOWER(%s)
-        """, (new_mbid, new_mbid, new_album, new_artist, mbid_import_group, old_artist, old_album))
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    UPDATE download_queue
+                    SET release_mbid = :new_mbid, release_id = :new_mbid, release_source = 'musicbrainz',
+                        album = :new_album, album_artist = :new_artist, import_group = :mbid_import_group,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:old_artist)
+                      AND LOWER(album) = LOWER(:old_album)
+                """),
+                {
+                    "new_mbid": new_mbid,
+                    "new_album": new_album,
+                    "new_artist": new_artist,
+                    "mbid_import_group": mbid_import_group,
+                    "old_artist": old_artist,
+                    "old_album": old_album,
+                },
+            )
+            updated_count = result.rowcount or 0
 
-        updated_count = cursor.rowcount or 0
-
-        # Merge queue rows already under this MBID into the same import_group
-        cursor.execute("""
-            UPDATE download_queue
-            SET import_group = %s, release_source = 'musicbrainz',
-                album_artist = COALESCE(NULLIF(album_artist, ''), %s),
-                updated_at = CURRENT_TIMESTAMP
-            WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = %s
-        """, (mbid_import_group, new_artist, new_mbid))
-        merged_count = cursor.rowcount or 0
-
-        conn.commit()
-        conn.close()
-        conn = None
+            # Merge queue rows already under this MBID into the same import_group
+            result2 = session.execute(
+                _text("""
+                    UPDATE download_queue
+                    SET import_group = :mbid_import_group, release_source = 'musicbrainz',
+                        album_artist = COALESCE(NULLIF(album_artist, ''), :new_artist),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = :new_mbid
+                """),
+                {"mbid_import_group": mbid_import_group, "new_artist": new_artist, "new_mbid": new_mbid},
+            )
+            merged_count = result2.rowcount or 0
 
         return _json_response({
             "success": True,
@@ -326,11 +331,6 @@ async def api_queue_update_album_mbid():
 
     except Exception as exc:
         _logging.getLogger(__name__).error("Error updating album MBID: %s", exc, exc_info=True)
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
         return _json_response({"success": False, "error": str(exc)}), 500
 
 
@@ -344,7 +344,6 @@ def api_queue_missing_tracks():
     import logging as _logging
     import re as _re
 
-    conn = None
     try:
         release_mbid = (request.args.get("release_mbid") or "").strip()
         queue_ids_raw = (request.args.get("queue_ids") or "").strip()
@@ -377,28 +376,31 @@ def api_queue_missing_tracks():
                 "total_release_tracks": 0, "missing_tracks": [],
             })
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
 
-        if queue_ids:
-            ids_placeholders = ", ".join("%s" for _ in queue_ids)
-            cursor.execute(f"""
-                SELECT id, title, track_number, disc_number, recording_mbid
-                FROM download_queue
-                WHERE id IN ({ids_placeholders})
-                  AND status NOT IN ('removed', 'cancelled', 'deleted')
-            """, tuple(queue_ids))
-        else:
-            cursor.execute("""
-                SELECT id, title, track_number, disc_number, recording_mbid
-                FROM download_queue
-                WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = %s
-                  AND status NOT IN ('removed', 'cancelled', 'deleted')
-            """, (release_mbid,))
-
-        queue_rows = cursor.fetchall() or []
-        conn.close()
-        conn = None
+        with _db_session() as session:
+            if queue_ids:
+                ids_placeholders = ", ".join(f":qid{i}" for i in range(len(queue_ids)))
+                queue_rows = session.execute(
+                    _text(f"""
+                        SELECT id, title, track_number, disc_number, recording_mbid
+                        FROM download_queue
+                        WHERE id IN ({ids_placeholders})
+                          AND status NOT IN ('removed', 'cancelled', 'deleted')
+                    """),
+                    {f"qid{i}": qid for i, qid in enumerate(queue_ids)},
+                ).fetchall() or []
+            else:
+                queue_rows = session.execute(
+                    _text("""
+                        SELECT id, title, track_number, disc_number, recording_mbid
+                        FROM download_queue
+                        WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = :release_mbid
+                          AND status NOT IN ('removed', 'cancelled', 'deleted')
+                    """),
+                    {"release_mbid": release_mbid},
+                ).fetchall() or []
 
         def _norm_text(value):
             return _re.sub(r"\s+", " ", _re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())).strip()
@@ -454,11 +456,6 @@ def api_queue_missing_tracks():
 
     except Exception as exc:
         _logging.getLogger(__name__).error("Error fetching missing tracks: %s", exc)
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
         return _json_response({"success": False, "error": str(exc)}), 500
 
 
@@ -480,7 +477,6 @@ async def api_queue_import_missing_tracks():
         def _fuzzy_ratio(a: str, b: str) -> float:
             return _SequenceMatcher(None, a or "", b or "").ratio()
 
-    conn = None
     try:
         payload = (await request.get_json(silent=True)) or {}
         release_mbid = (payload.get("release_mbid") or "").strip()
@@ -501,37 +497,42 @@ async def api_queue_import_missing_tracks():
         if not release_tracks:
             return _json_response({"success": False, "error": "No MusicBrainz track metadata available"}), 400
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
 
-        # Get context from the first queue ID
-        ref_artist = ref_album = ref_import_group = ""
-        if queue_ids:
-            ids_ph = ", ".join("%s" for _ in queue_ids)
-            cursor.execute(f"""
-                SELECT artist, album, album_artist, import_group
-                FROM download_queue WHERE id IN ({ids_ph}) ORDER BY id LIMIT 1
-            """, tuple(queue_ids))
-            ref = cursor.fetchone()
-            if ref:
-                ref_artist = row_get(ref, "artist", 0) or ""
-                ref_album = row_get(ref, "album", 1) or ""
-                ref_import_group = row_get(ref, "import_group", 3) or ""
+        with _db_session() as session:
+            # Get context from the first queue ID
+            ref_artist = ref_album = ref_import_group = ""
+            if queue_ids:
+                ids_ph = ", ".join(f":qid{i}" for i in range(len(queue_ids)))
+                ref = session.execute(
+                    _text(f"""
+                        SELECT artist, album, album_artist, import_group
+                        FROM download_queue WHERE id IN ({ids_ph}) ORDER BY id LIMIT 1
+                    """),
+                    {f"qid{i}": qid for i, qid in enumerate(queue_ids)},
+                ).fetchone()
+                if ref:
+                    ref_artist = row_get(ref, "artist", 0) or ""
+                    ref_album = row_get(ref, "album", 1) or ""
+                    ref_import_group = row_get(ref, "import_group", 3) or ""
 
-        release_title = release_meta.get("release_title") or ref_album
-        release_artist = release_meta.get("artist") or ""
-        import_group = ref_import_group or f"mbid_{release_mbid}"
+            release_title = release_meta.get("release_title") or ref_album
+            release_artist = release_meta.get("artist") or ""
+            import_group = ref_import_group or f"mbid_{release_mbid}"
 
-        # Fetch candidate queue rows
-        cursor.execute("""
-            SELECT id, title, track_number, disc_number, recording_mbid
-            FROM download_queue
-            WHERE (LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER(%s)
-                   OR (import_group IS NOT NULL AND import_group = %s))
-              AND COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) IS DISTINCT FROM %s
-              AND status NOT IN ('removed', 'cancelled', 'deleted', 'imported', 'in_collection')
-        """, (release_title, import_group, release_mbid))
-        candidate_rows = cursor.fetchall() or []
+            # Fetch candidate queue rows
+            candidate_rows = session.execute(
+                _text("""
+                    SELECT id, title, track_number, disc_number, recording_mbid
+                    FROM download_queue
+                    WHERE (LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER(:release_title)
+                           OR (import_group IS NOT NULL AND import_group = :import_group))
+                      AND COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) IS DISTINCT FROM :release_mbid
+                      AND status NOT IN ('removed', 'cancelled', 'deleted', 'imported', 'in_collection')
+                """),
+                {"release_title": release_title, "import_group": import_group, "release_mbid": release_mbid},
+            ).fetchall() or []
 
         available = {}
         for row in candidate_rows:
@@ -605,27 +606,23 @@ async def api_queue_import_missing_tracks():
                 if disc_number:
                     updates["disc_number"] = str(disc_number)
 
-                set_clause = ", ".join(f"{col} = %s" for col in updates)
-                params = list(updates.values()) + [best_id]
-                cursor.execute(
-                    f"UPDATE download_queue SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                    params,
+                set_clause = ", ".join(f"{col} = :{col}" for col in updates)
+                session.execute(
+                    _text(f"UPDATE download_queue SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = :item_id"),
+                    {**{col: updates[col] for col in updates}, "item_id": best_id},
                 )
-                conn.commit()
+                session.commit()
                 del available[best_id]
                 matched_count += 1
                 matched_items.append({"queue_id": best_id, "title": title, "match_score": round(best_score, 3)})
             except Exception as upd_err:
                 _logging.getLogger(__name__).warning("Failed to update queue row %s: %s", best_id, upd_err)
                 try:
-                    conn.rollback()
+                    session.rollback()
                 except Exception:
                     pass
                 failed_count += 1
                 failed_items.append({"title": title})
-
-        conn.close()
-        conn = None
 
         return _json_response({
             "success": True,
@@ -640,9 +637,4 @@ async def api_queue_import_missing_tracks():
 
     except Exception as exc:
         _logging.getLogger(__name__).error("Error matching missing tracks: %s", exc)
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
         return _json_response({"success": False, "error": str(exc)}), 500

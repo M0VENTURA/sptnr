@@ -25,27 +25,54 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+"""Cover detection repository — ALL database read/write for cover detection.
+
+Extracted from the legacy ``CoverDetector`` class to enforce the
+repository-only-DB-access rule.  Every function opens its own SQLAlchemy
+session (``db_session``) with named binds — the legacy ``conn`` parameter is
+kept only for backward compatibility and is ignored.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy import text
+from db.engine import db_session
+from db.utils import row_get
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Queries
+# ---------------------------------------------------------------------------
+
+
 def track_has_original_by_artist(
     conn,
     artist: str,
     title: str,
 ) -> bool:
     """Return True when *artist* already has a non-cover recording of *title*."""
-    if not conn or not artist or not title:
+    if not artist or not title:
         return False
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT 1 FROM tracks
-            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-              AND LOWER(title) = LOWER(%s)
-              AND COALESCE(is_cover, 0) = 0
-            LIMIT 1
-            """,
-            (artist, title),
-        )
-        return cursor.fetchone() is not None
+        with db_session() as session:
+            row = session.execute(
+                text("""
+                    SELECT 1 FROM tracks
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                      AND LOWER(title) = LOWER(:title)
+                      AND COALESCE(is_cover, 0) = 0
+                    LIMIT 1
+                """),
+                {"artist": artist, "title": title},
+            ).fetchone()
+        return row is not None
     except Exception:
         return False
 
@@ -58,22 +85,21 @@ def is_common_writer_for_artist(
     min_count: int = 2,
 ) -> bool:
     """Return True when *writer* appears on at least *min_count* tracks by *artist*."""
-    if not conn or not writer or not artist:
+    if not writer or not artist:
         return False
 
     lookup = track_artist if track_artist and not _loose_match(track_artist, artist) else artist
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT writer FROM tracks
-            WHERE (LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-                   OR LOWER(artist) = LOWER(%s))
-              AND writer IS NOT NULL AND writer != '' AND writer != '[]'
-            """,
-            (lookup, lookup),
-        )
-        rows = cursor.fetchall() or []
+        with db_session() as session:
+            rows = session.execute(
+                text("""
+                    SELECT writer FROM tracks
+                    WHERE (LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:lookup)
+                           OR LOWER(artist) = LOWER(:lookup))
+                      AND writer IS NOT NULL AND writer != '' AND writer != '[]'
+                """),
+                {"lookup": lookup},
+            ).fetchall() or []
     except Exception:
         return False
 
@@ -98,25 +124,24 @@ def is_common_writer_for_artist(
 
 def writer_coverage_for_artist(conn, artist: str) -> float:
     """Return fraction (0.0–1.0) of tracks by *artist* that have a non-null writer field."""
-    if not conn or not artist:
+    if not artist:
         return 1.0
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT COUNT(*) AS total,
-                   SUM(CASE WHEN writer IS NOT NULL
-                         AND TRIM(CAST(writer AS TEXT)) NOT IN ('', '[]', 'null', 'None')
-                    THEN 1 ELSE 0 END) AS with_writer
-            FROM tracks
-            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
-            """,
-            (artist,),
-        )
-        row = cursor.fetchone()
+        with db_session() as session:
+            row = session.execute(
+                text("""
+                    SELECT COUNT(*) AS total,
+                           SUM(CASE WHEN writer IS NOT NULL
+                                 AND TRIM(CAST(writer AS TEXT)) NOT IN ('', '[]', 'null', 'None')
+                            THEN 1 ELSE 0 END) AS with_writer
+                    FROM tracks
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                """),
+                {"artist": artist},
+            ).mappings().first()
         if row:
-            total = int(row_get(row, "total", 0, 0) or 0)
-            with_writer = int(row_get(row, "with_writer", 1, 0) or 0)
+            total = int(row.get("total") or 0)
+            with_writer = int(row.get("with_writer") or 0)
             return float(with_writer) / float(total) if total else 1.0
     except Exception:
         pass
@@ -125,17 +150,16 @@ def writer_coverage_for_artist(conn, artist: str) -> float:
 
 def get_track_writers_from_db(conn, track_id: str) -> List[str]:
     """Fetch writer JSON from the tracks table for a single track."""
-    if not conn:
+    if not track_id:
         return []
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT writer FROM tracks WHERE id = %s",
-            (track_id,),
-        )
-        row = cursor.fetchone()
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT writer FROM tracks WHERE id = :id"),
+                {"id": track_id},
+            ).fetchone()
         if row:
-            raw = row_get(row, "writer", 0, "")
+            raw = row[0]
             if raw:
                 try:
                     w = json.loads(raw) if isinstance(raw, str) else raw
@@ -154,23 +178,22 @@ def is_cover_fully_confirmed(conn, track_id: str) -> bool:
     Once confirmed, the track should not be re-checked on subsequent scans
     unless explicitly forced.
     """
-    if not conn:
+    if not track_id:
         return False
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT is_cover, original_cover_artist, cover_manual_override FROM tracks WHERE id = %s",
-            (track_id,),
-        )
-        row = cursor.fetchone()
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT is_cover, original_cover_artist, cover_manual_override FROM tracks WHERE id = :id"),
+                {"id": track_id},
+            ).fetchone()
         if not row:
             return False
-        is_cover = row_get(row, "is_cover", 0, 0)
-        original_artist = row_get(row, "original_cover_artist", 1, "") or ""
-        manual_override = row_get(row, "cover_manual_override", 2, False)
+        is_cover = row[0]
+        original_artist = row[1] or ""
+        manual_override = row[2]
         if manual_override:
             return True  # user-override means skip detection entirely
-        if is_cover and original_artist.strip():
+        if is_cover and str(original_artist).strip():
             return True
         return False
     except Exception:
@@ -179,19 +202,18 @@ def is_cover_fully_confirmed(conn, track_id: str) -> bool:
 
 def get_track_genres(conn, track_id: str) -> dict:
     """Return (genres, musicbrainz_genres) for a track."""
-    if not conn:
+    if not track_id:
         return {"genres": "", "musicbrainz_genres": ""}
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT genres, musicbrainz_genres FROM tracks WHERE id = %s",
-            (track_id,),
-        )
-        row = cursor.fetchone()
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT genres, musicbrainz_genres FROM tracks WHERE id = :id"),
+                {"id": track_id},
+            ).fetchone()
         if row:
             return {
-                "genres": row_get(row, "genres", 0, "") or "",
-                "musicbrainz_genres": row_get(row, "musicbrainz_genres", 1, "") or "",
+                "genres": row[0] or "",
+                "musicbrainz_genres": row[1] or "",
             }
     except Exception:
         pass
@@ -209,7 +231,7 @@ def apply_cover_metadata_batch(conn, updates: List[Dict], max_retries: int = 5) 
     Returns the list of successfully-updated track IDs.
     Uses deterministic retry with exponential back-off.
     """
-    if not conn or not updates:
+    if not updates:
         return []
 
     rows = sorted(
@@ -222,51 +244,53 @@ def apply_cover_metadata_batch(conn, updates: List[Dict], max_retries: int = 5) 
     delay = 0.15
     for attempt in range(max_retries):
         try:
-            cursor = conn.cursor()
             successful: List[str] = []
-            for update in rows:
-                tid = update["track_id"]
-                title = update.get("title", "")
-                orig = update.get("original_artist", "")
-                reason = update.get("is_cover_reason") or (f"Originally by {orig}" if orig else "Cover detection")
-                new_title = _build_cover_title(title, orig)
+            with db_session() as session:
+                for update in rows:
+                    tid = update["track_id"]
+                    title = update.get("title", "")
+                    orig = update.get("original_artist", "")
+                    reason = update.get("is_cover_reason") or (f"Originally by {orig}" if orig else "Cover detection")
+                    new_title = _build_cover_title(title, orig)
 
-                # Add "Cover" to musicbrainz_genres.
-                try:
-                    cursor.execute("SELECT musicbrainz_genres FROM tracks WHERE id = %s", (tid,))
-                    row = cursor.fetchone()
-                except Exception:
-                    row = None
-                mb_raw = row_get(row, "musicbrainz_genres", 0, "") if row else ""
-                try:
-                    mb_list = json.loads(mb_raw) if mb_raw and mb_raw != "null" else []
-                    if not isinstance(mb_list, list):
+                    # Add "Cover" to musicbrainz_genres.
+                    try:
+                        row = session.execute(
+                            text("SELECT musicbrainz_genres FROM tracks WHERE id = :id"),
+                            {"id": tid},
+                        ).fetchone()
+                    except Exception:
+                        row = None
+                    mb_raw = row[0] if row else ""
+                    try:
+                        mb_list = json.loads(mb_raw) if mb_raw and mb_raw != "null" else []
+                        if not isinstance(mb_list, list):
+                            mb_list = []
+                    except (json.JSONDecodeError, TypeError):
                         mb_list = []
-                except (json.JSONDecodeError, TypeError):
-                    mb_list = []
-                if "Cover" not in [str(g).strip() for g in mb_list]:
-                    mb_list.insert(0, "Cover")
-                    cursor.execute(
-                        "UPDATE tracks SET musicbrainz_genres = %s WHERE id = %s",
-                        (json.dumps(mb_list), tid),
+                    if "Cover" not in [str(g).strip() for g in mb_list]:
+                        mb_list.insert(0, "Cover")
+                        session.execute(
+                            text("UPDATE tracks SET musicbrainz_genres = :genres WHERE id = :id"),
+                            {"genres": json.dumps(mb_list), "id": tid},
+                        )
+
+                    if new_title != title:
+                        session.execute(
+                            text("UPDATE tracks SET title = :title WHERE id = :id"),
+                            {"title": new_title, "id": tid},
+                        )
+                    session.execute(
+                        text(
+                            "UPDATE tracks SET is_cover = 1, is_cover_reason = :reason, "
+                            "original_cover_artist = :orig WHERE id = :id"
+                        ),
+                        {"reason": reason, "orig": orig, "id": tid},
                     )
+                    successful.append(tid)
 
-                if new_title != title:
-                    cursor.execute("UPDATE tracks SET title = %s WHERE id = %s", (new_title, tid))
-                cursor.execute(
-                    "UPDATE tracks SET is_cover = 1, is_cover_reason = %s, "
-                    "original_cover_artist = %s WHERE id = %s",
-                    (reason, orig, tid),
-                )
-                successful.append(tid)
-
-            conn.commit()
             return successful
         except Exception as exc:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
             if attempt < max_retries - 1:
                 sleep_for = min(delay * (2 ** attempt), 2.0)
                 logger.warning(

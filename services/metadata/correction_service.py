@@ -14,34 +14,28 @@ from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection, row_get  # TODO: migrate
+from db.utils import row_get
 
 logger = logging.getLogger(__name__)
 
 
-def _table_columns(cursor: Any, table_name: str) -> set[str]:
-    """Return the column names of a table via a psycopg2 cursor.
+def _table_columns(cursor: Any = None, table_name: str = "") -> set[str]:
+    """Return the set of column names for *table_name* (information_schema).
 
-    ``db.utils`` has no ``get_table_columns`` (it lives in
-    ``db.schema_helpers`` and takes a SQLAlchemy session, not a cursor) —
-    importing it raised ImportError and took the whole corrections page
-    down with a silent "Database error" banner.
+    ``cursor`` is kept for backward compatibility — the query runs on its own
+    SQLAlchemy session.
     """
+    if not table_name:
+        return set()
     try:
-        cursor.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema = current_schema() AND table_name = %s",
-            (table_name,),
-        )
-        # psycopg2 RealDictRow rows are dict-like — ``row[0]`` raises KeyError,
-        # which made this always return an empty set and silently disable the
-        # whole inconsistency scan. Use ``row_get`` which handles dict-like and
-        # tuple rows.
-        return {
-            str(row_get(row, "column_name"))
-            for row in cursor.fetchall()
-            if row_get(row, "column_name")
-        }
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            rows = session.execute(
+                _text("SELECT column_name FROM information_schema.columns WHERE table_name = :tbl"),
+                {"tbl": table_name},
+            ).fetchall() or []
+        return {str(r[0]) for r in rows}
     except Exception:
         return set()
 
@@ -81,10 +75,10 @@ def get_album_tag_inconsistencies(artist_filter: str | None = None) -> list[dict
         {album_artist, album, track_count,
          inconsistencies: [{field, field_label, values: [{value, count, track_ids}]}]}
     """
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        track_columns = _table_columns(cursor, "tracks")
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        track_columns = _table_columns(None, "tracks")
         has_album_artist = "album_artist" in track_columns
         artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)" if has_album_artist else "artist"
 
@@ -104,22 +98,24 @@ def get_album_tag_inconsistencies(artist_filter: str | None = None) -> list[dict
         having_sql = " OR ".join(having_parts)
 
         where_sql = "WHERE album IS NOT NULL AND TRIM(album) != ''"
-        params: list[str] = []
+        params: dict[str, Any] = {}
         if artist_filter:
-            where_sql += f" AND {artist_expr} = %s"
-            params.append(artist_filter)
+            where_sql += f" AND {artist_expr} = :artist_filter"
+            params["artist_filter"] = artist_filter
 
-        cursor.execute(
-            f"""
-            SELECT {artist_expr} AS album_artist, album, COUNT(*) AS track_count
-            FROM tracks {where_sql}
-            GROUP BY {artist_expr}, album
-            HAVING COUNT(*) >= 2 AND ({having_sql})
-            ORDER BY {artist_expr}, album
-            """,
-            params or None,
-        )
-        flagged_albums = cursor.fetchall()
+        with _db_session() as session:
+            flagged_albums = session.execute(
+                _text(
+                    f"""
+                    SELECT {artist_expr} AS album_artist, album, COUNT(*) AS track_count
+                    FROM tracks {where_sql}
+                    GROUP BY {artist_expr}, album
+                    HAVING COUNT(*) >= 2 AND ({having_sql})
+                    ORDER BY {artist_expr}, album
+                    """
+                ),
+                params or None,
+            ).mappings().all()
 
         results = []
         for row in flagged_albums:
@@ -172,8 +168,6 @@ def get_album_tag_inconsistencies(artist_filter: str | None = None) -> list[dict
     except Exception as exc:
         logger.warning("Failed to get album tag inconsistencies: %s", exc, exc_info=True)
         return []
-    finally:
-        conn.close()
 
 
 def fix_album_field(album_artist: str, album: str, field: str, value: Any) -> tuple[int, int]:
@@ -186,23 +180,38 @@ def fix_album_field(album_artist: str, album: str, field: str, value: Any) -> tu
         logger.warning("Field %s not in allowed consistency fields", field)
         return 0, 0
 
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            f"SELECT id, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
-            (album_artist, album),
-        )
-        affected = [dict(r) if hasattr(r, "keys") else {"id": r[0], "file_path": r[1]} for r in cursor.fetchall()]
-        if not affected:
-            return 0, 0
+def fix_album_field(album_artist: str, album: str, field: str, value: Any) -> tuple[int, int]:
+    """Apply a single field value to all tracks in an album.
 
-        cursor.execute(
-            f"UPDATE tracks SET {field} = %s WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
-            (value, album_artist, album),
-        )
-        conn.commit()
-        updated_count = len(affected)
+    Returns (tracks_updated, files_updated).
+    """
+    allowed = {f for f, _ in ALBUM_CONSISTENCY_FIELDS}
+    if field not in allowed:
+        logger.warning("Field %s not in allowed consistency fields", field)
+        return 0, 0
+
+    try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            rows = session.execute(
+                _text(
+                    "SELECT id, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :aa AND album = :al"
+                ),
+                {"aa": album_artist, "al": album},
+            ).mappings().all()
+            affected = [dict(r) for r in rows]
+            if not affected:
+                return 0, 0
+
+            session.execute(
+                _text(
+                    f"UPDATE tracks SET {field} = :value "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :aa AND album = :al"
+                ),
+                {"value": value, "aa": album_artist, "al": album},
+            )
+            updated_count = len(affected)
 
         files_updated = 0
         from services.metadata.tag_file_service import write_tags_to_file
@@ -219,5 +228,3 @@ def fix_album_field(album_artist: str, album: str, field: str, value: Any) -> tu
     except Exception as exc:
         logger.error("fix_album_field failed: %s", exc, exc_info=True)
         return 0, 0
-    finally:
-        conn.close()

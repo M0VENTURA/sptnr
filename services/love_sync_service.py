@@ -25,7 +25,8 @@ from db.repositories.love_sync_repository import (
     unstar_all_for_user,
     upsert_loved_track,
 )
-from db.utils import get_db_connection
+from sqlalchemy import text
+from db.engine import db_session
 
 logger = logging.getLogger(__name__)
 
@@ -44,77 +45,70 @@ def sync_all_users(navidrome_client: Optional[NavidromeClient] = None) -> Dict[s
     Returns:
         Dict with per-user sync results.
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with db_session() as session:
+        ensure_user_loved_tracks_table(session)
+        session.commit()
 
-    ensure_user_loved_tracks_table(cursor)
-    conn.commit()
+        nd_client = navidrome_client or NavidromeClient()
+        results: Dict[str, Any] = {"users": [], "total_loved": 0, "total_unloved": 0}
 
-    nd_client = navidrome_client or NavidromeClient()
-    results: Dict[str, Any] = {"users": [], "total_loved": 0, "total_unloved": 0}
+        users = get_navidrome_users(session)
+        if not users:
+            logger.info("Love sync: no Navidrome users found")
+            return {**results, "error": "no_users"}
 
-    users = get_navidrome_users(cursor)
-    if not users:
-        logger.info("Love sync: no Navidrome users found")
-        conn.close()
-        return {**results, "error": "no_users"}
+        for user in users:
+            user_id = int(user.get("id", 0))
+            user_name = str(user.get("name", ""))
 
-    for user in users:
-        user_id = int(user.get("id", 0))
-        user_name = str(user.get("name", ""))
+            if not user_id:
+                continue
 
-        if not user_id:
-            continue
-
-        try:
-            # 1. Get user's ListenBrainz token
-            lb_token = _get_listenbrainz_token(cursor, user_id)
-
-            # 2. Get starred tracks from Navidrome
-            starred = nd_client.get_starred_items() or {}
-            starred_songs = starred.get("song", []) if isinstance(starred, dict) else []
-            starred_ids = [s.get("id", "") for s in starred_songs if s.get("id")]
-
-            # 3. Full-sync: unstar all, then star current
-            unstar_all_for_user(cursor, user_id)
-            loved_count = 0
-            for track_id in starred_ids:
-                upsert_loved_track(cursor, user_id, track_id)
-                loved_count += 1
-                # Push to ListenBrainz if token available and track has MBID
-                if lb_token:
-                    _push_love_to_listenbrainz(cursor, lb_token, track_id)
-
-            conn.commit()
-            logger.info("Love sync for user '%s': %d tracks loved", user_name, loved_count)
-            results["users"].append({
-                "name": user_name,
-                "loved": loved_count,
-                "listeningbrainz_token": bool(lb_token),
-            })
-            results["total_loved"] += loved_count
-        except Exception as exc:
-            logger.error("Love sync failed for user '%s': %s", user_name, exc)
             try:
-                conn.rollback()
-            except Exception:
-                pass
-            results["users"].append({"name": user_name, "error": str(exc)})
+                # 1. Get user's ListenBrainz token
+                lb_token = _get_listenbrainz_token(session, user_id)
 
-    conn.close()
+                # 2. Get starred tracks from Navidrome
+                starred = nd_client.get_starred_items() or {}
+                starred_songs = starred.get("song", []) if isinstance(starred, dict) else []
+                starred_ids = [s.get("id", "") for s in starred_songs if s.get("id")]
+
+                # 3. Full-sync: unstar all, then star current
+                unstar_all_for_user(session, user_id)
+                loved_count = 0
+                for track_id in starred_ids:
+                    upsert_loved_track(session, user_id, track_id)
+                    loved_count += 1
+                    # Push to ListenBrainz if token available and track has MBID
+                    if lb_token:
+                        _push_love_to_listenbrainz(session, lb_token, track_id)
+
+                # Per-user commit (the whole DB session commits on exit) —
+                # matches the legacy per-user transaction boundary.
+                session.commit()
+                logger.info("Love sync for user '%s': %d tracks loved", user_name, loved_count)
+                results["users"].append({
+                    "name": user_name,
+                    "loved": loved_count,
+                    "listeningbrainz_token": bool(lb_token),
+                })
+                results["total_loved"] += loved_count
+            except Exception as exc:
+                logger.error("Love sync failed for user '%s': %s", user_name, exc)
+                session.rollback()
+                results["users"].append({"name": user_name, "error": str(exc)})
+
     return results
 
 
-def _get_listenbrainz_token(cursor, user_id: int) -> Optional[str]:
+def _get_listenbrainz_token(session, user_id: int) -> Optional[str]:
     """Fetch the ListenBrainz user token for a Navidrome user."""
     try:
-        cursor.execute(
-            "SELECT listenbrainz_token FROM navidrome_users WHERE id = %s",
-            (user_id,),
-        )
-        row = cursor.fetchone()
+        row = session.execute(
+            text("SELECT listenbrainz_token FROM navidrome_users WHERE id = :user_id"),
+            {"user_id": user_id},
+        ).mappings().first()
         if row:
-            # Rows are RealDictRow (dict-like); never index by position.
             raw = str(row.get("listenbrainz_token") or "").strip()
             return raw if raw else None
     except Exception:
@@ -122,9 +116,9 @@ def _get_listenbrainz_token(cursor, user_id: int) -> Optional[str]:
     return None
 
 
-def _push_love_to_listenbrainz(cursor, token: str, track_id: str) -> None:
+def _push_love_to_listenbrainz(session, token: str, track_id: str) -> None:
     """Attempt to push a love for *track_id* to ListenBrainz via its MBID."""
-    mbid = get_track_mbid(cursor, track_id)
+    mbid = get_track_mbid(session, track_id)
     if not mbid:
         logger.debug("Love sync: no MBID for track %s, skipping ListenBrainz push", track_id)
         return

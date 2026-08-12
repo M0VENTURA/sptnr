@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import subprocess
+import threading
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -1207,35 +1212,203 @@ def api_delete_bookmark(bookmark_id):
 # ESSENTIA
 # ===========================================================================
 
+# ML model files downloaded from the official Essentia model zoo — the same
+# set the bundled Docker image ships with (mood + Discogs-400 genre models).
+_ESSENTIA_MODEL_URLS = [
+    "https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bs64-1.pb",
+    "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb",
+    "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json",
+    "https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.pb",
+    "https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json",
+]
+_ESSENTIA_REPO_URL = "https://github.com/WB2024/Essentia-to-Metadata.git"
+_ESSENTIA_SCRIPT_DEFAULT = "/opt/Essentia-to-Metadata/tag_music.py"
+_ESSENTIA_MODELS_DEFAULT = "/opt/essentia_models"
+
+_essentia_download_thread = None
+_essentia_download_lock = threading.Lock()
+
+
+def _essentia_progress_file() -> str:
+    """Path of the Essentia download progress file (state dir)."""
+    from helpers.config_helpers import get_state_directory
+    return os.path.join(get_state_directory(), "essentia_download_progress.json")
+
+
+def _write_essentia_progress(is_running: bool, **extra) -> None:
+    """Persist the Essentia download progress payload (best-effort)."""
+    try:
+        payload = {
+            "is_running": is_running,
+            "scan_type": "essentia_download",
+            "last_updated": datetime.now().isoformat(),
+        }
+        payload.update(extra)
+        path = _essentia_progress_file()
+        _dir = os.path.dirname(path) or "."
+        os.makedirs(_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+    except Exception as exc:
+        logger.debug("Failed writing essentia download progress: %s", exc)
+
+
+def _do_essentia_download() -> None:
+    """Clone/update the Essentia-to-Metadata script and download the ML models.
+
+    Runs on a background thread.  Steps:
+      1. git-clone (or git-pull) the WB2024/Essentia-to-Metadata repo into the
+         directory derived from ``essentia.script_path`` (or the Docker default).
+      2. Stream-download the 5 model files from essentia.upf.edu into
+         ``essentia.models_dir`` (or /opt/essentia_models).
+
+    Progress is written to ``essentia_download_progress.json`` so
+    ``/api/essentia/download-status`` can serve it to the config page and the
+    setup wizard.
+    """
+    try:
+        cfg = get_config() or {}
+        essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
+        script_path = str(essentia_cfg.get("script_path") or "").strip()
+        models_dir_cfg = str(essentia_cfg.get("models_dir") or "").strip()
+
+        clone_dir = os.path.dirname(script_path) if script_path else os.path.dirname(_ESSENTIA_SCRIPT_DEFAULT)
+        target_models_dir = models_dir_cfg or _ESSENTIA_MODELS_DEFAULT
+        total_files = len(_ESSENTIA_MODEL_URLS)
+
+        # ── Step 1: clone or update the script repository ────────────────
+        _write_essentia_progress(
+            True, status="cloning_script",
+            current_step=f"Cloning Essentia-to-Metadata to {clone_dir}…",
+            files_done=0, files_total=total_files,
+        )
+        parent_dir = os.path.dirname(clone_dir)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        if os.path.isdir(os.path.join(clone_dir, ".git")):
+            # Repo already present — pull latest changes.
+            result = subprocess.run(
+                ["git", "-C", clone_dir, "pull", "--ff-only"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                logger.warning("Essentia git pull returned non-zero (non-fatal): %s", result.stderr.strip())
+        else:
+            result = subprocess.run(
+                ["git", "clone", "--depth=1", _ESSENTIA_REPO_URL, clone_dir],
+                capture_output=True, text=True, timeout=180,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"git clone failed: {result.stderr.strip()[:300]}")
+
+        # ── Step 2: download the model files ─────────────────────────────
+        os.makedirs(target_models_dir, exist_ok=True)
+        for idx, url in enumerate(_ESSENTIA_MODEL_URLS):
+            filename = os.path.basename(url)
+            dest_path = os.path.join(target_models_dir, filename)
+            _write_essentia_progress(
+                True, status="downloading_models",
+                current_step=f"Downloading {filename} ({idx + 1}/{total_files})…",
+                files_done=idx, files_total=total_files,
+            )
+            if os.path.isfile(dest_path):
+                logger.info("Essentia model already present, skipping: %s", dest_path)
+                continue
+            tmp_path = dest_path + ".tmp"
+            try:
+                with httpx.stream("GET", url, timeout=300, follow_redirects=True) as resp:
+                    resp.raise_for_status()
+                    with open(tmp_path, "wb") as fh:
+                        for chunk in resp.iter_bytes(chunk_size=1 << 20):
+                            if chunk:
+                                fh.write(chunk)
+                os.replace(tmp_path, dest_path)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                raise
+
+        _write_essentia_progress(
+            False, status="complete", current_step="Download complete",
+            files_done=total_files, files_total=total_files,
+            models_dir=target_models_dir, script_dir=clone_dir,
+        )
+        from helpers.logging_config import log_unified
+        log_unified(
+            f"Essentia Scan - Models and script downloaded successfully"
+            f" (models: {target_models_dir}, script: {clone_dir})"
+        )
+    except Exception as exc:
+        logger.error("Essentia model download failed: %s", exc, exc_info=True)
+        _write_essentia_progress(False, status="error", current_step=f"Error: {exc}", error=str(exc))
+
+
 @misc_api_bp.route("/essentia/download-models", methods=["POST"])
 def api_essentia_download_models():
-    """Download Essentia model files."""
-    return jsonify({"status": "started", "message": "Download started"}), 202
+    """Download the Essentia-to-Metadata script and ML model files (background).
+
+    Starts a background thread that:
+      1. git-clones (or git-pulls) https://github.com/WB2024/Essentia-to-Metadata
+         into the directory derived from the configured ``script_path``.
+      2. Downloads the 5 Essentia ML model files from essentia.upf.edu into
+         the configured ``models_dir``.
+
+    Returns JSON ``{"status": "started"}`` immediately, or 409
+    ``{"status": "already_running"}`` if a download is already in progress.
+    Poll ``/api/essentia/download-status`` for progress.
+    """
+    global _essentia_download_thread
+    with _essentia_download_lock:
+        if _essentia_download_thread is not None and _essentia_download_thread.is_alive():
+            return jsonify({"status": "already_running", "message": "Download already in progress"}), 409
+        _essentia_download_thread = threading.Thread(
+            target=_do_essentia_download, daemon=True, name="essentia-download"
+        )
+        _essentia_download_thread.start()
+    return jsonify({"status": "started", "message": "Essentia download started"}), 202
 
 
 @misc_api_bp.route("/essentia/download-status")
 def api_essentia_download_status():
-    """Return download status for Essentia models.
+    """Return download status for Essentia models/script.
 
-    Checks whether the configured models directory exists and contains
-    model files (``.pb`` / ``.json``).  Returns ``"installed"`` when
-    at least one model file is found, so the UI can hide the download
-    button.
+    While a download runs, mirrors the background thread's progress file
+    (``cloning_script`` / ``downloading_models`` / ``error``).  Once idle, an
+    ``installed`` result is reported when the configured models directory
+    contains model files (``.pb`` / ``.json``) so the UI can hide the
+    download button; ``complete`` is reported only when the models dir is
+    unexpectedly empty after a successful run.
     """
-    from helpers.config_helpers import get_config
-    import os
+    progress = None
+    try:
+        with open(_essentia_progress_file(), "r", encoding="utf-8") as fh:
+            progress = json.load(fh)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.debug("Essentia progress read failed: %s", exc)
+
+    if isinstance(progress, dict) and progress.get("is_running"):
+        return jsonify(progress)
+    if isinstance(progress, dict) and progress.get("status") == "error":
+        return jsonify(progress), 500
 
     cfg = get_config()
     models_dir = (
         (cfg.get("essentia", {}) or {}).get("models_dir")
         or os.environ.get("ESSENTIA_MODELS_DIR")
-        or "/opt/essentia_models"
+        or _ESSENTIA_MODELS_DEFAULT
     )
-
     if os.path.isdir(models_dir):
         model_files = [f for f in os.listdir(models_dir) if f.endswith((".pb", ".json"))]
         if model_files:
             return jsonify({"status": "installed", "models_dir": models_dir, "file_count": len(model_files)}), 200
+
+    if isinstance(progress, dict) and progress.get("status") == "complete":
+        return jsonify(progress)
 
     return jsonify({"status": "idle", "models_dir": models_dir}), 200
 

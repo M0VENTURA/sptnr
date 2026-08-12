@@ -374,22 +374,23 @@ class CoverDetector:
         # Persist the assessment marker for every track this pass actually
         # assessed (fresh-cache skips are already up to date) so subsequent
         # scans skip the heavy per-track MB pipeline until the recheck window.
-        if self.db_conn:
-            try:
-                assessed = [
-                    str(t.get("id")) for t in tracks
-                    if t.get("id") and str(t.get("id")) not in _fresh_skipped
-                ]
-                if assessed:
-                    cur = self.db_conn.cursor()
-                    cur.execute(
-                        "UPDATE tracks SET cover_last_checked = %s WHERE id IN (%s)"
-                        % ("%s", ",".join(["%s"] * len(assessed))),
-                        [datetime.now(timezone.utc).isoformat()] + assessed,
+        try:
+            assessed = [
+                str(t.get("id")) for t in tracks
+                if t.get("id") and str(t.get("id")) not in _fresh_skipped
+            ]
+            if assessed:
+                from sqlalchemy import text as _text
+                from db.engine import db_session as _db_session
+                ids_placeholders = ", ".join(f":tid{i}" for i in range(len(assessed)))
+                with _db_session() as session:
+                    session.execute(
+                        _text(f"UPDATE tracks SET cover_last_checked = :checked WHERE id IN ({ids_placeholders})"),
+                        {"checked": datetime.now(timezone.utc).isoformat(),
+                         **{f"tid{i}": t for i, t in enumerate(assessed)}},
                     )
-                    self.db_conn.commit()
-            except Exception as exc:
-                logger.debug("cover_last_checked persist failed: %s", exc)
+        except Exception as exc:
+            logger.debug("cover_last_checked persist failed: %s", exc)
 
         logger.info("Cover detection complete: %d covers found in '%s'", len(cover_results), album)
         return cover_results
@@ -787,18 +788,20 @@ class CoverDetector:
     def _load_cover_checked_map(self, track_ids: List[Any]) -> Dict[str, Any]:
         """Load ``cover_last_checked`` for the album's tracks (one DB query)."""
         ids = [str(t) for t in track_ids if t]
-        if not ids or not self.db_conn:
+        if not ids:
             return {}
         try:
-            cur = self.db_conn.cursor()
-            cur.execute(
-                "SELECT id, cover_last_checked FROM tracks WHERE id IN (%s)"
-                % ",".join(["%s"] * len(ids)),
-                ids,
-            )
+            from sqlalchemy import text as _text
+            from db.engine import db_session as _db_session
+            ids_placeholders = ", ".join(f":tid{i}" for i in range(len(ids)))
+            with _db_session() as session:
+                rows = session.execute(
+                    _text(f"SELECT id, cover_last_checked FROM tracks WHERE id IN ({ids_placeholders})"),
+                    {f"tid{i}": t for i, t in enumerate(ids)},
+                ).fetchall() or []
             return {
-                str(row_get(row, "id", 0, "")): row_get(row, "cover_last_checked", 1)
-                for row in cur.fetchall() or []
+                str(r[0]): r[1]
+                for r in rows
             }
         except Exception as exc:
             logger.debug("cover_last_checked load failed: %s", exc)
@@ -844,9 +847,9 @@ class CoverDetector:
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        # Fallback: check DB if not in the track dict.
-        if not writers and self.db_conn:
-            writers = get_track_writers_from_db(self.db_conn, track.get("id", ""))
+        # Fallback: check DB if not in the track dict (repo opens its own session).
+        if not writers:
+            writers = get_track_writers_from_db(None, track.get("id", ""))
 
         if not writers:
             mbid = track.get("mbid") or self._resolve_recording_mbid(

@@ -17,24 +17,18 @@ Architecture:
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection  # TODO: migrate
 from db.repositories.library import fetch_genre_mood_analytics
 
 
 def get_genre_mood_analytics(top_n=50):
-    conn = get_db_connection()
+    # The repository layer owns the SQLAlchemy session.
+    genres_raw, moods_raw, combos_raw = fetch_genre_mood_analytics(None, top_n)
 
-    try:
-        genres_raw, moods_raw, combos_raw = fetch_genre_mood_analytics(conn, top_n)
+    genres = [{"name": row[0], "count": row[1]} for row in genres_raw]
+    moods = [{"name": row[0], "count": row[1]} for row in moods_raw]
+    combos = [
+        {"genre": row[0], "mood": row[1], "count": row[2]}
+        for row in combos_raw
+    ]
 
-        genres = [{"name": row[0], "count": row[1]} for row in genres_raw]
-        moods = [{"name": row[0], "count": row[1]} for row in moods_raw]
-        combos = [
-            {"genre": row[0], "mood": row[1], "count": row[2]}
-            for row in combos_raw
-        ]
-
-        return genres, moods, combos
-
-    finally:
-        conn.close()
+    return genres, moods, combos

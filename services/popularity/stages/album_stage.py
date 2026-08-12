@@ -159,16 +159,19 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
 def _fetch_artist_metadata(artist: str, conn) -> dict[str, Any]:
     """Fetch artist country, bio, and image, delegating to existing services."""
     result: dict[str, Any] = {"country": None, "bio": None, "image_url": None}
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT country, bio, image_url FROM artists WHERE name = %s", (artist,))
-    existing = cursor.fetchone()
-    if existing:
-        result = {
-            "country": row_get(existing, "country") or None,
-            "bio": row_get(existing, "bio") or None,
-            "image_url": row_get(existing, "image_url") or None,
-        }
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+    with _db_session() as session:
+        existing = session.execute(
+            _text("SELECT country, bio, image_url FROM artists WHERE name = :artist"),
+            {"artist": artist},
+        ).mappings().first()
+        if existing:
+            result = {
+                "country": existing.get("country") or None,
+                "bio": existing.get("bio") or None,
+                "image_url": existing.get("image_url") or None,
+            }
 
     # Bio via existing enrichment service
     if not result["bio"]:
@@ -199,15 +202,20 @@ def _fetch_artist_metadata(artist: str, conn) -> dict[str, Any]:
 
     # Persist
     try:
-        cursor.execute("""
-            INSERT INTO artists (id, name, country, bio, image_url)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (name) DO UPDATE SET
-                country = COALESCE(excluded.country, artists.country),
-                bio = COALESCE(excluded.bio, artists.bio),
-                image_url = COALESCE(excluded.image_url, artists.image_url)
-        """, (artist, artist, result["country"], result["bio"], result["image_url"]))
-        conn.commit()
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            session.execute(
+                _text("""
+                    INSERT INTO artists (id, name, country, bio, image_url)
+                    VALUES (:artist, :artist, :country, :bio, :image_url)
+                    ON CONFLICT (name) DO UPDATE SET
+                        country = COALESCE(excluded.country, artists.country),
+                        bio = COALESCE(excluded.bio, artists.bio),
+                        image_url = COALESCE(excluded.image_url, artists.image_url)
+                """),
+                {"artist": artist, "country": result["country"], "bio": result["bio"], "image_url": result["image_url"]},
+            )
     except Exception as exc:
         logger.debug("[album_stage] Persist artist metadata failed: %s", exc)
 
@@ -221,17 +229,21 @@ def _fetch_artist_metadata(artist: str, conn) -> dict[str, Any]:
 def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
     """Fetch and cache similar artists from Last.fm (and ListenBrainz in future)."""
     result: dict[str, list] = {"lastfm": [], "listenbrainz": []}
-    cursor = conn.cursor()
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
 
     if bool(options.get("singles_only")) or bool(options.get("singles_with_missing_popularity")):
         return result
 
     try:
-        cursor.execute("""
-            SELECT similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated
-            FROM artists WHERE name = %s
-        """, (artist,))
-        cached = cursor.fetchone()
+        with _db_session() as session:
+            cached = session.execute(
+                _text("""
+                    SELECT similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated
+                    FROM artists WHERE name = :artist
+                """),
+                {"artist": artist},
+            ).mappings().first()
         cached_lf_fresh = False
         cached_lb_fresh = False
         if cached:
@@ -361,14 +373,17 @@ def _fetch_discogs_artist_id(artist: str, conn, options: dict) -> None:
         discogs_artist_id = _discogs_artist_id_cache[_cache_key]
         if not discogs_artist_id:
             return
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE tracks SET discogs_artist_id = %s "
-            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
-            "AND (discogs_artist_id IS NULL OR TRIM(CAST(discogs_artist_id AS TEXT)) = '')",
-            (discogs_artist_id, artist),
-        )
-        conn.commit()
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            session.execute(
+                _text(
+                    "UPDATE tracks SET discogs_artist_id = :did "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                    "AND (discogs_artist_id IS NULL OR TRIM(CAST(discogs_artist_id AS TEXT)) = '')"
+                ),
+                {"did": discogs_artist_id, "artist": artist},
+            )
         logger.info("[album_stage] Discogs artist ID for '%s': %s", artist, discogs_artist_id)
     except Exception as exc:
         logger.debug("[album_stage] Discogs artist ID lookup failed for '%s': %s", artist, exc)
@@ -392,19 +407,22 @@ def _fetch_musicbrainz_artist_id(artist: str, conn, options: dict) -> None:
     if artist.lower() in ("various artists", "various", "compilation", "soundtrack"):
         return
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
-            "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
-            "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' LIMIT 1",
-            (artist,),
-        )
-        row = cursor.fetchone()
-        if row and row_get(row, "mbid"):
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            row = session.execute(
+                _text(
+                    "SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
+                    "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                    "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' LIMIT 1"
+                ),
+                {"artist": artist},
+            ).fetchone()
+        if row and row[0]:
             return
 
         from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
-        mbid = lookup_and_save_artist_mbid(artist, conn)
+        mbid = lookup_and_save_artist_mbid(artist)
         if mbid:
             logger.info("[album_stage] MusicBrainz artist ID for '%s': %s", artist, mbid)
     except Exception as exc:
@@ -464,52 +482,54 @@ def _persist_album_type_to_tracks(conn, cursor, artist, album, tracks, album_typ
     """Propagate the detected album type (+ release-group MBID) to album tracks."""
     if not album_type:
         return
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
     primary = normalize_primary_release_type(album_type)
     updated = 0
-    for track in tracks or []:
-        track_id = track.get("id")
-        if not track_id:
-            continue
-        # Skip tracks whose stored type already matches — avoids a write
-        # storm on every re-scan (legacy behaviour wrote only on change).
-        # Compare against musicbrainz_albumtype — the canonical display
-        # column (spotify_album_type is legacy and no longer read).
-        current_type = str(track.get("musicbrainz_albumtype") or "")
-        if current_type == album_type:
-            continue
-        try:
-            cursor.execute(
-                """
-                UPDATE tracks
-                SET spotify_album_type = %s, releasetype = %s, musicbrainz_albumtype = %s
-                WHERE id = %s
-                """,
-                (album_type, primary, album_type, str(track_id)),
-            )
-            updated += 1
-        except Exception as exc:
-            logger.debug("[album_stage] Album-type persist failed for %s: %s", track_id, exc)
+    with _db_session() as session:
+        for track in tracks or []:
+            track_id = track.get("id")
+            if not track_id:
+                continue
+            # Skip tracks whose stored type already matches — avoids a write
+            # storm on every re-scan (legacy behaviour wrote only on change).
+            # Compare against musicbrainz_albumtype — the canonical display
+            # column (spotify_album_type is legacy and no longer read).
+            current_type = str(track.get("musicbrainz_albumtype") or "")
+            if current_type == album_type:
+                continue
+            try:
+                session.execute(
+                    _text("""
+                        UPDATE tracks
+                        SET spotify_album_type = :album_type, releasetype = :primary, musicbrainz_albumtype = :album_type
+                        WHERE id = :tid
+                    """),
+                    {"album_type": album_type, "primary": primary, "tid": str(track_id)},
+                )
+                updated += 1
+            except Exception as exc:
+                logger.debug("[album_stage] Album-type persist failed for %s: %s", track_id, exc)
     if updated:
-        conn.commit()
         logger.info(
             "[album_stage] Persisted album type '%s' to %s track(s) for '%s - %s'",
             album_type, updated, artist, album,
         )
 
     if release_group_mbid:
-        try:
-            cursor.execute(
-                """
-                UPDATE tracks
-                SET musicbrainz_releasegroupid = %s
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
-                  AND (musicbrainz_releasegroupid IS NULL OR TRIM(musicbrainz_releasegroupid) = '')
-                """,
-                (release_group_mbid, artist, album),
-            )
-            conn.commit()
-        except Exception as exc:
-            logger.debug("[album_stage] Release-group MBID propagation failed: %s", exc)
+        with _db_session() as session:
+            try:
+                session.execute(
+                    _text("""
+                        UPDATE tracks
+                        SET musicbrainz_releasegroupid = :rg_mbid
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album
+                          AND (musicbrainz_releasegroupid IS NULL OR TRIM(musicbrainz_releasegroupid) = '')
+                    """),
+                    {"rg_mbid": release_group_mbid, "artist": artist, "album": album},
+                )
+            except Exception as exc:
+                logger.debug("[album_stage] Release-group MBID propagation failed: %s", exc)
 
         # Resolve the release-group MBID to a concrete release MBID and store
         # it on tracks that are still missing one (legacy parity). The album
@@ -528,16 +548,16 @@ def _persist_album_type_to_tracks(conn, cursor, artist, album, tracks, album_typ
             release_mbid = ""
         if release_mbid and str(release_mbid).strip() and str(release_mbid).strip() != str(release_group_mbid).strip():
             try:
-                cursor.execute(
-                    """
-                    UPDATE tracks
-                    SET musicbrainz_album_mbid = %s, musicbrainz_albumid = %s
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
-                      AND (musicbrainz_album_mbid IS NULL OR TRIM(musicbrainz_album_mbid) = '')
-                    """,
-                    (release_mbid, release_mbid, artist, album),
-                )
-                conn.commit()
+                with _db_session() as session:
+                    session.execute(
+                        _text("""
+                            UPDATE tracks
+                            SET musicbrainz_album_mbid = :mbid, musicbrainz_albumid = :mbid
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album
+                              AND (musicbrainz_album_mbid IS NULL OR TRIM(musicbrainz_album_mbid) = '')
+                        """),
+                        {"mbid": release_mbid, "artist": artist, "album": album},
+                    )
             except Exception as exc:
                 logger.debug("[album_stage] Release MBID propagation failed: %s", exc)
 
@@ -572,11 +592,15 @@ def _fetch_artist_lastfm_tags(artist: str, conn) -> None:
     Skips artists that already have tags cached.
     """
     try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT lastfm_artist_tags FROM artists WHERE name = %s", (artist,))
-        row = cursor.fetchone()
-        if row and row_get(row, "lastfm_artist_tags"):
-            return
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            row = session.execute(
+                _text("SELECT lastfm_artist_tags FROM artists WHERE name = :artist"),
+                {"artist": artist},
+            ).fetchone()
+            if row and row[0]:
+                return
 
         from helpers.config_helpers import get_config
         cfg = get_config()
@@ -592,11 +616,13 @@ def _fetch_artist_lastfm_tags(artist: str, conn) -> None:
         tags = lf.get_artist_top_tags(artist, limit=15) or []
         names = [t.get("name") for t in tags if isinstance(t, dict) and t.get("name")]
         if names:
-            cursor.execute(
-                "UPDATE artists SET lastfm_artist_tags = %s WHERE name = %s",
-                (json.dumps(names), artist),
-            )
-            conn.commit()
+            from sqlalchemy import text as _text
+            from db.engine import db_session as _db_session
+            with _db_session() as session:
+                session.execute(
+                    _text("UPDATE artists SET lastfm_artist_tags = :tags WHERE name = :artist"),
+                    {"tags": json.dumps(names), "artist": artist},
+                )
             logger.info("[album_stage] Stored %d Last.fm tag(s) for '%s'", len(names), artist)
     except Exception as exc:
         logger.debug("[album_stage] Last.fm artist tags failed for '%s': %s", artist, exc)

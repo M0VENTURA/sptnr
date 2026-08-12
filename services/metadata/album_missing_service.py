@@ -12,53 +12,47 @@ from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection, row_get  # TODO: migrate
 
 logger = logging.getLogger(__name__)
 
 
 def get_library_tracks(artist: str, album: str) -> list[dict]:
     """Get all library tracks for a specific artist/album."""
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, title, track_number, disc_number, file_path, duration FROM tracks "
-            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s "
-            "ORDER BY COALESCE(disc_number, '1'), track_number",
-            (artist, album),
+    with db_session() as session:
+        result = session.execute(
+            text(
+                "SELECT id, title, track_number, disc_number, file_path, duration FROM tracks "
+                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album "
+                "ORDER BY COALESCE(disc_number, '1'), track_number"
+            ),
+            {"artist": artist, "album": album},
         )
-        return [dict(r) for r in cursor.fetchall()]
-    finally:
-        conn.close()
+        return [dict(r) for r in result.mappings().all()]
 
 
 def get_missing_tracks(artist: str, album: str) -> dict:
     """Check which tracks are in the MusicBrainz release but missing from the library."""
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
+    with db_session() as session:
         # Get MBID
-        cursor.execute(
-            "SELECT musicbrainz_album_mbid FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s "
-            "AND musicbrainz_album_mbid IS NOT NULL AND TRIM(musicbrainz_album_mbid) != '' LIMIT 1",
-            (artist, album),
-        )
-        row = cursor.fetchone()
-        # Rows are RealDictRow (dict-like); never index by position.
-        mb_mbid = row.get("musicbrainz_album_mbid") if row else None
+        row = session.execute(
+            text(
+                "SELECT musicbrainz_album_mbid FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album "
+                "AND musicbrainz_album_mbid IS NOT NULL AND TRIM(musicbrainz_album_mbid) != '' LIMIT 1"
+            ),
+            {"artist": artist, "album": album},
+        ).fetchone()
+        mb_mbid = row[0] if row else None
 
         # Fetch library tracks (mbid is the recording MBID column — beets_mbid
         # does not exist in the current schema).
-        cursor.execute(
-            "SELECT id, title, track_number, disc_number, mbid FROM tracks "
-            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
-            (artist, album),
-        )
-        library_rows = cursor.fetchall()
+        library_rows = session.execute(
+            text(
+                "SELECT id, title, track_number, disc_number, mbid FROM tracks "
+                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"
+            ),
+            {"artist": artist, "album": album},
+        ).fetchall()
         library_count = len(library_rows)
-    finally:
-        conn.close()
 
     if not mb_mbid:
         # Fallback: search MB for a release
@@ -139,26 +133,23 @@ def get_missing_tracks(artist: str, album: str) -> dict:
 
 def get_title_mismatches(artist: str, album: str) -> dict:
     """Compare library track titles against the full MusicBrainz release tracklist."""
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT musicbrainz_album_mbid FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s "
-            "AND musicbrainz_album_mbid IS NOT NULL AND TRIM(musicbrainz_album_mbid) != '' LIMIT 1",
-            (artist, album),
-        )
-        row = cursor.fetchone()
-        # Rows are RealDictRow (dict-like); never index by position.
-        mb_mbid = row.get("musicbrainz_album_mbid") if row else None
+    with db_session() as session:
+        row = session.execute(
+            text(
+                "SELECT musicbrainz_album_mbid FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album "
+                "AND musicbrainz_album_mbid IS NOT NULL AND TRIM(musicbrainz_album_mbid) != '' LIMIT 1"
+            ),
+            {"artist": artist, "album": album},
+        ).fetchone()
+        mb_mbid = row[0] if row else None
 
-        cursor.execute(
-            "SELECT id, title, track_number, disc_number, duration FROM tracks "
-            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s",
-            (artist, album),
-        )
-        library_rows = cursor.fetchall()
-    finally:
-        conn.close()
+        library_rows = session.execute(
+            text(
+                "SELECT id, title, track_number, disc_number, duration FROM tracks "
+                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"
+            ),
+            {"artist": artist, "album": album},
+        ).fetchall()
 
     if not mb_mbid:
         return {"mismatches": [], "mismatch_count": 0, "library_count": len(library_rows)}

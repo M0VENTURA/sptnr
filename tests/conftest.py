@@ -54,8 +54,9 @@ def sample_track(db_session):
     from sqlalchemy import text as _text
     db_session.execute(
         _text("""
-            INSERT OR IGNORE INTO tracks (id, artist, album, title, file_path)
+            INSERT INTO tracks (id, artist, album, title, file_path)
             VALUES (:id, :artist, :album, :title, :file_path)
+            ON CONFLICT DO NOTHING
         """),
         {
             "id": "test-track-001",

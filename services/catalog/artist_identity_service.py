@@ -137,16 +137,20 @@ class ArtistIdentityResolver:
 
     def _is_alias(self, artist: str, album_artist: str, album: str, track_count: int) -> bool:
         """Detect if *artist* is a historical alias of *album_artist* on this album."""
-        if track_count < 3 or not self.conn or not album:
+        if track_count < 3 or not album:
             return False
         try:
-            cur = self.conn.cursor()
-            cur.execute(
-                "SELECT artist, COUNT(*) AS cnt FROM tracks "
-                "WHERE album = %s AND artist IS NOT NULL GROUP BY artist ORDER BY cnt DESC LIMIT 1",
-                (album,),
-            )
-            row = cur.fetchone()
+            from sqlalchemy import text
+            from db.engine import db_session
+            with db_session() as session:
+                row = session.execute(
+                    text(
+                        "SELECT artist, COUNT(*) AS cnt FROM tracks "
+                        "WHERE album = :album AND artist IS NOT NULL "
+                        "GROUP BY artist ORDER BY cnt DESC LIMIT 1"
+                    ),
+                    {"album": album},
+                ).fetchone()
             if not row:
                 return False
             most_common = str(row[0])

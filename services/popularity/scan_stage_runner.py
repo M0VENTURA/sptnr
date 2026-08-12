@@ -263,16 +263,13 @@ def _run_album_cover_detection(
     if not _covers_enabled:
         return
 
-    conn = None
     try:
-        from db.utils import get_db_connection
         from services.enrichment.cover_detection_service import detect_covers_for_album
-        conn = get_db_connection()
         _cover_results = detect_covers_for_album(
             album=album,
             artist=artist,
             tracks=tracks,
-            conn=conn,
+            conn=None,
             force=bool(options.get("force")),
         )
         if _cover_results:
@@ -284,12 +281,6 @@ def _run_album_cover_detection(
             "[scan_runner] Cover detection failed for '%s - %s': %s",
             artist, album, exc,
         )
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 def _artist_top_marked_cutoffs(

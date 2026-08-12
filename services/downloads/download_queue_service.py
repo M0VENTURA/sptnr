@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.context import db_cursor  # TODO: migrate to db_session
 from db.repositories.queue import (
     clear_queue as repo_clear_queue,
     update_queue_item,

@@ -1193,16 +1193,16 @@ def check_completed_downloads() -> dict[str, Any]:
                         continue
                     seen_orphans.add(real)
                     try:
-                        from db.utils import get_db_connection
-                        conn = get_db_connection()
-                        cur = conn.cursor()
-                        cur.execute(
-                            "SELECT 1 FROM download_queue "
-                            "WHERE file_path = %s OR found_filename = %s LIMIT 1",
-                            (str(_local), os.path.basename(str(_local))),
-                        )
-                        referenced = cur.fetchone() is not None
-                        conn.close()
+                        from sqlalchemy import text as _text
+                        from db.engine import db_session as _db_session
+                        with _db_session() as session:
+                            referenced = session.execute(
+                                _text(
+                                    "SELECT 1 FROM download_queue "
+                                    "WHERE file_path = :path OR found_filename = :name LIMIT 1"
+                                ),
+                                {"path": str(_local), "name": os.path.basename(str(_local))},
+                            ).fetchone() is not None
                     except Exception:
                         referenced = True  # be safe: never delete when unsure
                     if referenced:

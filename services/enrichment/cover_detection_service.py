@@ -30,28 +30,26 @@ def detect_covers_for_artist(artist_name: str, conn, force: bool = False) -> int
 
     Uses the full ``CoverDetector`` pipeline (ISRC, MB relations, writer
     analysis, heuristics) for each track individually.  Returns the number
-    of tracks updated.
-
-    Args:
-        artist_name: Artist name to scan.
-        conn: Database connection.
-        force: If True, re-check even already-confirmed covers.
+    of tracks updated.  ``conn`` is kept for backward compatibility — DB
+    access runs on SQLAlchemy sessions.
     """
     try:
-        detector = CoverDetector(db_connection=conn)
+        detector = CoverDetector(db_connection=None)
     except Exception as exc:
         logger.warning("CoverDetector unavailable: %s", exc)
         return 0
 
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, title, artist, album, composer, writer, isrc, mbid, "
-        "musicbrainz_album_mbid, file_path, is_cover, genres, musicbrainz_genres, "
-        "original_cover_artist, cover_manual_override, cover_last_checked "
-        "FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)",
-        (artist_name,),
-    )
-    rows = cur.fetchall() or []
+    from sqlalchemy import text
+    from db.engine import db_session
+    with db_session() as session:
+        result = session.execute(
+            text("SELECT id, title, artist, album, composer, writer, isrc, mbid, "
+                 "musicbrainz_album_mbid, file_path, is_cover, genres, musicbrainz_genres, "
+                 "original_cover_artist, cover_manual_override, cover_last_checked "
+                 "FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)"),
+            {"artist": artist_name},
+        )
+        rows = result.fetchall() or []
 
     # Build a pseudo-album context so per-album caching works.
     albums: Dict[str, List[Dict]] = {}

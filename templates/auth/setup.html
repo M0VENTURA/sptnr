@@ -303,7 +303,7 @@ document.addEventListener('DOMContentLoaded', function() { if(document.getElemen
 function updateSummary() {
   document.getElementById('summaryNavidrome').innerHTML='<strong>'+(document.getElementById('navUser').value||'username')+'</strong> @ '+(document.getElementById('navUrl').value||'not set');
   const pgHost=document.getElementById('pgHost').value.trim();
-  document.getElementById('summaryDatabase').innerHTML=pgHost?'<strong>PostgreSQL</strong> @ '+pgHost+'/'+(document.getElementById('pgDb').value||'popularr'):'<span class="text-muted">SQLite (first-run mode)</span>';
+  document.getElementById('summaryDatabase').innerHTML=pgHost?'<strong>PostgreSQL</strong> @ '+pgHost+'/'+(document.getElementById('pgDb').value||'popularr'):'<span class="text-muted">PostgreSQL (container defaults)</span>';
   const apis=[]; if(document.getElementById('lfmEnabled').checked) apis.push('Last.fm'); if(document.getElementById('dgEnabled').checked) apis.push('Discogs'); if(document.getElementById('lbEnabled').checked) apis.push('ListenBrainz'); if(document.getElementById('slskdEnabled').checked) apis.push('Soulseek');
   document.getElementById('summaryApis').textContent=apis.length?apis.join(', '):'None enabled';
   document.getElementById('summaryEssentia').textContent=document.getElementById('essentiaEnabled').checked?'Will be enabled':'Not enabled';

@@ -419,20 +419,17 @@ def discover_files() -> dict[str, object]:
     already_in_library = 0
     if files:
         try:
-            from db.utils import get_db_connection
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            for f in files:
-                cursor.execute(
-                    "SELECT COUNT(*) FROM tracks WHERE file_path = %s",
-                    (f.full_path,),
-                )
-                row = cursor.fetchone()
-                # Rows are RealDictRow (dict-like); never index by position.
-                count = int(row.get("count") or 0) if row else 0
-                if count > 0:
-                    already_in_library += 1
-            conn.close()
+            from sqlalchemy import text as _text
+            from db.engine import db_session as _db_session
+            with _db_session() as session:
+                for f in files:
+                    row = session.execute(
+                        _text("SELECT COUNT(*) FROM tracks WHERE file_path = :path"),
+                        {"path": f.full_path},
+                    ).fetchone()
+                    count = int(row[0]) if row else 0
+                    if count > 0:
+                        already_in_library += 1
         except Exception as exc:
             logger.debug("[DISCOVER] Library check: %s", exc)
 

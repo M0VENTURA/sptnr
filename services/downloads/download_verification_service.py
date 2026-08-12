@@ -17,7 +17,7 @@ from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection, row_get
+from db.utils import row_get
 
 logger = logging.getLogger(__name__)
 
