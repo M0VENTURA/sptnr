@@ -198,13 +198,8 @@
                         <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-files me-2"></i>Rename Files</a></li>
                         <li><a class="dropdown-item" href="javascript:void(0)" onclick="autoLinkAllMbids()"><i class="bi bi-link-45deg me-2"></i>Auto-Link MBIDs</a></li>
                         <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumArtModal()"><i class="bi bi-image me-2"></i>Change Album Art</a></li>
-                        {% if (qbit_config is defined and qbit_config.enabled) or (slskd_config is defined and slskd_config.enabled) %}
-                        <li><hr class="dropdown-divider"></li>
-                        {% endif %}
-                        {% if qbit_config is defined and qbit_config.enabled %}
-                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openQbitSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-cloud-download me-2"></i>Search qBittorrent</a></li>
-                        {% endif %}
                         {% if slskd_config is defined and slskd_config.enabled %}
+                        <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item" href="javascript:void(0)" onclick="openSlskdSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-music-note-beamed me-2"></i>Search Soulseek</a></li>
                         {% endif %}
                     </ul>
@@ -839,7 +834,11 @@
   }
 </style>
 
-<script id="page-data" type="application/json">{{ {"artistName": artist_name, "albumName": album_name} | tojson | safe }}</script>
+{# Track-id → audio file basename map, used by the delete confirmation modal
+   to list exactly which files an action will affect. #}
+{% set _track_files = {} %}
+{% for _t in tracks %}{% if _t.get('file_path') %}{% set _ = _track_files.update({_t.id: _t.file_path|replace('\\', '/')|split('/')|last}) %}{% endif %}{% endfor %}
+<script id="page-data" type="application/json">{{ {"artistName": artist_name, "albumName": album_name, "trackFiles": _track_files} | tojson | safe }}</script>
 <script>var _pd = JSON.parse(document.getElementById('page-data').textContent); window._pageData = _pd;</script>
 <script src="{{ versioned_static('js/album_detail.js') }}"></script>
 <script src="{{ versioned_static('js/genre-utils.js') }}"></script>
@@ -872,7 +871,8 @@
   </div>
 </div>
 
-<!-- Bulk Delete Modal (used by the Tracks toolbar "Delete Selected" button) -->
+<!-- Bulk Delete Modal (used by the Tracks toolbar "Delete Selected" button
+     and the per-track ⋮ menu) -->
 <div class="modal fade" id="bulkDeleteModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -882,12 +882,19 @@
       </div>
       <div class="modal-body">
         <p>You are about to delete <strong id="deleteTrackCount">0</strong> track(s).</p>
-        <p class="text-muted small mb-0">Deleting with files will permanently remove the audio files from disk.</p>
+        <ul id="deleteTrackFiles" class="list-unstyled small text-muted mb-2"
+            style="max-height: 140px; overflow-y: auto; font-family: monospace; font-size: 0.8rem;"></ul>
+        <div class="alert alert-secondary py-2 small mb-0">
+          <i class="bi bi-info-circle me-1"></i>
+          <strong>Remove from library</strong> deletes the metadata record only — the audio files stay on disk.
+          <strong>Delete files &amp; record</strong> permanently removes the audio files from disk too.
+          Neither action can be undone.
+        </div>
       </div>
       <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-outline-danger" onclick="deleteDatabaseOnly()">Delete from database only</button>
-        <button type="button" class="btn btn-danger" onclick="deleteWithFiles()">Delete with files</button>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Keep files</button>
+        <button type="button" class="btn btn-outline-danger" onclick="deleteDatabaseOnly()"><i class="bi bi-database-x me-1"></i>Remove from library</button>
+        <button type="button" class="btn btn-danger" onclick="deleteWithFiles()"><i class="bi bi-trash me-1"></i>Delete files &amp; record</button>
       </div>
     </div>
   </div>

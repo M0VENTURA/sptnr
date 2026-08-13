@@ -1134,14 +1134,42 @@ html {
 .us-row .accent-library { color: #2ecc71; }
 .us-row .accent-mb { color: #f1c40f; }
 
+/* Source badges overlaid on the album-art thumbnail (top-right corner):
+   green ♫ = local library, amber ⬡ = MusicBrainz.  Keeps the text column
+   free of bullet characters. */
+.us-row .us-thumb-wrap {
+    position: relative;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.us-row .us-thumb-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.55rem;
+    color: #0b0b0b;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(0, 0, 0, 0.4);
+}
+
+.us-row .us-thumb-badge.accent-library-bg { background: #2ecc71; }
+.us-row .us-thumb-badge.accent-mb-bg { background: #f1c40f; }
+
 .us-row .us-artist {
-    color: #ffffff;
+    color: #e0e0e0;
     font-weight: 600;
 }
 
 .us-row .us-type,
 .us-row .us-owner {
-    color: var(--text-secondary);
+    color: #888888;
 }
 
 /* Search flyout row thumbnails (local art / Cover Art Archive) */

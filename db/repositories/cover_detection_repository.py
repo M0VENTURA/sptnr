@@ -1,33 +1,6 @@
 """Cover detection repository — ALL database read/write for cover detection.
 
 Extracted from the legacy ``CoverDetector`` class to enforce the
-repository-only-DB-access rule.
-
-Every function accepts a raw DB connection (``conn``) and uses positional
-``row_get`` access so it works with both ``psycopg2`` and ``psycopg2.extras``
-RealDict cursors.
-"""
-
-from __future__ import annotations
-
-import json
-import logging
-import time
-from typing import Any, Dict, List, Optional
-
-from db.utils import row_get
-
-logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Queries
-# ---------------------------------------------------------------------------
-
-
-"""Cover detection repository — ALL database read/write for cover detection.
-
-Extracted from the legacy ``CoverDetector`` class to enforce the
 repository-only-DB-access rule.  Every function opens its own SQLAlchemy
 session (``db_session``) with named binds — the legacy ``conn`` parameter is
 kept only for backward compatibility and is ignored.

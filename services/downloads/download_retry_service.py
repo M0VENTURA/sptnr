@@ -1,9 +1,9 @@
 """
 Download Retry Service (refactored)
 
-Handles retrying failed downloads with automatic method fallback.
-If a download fails after multiple attempts via Soulseek, it will be
-re-tried via qBittorrent and vice versa.
+Handles retrying failed downloads.  Soulseek (slskd) is the only download
+method; legacy rows carrying a ``qbittorrent`` source are normalised to
+Soulseek when they are retried.
 """
 
 from __future__ import annotations
@@ -63,10 +63,11 @@ def requeue_failed_items(limit: int = 50) -> int:
 # RETRY MANAGER (method fallback)
 # =============================================================================
 
-# Fallback chain: Soulseek -> qBittorrent -> Soulseek
+# Soulseek is the only download method — any legacy source (including old
+# ``qbittorrent`` rows) normalises back to Soulseek on retry.
 _METHOD_FALLBACK: dict[str, str] = {
-    "soulseek": "qbittorrent",
-    "slskd": "qbittorrent",
+    "soulseek": "soulseek",
+    "slskd": "soulseek",
     "qbittorrent": "soulseek",
 }
 

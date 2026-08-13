@@ -10,6 +10,8 @@
 let playlists = [];
 let currentPlaylist = null;
 let currentTracks = [];
+let _playlistFilter = '';
+let _csvImportData = null;
 const compactView = window.matchMedia('(max-width: 767.98px)');
 
 // ===============================
@@ -98,8 +100,12 @@ async function loadPlaylists() {
 
 function renderList() {
   const listEl = document.getElementById('playlistList');
-  const smart = playlists.filter(p => p.type === 'smart');
-  const regular = playlists.filter(p => p.type === 'regular');
+  const needle = _playlistFilter.trim().toLowerCase();
+  const filtered = needle
+    ? playlists.filter(p => (p.name || '').toLowerCase().includes(needle))
+    : playlists;
+  const smart = filtered.filter(p => p.type === 'smart');
+  const regular = filtered.filter(p => p.type === 'regular');
 
   document.getElementById('smartCount').textContent = smart.length;
   document.getElementById('regularCount').textContent = regular.length;
@@ -117,9 +123,16 @@ function renderList() {
   renderGroup('Smart Playlists', smart);
   renderGroup('Regular Playlists', regular);
 
-  if (!playlists.length) {
-    listEl.innerHTML = '<p class="text-center text-muted py-4 small">No playlists found</p>';
+  if (!filtered.length) {
+    listEl.innerHTML = '<p class="text-center text-muted py-4 small">' +
+      (needle ? 'No playlists match "' + escapeHtml(_playlistFilter.trim()) + '"' : 'No playlists found') +
+      '</p>';
   }
+}
+
+function applyPlaylistFilter(value) {
+  _playlistFilter = value || '';
+  renderList();
 }
 
 function playlistCard(playlist) {
@@ -345,9 +358,17 @@ function openRenameModal(id, source) {
 
   currentPlaylist = target;
   document.getElementById('renameName').value = target.name || '';
-  document.getElementById('renameFileName').value = target.file_name ? target.file_name.replace(/\.nsp$/i, '') : '';
-  document.getElementById('renameFilePath').textContent = target.file_path ? `Currently: ${target.file_path}` : '';
-  document.getElementById('renameFileGroup').style.display = target.source === 'file' ? '' : 'none';
+  const isM3u = String(target.kind || '').toLowerCase() === 'm3u' ||
+    String(target.file_name || '').toLowerCase().endsWith('.m3u') ||
+    String(target.file_name || '').toLowerCase().endsWith('.m3u8');
+  // Generated .m3u playlists derive their file name from the playlist name —
+  // only .nsp smart playlists expose the raw file name field.
+  document.getElementById('renameFileGroup').style.display =
+    (target.source === 'file' && !isM3u) ? '' : 'none';
+  if (target.source === 'file' && !isM3u) {
+    document.getElementById('renameFileName').value = target.file_name ? target.file_name.replace(/\.nsp$/i, '') : '';
+    document.getElementById('renameFilePath').textContent = target.file_path ? `Currently: ${target.file_path}` : '';
+  }
 
   const modal = new bootstrap.Modal(document.getElementById('renameModal'));
   modal.show();
@@ -494,6 +515,102 @@ async function submitGenerator() {
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-magic"></i> Generate';
+  }
+}
+
+// ===============================
+// CSV IMPORT
+// ===============================
+
+function openCsvImportModal() {
+  document.getElementById('csvImportForm').reset();
+  document.getElementById('csvImportStatus').textContent = '';
+  document.getElementById('csvImportResult').classList.add('d-none');
+  _csvImportData = null;
+  new bootstrap.Modal(document.getElementById('csvImportModal')).show();
+}
+
+async function submitCsvImport(event) {
+  event.preventDefault();
+  const fileInput = document.getElementById('csvImportFile');
+  const name = document.getElementById('csvImportName').value.trim();
+  if (!fileInput.files.length || !name) {
+    alert('Please select a CSV file and enter a playlist name');
+    return;
+  }
+
+  const statusEl = document.getElementById('csvImportStatus');
+  const submitBtn = document.getElementById('csvImportSubmitBtn');
+  statusEl.textContent = '⏳ Importing and matching tracks…';
+  statusEl.className = 'mb-2 small text-secondary';
+  submitBtn.disabled = true;
+  submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Importing…';
+
+  try {
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('playlist_name', name);
+    formData.append('playlist_description', '');
+
+    const response = await fetch('/api/playlist/import/csv', { method: 'POST', body: formData });
+    const data = await parseJsonOrThrow(response);
+    if (!response.ok) throw new Error(data.error || 'Import failed');
+
+    _csvImportData = data;
+    const matched = (data.matched_tracks || []).length;
+    const missing = (data.missing_tracks || []).length;
+    const total = matched + missing;
+    const coverage = total > 0 ? Math.round((matched / total) * 100) : 0;
+
+    document.getElementById('csvImportMatched').textContent = `${matched} matched`;
+    document.getElementById('csvImportMissing').textContent = `${missing} missing`;
+    document.getElementById('csvImportCoverage').textContent =
+      `${total} track(s) · ${coverage}% in library`;
+    document.getElementById('csvImportCreateBtn').disabled = matched === 0;
+    document.getElementById('csvImportResult').classList.remove('d-none');
+    statusEl.textContent = '✅ Import complete';
+    statusEl.className = 'mb-2 small text-success';
+  } catch (err) {
+    console.error('submitCsvImport:', err);
+    statusEl.textContent = '❌ ' + err.message;
+    statusEl.className = 'mb-2 small text-danger';
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = '<i class="bi bi-upload"></i> Import';
+  }
+}
+
+async function createPlaylistFromImport() {
+  if (!_csvImportData) return;
+  const name = document.getElementById('csvImportName').value.trim();
+  const btn = document.getElementById('csvImportCreateBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Creating…';
+  try {
+    const response = await fetch('/api/playlist/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        playlist_name: name,
+        playlist_description: '',
+        matched_tracks: _csvImportData.matched_tracks || [],
+        format: 'm3u',
+      }),
+    });
+    const data = await parseJsonOrThrow(response);
+    if (!response.ok) throw new Error(data.error || 'Creation failed');
+
+    btn.innerHTML = '<i class="bi bi-check-circle"></i> Created';
+    btn.classList.remove('btn-success');
+    btn.classList.add('btn-outline-success');
+    showAlert(`Playlist "${name}" created with ${data.track_count} track(s)`, false);
+    bootstrap.Modal.getInstance(document.getElementById('csvImportModal')).hide();
+    await loadPlaylists();
+  } catch (err) {
+    console.error('createPlaylistFromImport:', err);
+    showAlert(err.message || 'Failed to create playlist', true);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-plus-circle"></i> Create Playlist from Matched Tracks';
   }
 }
 

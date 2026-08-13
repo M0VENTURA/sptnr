@@ -507,20 +507,12 @@ function cancelSlskdDownload(username, filename, token) {
 function startMonitorAutoRefresh() {
   if (monitorInterval) clearInterval(monitorInterval);
   monitorInterval = setInterval(() => {
-    refreshQbitMonitor({ silent: true });
     refreshSlskdMonitor({ silent: true });
   }, 5000);
 }
 
 // Allow Enter key to trigger search
 document.addEventListener('DOMContentLoaded', function() {
-  const qbitInput = document.getElementById('qbitSearchInput');
-  if (qbitInput) {
-    qbitInput.addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') performQbitSearch();
-    });
-  }
-  
   const slskdInput = document.getElementById('slskdSearchInput');
   if (slskdInput) {
     slskdInput.addEventListener('keypress', function(e) {
@@ -529,18 +521,15 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
    // Kick off monitors if present (for individual monitor tabs)
-   if (document.getElementById('qbitMonLoading')) {
-     refreshQbitMonitor();
-   }
    if (document.getElementById('slskdMonLoading')) {
      refreshSlskdMonitor();
    }
-   if (document.getElementById('qbitMonLoading') || document.getElementById('slskdMonLoading')) {
+   if (document.getElementById('slskdMonLoading')) {
      startMonitorAutoRefresh();
    }
 
    // Initialize consolidated monitor
-   if (document.getElementById('monitorQbitLoading')) {
+   if (document.getElementById('monitorSlskdLoading')) {
      refreshAllMonitors();
      startConsolidatedMonitorRefresh();
    }
@@ -551,8 +540,7 @@ let monitorRefreshCountdown = 5;
 let monitorCountdownInterval = null;
 
 function refreshAllMonitors() {
-  // Refresh both qBittorrent and Soulseek monitors
-  refreshConsolidatedQbitMonitor();
+  // Refresh the Soulseek monitor
   refreshConsolidatedSlskdMonitor();
   
   // Reset countdown
@@ -582,89 +570,6 @@ function startConsolidatedMonitorRefresh() {
   monitorCountdownInterval = setInterval(() => {
     updateMonitorCountdown();
   }, 1000);
-}
-
-function refreshConsolidatedQbitMonitor() {
-  const loading = document.getElementById('monitorQbitLoading');
-  const errorBox = document.getElementById('monitorQbitError');
-  const results = document.getElementById('monitorQbitResults');
-  const empty = document.getElementById('monitorQbitEmpty');
-  const table = document.getElementById('monitorQbitTable');
-  const tbody = document.getElementById('monitorQbitTableBody');
-  const countBadge = document.getElementById('monitorQbitCount');
-  const totalCountBadge = document.getElementById('monitorTotalCount');
-  
-  // Only show loading on first load
-  if (!results.style.display || results.style.display === 'block') {
-    if (loading) loading.style.display = 'none';
-  }
-
-  fetch('/api/qbittorrent/status')
-    .then(resp => resp.json())
-    .then(data => {
-      if (loading) loading.style.display = 'none';
-
-      if (data.error) {
-        if (errorBox) {
-          errorBox.textContent = 'Error: ' + data.error;
-          errorBox.style.display = 'block';
-        }
-        if (results) results.style.display = 'none';
-        return;
-      }
-
-      if (errorBox) errorBox.style.display = 'none';
-      if (results) results.style.display = 'block';
-      const torrents = data.torrents || [];
-      if (countBadge) {
-        countBadge.style.display = torrents.length ? 'inline-block' : 'none';
-        countBadge.textContent = `${torrents.length} active`;
-      }
-
-      if (torrents.length === 0) {
-        if (empty) empty.style.display = 'block';
-        if (table) table.style.display = 'none';
-        updateTotalMonitorCount();
-        return;
-      }
-
-      if (empty) empty.style.display = 'none';
-      if (table) table.style.display = 'block';
-      if (tbody) tbody.innerHTML = '';
-
-      torrents.forEach(torrent => {
-        const row = document.createElement('tr');
-        const state = (torrent.state || '').toLowerCase();
-        let stateClass = 'bg-secondary';
-        if (state.includes('downloading')) stateClass = 'bg-primary';
-        else if (state.includes('uploading') || state.includes('seeding')) stateClass = 'bg-success';
-        else if (state.includes('paused')) stateClass = 'bg-warning';
-        else if (state.includes('error')) stateClass = 'bg-danger';
-
-        row.innerHTML = `
-          <td title="${escapeHtml(torrent.name || '')}">
-            <small class="text-truncate d-block">${escapeHtml(torrent.name || '')}</small>
-          </td>
-          <td class="text-center">
-            <div class="progress" style="height: 18px; min-width: 80px;">
-              <div class="progress-bar ${torrent.progress >= 100 ? 'bg-success' : 'bg-primary'}" role="progressbar" style="width: ${torrent.progress}%" aria-valuenow="${torrent.progress}" aria-valuemin="0" aria-valuemax="100" style="font-size: 0.75rem;">${torrent.progress}%</div>
-            </div>
-          </td>
-          <td class="text-center small">${formatBytes(torrent.size || 0)}</td>
-          <td class="text-center small">${torrent.dlspeed > 0 ? formatBytes(torrent.dlspeed) + '/s' : '—'}</td>
-          <td class="text-center"><span class="badge ${stateClass}">${state.substring(0, 8)}</span></td>
-        `;
-        if (tbody) tbody.appendChild(row);
-      });
-
-      updateTotalMonitorCount();
-    })
-    .catch(err => {
-      if (errorBox) {
-        errorBox.textContent = 'Network error: ' + err.message;
-        errorBox.style.display = 'block';
-      }
-    });
 }
 
 function refreshConsolidatedSlskdMonitor() {
@@ -756,9 +661,8 @@ function refreshConsolidatedSlskdMonitor() {
 }
 
 function updateTotalMonitorCount() {
-  const qbitCount = document.querySelectorAll('#monitorQbitTableBody tr').length;
   const slskdCount = document.querySelectorAll('#monitorSlskdTableBody tr').length;
-  const total = qbitCount + slskdCount;
+  const total = slskdCount;
   
   const totalBadge = document.getElementById('monitorTotalCount');
   if (totalBadge) {

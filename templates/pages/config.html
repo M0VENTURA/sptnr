@@ -525,29 +525,6 @@
 
         <div class="col-12 col-xl-6">
           <div class="border rounded p-3 h-100">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-              <h6 class="mb-0"><i class="bi bi-google"></i> Google Custom Search</h6>
-              <div class="form-check form-switch mb-0">
-                <input class="form-check-input" type="checkbox" id="api_google_enabled" {% if config.get('api_integrations', {}).get('google', {}).get('enabled') %}checked{% endif %}>
-                <label class="form-check-label" for="api_google_enabled">Enabled</label>
-              </div>
-            </div>
-            <div class="row g-2">
-              <div class="col-12 col-md-6">
-                <label class="form-label form-label-sm">API Key</label>
-                <input type="text" class="form-control form-control-sm" id="api_google_api_key" value="{{ config.get('api_integrations', {}).get('google', {}).get('api_key', '') }}">
-              </div>
-              <div class="col-12 col-md-6">
-                <label class="form-label form-label-sm">CSE ID</label>
-                <input type="text" class="form-control form-control-sm" id="api_google_cse_id" value="{{ config.get('api_integrations', {}).get('google', {}).get('cse_id', '') }}">
-              </div>
-            </div>
-            <small class="form-text text-muted">Google Custom Search JSON API key plus a custom search engine ID. Used for web searches that resolve release/video links during single detection (e.g. confirming official video presence).</small>
-          </div>
-        </div>
-
-        <div class="col-12 col-xl-6">
-          <div class="border rounded p-3 h-100">
             {% set nav_cfg = config.get('navidrome') if config.get('navidrome') is mapping else {} %}
             <h6 class="mb-2 text-success"><i class="bi bi-music-note-beamed"></i> Navidrome</h6>
             <div class="form-check form-switch mb-2">
@@ -587,45 +564,13 @@
         <!-- ===== TAB 3: DOWNLOADS ===== -->
         <div class="tab-pane fade" id="tab-downloads" role="tabpanel">
 
-  <!-- qBittorrent & slskd Section (Download Sources) -->
+  <!-- Download Sources -->
   <div class="card shadow-sm mb-3" id="sources">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-cloud-download"></i> Download Sources</h5>
-      <small class="text-muted">Configure torrent and P2P sources. Leave disabled if not using them.</small>
+      <small class="text-muted">Configure P2P download sources. Leave disabled if not using them.</small>
     </div>
     <div class="card-body">
-      <!-- qBittorrent -->
-      <h6 class="mb-3"><i class="bi bi-download"></i> qBittorrent</h6>
-      <div class="row g-3 mb-4 pb-3 border-bottom">
-        <div class="col-12">
-          <div class="form-check form-switch">
-            <input class="form-check-input" type="checkbox" id="qbit_enabled" {% if config.get('qbittorrent', {}).get('enabled') %}checked{% endif %}>
-            <label class="form-check-label" for="qbit_enabled">Enabled</label>
-            <small class="form-text text-muted d-block mt-1">Torrent client integration for automated downloads</small>
-          </div>
-        </div>
-        <div class="col-12">
-          <label class="form-label">Web URL</label>
-          <input type="text" class="form-control" id="qbit_web_url" placeholder="http://localhost:8080" value="{{ config.get('qbittorrent', {}).get('web_url', '') }}">
-          <small class="form-text text-muted">qBittorrent web UI address used for the API.</small>
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label">Username</label>
-          <input type="text" class="form-control" id="qbit_username" placeholder="admin" value="{{ config.get('qbittorrent', {}).get('username', '') }}">
-          <small class="form-text text-muted">qBittorrent web UI login.</small>
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label">Password</label>
-          <input type="password" class="form-control" id="qbit_password" placeholder="••••••••" value="{{ config.get('qbittorrent', {}).get('password', '') }}">
-          <small class="form-text text-muted">qBittorrent web UI password. Stored in config.yaml.</small>
-        </div>
-        <div class="col-12">
-          <label class="form-label">Torrent Downloads Folder</label>
-          <input type="text" class="form-control" id="qbit_downloads_folder" placeholder="/downloads/torrents" value="{{ config.get('qbittorrent', {}).get('downloads_folder', '') }}">
-          <div class="form-text">Folder where qBittorrent saves completed torrent downloads. Leave blank if qBittorrent saves to the same location as the Downloads Folder below. When set, this folder is also scanned when checking for completed downloads.</div>
-        </div>
-      </div>
-
       <!-- slskd (Soulseek) -->
       <h6 class="mb-3"><i class="bi bi-music-note-list"></i> slskd (Soulseek)</h6>
       <div class="row g-3">
@@ -691,14 +636,14 @@
   <div class="card shadow-sm mb-3" id="downloads">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-folder-fill"></i> Downloads</h5>
-      <small class="text-muted">Configure download folder for downloaded music files (used by qBittorrent and slskd)</small>
+      <small class="text-muted">Configure download folder for downloaded music files (used by slskd)</small>
     </div>
     <div class="card-body">
       <div class="row g-3">
         <div class="col-12">
           <label class="form-label">Downloads Folder</label>
           <input type="text" class="form-control" id="downloads_folder" placeholder="/downloads/Music" value="{{ config.get('downloads', {}).get('folder', '') }}">
-          <div class="form-text">Path to watch for downloaded music files (primarily used by slskd/Soulseek). If using qBittorrent with a separate save folder, configure that in the qBittorrent section above.</div>
+          <div class="form-text">Path to watch for downloaded music files (used by slskd/Soulseek).</div>
         </div>
         <div class="col-12">
           <label class="form-label">External Media Export Path</label>

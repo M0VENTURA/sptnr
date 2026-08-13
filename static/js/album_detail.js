@@ -638,11 +638,6 @@ var _pageData = window._pageData || {};
         });
     }
 
-    function openQbitSearchAlbum(artist, album) {
-        const query = `${artist} ${album}`;
-        window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
-    }
-
     function openSlskdSearchAlbum(artist, album) {
         const query = `${artist} ${album}`
             .replace(/\\u0026/gi, ' ')
@@ -2246,21 +2241,42 @@ var _pageData = window._pageData || {};
         });
     }
     
-    function confirmBulkDeleteTracks() {
-        const trackIds = getSelectedTracks();
-        if (trackIds.length === 0) {
+    // Track ids staged for deletion by the confirmation modal (used by both
+    // the single-track ⋮ menu and the bulk "Delete Selected" toolbar button).
+    let _pendingDeleteIds = [];
+
+    function openDeleteTrackModal(trackIds) {
+        trackIds = (trackIds || []).filter(Boolean);
+        if (!trackIds.length) {
             alert('Please select at least one track');
             return;
         }
-        
-        // Show modal with track count
+        _pendingDeleteIds = trackIds;
         document.getElementById('deleteTrackCount').textContent = trackIds.length;
+
+        // List the actual file names being targeted (up to 5, then "+N more")
+        // so the user knows exactly what the action affects.
+        const files = trackIds
+            .map(id => (window._pageData && _pageData.trackFiles && _pageData.trackFiles[id]) || '')
+            .filter(Boolean);
+        const listEl = document.getElementById('deleteTrackFiles');
+        const visible = files.slice(0, 5);
+        const rest = files.length - visible.length;
+        listEl.innerHTML = files.length
+            ? visible.map(f => `<li><i class="bi bi-file-earmark-music me-1"></i>${escapeHtml(f)}</li>`).join('')
+              + (rest > 0 ? `<li class="text-muted fst-italic">…and ${rest} more</li>` : '')
+            : '<li class="fst-italic">(no local audio files found for the selected tracks)</li>';
+
         const modal = new bootstrap.Modal(document.getElementById('bulkDeleteModal'));
         modal.show();
     }
+
+    function confirmBulkDeleteTracks() {
+        openDeleteTrackModal(getSelectedTracks());
+    }
     
     function deleteDatabaseOnly() {
-        const trackIds = getSelectedTracks();
+        const trackIds = _pendingDeleteIds.length ? _pendingDeleteIds : getSelectedTracks();
         const modal = bootstrap.Modal.getInstance(document.getElementById('bulkDeleteModal'));
         modal.hide();
         
@@ -2268,14 +2284,9 @@ var _pageData = window._pageData || {};
     }
     
     function deleteWithFiles() {
-        const trackIds = getSelectedTracks();
+        const trackIds = _pendingDeleteIds.length ? _pendingDeleteIds : getSelectedTracks();
         const modal = bootstrap.Modal.getInstance(document.getElementById('bulkDeleteModal'));
         modal.hide();
-        
-        // Additional confirmation for file deletion
-        if (!confirm(`⚠️ Are you absolutely sure?\n\nThis will PERMANENTLY delete ${trackIds.length} MP3 file(s) from disk.\n\nThis action cannot be undone.`)) {
-            return;
-        }
         
         performBulkDelete(trackIds, true, 'files and database');
     }
@@ -2294,15 +2305,32 @@ var _pageData = window._pageData || {};
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                alert(`✅ Deleted ${data.deleted_count} track(s) from ${deleteType}`);
-                // Reload page to show updated tracks
-                location.reload();
+                // Remove the affected rows immediately — no page reload.
+                removeTrackRows(trackIds);
+                clearAllTracks();
+                mergeMissingTracks();
+                if (typeof showToast === 'function') {
+                    showToast('Success', `${data.deleted_count} track(s) deleted from ${deleteType}`, 'success');
+                }
             } else {
                 alert('❌ Error: ' + (data.error || 'Failed to delete tracks'));
             }
         })
         .catch(err => {
             alert('❌ Network error: ' + err.message);
+        })
+        .finally(() => {
+            _pendingDeleteIds = [];
+        });
+    }
+
+    function removeTrackRows(trackIds) {
+        const ids = (trackIds || []).map(String);
+        ids.forEach(trackId => {
+            document.querySelectorAll(`tr[data-track-id="${CSS.escape(trackId)}"]`).forEach(r => r.remove());
+            document.querySelectorAll('.mb-update-row, .mb-extra-row').forEach(r => {
+                if (r.dataset.trackId === trackId) r.remove();
+            });
         });
     }
 
@@ -3089,34 +3117,12 @@ var _pageData = window._pageData || {};
         }
     }
 
-    async function deleteTrack(trackId) {
+    function deleteTrack(trackId) {
         if (!trackId) return;
-        if (!confirm('Delete this track from the library?')) return;
-        try {
-            const resp = await fetch('/api/album/bulk-delete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    track_ids: [trackId],
-                    artist: _pageData.artistName,
-                    album: _pageData.albumName,
-                    delete_files: false
-                })
-            });
-            const data = await resp.json().catch(() => ({}));
-            if (data && data.success) {
-                const trackIdStr = String(trackId);
-                document.querySelectorAll(`tr[data-track-id="${CSS.escape(trackIdStr)}"]`).forEach(r => r.remove());
-                document.querySelectorAll('.mb-update-row, .mb-extra-row').forEach(r => {
-                    if (r.dataset.trackId === trackIdStr) r.remove();
-                });
-                mergeMissingTracks();
-            } else {
-                alert('❌ Error: ' + ((data && data.error) || 'Failed to delete track'));
-            }
-        } catch (err) {
-            alert('❌ Network error: ' + err.message);
-        }
+        // Route the single-track delete through the same confirmation modal
+        // as bulk deletion so the scope (record-only vs file removal) is
+        // always explicit before anything is deleted.
+        openDeleteTrackModal([trackId]);
     }
 
     document.addEventListener('DOMContentLoaded', function() {

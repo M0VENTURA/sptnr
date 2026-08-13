@@ -133,6 +133,8 @@ async def api_search():
                             END AS match_rank
                         FROM tracks
                         WHERE LOWER(COALESCE(album, '')) LIKE :contains
+                           OR LOWER(COALESCE(album_artist, '')) LIKE :contains
+                           OR LOWER(COALESCE(artist, '')) LIKE :contains
                         GROUP BY
                             COALESCE(NULLIF(album_artist, ''), artist),
                             album

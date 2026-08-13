@@ -1149,7 +1149,7 @@ def start_release_download(release_id, release_title, artist, method='slskd', cr
                 release_source='musicbrainz',
             )
 
-        queue_source = 'soulseek' if method.lower() == 'slskd' else 'qbittorrent'
+        queue_source = 'soulseek'
 
         queue_ids = add_release_tracks_to_queue(
             resolved_release_id,

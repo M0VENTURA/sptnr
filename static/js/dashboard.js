@@ -433,7 +433,7 @@ async function addUpcomingReleaseToQueueDashboard(encodedArtist, encodedAlbum, e
     // the album by artist + title).
     const result = await postJSON("/api/queue/add", {
       artist, title: album, album,
-      import_type: "album", source: "qbittorrent", release_source: "dashboard_upcoming",
+      import_type: "album", source: "soulseek", release_source: "dashboard_upcoming",
       priority: 5, is_album: true, year: /^\d{4}/.test(dateText) ? dateText.slice(0, 4) : null,
     });
     

@@ -49,18 +49,23 @@ import os as _os
 import uuid as _uuid
 from datetime import datetime as _datetime
 
-_PLAYLIST_SESSIONS_FILE = _os.environ.get(
-    "PLAYLIST_SESSIONS_FILE",
-    "/data/playlist_sessions.json",
-)
+
+def _playlist_sessions_file() -> str:
+    """State-dir path for the lightweight playlist download sessions file."""
+    try:
+        from helpers.config_helpers import get_state_directory
+        return _os.path.join(get_state_directory(), "playlist_sessions.json")
+    except Exception:
+        return _os.environ.get("PLAYLIST_SESSIONS_FILE", "/data/playlist_sessions.json")
 
 
 def _load_sessions() -> list[dict]:
     """Load all playlist download sessions from the JSON file."""
-    if not _os.path.exists(_PLAYLIST_SESSIONS_FILE):
+    path = _playlist_sessions_file()
+    if not _os.path.exists(path):
         return []
     try:
-        with open(_PLAYLIST_SESSIONS_FILE, "r", encoding="utf-8") as _fh:
+        with open(path, "r", encoding="utf-8") as _fh:
             return _json.load(_fh)
     except Exception:
         return []
@@ -68,8 +73,9 @@ def _load_sessions() -> list[dict]:
 
 def _save_sessions(sessions: list[dict]) -> None:
     """Persist playlist download sessions to the JSON file."""
-    _os.makedirs(_os.path.dirname(_PLAYLIST_SESSIONS_FILE), exist_ok=True)
-    with open(_PLAYLIST_SESSIONS_FILE, "w", encoding="utf-8") as _fh:
+    path = _playlist_sessions_file()
+    _os.makedirs(_os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as _fh:
         _json.dump(sessions, _fh, indent=2, default=str)
 
 
@@ -121,11 +127,8 @@ async def api_playlist_downloads_create():
 
 @playlists_bp.route("/playlist-manager")
 async def playlist_manager():
-    cfg = get_config()
-    return await render_template(
-        "playlists/manager.html",
-        navidrome_users=cfg.get("navidrome_users", [])
-    )
+    # The standalone manager page was folded into the /playlists hub.
+    return redirect(url_for("playlists.playlists_index"))
 
 
 @playlists_bp.route("/playlist/import/csv")
@@ -368,6 +371,8 @@ async def api_playlist_import_csv():
                     "artist": library_track.get("artist"),
                     "album": library_track.get("album"),
                     "stars": library_track.get("stars"),
+                    "file_path": library_track.get("file_path"),
+                    "duration_s": library_track.get("duration"),
                     "confidence": 1.0,
                     "strategy": strategy,
                 })
@@ -431,6 +436,31 @@ async def api_playlist_create():
 
         if not name or not tracks:
             return jsonify({"error": "Missing data"}), 400
+
+        # ``format`` selects the file type: "m3u" writes a regular .m3u into
+        # the Playlists folder (needs file paths), "nsp" writes a smart-
+        # playlist JSON (legacy default).
+        file_format = str(data.get("format") or "nsp").lower()
+        if file_format == "m3u":
+            from services.playlists.playlist_service import create_m3u_file
+            m3u_tracks = []
+            for t in tracks:
+                if not (t.get("file_path") or "").strip():
+                    continue
+                m3u_tracks.append({
+                    "file_path": t["file_path"],
+                    "title": t.get("title") or "",
+                    "artist": t.get("artist") or "",
+                    "duration": t.get("duration_s") or t.get("duration") or 0,
+                })
+            file_path = create_m3u_file(name, m3u_tracks)
+            if not file_path:
+                return jsonify({"error": "No tracks with file paths could be written"}), 400
+            return jsonify({
+                "success": True,
+                "file_path": file_path,
+                "track_count": len(m3u_tracks),
+            }), 201
 
         track_ids = [t["id"] for t in tracks if t.get("id")]
 

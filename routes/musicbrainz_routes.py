@@ -38,35 +38,22 @@ def _normalize_download_method(
     default_method: str = "slskd",
     context: str = "download request",
 ) -> tuple[str | None, str | None]:
-    """Resolve the effective download transport based on enabled integrations."""
+    """Resolve the effective download transport based on enabled integrations.
+
+    Soulseek (slskd) is the only download transport; a requested Soulseek
+    alias is normalised and the method is refused when slskd is disabled.
+    """
     method = str(requested_method or default_method).strip().lower()
     if method == "soulseek":
         method = "slskd"
 
-    if method not in {"slskd", "qbittorrent"}:
-        return None, "Invalid method. Use 'slskd' or 'qbittorrent'"
+    if method != "slskd":
+        return None, "Invalid method. Use 'slskd'"
 
     cfg = get_config() or {}
     slskd_enabled = bool((cfg.get("slskd") or {}).get("enabled", False))
-    qbit_enabled = bool((cfg.get("qbittorrent") or {}).get("enabled", False))
-
-    if method == "qbittorrent" and not qbit_enabled:
-        if slskd_enabled:
-            logger.info(
-                "[QUEUE_ROUTE] qBittorrent requested for %s but disabled; routing through Soulseek",
-                context,
-            )
-            return "slskd", None
-        return None, "qBittorrent is disabled and Soulseek is not enabled"
-
-    if method == "slskd" and not slskd_enabled:
-        if qbit_enabled:
-            logger.info(
-                "[QUEUE_ROUTE] Soulseek requested for %s but disabled; routing through qBittorrent",
-                context,
-            )
-            return "qbittorrent", None
-        return None, "Soulseek is disabled and qBittorrent is not enabled"
+    if not slskd_enabled:
+        return None, "Soulseek (slskd) is not enabled"
 
     return method, None
 
@@ -231,6 +218,11 @@ async def api_musicbrainz_batch_update():
 # ---------------------------------------------------------------------------
 # POST /api/musicbrainz/search
 # ---------------------------------------------------------------------------
+
+def _normalise_search_key(value: str) -> str:
+    """Lowercase + strip non-alphanumerics for library cross-referencing."""
+    return re.sub(r"[^a-zA-Z0-9]+", "", (value or "").lower())
+
 
 @mb_bp.route("/search", methods=["POST"])
 async def api_musicbrainz_search():
@@ -550,6 +542,78 @@ async def api_musicbrainz_search():
                 r for r in releases
                 if str(r.get("category") or r.get("primary_type") or "").lower() == release_type
             ]
+
+        # ── 2c. Library dedupe (discovery accuracy) ─────────────────────
+        # Release-groups the user already owns are useless in the discovery
+        # list.  Strip any MusicBrainz result whose release-group MBID or
+        # normalised (artist, album) title already exists in the local
+        # library, so the MusicBrainz tab count reflects only missing albums.
+        # Local ``missing_releases`` rows (source "local") are untouched.
+        try:
+            from sqlalchemy import text as _lib_text
+            from db.engine import db_session as _lib_db_session
+
+            mb_rows = [r for r in releases if r.get("source") == "musicbrainz"]
+            if mb_rows:
+                owned_rgids: set[str] = set()
+                owned_pairs: set[tuple[str, str]] = set()
+                candidates = [
+                    (
+                        _normalise_search_key(r.get("artist")),
+                        _normalise_search_key(r.get("title")),
+                        str(r.get("id") or "").strip(),
+                    )
+                    for r in mb_rows
+                ]
+                with _lib_db_session() as session:
+                    rgids = [c[2] for c in candidates if c[2]]
+                    if rgids:
+                        ph = ", ".join(f":r{i}" for i in range(len(rgids)))
+                        rows = session.execute(
+                            _lib_text(
+                                "SELECT DISTINCT TRIM(musicbrainz_releasegroupid) FROM tracks "
+                                f"WHERE musicbrainz_releasegroupid IN ({ph})"
+                            ),
+                            {f"r{i}": rid for i, rid in enumerate(rgids)},
+                        ).fetchall()
+                        owned_rgids = {str(r[0]) for r in rows if r[0]}
+                    pairs = [(c[0], c[1]) for c in candidates if c[0] and c[1]]
+                    if pairs:
+                        conds = " OR ".join(
+                            f"(LOWER(REGEXP_REPLACE(COALESCE(NULLIF(album_artist, ''), artist), "
+                            f"'[^a-zA-Z0-9]', '', 'g')) = :a{i} "
+                            f"AND LOWER(REGEXP_REPLACE(album, '[^a-zA-Z0-9]', '', 'g')) = :b{i})"
+                            for i in range(len(pairs))
+                        )
+                        pair_params: dict[str, str] = {}
+                        for i, (a, b) in enumerate(pairs):
+                            pair_params[f"a{i}"] = a
+                            pair_params[f"b{i}"] = b
+                        rows = session.execute(
+                            _lib_text(
+                                "SELECT DISTINCT "
+                                "LOWER(REGEXP_REPLACE(COALESCE(NULLIF(album_artist, ''), artist), "
+                                "'[^a-zA-Z0-9]', '', 'g')), "
+                                "LOWER(REGEXP_REPLACE(album, '[^a-zA-Z0-9]', '', 'g')) "
+                                f"FROM tracks WHERE {conds}"
+                            ),
+                            pair_params,
+                        ).fetchall()
+                        owned_pairs = {(str(r[0]), str(r[1])) for r in rows}
+
+                def _is_owned(r: dict[str, Any]) -> bool:
+                    rgid = str(r.get("id") or "").strip()
+                    if rgid and rgid in owned_rgids:
+                        return True
+                    pair = (
+                        _normalise_search_key(r.get("artist")),
+                        _normalise_search_key(r.get("title")),
+                    )
+                    return pair in owned_pairs
+
+                releases = [r for r in releases if r.get("source") != "musicbrainz" or not _is_owned(r)]
+        except Exception as exc:
+            logger.debug("[MB_SEARCH] Library dedupe failed: %s", exc)
 
         # ── 3. Sort (legacy parity): artist asc, then first release date desc
         if artist_only:
@@ -946,7 +1010,7 @@ async def api_musicbrainz_download():
                 "artist": artist,
                 "title": release_title,
                 "album": release_title,
-                "source": "soulseek" if method == "slskd" else "qbittorrent",
+                "source": "soulseek",
             })
             if not add_result.get("success"):
                 return jsonify({"error": add_result.get("error") or result.get("error", "Download failed")}), 500

@@ -174,6 +174,14 @@
       'onerror="this.onerror=null;this.src=\'' + _IMG_PLACEHOLDER + '\';">';
   }
 
+  // Thumbnail + source badge overlaid on its top-right corner: green ♫ for
+  // library-owned rows, amber ⬡ for MusicBrainz rows (matches the scope-tab
+  // accents) — no bullet characters cluttering the text column.
+  function thumbWithBadge(thumb, badgeIcon, badgeClass) {
+    return '<span class="us-thumb-wrap">' + thumb +
+      '<span class="us-thumb-badge ' + badgeClass + '">' + badgeIcon + '</span></span>';
+  }
+
   function fmtDuration(seconds) {
     var s = Number(seconds);
     if (!isFinite(s) || s <= 0) return '';
@@ -242,7 +250,7 @@
       return '<a class="us-row" href="/artist/' + encodeURIComponent(a.name) + '">' +
         thumbHtml('/api/artist/image?name=' + encodeURIComponent(a.name), 'rounded-circle border border-secondary', a.name) +
         '<span class="us-row-main">' +
-          '<span class="us-row-title d-block"><span class="us-dot accent-library">●</span> ' + esc(a.name) + '</span>' +
+          '<span class="us-row-title d-block">' + esc(a.name) + '</span>' +
           '<span class="us-row-sub d-block">' + a.track_count + ' track' + (a.track_count === 1 ? '' : 's') + ' - ' + a.album_count + ' album' + (a.album_count === 1 ? '' : 's') + '</span>' +
         '</span>' +
         '<span class="us-row-meta badge bg-secondary-subtle text-secondary-emphasis">Artist</span>' +
@@ -324,10 +332,11 @@
         // Local album art endpoint (same pattern as the album page hero).
         var localArt = '/api/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + '/art';
         html += '<a class="us-row" href="' + href + '">' +
-          thumbHtml(localArt, 'rounded border border-secondary', it.title) +
+          thumbWithBadge(thumbHtml(localArt, 'rounded border border-secondary', it.title),
+            '<i class="bi bi-music-note-fill"></i>', 'accent-library-bg') +
           '<span class="us-row-main">' +
-            '<span class="us-row-title d-block"><span class="us-dot accent-library">●</span> ' + esc(it.title) + yearSuffix + '</span>' +
-            '<span class="us-row-sub d-block"><span class="us-artist">' + esc(it.artist) + '</span> - <span class="us-type">' + esc(it.typeLabel || 'Album') + '</span> - <span class="us-owner">In Library</span></span>' +
+            '<span class="us-row-title d-block">' + esc(it.title) + yearSuffix + '</span>' +
+            '<span class="us-row-sub d-block"><span class="us-artist">By ' + esc(it.artist) + '</span> · <span class="us-type">' + esc(it.typeLabel || 'Album') + '</span></span>' +
             trackLine +
           '</span>' +
         '</a>';
@@ -337,10 +346,11 @@
         var ownedHref = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title);
         var ownedArt = '/api/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + '/art';
         html += '<a class="us-row" href="' + ownedHref + '">' +
-          thumbHtml(ownedArt, 'rounded border border-secondary', it.title) +
+          thumbWithBadge(thumbHtml(ownedArt, 'rounded border border-secondary', it.title),
+            '<i class="bi bi-music-note-fill"></i>', 'accent-library-bg') +
           '<span class="us-row-main">' +
-            '<span class="us-row-title d-block"><span class="us-dot accent-library">●</span> ' + esc(it.title) + yearSuffix + '</span>' +
-            '<span class="us-row-sub d-block"><span class="us-artist">' + esc(it.artist) + '</span> - <span class="us-type">' + esc(it.typeLabel || 'Album') + '</span> - <span class="us-owner">In Library</span></span>' +
+            '<span class="us-row-title d-block">' + esc(it.title) + yearSuffix + '</span>' +
+            '<span class="us-row-sub d-block"><span class="us-artist">By ' + esc(it.artist) + '</span> · <span class="us-type">' + esc(it.typeLabel || 'Album') + '</span></span>' +
             trackLine +
           '</span>' +
         '</a>';
@@ -356,10 +366,11 @@
         // stops the navigation via the delegated handler's preventDefault.
         var mbUrl = id ? 'https://musicbrainz.org/release-group/' + encodeURIComponent(id) : '#';
         html += '<a class="us-row" href="' + mbUrl + '" target="_blank" rel="noopener">' +
-          thumbHtml(cover, 'rounded border border-secondary', it.title) +
+          thumbWithBadge(thumbHtml(cover, 'rounded border border-secondary', it.title),
+            '<i class="bi bi-hexagon-fill"></i>', 'accent-mb-bg') +
           '<span class="us-row-main">' +
-            '<span class="us-row-title d-block"><span class="us-dot accent-mb">●</span> ' + esc(it.title) + yearSuffix + '</span>' +
-            '<span class="us-row-sub d-block"><span class="us-artist">' + esc(it.artist) + '</span> - <span class="us-type">' + esc(it.typeLabel || 'Release') + '</span></span>' +
+            '<span class="us-row-title d-block">' + esc(it.title) + yearSuffix + '</span>' +
+            '<span class="us-row-sub d-block"><span class="us-artist">By ' + esc(it.artist) + '</span> · <span class="us-type">' + esc(it.typeLabel || 'Release') + '</span></span>' +
             trackLine +
           '</span>' +
           (withQueue ? (queued

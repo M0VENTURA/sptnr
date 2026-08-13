@@ -251,7 +251,6 @@ def add_release_tracks_to_queue(
 
     if normalized_source not in (
         "soulseek",
-        "qbittorrent",
     ):
         normalized_source = "soulseek"
 

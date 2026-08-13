@@ -307,10 +307,7 @@ window.performMbSearch = async function() {
 
       const actionButtons = window._mbSearchCallback
         ? `<button class="btn btn-sm btn-success" onclick="handleGlobalMbSelect('${encodeInlineArg(release)}')"><i class="bi bi-check-circle"></i> Select Match</button>`
-        : `<div class="btn-group" role="group">
-             <button class="btn btn-sm btn-success" onclick="downloadMbRelease('${escapeHtml(release.id)}', '${escapeHtml(release.title)}', '${escapeHtml(resultArtist)}', 'slskd')" title="Download via Soulseek"><i class="bi bi-music-note-list"></i> Soulseek</button>
-             <button class="btn btn-sm btn-primary" onclick="downloadMbRelease('${escapeHtml(release.id)}', '${escapeHtml(release.title)}', '${escapeHtml(resultArtist)}', 'qbittorrent')" title="Download via qBittorrent"><i class="bi bi-cloud-download"></i> qBit</button>
-           </div>`;
+        : `<button class="btn btn-sm btn-success" onclick="downloadMbRelease('${escapeHtml(release.id)}', '${escapeHtml(release.title)}', '${escapeHtml(resultArtist)}', 'slskd')" title="Download via Soulseek"><i class="bi bi-music-note-list"></i> Soulseek</button>`;
 
       html += `
         <div class="list-group-item bg-dark-subtle border-secondary mb-2 rounded">
@@ -358,218 +355,6 @@ window.handleGlobalMbSelect = function(releaseEnc) {
 
 // Also map performMbDownloadSearch to performMbSearch in case any old HTML buttons rely on it
 window.performMbDownloadSearch = window.performMbSearch;
-
-
-// ============================================================================
-// QBITTORRENT FUNCTIONS
-// ============================================================================
-
-let qbitMonLoaded = false;
-let qbitMonInFlight = false;
-
-async function performQbitSearch() {
-  const query = document.getElementById('qbitSearchInput')?.value;
-  if (!query) return;
-  
-  document.getElementById('qbitLoading').style.display = 'block';
-  document.getElementById('qbitResults').innerHTML = '';
-  
-  try {
-    const data = await fetchJsonOrThrow('/api/qbittorrent/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query })
-    });
-
-    document.getElementById('qbitLoading').style.display = 'none';
-    
-    if (data.error) {
-      document.getElementById('qbitResults').innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> ${data.error}</div>`;
-      return;
-    }
-    
-    const results = data.results || [];
-    if (results.length === 0) {
-      document.getElementById('qbitResults').innerHTML = `<div class="alert alert-info"><i class="bi bi-info-circle"></i> No results found.</div>`;
-      return;
-    }
-    
-    let html = '<div class="list-group">';
-    results.forEach((result) => {
-      const size = formatBytes(result.fileSize || 0);
-      const seedClass = result.nbSeeders > 10 ? 'text-success' : (result.nbSeeders > 0 ? 'text-warning' : 'text-danger');
-      
-      html += `
-        <div class="list-group-item list-group-item-action">
-          <div class="d-flex w-100 justify-content-between align-items-start">
-            <div class="flex-grow-1 me-2">
-              <h6 class="mb-1" style="font-size: 0.9rem;">${escapeHtml(result.fileName || 'Unknown')}</h6>
-              <small class="text-muted">${escapeHtml(result.siteUrl || '')}</small>
-            </div>
-            <button class="btn btn-sm btn-success" onclick="addTorrent('${escapeHtml(result.fileUrl)}')" ${!result.fileUrl ? 'disabled' : ''}>
-              <i class="bi bi-plus-circle"></i> Add
-            </button>
-          </div>
-          <div class="d-flex gap-3 mt-2">
-            <small><i class="bi bi-hdd"></i> ${size}</small>
-            <small class="${seedClass}"><i class="bi bi-arrow-up-circle"></i> ${result.nbSeeders || 0}</small>
-            <small><i class="bi bi-arrow-down-circle"></i> ${result.nbLeechers || 0}</small>
-          </div>
-        </div>
-      `;
-    });
-    html += '</div>';
-    document.getElementById('qbitResults').innerHTML = html;
-
-  } catch (error) {
-    document.getElementById('qbitLoading').style.display = 'none';
-    document.getElementById('qbitResults').innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> ${error.message}</div>`;
-  }
-}
-
-async function addTorrent(url) {
-  if (!url || !confirm('Add this torrent to qBittorrent?')) return;
-  try {
-    const data = await fetchJsonOrThrow('/api/qbittorrent/add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
-    if (data.success) {
-      alert('✓ Torrent added successfully!');
-    } else {
-      alert('✗ Error: ' + (data.error || 'Failed to add torrent'));
-    }
-  } catch (error) {
-    alert('✗ Network error: ' + error.message);
-  }
-}
-
-async function refreshQbitMonitor(options = {}) {
-  const silent = options.silent === true;
-  const loading = document.getElementById('qbitMonLoading');
-  const errorBox = document.getElementById('qbitMonError');
-  const results = document.getElementById('qbitMonResults');
-  const empty = document.getElementById('qbitMonEmpty');
-  const table = document.getElementById('qbitMonTable');
-  const tbody = document.getElementById('qbitMonTableBody');
-  const countBadge = document.getElementById('qbitMonCount');
-
-  if (!loading || qbitMonInFlight) return;
-  qbitMonInFlight = true;
-
-  if (!qbitMonLoaded && !silent) loading.style.display = 'block';
-
-  try {
-    const response = await fetch('/api/qbittorrent/status');
-    const data = await response.json();
-    
-    if (loading) loading.style.display = 'none';
-    qbitMonLoaded = true;
-
-    if (data.error) {
-      if (errorBox) { errorBox.textContent = 'Error: ' + data.error; errorBox.style.display = 'block'; }
-      if (results) results.style.display = 'none';
-      return;
-    }
-
-    if (errorBox) errorBox.style.display = 'none';
-    if (results) results.style.display = 'block';
-    
-    const torrents = data.torrents || [];
-    if (countBadge) {
-      countBadge.style.display = torrents.length ? 'inline-block' : 'none';
-      countBadge.textContent = `${torrents.length} active`;
-    }
-
-    if (torrents.length === 0) {
-      if (empty) empty.style.display = 'block';
-      if (table) table.style.display = 'none';
-      return;
-    }
-
-    if (empty) empty.style.display = 'none';
-    if (table) table.style.display = 'block';
-    if (tbody) tbody.innerHTML = '';
-
-    torrents.forEach(torrent => {
-      const row = document.createElement('tr');
-      const state = (torrent.state || '').toLowerCase();
-      let stateClass = 'bg-secondary';
-      if (state.includes('downloading')) stateClass = 'bg-primary';
-      else if (state.includes('uploading') || state.includes('seeding')) stateClass = 'bg-success';
-      else if (state.includes('paused')) stateClass = 'bg-warning';
-      else if (state.includes('error')) stateClass = 'bg-danger';
-      else if (state.includes('stalled')) stateClass = 'bg-warning';
-
-      const needsForceStart = state.includes('stalled') || state.includes('paused') || state.includes('error');
-      const isRunning = !state.includes('stalled') && !state.includes('paused') && state !== 'stopped';
-      const hash = torrent.hash || '';
-      
-      const actionHtml = hash ? `<div style="display: flex; gap: 4px; justify-content: center;">
-          ${needsForceStart ? `<button class="btn btn-sm btn-outline-primary" onclick="forceStartQbitTorrent('${escapeHtml(hash)}')" title="Force start torrent"><i class="bi bi-lightning-charge"></i> Start</button>` : ''}
-          ${isRunning ? `<button class="btn btn-sm btn-outline-danger" onclick="stopQbitTorrent('${escapeHtml(hash)}')" title="Stop torrent"><i class="bi bi-pause-circle"></i> Stop</button>` : ''}
-        </div>` : '<span class="text-muted">–</span>';
-
-      row.innerHTML = `
-        <td>
-          <div class="text-truncate" style="max-width: 420px;" title="${escapeHtml(torrent.name || '')}">
-            ${escapeHtml(torrent.name || '')}
-          </div>
-          ${torrent.category ? `<small class="text-muted"><i class="bi bi-tag"></i> ${escapeHtml(torrent.category)}</small>` : ''}
-        </td>
-        <td class="text-center"><span class="badge ${stateClass}">${escapeHtml(torrent.state || '')}</span></td>
-        <td class="text-center">
-          <div class="progress" style="height: 20px; min-width: 100px;">
-            <div class="progress-bar ${torrent.progress >= 100 ? 'bg-success' : 'bg-primary'}" role="progressbar" style="width: ${torrent.progress}%">${torrent.progress}%</div>
-          </div>
-        </td>
-        <td class="text-center">${formatBytes(torrent.size || 0)}</td>
-        <td class="text-center">${torrent.dlspeed > 0 ? `<span class="text-primary"><i class="bi bi-arrow-down"></i> ${formatBytes(torrent.dlspeed)}/s</span>` : '–'}</td>
-        <td class="text-center">${torrent.upspeed > 0 ? `<span class="text-success"><i class="bi bi-arrow-up"></i> ${formatBytes(torrent.upspeed)}/s</span>` : '–'}</td>
-        <td class="text-center"><span class="${torrent.num_seeds > 0 ? 'text-success' : 'text-muted'}">${torrent.num_seeds} / ${torrent.num_leechs}</span></td>
-        <td class="text-center">${formatETA(torrent.eta)}</td>
-        <td class="text-center">${actionHtml}</td>
-      `;
-      if (tbody) tbody.appendChild(row);
-    });
-  } catch (err) {
-    if (!silent && loading) loading.style.display = 'none';
-    if (errorBox) { errorBox.textContent = 'Network error: ' + err.message; errorBox.style.display = 'block'; }
-  } finally {
-    qbitMonInFlight = false;
-  }
-}
-
-async function forceStartQbitTorrent(hash) {
-  if (!hash) return;
-  try {
-    const data = await fetchJsonOrThrow('/api/qbittorrent/force-start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hash })
-    });
-    if (data.success) refreshQbitMonitor({ silent: true });
-    else alert('✗ Error: ' + (data.error || 'Failed to force start'));
-  } catch (err) {
-    alert('✗ Network error: ' + err.message);
-  }
-}
-
-async function stopQbitTorrent(hash) {
-  if (!hash || !confirm('Stop this torrent?')) return;
-  try {
-    const data = await fetchJsonOrThrow('/api/qbittorrent/stop', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hash })
-    });
-    if (data.success) refreshQbitMonitor({ silent: true });
-    else alert('✗ Error: ' + (data.error || 'Failed to stop torrent'));
-  } catch (err) {
-    alert('✗ Network error: ' + err.message);
-  }
-}
 
 
 // ============================================================================
@@ -1376,7 +1161,7 @@ async function refreshMbDownloads() {
             ${dl.total_tracks ? `<small class="text-muted">Tracks: ${dl.completed_tracks}/${dl.total_tracks} completed</small>` : ''}
           </td>
           <td>${escapeHtml(dl.artist)}</td>
-          <td class="text-center"><span class="badge ${dl.method === 'slskd' ? 'bg-success' : 'bg-primary'}">${dl.method === 'slskd' ? 'Soulseek' : 'qBittorrent'}</span></td>
+          <td class="text-center"><span class="badge bg-success">Soulseek</span></td>
           <td class="text-center">${statusBadge}</td>
           <td class="text-center text-muted small">${new Date(dl.created_at).toLocaleString()}</td>
           <td class="text-center">
@@ -2216,18 +2001,6 @@ async function deleteGroup(index) {
 // ============================================================================
 
 document.addEventListener('DOMContentLoaded', function() {
-  const qbitInput = document.getElementById('qbitSearchInput');
-  if (qbitInput) {
-    qbitInput.addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') performQbitSearch();
-    });
-  }
-
-  if (document.getElementById('qbitMonLoading')) {
-    refreshQbitMonitor();
-    setInterval(() => refreshQbitMonitor({ silent: true }), 5000);
-  }
-
   if (document.getElementById('upcomingReleases')) {
     refreshUpcomingReleases();
   }

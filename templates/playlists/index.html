@@ -13,11 +13,16 @@
           <i class="bi bi-question-circle"></i>
         </a>
       </h4>
-      <p class="text-muted small mb-0">All smart and regular playlists in the system — view tracks and rename</p>
+      <p class="text-muted small mb-0">All smart and regular playlists in the system — view, rename and import</p>
     </div>
-    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadPlaylists()" title="Refresh">
-      <i class="bi bi-arrow-clockwise"></i> Refresh
-    </button>
+    <div class="d-flex gap-2 flex-wrap">
+      <button type="button" class="btn btn-sm btn-outline-primary" onclick="openCsvImportModal()" title="Import a playlist from an Exportify CSV export">
+        <i class="bi bi-upload"></i> Import CSV
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadPlaylists()" title="Refresh">
+        <i class="bi bi-arrow-clockwise"></i> Refresh
+      </button>
+    </div>
   </div>
 
   <div id="playlistsAlert"></div>
@@ -44,7 +49,11 @@
           </div>
         </div>
         <div class="card-body p-2">
-          <div id="playlistList" class="d-flex flex-column gap-2" style="max-height: calc(100vh - 260px); overflow-y: auto;">
+          <div class="input-group input-group-sm mb-2">
+            <span class="input-group-text bg-dark border-secondary text-muted"><i class="bi bi-search"></i></span>
+            <input type="text" id="playlistFilterInput" class="form-control form-control-sm bg-dark text-light border-secondary shadow-none" placeholder="Filter playlists…" autocomplete="off" oninput="applyPlaylistFilter(this.value)">
+          </div>
+          <div id="playlistList" class="d-flex flex-column gap-2" style="max-height: calc(100vh - 320px); overflow-y: auto;">
             <p class="text-center text-muted py-4 small">Loading playlists…</p>
           </div>
         </div>
@@ -110,6 +119,59 @@
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= CSV IMPORT MODAL ======================= -->
+<div class="modal fade" id="csvImportModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title"><i class="bi bi-filetype-csv"></i> Import Playlist from CSV</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-secondary py-2 small">
+          <i class="bi bi-info-circle me-1"></i>
+          Export an <strong>Exportify</strong> CSV (exportify.net → Export), upload it below. Tracks found in
+          your library are saved into a new playlist; missing tracks can be queued for download from the
+          Downloads page afterwards.
+        </div>
+        <form id="csvImportForm" onsubmit="submitCsvImport(event)">
+          <div class="mb-3">
+            <label for="csvImportFile" class="form-label small fw-semibold">CSV File <span class="text-danger">*</span></label>
+            <input type="file" id="csvImportFile" class="form-control" accept=".csv" required>
+            <div class="form-text">Exportify CSV — must contain at least <code>Track Name</code> and <code>Artist Name(s)</code> columns.</div>
+          </div>
+          <div class="mb-3">
+            <label for="csvImportName" class="form-label small fw-semibold">Playlist Name <span class="text-danger">*</span></label>
+            <input type="text" id="csvImportName" class="form-control" placeholder="e.g., My Imported Playlist" maxlength="200" required>
+          </div>
+          <div id="csvImportStatus" class="mb-2 small"></div>
+          <div id="csvImportResult" class="d-none">
+            <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+              <span class="badge bg-success" id="csvImportMatched">0 matched</span>
+              <span class="badge bg-warning text-dark" id="csvImportMissing">0 missing</span>
+              <span class="text-muted small" id="csvImportCoverage"></span>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+              <button type="button" class="btn btn-sm btn-success" id="csvImportCreateBtn" onclick="createPlaylistFromImport()">
+                <i class="bi bi-plus-circle"></i> Create Playlist from Matched Tracks
+              </button>
+              <a href="/downloads" class="btn btn-sm btn-outline-warning">
+                <i class="bi bi-download"></i> Queue Missing on Downloads
+              </a>
+            </div>
+          </div>
+          <div class="modal-footer px-0 pb-0">
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            <button type="submit" class="btn btn-sm btn-primary" id="csvImportSubmitBtn">
+              <i class="bi bi-upload"></i> Import
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   </div>

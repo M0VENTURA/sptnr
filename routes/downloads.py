@@ -364,13 +364,11 @@ async def api_queue_upcoming():
         if release_mbid:
             try:
                 from services.downloads.download_pipeline_service import start_release_download
-                cfg = get_config() or {}
-                slskd_enabled = bool((cfg.get("slskd") or {}).get("enabled", False))
                 result = start_release_download(
                     release_mbid,
                     album,
                     artist,
-                    method="slskd" if slskd_enabled else "qbittorrent",
+                    method="slskd",
                     create_folder_group=False,
                 )
                 if result.get("success"):
@@ -407,7 +405,7 @@ async def api_queue_upcoming():
             artist=artist,
             title=album,
             album=album,
-            source="qbittorrent",
+            source="soulseek",
             priority=5,
             year=year,
             release_mbid=release_mbid,

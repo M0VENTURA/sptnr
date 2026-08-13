@@ -1,4 +1,4 @@
-"""slskd and qBittorrent download search/proxy routes — migrated from old app.py."""
+"""slskd download search/proxy routes — migrated from old app.py."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from helpers.response_helpers import _ok, _fail
 logger = logging.getLogger(__name__)
 
 slskd_bp = Blueprint("slskd_api", __name__, url_prefix="/api/slskd")
-qbit_bp = Blueprint("qbit_api", __name__, url_prefix="/api/qbittorrent")
 slsk_bp = Blueprint("slsk_api", __name__, url_prefix="/api/slsk")
 
 
@@ -358,121 +357,3 @@ def api_dismiss_all_suggested_words():
     # Dismiss by clearing (suggested words would be regenerated on next analysis)
     return jsonify({"success": True})
 
-
-# ===========================================================================
-# QBITTORRENT ROUTES
-# ===========================================================================
-
-
-@qbit_bp.route("/search", methods=["POST"])
-async def qbit_search():
-    """Proxy endpoint for qBittorrent search API."""
-    cfg = get_config()
-    qbit_config = cfg.get("qbittorrent", {})
-    if not qbit_config.get("enabled"):
-        return jsonify({"error": "qBittorrent not enabled"}), 400
-    query = ((await request.get_json()) or {}).get("query", "")
-    if not query:
-        return jsonify({"error": "query required"}), 400
-    try:
-        from api_clients.qbittorrent import QBittorrentClient
-        client = QBittorrentClient(
-            qbit_config["web_url"],
-            qbit_config.get("username", ""),
-            qbit_config.get("password", ""),
-        )
-        results = client.search(query)
-        return jsonify({"success": True, "results": results or []})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-
-
-@qbit_bp.route("/add", methods=["POST"])
-async def qbit_add_torrent():
-    """Proxy endpoint to add torrent to qBittorrent."""
-    cfg = get_config()
-    qbit_config = cfg.get("qbittorrent", {})
-    if not qbit_config.get("enabled"):
-        return jsonify({"error": "qBittorrent not enabled"}), 400
-    torrent_url = ((await request.get_json()) or {}).get("url", "")
-    if not torrent_url:
-        return jsonify({"error": "url required"}), 400
-    try:
-        from api_clients.qbittorrent import QBittorrentClient
-        client = QBittorrentClient(
-            qbit_config["web_url"],
-            qbit_config.get("username", ""),
-            qbit_config.get("password", ""),
-        )
-        result = client.add_torrent(torrent_url)
-        return jsonify({"success": True, "result": result})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-
-
-@qbit_bp.route("/status", methods=["GET"])
-def qbit_status():
-    """Get qBittorrent download status."""
-    cfg = get_config()
-    qbit_config = cfg.get("qbittorrent", {})
-    if not qbit_config.get("enabled"):
-        return jsonify({"error": "qBittorrent not enabled"}), 400
-    try:
-        from api_clients.qbittorrent import QBittorrentClient
-        client = QBittorrentClient(
-            qbit_config["web_url"],
-            qbit_config.get("username", ""),
-            qbit_config.get("password", ""),
-        )
-        torrents = client.get_torrents()
-        return jsonify({"success": True, "torrents": torrents or []})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-
-
-@qbit_bp.route("/force-start", methods=["POST"])
-async def qbit_force_start():
-    """Force-start or resume a stalled qBittorrent torrent."""
-    cfg = get_config()
-    qbit_config = cfg.get("qbittorrent", {})
-    if not qbit_config.get("enabled"):
-        return jsonify({"error": "qBittorrent not enabled"}), 400
-    data = (await request.get_json()) or {}
-    torrent_hash = str(data.get("hash") or "").strip()
-    if not torrent_hash:
-        return jsonify({"error": "hash required"}), 400
-    try:
-        from api_clients.qbittorrent import QBittorrentClient
-        client = QBittorrentClient(
-            qbit_config["web_url"],
-            qbit_config.get("username", ""),
-            qbit_config.get("password", ""),
-        )
-        client.force_start(torrent_hash)
-        return jsonify({"success": True})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-
-
-@qbit_bp.route("/stop", methods=["POST"])
-async def qbit_stop():
-    """Pause/stop a qBittorrent torrent."""
-    cfg = get_config()
-    qbit_config = cfg.get("qbittorrent", {})
-    if not qbit_config.get("enabled"):
-        return jsonify({"error": "qBittorrent not enabled"}), 400
-    data = (await request.get_json()) or {}
-    torrent_hash = str(data.get("hash") or "").strip()
-    if not torrent_hash:
-        return jsonify({"error": "hash required"}), 400
-    try:
-        from api_clients.qbittorrent import QBittorrentClient
-        client = QBittorrentClient(
-            qbit_config["web_url"],
-            qbit_config.get("username", ""),
-            qbit_config.get("password", ""),
-        )
-        client.stop_torrent(torrent_hash)
-        return jsonify({"success": True})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500

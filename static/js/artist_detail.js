@@ -206,14 +206,8 @@ function openDownloadSearch(artistName, albumName) {
   
   document.getElementById('downloadArtistName').textContent = artistName + (albumName ? ' - ' + albumName : '');
   
-  // Set search query for both tabs
+  // Set search query
   const query = albumName ? artistName + ' ' + albumName : artistName;
-  
-  const qbitInput = document.getElementById('qbitSearchInput');
-  if (qbitInput) {
-    qbitInput.value = query;
-    document.getElementById('qbitResults').innerHTML = '';
-  }
   
   const slskdInput = document.getElementById('slskdSearchInput');
   if (slskdInput) {
@@ -228,16 +222,11 @@ function openDownloadSearch(artistName, albumName) {
   
   // Auto-search on the active tab
   setTimeout(() => {
-    const activeTab = document.querySelector('#downloadTabs .nav-link.active');
-    if (activeTab && activeTab.id === 'qbit-tab') {
-      performQbitSearch();
-    } else if (activeTab && activeTab.id === 'slskd-tab') {
-      // Show track queue option for Soulseek
-      if (albumName) {
-        showSlskdTrackQueueOption();
-      }
-      performSlskdSearch();
+    // Show track queue option for Soulseek
+    if (albumName) {
+      showSlskdTrackQueueOption();
     }
+    performSlskdSearch();
   }, 300);
 }
 
@@ -579,134 +568,6 @@ function downloadSlskdFile(username, filename, size) {
   });
 }
 
-function performQbitSearch() {
-  const query = document.getElementById('qbitSearchInput').value;
-  if (!query) return;
-  
-  document.getElementById('qbitLoading').style.display = 'block';
-  document.getElementById('qbitResults').innerHTML = '';
-  
-  fetch('/api/qbittorrent/search', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ query: query })
-  })
-  .then(response => response.json())
-  .then(data => {
-    document.getElementById('qbitLoading').style.display = 'none';
-    
-    if (data.error) {
-      document.getElementById('qbitResults').innerHTML = `
-        <div class="alert alert-danger">
-          <i class="bi bi-exclamation-triangle"></i> Error: ${data.error}
-        </div>
-      `;
-      return;
-    }
-    
-    const results = data.results || [];
-    
-    if (results.length === 0) {
-      document.getElementById('qbitResults').innerHTML = `
-        <div class="alert alert-info">
-          <i class="bi bi-info-circle"></i> No results found. Try a different search query.
-        </div>
-      `;
-      return;
-    }
-    
-    let html = `
-      <div class="table-responsive">
-        <table class="table table-hover">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th class="text-center">Size</th>
-              <th class="text-center">Seeds</th>
-              <th class="text-center">Peers</th>
-              <th class="text-center">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-    `;
-    
-    results.forEach((result, idx) => {
-      const size = formatBytes(result.fileSize || 0);
-      const seedClass = result.nbSeeders > 10 ? 'text-success' : (result.nbSeeders > 0 ? 'text-warning' : 'text-danger');
-      
-      html += `
-        <tr>
-          <td>
-            <div class="small" style="max-width: 500px; overflow: hidden; text-overflow: ellipsis;">
-              ${escapeHtml(result.fileName || 'Unknown')}
-            </div>
-            <div class="text-muted" style="font-size: 0.75rem;">
-              ${escapeHtml(result.siteUrl || '')}
-            </div>
-          </td>
-          <td class="text-center">${size}</td>
-          <td class="text-center ${seedClass}">
-            <i class="bi bi-arrow-up-circle"></i> ${result.nbSeeders || 0}
-          </td>
-          <td class="text-center">
-            <i class="bi bi-arrow-down-circle"></i> ${result.nbLeechers || 0}
-          </td>
-          <td class="text-center">
-            <button class="btn btn-sm btn-success" onclick="addTorrent('${escapeJsString(result.fileUrl)}')"
-              ${!result.fileUrl ? 'disabled' : ''}>
-              <i class="bi bi-plus-circle"></i> Add
-            </button>
-          </td>
-        </tr>
-      `;
-    });
-    
-    html += `
-          </tbody>
-        </table>
-      </div>
-      <div class="text-muted small mt-2">
-        Found ${results.length} results
-      </div>
-    `;
-    
-    document.getElementById('qbitResults').innerHTML = html;
-  })
-  .catch(error => {
-    document.getElementById('qbitLoading').style.display = 'none';
-    document.getElementById('qbitResults').innerHTML = `
-      <div class="alert alert-danger">
-        <i class="bi bi-exclamation-triangle"></i> Network error: ${error.message}
-      </div>
-    `;
-  });
-}
-
-function addTorrent(url) {
-  if (!url || !confirm('Add this torrent to qBittorrent?')) return;
-  
-  fetch('/api/qbittorrent/add', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ url: url })
-  })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
-      alert('✅ Torrent added successfully!');
-    } else {
-      alert('❌ Error: ' + (data.error || 'Failed to add torrent'));
-    }
-  })
-  .catch(error => {
-    alert('❌ Network error: ' + error.message);
-  });
-}
-
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -765,15 +626,6 @@ function formatDuration(rawValue) {
 
 // Allow Enter key to trigger search
 document.addEventListener('DOMContentLoaded', function() {
-  const qbitSearchInput = document.getElementById('qbitSearchInput');
-  if (qbitSearchInput) {
-    qbitSearchInput.addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') {
-        performQbitSearch();
-      }
-    });
-  }
-  
   const slskdSearchInput = document.getElementById('slskdSearchInput');
   if (slskdSearchInput) {
     slskdSearchInput.addEventListener('keypress', function(e) {

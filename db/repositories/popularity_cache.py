@@ -122,7 +122,3 @@ def upsert_track_popularity_bulk(rows: List[Dict[str, Any]]) -> int:
     except Exception as exc:
         logger.error("[track_popularity_cache] bulk upsert failed for %s: %s", rows[0].get("artist"), exc)
         return 0
-
-
-import logging
-logger = logging.getLogger(__name__)

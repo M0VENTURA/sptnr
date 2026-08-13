@@ -187,13 +187,6 @@ function buildConfigObject() {
     logging: {
       level: getValue('log_level', 'info').toLowerCase()
     },
-    qbittorrent: {
-      enabled: getChecked('qbit_enabled'),
-      web_url: getValue('qbit_web_url'),
-      username: getValue('qbit_username'),
-      password: getValue('qbit_password'),
-      downloads_folder: getValue('qbit_downloads_folder')
-    },
     slskd: Object.assign(
       {},
       (window.pageConfig && window.pageConfig.slskd) || {},
@@ -455,11 +448,6 @@ function buildConfigObject() {
       audiodb: {
         enabled: getChecked('api_audiodb_enabled'),
         api_key: getValue('api_audiodb_api_key')
-      },
-      google: {
-        enabled: getChecked('api_google_enabled'),
-        api_key: getValue('api_google_api_key'),
-        cse_id: getValue('api_google_cse_id')
       }
     },
     strip_parentheses_filters: Array.from(document.querySelectorAll('#stripKeywordsList .badge'))
@@ -555,7 +543,6 @@ const SECTION_LABELS = {
   navidrome_users: 'Music Users',
   matching: 'Track Matching',
   logging: 'Logging',
-  qbittorrent: 'qBittorrent',
   slskd: 'slskd / Soulseek',
   wikidata: 'Artist Biography',
   queue: 'Queue Matching',

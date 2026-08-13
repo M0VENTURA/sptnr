@@ -976,30 +976,6 @@ def get_api_integration(service: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# qBittorrent (qbittorrent.*)
-# ---------------------------------------------------------------------------
-
-def get_qbittorrent_config() -> dict[str, Any]:
-    """Get qBittorrent torrent client configuration.
-
-    Config section: ``qbittorrent`` in config.yaml
-
-    Returns:
-        Dict with keys ``enabled``, ``web_url``, ``username``,
-        ``password``, ``downloads_folder``.
-    """
-    cfg = get_config()
-    qb = cfg.get("qbittorrent", {})
-    return {
-        "enabled": bool(qb.get("enabled", False)),
-        "web_url": str(qb.get("web_url", "") or ""),
-        "username": str(qb.get("username", "") or ""),
-        "password": str(qb.get("password", "") or ""),
-        "downloads_folder": str(qb.get("downloads_folder", "") or ""),
-    }
-
-
-# ---------------------------------------------------------------------------
 # slskd / Soulseek basic (slskd.*)
 # ---------------------------------------------------------------------------
 

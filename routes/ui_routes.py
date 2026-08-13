@@ -1201,7 +1201,6 @@ async def artist_detail(name: str):
         artist_country=artist_country,
         artist_members=artist_members,
         similar_artists=similar_artists,
-        qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
 
@@ -1693,7 +1692,6 @@ async def album_detail(artist: str, album: str):
         is_album_favourite=is_album_favourite,
 
         # Download provider config
-        qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
 
@@ -2522,10 +2520,6 @@ async def track_detail(track_id: str):
             track_id=str(track_id),
             is_track_favourite=is_track_favourite,
             genre_sources=genre_sources,
-            qbit_config=cfg.get(
-                "qbittorrent",
-                {"enabled": False, "web_url": "http://localhost:8080"},
-            ),
             slskd_config=cfg.get(
                 "slskd",
                 {"enabled": False},
@@ -2793,7 +2787,7 @@ async def correcting():
 @ui_bp.route("/missing")
 async def missing_page():
     cfg = get_config()
-    return await render_template("pages/missing_releases.html", qbit_config=cfg.get("qbittorrent", {}), slskd_config=cfg.get("slskd", {}))
+    return await render_template("pages/missing_releases.html", slskd_config=cfg.get("slskd", {}))
 
 
 @ui_bp.route("/discover")
@@ -2807,7 +2801,6 @@ async def downloads_monitor():
     from services.infrastructure.filesystem_service import resolve_downloads_dir
     return await render_template(
         "pages/downloads/monitor.html",
-        qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
         downloads_dir=resolve_downloads_dir(prefer_music_subfolder=False),
     )
@@ -2823,7 +2816,6 @@ async def downloads_page():
     cfg = get_config()
     return await render_template(
         "pages/downloads/queue.html",
-        qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
 
@@ -2834,7 +2826,6 @@ async def downloads_search():
     cfg = get_config()
     return await render_template(
         "pages/downloads/search.html",
-        qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
 
@@ -2852,11 +2843,6 @@ async def downloads_search_musicbrainz():
     return redirect(url_for("ui.downloads_search"))
 
 
-@ui_bp.route("/downloads/search/qbittorrent")
-async def downloads_search_qbittorrent():
-    return redirect(url_for("ui.downloads_search") + "#qbittorrent")
-
-
 @ui_bp.route("/downloads/search/playlists")
 async def downloads_search_playlists():
     return redirect(url_for("ui.downloads_search") + "#playlists")
@@ -2867,7 +2853,6 @@ async def downloads_manager():
     cfg = get_config()
     return await render_template(
         "pages/downloads/manager.html",
-        qbit_config=cfg.get("qbittorrent", {}),
         slskd_config=cfg.get("slskd", {}),
     )
 

@@ -17,7 +17,7 @@ from routes.analytics import analytics_bp
 from routes.logs import logs_bp
 from routes.metadata import metadata_bp
 from routes.track_routes import track_bp
-from routes.download_search_routes import slskd_bp, qbit_bp, slsk_bp
+from routes.download_search_routes import slskd_bp, slsk_bp
 from routes.musicbrainz_routes import mb_bp
 from routes.social_routes import listenbrainz_bp, lastfm_bp, weekly_bp
 from routes.upcoming_releases_routes import upcoming_bp
@@ -46,7 +46,6 @@ def register_all_blueprints(app):
     app.register_blueprint(metadata_bp)
     app.register_blueprint(track_bp)
     app.register_blueprint(slskd_bp)
-    app.register_blueprint(qbit_bp)
     app.register_blueprint(slsk_bp)
     app.register_blueprint(mb_bp)
     app.register_blueprint(listenbrainz_bp)
